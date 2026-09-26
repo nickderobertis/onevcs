@@ -1902,6 +1902,86 @@ fn the_library_classifies_a_held_branch_a_retired_one_and_refuses_one_nothing_ho
 }
 
 #[test]
+fn the_library_pass_resolves_an_exclusion_by_its_identity_and_refuses_one_naming_none() {
+    let yard = Yard::new();
+    yard.landed("feature/spared", "spared.txt");
+    crate::honesty::inhabit(yard.world());
+    let providers = onevcs::Providers::real();
+    let before = yard.held("feature/spared");
+    let pass = |identity: &str| {
+        onevcs::retire_finished(
+            &providers,
+            &onevcs::RetirePass {
+                scope: onevcs::Scope::All,
+                exclude: vec![onevcs::BranchRef {
+                    identity: identity.to_owned(),
+                    branch: "feature/spared".to_owned(),
+                }],
+                dry_run: false,
+            },
+        )
+    };
+
+    // An identity nothing registered excludes nothing, so the pass is refused before it
+    // examines anything rather than retiring the branch its caller meant to spare.
+    let refused = pass("github.com/nobody/nothing").expect_err("no such identity");
+    assert!(
+        refused
+            .to_string()
+            .contains("the exclusion names no registered identity"),
+        "{refused}"
+    );
+    assert_eq!(yard.held("feature/spared"), before);
+    assert!(events(yard.world(), "branch-retired").is_empty());
+
+    // The alias a `--repo` takes names the same identity, and spares the branch.
+    let spared = pass("project").expect("an alias resolves to its identity");
+    let entry = spared
+        .examined
+        .iter()
+        .find(|entry| entry.retirement.branch == "feature/spared")
+        .expect("the branch was examined");
+    assert_eq!(entry.outcome, onevcs::RetireOutcome::Kept);
+    assert_eq!(entry.retirement.reason, Some(onevcs::KeepReason::Excluded));
+    assert_eq!(yard.held("feature/spared"), before);
+}
+
+#[test]
+fn a_retirement_record_naming_evidence_this_crate_would_not_write_is_not_read_as_one() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/evidenced", "evidenced.txt");
+    let (code, retired) = yard.verb(&["retire", "feature/evidenced"]);
+    assert_eq!(code, 0, "{retired}");
+    assert_eq!(retired["proof"]["kind"], "recorded-landing", "{retired}");
+    let stream = std::fs::read_dir(world.home().join("streams"))
+        .expect("streams")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| text.contains("\"branch-retired\""))
+        })
+        .expect("the stream the retirement was written to");
+    let text = std::fs::read_to_string(&stream).expect("the stream");
+    let line = text
+        .lines()
+        .find(|line| line.contains("\"branch-retired\""))
+        .expect("the retirement");
+    // The genuine line again, read after it, with a trigger no verb wrote here and a
+    // proof whose commit is not one. Were it read, `status` would name its trigger.
+    let mut forged: Value = serde_json::from_str(line).expect("an event");
+    forged["payload"]["trigger"] = Value::from("pass");
+    forged["payload"]["proof"]["commit"] = Value::from("HEAD~1; not a commit");
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes such a proof,
+    // which is the point: the input under test is a stream line some other writer left,
+    // and the real binary is what reads it.
+    std::fs::write(&stream, format!("{text}{forged}\n")).expect("the stream is appended to");
+
+    let report = status(world, "feature/evidenced");
+    assert_eq!(report["retired"]["trigger"], "verb", "{report}");
+}
+
+#[test]
 fn a_branch_checked_out_in_a_checkout_with_a_separate_git_directory_is_refused() {
     // A checkout cloned with `--separate-git-dir` has a `.git` file rather than a
     // directory, so what it has checked out is asked of git rather than read off disk.

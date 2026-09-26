@@ -1883,6 +1883,28 @@ impl RetiredPayload {
                 .iter()
                 .all(|token| ids::is_safe_name(token))
             && self.differing_paths.iter().all(|path| !path.is_empty())
+            && self.evidence_is_plain()
+    }
+
+    /// Whether the evidence the record names is evidence this crate could have
+    /// written: every commit a proof names a commit id, and a supersession naming a
+    /// branch git accepts, a landing that is a commit or a change request, and labels
+    /// a caller could have recorded — the same checks `SupersessionRecord::read`
+    /// makes of the record it came from.
+    fn evidence_is_plain(&self) -> bool {
+        let commit = |sha: &Sha| ObjectId::parse(&sha.0).is_some();
+        let proof = match &self.proof {
+            None => true,
+            Some(RetirementProof::MergedChangeRequest { head, .. }) => commit(head),
+            Some(RetirementProof::RecordedLanding { commit: at }) => commit(at),
+            Some(RetirementProof::ContentIdentical { base_commit }) => commit(base_commit),
+        };
+        let superseded = self.superseded_by.as_ref().is_none_or(|by| {
+            Ref::try_from(by.branch.clone()).is_ok()
+                && SupersedingLanding::parse(&by.landing).is_some()
+                && label::validate(&by.labels).is_ok()
+        });
+        proof && superseded
     }
 }
 
@@ -2229,11 +2251,31 @@ pub(crate) fn pass_over(
         }
     }
     let host = Host::with(sessions)?;
+    // …and each identity it names resolved the way a `--repo` is, so an exclusion that
+    // names no registered identity is refused rather than protecting nothing.
+    let exclude = request
+        .exclude
+        .iter()
+        .map(|excluded| {
+            let resolved = store::resolve(&host.registry, &excluded.identity).map_err(|why| {
+                error::invalid(format!(
+                    "{branch:?} of {identity:?} is not a branch a pass can leave alone: the \
+                     exclusion names no registered identity ({why}); `onevcs repos` lists them",
+                    branch = excluded.branch,
+                    identity = excluded.identity,
+                ))
+            })?;
+            Ok(BranchRef {
+                identity: resolved.key,
+                branch: excluded.branch.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let identities = match &request.scope {
         Scope::All => host.identities(),
         Scope::Repo(repo) => vec![store::resolve(&host.registry, repo)?.key],
     };
-    let ask = Ask::acting(hosting, request.dry_run, &request.exclude);
+    let ask = Ask::acting(hosting, request.dry_run, &exclude);
     let mut report = RetirementPassReport {
         dry_run: request.dry_run,
         examined: Vec::new(),
