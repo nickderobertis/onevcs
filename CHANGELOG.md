@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0](https://github.com/nickderobertis/onevcs/compare/v0.32.2...v0.33.0) - 2026-09-26
+
+### Added
+
+- *(session)* take a caller's branch name to cut, and a configured prefix for every branch ([#226](https://github.com/nickderobertis/onevcs/pull/226))
+
 ## [0.32.2](https://github.com/nickderobertis/onevcs/compare/v0.32.1...v0.32.2) - 2026-09-25
 
 ### Fixed
