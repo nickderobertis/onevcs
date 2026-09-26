@@ -45,7 +45,8 @@
 //! scripts for real against a scratch `origin`, because the branch it pushed and
 //! what that branch then locks are the behaviour; `scripts/release-pr-check.sh`,
 //! which cuts a release PR's tree with the real `release-plz`, is driven here only
-//! up to its refusals, and in full by CI's `release-pr` job, which installs it.
+//! up to its refusals, and in full by `tests/release_pr/` — its own binary, run with
+//! the pinned `release-plz` by CI's `release-pr` job, which installs it.
 //!
 //! Unix only, like `smoke.rs` beside it: `nx-affected.sh` runs on the Linux
 //! `changes` and `gate` jobs alone, and the platform-specific half of
@@ -2968,4 +2969,41 @@ fn release_pr_check_that_cannot_cut_a_release_says_why_rather_than_passing() {
         .check()
         .failed()
         .said("release-plz update left crates/onevcs/Cargo.toml at 0.1.0, so nothing was proved");
+}
+
+#[test]
+fn release_pr_check_refuses_a_crate_manifest_it_reads_no_version_from() {
+    // A version it could not read would compare equal to the baseline's missing one
+    // and send the check down the wrong path, so it stops before cutting anything.
+    let cut = ReleaseCut::new(true, true, &Update::Bumps);
+    let root = cut.dir.path();
+    std::fs::write(
+        root.join("crates/onevcs/Cargo.toml"),
+        "[package]\nname = \"onevcs\"\nversion.workspace = true\nedition = \"2021\"\n",
+    )
+    .expect("the fixture's manifest is writable");
+    let status = hermetic_git(Command::new("git").arg("-C").arg(root).args([
+        "-c",
+        "user.name=release-pr-check",
+        "-c",
+        "user.email=release-pr-check@invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        "build: inherit the version",
+    ]))
+    .status()
+    .expect("git must be available to commit the fixture's change");
+    assert!(
+        status.success(),
+        "the fixture's change could not be committed"
+    );
+    cut.check()
+        .failed()
+        .said("release-pr-check.sh: crates/onevcs/Cargo.toml at HEAD declares no version")
+        .said("ACTION: give that manifest's [package] a version = \"X.Y.Z\" line");
+    assert!(
+        cut.asked().is_empty(),
+        "nothing is cut from a version it could not read"
+    );
 }

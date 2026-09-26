@@ -20,6 +20,19 @@
 #   4. that tree's own `just _crate-bootstrap`, unchanged — the recipe that fetches
 #      both the workspace's and the compatibility project's lockfile `--locked`.
 #
+# A release PR's own tree is already cut: its `crates/onevcs/Cargo.toml` differs
+# from the baseline's, and release-plz reads a local version that differs from the
+# registry's as a bump already made, so step 2 would change only the changelogs and
+# prove nothing. The tree is told apart by that same comparison — release-plz's own
+# rule, so the check and the tool cannot disagree about which tree is a release PR —
+# and two things are proved of it instead:
+#
+#   a. the tree bootstraps `--locked` as it stands, which is what a release PR whose
+#      compat/Cargo.lock the release job failed to carry fails;
+#   b. steps 1 to 4 against that tree itself as the baseline — the registry once this
+#      release is published — so the release PR after it is still proved to carry
+#      its lockfiles.
+#
 # A tree from before step 3 existed (58591f3 and earlier) fails at step 4, which is
 # the failure release PR #242 hit. Needs `release-plz` on PATH; CI's `release-pr`
 # job installs the version `release-plz.yml` pins.
@@ -78,6 +91,22 @@ step "checking out the $baseline baseline" "$scratch_full" git -C "$repo" worktr
 manifest="$repo/crates/onevcs/Cargo.toml"
 version_of() { sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -n1; }
 before="$(version_of "$manifest")"
+released="$(version_of "$work/baseline/crates/onevcs/Cargo.toml")"
+[ -n "$before" ] || refuse "crates/onevcs/Cargo.toml at $ref declares no version" \
+    "give that manifest's [package] a version = \"X.Y.Z\" line"
+[ -n "$released" ] || refuse "crates/onevcs/Cargo.toml at the $baseline baseline declares no version" \
+    "check that $baseline is a release tag of this repository's crate"
+proved=""
+
+if [ "$before" != "$released" ]; then
+    echo "$ref already carries crates/onevcs/Cargo.toml $released -> $before; bootstrapping it as it stands" >>"$log"
+    (cd "$repo" && just _crate-bootstrap) >>"$log" 2>&1 \
+        || fail "the release PR tree at $ref bumps crates/onevcs/Cargo.toml $released -> $before and fails the --locked bootstrap" \
+            "carry compat/Cargo.lock along in the release job (scripts/release-pr-lockfiles.sh), or run it on this branch and commit what it changes"
+    step "moving the baseline to the tree at $ref" "$scratch_full" git -C "$repo" worktree remove --force "$work/baseline"
+    step "checking out $commit as the baseline" "$scratch_full" git -C "$repo" worktree add --quiet --detach "$work/baseline" "$commit"
+    proved="the release PR tree at $ref ($released -> $before) bootstraps, and "
+fi
 
 echo "// release-pr-check: a change for release-plz to release" >>"$repo/crates/onevcs/src/lib.rs"
 step "committing a change to release" \
@@ -106,4 +135,4 @@ fi
     || fail "a release PR cut from $ref bumps crates/onevcs/Cargo.toml $before -> $after and fails the --locked bootstrap" \
         "carry compat/Cargo.lock along in the release job (scripts/release-pr-lockfiles.sh)"
 
-echo "release-pr-check: a release PR cut from $ref (crates/onevcs/Cargo.toml $before -> $after) bootstraps"
+echo "release-pr-check: ${proved}a release PR cut from $ref (crates/onevcs/Cargo.toml $before -> $after) bootstraps"

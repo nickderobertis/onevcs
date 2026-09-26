@@ -150,9 +150,11 @@ _crate-lint:
     @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet -- -D warnings
 
 # The offline tier: every binary but `smoke`, which needs a GitHub credential and
-# a scratch repository and is run by `just smoke-real` alone. Excluded by name
-# rather than by `#[ignore]`, so no journey in it is ever a skipped test.
-offline-tiers := "not binary(smoke)"
+# a scratch repository and is run by `just smoke-real` alone, and `release_pr`,
+# which needs the pinned `release-plz` and is run by `just release-pr-journeys`.
+# Excluded by name rather than by `#[ignore]`, so no journey in either is ever a
+# skipped test.
+offline-tiers := "not binary(smoke) and not binary(release_pr)"
 
 # 95% line coverage is the gate; lower it only with a documented reason in
 # AGENTS.md.
@@ -247,6 +249,13 @@ semver-check:
 # Prove a release PR cut from REF (default HEAD, committed state) still bootstraps.
 release-pr-check ref="HEAD":
     @bash scripts/release-pr-check.sh {{quote(ref)}}
+
+# The journeys that hold release-pr-check to what it proves, run against the real
+# `release-plz` at the version `release-plz.yml` pins — they refuse any other — so
+# outside `check` and `gate`, which do not install it. CI's `release-pr` job runs
+# this after `release-pr-check`. See crates/onevcs/tests/release_pr/main.rs.
+release-pr-journeys:
+    @cargo nextest run --workspace --locked -E 'binary(release_pr)' --status-level fail
 
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
