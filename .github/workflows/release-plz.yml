@@ -4,7 +4,8 @@ name: Release-plz
 #   * release     — if a merged version-bump PR left the crate manifest at a version with
 #                   no tag yet, tag vX.Y.Z and cut the GitHub Release.
 #   * release-pr  — open/update a "release vX.Y.Z" PR that bumps the version and
-#                   writes the CHANGELOG for the commits since the last release.
+#                   writes the CHANGELOG for the commits since the last release,
+#                   then carry compat/Cargo.lock along (release-plz cannot see it).
 #   * auto-merge  — enable auto-merge on that PR so it merges once the required
 #                   checks pass; the merge re-triggers `release` above.
 #
@@ -113,7 +114,22 @@ jobs:
         if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-        run: release-plz release-pr ${{ steps.baseline.outputs.arg }} --git-token "$GITHUB_TOKEN"
+        run: |
+          release-plz release-pr ${{ steps.baseline.outputs.arg }} --git-token "$GITHUB_TOKEN" -o json \
+            > "$RUNNER_TEMP/release-pr.json"
+          cat "$RUNNER_TEMP/release-pr.json"
+
+      # `compat/` is a cargo project outside the workspace that links crates/onevcs
+      # by path, so its Cargo.lock records that crate's version — and release-plz,
+      # which only refreshes the workspace's own lock, leaves it naming the old one.
+      # release-plz has no hook between its update and its commit, so the release
+      # PR's branch gets one more commit here, as the Actions bot; the script says
+      # why, and `tests/e2e/scripts.rs` drives it against a scratch remote.
+      # `just release-pr-check` drives the lockfile step it runs on a tree
+      # `release-plz update` produced.
+      - name: Carry the out-of-workspace lockfiles onto the release PR
+        if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"
+        run: bash scripts/release-pr-carry.sh "$RUNNER_TEMP/release-pr.json"
 
       - name: Auto-merge the release PR when the gate is green
         if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"
