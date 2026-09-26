@@ -7033,21 +7033,21 @@ fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_wri
     for (proof, spelled) in [
         (
             onevcs::RetirementProof::MergedChangeRequest {
-                change_url: "https://github.com/acme/project/pull/12".to_owned(),
-                head: "0f1e2d3c".to_owned(),
+                change_url: Url::parse("https://github.com/acme/project/pull/12").expect("a URL"),
+                head: Sha("0f1e2d3c".to_owned()),
             },
             json!({"kind": "merged-change-request",
                    "change_url": "https://github.com/acme/project/pull/12", "head": "0f1e2d3c"}),
         ),
         (
             onevcs::RetirementProof::RecordedLanding {
-                commit: "0f1e2d3c".to_owned(),
+                commit: Sha("0f1e2d3c".to_owned()),
             },
             json!({"kind": "recorded-landing", "commit": "0f1e2d3c"}),
         ),
         (
             onevcs::RetirementProof::ContentIdentical {
-                base_commit: "0f1e2d3c".to_owned(),
+                base_commit: Sha("0f1e2d3c".to_owned()),
             },
             json!({"kind": "content-identical", "base_commit": "0f1e2d3c"}),
         ),

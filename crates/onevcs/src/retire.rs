@@ -201,20 +201,20 @@ pub enum RetirementProof {
     /// branch's content.
     MergedChangeRequest {
         /// The change request.
-        change_url: String,
+        change_url: Url,
         /// The head that contains the branch's content.
-        head: String,
+        head: Sha,
     },
     /// A landing is recorded for the branch at this commit of it, and nothing after
     /// it changes content.
     RecordedLanding {
         /// The branch commit that landed.
-        commit: String,
+        commit: Sha,
     },
     /// Every path the branch changed reads on the base exactly as on the branch.
     ContentIdentical {
         /// The base commit the paths were compared against.
-        base_commit: String,
+        base_commit: Sha,
     },
 }
 
@@ -231,9 +231,9 @@ impl RetirementProof {
     /// The commit that is the evidence.
     pub fn commit(&self) -> &str {
         match self {
-            RetirementProof::MergedChangeRequest { head, .. } => head,
-            RetirementProof::RecordedLanding { commit } => commit,
-            RetirementProof::ContentIdentical { base_commit } => base_commit,
+            RetirementProof::MergedChangeRequest { head, .. } => &head.0,
+            RetirementProof::RecordedLanding { commit } => &commit.0,
+            RetirementProof::ContentIdentical { base_commit } => &base_commit.0,
         }
     }
 
@@ -241,18 +241,36 @@ impl RetirementProof {
     pub fn describe(&self) -> String {
         match self {
             RetirementProof::MergedChangeRequest { change_url, head } => {
-                format!("merged-change-request — {change_url} merged at head {head}")
+                format!(
+                    "merged-change-request — {change_url} merged at head {}",
+                    head.0
+                )
             }
             RetirementProof::RecordedLanding { commit } => {
-                format!("recorded-landing — {commit} landed, and nothing after it changes content")
+                format!(
+                    "recorded-landing — {} landed, and nothing after it changes content",
+                    commit.0
+                )
             }
             RetirementProof::ContentIdentical { base_commit } => {
-                format!("content-identical — every path it changed reads the same on {base_commit}")
+                format!(
+                    "content-identical — every path it changed reads the same on {}",
+                    base_commit.0
+                )
             }
         }
     }
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] the fields below that stay text are
+// the ones this crate has no public type for, and the retirement amendment in
+// `docs/contract.md` fixes them as it fixes `Recoverable`'s: an identity key and a branch
+// name are `String` everywhere the contract spells one (`workspace::Ref` is private), a
+// holder's location is a path or an origin URL by its `kind`, and a supersession's landing is
+// a commit or a URL exactly as the caller recorded it. Every one is decided where it arrives —
+// written from git's own answers, and read back through `SupersessionRecord::read` and
+// `RetiredRecord::read`, which refuse what does not parse — and the commits and the change
+// request carry `Sha` and `Url`.
 /// The retry that superseded a branch, as its record says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupersededBy {
@@ -311,11 +329,10 @@ pub struct FailedHolder {
 }
 
 /// What a branch is, and everything that says so.
-// llmlint: ignore[invalid_states_unrepresentable] the shape is the amendment's `Retirement`
-// JSON, which two other repositories read field by field, so the class, the reason and the
-// proof cannot be folded into one value without changing the document they parse. The rule
-// between them is held where a document is *read*: `AnyRetirement` refuses a reason
-// without `keep`, a proof without `retirable`, and a supersession without its class.
+// The class, the reason and the proof cannot be folded into one value without changing the
+// document two other repositories parse field by field, so the rule between them is held
+// where a document is *read*: `AnyRetirement` refuses a reason without `keep`, a proof
+// without `retirable`, and a supersession without its class.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "AnyRetirement")]
 pub struct Retirement {
@@ -328,14 +345,14 @@ pub struct Retirement {
     /// The branch.
     pub branch: String,
     /// Where it stands: the first copy's tip, in search order.
-    pub tip: String,
+    pub tip: Sha,
     /// The base it is judged against.
     pub base: String,
     /// What proves it holds nothing beyond the base, for [`RetirementClass::Retirable`]
     /// alone.
     pub proof: Option<RetirementProof>,
     /// The commits at its tip that change no content, which no proof asks about.
-    pub content_free_commits: Vec<String>,
+    pub content_free_commits: Vec<Sha>,
     /// The retry that superseded it, for [`RetirementClass::SupersededWithChanges`].
     pub superseded_by: Option<SupersededBy>,
     /// The paths it changed that differ from the base: non-empty exactly for
@@ -352,14 +369,16 @@ struct AnyRetirement {
     reason: Option<KeepReason>,
     identity: String,
     branch: String,
-    tip: String,
+    tip: Sha,
     base: String,
     proof: Option<RetirementProof>,
-    content_free_commits: Vec<String>,
+    content_free_commits: Vec<Sha>,
     superseded_by: Option<SupersededBy>,
     differing_paths: Vec<String>,
     holders: Vec<BranchHolder>,
 }
+
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 impl TryFrom<AnyRetirement> for Retirement {
     type Error = String;
@@ -400,7 +419,7 @@ impl Retirement {
             reason: Some(reason),
             identity: census.resolution.key.clone(),
             branch: branch.to_owned(),
-            tip: copies.first_tip(),
+            tip: Sha(copies.first_tip()),
             base: census.base.clone().unwrap_or_default(),
             proof: None,
             content_free_commits: Vec::new(),
@@ -436,7 +455,11 @@ impl Retirement {
         if !self.content_free_commits.is_empty() {
             lines.push(format!(
                 "content-free commits at its tip: {}",
-                self.content_free_commits.join(", ")
+                self.content_free_commits
+                    .iter()
+                    .map(|commit| commit.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         for holder in &self.holders {
@@ -1248,7 +1271,7 @@ impl<'a> Census<'a> {
             }
         }
         let mut retirement = kept(KeepReason::UnmergedUniqueCommits);
-        retirement.content_free_commits = free;
+        retirement.content_free_commits = free.into_iter().map(Sha).collect();
         let Some((repo, tip, fork)) = uncovered else {
             retirement.class = RetirementClass::Retirable;
             retirement.reason = None;
@@ -1257,7 +1280,7 @@ impl<'a> Census<'a> {
             // is identical, since a copy the base carries changed nothing.
             if retirement.proof.is_none() {
                 retirement.proof = Some(RetirementProof::ContentIdentical {
-                    base_commit: base_tip.to_owned(),
+                    base_commit: Sha(base_tip.to_owned()),
                 });
             }
             return Ok(retirement);
@@ -1335,8 +1358,8 @@ impl<'a> Census<'a> {
             for head in &evidence.heads {
                 if git::known_to_reach(asked, &content_tip, head.as_str())? {
                     proof = Some(RetirementProof::MergedChangeRequest {
-                        change_url: change.to_string(),
-                        head: head.as_str().to_owned(),
+                        change_url: change.clone(),
+                        head: Sha(head.as_str().to_owned()),
                     });
                     break;
                 }
@@ -1358,7 +1381,7 @@ impl<'a> Census<'a> {
             };
             if differing.is_empty() {
                 proof = Some(RetirementProof::ContentIdentical {
-                    base_commit: base_tip.to_owned(),
+                    base_commit: Sha(base_tip.to_owned()),
                 });
             }
         }
@@ -1410,7 +1433,7 @@ impl<'a> Census<'a> {
             }
             if all_free {
                 return Ok(Some(RetirementProof::RecordedLanding {
-                    commit: point.as_str().to_owned(),
+                    commit: Sha(point.as_str().to_owned()),
                 }));
             }
         }
@@ -1768,16 +1791,16 @@ impl SupersessionRecord {
 
 /// The payload a `branch-retired` event carries, which is also what it is read back
 /// as.
-// llmlint: ignore[invalid_states_unrepresentable] the amendment fixes this payload field
-// for field, and a stream is a file whichever process wrote it — so what is typed is what
-// a reader routes on (the class, reason, proof, mode and trigger), and the rest is checked
-// where a record is read: `RetiredRecord::read` refuses a branch git would not accept, a
-// tip that is not a commit id, and fields that contradict each other.
+// llmlint: ignore-block[invalid_states_unrepresentable] the amendment fixes this payload
+// field for field, and a stream is a file whichever process wrote it — so what is typed is
+// what a reader routes on (the class, reason, proof, mode, trigger and tip), and the rest is
+// checked where a record is read: `RetiredRecord::read` refuses a branch git would not
+// accept, a tip that is not a commit id, and fields that contradict each other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RetiredPayload {
     identity: String,
     branch: String,
-    tip: String,
+    tip: Sha,
     class: RetirementClass,
     reason: Option<KeepReason>,
     proof: Option<RetirementProof>,
@@ -1791,6 +1814,7 @@ pub(crate) struct RetiredPayload {
     run_roots_removed: Vec<PathBuf>,
     sessions_closed: Vec<String>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// One `branch-retired` record, read back with the moment it was written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1804,7 +1828,7 @@ impl RetiredRecord {
         let payload: RetiredPayload =
             serde_json::from_value(Value::Object(payload.clone())).ok()?;
         Ref::try_from(payload.branch.clone()).ok()?;
-        ObjectId::parse(&payload.tip)?;
+        ObjectId::parse(&payload.tip.0)?;
         // A retirement acts only on a class its mode permits, and the class decides
         // which of the reason, the proof and the supersession it carries — so a record
         // whose fields contradict each other is one nothing wrote, and is no record.
@@ -1842,7 +1866,7 @@ impl RetiredRecord {
         self.payload.proof.as_ref()
     }
 
-    pub(crate) fn tip(&self) -> &str {
+    pub(crate) fn tip(&self) -> &Sha {
         &self.payload.tip
     }
 

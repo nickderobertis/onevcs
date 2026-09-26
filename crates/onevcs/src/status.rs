@@ -399,7 +399,7 @@ pub struct RetiredReport {
     /// When, as the event stream stamped it.
     pub at: Stamp,
     /// The commit the branch was deleted at.
-    pub tip: String,
+    pub tip: crate::host::Sha,
 }
 
 impl RetiredReport {
@@ -411,7 +411,7 @@ impl RetiredReport {
             trigger: record.trigger(),
             mode: record.mode(),
             at: Stamp::try_from(record.at().to_owned()).ok()?,
-            tip: record.tip().to_owned(),
+            tip: record.tip().clone(),
         })
     }
 
@@ -456,13 +456,17 @@ fn landed_on_base(
     }
     let mentioning = |needle: &str| git::first_commit_mentioning(publication, &tip, needle);
     match proof? {
-        crate::retire::RetirementProof::RecordedLanding { commit } => mentioning(commit),
+        crate::retire::RetirementProof::RecordedLanding { commit } => mentioning(&commit.0),
         crate::retire::RetirementProof::MergedChangeRequest { change_url, .. } => {
-            let number = change_url.trim_end_matches('/').rsplit('/').next()?;
-            mentioning(&format!("(#{number})")).or_else(|| mentioning(change_url))
+            let number = change_url
+                .as_str()
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()?;
+            mentioning(&format!("(#{number})")).or_else(|| mentioning(change_url.as_str()))
         }
         crate::retire::RetirementProof::ContentIdentical { base_commit } => {
-            Some(base_commit.clone())
+            Some(base_commit.0.clone())
         }
     }
 }
@@ -3004,7 +3008,7 @@ impl Report {
                 trigger = retired.trigger.as_str(),
                 mode = retired.mode.as_str(),
                 at = String::from(retired.at.clone()),
-                tip = retired.tip,
+                tip = retired.tip.0,
             ));
         }
         out.push_str("publication:\n");

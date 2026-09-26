@@ -193,10 +193,12 @@ pub fn full_vcs_state() -> VcsState {
                 reason: None,
                 identity: identity().origin,
                 branch: "feature/seeded".to_owned(),
-                tip: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c".to_owned(),
+                tip: Sha("0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c".to_owned()),
                 base: "main".to_owned(),
                 proof: None,
-                content_free_commits: vec!["1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d".to_owned()],
+                content_free_commits: vec![Sha(
+                    "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d".to_owned()
+                )],
                 superseded_by: Some(SupersededBy {
                     branch: "feature/seeded-retry".to_owned(),
                     landing: "https://github.com/acme-corp/widgets/pull/8".to_owned(),

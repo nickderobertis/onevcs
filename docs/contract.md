@@ -3162,17 +3162,17 @@ pub fn record_supersession(supersession: &Supersession) -> Result<()>;
 
 // The answers, field for field the JSON below:
 pub struct Retirement { pub class: RetirementClass, pub reason: Option<KeepReason>,
-                        pub identity: String, pub branch: String, pub tip: String,
+                        pub identity: String, pub branch: String, pub tip: Sha,
                         pub base: String, pub proof: Option<RetirementProof>,
-                        pub content_free_commits: Vec<String>,
+                        pub content_free_commits: Vec<Sha>,
                         pub superseded_by: Option<SupersededBy>,
                         pub differing_paths: Vec<String>, pub holders: Vec<BranchHolder> }
 pub enum RetirementClass { Retirable, SupersededWithChanges, Keep }
 pub enum KeepReason { HeldByLiveSession, Excluded, OpenChangeRequest, CheckedOut,
                       DirtyWorktree, UnmergedUniqueCommits, Unknown, IsBase }
-pub enum RetirementProof { MergedChangeRequest { change_url: String, head: String },
-                           RecordedLanding { commit: String },
-                           ContentIdentical { base_commit: String } }
+pub enum RetirementProof { MergedChangeRequest { change_url: Url, head: Sha },
+                           RecordedLanding { commit: Sha },
+                           ContentIdentical { base_commit: Sha } }
 pub struct SupersededBy { pub branch: String, pub landing: String,
                           pub labels: BTreeMap<String, String> }
 pub struct BranchHolder { pub kind: BranchHolderKind, pub location: String }
