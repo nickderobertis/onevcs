@@ -504,6 +504,13 @@ fn a_branch_whose_every_changed_path_the_base_already_carries_is_retired_as_cont
         yard.held("feature/case-two").is_empty(),
         "gone from the origin too"
     );
+    let report = status(yard.world(), "feature/case-two");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"],
+        yard.origin_main().as_str(),
+        "{report}"
+    );
 }
 
 #[test]
@@ -935,6 +942,12 @@ fn a_recorded_landing_followed_only_by_a_content_free_commit_is_retirable() {
         classified["content_free_commits"],
         serde_json::json!([note])
     );
+    let (code, rehearsed) = said(yard.world(), &["retire", "feature/noted", "--dry-run"]);
+    assert_eq!(code, 0, "{rehearsed}");
+    says(
+        &rehearsed,
+        &format!("  content-free commits at its tip: {note}"),
+    );
 }
 
 #[test]
@@ -1018,6 +1031,11 @@ fn a_branch_with_an_open_change_request_is_refused_and_nothing_is_deleted() {
         .assert()
         .success();
     let before = hosted.branch_on_origin("feature/in-review");
+    // A rehearsal may not record a merge, so it asks the host itself whether the change
+    // request merged, and hears that it is still open.
+    let (code, rehearsed) = verb(&hosted.world, &["retire", "feature/in-review", "--dry-run"]);
+    assert_eq!(code, 4, "{rehearsed}");
+    assert_eq!(rehearsed["reason"], "open-change-request");
     let (code, refused) = verb(&hosted.world, &["retire", "feature/in-review"]);
     assert_eq!(code, 4, "{refused}");
     assert_eq!(refused["reason"], "open-change-request");
@@ -1565,6 +1583,19 @@ fn the_pass_says_what_it_retired_and_kept_and_rehearses_without_acting() {
     assert!(!acted.contains("rehearsal"), "{acted}");
     assert!(yard.held("feature/finished").is_empty());
     assert!(tip(world, yard.checkout(), "feature/unfinished").is_some());
+
+    // Kept for a reason other than the work it holds, which its row says.
+    yard.run(&[
+        "import",
+        "feature/unfinished",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    world.git(&yard.worker, &["checkout", "-q", "feature/unfinished"]);
+    let (code, listed) = said(world, &["recoverable"]);
+    assert_eq!(code, 0, "{listed}");
+    says(&listed, "    Kept: keep / checked-out");
 }
 
 #[test]
@@ -1701,6 +1732,9 @@ fn a_branch_name_that_is_not_one_or_that_nothing_holds_is_refused_by_name() {
         &nowhere,
         "no checkout, pool slot or run clone of a registered identity holds \"feature/nowhere\"",
     );
+    let (code, excluded) = said(world, &["retire-finished", "--exclude", "feature/..bad"]);
+    assert_eq!(code, 2, "{excluded}");
+    says(&excluded, "is not a branch a pass can leave alone");
 }
 
 #[test]
@@ -1741,5 +1775,44 @@ fn the_library_classifies_a_held_branch_a_retired_one_and_refuses_one_nothing_ho
             .to_string()
             .contains("no retirement of it is recorded"),
         "{nowhere}"
+    );
+}
+
+#[test]
+fn a_branch_a_registered_linked_worktree_has_checked_out_is_refused() {
+    // A checkout registered from a linked worktree has a `.git` file rather than a
+    // directory, so what it has checked out is asked of git rather than read off disk.
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/linked", "linked.txt");
+    let linked = world.path("linked");
+    world.git(
+        yard.checkout(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &linked.to_string_lossy(),
+            "feature/linked",
+        ],
+    );
+    assert!(
+        linked.join(".git").is_file(),
+        "the premise: a linked worktree"
+    );
+    world
+        .onevcs()
+        .args(["register", &linked.to_string_lossy()])
+        .assert()
+        .success();
+    let before = yard.held("feature/linked");
+
+    let (code, refused) = yard.verb(&["retire", "feature/linked", "--repo", "project"]);
+    assert_eq!(code, 4, "{refused}");
+    assert_eq!(refused["reason"], "checked-out", "{refused}");
+    assert_eq!(yard.held("feature/linked"), before);
+    assert_eq!(
+        world.git(&linked, &["branch", "--show-current"]).trim(),
+        "feature/linked"
     );
 }
