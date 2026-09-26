@@ -724,19 +724,29 @@ fn a_superseded_branch_that_still_differs_is_surfaced_and_only_reclaim_removes_i
     yard.land("feature/second-try");
     let landing = yard.origin_main();
     for _ in 0..2 {
-        yard.run(&[
-            "supersede",
-            "feature/first-try",
-            "--repo",
-            "project",
-            "--by",
-            "feature/second-try",
-            "--landing",
-            &landing,
-            "--label",
-            "node=build",
-        ])
-        .success();
+        let (code, recorded) = said(
+            world,
+            &[
+                "supersede",
+                "feature/first-try",
+                "--repo",
+                "project",
+                "--by",
+                "feature/second-try",
+                "--landing",
+                &landing,
+                "--label",
+                "node=build",
+            ],
+        );
+        assert_eq!(code, 0, "{recorded}");
+        says(
+            &recorded,
+            &format!(
+                "recorded: feature/first-try is superseded by feature/second-try, \
+                 which landed at {landing}"
+            ),
+        );
     }
     let superseded = events(world, "branch-superseded");
     assert_eq!(
