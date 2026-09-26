@@ -1836,7 +1836,8 @@ impl SupersessionRecord {
 // field for field, and a stream is a file whichever process wrote it — so what is typed is
 // what a reader routes on (the class, reason, proof, mode, trigger and tip), and the rest is
 // checked where a record is read: `RetiredRecord::read` refuses a branch git would not
-// accept, a tip that is not a commit id, and fields that contradict each other.
+// accept, a tip that is not a commit id, fields that contradict each other, and an account
+// of what was done that this crate would not have written (`accounts_plainly`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RetiredPayload {
     identity: String,
@@ -1857,6 +1858,34 @@ pub(crate) struct RetiredPayload {
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 
+impl RetiredPayload {
+    /// Whether what the record says it did is spelled the way this crate writes it: every
+    /// place a path this host could have held — or, for the origin, a location on one line
+    /// — every session a token, and every path and error something. A record that says
+    /// otherwise is one nothing here wrote, and its account is not repeated to anybody.
+    fn accounts_plainly(&self) -> bool {
+        let one_line = |text: &str| !text.is_empty() && !text.chars().any(char::is_control);
+        let place = |kind: BranchHolderKind, location: &str| {
+            one_line(location)
+                && (kind == BranchHolderKind::Origin || Path::new(location).is_absolute())
+        };
+        let path = |path: &PathBuf| path.to_str().is_some_and(one_line) && path.is_absolute();
+        self.deleted
+            .iter()
+            .all(|holder| place(holder.kind, &holder.location))
+            && self.failed.iter().all(|holder| {
+                place(holder.kind, &holder.location) && !holder.error.trim().is_empty()
+            })
+            && self.slots_returned.iter().all(path)
+            && self.run_roots_removed.iter().all(path)
+            && self
+                .sessions_closed
+                .iter()
+                .all(|token| ids::is_safe_name(token))
+            && self.differing_paths.iter().all(|path| !path.is_empty())
+    }
+}
+
 /// One `branch-retired` record, read back with the moment it was written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetiredRecord {
@@ -1870,7 +1899,7 @@ impl RetiredRecord {
             serde_json::from_value(Value::Object(payload.clone())).ok()?;
         Ref::try_from(payload.branch.clone()).ok()?;
         ObjectId::parse(&payload.tip.0)?;
-        if !is_identity_key(&payload.identity) {
+        if !is_identity_key(&payload.identity) || !payload.accounts_plainly() {
             return None;
         }
         // A retirement acts only on a class its mode permits, and the class decides

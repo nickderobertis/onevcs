@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::host::{Hosted, AUTOMATED, REVIEWED};
 use crate::lifecycle::{orphan_working_in, stop_orphan, Fixture};
@@ -1442,6 +1442,59 @@ fn a_retirement_record_naming_no_identity_is_not_read_as_one() {
 
     let report = status(world, "feature/recorded");
     assert_eq!(report["retired"]["class"], "retirable", "{report}");
+}
+
+#[test]
+fn a_retirement_record_whose_account_is_not_one_this_crate_writes_is_not_read_as_one() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/accounted", "accounted.txt");
+    let (code, retired) = yard.verb(&["retire", "feature/accounted"]);
+    assert_eq!(code, 0, "{retired}");
+    let stream = std::fs::read_dir(world.home().join("streams"))
+        .expect("streams")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| text.contains("\"branch-retired\""))
+        })
+        .expect("the stream the retirement was written to");
+    let text = std::fs::read_to_string(&stream).expect("the stream");
+    let line = text
+        .lines()
+        .find(|line| line.contains("\"branch-retired\""))
+        .expect("the retirement");
+    // Each forged line is the genuine one, stamped the same moment and so read after it,
+    // with a trigger no verb wrote here and one field of its account spelled the way
+    // nothing in this crate writes it. Were any of them read, `status` would name its
+    // trigger instead of the verb's.
+    let damaged: [(&str, Value); 5] = [
+        (
+            "deleted",
+            json!([{"kind": "checkout", "location": "relative/checkout"}]),
+        ),
+        (
+            "failed",
+            json!([{"kind": "origin", "location": "origin\n\u{1b}[2J", "error": "refused"}]),
+        ),
+        ("slots_returned", json!(["pool/1"])),
+        ("run_roots_removed", json!([""])),
+        ("sessions_closed", json!(["../../registry"])),
+    ];
+    let mut forged_lines = String::new();
+    for (field, value) in damaged {
+        let mut forged: Value = serde_json::from_str(line).expect("an event");
+        forged["payload"]["trigger"] = Value::from("pass");
+        forged["payload"][field] = value;
+        forged_lines.push_str(&format!("{forged}\n"));
+    }
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes such an
+    // account, which is the point: the input under test is a stream line some other
+    // writer left, and the real binary is what reads it.
+    std::fs::write(&stream, format!("{text}{forged_lines}")).expect("the stream is appended to");
+
+    let report = status(world, "feature/accounted");
+    assert_eq!(report["retired"]["trigger"], "verb", "{report}");
 }
 
 #[test]
