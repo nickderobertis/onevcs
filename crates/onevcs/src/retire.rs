@@ -735,9 +735,9 @@ pub(crate) struct Ask<'a> {
     /// The host to ask about a change request the records do not decide, or `None`
     /// to decide from the records alone.
     host: Option<&'a dyn Hosting>,
-    /// Fetch the identity's origin into the publication checkout first, so the base
-    /// is judged where the origin has it now. Writes refs, so never on a read.
-    fetch: bool,
+    /// Fetch a copy's commits into the publication checkout's object store where only
+    /// the origin holds them — objects, and never a ref, so a dry run may too.
+    fetch_objects: bool,
     /// Record a merge the host reports, the way a read that finds a late merge does.
     reconcile: bool,
     /// Ask the origin itself where the branch is, rather than the publication
@@ -751,7 +751,7 @@ impl<'a> Ask<'a> {
     pub(crate) fn offline() -> Ask<'static> {
         Ask {
             host: None,
-            fetch: false,
+            fetch_objects: false,
             reconcile: false,
             remote: false,
             exclude: &[],
@@ -761,7 +761,7 @@ impl<'a> Ask<'a> {
     fn query(host: &'a dyn Hosting) -> Self {
         Ask {
             host: Some(host),
-            fetch: false,
+            fetch_objects: true,
             reconcile: false,
             remote: true,
             exclude: &[],
@@ -771,12 +771,26 @@ impl<'a> Ask<'a> {
     fn acting(host: Option<&'a dyn Hosting>, dry_run: bool, exclude: &'a [BranchRef]) -> Self {
         Ask {
             host,
-            fetch: !dry_run,
+            fetch_objects: true,
             reconcile: !dry_run,
             remote: true,
             exclude,
         }
     }
+}
+
+/// How far a census may reach to learn where the identity's base is on its origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// The publication checkout's own remote-tracking copy, and nothing else: the one
+    /// reach a report that never asks anything outside this host may make.
+    Offline,
+    /// Ask the origin where the base is, and fetch the commit's objects where the
+    /// checkout lacks them — without moving a ref, so a dry run may make it.
+    Remote,
+    /// Fetch the origin into the publication checkout, which is what a retirement that
+    /// is going to act does first.
+    Fetch,
 }
 
 /// Where one copy of a branch can be.
@@ -849,7 +863,7 @@ impl<'a> Census<'a> {
         sessions: &'a [Record],
         streams: &'a [status::Recorded],
         trailers: &'a Trailers,
-        fetch: bool,
+        reach: Reach,
         only: Option<&BTreeSet<PathBuf>>,
     ) -> Result<Self> {
         let resolution = store::resolve(registry, identity)?;
@@ -857,12 +871,15 @@ impl<'a> Census<'a> {
         // A fetch that failed leaves the base where the checkout last saw it, which
         // is not where the origin has it now — and every proof is asked against the
         // origin's base. So the base is unknown rather than stale.
-        let fetched = !fetch || git::fetch(&publication, "origin").is_ok();
+        let fetched = reach != Reach::Fetch || git::fetch(&publication, "origin").is_ok();
         let base = git::default_branch(&publication, "origin").ok();
-        let base_tip = base
-            .as_ref()
-            .filter(|_| fetched)
-            .and_then(|base| git::tip(&publication, &format!("refs/remotes/origin/{base}")));
+        let base_tip = match (reach, base.as_deref()) {
+            (_, None) => None,
+            (Reach::Remote, Some(base)) => remote_base(&publication, base),
+            (Reach::Offline | Reach::Fetch, Some(base)) => fetched
+                .then(|| git::tip(&publication, &format!("refs/remotes/origin/{base}")))
+                .flatten(),
+        };
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
             repo: publication.clone(),
@@ -1271,7 +1288,7 @@ impl<'a> Census<'a> {
                     )
             })
             .map(|place| place.repo.clone());
-        if found.is_some() || !ask.fetch {
+        if found.is_some() || !ask.fetch_objects {
             return found;
         }
         let publication = self.publication().to_path_buf();
@@ -1404,6 +1421,45 @@ impl<'a> Census<'a> {
         if evidence.landing.is_some() {
             return Ok(None);
         }
+        // A pass that may record takes a late merge up first, once, through the
+        // reconciliation a read that meets one makes — whatever else the base says —
+        // so the landing is on the record the way every late merge's is.
+        if let (true, Some(hosting)) = (ask.reconcile, ask.host) {
+            let session = self
+                .session_of(branch)
+                .map(|record| record.token.to_string());
+            if let Some(opened) = status::opened_change(
+                self.streams,
+                &self.resolution.key,
+                branch,
+                session.as_deref(),
+            ) {
+                if let (Some(id), Some(target)) = (opened.id.as_deref(), opened.base.as_deref()) {
+                    let head = judged
+                        .first()
+                        .map(|(copy, _)| copy.tip.clone())
+                        .unwrap_or_default();
+                    let merged = crate::publish::reconcile_late_merge(
+                        self.registry,
+                        &crate::publish::Watched {
+                            identity: &self.resolution.key,
+                            branch,
+                            url: &opened.url,
+                            id,
+                            base: target,
+                            head: &head,
+                            stream: opened.stream.as_deref(),
+                        },
+                        hosting,
+                    );
+                    if let Some(landing) = merged.as_deref().and_then(ObjectId::parse) {
+                        evidence.landing = Some(landing);
+                        evidence.changed = true;
+                        return Ok(None);
+                    }
+                }
+            }
+        }
         // Named on the base by the host's own squash commit is merged, whoever merged
         // it — the same tier the landing decision reads.
         for (copy, one) in judged {
@@ -1438,44 +1494,26 @@ impl<'a> Census<'a> {
             .first()
             .map(|(copy, _)| copy.tip.clone())
             .unwrap_or_default();
-        // Once, and through the reconciliation a read that meets a late merge makes, so
-        // what the host reports is recorded the way every other late merge is.
-        let merged = match ask.reconcile {
-            true => crate::publish::reconcile_late_merge(
-                self.registry,
-                &crate::publish::Watched {
-                    identity: &self.resolution.key,
-                    branch,
-                    url: &opened.url,
-                    id,
-                    base: target,
-                    head: &head,
-                    stream: opened.stream.as_deref(),
-                },
-                hosting,
-            ),
-            false => {
-                let Ok(host) = crate::publish::change_host(&self.resolution.key)
-                    .and_then(|slug| hosting.for_repo(&slug))
-                else {
-                    return Ok(Some(KeepReason::Unknown));
-                };
-                match host.merged_at(&change_request(&opened, id, target, &head)) {
-                    Ok(merged) => merged.map(|sha| sha.0),
-                    Err(_) => return Ok(Some(KeepReason::Unknown)),
-                }
-            }
-        };
-        if let Some(landing) = merged.as_deref().and_then(ObjectId::parse) {
-            evidence.landing = Some(landing);
-            evidence.changed = true;
-            return Ok(None);
-        }
         let Ok(host) = crate::publish::change_host(&self.resolution.key)
             .and_then(|slug| hosting.for_repo(&slug))
         else {
             return Ok(Some(KeepReason::Unknown));
         };
+        // A read that may not record asks whether it merged without writing anything
+        // down; one that may has already reconciled above.
+        if !ask.reconcile {
+            match host.merged_at(&change_request(&opened, id, target, &head)) {
+                Ok(Some(sha)) => {
+                    if let Some(landing) = ObjectId::parse(&sha.0) {
+                        evidence.landing = Some(landing);
+                        evidence.changed = true;
+                        return Ok(None);
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => return Ok(Some(KeepReason::Unknown)),
+            }
+        }
         match host.find_changes(branch, target) {
             Ok(open) if open.iter().any(|found| found.url == opened.url) => {
                 Ok(Some(KeepReason::OpenChangeRequest))
@@ -1524,6 +1562,19 @@ impl<'a> Census<'a> {
         }
         Ok(None)
     }
+}
+
+/// Where the origin has the base now, with its commit readable in the publication
+/// checkout — or `None` where either could not be had, which leaves the base unknown.
+fn remote_base(publication: &Path, base: &str) -> Option<String> {
+    let RemoteTip::At(tip) = git::remote_tip(publication, "origin", base, &[]).ok()? else {
+        return None;
+    };
+    let wanted = Sha(tip.as_str().to_owned());
+    if !git::has_commit(publication, &wanted) {
+        git::fetch_objects_of(publication, "origin", base).ok()?;
+    }
+    git::has_commit(publication, &wanted).then(|| tip.as_str().to_owned())
 }
 
 /// A classification and the copies it was made from.
@@ -1846,14 +1897,14 @@ impl Host {
         })
     }
 
-    fn census(&self, identity: &str, fetch: bool) -> Result<Census<'_>> {
+    fn census(&self, identity: &str, reach: Reach) -> Result<Census<'_>> {
         Census::read(
             &self.registry,
             identity,
             &self.sessions,
             &self.streams,
             &self.trailers,
-            fetch,
+            reach,
             None,
         )
     }
@@ -1885,7 +1936,7 @@ impl Host {
         }
         let mut holding = Vec::new();
         for identity in self.identities() {
-            let census = self.census(&identity, false)?;
+            let census = self.census(&identity, Reach::Offline)?;
             let held = !census.copies(branch, &Ask::offline()).copies.is_empty()
                 || status::retirement_of(&self.streams, &identity, branch).is_some();
             if held {
@@ -1916,7 +1967,7 @@ impl Host {
 pub(crate) fn classify(hosting: &dyn Hosting, query: &RetirementQuery) -> Result<Retirement> {
     let host = Host::read()?;
     let identity = host.identity_of(query.repo.as_deref(), &query.branch)?;
-    let census = host.census(&identity, false)?;
+    let census = host.census(&identity, Reach::Remote)?;
     let ask = Ask::query(hosting);
     let classified = census.classify(&query.branch, &ask)?;
     if !classified.copies.copies.is_empty() || !classified.copies.unreadable.is_empty() {
@@ -1951,7 +2002,7 @@ pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Reti
 pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Result<Retired> {
     let host = Host::read()?;
     let identity = host.identity_of(request.repo.as_deref(), &request.branch)?;
-    let census = host.census(&identity, !request.dry_run)?;
+    let census = host.census(&identity, reach_for(request.dry_run))?;
     let ask = Ask::acting(Some(hosting), request.dry_run, &[]);
     let acting = match request.mode {
         RetireMode::Lossless => Acting::Retire,
@@ -1975,6 +2026,15 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
         request.dry_run,
         &ask,
     )
+}
+
+/// How far an operation that may be a dry run reaches: a rehearsal moves no ref, and
+/// still judges the base where the origin has it now.
+fn reach_for(dry_run: bool) -> Reach {
+    match dry_run {
+        true => Reach::Remote,
+        false => Reach::Fetch,
+    }
 }
 
 /// The automatic pass.
@@ -2005,7 +2065,7 @@ pub(crate) fn pass_over(
         examined: Vec::new(),
     };
     for identity in identities {
-        let census = host.census(&identity, !request.dry_run)?;
+        let census = host.census(&identity, reach_for(request.dry_run))?;
         for branch in candidates(&census, &host)? {
             let copies = census.copies(&branch, &ask);
             if copies.copies.is_empty() && copies.unreadable.is_empty() {
@@ -2078,22 +2138,21 @@ pub(crate) fn retired(record: &Record) -> bool {
 pub(crate) fn after_close(record: &Record) {
     let retired = (|| -> Result<Option<Retired>> {
         let host = Host::read()?;
-        let census = host.census(&record.identity, true)?;
+        // Only a branch whose landing this host recorded is asked about at all, so an
+        // ordinary close — work nobody has landed — fetches nothing and decides nothing.
         let recorded = status::recorded_for(
             &host.streams,
             &record.identity,
             &record.branch,
             Some(&record.token),
         );
+        if recorded.landing.is_none() {
+            return Ok(None);
+        }
+        let census = host.census(&record.identity, Reach::Fetch)?;
         let ask = Ask::acting(None, false, &[]);
         let classified = census.classify(&record.branch, &ask)?;
-        let proved_by_a_landing = recorded.landing.is_some()
-            || matches!(
-                classified.retirement.proof,
-                Some(RetirementProof::RecordedLanding { .. })
-                    | Some(RetirementProof::MergedChangeRequest { .. })
-            );
-        if !proved_by_a_landing || classified.retirement.class != RetirementClass::Retirable {
+        if classified.retirement.class != RetirementClass::Retirable {
             return Ok(None);
         }
         act(
@@ -2464,6 +2523,11 @@ impl Census<'_> {
         };
         let clone = slot.join("clone");
         let worktree = slot.join("worktree");
+        // Onto the base as the origin has it now, which is where the next session
+        // would be cut from: a slot's clone has seen the base only as of the last
+        // session placed on it. A fetch that fails leaves it where it was, which is the
+        // base a close would have returned it onto.
+        let _ = git::fetch(&clone, "origin");
         let base = Ref::from_git(self.base.clone().unwrap_or_else(|| "HEAD".to_owned()));
         let delete = workspaces::resolve_for(&self.resolution, workspaces::Overrides::default())
             .map(|resolved| resolved.delete)

@@ -3339,12 +3339,16 @@ pub fn delete_remote_branch(
 
 /// Fetch one branch of a remote into this repository's object store without moving
 /// any ref but `FETCH_HEAD`, so a copy only the remote holds can be read here.
+///
+/// `--refmap=` is what keeps it from moving the remote-tracking ref too, which a fetch
+/// naming one branch otherwise updates on the side.
 pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
     let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
     Ok(run(
         &[
             "fetch",
             "--no-tags",
+            "--refmap=",
             remote,
             &format!("refs/heads/{branch}"),
         ],

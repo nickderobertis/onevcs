@@ -641,7 +641,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         sessions,
         streams,
         trailers,
-        false,
+        crate::retire::Reach::Offline,
         narrowed.as_ref().map(|only| &only.checkouts),
     )?;
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
