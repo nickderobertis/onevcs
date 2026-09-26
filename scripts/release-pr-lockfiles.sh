@@ -23,7 +23,7 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "release-pr-lockfiles.sh: not inside a git checkout" >&2
-    echo "ACTION: run it from the onevcs repository root" >&2
+    echo "ACTION: run it from the root of this repository's checkout" >&2
     exit 1
 }
 cd "$root"

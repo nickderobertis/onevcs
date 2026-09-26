@@ -33,7 +33,7 @@ refuse() {
 
 ref="${1:-HEAD}"
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
-    || refuse "not inside a git checkout" "run it from the onevcs repository root"
+    || refuse "not inside a git checkout" "run it from the root of this repository's checkout"
 commit="$(git -C "$root" rev-parse --verify --quiet "$ref^{commit}")" \
     || refuse "'$ref' names no commit in this repository" "pass a branch, tag, or commit that exists here"
 command -v just >/dev/null 2>&1 \
@@ -90,8 +90,8 @@ step "committing a change to release" \
         "fix release-plz.toml or the crate manifest it names above; reproduce with 'release-plz update' in a clone of $ref"
 
 after="$(version_of "$manifest")"
-[ "$after" != "$before" ] || fail "release-plz update left crates/onevcs at $before, so nothing was proved" \
-    "make release-plz.toml release onevcs again — no 'release = false' for it, and a commit_parsers entry that still turns 'fix:' into a release"
+[ "$after" != "$before" ] || fail "release-plz update left crates/onevcs/Cargo.toml at $before, so nothing was proved" \
+    "make release-plz.toml release that crate again — no 'release = false' for it, and a commit_parsers entry that still turns 'fix:' into a release"
 
 if [ -f "$repo/scripts/release-pr-lockfiles.sh" ]; then
     (cd "$repo" && bash scripts/release-pr-lockfiles.sh) >>"$log" 2>&1 \
@@ -102,7 +102,7 @@ else
 fi
 
 (cd "$repo" && just _crate-bootstrap) >>"$log" 2>&1 \
-    || fail "a release PR cut from $ref bumps onevcs $before -> $after and fails the --locked bootstrap" \
+    || fail "a release PR cut from $ref bumps crates/onevcs/Cargo.toml $before -> $after and fails the --locked bootstrap" \
         "carry compat/Cargo.lock along in the release job (scripts/release-pr-lockfiles.sh)"
 
-echo "release-pr-check: a release PR cut from $ref (onevcs $before -> $after) bootstraps"
+echo "release-pr-check: a release PR cut from $ref (crates/onevcs/Cargo.toml $before -> $after) bootstraps"
