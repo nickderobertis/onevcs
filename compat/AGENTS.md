@@ -6,9 +6,10 @@ Instructions that are true of `compat/` and nowhere else.
 
 ## What it is for
 
-A claim the crate next door cannot make about itself: that a build of `onevcs`
-**already in the field** goes on reading what this build writes — its streams, and
-the state it leaves on a host they share.
+A claim the crate next door cannot make about itself: that a pinned build of
+`onevcs` **already in the field** goes on reading what this build writes — its
+streams, and the state it leaves on a host they share — as far as that build's own
+readers reach.
 A released build carries its own copy of the envelope types, from before they were
 `onemessagebus`'s, so asserting that from the current sources would only ask this
 build about itself. So the dependency here
@@ -17,15 +18,30 @@ one `docs/contract.md` declares — the same document `crates/onevcs/tests/contr
 holds this build's own serialization to, so the two ends meet on one text rather
 than on a copy of it.
 
+How far a release's readers reach is a property of the release, and the claims below
+say which. An added envelope *field* is proved read by 0.13.0. An added event *kind*
+is not: 0.13.0 and 0.14.x carry `kind` as a closed `EventKind` enum with no
+`#[serde(other)]`, so a line of a kind added after them fails as an unknown variant.
+Reading past an unknown kind entered the released readers in 0.15.0, and is proved
+here for the pinned 0.32.2. A consumer on a release before 0.15.0 has to upgrade
+before a producer writes a new kind.
+
 Pin the version **exactly**. What is proved is a property of *that* build, and a
 range that quietly moved would change what was proved without anyone deciding to.
 
-It makes two claims now, against two released builds, and each is the build the
+It makes three claims now, against two released builds, and each is the build the
 claim is about:
 
 - `tests/released.rs` holds **0.13.0** — a build from before an envelope carried
   `phase` — to reading the envelope this build stamps one on. It is linked as
-  `onevcs-envelope-era`, because only a build that old can make that claim.
+  `onevcs-envelope-era`, because only a build that old can make that claim. The
+  claim is about an added field and nothing more: its `EventKind` is closed, so its
+  vocabulary bounds the kinds the journey feeds it.
+- `tests/unknown_kind.rs` holds **0.32.2** to reading a stream this build wrote in
+  which an envelope of a kind 0.32.2 has no word for — read from this build's
+  `EventKind`, never spelled by the test — sits between two it knows: `EventLines`
+  keeps the line and offers no envelope for it, its filtered read and `EventStream`
+  leave it out, and each hands back exactly the known events.
 - `tests/retired.rs` holds **0.32.2** — the release consumers ran when retirement
   landed (on 2026-09-26, the one `ai-orchestrator` pinned), so the build a consumer
   shared a host's `$ONEVCS_HOME` with — to reading the state this build leaves after
@@ -42,11 +58,11 @@ claim is about:
   and its `diagnosis` is what a failed retirement prints, so the day it is re-enabled
   on Windows it names the read that failed.
 
-The second claim needs this build to *write* the state, so this build is linked too,
-from the path beside it, as `onevcs-current`: one journey writes a real scratch host
-with it and reads the host back with the release, both through their libraries, in
-one process — which is why the journey sets `HOME` and `ONEVCS_HOME` in its own
-process and relies on nextest's process per test.
+The 0.32.2 claims need this build to *write* what is read, so this build is linked
+too, from the path beside it, as `onevcs-current`: each journey writes with it and
+reads back with the release, both through their libraries, in one process — which is
+why each sets `ONEVCS_HOME` (and the retirement journey `HOME`) in its own process and
+relies on nextest's process per test.
 
 ## Why it is not a workspace member, and why that must not change
 

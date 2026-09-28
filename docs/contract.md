@@ -1226,8 +1226,8 @@ being integrated.
 about the kind; a push's is a fact about the branch it updated, which is known where
 the push is made and nowhere else. So `Phase::of` answers for every kind but one and
 answers `None` for `push`, and the producer supplies that one. The field is
-**additive inside `v: 1`**: a build that predates it reads an envelope carrying it
-exactly as it read one without — the envelope types declare no
+**additive inside `v: 1`**: a build that predates it reads an envelope of a kind it
+knows carrying it exactly as it read one without — the envelope types declare no
 `deny_unknown_fields`, and never will — and a build that has it reads an envelope
 without one at the phase the kind decides. The fixture in full:
 
@@ -2955,6 +2955,17 @@ most needs to see. Given a filter it is the stricter of the two, because an even
 to be read to be judged: a line that is not this session's envelope is refused there,
 and a kind this build has no word for is left out.
 
+**A kind a later build added reads only in a release that passes over unknown kinds,
+and that starts at 0.15.0.** Every release from 0.15.0 on reads past a kind it has no
+word for. `compat/tests/unknown_kind.rs` holds the pinned 0.32.2 to it: its
+`EventLines` keeps the line and offers no envelope for it, and its filtered read and
+its `EventStream` leave it out. 0.13.0 and 0.14.x cannot read it. Their `kind` is a
+closed `#[serde(rename_all = "kebab-case")] enum EventKind` with no
+`#[serde(other)]`, so a line of a later kind fails as an unknown variant.
+`compat/tests/released.rs` holds 0.13.0 to an added *field*, `phase`, and to nothing
+about an added kind. A consumer on a release before 0.15.0 has to upgrade before a
+producer writes a new kind.
+
 Event kinds added: none.
 
 ### A branch this crate cuts takes the host's prefix, and a caller may name the rest
@@ -3287,8 +3298,11 @@ does not apply to it and the live-holder refusals do. `retire_finished` itself i
 
 **No registry or session-record schema change.** `registry.json` stays at version 6 and
 session records at version 3; the two records are stream event kinds under
-`$ONEVCS_HOME/streams`, on one stream per identity and branch, which an older `onevcs`
-sharing the state root passes over as kinds it has no word for.
+`$ONEVCS_HOME/streams`, on one stream per identity and branch. An older `onevcs` from
+0.15.0 on sharing the state root passes over them as kinds it has no word for, which
+`compat/tests/retired.rs` and `compat/tests/unknown_kind.rs` hold the pinned 0.32.2
+to. 0.13.0 and 0.14.x, whose `EventKind` is closed, refuse a line of either as an
+unknown variant.
 
 Event kinds added: `branch-superseded`, `branch-retired`.
 

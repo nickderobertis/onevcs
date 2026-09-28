@@ -1,11 +1,18 @@
 //! A previously released `onevcs` reading an envelope this build writes.
 //!
 //! The claim this proves is the one nothing inside the crate can: that `phase` is
-//! **additive inside `v: 1`**, so a build already in the field goes on reading a
-//! stream a newer one wrote. Asserting that from the current sources would only ask
-//! this build about itself — a released build carries its own copy of the envelope
-//! types, from before they were `onemessagebus`'s, and what a consumer actually runs
-//! is a version that was published before the field existed.
+//! **additive inside `v: 1`**, so 0.13.0 goes on reading an envelope of a kind it
+//! knows after a newer build adds a *field* to it. Asserting that from the current
+//! sources would only ask this build about itself — a released build carries its own
+//! copy of the envelope types, from before they were `onemessagebus`'s, and what a
+//! consumer actually runs is a version that was published before the field existed.
+//!
+//! That is all it proves. 0.13.0 cannot read a *kind* added after it: its
+//! `Envelope.kind` is a closed `#[serde(rename_all = "kebab-case")] enum EventKind`
+//! with no `#[serde(other)]`, so a line carrying a later kind fails as an unknown
+//! variant — which is why `kinds()` below is 0.13.0's own vocabulary. Reading past an
+//! unknown kind entered the released readers in 0.15.0, and `tests/unknown_kind.rs`
+//! holds the pinned 0.32.2 to it.
 //!
 //! So the dependency here is the released crate from the registry, at a pinned
 //! version, and the fixture is the one `docs/contract.md` declares — the same
