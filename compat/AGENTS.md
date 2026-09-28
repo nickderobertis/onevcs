@@ -22,7 +22,8 @@ How far a release's readers reach is a property of the release, and the claims b
 say which. An added envelope *field* is proved read by 0.13.0. An added event *kind*
 is not: 0.13.0 and 0.14.x carry `kind` as a closed `EventKind` enum with no
 `#[serde(other)]`, so a line of a kind added after them fails as an unknown variant.
-Reading past an unknown kind entered the released readers in 0.15.0, and is proved
+Passing over an unknown kind entered the released `EventStream` in 0.15.0, and
+`EventLines`, public only since 0.31.0, has done the same since then; both are proved
 here for the pinned 0.32.2. A consumer on a release before 0.15.0 has to upgrade
 before a producer writes a new kind.
 

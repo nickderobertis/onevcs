@@ -10,9 +10,10 @@
 //! That is all it proves. 0.13.0 cannot read a *kind* added after it: its
 //! `Envelope.kind` is a closed `#[serde(rename_all = "kebab-case")] enum EventKind`
 //! with no `#[serde(other)]`, so a line carrying a later kind fails as an unknown
-//! variant — which is why `kinds()` below is 0.13.0's own vocabulary. Reading past an
-//! unknown kind entered the released readers in 0.15.0, and `tests/unknown_kind.rs`
-//! holds the pinned 0.32.2 to it.
+//! variant — which is why `kinds()` below is 0.13.0's own vocabulary. Passing over an
+//! unknown kind entered the released `EventStream` in 0.15.0 (`EventLines` has been
+//! public only since 0.31.0), and `tests/unknown_kind.rs` holds the pinned 0.32.2 to
+//! it.
 //!
 //! So the dependency here is the released crate from the registry, at a pinned
 //! version, and the fixture is the one `docs/contract.md` declares — the same

@@ -2956,8 +2956,10 @@ to be read to be judged: a line that is not this session's envelope is refused t
 and a kind this build has no word for is left out.
 
 **A kind a later build added reads only in a release that passes over unknown kinds,
-and that starts at 0.15.0.** Every release from 0.15.0 on reads past a kind it has no
-word for. `compat/tests/unknown_kind.rs` holds the pinned 0.32.2 to it: its
+and that starts at 0.15.0.** Every release from 0.15.0 on passes over a kind it has no
+word for in `EventStream`, the reader of values. `EventLines`, the reader of lines, has
+been public only since 0.31.0 and has kept such a line without an envelope since then.
+`compat/tests/unknown_kind.rs` holds the pinned 0.32.2 to it: its
 `EventLines` keeps the line and offers no envelope for it, and its filtered read and
 its `EventStream` leave it out. 0.13.0 and 0.14.x cannot read it. Their `kind` is a
 closed `#[serde(rename_all = "kebab-case")] enum EventKind` with no

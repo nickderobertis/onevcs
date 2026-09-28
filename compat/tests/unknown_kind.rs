@@ -2,8 +2,9 @@
 //!
 //! The forward-read claim for a new *kind* is not 0.13.0's to make — its `kind` is a
 //! closed enum with no fallback, so it refuses the whole line (`tests/released.rs`
-//! says so). Reading past an unknown kind entered the released readers in 0.15.0, and
-//! this holds the pinned 0.32.2 to it: given a stream this build wrote, with an
+//! says so). Passing over an unknown kind entered the released `EventStream` in
+//! 0.15.0, and `EventLines` has done the same since it became public in 0.31.0. This
+//! holds the pinned 0.32.2 to both: given a stream this build wrote, with an
 //! envelope of a kind this build has and 0.32.2 has no word for between two it
 //! knows, both of its readers succeed and hand back exactly the two it knows.
 //! `EventLines` keeps the unknown line as text and offers no envelope for it;
