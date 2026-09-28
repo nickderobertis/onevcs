@@ -19,9 +19,9 @@ use onevcs_current::{Dimensions, Envelope, EventKind, Labels, Phase, PhaseOf, SO
 use serde_json::{json, Value};
 
 /// A kind this build writes and the pinned release does not know.
-const LATER: EventKind = EventKind::BranchRetired;
-/// Kinds both builds know, written either side of it.
-const KNOWN: [EventKind; 2] = [EventKind::SessionOpened, EventKind::SessionClosed];
+const ADDED_LATER: EventKind = EventKind::BranchRetired;
+/// Two kinds both builds know, written either side of it.
+const BOOKENDS: [EventKind; 2] = [EventKind::SessionOpened, EventKind::SessionClosed];
 
 /// A state root of its own, removed when the journey ends.
 struct Scratch(PathBuf);
@@ -78,21 +78,21 @@ fn a_released_build_reads_past_a_kind_added_after_it() {
     let scratch = Scratch::new();
 
     // The premise: the release knows the kinds either side, and not the one between.
-    for kind in KNOWN {
+    for kind in BOOKENDS {
         serde_json::from_value::<onevcs::EventKind>(spelled(kind))
             .unwrap_or_else(|e| panic!("the release knows {}: {e}", spelled(kind)));
     }
     assert!(
-        serde_json::from_value::<onevcs::EventKind>(spelled(LATER)).is_err(),
+        serde_json::from_value::<onevcs::EventKind>(spelled(ADDED_LATER)).is_err(),
         "the premise: the pinned release has no word for {}, so a later kind is needed",
-        spelled(LATER)
+        spelled(ADDED_LATER)
     );
 
     let token = "compat-unknown-kind";
     let envelopes = [
-        written(token, 1, KNOWN[0]),
-        written(token, 2, LATER),
-        written(token, 3, KNOWN[1]),
+        written(token, 1, BOOKENDS[0]),
+        written(token, 2, ADDED_LATER),
+        written(token, 3, BOOKENDS[1]),
     ];
     let lines: Vec<String> = envelopes
         .iter()
