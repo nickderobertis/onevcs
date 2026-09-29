@@ -3438,7 +3438,8 @@ before a deletion.
 **No question is asked twice in one pass.** Within a pass, no commit-existence question
 (`git cat-file -e`) and no ancestry question (`git merge-base --is-ancestor`) about one
 repository's objects is asked twice: the answers are remembered for the pass, and a
-repository that did not hold a commit is asked again only once something has fetched.
+repository that did not hold a commit is asked again only after the pass has written
+something — a fetch is what brings one, and a deletion is the only other write it makes.
 
 **What the report says.** Every examined entry of `RetirementPassReport` carries
 `derivation`: `derived` where this pass decided it — its proofs were run, or a check made
