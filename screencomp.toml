@@ -1,17 +1,19 @@
 # screencomp configuration. See https://github.com/nickderobertis/screencomp.
 
 [capture]
-# One lane, and the reason is what the shots are made of: they are deterministic
-# SVGs — pure layout maths over a vendored, pinned font embedded into each file as
-# base64 — rather than rasterized pixels whose anti-aliasing drifts across CPUs. The
-# bytes are therefore identical on every architecture, so one committed baseline is
-# correct everywhere and a second lane would only be a second copy of the first.
+# The shots are deterministic SVGs — pure layout maths over a vendored, pinned font
+# embedded into each file as base64 — rather than rasterized pixels whose
+# anti-aliasing drifts across CPUs, so the bytes are identical on every architecture
+# and every lane's baseline is the same set of digests. There is still one lane per
+# architecture a push is made from, because the pre-push guard refuses a host whose
+# lane is not declared here: arm64 is here so a push from an arm64 host is checked
+# rather than refused, which every such push was until it was added.
 #
 # This is the single source for the lane name. scripts/host-arch.sh derives *this
 # host's* lane from `uname -m` for the capture, the bless and the guard; the guard
 # reads the declared list back out of this file and refuses a host it does not name,
 # saying how to add one. CI fans one job out per entry here.
-arches = ["x86_64"]
+arches = ["x86_64", "arm64"]
 
 [comment]
 title = "Terminal screenshots"

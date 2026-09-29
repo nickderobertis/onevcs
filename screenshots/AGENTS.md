@@ -107,8 +107,9 @@ it is regenerated on demand with `just screenshots-gif` and committed.
 screencomp gates on the **hash** of each image, so two captures of one build must
 produce byte-identical trees. Unlike a rasterized PNG (whose anti-aliasing drifts
 across CPUs), an SVG is pure layout maths, which is why this needs no container and
-earns a single `x86_64` lane whose committed baseline is correct on every host. What is
-pinned, and where its one source is:
+why its `x86_64` and `arm64` lanes hold the same digests. A second lane exists only
+because the pre-push guard refuses a host whose lane is not declared. What is pinned,
+and where its one source is:
 
 | pinned | its one source | how a copy is kept honest |
 | --- | --- | --- |

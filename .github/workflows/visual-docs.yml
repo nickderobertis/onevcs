@@ -8,10 +8,12 @@
 # job, and there is no Nx target any of those fan out to that reaches it.
 #
 # Which CPU arch(es) CI captures is read from [capture].arches in screencomp.toml —
-# one lane per arch, fanned out by the reusable workflow. onevcs declares x86_64
-# alone: the shots are deterministic SVGs over a vendored, pinned font, so the bytes
-# are identical on every architecture and one baseline is correct everywhere. No
-# pinned capture container is needed.
+# one lane per arch, fanned out by the reusable workflow, which runs an arm64 lane
+# on ubuntu-24.04-arm. onevcs declares x86_64 and arm64: the shots are deterministic
+# SVGs over a vendored, pinned font, so the bytes are identical on every
+# architecture and the two baselines hold the same digests; arm64 is declared
+# because the local pre-push guard refuses a host whose lane is not. No pinned
+# capture container is needed.
 name: Visual docs
 
 on:
