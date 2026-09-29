@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::host::Sha;
 use crate::retire::{BranchHolderKind, Retirement};
 use crate::{home, ids};
 
@@ -107,7 +108,7 @@ impl<T> Reply<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HostAnswer {
-    pub(crate) merged: Reply<Option<String>>,
+    pub(crate) merged: Reply<Option<Sha>>,
     pub(crate) open: Reply<ChangeState>,
 }
 

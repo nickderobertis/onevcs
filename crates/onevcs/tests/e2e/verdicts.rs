@@ -1100,6 +1100,35 @@ fn a_corrupt_record_or_one_another_release_wrote_is_derived_again_and_rewritten(
     for (_, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
         assert_eq!(derivation, "reused");
     }
+
+    // A record this host will not read, and one of another format, are no record either.
+    let (finished, _) = &rewritten["feature/finished"];
+    let (open_ended, record) = &rewritten["feature/open-ended"];
+    // llmlint: ignore-block[tests_mirror_real_usage] a record of a format this build does not
+    // write is what a later release sharing the state root leaves, and a file this host
+    // will not read is a fact about the host; no verb of this crate makes either, and
+    // what is driven over them is the binary.
+    let mut reshaped = record.clone();
+    reshaped["format"] = Value::from(2);
+    std::fs::write(open_ended, reshaped.to_string()).expect("a record of another format");
+    let rehearsed = with_mode(finished, 0o000, || {
+        assert!(
+            std::fs::read_to_string(finished).is_err(),
+            "the premise: {} is unreadable to this user",
+            finished.display()
+        );
+        pass_over(&yard, &["--dry-run"])
+    });
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for branch in ["feature/finished", "feature/open-ended"] {
+        let again = entry(&rehearsed, branch);
+        assert_eq!(again["derivation"], "derived", "{again}");
+        assert_eq!(verdict_of(again), verdict_of(entry(&reused, branch)));
+    }
+    assert_eq!(records(world)["feature/open-ended"].1["format"], 1);
+    for (_, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
+        assert_eq!(derivation, "reused");
+    }
 }
 
 /// Run `act` with `path`'s mode set to `mode`, and put it back afterwards.
@@ -1160,6 +1189,26 @@ fn a_stream_that_cannot_be_read_is_never_an_unchanged_one() {
         assert_eq!(
             verdict_of(entry(&again, &branch)),
             verdict_of(entry(&reused, &branch))
+        );
+    }
+
+    // …and a directory of streams that cannot even be listed says nothing is unchanged.
+    let streams = world.home().join("streams");
+    // llmlint: ignore-block[tests_mirror_real_usage] the same arrangement as above, one
+    // level up: a directory this host will not list, which no verb makes.
+    let unlisted = with_mode(&streams, 0o000, || {
+        assert!(
+            std::fs::read_dir(&streams).is_err(),
+            "the premise: {} is unlistable to this user",
+            streams.display()
+        );
+        pass_over(&yard, &["--dry-run"])
+    });
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for (branch, derivation) in derivations(&unlisted) {
+        assert_eq!(
+            derivation, "derived",
+            "{branch} while the streams cannot be listed"
         );
     }
 }

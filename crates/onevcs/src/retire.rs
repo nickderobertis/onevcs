@@ -1826,7 +1826,7 @@ impl<'a> Census<'a> {
         use crate::verdict::{ChangeState, HostAnswer, Reply};
         let mut heard = HostAnswer::not_asked();
         // An answer this pass already heard, or the host asked now.
-        let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<String>>| match replies {
+        let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<Sha>>| match replies {
             Some(replied) if replied.merged.asked() => replied.merged.clone(),
             _ => ask_now(),
         };
@@ -1844,9 +1844,9 @@ impl<'a> Census<'a> {
                 .and_then(|slug| hosting.for_repo(&slug))
                 .ok()
         });
-        let merged_now = |sha: &Option<String>, evidence: &mut Evidence| match sha
-            .as_deref()
-            .and_then(ObjectId::parse)
+        let merged_now = |sha: &Option<Sha>, evidence: &mut Evidence| match sha
+            .as_ref()
+            .and_then(|sha| ObjectId::parse(&sha.0))
         {
             Some(landing) => {
                 evidence.landing = Some(landing);
@@ -1861,19 +1861,22 @@ impl<'a> Census<'a> {
                     heard.merged = merged_heard(&|| match host
                         .merged_at(&change_request(opened, id, target, head))
                     {
-                        Ok(Some(sha)) => Reply::Answered(crate::publish::record_late_merge(
-                            self.registry,
-                            &crate::publish::Watched {
-                                identity: &self.resolution.key,
-                                branch,
-                                url: &opened.url,
-                                id: &id.0,
-                                base: target,
-                                head,
-                                stream: opened.stream.as_deref(),
-                            },
-                            &sha,
-                        )),
+                        Ok(Some(sha)) => Reply::Answered(
+                            crate::publish::record_late_merge(
+                                self.registry,
+                                &crate::publish::Watched {
+                                    identity: &self.resolution.key,
+                                    branch,
+                                    url: &opened.url,
+                                    id: &id.0,
+                                    base: target,
+                                    head,
+                                    stream: opened.stream.as_deref(),
+                                },
+                                &sha,
+                            )
+                            .map(Sha),
+                        ),
                         Ok(None) => Reply::Answered(None),
                         Err(_) => Reply::Failed,
                     });
@@ -1904,7 +1907,7 @@ impl<'a> Census<'a> {
             heard.merged = merged_heard(&|| match host
                 .merged_at(&change_request(&opened, id, target, head))
             {
-                Ok(Some(sha)) => Reply::Answered(Some(sha.0)),
+                Ok(Some(sha)) => Reply::Answered(Some(sha)),
                 Ok(None) => Reply::Answered(None),
                 Err(_) => Reply::Failed,
             });
