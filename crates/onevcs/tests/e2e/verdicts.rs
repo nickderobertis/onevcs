@@ -832,3 +832,163 @@ fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merge
     assert_eq!(entry(&acted, "feature/merging")["outcome"], "retired");
     assert_eq!(hosted.branch_on_origin("feature/merging"), None);
 }
+
+// ---------------------------------------------------------------------------------
+// Reuse never bypasses what is checked fresh on every pass.
+// ---------------------------------------------------------------------------------
+
+/// A landed branch whose recorded verdict is retirable, and which the rehearsal that
+/// followed reused — so every change below touches nothing a record answers.
+fn retirable_on_record(yard: &Yard, branch: &str) {
+    let reused = recorded(yard, branch);
+    assert_eq!(reused["class"], "retirable", "{reused}");
+    assert_eq!(reused["outcome"], "would-retire", "{reused}");
+}
+
+#[test]
+fn a_live_holder_keeps_a_branch_whose_recorded_verdict_is_retirable() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/live", "live.txt");
+    // The session is there from the start, owned by nothing and worked in by nobody —
+    // so it holds nothing yet, and the record's inputs already include it.
+    let (_token, worktree) = yard.stale_session("feature/live");
+    retirable_on_record(&yard, "feature/live");
+
+    let working = crate::lifecycle::orphan_working_in(&worktree);
+    let before = yard.held("feature/live");
+    let acted = pass_over(&yard, &[]);
+    crate::lifecycle::stop_orphan(working);
+    let live = entry(&acted, "feature/live");
+    assert_eq!(live["outcome"], "kept", "{live}");
+    assert_eq!(live["reason"], "held-by-live-session", "{live}");
+    assert_eq!(yard.held("feature/live"), before, "nothing was deleted");
+    assert!(events(world, "branch-retired").is_empty());
+}
+
+#[test]
+fn an_exclusion_keeps_a_branch_whose_recorded_verdict_is_retirable() {
+    let yard = Yard::new();
+    yard.landed("feature/spared", "spared.txt");
+    retirable_on_record(&yard, "feature/spared");
+
+    let before = yard.held("feature/spared");
+    let acted = pass_over(&yard, &["--exclude", "feature/spared"]);
+    let spared = entry(&acted, "feature/spared");
+    assert_eq!(spared["outcome"], "kept", "{spared}");
+    assert_eq!(spared["reason"], "excluded", "{spared}");
+    assert_eq!(yard.held("feature/spared"), before, "nothing was deleted");
+}
+
+#[test]
+fn a_checkout_that_now_has_it_checked_out_keeps_a_branch_whose_recorded_verdict_is_retirable() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/opened", "opened.txt");
+    yard.run(&[
+        "import",
+        "feature/opened",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    retirable_on_record(&yard, "feature/opened");
+
+    world.git(&yard.worker, &["checkout", "-q", "feature/opened"]);
+    let before = yard.held("feature/opened");
+    let acted = pass_over(&yard, &[]);
+    let opened = entry(&acted, "feature/opened");
+    assert_eq!(
+        opened["derivation"], "reused",
+        "the verdict was reused: {opened}"
+    );
+    assert_eq!(opened["outcome"], "kept", "{opened}");
+    assert_eq!(opened["reason"], "checked-out", "{opened}");
+    assert_eq!(yard.held("feature/opened"), before, "nothing was deleted");
+}
+
+#[test]
+fn a_worktree_gone_dirty_keeps_a_branch_whose_recorded_verdict_is_retirable() {
+    let yard = Yard::new();
+    yard.landed("feature/half-done", "half.txt");
+    let (_token, worktree) = yard.stale_session("feature/half-done");
+    retirable_on_record(&yard, "feature/half-done");
+
+    std::fs::write(worktree.join("uncommitted.txt"), "still being written\n")
+        .expect("work nobody committed");
+    let before = yard.held("feature/half-done");
+    let acted = pass_over(&yard, &[]);
+    let dirty = entry(&acted, "feature/half-done");
+    assert_eq!(
+        dirty["derivation"], "reused",
+        "the verdict was reused: {dirty}"
+    );
+    assert_eq!(dirty["outcome"], "kept", "{dirty}");
+    assert_eq!(dirty["reason"], "dirty-worktree", "{dirty}");
+    assert_eq!(
+        yard.held("feature/half-done"),
+        before,
+        "nothing was deleted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("uncommitted.txt"))
+            .ok()
+            .as_deref(),
+        Some("still being written\n")
+    );
+}
+
+#[test]
+fn a_tip_that_moves_after_a_reused_verdict_chose_it_for_deletion_is_refused_and_kept() {
+    // The seam is git's own: a `reference-transaction` hook in the publication checkout
+    // that, the moment this pass deletes that checkout's copy, pushes a commit onto the
+    // origin's copy — after the pass read every tip and chose the branch, and before it
+    // deletes the origin's. The push under a lease is what refuses.
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/moving", "moving.txt");
+    yard.preserve("feature/moving");
+    retirable_on_record(&yard, "feature/moving");
+    let before = yard.held("feature/moving");
+    let pusher = world.path("pusher");
+    world.install_hook(
+        yard.checkout(),
+        "reference-transaction",
+        &format!(
+            "[ \"$1\" = committed ] || exit 0\n\
+             while read -r old new ref; do\n\
+               if [ \"$ref\" = refs/heads/feature/moving ] && [ \"$new\" = {zero} ]; then\n\
+                 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX\n\
+                 rm -rf {pusher}\n\
+                 git clone -q {origin} {pusher}\n\
+                 git -C {pusher} checkout -q feature/moving\n\
+                 echo moved >> {pusher}/moving.txt\n\
+                 git -C {pusher} commit -qam 'feat: moved under the retirement'\n\
+                 git -C {pusher} push -q origin feature/moving\n\
+               fi\n\
+             done",
+            zero = "0".repeat(40),
+            pusher = pusher.display(),
+            origin = yard.fixture.origin.display(),
+        ),
+    );
+
+    let acted = pass_over(&yard, &[]);
+    let moving = entry(&acted, "feature/moving");
+    assert_eq!(moving["outcome"], "kept", "{moving}");
+    assert_eq!(moving["reason"], "unmerged-unique-commits", "{moving}");
+    let after = yard.held("feature/moving");
+    assert_eq!(
+        after.get(yard.checkout()),
+        before.get(yard.checkout()),
+        "the copy deleted before the move was put back"
+    );
+    let moved = after
+        .get(&yard.fixture.origin)
+        .expect("the origin's copy was not deleted");
+    assert_ne!(Some(moved), before.get(&yard.fixture.origin));
+    assert!(
+        events(world, "branch-retired").is_empty(),
+        "nothing was retired"
+    );
+}
