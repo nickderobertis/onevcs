@@ -29,8 +29,10 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::cost::{Call, Counting};
+use crate::host::{Hosted, AUTOMATED};
 use crate::lifecycle::local_direct;
-use crate::world::World;
+use crate::retire::{events, Yard};
+use crate::world::{Check, World};
 
 /// A host of several registered identities, each holding candidate branches across
 /// two registered checkouts and its origin, and closed session records beside them.
@@ -275,20 +277,21 @@ fn swept(command: &mut assert_cmd::Command) -> (Vec<Value>, f64) {
 
 /// How long a repeat `onevcs sweep --dry-run` over an unchanged host may take.
 ///
-/// Measured over the estate below (4 identities, 196 candidate branches, 32 closed
+/// Measured over the estate below (6 identities, 354 candidate branches, 48 closed
 /// session records) with the suite's own debug build of the binary and no counting
-/// shim, on the 2026-09-29 build host: the repeat sweep took 0.27–0.42s with every
-/// verdict reused, where the same sweep built from the base this change started from
-/// (`7debbbe`) took 4.9s over the same estate. Two and a half seconds is six times the
-/// measurement, for a loaded host, and still half of what the base took.
-const REPEAT_SWEEP_BOUND_SECONDS: f64 = 2.5;
+/// shim, on the 2026-09-29 build host under a load average of 7 to 15: the repeat sweep
+/// took 0.27–0.42s with every verdict reused, where the same sweep built from the base
+/// this change started from (`7debbbe`) took 6.5–9.5s over the same estate. Three
+/// seconds is seven times the measurement, for a loaded host, and under half of the
+/// fastest the base managed.
+const REPEAT_SWEEP_BOUND_SECONDS: f64 = 3.0;
 
 #[test]
 fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again() {
     let estate = Estate::new(
-        4,
+        6,
         Shape {
-            unmerged: 39,
+            unmerged: 49,
             retirable: 2,
             copied: 4,
             advanced: 8,
@@ -552,4 +555,280 @@ fn a_repeat_pass_over_unchanged_state_reuses_every_verdict_and_asks_the_origin_o
         [] as [String; 0],
         "the sweep's pass asks no ancestry, history, diff or existence question"
     );
+}
+
+// ---------------------------------------------------------------------------------
+// A changed input is never answered by an old verdict.
+// ---------------------------------------------------------------------------------
+
+/// One `retire-finished` pass over a yard, rehearsed or not, as the entries it examined.
+fn pass_over(yard: &Yard, args: &[&str]) -> Vec<Value> {
+    let mut argv = vec!["retire-finished"];
+    argv.extend_from_slice(args);
+    let (code, report) = yard.verb(&argv);
+    assert_eq!(code, 0, "{report}");
+    report["examined"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a pass report: {report}"))
+        .clone()
+}
+
+/// Rehearse the pass twice over a yard, and hold the second to having reused the
+/// verdict the first derived for `branch` — the premise every journey below changes
+/// one input under.
+fn recorded(yard: &Yard, branch: &str) -> Value {
+    let derived = pass_over(yard, &["--dry-run"]);
+    assert_eq!(entry(&derived, branch)["derivation"], "derived");
+    let reused = pass_over(yard, &["--dry-run"]);
+    let reused = entry(&reused, branch).clone();
+    assert_eq!(
+        reused["derivation"], "reused",
+        "the premise: nothing changed, so the verdict was reused: {reused}"
+    );
+    reused
+}
+
+/// Commit a change to `branch` in a checkout that is not on it, and step back off it.
+fn commit_onto(world: &World, checkout: &std::path::Path, branch: &str, file: &str) {
+    world.git(checkout, &["checkout", "-q", branch]);
+    world.commit_file(checkout, file, "more\n", "feat: more work on it");
+    world.git(checkout, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_retirable_branch_that_gains_a_commit_in_one_copy_is_derived_again_and_kept() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/grown", "grown.txt");
+    yard.run(&[
+        "import",
+        "feature/grown",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    assert_eq!(recorded(&yard, "feature/grown")["class"], "retirable");
+
+    commit_onto(world, &yard.worker, "feature/grown", "grown-more.txt");
+    let before = yard.held("feature/grown");
+    let acted = pass_over(&yard, &[]);
+    let grown = entry(&acted, "feature/grown");
+    assert_eq!(grown["derivation"], "derived", "{grown}");
+    assert_eq!(grown["outcome"], "kept", "{grown}");
+    assert_eq!(grown["reason"], "unmerged-unique-commits", "{grown}");
+    assert_eq!(yard.held("feature/grown"), before, "no copy was deleted");
+    assert!(events(world, "branch-retired").is_empty());
+}
+
+#[test]
+fn a_branch_whose_origin_copy_moved_is_derived_again() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.landed("feature/pushed-to", "pushed.txt");
+    yard.preserve("feature/pushed-to");
+    assert_eq!(recorded(&yard, "feature/pushed-to")["class"], "retirable");
+
+    let elsewhere = world.clone_of(&yard.fixture.origin, "elsewhere");
+    commit_onto(world, &elsewhere, "feature/pushed-to", "pushed-more.txt");
+    world.git(&elsewhere, &["push", "-q", "origin", "feature/pushed-to"]);
+    let before = yard.held("feature/pushed-to");
+    let acted = pass_over(&yard, &[]);
+    let moved = entry(&acted, "feature/pushed-to");
+    assert_eq!(moved["derivation"], "derived", "{moved}");
+    assert_eq!(moved["outcome"], "kept", "{moved}");
+    assert_eq!(moved["reason"], "unmerged-unique-commits", "{moved}");
+    assert_eq!(
+        yard.held("feature/pushed-to"),
+        before,
+        "no copy was deleted"
+    );
+}
+
+#[test]
+fn a_branch_whose_base_moved_is_derived_again_and_retires_once_the_base_carries_it() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked("feature/early", &[("early.txt", "early\n")]);
+    assert_eq!(
+        recorded(&yard, "feature/early")["reason"],
+        "unmerged-unique-commits"
+    );
+
+    // Somebody makes the same change on the base elsewhere.
+    let elsewhere = world.clone_of(&yard.fixture.origin, "elsewhere");
+    world.commit_file(&elsewhere, "early.txt", "early\n", "feat: early, elsewhere");
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    let rehearsed = pass_over(&yard, &["--dry-run"]);
+    let early = entry(&rehearsed, "feature/early");
+    assert_eq!(early["derivation"], "derived", "{early}");
+    assert_eq!(early["class"], "retirable", "{early}");
+    assert_eq!(early["proof"]["kind"], "content-identical", "{early}");
+    assert_eq!(early["outcome"], "would-retire", "{early}");
+}
+
+#[test]
+fn a_branch_copied_into_a_new_place_is_derived_again() {
+    let yard = Yard::new();
+    yard.worked("feature/spread", &[("spread.txt", "spread\n")]);
+    let before = recorded(&yard, "feature/spread");
+    assert_eq!(
+        before["holders"].as_array().map(Vec::len),
+        Some(1),
+        "{before}"
+    );
+
+    yard.run(&[
+        "import",
+        "feature/spread",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    let rehearsed = pass_over(&yard, &["--dry-run"]);
+    let spread = entry(&rehearsed, "feature/spread");
+    assert_eq!(spread["derivation"], "derived", "{spread}");
+    assert_eq!(spread["reason"], "unmerged-unique-commits", "{spread}");
+    let worker = yard.worker.display().to_string();
+    assert!(
+        spread["holders"]
+            .as_array()
+            .expect("holders")
+            .iter()
+            .any(|holder| holder["location"] == worker.as_str()),
+        "the new copy is judged: {spread}"
+    );
+}
+
+#[test]
+fn a_recorded_landing_is_a_changed_input_and_retires_the_branch() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked("feature/to-land", &[("to-land.txt", "to land\n")]);
+    assert_eq!(
+        recorded(&yard, "feature/to-land")["reason"],
+        "unmerged-unique-commits"
+    );
+
+    yard.land("feature/to-land");
+    let rehearsed = pass_over(&yard, &["--dry-run"]);
+    let landed = entry(&rehearsed, "feature/to-land");
+    assert_eq!(landed["derivation"], "derived", "{landed}");
+    assert_eq!(landed["class"], "retirable", "{landed}");
+    let acted = pass_over(&yard, &[]);
+    assert_eq!(entry(&acted, "feature/to-land")["outcome"], "retired");
+    assert!(yard.held("feature/to-land").is_empty());
+    assert_eq!(events(world, "branch-retired").len(), 1);
+}
+
+#[test]
+fn a_supersession_recorded_with_nothing_else_moving_is_a_changed_input() {
+    // The base, every copy and the host are where they were; the one input that moves
+    // is the stream record naming the branch.
+    let yard = Yard::new();
+    yard.worked("feature/tried", &[("tried.txt", "a\n")]);
+    yard.worked("feature/retried", &[("tried.txt", "b\n")]);
+    yard.land("feature/retried");
+    assert_eq!(
+        recorded(&yard, "feature/tried")["reason"],
+        "unmerged-unique-commits"
+    );
+
+    yard.run(&[
+        "supersede",
+        "feature/tried",
+        "--repo",
+        "project",
+        "--by",
+        "feature/retried",
+        "--landing",
+        &yard.origin_main(),
+    ])
+    .success();
+    let rehearsed = pass_over(&yard, &["--dry-run"]);
+    let tried = entry(&rehearsed, "feature/tried");
+    assert_eq!(tried["derivation"], "derived", "{tried}");
+    assert_eq!(tried["class"], "superseded-with-changes", "{tried}");
+    assert_eq!(
+        tried["superseded_by"]["branch"], "feature/retried",
+        "{tried}"
+    );
+}
+
+/// Publish a session's branch as a change request the host holds until its checks
+/// pass — which they have not yet — so it is left open when the publication stops
+/// watching it.
+fn held_open(hosted: &Hosted, branch: &str) {
+    let token = hosted.change(branch, &format!("feat: {branch}"));
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merged_one_retires() {
+    let hosted = Hosted::new(AUTOMATED);
+    let world = &hosted.world;
+    world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    held_open(&hosted, "feature/closing");
+    held_open(&hosted, "feature/merging");
+    let pass = |args: &[&str]| -> Vec<Value> {
+        let mut argv = vec!["retire-finished", "--repo", "hosted"];
+        argv.extend_from_slice(args);
+        let (code, report) = crate::retire::verb(world, &argv);
+        assert_eq!(code, 0, "{report}");
+        report["examined"].as_array().expect("entries").clone()
+    };
+    let first = pass(&["--dry-run"]);
+    for branch in ["feature/closing", "feature/merging"] {
+        let open = entry(&first, branch);
+        assert_eq!(open["reason"], "open-change-request", "{open}");
+        assert_eq!(open["derivation"], "derived", "{open}");
+    }
+    // The host is asked again on a pass whose derivation asks it, and says the same.
+    let asked = world.host_calls().len();
+    let again = pass(&["--dry-run"]);
+    for branch in ["feature/closing", "feature/merging"] {
+        assert_eq!(entry(&again, branch)["derivation"], "reused", "{again:?}");
+    }
+    assert!(
+        world.host_calls().len() > asked,
+        "the host was asked again rather than answered from the record"
+    );
+
+    // Closed without merging, and nothing else moves: the host's answer is the input.
+    world.close_change_request(1);
+    let closed = pass(&["--dry-run"]);
+    let closing = entry(&closed, "feature/closing");
+    assert_eq!(closing["derivation"], "derived", "{closing}");
+    assert_eq!(closing["reason"], "unmerged-unique-commits", "{closing}");
+    assert_eq!(entry(&closed, "feature/merging")["derivation"], "reused");
+
+    // The other merges on the host's own clock, and the pass retires it.
+    world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    world.let_the_host_act();
+    let merged = pass(&["--dry-run"]);
+    let merging = entry(&merged, "feature/merging");
+    assert_eq!(merging["derivation"], "derived", "{merging}");
+    assert_eq!(merging["class"], "retirable", "{merging}");
+    assert_eq!(
+        merging["proof"]["kind"], "merged-change-request",
+        "{merging}"
+    );
+    let acted = pass(&[]);
+    assert_eq!(entry(&acted, "feature/merging")["outcome"], "retired");
+    assert_eq!(hosted.branch_on_origin("feature/merging"), None);
 }

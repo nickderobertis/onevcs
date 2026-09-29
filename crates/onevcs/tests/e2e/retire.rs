@@ -32,13 +32,13 @@ use crate::world::{token_of, worktree_of, Check, World};
 
 /// A local-direct identity with a pool of one slot and a second registered checkout
 /// work is executed in — every kind of place `onevcs` keeps a branch in.
-struct Yard {
-    fixture: Fixture,
-    worker: PathBuf,
+pub(crate) struct Yard {
+    pub(crate) fixture: Fixture,
+    pub(crate) worker: PathBuf,
 }
 
 impl Yard {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let fixture = pooled(&sized(1, "unlimited"));
         let worker = fixture.world.clone_of(&fixture.origin, "worker");
         fixture
@@ -50,17 +50,17 @@ impl Yard {
         Yard { fixture, worker }
     }
 
-    fn world(&self) -> &World {
+    pub(crate) fn world(&self) -> &World {
         &self.fixture.world
     }
 
-    fn checkout(&self) -> &Path {
+    pub(crate) fn checkout(&self) -> &Path {
         &self.fixture.checkout
     }
 
     /// Open a session on `branch`, commit `files` in it, and close it — which hands the
     /// branch back to the publication checkout and returns the slot it was placed on.
-    fn worked(&self, branch: &str, files: &[(&str, &str)]) -> String {
+    pub(crate) fn worked(&self, branch: &str, files: &[(&str, &str)]) -> String {
         let (token, worktree) = self.fixture.open(&["--branch", branch]);
         for (file, contents) in files {
             self.world()
@@ -73,7 +73,7 @@ impl Yard {
     /// Land a branch the publication checkout holds, by the verb that lands a branch by
     /// name: a local squash onto the base carrying the landing trailer that names the
     /// branch commit it landed.
-    fn land(&self, branch: &str) {
+    pub(crate) fn land(&self, branch: &str) {
         self.run(&[
             "publish-branch",
             branch,
@@ -84,13 +84,13 @@ impl Yard {
     }
 
     /// A branch whose work landed and which holds nothing beyond it.
-    fn landed(&self, branch: &str, file: &str) {
+    pub(crate) fn landed(&self, branch: &str, file: &str) {
         self.worked(branch, &[(file, &format!("{branch}\n"))]);
         self.land(branch);
     }
 
     /// Put a branch on the origin under its own name.
-    fn preserve(&self, branch: &str) {
+    pub(crate) fn preserve(&self, branch: &str) {
         self.run(&[
             "preserve",
             branch,
@@ -102,30 +102,30 @@ impl Yard {
 
     /// A session over `branch` cut under `runs/` and left open, as a run that stopped
     /// leaves one: nothing owns it any more and nothing is working in it.
-    fn stale_session(&self, branch: &str) -> (String, PathBuf) {
+    pub(crate) fn stale_session(&self, branch: &str) -> (String, PathBuf) {
         self.fixture.open(&["--branch", branch, "--pool", "0"])
     }
 
-    fn run(&self, args: &[&str]) -> assert_cmd::assert::Assert {
+    pub(crate) fn run(&self, args: &[&str]) -> assert_cmd::assert::Assert {
         self.world().onevcs().args(args).assert()
     }
 
     /// One of the four verbs with `--json`, as its exit code and its document.
-    fn verb(&self, args: &[&str]) -> (i32, Value) {
+    pub(crate) fn verb(&self, args: &[&str]) -> (i32, Value) {
         verb(self.world(), args)
     }
 
-    fn slot(&self) -> PathBuf {
+    pub(crate) fn slot(&self) -> PathBuf {
         identity_root(self.world()).join("pool").join("1")
     }
 
     /// Every place a copy of a branch can be, as `onevcs` keeps them.
-    fn places(&self) -> Vec<PathBuf> {
+    pub(crate) fn places(&self) -> Vec<PathBuf> {
         places(self.world(), &[self.checkout(), &self.worker])
     }
 
     /// Where every place has the branch.
-    fn held(&self, branch: &str) -> BTreeMap<PathBuf, String> {
+    pub(crate) fn held(&self, branch: &str) -> BTreeMap<PathBuf, String> {
         let mut held = holding(&self.places(), branch);
         if let Some(tip) = tip(self.world(), &self.fixture.origin, branch) {
             held.insert(self.fixture.origin.clone(), tip);
@@ -133,7 +133,7 @@ impl Yard {
         held
     }
 
-    fn origin_main(&self) -> String {
+    pub(crate) fn origin_main(&self) -> String {
         self.world()
             .git(&self.fixture.origin, &["rev-parse", "main"])
             .trim()
@@ -142,7 +142,7 @@ impl Yard {
 }
 
 /// One `onevcs` verb with `--json`, as its exit code and its document.
-fn verb(world: &World, args: &[&str]) -> (i32, Value) {
+pub(crate) fn verb(world: &World, args: &[&str]) -> (i32, Value) {
     let output = world
         .onevcs()
         .args(args)
@@ -233,7 +233,7 @@ fn holding(places: &[PathBuf], branch: &str) -> BTreeMap<PathBuf, String> {
 /// Every event of one kind in every stream of this world, read the way a consumer
 /// reads a stream: `onevcs events`, over every stream the contract says the records go
 /// to, under `$ONEVCS_HOME/streams`.
-fn events(world: &World, kind: &str) -> Vec<Value> {
+pub(crate) fn events(world: &World, kind: &str) -> Vec<Value> {
     let Ok(streams) = std::fs::read_dir(world.home().join("streams")) else {
         return Vec::new();
     };
