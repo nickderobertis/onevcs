@@ -61,8 +61,18 @@ pub(crate) struct Key {
     pub(crate) session: Option<String>,
     /// The landed-commit trailer prefix the rules name.
     pub(crate) trailer_prefix: String,
-    /// Whether the derivation had a host to ask.
-    pub(crate) hosted: bool,
+    /// Whether the derivation had a host to ask, or the records alone.
+    pub(crate) asking: Asking,
+}
+
+/// What a derivation could ask about a branch's change request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Asking {
+    /// The host, where the records do not decide it.
+    Host,
+    /// The records alone.
+    Records,
 }
 
 /// One copy of a branch, as a key holds it.
@@ -98,7 +108,16 @@ impl<T> Reply<T> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct HostAnswer {
     pub(crate) merged: Reply<Option<String>>,
-    pub(crate) open: Reply<bool>,
+    pub(crate) open: Reply<ChangeState>,
+}
+
+/// Whether the host lists a change request among the branch's open ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ChangeState {
+    Open,
+    /// Neither merged nor open, which is closed without merging.
+    NotOpen,
 }
 
 impl HostAnswer {
@@ -132,13 +151,32 @@ impl HostAnswer {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Verdict {
     pub(crate) retirement: Retirement,
-    /// Whether the verdict was reached before the checked-out and dirty-worktree
-    /// checks would have been asked, which is then where it stays.
-    pub(crate) early: bool,
-    /// Whether the base's history names the branch's change request, where the
+    pub(crate) reached: Reached,
+    /// What the base's history says of the branch's change request, where the
     /// derivation came to ask the host about one — which decides what it asks.
-    pub(crate) names_change: Option<bool>,
+    pub(crate) history: Option<History>,
     pub(crate) host: HostAnswer,
+}
+
+/// Where a derivation reached its verdict, which decides whether the checked-out and
+/// dirty-worktree checks still come after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Reached {
+    /// Before those checks: a copy at the base or one that could not be judged, or a
+    /// change request that is open or could not be asked about. The verdict stands.
+    Early,
+    /// From the proofs, after them: a checkout that has it checked out, or a dirty
+    /// worktree over it, still keeps the branch.
+    Concluded,
+}
+
+/// Whether the base's own history names the branch's change request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum History {
+    NamesTheChange,
+    DoesNotName,
 }
 
 /// A record as it is written.

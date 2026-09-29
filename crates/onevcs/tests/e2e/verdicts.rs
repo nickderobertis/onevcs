@@ -557,9 +557,7 @@ fn a_repeat_pass_over_unchanged_state_reuses_every_verdict_and_asks_the_origin_o
     );
 }
 
-// ---------------------------------------------------------------------------------
 // A changed input is never answered by an old verdict.
-// ---------------------------------------------------------------------------------
 
 /// One `retire-finished` pass over a yard, rehearsed or not, as the entries it examined.
 fn pass_over(yard: &Yard, args: &[&str]) -> Vec<Value> {
@@ -833,9 +831,7 @@ fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merge
     assert_eq!(hosted.branch_on_origin("feature/merging"), None);
 }
 
-// ---------------------------------------------------------------------------------
 // Reuse never bypasses what is checked fresh on every pass.
-// ---------------------------------------------------------------------------------
 
 /// A landed branch whose recorded verdict is retirable, and which the rehearsal that
 /// followed reused — so every change below touches nothing a record answers.
@@ -993,9 +989,7 @@ fn a_tip_that_moves_after_a_reused_verdict_chose_it_for_deletion_is_refused_and_
     );
 }
 
-// ---------------------------------------------------------------------------------
 // An input that cannot be read is never an unchanged one, and the pass completes.
-// ---------------------------------------------------------------------------------
 
 /// Every verdict record a state root holds, by the branch it is about. Only the files a
 /// pass reads — a writer's temporary file beside them is not one.
@@ -1084,14 +1078,15 @@ fn a_corrupt_record_or_one_another_release_wrote_is_derived_again_and_rewritten(
     let (finished, _) = &on_record["feature/finished"];
     let (open_ended, record) = &on_record["feature/open-ended"];
 
-    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes half a record
-    // or one claiming another release — a disk that filled, and a release sharing the
-    // state root, do — so the journey leaves both where the real reader meets them.
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate writes half a
+    // record or one claiming another release — a disk that filled, and a release sharing
+    // the state root, do — so the journey leaves both where the real reader meets them.
     let text = std::fs::read_to_string(finished).expect("a record");
     std::fs::write(finished, &text[..text.len() / 2]).expect("a torn record");
     let mut elsewhere = record.clone();
     elsewhere["onevcs"] = Value::from("0.0.1");
     std::fs::write(open_ended, elsewhere.to_string()).expect("another release's record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let rehearsed = pass_over(&yard, &["--dry-run"]);
     for branch in ["feature/finished", "feature/open-ended"] {
@@ -1134,9 +1129,10 @@ fn a_stream_that_cannot_be_read_is_never_an_unchanged_one() {
         })
         .expect("a stream");
 
-    // llmlint: ignore[tests_mirror_real_usage] a stream this host will not read is a fact
-    // about the host, reachable by no verb; a real mode on a real file is what the binary
-    // meets, exactly as `World::with_unreadable_records` arranges for session records.
+    // llmlint: ignore-block[tests_mirror_real_usage] a stream this host will not read is a
+    // fact about the host, reachable by no verb; a real mode on a real file is what the
+    // binary meets, exactly as `World::with_unreadable_records` arranges for session
+    // records, and what is driven over it is the binary.
     let unreadable = with_mode(&stream, 0o000, || {
         assert!(
             std::fs::read_to_string(&stream).is_err(),
@@ -1148,6 +1144,7 @@ fn a_stream_that_cannot_be_read_is_never_an_unchanged_one() {
             pass_over(&yard, &["--dry-run"]),
         ]
     });
+    // llmlint: ignore-end[tests_mirror_real_usage]
     for examined in &unreadable {
         for (branch, derivation) in derivations(examined) {
             assert_eq!(
@@ -1194,8 +1191,9 @@ fn a_record_that_cannot_be_written_costs_only_its_reuse() {
     let verdicts = world.home().join("verdicts");
     std::fs::create_dir_all(&verdicts).expect("the records' directory");
 
-    // llmlint: ignore[tests_mirror_real_usage] a directory this host will not write is a
-    // fact about the host, reachable by no verb, and what is driven over it is the binary.
+    // llmlint: ignore-block[tests_mirror_real_usage] a directory this host will not write
+    // is a fact about the host, reachable by no verb, and what is driven over it is the
+    // binary.
     let unwritten = with_mode(&verdicts, 0o555, || {
         let said = world
             .onevcs()
@@ -1207,6 +1205,7 @@ fn a_record_that_cannot_be_written_costs_only_its_reuse() {
         let report: Value = serde_json::from_slice(&said.stdout).expect("a report");
         (report, stderr, pass_over(&yard, &["--dry-run"]))
     });
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let (report, stderr, second) = unwritten;
     assert!(
         stderr.contains("could not be recorded") && stderr.contains("this pass is complete"),
@@ -1235,9 +1234,7 @@ fn a_record_that_cannot_be_written_costs_only_its_reuse() {
     }
 }
 
-// ---------------------------------------------------------------------------------
 // Two writers at once, and one stopped part way, never leave a torn record.
-// ---------------------------------------------------------------------------------
 
 /// An estate large enough that a pass over it takes long enough to overlap another.
 fn busy_estate() -> Estate {
@@ -1334,11 +1331,12 @@ fn a_pass_killed_part_way_leaves_no_torn_record_where_one_is_read() {
     let first = rehearsed(&mut world.onevcs());
     let on_record = records(world);
     let (branch, (path, _)) = on_record.iter().next().expect("a record");
-    // llmlint: ignore[tests_mirror_real_usage] no writer of this crate leaves half a record
-    // where one is read — that is the property — so the torn file is laid down by hand to
-    // show what the reader does with one.
+    // llmlint: ignore-block[tests_mirror_real_usage] no writer of this crate leaves half a
+    // record where one is read — that is the property — so the torn file is laid down by
+    // hand to show what the reader does with one.
     let text = std::fs::read_to_string(path).expect("a record");
     std::fs::write(path, &text[..text.len() / 3]).expect("a torn record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let again = rehearsed(&mut world.onevcs());
     assert_eq!(entry(&again, branch)["derivation"], "derived");
     assert_eq!(
@@ -1351,9 +1349,7 @@ fn a_pass_killed_part_way_leaves_no_torn_record_where_one_is_read() {
     }
 }
 
-// ---------------------------------------------------------------------------------
 // The library, the way an engine's idle maintenance calls it.
-// ---------------------------------------------------------------------------------
 
 #[test]
 fn the_library_pass_called_twice_over_unchanged_state_reuses_every_verdict() {

@@ -201,10 +201,12 @@ mod sweep;
 // Unix only: it installs `cost.rs`'s counting `git` and `world.rs`'s `gh`, both POSIX
 // shell, over real origins and real sessions. Its own header carries the reason in full.
 #[cfg(unix)]
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice.
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// Every journey of this suite lives in the one `e2e` binary of the one crate project, which
+// `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
+// commands twice, and the affected selection already fails closed to everything on a base
+// it cannot derive. The twenty-one journeys here run offline, credential-free and in about
+// seven seconds, and the two programs they substitute are the note above this module's.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
 mod verdicts;
 #[cfg(unix)]
 mod world;

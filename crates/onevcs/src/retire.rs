@@ -1333,7 +1333,7 @@ impl<'a> Census<'a> {
             return Ok(keep(KeepReason::Unknown));
         }
         let (verdict, derivation) = self.verdict(branch, base, base_tip, &copies, ask);
-        if verdict.early {
+        if verdict.reached == crate::verdict::Reached::Early {
             return Ok(classified(verdict.retirement, derivation));
         }
         // Every read below that fails is a proof that did not hold, and the answer to
@@ -1378,15 +1378,21 @@ impl<'a> Census<'a> {
                 .read(key)
                 .filter(|verdict| self.describes(&verdict.retirement, branch, base, copies))
             {
-                let Some(names) = verdict.names_change else {
+                let Some(history) = verdict.history else {
                     return (verdict, Derivation::Reused);
                 };
                 // The derivation asked the host, so this pass asks it the same
                 // questions; a different answer is a changed input, and one it could not
                 // hear is not an unchanged one.
                 let mut evidence = self.evidence(branch);
-                let (heard, _) =
-                    self.consult(branch, &mut evidence, &copies.first_tip(), names, ask, None);
+                let (heard, _) = self.consult(
+                    branch,
+                    &mut evidence,
+                    &copies.first_tip(),
+                    history,
+                    ask,
+                    None,
+                );
                 if !heard.failed() && heard.same_as(&verdict.host) {
                     return (verdict, Derivation::Reused);
                 }
@@ -1445,7 +1451,10 @@ impl<'a> Census<'a> {
             records,
             session,
             trailer_prefix: self.trailers.landed().to_owned(),
-            hosted: ask.host.is_some(),
+            asking: match ask.host {
+                Some(_) => crate::verdict::Asking::Host,
+                None => crate::verdict::Asking::Records,
+            },
         })
     }
 
@@ -1486,8 +1495,8 @@ impl<'a> Census<'a> {
         let kept = |reason| Retirement::kept(self, branch, reason, copies);
         let mut verdict = crate::verdict::Verdict {
             retirement: kept(KeepReason::Unknown),
-            early: true,
-            names_change: None,
+            reached: crate::verdict::Reached::Early,
+            history: None,
             host: crate::verdict::HostAnswer::not_asked(),
         };
         let mut evidence = self.evidence(branch);
@@ -1500,8 +1509,8 @@ impl<'a> Census<'a> {
         }
         match self.open_change(branch, &mut evidence, &judged, ask, replies) {
             Err(_) => return verdict,
-            Ok((open, names, heard)) => {
-                verdict.names_change = names;
+            Ok((open, history, heard)) => {
+                verdict.history = history;
                 verdict.host = heard;
                 if let Some(reason) = open {
                     verdict.retirement = kept(reason);
@@ -1509,7 +1518,7 @@ impl<'a> Census<'a> {
                 }
             }
         }
-        verdict.early = false;
+        verdict.reached = crate::verdict::Reached::Concluded;
         // The change request may have been found merged since the copies were judged,
         // so they are judged again under what is now known.
         if evidence.changed {
@@ -1758,7 +1767,11 @@ impl<'a> Census<'a> {
         judged: &[(Copy, Judged)],
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
-    ) -> Result<(Option<KeepReason>, Option<bool>, crate::verdict::HostAnswer)> {
+    ) -> Result<(
+        Option<KeepReason>,
+        Option<crate::verdict::History>,
+        crate::verdict::HostAnswer,
+    )> {
         let Some(change) = evidence.change.clone() else {
             return Ok((None, None, crate::verdict::HostAnswer::not_asked()));
         };
@@ -1767,7 +1780,7 @@ impl<'a> Census<'a> {
         }
         // Named on the base by the host's own squash commit is merged, whoever merged
         // it — the same tier the landing decision reads.
-        let mut names = false;
+        let mut named = crate::verdict::History::DoesNotName;
         for (copy, one) in judged {
             let Some(fork) = &one.fork else { continue };
             let Some(repo) = self.readable(copy, branch, ask) else {
@@ -1779,7 +1792,7 @@ impl<'a> Census<'a> {
                 self.base_tip.as_deref().unwrap_or(""),
             )?;
             if landed::names_the_change(&history, change.as_str()).is_some() {
-                names = true;
+                named = crate::verdict::History::NamesTheChange;
                 break;
             }
         }
@@ -1787,8 +1800,8 @@ impl<'a> Census<'a> {
             .first()
             .map(|(copy, _)| copy.tip.clone())
             .unwrap_or_default();
-        let (heard, open) = self.consult(branch, evidence, &head, names, ask, replies);
-        Ok((open, Some(names), heard))
+        let (heard, open) = self.consult(branch, evidence, &head, named, ask, replies);
+        Ok((open, Some(named), heard))
     }
 
     /// Put to the host what the derivation asks it about the branch's change request,
@@ -1806,11 +1819,11 @@ impl<'a> Census<'a> {
         branch: &str,
         evidence: &mut Evidence,
         head: &str,
-        names: bool,
+        history: crate::verdict::History,
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
     ) -> (crate::verdict::HostAnswer, Option<KeepReason>) {
-        use crate::verdict::{HostAnswer, Reply};
+        use crate::verdict::{ChangeState, HostAnswer, Reply};
         let mut heard = HostAnswer::not_asked();
         // An answer this pass already heard, or the host asked now.
         let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<String>>| match replies {
@@ -1872,7 +1885,7 @@ impl<'a> Census<'a> {
                 }
             }
         }
-        if names {
+        if history == crate::verdict::History::NamesTheChange {
             return (heard, None);
         }
         if ask.host.is_none() {
@@ -1908,14 +1921,19 @@ impl<'a> Census<'a> {
         heard.open = match replies {
             Some(replied) if replied.open.asked() => replied.open.clone(),
             _ => match host.find_changes(branch, target) {
-                Ok(open) => Reply::Answered(open.iter().any(|found| found.url == opened.url)),
+                Ok(open) => {
+                    Reply::Answered(match open.iter().any(|found| found.url == opened.url) {
+                        true => ChangeState::Open,
+                        false => ChangeState::NotOpen,
+                    })
+                }
                 Err(_) => Reply::Failed,
             },
         };
         let open = match heard.open {
-            Reply::Answered(true) => Some(KeepReason::OpenChangeRequest),
+            Reply::Answered(ChangeState::Open) => Some(KeepReason::OpenChangeRequest),
             // Neither merged nor open is closed without merging, which holds nothing.
-            Reply::Answered(false) => None,
+            Reply::Answered(ChangeState::NotOpen) => None,
             Reply::Failed | Reply::NotAsked => Some(KeepReason::Unknown),
         };
         (heard, open)
