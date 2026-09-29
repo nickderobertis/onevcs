@@ -275,16 +275,27 @@ fn swept(command: &mut assert_cmd::Command) -> (Vec<Value>, f64) {
     (examined, elapsed)
 }
 
-/// How long a repeat `onevcs sweep --dry-run` over an unchanged host may take.
+/// How long a repeat `onevcs sweep --dry-run` over an unchanged host may take, as a
+/// fraction of the sweep that derived every verdict on the same runner a moment before.
 ///
+/// A fraction rather than a number of seconds, because what a sweep costs is spawned
+/// processes and what one spawn costs is the runner's: CI's macOS runner is about ten
+/// times slower per spawn than the Linux build host, uniformly across both sweeps.
 /// Measured over the estate below (6 identities, 354 candidate branches, 48 closed
-/// session records) with the suite's own debug build of the binary and no counting
-/// shim, on the 2026-09-29 build host under a load average of 7 to 15: the repeat sweep
-/// took 0.27–0.42s with every verdict reused, where the same sweep built from the base
-/// this change started from (`7debbbe`) took 6.5–9.5s over the same estate. Three
-/// seconds is seven times the measurement, for a loaded host, and under half of the
-/// fastest the base managed.
-const REPEAT_SWEEP_BOUND_SECONDS: f64 = 3.0;
+/// session records) with the suite's own debug build and no counting shim:
+/// - on the 2026-09-29 Linux build host, 0.48s of 4.57s (10.5%) and 0.54s of 5.54s
+///   (9.7%) at a load average of 7 to 15, and 3.26s of 39.13s (8.3%) at a load average
+///   of 30 on 14 cores. The same sweep built from the base this change started from
+///   (`7debbbe`) took 6.5–9.5s over the same estate at the lighter load, re-deriving
+///   every verdict the way the first sweep here does;
+/// - on CI's `macos-latest` runner, 5.48s of 42.92s (12.8%), before the census stopped
+///   asking a place that holds only named branches and its base which heads are
+///   unpublished.
+///
+/// A quarter is twice the worst of those, for a runner loaded unevenly between the
+/// two sweeps. A pass that re-derived its verdicts or asked the origin one ref at a
+/// time would cost about what the first sweep did, and fail it.
+const REPEAT_SWEEP_MAX_FRACTION: f64 = 0.25;
 
 #[test]
 fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again() {
@@ -345,10 +356,12 @@ fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again()
         assert_eq!(entry["derivation"], "reused", "{entry}");
     }
     assert!(
-        reused <= REPEAT_SWEEP_BOUND_SECONDS,
-        "the repeat sweep took {reused:.1}s over {} branches, and the bound is \
-         {REPEAT_SWEEP_BOUND_SECONDS}s",
-        repeat.len()
+        reused <= derived * REPEAT_SWEEP_MAX_FRACTION,
+        "the repeat sweep took {reused:.2}s over {} branches, {:.1}% of the {derived:.2}s \
+         the deriving sweep took, and the bound is {:.0}%",
+        repeat.len(),
+        reused / derived * 100.0,
+        REPEAT_SWEEP_MAX_FRACTION * 100.0
     );
 }
 
