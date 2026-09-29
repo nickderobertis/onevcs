@@ -60,8 +60,8 @@ pub(crate) struct Key {
     pub(crate) records: String,
     /// The session whose stream is the branch's own.
     pub(crate) session: Option<String>,
-    /// The landed-commit trailer prefix the rules name.
-    pub(crate) trailer_prefix: String,
+    /// The landed-commit trailer, under the prefix the rules name.
+    pub(crate) landed_trailer: String,
     /// Whether the derivation had a host to ask, or the records alone.
     pub(crate) asking: Asking,
 }

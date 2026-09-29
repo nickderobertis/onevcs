@@ -206,6 +206,35 @@ pub fn documented_sweep_report() -> serde_json::Value {
     serde_json::from_str(fixtures[0]).expect("the documented sweep report is JSON")
 }
 
+/// A verdict record, as the verdict amendment spells one.
+///
+/// The record is private to this crate and no consumer reads it, but the amendment names
+/// every input its key covers, and a key that dropped one would reuse a verdict a changed
+/// input should have re-derived. So the journey beside this holds every record a real pass
+/// writes to the shape spelled there.
+#[cfg(unix)]
+pub fn documented_verdict_record() -> serde_json::Value {
+    const MARKER: &str = "\"landed_trailer\":";
+    let contract = contract();
+    let fixtures: Vec<&str> = contract
+        .split("\n```json\n")
+        .skip(1)
+        .map(|block| {
+            block
+                .split_once("\n```")
+                .expect("a json fence in the contract is closed")
+                .0
+        })
+        .filter(|body| body.contains(MARKER))
+        .collect();
+    assert_eq!(
+        fixtures.len(),
+        1,
+        "exactly one json block in the contract spells a verdict record"
+    );
+    serde_json::from_str(fixtures[0]).expect("the documented verdict record is JSON")
+}
+
 /// The variables a probe is given, read out of the record that documents them.
 ///
 /// Same reason: the list is stated for an operator wondering what their probe can

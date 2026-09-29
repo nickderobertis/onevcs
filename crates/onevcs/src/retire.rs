@@ -1450,7 +1450,7 @@ impl<'a> Census<'a> {
             unreadable: copies.unreadable.clone(),
             records,
             session,
-            trailer_prefix: self.trailers.landed().to_owned(),
+            landed_trailer: self.trailers.landed().to_owned(),
             asking: match ask.host {
                 Some(_) => crate::verdict::Asking::Host,
                 None => crate::verdict::Asking::Records,

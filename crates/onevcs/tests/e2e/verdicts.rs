@@ -557,8 +557,6 @@ fn a_repeat_pass_over_unchanged_state_reuses_every_verdict_and_asks_the_origin_o
     );
 }
 
-// A changed input is never answered by an old verdict.
-
 /// One `retire-finished` pass over a yard, rehearsed or not, as the entries it examined.
 fn pass_over(yard: &Yard, args: &[&str]) -> Vec<Value> {
     let mut argv = vec!["retire-finished"];
@@ -831,8 +829,6 @@ fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merge
     assert_eq!(hosted.branch_on_origin("feature/merging"), None);
 }
 
-// Reuse never bypasses what is checked fresh on every pass.
-
 /// A landed branch whose recorded verdict is retirable, and which the rehearsal that
 /// followed reused — so every change below touches nothing a record answers.
 fn retirable_on_record(yard: &Yard, branch: &str) {
@@ -988,8 +984,6 @@ fn a_tip_that_moves_after_a_reused_verdict_chose_it_for_deletion_is_refused_and_
         "nothing was retired"
     );
 }
-
-// An input that cannot be read is never an unchanged one, and the pass completes.
 
 /// Every verdict record a state root holds, by the branch it is about. Only the files a
 /// pass reads — a writer's temporary file beside them is not one.
@@ -1283,8 +1277,6 @@ fn a_record_that_cannot_be_written_costs_only_its_reuse() {
     }
 }
 
-// Two writers at once, and one stopped part way, never leave a torn record.
-
 /// An estate large enough that a pass over it takes long enough to overlap another.
 fn busy_estate() -> Estate {
     Estate::new(
@@ -1398,8 +1390,6 @@ fn a_pass_killed_part_way_leaves_no_torn_record_where_one_is_read() {
     }
 }
 
-// The library, the way an engine's idle maintenance calls it.
-
 #[test]
 fn the_library_pass_called_twice_over_unchanged_state_reuses_every_verdict() {
     let estate = counted_estate();
@@ -1434,4 +1424,68 @@ fn the_library_pass_called_twice_over_unchanged_state_reuses_every_verdict() {
         );
         assert_eq!(entry.outcome, onevcs::RetireOutcome::Kept);
     }
+}
+
+/// The names an object carries, and the same for every object inside it — the shape of
+/// a document, whatever its values.
+fn shape(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, inner)| (name.clone(), shape(inner)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().take(1).map(shape).collect()),
+        _ => Value::Null,
+    }
+}
+
+#[test]
+fn every_record_a_pass_writes_has_the_shape_the_contract_spells() {
+    let yard = yard_on_record();
+    let documented = crate::support::documented_verdict_record();
+    let written = records(yard.world());
+    assert!(!written.is_empty());
+    for (branch, (_, record)) in &written {
+        // The retirement inside is the one the retirement amendment holds field for
+        // field; what is held here is everything around it.
+        let mut around = record.clone();
+        around["verdict"]["retirement"] = Value::Null;
+        let mut spelled = documented.clone();
+        spelled["verdict"]["retirement"] = Value::Null;
+        // A host answer's shape varies with what was asked; each word is held below.
+        for held in [&mut around, &mut spelled] {
+            held["verdict"]["host"]["merged"] = Value::Null;
+            held["verdict"]["host"]["open"] = Value::Null;
+            held["verdict"]["history"] = Value::Null;
+            held["key"]["session"] = Value::Null;
+        }
+        assert_eq!(shape(&around), shape(&spelled), "{branch}: {record:#}");
+        assert_eq!(record["format"], documented["format"], "{branch}");
+        for word in ["reached", "history"] {
+            let said = &record["verdict"][word];
+            assert!(
+                said.is_null() || documented_word(said),
+                "{branch}: {word} is {said}, which the amendment does not spell"
+            );
+        }
+        assert!(documented_word(&record["key"]["asking"]), "{branch}");
+        for answer in ["merged", "open"] {
+            let said = &record["verdict"]["host"][answer];
+            assert!(
+                said == "not-asked" || said.get("answered").is_some(),
+                "{branch}: the host's {answer} answer is {said}"
+            );
+        }
+    }
+}
+
+/// Whether the verdict amendment spells this word.
+fn documented_word(word: &Value) -> bool {
+    let contract =
+        std::fs::read_to_string(crate::support::workspace_root().join("docs/contract.md"))
+            .expect("the contract");
+    word.as_str()
+        .is_some_and(|word| contract.contains(&format!("`{word}`")))
 }

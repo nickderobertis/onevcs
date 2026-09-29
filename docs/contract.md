@@ -3368,6 +3368,39 @@ it was derived under. A dry run records too: a record is a derivation, not an ac
   `gh pr list`), what the host answered. A pass whose derivation would ask the host asks
   it again, and a different answer is a changed input.
 
+A record is one JSON document: the format, the writer, the key, and the verdict beside
+what reusing it has to ask again — where the derivation reached it (`early`, before the
+checked-out and dirty-worktree checks, or `concluded`, from the proofs), whether the
+base's history names the change request where the host came to be asked, and the host's
+two answers. No consumer reads one; the shape is spelled so the record and this text
+cannot drift apart.
+
+```json
+{"format": 1, "onevcs": "0.35.0",
+ "key": {"identity": "github.com/acme/project", "branch": "feature/unfinished",
+         "base": "main", "base_tip": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+         "copies": [{"kind": "checkout", "location": "/home/me/src/project",
+                     "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"}],
+         "unreadable": [],
+         "records": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+         "session": "s-abc", "landed_trailer": "Onevcs-Landed-Commit:", "asking": "host"},
+ "verdict": {"retirement": {"class": "keep", "reason": "unmerged-unique-commits",
+                            "identity": "github.com/acme/project",
+                            "branch": "feature/unfinished",
+                            "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+                            "base": "main", "proof": null, "content_free_commits": [],
+                            "superseded_by": null, "differing_paths": ["src/lib.rs"],
+                            "holders": [{"kind": "checkout",
+                                         "location": "/home/me/src/project"}]},
+             "reached": "concluded", "history": "does-not-name",
+             "host": {"merged": {"answered": null}, "open": {"answered": "open"}}}}
+```
+
+`asking` is `host` or `records`; `history` is `names-the-change`, `does-not-name`, or
+`null` where the host was never in question; each host answer is `"not-asked"`,
+`{"answered": ...}` — a merge commit or `null`, and `open` or `not-open` — or `"failed"`,
+which no reusable record holds.
+
 **What a reused verdict may skip: only the derivation** — the ancestry, landing and
 content proofs. These are evaluated fresh on every pass and are never part of what a
 record answers: live holders (`held-by-live-session`), exclusions (`excluded`),
