@@ -890,6 +890,16 @@ struct Place {
     slot: Option<PathBuf>,
 }
 
+/// Where a read of a branch's tips comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tips {
+    /// The census's listings: each place's branches once, and the origin's once.
+    Listed,
+    /// Git itself, ref by ref and past anything the pass remembers — the read made
+    /// immediately before a deletion.
+    Now,
+}
+
 /// Which place a copy is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Holding {
@@ -946,7 +956,7 @@ pub(crate) struct Census<'a> {
     origin_heads: Option<std::result::Result<BTreeMap<String, ObjectId>, String>>,
     /// Whether every stream under the state root could be listed, without which no
     /// branch's records can be said to be unchanged.
-    streams_whole: bool,
+    stream_listing: status::Listing,
     sessions: &'a [Record],
     streams: &'a [status::Recorded],
     trailers: &'a Trailers,
@@ -1058,7 +1068,7 @@ impl<'a> Census<'a> {
             heads: places.iter().map(|_| std::cell::OnceCell::new()).collect(),
             tracked: std::cell::OnceCell::new(),
             origin_heads,
-            streams_whole: true,
+            stream_listing: status::Listing::Whole,
             lent: git::objects_dir(&publication).ok(),
             origin,
             resolution,
@@ -1087,11 +1097,11 @@ impl<'a> Census<'a> {
     }
 
     /// Where one place has the branch: from the listing of its branches, or — asked
-    /// `fresh`, which is what a read immediately before deleting is — from git now,
-    /// past anything the pass remembers.
-    fn local_tip(&self, index: usize, branch: &str, fresh: bool) -> LocalTip {
+    /// [`Tips::Now`], which is what a read immediately before deleting is — from git
+    /// now, past anything the pass remembers.
+    fn local_tip(&self, index: usize, branch: &str, tips: Tips) -> LocalTip {
         let place = &self.places[index];
-        if fresh {
+        if tips == Tips::Now {
             return git::unremembered(|| git::local_tip(&place.repo, branch));
         }
         if !place.repo.exists() {
@@ -1114,23 +1124,23 @@ impl<'a> Census<'a> {
     /// Where each copy of the branch stands, as the census's listings have it: each
     /// place's branches, and the origin's where the census asked the origin.
     fn copies(&self, branch: &str, ask: &Ask<'_>) -> Copies {
-        self.copies_read(branch, ask, false)
+        self.copies_read(branch, ask, Tips::Listed)
     }
 
     /// Where each copy stands now, asked of every place and of the origin one ref at a
     /// time: the read immediately before a deletion, and the only one that asks the
     /// origin about a single branch.
     fn copies_now(&self, branch: &str, ask: &Ask<'_>) -> Copies {
-        self.copies_read(branch, ask, true)
+        self.copies_read(branch, ask, Tips::Now)
     }
 
-    fn copies_read(&self, branch: &str, ask: &Ask<'_>, fresh: bool) -> Copies {
+    fn copies_read(&self, branch: &str, ask: &Ask<'_>, tips: Tips) -> Copies {
         let mut read = Copies {
             unreadable: self.unlisted.clone(),
             ..Copies::default()
         };
         for (index, place) in self.places.iter().enumerate() {
-            match self.local_tip(index, branch, fresh) {
+            match self.local_tip(index, branch, tips) {
                 LocalTip::At(tip) => read.copies.push(Copy {
                     at: Holding::Local(index),
                     tip: tip.as_str().to_owned(),
@@ -1144,8 +1154,8 @@ impl<'a> Census<'a> {
         if self.origin.is_none() {
             return read;
         }
-        match (ask.remote, fresh) {
-            (true, true) => match git::remote_tip(self.publication(), "origin", branch, &[]) {
+        match (ask.remote, tips) {
+            (true, Tips::Now) => match git::remote_tip(self.publication(), "origin", branch, &[]) {
                 Ok(RemoteTip::At(tip)) => read.copies.push(Copy {
                     at: Holding::Origin,
                     tip: tip.as_str().to_owned(),
@@ -1156,7 +1166,7 @@ impl<'a> Census<'a> {
                     .push("the origin could not be asked where the branch is".to_owned()),
                 Err(failure) => read.unreadable.push(format!("the origin: {failure}")),
             },
-            (true, false) => match &self.origin_heads {
+            (true, Tips::Listed) => match &self.origin_heads {
                 Some(Ok(tips)) => {
                     if let Some(tip) = tips.get(branch) {
                         read.copies.push(Copy {
@@ -1418,7 +1428,7 @@ impl<'a> Census<'a> {
         copies: &Copies,
         ask: &Ask<'_>,
     ) -> Option<crate::verdict::Key> {
-        if !self.streams_whole {
+        if self.stream_listing == status::Listing::Partial {
             return None;
         }
         let session = self
@@ -1628,7 +1638,7 @@ impl<'a> Census<'a> {
         // A local copy at the same commit first, which asks git nothing; then the
         // publication checkout, which a fetch of the origin fills; then every other.
         let local_twin = self.places.iter().enumerate().find(|(index, _)| {
-            matches!(self.local_tip(*index, branch, false), LocalTip::At(tip) if tip.as_str() == copy.tip)
+            matches!(self.local_tip(*index, branch, Tips::Listed), LocalTip::At(tip) if tip.as_str() == copy.tip)
         });
         if let Some((_, place)) = local_twin {
             return Some(place.repo.clone());
@@ -2390,7 +2400,7 @@ struct Host {
     sessions: Vec<Record>,
     streams: Vec<status::Recorded>,
     /// Whether the streams directory was listed whole.
-    streams_whole: bool,
+    stream_listing: status::Listing,
     trailers: Trailers,
 }
 
@@ -2407,11 +2417,11 @@ impl Host {
             Some(listed) => listed,
             None => workspace::all()?,
         };
-        let (streams, streams_whole) = status::recorded_streams_whole(&mut Vec::new())?;
+        let (streams, stream_listing) = status::recorded_streams_whole(&mut Vec::new())?;
         Ok(Host {
             sessions,
             streams,
-            streams_whole,
+            stream_listing,
             trailers: provenance::from_rules(&rules),
             registry,
         })
@@ -2427,7 +2437,7 @@ impl Host {
             reach,
             None,
         )?;
-        census.streams_whole = self.streams_whole;
+        census.stream_listing = self.stream_listing;
         Ok(census)
     }
 

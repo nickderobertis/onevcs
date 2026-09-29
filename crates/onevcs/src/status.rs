@@ -2079,14 +2079,23 @@ pub(crate) fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>>
     recorded_streams_whole(notes).map(|(streams, _)| streams)
 }
 
+/// Whether every stream under the state root could be listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Listing {
+    Whole,
+    /// Something could not be listed, so what it recorded is not known — and a reader
+    /// that read what it could cannot say that is everything.
+    Partial,
+}
+
 /// The same, and whether the directory itself was listed whole: a stream that could
 /// not even be listed is one no reader can say anything about, or say is unchanged.
-pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Recorded>, bool)> {
+pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Recorded>, Listing)> {
     let directory = home::streams_dir()?;
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Vec::new(), true))
+            return Ok((Vec::new(), Listing::Whole))
         }
         Err(failure) => {
             notes.push(format!(
@@ -2094,7 +2103,7 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
                  recorded is in this report",
                 directory.display()
             ));
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), Listing::Partial));
         }
     };
     let listed = notes.len();
@@ -2121,7 +2130,10 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
         }
     }
     tokens.sort();
-    let whole = notes.len() == listed;
+    let listing = match notes.len() == listed {
+        true => Listing::Whole,
+        false => Listing::Partial,
+    };
     let streams = tokens
         .into_iter()
         .map(|token| {
@@ -2131,7 +2143,7 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
             record
         })
         .collect();
-    Ok((streams, whole))
+    Ok((streams, listing))
 }
 
 /// One stream, read as the values it holds and said so where it could not be.
