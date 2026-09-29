@@ -992,3 +992,401 @@ fn a_tip_that_moves_after_a_reused_verdict_chose_it_for_deletion_is_refused_and_
         "nothing was retired"
     );
 }
+
+// ---------------------------------------------------------------------------------
+// An input that cannot be read is never an unchanged one, and the pass completes.
+// ---------------------------------------------------------------------------------
+
+/// Every verdict record a state root holds, by the branch it is about. Only the files a
+/// pass reads — a writer's temporary file beside them is not one.
+fn records(world: &World) -> BTreeMap<String, (PathBuf, Value)> {
+    let (whole, torn) = read_records(world);
+    assert_eq!(torn, [] as [String; 0], "every record is whole");
+    whole
+}
+
+/// Every record a state root holds that reads as a whole one, and every one that does
+/// not — a file that names no key and verdict, or does not parse at all.
+fn read_records(world: &World) -> (BTreeMap<String, (PathBuf, Value)>, Vec<String>) {
+    let mut whole = BTreeMap::new();
+    let mut torn = Vec::new();
+    let Ok(listed) = std::fs::read_dir(world.home().join("verdicts")) else {
+        return (whole, torn);
+    };
+    for path in listed.flatten().map(|entry| entry.path()) {
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        // A record replaced or removed between the listing and the read is not one to
+        // judge; one that is there is read whole or not at all.
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let record: Option<Value> = serde_json::from_str(&text).ok();
+        match record {
+            Some(record)
+                if record["key"]["branch"].is_string()
+                    && record["verdict"]["retirement"]["class"].is_string() =>
+            {
+                let branch = record["key"]["branch"]
+                    .as_str()
+                    .expect("checked above")
+                    .to_owned();
+                whole.insert(branch, (path, record));
+            }
+            _ => torn.push(format!("{}:\n{text}", path.display())),
+        }
+    }
+    (whole, torn)
+}
+
+/// A yard with a branch kept as unmerged and one that retires, both on record.
+fn yard_on_record() -> Yard {
+    let yard = Yard::new();
+    yard.worked("feature/open-ended", &[("open.txt", "open\n")]);
+    yard.landed("feature/finished", "finished.txt");
+    recorded(&yard, "feature/open-ended");
+    yard
+}
+
+/// Every entry's derivation, by branch.
+fn derivations(examined: &[Value]) -> BTreeMap<String, String> {
+    examined
+        .iter()
+        .map(|entry| {
+            (
+                entry["branch"].as_str().expect("a branch").to_owned(),
+                entry["derivation"]
+                    .as_str()
+                    .expect("a derivation")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Everything an entry says but how it was reached.
+fn verdict_of(entry: &Value) -> Value {
+    let mut verdict = entry.clone();
+    verdict
+        .as_object_mut()
+        .expect("an entry")
+        .remove("derivation");
+    verdict
+}
+
+#[test]
+fn a_corrupt_record_or_one_another_release_wrote_is_derived_again_and_rewritten() {
+    let yard = yard_on_record();
+    let world = yard.world();
+    let reused = pass_over(&yard, &["--dry-run"]);
+    let on_record = records(world);
+    let (finished, _) = &on_record["feature/finished"];
+    let (open_ended, record) = &on_record["feature/open-ended"];
+
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes half a record
+    // or one claiming another release — a disk that filled, and a release sharing the
+    // state root, do — so the journey leaves both where the real reader meets them.
+    let text = std::fs::read_to_string(finished).expect("a record");
+    std::fs::write(finished, &text[..text.len() / 2]).expect("a torn record");
+    let mut elsewhere = record.clone();
+    elsewhere["onevcs"] = Value::from("0.0.1");
+    std::fs::write(open_ended, elsewhere.to_string()).expect("another release's record");
+
+    let rehearsed = pass_over(&yard, &["--dry-run"]);
+    for branch in ["feature/finished", "feature/open-ended"] {
+        let again = entry(&rehearsed, branch);
+        assert_eq!(again["derivation"], "derived", "{again}");
+        assert_eq!(verdict_of(again), verdict_of(entry(&reused, branch)));
+    }
+    // Each was rewritten whole, by this build, and the next pass reuses it.
+    let rewritten = records(world);
+    assert_ne!(rewritten["feature/open-ended"].1["onevcs"], "0.0.1");
+    for (_, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
+        assert_eq!(derivation, "reused");
+    }
+}
+
+/// Run `act` with `path`'s mode set to `mode`, and put it back afterwards.
+fn with_mode<T>(path: &std::path::Path, mode: u32, act: impl FnOnce() -> T) -> T {
+    use std::os::unix::fs::PermissionsExt;
+    let original = std::fs::metadata(path)
+        .expect("a path to close")
+        .permissions();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("closed");
+    let outcome = act();
+    std::fs::set_permissions(path, original).expect("opened again");
+    outcome
+}
+
+#[test]
+fn a_stream_that_cannot_be_read_is_never_an_unchanged_one() {
+    let yard = yard_on_record();
+    let world = yard.world();
+    let reused = pass_over(&yard, &["--dry-run"]);
+    let stream = std::fs::read_dir(world.home().join("streams"))
+        .expect("the streams")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ndjson")
+        })
+        .expect("a stream");
+
+    // llmlint: ignore[tests_mirror_real_usage] a stream this host will not read is a fact
+    // about the host, reachable by no verb; a real mode on a real file is what the binary
+    // meets, exactly as `World::with_unreadable_records` arranges for session records.
+    let unreadable = with_mode(&stream, 0o000, || {
+        assert!(
+            std::fs::read_to_string(&stream).is_err(),
+            "the premise: {} is unreadable to this user",
+            stream.display()
+        );
+        [
+            pass_over(&yard, &["--dry-run"]),
+            pass_over(&yard, &["--dry-run"]),
+        ]
+    });
+    for examined in &unreadable {
+        for (branch, derivation) in derivations(examined) {
+            assert_eq!(
+                derivation, "derived",
+                "{branch} while a stream is unreadable"
+            );
+        }
+    }
+    // Read whole again, nothing has changed since the verdicts were recorded.
+    let again = pass_over(&yard, &["--dry-run"]);
+    for (branch, derivation) in derivations(&again) {
+        assert_eq!(derivation, "reused", "{branch}");
+        assert_eq!(
+            verdict_of(entry(&again, &branch)),
+            verdict_of(entry(&reused, &branch))
+        );
+    }
+}
+
+#[test]
+fn an_origin_that_cannot_be_listed_derives_unknown_and_reuses_nothing() {
+    let yard = yard_on_record();
+    let origin = yard.fixture.origin.clone();
+    let away = origin.with_extension("away");
+    std::fs::rename(&origin, &away).expect("the origin moved out of reach");
+    let unreachable = pass_over(&yard, &["--dry-run"]);
+    std::fs::rename(&away, &origin).expect("the origin is back");
+    for kept in &unreachable {
+        assert_eq!(kept["derivation"], "derived", "{kept}");
+        assert_eq!(kept["reason"], "unknown", "{kept}");
+    }
+    // The records written before are still the answer once the origin answers again.
+    for (branch, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
+        assert_eq!(derivation, "reused", "{branch}");
+    }
+}
+
+#[test]
+fn a_record_that_cannot_be_written_costs_only_its_reuse() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked("feature/open-ended", &[("open.txt", "open\n")]);
+    yard.landed("feature/finished", "finished.txt");
+    let verdicts = world.home().join("verdicts");
+    std::fs::create_dir_all(&verdicts).expect("the records' directory");
+
+    // llmlint: ignore[tests_mirror_real_usage] a directory this host will not write is a
+    // fact about the host, reachable by no verb, and what is driven over it is the binary.
+    let unwritten = with_mode(&verdicts, 0o555, || {
+        let said = world
+            .onevcs()
+            .args(["retire-finished", "--dry-run", "--json"])
+            .output()
+            .expect("the binary runs");
+        assert!(said.status.success(), "{said:?}");
+        let stderr = String::from_utf8_lossy(&said.stderr).into_owned();
+        let report: Value = serde_json::from_slice(&said.stdout).expect("a report");
+        (report, stderr, pass_over(&yard, &["--dry-run"]))
+    });
+    let (report, stderr, second) = unwritten;
+    assert!(
+        stderr.contains("could not be recorded") && stderr.contains("this pass is complete"),
+        "the pass says what it could not record: {stderr}"
+    );
+    assert!(records(world).is_empty());
+    let examined = report["examined"].as_array().expect("entries");
+    assert_eq!(
+        entry(examined, "feature/finished")["outcome"],
+        "would-retire"
+    );
+    assert_eq!(
+        entry(examined, "feature/open-ended")["reason"],
+        "unmerged-unique-commits"
+    );
+    for (branch, derivation) in derivations(&second) {
+        assert_eq!(
+            derivation, "derived",
+            "{branch}: nothing was recorded to reuse"
+        );
+    }
+    // Writable again, a pass records and the next reuses.
+    pass_over(&yard, &["--dry-run"]);
+    for (branch, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
+        assert_eq!(derivation, "reused", "{branch}");
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// Two writers at once, and one stopped part way, never leave a torn record.
+// ---------------------------------------------------------------------------------
+
+/// An estate large enough that a pass over it takes long enough to overlap another.
+fn busy_estate() -> Estate {
+    Estate::new(
+        1,
+        Shape {
+            unmerged: 40,
+            retirable: 2,
+            copied: 3,
+            advanced: 8,
+            sessions: 2,
+        },
+    )
+}
+
+#[test]
+fn a_sweep_and_the_library_pass_at_once_leave_only_whole_records() {
+    let estate = busy_estate();
+    let world = &estate.world;
+    crate::honesty::inhabit(world);
+    let providers = onevcs::Providers::real();
+    let rehearsal = onevcs::RetirePass {
+        scope: onevcs::Scope::All,
+        exclude: Vec::new(),
+        dry_run: true,
+    };
+    for _ in 0..6 {
+        // Nothing on record, so both derive every verdict and both write every record —
+        // while a reader reads every record there, the whole time, as a third pass would.
+        let _ = std::fs::remove_dir_all(world.home().join("verdicts"));
+        let writing = std::sync::atomic::AtomicBool::new(true);
+        let torn = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut seen = Vec::new();
+                while writing.load(std::sync::atomic::Ordering::SeqCst) {
+                    seen.extend(read_records(world).1);
+                }
+                seen
+            });
+            let mut sweep = world
+                .onevcs_std()
+                .args(["sweep", "--dry-run", "--format", "json"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("the sweep starts");
+            let report = onevcs::retire_finished(&providers, &rehearsal).expect("the library pass");
+            assert!(!report.examined.is_empty());
+            assert!(sweep.wait().expect("the sweep ends").success());
+            writing.store(false, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(records(world).len(), report.examined.len());
+            reader.join().expect("the reader")
+        });
+        assert_eq!(torn, [] as [String; 0], "a record was read torn");
+    }
+    // …and every one of them is a record the next pass reuses.
+    let reused = rehearsed(&mut world.onevcs());
+    assert!(!reused.is_empty());
+    for (branch, derivation) in derivations(&reused) {
+        assert_eq!(derivation, "reused", "{branch}");
+    }
+}
+
+#[test]
+fn a_pass_killed_part_way_leaves_no_torn_record_where_one_is_read() {
+    let estate = busy_estate();
+    let world = &estate.world;
+    let verdicts = world.home().join("verdicts");
+    for attempt in 0..5_u64 {
+        let _ = std::fs::remove_dir_all(&verdicts);
+        let mut pass = world
+            .onevcs_std()
+            .args(["retire-finished", "--dry-run", "--json"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the pass starts");
+        // Stopped at a different point each time: once it has begun writing, and a
+        // little later on each attempt.
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while std::fs::read_dir(&verdicts).map_or(true, |mut listed| listed.next().is_none())
+            && Instant::now() < deadline
+            && pass.try_wait().expect("the pass is asked").is_none()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(attempt * 15));
+        let _ = pass.kill();
+        let _ = pass.wait();
+        // Every record where a pass reads one is whole: `records` refuses one that is not.
+        records(world);
+    }
+    // A torn file where a record is read — what a writer that wrote in place would have
+    // left — is derived again rather than read, and replaced whole.
+    let first = rehearsed(&mut world.onevcs());
+    let on_record = records(world);
+    let (branch, (path, _)) = on_record.iter().next().expect("a record");
+    // llmlint: ignore[tests_mirror_real_usage] no writer of this crate leaves half a record
+    // where one is read — that is the property — so the torn file is laid down by hand to
+    // show what the reader does with one.
+    let text = std::fs::read_to_string(path).expect("a record");
+    std::fs::write(path, &text[..text.len() / 3]).expect("a torn record");
+    let again = rehearsed(&mut world.onevcs());
+    assert_eq!(entry(&again, branch)["derivation"], "derived");
+    assert_eq!(
+        verdict_of(entry(&again, branch)),
+        verdict_of(entry(&first, branch))
+    );
+    records(world);
+    for (branch, derivation) in derivations(&rehearsed(&mut world.onevcs())) {
+        assert_eq!(derivation, "reused", "{branch}");
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// The library, the way an engine's idle maintenance calls it.
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn the_library_pass_called_twice_over_unchanged_state_reuses_every_verdict() {
+    let estate = counted_estate();
+    crate::honesty::inhabit(&estate.world);
+    let providers = onevcs::Providers::real();
+    let idle = onevcs::RetirePass {
+        scope: onevcs::Scope::All,
+        exclude: Vec::new(),
+        dry_run: false,
+    };
+    let first = onevcs::retire_finished(&providers, &idle).expect("the first pass");
+    assert!(first
+        .examined
+        .iter()
+        .all(|entry| entry.derivation == onevcs::Derivation::Derived));
+    assert!(
+        first
+            .examined
+            .iter()
+            .any(|entry| entry.outcome == onevcs::RetireOutcome::Retired),
+        "the premise: the first pass retires a branch: {first:?}"
+    );
+    let second = onevcs::retire_finished(&providers, &idle).expect("the second pass");
+    assert!(!second.examined.is_empty());
+    for entry in &second.examined {
+        assert_eq!(
+            entry.derivation,
+            onevcs::Derivation::Reused,
+            "{}: {:?}",
+            entry.retirement.branch,
+            entry
+        );
+        assert_eq!(entry.outcome, onevcs::RetireOutcome::Kept);
+    }
+}
