@@ -198,5 +198,13 @@ mod support;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod sweep;
+// Unix only: it installs `cost.rs`'s counting `git` and `world.rs`'s `gh`, both POSIX
+// shell, over real origins and real sessions. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod verdicts;
 #[cfg(unix)]
 mod world;

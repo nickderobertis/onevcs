@@ -2850,6 +2850,19 @@ pub(crate) fn reconcile_late_merge(
             base: watched.base.to_owned(),
         })
         .ok()??;
+    record_late_merge(registry, watched, &merged)
+}
+
+/// Record a merge the host reported for a change request this host stopped watching,
+/// the way [`reconcile_late_merge`] records the one it finds — for a caller that asked
+/// the host itself, because it has to tell a refusal from "not merged". Answers the
+/// landing where it was recorded, and `None` where it could not be, for the reason
+/// [`warn_unreconciled`] gives.
+pub(crate) fn record_late_merge(
+    registry: &crate::registry::Registry,
+    watched: &Watched<'_>,
+    merged: &Sha,
+) -> Option<String> {
     let located = match crate::release::for_repository(registry, watched.identity) {
         Ok(located) => located,
         // Best effort throughout, as every part of recording a landing after the
@@ -2870,7 +2883,7 @@ pub(crate) fn reconcile_late_merge(
         watched.url,
         &mut stream,
     );
-    Some(merged.0)
+    Some(merged.0.clone())
 }
 
 /// Say on stderr that a merge the host reported could not be recorded here, and

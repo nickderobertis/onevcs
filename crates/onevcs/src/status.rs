@@ -1946,6 +1946,9 @@ pub(crate) struct Recorded {
     superseded: Vec<Stamped<crate::retire::SupersessionRecord>>,
     /// The newest `branch-retired` this stream recorded.
     retired: Option<Stamped<crate::retire::RetiredRecord>>,
+    /// Whether some of the stream could not be read — the file, or a line of it — so
+    /// what it recorded is not all here.
+    gaps: bool,
 }
 
 /// The reason a `change-drafted` payload records, read back field by field.
@@ -2073,19 +2076,28 @@ fn newest<T>(recorded: impl Iterator<Item = Stamped<T>>) -> Option<Stamped<T>> {
 /// said, and reporting "could not look" as "there is none" is how a report about half
 /// the record reads as a report about all of it.
 pub(crate) fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>> {
+    recorded_streams_whole(notes).map(|(streams, _)| streams)
+}
+
+/// The same, and whether the directory itself was listed whole: a stream that could
+/// not even be listed is one no reader can say anything about, or say is unchanged.
+pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Recorded>, bool)> {
     let directory = home::streams_dir()?;
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), true))
+        }
         Err(failure) => {
             notes.push(format!(
                 "the event streams at {} could not be listed ({failure}), so nothing any session \
                  recorded is in this report",
                 directory.display()
             ));
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
     };
+    let listed = notes.len();
     let mut tokens: Vec<String> = Vec::new();
     for entry in entries {
         let entry = match entry {
@@ -2109,10 +2121,17 @@ pub(crate) fn recorded_streams(notes: &mut Vec<String>) -> Result<Vec<Recorded>>
         }
     }
     tokens.sort();
-    Ok(tokens
+    let whole = notes.len() == listed;
+    let streams = tokens
         .into_iter()
-        .map(|token| read_stream(&directory, &token, notes))
-        .collect())
+        .map(|token| {
+            let before = notes.len();
+            let mut record = read_stream(&directory, &token, notes);
+            record.gaps = notes.len() > before;
+            record
+        })
+        .collect();
+    Ok((streams, whole))
 }
 
 /// One stream, read as the values it holds and said so where it could not be.
@@ -2141,6 +2160,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         pushed_heads: Vec::new(),
         superseded: Vec::new(),
         retired: None,
+        gaps: false,
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -2607,6 +2627,33 @@ pub(crate) fn opened_change(
             .change_stream
             .and_then(|stream| Token::try_from(stream).ok()),
     })
+}
+
+/// Everything this host's streams recorded about one branch that a retirement's
+/// derivation reads — its change request and landing, the heads pushed for it, the
+/// change request's own record, its supersessions and its retirement — as one digest,
+/// or `None` where a stream that could be about it was not read whole.
+///
+/// Every stream a reader above consults for the branch is in it, whole, so a record
+/// any of them would read differently is a different digest. A stream with a gap is
+/// not unchanged, it is unknown: one naming the branch, and one that could not say
+/// what it names at all, each answer `None`.
+pub(crate) fn recorded_digest(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Option<String> {
+    // The session's own stream is named beside every stream the other readers match,
+    // so this is every stream any of them reads.
+    let relevant = relevant_streams(streams, identity, branch, session);
+    let unattributed = streams
+        .iter()
+        .any(|record| record.gaps && (record.identity.is_none() || record.branch.is_none()));
+    if unattributed || relevant.iter().any(|record| record.gaps) {
+        return None;
+    }
+    Some(crate::ids::digest(&format!("{relevant:?}")))
 }
 
 /// Every branch of one identity this host's streams name, which is where a pass over

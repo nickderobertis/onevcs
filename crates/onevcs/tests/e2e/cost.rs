@@ -51,20 +51,20 @@ use crate::world::World;
 /// The directory is recorded beside the arguments, because half of what a filtered
 /// read promises is about *where* it looked: "this checkout was never opened" is not
 /// a claim any argument list can make.
-struct Counting {
+pub(crate) struct Counting {
     directory: PathBuf,
     log: PathBuf,
 }
 
 /// One recorded invocation: the directory it ran in, and its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Call {
-    cwd: PathBuf,
-    args: String,
+pub(crate) struct Call {
+    pub(crate) cwd: PathBuf,
+    pub(crate) args: String,
 }
 
 impl Counting {
-    fn installed(world: &World) -> Self {
+    pub(crate) fn installed(world: &World) -> Self {
         let directory = world.path("counting");
         std::fs::create_dir_all(&directory).expect("a directory for the counting git");
         let log = world.path("counting.log");
@@ -96,12 +96,12 @@ impl Counting {
 
     /// Forget everything recorded so far, so one read is counted rather than a
     /// fixture's whole construction.
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         let _ = std::fs::remove_file(&self.log);
     }
 
     /// Every invocation recorded since the last [`clear`](Self::clear).
-    fn calls(&self) -> Vec<Call> {
+    pub(crate) fn calls(&self) -> Vec<Call> {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
             .lines()
@@ -114,7 +114,7 @@ impl Counting {
     }
 
     /// `onevcs`, with this `git` first on `PATH`.
-    fn onevcs(&self, world: &World) -> assert_cmd::Command {
+    pub(crate) fn onevcs(&self, world: &World) -> assert_cmd::Command {
         let mut path = std::ffi::OsString::from(&self.directory);
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());

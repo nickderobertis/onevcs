@@ -6993,6 +6993,70 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
 }
 
 #[test]
+fn the_derivation_a_pass_reports_is_the_field_and_the_two_words_the_amendment_spells() {
+    // ai-orchestrator's adoption reads `derivation` off every examined entry by that name
+    // and those two words, so the entry the amendment spells is read into the type and
+    // written back byte for byte, and each word is held to the text.
+    let documented: Value = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"derivation\": \"reused\"",
+    ))
+    .expect("the verdict amendment's entry is JSON");
+    let read: onevcs::Retired =
+        serde_json::from_value(documented.clone()).expect("the amendment's entry reads");
+    assert_eq!(read.derivation, onevcs::Derivation::Reused);
+    assert_eq!(
+        serde_json::to_value(&read).expect("an entry serializes"),
+        documented
+    );
+    for (derivation, word) in [
+        (onevcs::Derivation::Derived, "derived"),
+        (onevcs::Derivation::Reused, "reused"),
+    ] {
+        assert_eq!(derivation.as_str(), word);
+        assert_eq!(
+            serde_json::to_value(derivation).expect("a derivation"),
+            json!(word)
+        );
+        assert!(
+            regions().0.contains(&format!("`{word}`")),
+            "the amendment does not spell the derivation {word}"
+        );
+    }
+    // A document written before the field existed reads as derived.
+    let mut older = documented.clone();
+    older
+        .as_object_mut()
+        .expect("an object")
+        .remove("derivation");
+    let read: onevcs::Retired = serde_json::from_value(older).expect("an older entry reads");
+    assert_eq!(read.derivation, onevcs::Derivation::Derived);
+    // …and the text declares the type and the member.
+    let declarations = amendment_declaring("pub enum Derivation");
+    for declared in [
+        "pub enum Derivation { Derived, Reused }",
+        "impl Derivation { pub fn as_str(self) -> &'static str; }",
+        "Retired   pub derivation: Derivation",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the verdict amendment no longer declares: {declared}"
+        );
+    }
+    let text = regions().0;
+    for spelled in [
+        "`$ONEVCS_HOME/verdicts/`",
+        "`registry.json` stays at version 6 and session records at version 3",
+        "`git ls-remote --heads origin`",
+    ] {
+        assert!(
+            text.contains(spelled),
+            "the verdict amendment says {spelled}"
+        );
+    }
+}
+
+#[test]
 fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_written_as() {
     // Two repositories read this object field by field, so the one the amendment spells
     // is read into the type and written back byte for byte — a field renamed on either
