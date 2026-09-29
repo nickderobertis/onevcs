@@ -37,19 +37,21 @@ const FORMAT: u32 = 1;
 /// release may derive differently from the same inputs.
 const WRITER: &str = env!("CARGO_PKG_VERSION");
 
+// llmlint: ignore-block[invalid_states_unrepresentable] a key is compared whole and never
+// interpreted: every field is copied out of a value this crate already validated where it
+// arrived — the registry's identity key, branch names git listed, the stream digest, a
+// holder's location as `BranchHolder` spells it in the contract — and a record whose key
+// differs in any field, or does not parse, is simply not reused. A narrower type would
+// rule out no state a key can be in, since nothing but equality is ever asked of one.
 /// Everything a branch's derivation reads, which a recorded verdict is reused under
 /// only while every field is equal.
-// llmlint: ignore[invalid_states_unrepresentable] a key is compared whole and never
-// interpreted: every field is copied out of a value this crate already validated where it
-// arrived (the census's reads of git and the streams), and a record whose key differs in
-// any field — or does not parse — is simply not reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Key {
     pub(crate) identity: String,
     pub(crate) branch: String,
     pub(crate) base: String,
-    pub(crate) base_tip: String,
+    pub(crate) base_tip: Sha,
     /// Every copy, in search order: where it is and the commit it stands at. The
     /// origin's copy is among them where the origin has the branch, and its absence
     /// is its absence from this list.
@@ -82,8 +84,9 @@ pub(crate) enum Asking {
 pub(crate) struct KeyedCopy {
     pub(crate) kind: BranchHolderKind,
     pub(crate) location: String,
-    pub(crate) tip: String,
+    pub(crate) tip: Sha,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// One question put to the host, and what came of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +183,9 @@ pub(crate) enum History {
     DoesNotName,
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] `onevcs` is compared for equality
+// with this build's own `CARGO_PKG_VERSION` and nothing else: a record another build wrote
+// is not reused whatever its version says, so parsing it as a version would decide nothing.
 /// A record as it is written.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -189,6 +195,7 @@ struct Record {
     key: Key,
     verdict: Verdict,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// The records of one state root, for the length of one pass.
 pub(crate) struct Store {

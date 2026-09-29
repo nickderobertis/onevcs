@@ -1434,7 +1434,7 @@ impl<'a> Census<'a> {
             identity: self.resolution.key.clone(),
             branch: branch.to_owned(),
             base: base.to_owned(),
-            base_tip: base_tip.to_owned(),
+            base_tip: Sha(base_tip.to_owned()),
             copies: copies
                 .copies
                 .iter()
@@ -1443,7 +1443,7 @@ impl<'a> Census<'a> {
                     crate::verdict::KeyedCopy {
                         kind: holder.kind,
                         location: holder.location,
-                        tip: copy.tip.clone(),
+                        tip: Sha(copy.tip.clone()),
                     }
                 })
                 .collect(),
