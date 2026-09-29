@@ -107,8 +107,8 @@ impl Estate {
         estate
     }
 
-    /// Every candidate branch of every identity, by its identity's alias.
-    fn branches(&self) -> usize {
+    /// How many branches the estate cut across every identity, the sessions' own aside.
+    fn cut_branches(&self) -> usize {
         self.identities
             .iter()
             .map(|identity| identity.unmerged.len() + identity.retirable.len())
@@ -300,7 +300,7 @@ fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again()
     );
     let world = &estate.world;
     assert!(
-        estate.branches() >= 150,
+        estate.cut_branches() >= 150,
         "the premise: at least 150 candidate branches"
     );
 
