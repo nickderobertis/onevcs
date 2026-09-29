@@ -2725,12 +2725,14 @@ fn candidates(census: &Census<'_>, host: &Host) -> Result<Vec<String>> {
             continue;
         };
         // Whether a branch no record names holds commits no origin ref has, asked of
-        // the whole place at once — and not at all where the records name every one.
-        let unpublished: BTreeSet<String> =
-            match heads.iter().all(|(branch, _)| named.contains(branch)) {
-                true => BTreeSet::new(),
-                false => git::unpublished_heads(&place.repo).unwrap_or_default(),
-            };
+        // the whole place at once — and not at all where the records name every one
+        // but the base, which is never a candidate however much it holds.
+        let unpublished: BTreeSet<String> = match heads.iter().all(|(branch, _)| {
+            named.contains(branch) || census.base.as_deref() == Some(branch.as_str())
+        }) {
+            true => BTreeSet::new(),
+            false => git::unpublished_heads(&place.repo).unwrap_or_default(),
+        };
         for (branch, _) in heads {
             if named.contains(&branch) || unpublished.contains(&branch) {
                 found.insert(branch);
