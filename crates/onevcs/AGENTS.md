@@ -943,7 +943,7 @@ automatic moments that run the same pass — `session close` (after `workspace::
 in `Git::close_session`), `onevcs sweep`'s `finished-branches` family, and
 `retire_finished`. The shapes are the retirement amendment's in `docs/contract.md`,
 which two other repositories restate, so a field or a word here is not this crate's to
-rename. Six things are easy to undo.
+rename. Seven things are easy to undo.
 
 - **Every automatic path acts host-wide, so every automatic retirement is lossless.**
   Only `reclaim`, asked by a person, deletes a branch that still differs from its base.
@@ -962,7 +962,22 @@ rename. Six things are easy to undo.
   is `recoverable` (records and local refs; it never asks a host and stays inside the
   cost journeys' process budgets and the `--session`/`--label` narrowing); `Remote`
   asks the origin and fetches objects with `--refmap=`; `Fetch` is a retirement that is
-  going to act.
+  going to act. Either of the last two asks the origin **once per identity** —
+  `git::remote_branch_tips`, one `ls-remote --heads` — and reads every branch's and the
+  base's tip out of it; `Census::copies_now`, the read immediately before a deletion, is
+  the only per-ref read of the origin left, and it and the local re-read go past the
+  pass's memo (`git::unremembered`).
+- **A pass reuses a verdict only for the derivation, and only under an equal key**
+  (`verdict.rs`, the verdict amendment in `docs/contract.md`). `Census::classify` asks
+  the fresh checks first and last — base, live holder, exclusion, unreadable copies, then
+  `worked_in` (checked out, dirty) — and `Census::verdict` in between is the only thing
+  a record answers. A key that leaves out something the derivation reads is a false
+  reuse, and a false reuse can be a false retirement: when the derivation starts reading
+  something new, it goes into `Census::key` in the same change. A host answer that could
+  not be heard, a stream with a gap (`status::recorded_digest`), and a listing that
+  failed are never unchanged, and an `unknown` verdict is never recorded.
+  `tests/e2e/verdicts.rs` holds each input to forcing a fresh derivation, and each
+  fresh check to winning over a record that says `retirable`.
 - **A retired branch still answers `status`, `landing_status` and `release status`.**
   It resolves through its `branch-retired` record, reads as landed where it was retired
   `retirable`, and names the commit on the base its work reached — which is what a

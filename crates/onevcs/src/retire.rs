@@ -30,6 +30,11 @@
 //! `branch-retired`, under `$ONEVCS_HOME/streams`. Nothing about the registry or the
 //! session record moves, which is what lets an older `onevcs` sharing the state root
 //! go on reading it: a kind it has no word for is one it passes over.
+//!
+//! **A pass remembers what it derived.** The automatic pass records each branch's
+//! verdict in [`crate::verdict`] under everything its derivation read, and a later pass
+//! whose reads are all unchanged reuses the derivation — never the checks made fresh
+//! around it, which [`Census::classify`] asks on every pass whatever is on record.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
