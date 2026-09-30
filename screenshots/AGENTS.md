@@ -51,15 +51,19 @@ at all).
 - **`status`** — `onevcs status REF` over a change request that is still open with its
   checks part way through, which is where the report is at its fullest: all five
   sections (`work`, `identity`, `session`, `branch`, `publication`) plus the checks
-  table — one required check green, one still running, one advisory one failed — the
-  merge path's verdict, and the `next:` line saying what advances the work.
+  table — one required check passed, one still pending, one advisory one failed, each
+  with its state — the merge path's verdict, and the `next:` line saying what advances
+  the work. Its publication watched the running check to a short bound and stopped
+  there (`checks-unsettled`), so the change request is still the draft it opened as,
+  awaiting its checks, which the publication section says.
 - **`recoverable`** — `onevcs recoverable --all`, by far the most narrative report the
   tool has: a scope header, then a per-branch line with its identity and marks, and the
   indented `Found in:`, `On origin:`, `Stopped because:`, `Landed:` and pasteable
   `Resume:` lines. `--all` rather than the default, because it is the only form in
-  which the `Landed:` line appears, and the three branches are chosen so that every one
-  of those line kinds shows: one preserved onto its origin, one a stopped run left
-  open, one that reached its base.
+  which the `Landed:` line appears, and the branches are chosen so that every one of
+  those line kinds shows: one preserved onto its origin, one a stopped run left open,
+  one that reached its base — and the `status` scene's branch, which its unsettled
+  publication handed back and which is kept because its change request is open.
 - **`pool-status`** — `onevcs pool status widgets`: the capacity, and both slot states
   — one holding a live session, one idle with the outcome and time of its last
   maintenance on it.

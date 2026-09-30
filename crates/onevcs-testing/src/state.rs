@@ -8,11 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, Error, Identity, Landed,
     MergeOutcome, Recoverable, Result,
 };
-use onevcs::{MergePolicy, Publication, Session, SessionRequest, SessionToken};
+use onevcs::{MergePolicy, Publication, RequiredChecks, Session, SessionRequest, SessionToken};
 
 use crate::events;
 use crate::store::Checked;
@@ -56,7 +57,14 @@ use crate::store::Checked;
 /// field a `Recoverable` gained there: the branch's retirement classification — whether
 /// it provably holds nothing beyond its base, was superseded by a retry that landed, or
 /// is kept, and the evidence for it. No provider here classifies a row, so a row this
-/// crate writes carries none; a scenario may seed one.
+/// crate writes carries none; a scenario may seed one. `14` is the draft lifecycle:
+/// [`HostState::awaiting_checks`], the change requests opened as a draft while their
+/// required checks run, [`HostState::checks_after_lift`], the checks a host registers
+/// only once a change is lifted, and [`HostState::required_checks`], what the host
+/// says a merge into a base requires — beside [`VcsState::approvals`] and
+/// [`VcsState::drafts`], the two policy fields a provider's publication now routes
+/// the lifecycle on. A publication outcome inside [`VcsState::publications`] may also
+/// be `change-review-draft`.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -66,7 +74,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 13;
+pub const STATE_VERSION: u32 = 14;
 
 /// The oldest document version this build reads.
 ///
@@ -105,7 +113,12 @@ pub const STATE_VERSION: u32 = 13;
 /// labelled, and a row that names no session — which is what that build's rows said,
 /// since it recorded neither. `12` to `13` added the row's retirement, which appears only
 /// where a row holds one, so a version 12 row reads as one nothing classified — which
-/// is what it was, since that build had no classification to record.
+/// is what it was, since that build had no classification to record. `13` to `14`
+/// added fields that appear only when they hold something, so a version 13 document
+/// reads as one whose change requests were opened before the lifecycle drafted any,
+/// whose checks never change on a lift, whose host declares its required checks by
+/// the checks it was seeded with, and whose policy leaves approvals and drafts at
+/// their defaults — which is what that build published under.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -190,6 +203,17 @@ pub struct VcsState {
     /// rules system's rule rather than a restatement of it here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<MergePolicy>,
+    /// Whether this provider's changes need an approval, which is the other half of
+    /// what decides a green draft's ending: `change-open` with approvals required
+    /// keeps it for its user's review. Unset is the contract's own `default:`,
+    /// [`DEFAULT_APPROVALS`](crate::DEFAULT_APPROVALS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<Approvals>,
+    /// The `drafts:` a rules file would give this provider's identity. Unset, and
+    /// each key it leaves unset, is the shipped default: the lifecycle on and the
+    /// early-lift warning on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drafts: Option<Drafts>,
     /// Every publication this provider performed, in the order it performed them.
     ///
     /// Both a record a journey asserts on and the answer to "has this session been
@@ -219,6 +243,8 @@ impl Default for VcsState {
             preserved: Vec::new(),
             closed_sessions: BTreeSet::new(),
             policy: None,
+            approvals: None,
+            drafts: None,
             publications: Vec::new(),
         }
     }
@@ -317,6 +343,35 @@ pub struct HostState {
     /// draft any more, whatever [`drafts`](HostState::drafts) says it was opened as.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub made_ready: Vec<ChangeId>,
+    /// The change requests opened as a draft **while their required checks run** —
+    /// the lifecycle's draft, which no caller gave a reason for and so is not in
+    /// [`drafts`](HostState::drafts). A change named here is a draft until
+    /// [`made_ready`](HostState::made_ready) names it.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub awaiting_checks: BTreeSet<ChangeId>,
+    /// The checks the host reports on a change request once it has been lifted out of
+    /// its draft, in place of [`checks`](HostState::checks).
+    ///
+    /// What a repository whose workflow skips drafts looks like from outside: the
+    /// draft's checks are skipped or absent, and the run the lift triggers registers
+    /// after it. A change with no entry reports the same checks either side of a lift.
+    ///
+    /// A publication tells the run a lift triggered from the draft's by the run's own
+    /// identity, as it would on a real host: a check named here that the draft also
+    /// reported is a new run — running or settled — only where its
+    /// [`started_at`](Check::started_at) is one no draft-era run of that check reported. So seed a re-run with a start of its own — an entry repeating
+    /// the draft's start, or reporting none, is the draft's run still standing.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub checks_after_lift: BTreeMap<ChangeId, Vec<Check>>,
+    /// What this host answers when asked which checks a merge into a base requires.
+    ///
+    /// Unset is a host whose branch protection names exactly the checks it was seeded
+    /// as required, on any change request — a complete answer, and an empty one where
+    /// none is seeded required. Seeded, it is the answer for every base: an empty
+    /// complete one is a repository declaring no required check, and one naming an
+    /// `unconsulted` source is the incomplete answer a narrower credential gets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_checks: Option<RequiredChecks>,
     /// Every `describe_change` call this host has taken, in the order it took them:
     /// which change request, the title it was handed when it was handed one, and the
     /// body.
@@ -418,6 +473,9 @@ impl Default for HostState {
             bodies: BTreeMap::new(),
             drafts: BTreeMap::new(),
             made_ready: Vec::new(),
+            awaiting_checks: BTreeSet::new(),
+            checks_after_lift: BTreeMap::new(),
+            required_checks: None,
             described: Vec::new(),
             checks: BTreeMap::new(),
             check_logs: BTreeMap::new(),
@@ -790,6 +848,9 @@ impl Checked for HostState {
         }
         for id in &self.made_ready {
             opened_change(self, id, "a lifted draft")?;
+        }
+        for id in &self.awaiting_checks {
+            opened_change(self, id, "a draft awaiting its checks")?;
         }
         for described in &self.described {
             opened_change(self, &described.id, "a description")?;

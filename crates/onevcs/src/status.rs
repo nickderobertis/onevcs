@@ -36,7 +36,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
-use crate::host::{ChangeId, CheckSource, Hosting};
+use crate::host::{ChangeId, CheckSource, CheckState, Hosting};
 use crate::landed::{self, Landed};
 use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
@@ -114,10 +114,17 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// is the answer to whether its work is there. A branch nobody retired omits the
 /// field, as every absent field of this report is omitted.
 ///
+/// `10` is two readings the draft lifecycle needs. Every check in `checks` carries
+/// `state` — `passed`, `failed`, `skipped`, `pending` or `no-verdict` — so a skipped
+/// check reads as skipped rather than as whatever a reader made of its conclusion;
+/// and `publication.draft` may be `{"kind": "awaiting-checks"}`, the draft a
+/// publication opened while its required checks run, which carries no reason because
+/// nobody asked for it.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 9;
+pub const REPORT_VERSION: u32 = 10;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -359,7 +366,7 @@ pub struct PublicationReport {
     /// holding this change back now. What was drafted and then lifted is still in the
     /// stream, which is what `onevcs events` is for.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub draft: Option<DraftReason>,
+    pub draft: Option<StandingDraft>,
     /// Whether the host is holding the change request as a draft right now, as the
     /// host itself answered.
     ///
@@ -575,7 +582,7 @@ struct AnyPublication {
     #[serde(default)]
     change_url: Option<String>,
     #[serde(default)]
-    draft: Option<DraftReason>,
+    draft: Option<StandingDraft>,
     #[serde(default)]
     held_as_draft: Option<bool>,
     #[serde(default)]
@@ -708,6 +715,10 @@ pub struct CheckReport {
     // has not concluded, which is the one state this report does narrow.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conclusion: Option<String>,
+    /// Which of the five states [`Check::state`](crate::Check::state) classifies it
+    /// in — `skipped` apart from `passed`, which is the distinction a reader of the
+    /// raw conclusion used to have to draw for itself, and drew wrongly.
+    pub state: CheckState,
     /// Whether it blocks the merge.
     pub required: bool,
 }
@@ -784,7 +795,7 @@ struct Told {
     /// only the one that drafted it. The publication that lifts a draft is a *later*
     /// one carrying no reason, and a branch-keyed verb writes its own stream, so the
     /// draft and the lift routinely sit in two different records of one branch.
-    draft: Option<DraftReason>,
+    draft: Option<StandingDraft>,
     /// The newest `change-described` across every stream of this branch.
     described: Option<DescribedReport>,
     /// Where the newest `branch-preserved` of *this* branch put it on its origin.
@@ -869,7 +880,7 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
 /// stamp is a clock that could not tell them apart, and reporting a reason that may
 /// already be spent is the direction that sends somebody to wait for a release that
 /// has arrived.
-fn standing_draft(relevant: &[&Recorded]) -> Option<DraftReason> {
+fn standing_draft(relevant: &[&Recorded]) -> Option<StandingDraft> {
     let drafted = newest(relevant.iter().filter_map(|record| record.draft.clone()))?;
     let lifted = relevant
         .iter()
@@ -1659,6 +1670,7 @@ fn ask_the_host(identity: &str, branch: &str, base: &str, hosting: &dyn Hosting)
                 .checks
                 .into_iter()
                 .map(|check| CheckReport {
+                    state: check.state(),
                     name: check.name,
                     status: check.status,
                     conclusion: check.conclusion,
@@ -1914,7 +1926,7 @@ pub(crate) struct Recorded {
     landing: Option<Stamped<ObjectId>>,
     /// The reason the newest `change-drafted` on this stream gave for opening the
     /// change request as a draft.
-    draft: Option<Stamped<DraftReason>>,
+    draft: Option<Stamped<StandingDraft>>,
     /// When the newest `draft-lifted` on this stream took a change out of its draft.
     ///
     /// A moment rather than a value, and a field of its own rather than an absence in
@@ -1963,8 +1975,11 @@ pub(crate) struct Recorded {
 /// The publication's own rule is then applied where the record is read back rather
 /// than restated: a reason this crate would have refused to publish is one it must not
 /// render either — every field of it is printed on the line it is reported on.
-fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<DraftReason> {
+fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<StandingDraft> {
     let reason = match field("kind").as_deref() {
+        // The lifecycle's own draft, which no caller asked for and so carries no
+        // reason to check.
+        Some(AWAITING_CHECKS) => return Some(StandingDraft::AwaitingChecks(AwaitingChecks)),
         Some("held") => DraftReason::Held {
             because: field("because")?,
         },
@@ -1976,7 +1991,101 @@ fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<DraftReas
         },
         Some(_) => return None,
     };
-    reason.checked().ok().map(|()| reason)
+    reason.checked().ok().map(|()| StandingDraft::Asked(reason))
+}
+
+/// How a check's state is spelled in the report's human rendering: the same word its
+/// JSON carries.
+fn spell_check_state(state: CheckState) -> &'static str {
+    match state {
+        CheckState::Passed => "passed",
+        CheckState::Failed => "failed",
+        CheckState::Skipped => "skipped",
+        CheckState::Pending => "pending",
+        CheckState::NoVerdict => "no-verdict",
+    }
+}
+
+/// The `kind` the lifecycle's own draft is recorded under.
+const AWAITING_CHECKS: &str = "awaiting-checks";
+
+/// Why a change request stands as a draft, as this report reads it back: a reason a
+/// caller asked for, or the lifecycle's own draft while the required checks run.
+///
+/// Two shapes on one wire, told apart by `kind` exactly as the `change-drafted`
+/// payload tells them apart. The lifecycle's draft is not a [`DraftReason`] — nobody
+/// asked for it, and the caller's request type is not widened for it — so this is the
+/// report's own reading rather than a variant of that type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StandingDraft {
+    /// A draft a caller asked for, with its reason.
+    Asked(DraftReason),
+    /// A draft the publication opened while its required checks run.
+    AwaitingChecks(AwaitingChecks),
+}
+
+/// The lifecycle's own draft, which serializes as `{"kind": "awaiting-checks"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AwaitingChecks;
+
+impl Serialize for AwaitingChecks {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("kind", AWAITING_CHECKS)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AwaitingChecks {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Tagged {
+            kind: String,
+        }
+        let tagged = Tagged::deserialize(deserializer)?;
+        if tagged.kind == AWAITING_CHECKS {
+            Ok(AwaitingChecks)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "{:?} is not the kind of the draft awaiting its checks",
+                tagged.kind
+            )))
+        }
+    }
+}
+
+impl StandingDraft {
+    /// The `kind` it is recorded under.
+    fn kind(&self) -> String {
+        match self {
+            StandingDraft::Asked(reason) => reason.kind(),
+            StandingDraft::AwaitingChecks(_) => AWAITING_CHECKS.to_owned(),
+        }
+    }
+
+    /// The one line a person reads about it.
+    fn because(&self) -> &str {
+        match self {
+            StandingDraft::Asked(reason) => reason.because(),
+            StandingDraft::AwaitingChecks(_) => "its required checks are still running",
+        }
+    }
+
+    /// The publication's own rule for a reason, applied where a document is read back.
+    fn checked(&self) -> Result<()> {
+        match self {
+            StandingDraft::Asked(reason) => reason.checked(),
+            StandingDraft::AwaitingChecks(_) => Ok(()),
+        }
+    }
 }
 
 /// The moment an envelope was stamped, in the one form the shared envelope fixes:
@@ -3211,8 +3320,9 @@ impl Report {
                 out.push_str("checks:\n");
                 for check in checks {
                     out.push_str(&format!(
-                        "  {}\t{}\t{}\t{}\n",
+                        "  {}\t{}\t{}\t{}\t{}\n",
                         check.name,
+                        spell_check_state(check.state),
                         check.status,
                         check.conclusion.as_deref().unwrap_or("-"),
                         if check.required {
@@ -3309,13 +3419,13 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// halves read the same two files, so neither can drift from the other.
 #[cfg(test)]
 mod round_trip {
-    use super::{DraftReason, Landing, Report, ReportVersion, REPORT_VERSION};
+    use super::{DraftReason, Landing, Report, ReportVersion, StandingDraft, REPORT_VERSION};
     use serde_json::json;
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v9.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v9-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v10.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v10-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -3401,12 +3511,12 @@ mod round_trip {
             .draft
             .as_ref()
             .expect("the full golden's publication is the drafted one");
-        let DraftReason::AwaitingRelease {
+        let StandingDraft::Asked(DraftReason::AwaitingRelease {
             awaiting,
             target,
             reference,
             because,
-        } = held
+        }) = held
         else {
             panic!("the full golden's draft awaits a release: {held:?}");
         };

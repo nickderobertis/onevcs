@@ -32,9 +32,11 @@ onevcs release status "$token"                     # …and whether a release ca
 
 `onevcs rules check REPO` is the second line of that, on its own: it resolves the
 checkout to an identity, says which rule of the rules file matched it, and gives the
-publication and approvals that rule decided with the source of each.
+publication and approvals that rule decided with the source of each — and, beside them,
+whether the draft lifecycle below is on, what a green change does under that policy, and
+whether an early lift warns.
 
-![`onevcs rules check widgets` printing repo, identity, checkout and rules-file paths, the matched rule with its host/owner/name matcher, then publication change-auto and approvals none, each marked "(from rule 1)", and the trailer prefix taken from the rules file](docs/screenshots/rules-check.svg)
+![`onevcs rules check widgets` printing repo, identity, checkout and rules-file paths, the matched rule with its host/owner/name matcher, then publication change-auto and approvals none, each marked "(from rule 1)", the draft lifecycle on, a green draft lifted and the early-lift warning on — each from the shipped default or from publication and approvals — and the trailer prefix taken from the rules file](docs/screenshots/rules-check.svg)
 
 `onevcs repos --audit-gates` reads the same decision back for **every** registered
 identity at once, and beside each one what actually verifies a publication there —
@@ -52,12 +54,26 @@ onevcs publish "$token" --draft                    # open it as a draft the sess
 onevcs change describe "$token" --body-file pr.md  # replace the description with the evidence
 onevcs change show "$token" --json                 # what the host holds: url, id, base, draft, title, body
 onevcs change ready "$token"                       # lift the draft without landing anything
-onevcs publish "$token"                            # …or lift it and land it in one step
+onevcs publish "$token"                            # …or publish it: its checks decide the lift
 ```
 
 Each of those addresses the session's own change request — the one open from its
 branch into its base — so nothing names a URL. The library forms are
 `session_change`, `describe_change`, and `ready_change`.
+
+**Every change request starts as a draft while its required checks run.** A plain
+`onevcs publish` under `change-auto`, `change-direct` or `change-open` opens (or adopts)
+the change request as a draft and watches the pushed commit's required checks. Green lifts
+it to ready — and only then arms or performs the merge, since a host merges no draft —
+except under `change-open` with `approvals: required`, where it stays a draft for its own
+user's review and the publication ends `change-review-draft`. Red, or the bound, leaves it
+a draft. A repository whose CI skips drafts is lifted after a grace window
+(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`) so its checks can run, with one warning line. Lifting is one-way, and `drafts: {disabled: true}` in the rules file opens
+change requests ready, as before:
+
+```yaml
+default: {publication: change-open, approvals: required, drafts: {warn_on_early_lift: false}}
+```
 
 A branch that outlived the session that cut it is landed by name instead, under
 that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
@@ -89,7 +105,7 @@ kept; a pool slot is returned rather than removed. A branch a retry superseded,
 recorded with `onevcs supersede`, that still differs from the base is listed by
 `recoverable` with a `Reclaim:` line and only `onevcs reclaim` removes it.
 
-![`onevcs recoverable --all` over three branches: one whose run was left open and is only in a pool slot's clone, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
+![`onevcs recoverable --all` over four branches: one whose run was left open and is only in a pool slot's clone, one whose publication stopped watching its checks and which is kept because its change request is open, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
 
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It
@@ -104,7 +120,7 @@ and one that history cannot decide reads as `unknown` rather than as work nobody
 published. A host that cannot be reached leaves its section unavailable instead of
 failing the command.
 
-![`onevcs status` over an open change request: a "work:" header naming the branch and identity, then identity, session, branch and publication sections — the session closed and stale, the branch one commit ahead with its provenance complete, the publication open and not landed with its change-request URL and merge policy — then a checks table with one required check completed successfully, one still in progress, and one advisory check failed, the merge path's pass verdict and its log, and a "next:" line saying nothing advances the work while the host is still deciding](docs/screenshots/status.svg)
+![`onevcs status` over an open change request: a "work:" header naming the branch and identity, then identity, session, branch and publication sections — the session open and stale, the branch one commit ahead with its provenance complete, the publication open and not landed with its change-request URL and merge policy, held by the host as a draft awaiting its required checks — then a checks table naming each check's state beside the host's own words: one required check passed, one pending, and one advisory check failed, the merge path's pass verdict and its log, and a "next:" line saying nothing advances the work while the host is still deciding](docs/screenshots/status.svg)
 
 A branch is often worked on by more than one session — a run stops and the next
 one continues the name — so the older session's record names the one that
@@ -266,9 +282,12 @@ let published = onevcs::publish(&providers, &token, &PublishRequest::default())?
 match published.outcome {
     PublishOutcome::Merged(sha) => journal.landed(sha),
     PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
-    // A draft cannot land while it stands; publishing again with no `draft` lifts
-    // it, and so does `ready_change`. Whether it awaits a dependency's release or
-    // is held by the session still making it is the `DraftReason` the request carried.
+    // Green, and kept a draft for the person who dispatched the work to review.
+    PublishOutcome::ChangeReviewDraft(url) => journal.for_review(url),
+    // A draft cannot land while it stands; `ready_change` lifts it, and so does a
+    // publication with no `draft` once its checks are green. Whether it awaits a
+    // dependency's release or is held by the session still making it is the
+    // `DraftReason` the request carried.
     PublishOutcome::ChangeDraft(url) => journal.held_back(url),
     PublishOutcome::NothingToPublish => journal.nothing(),
     PublishOutcome::Failed { kind, reason, retained } => journal.failed(kind, reason, retained),

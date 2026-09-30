@@ -28,6 +28,12 @@ pub const CHECK_SOURCE_ENV: &str = "ONEVCS_CHECK_SOURCE";
 pub const CHECKS_TIMEOUT_ENV: &str = "ONEVCS_CHECKS_TIMEOUT_SECONDS";
 /// How often the host is asked again while its checks are unsettled.
 pub const CHECKS_POLL_ENV: &str = "ONEVCS_CHECKS_POLL_SECONDS";
+/// How long a draft waits for any of its required checks to run before it is lifted
+/// so they can — and, after such a lift, how long for them to run again.
+pub const DRAFT_GRACE_ENV: &str = "ONEVCS_DRAFT_CHECKS_GRACE_SECONDS";
+/// The default grace window. Two minutes is long past the moment a workflow that runs
+/// on drafts has registered its first job, and short beside the hour-long bound.
+pub const DEFAULT_DRAFT_GRACE_SECONDS: f64 = 120.0;
 /// The default bound on waiting for required checks. Long, because a repository's
 /// CI is doing the work and abandoning it mid-flight leaves state nobody recorded.
 pub const DEFAULT_CHECKS_TIMEOUT_SECONDS: f64 = 3600.0;
@@ -164,6 +170,11 @@ pub fn checks_timeout() -> Result<f64> {
 /// How long to wait between asking the host again.
 pub fn checks_poll() -> Result<f64> {
     seconds(CHECKS_POLL_ENV, DEFAULT_CHECKS_POLL_SECONDS)
+}
+
+/// How long a draft waits for its required checks to start before it is lifted.
+pub fn draft_grace() -> Result<f64> {
+    seconds(DRAFT_GRACE_ENV, DEFAULT_DRAFT_GRACE_SECONDS)
 }
 
 fn seconds(name: &str, default: f64) -> Result<f64> {

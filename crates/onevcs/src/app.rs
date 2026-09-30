@@ -456,6 +456,48 @@ fn print_policy(indent: &str, resolved: &ResolvedPolicy) {
     );
 }
 
+/// The draft lifecycle as `onevcs rules check` reports it: whether it is on, what a
+/// change whose checks come back green does under this policy, and whether an early
+/// lift warns — each with the layer that decided it.
+///
+/// What a green change does is derived from `publication` and `approvals`, never a
+/// key, so it names those two as what decided it. With the lifecycle off there is no
+/// draft for green checks to lift or keep, and the line says so.
+fn print_drafts(resolved: &ResolvedPolicy) {
+    println!(
+        "drafts: {} (from {})",
+        if resolved.drafts_disabled {
+            "off"
+        } else {
+            "on"
+        },
+        resolved.drafts_disabled_from
+    );
+    let green = policy::GreenDraft::of(resolved.publication, resolved.approvals);
+    if resolved.drafts_disabled && green != policy::GreenDraft::NotApplicable {
+        println!(
+            "green draft: not applicable (the lifecycle is off, so change requests open \
+             ready)"
+        );
+    } else {
+        println!(
+            "green draft: {} (from publication {} and approvals {})",
+            green.spell(),
+            policy::spell(resolved.publication),
+            spell_approvals(resolved.approvals)
+        );
+    }
+    println!(
+        "early-lift warning: {} (from {})",
+        if resolved.warn_on_early_lift {
+            "on"
+        } else {
+            "off"
+        },
+        resolved.warn_on_early_lift_from
+    );
+}
+
 fn spell_approvals(approvals: crate::rules::Approvals) -> &'static str {
     match approvals {
         crate::rules::Approvals::Required => "required",
@@ -1628,6 +1670,7 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
         None => println!("matched: no rule; the default applies"),
     }
     print_policy("", &checked.policy);
+    print_drafts(&checked.policy);
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.
     println!(

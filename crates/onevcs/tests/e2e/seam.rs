@@ -194,7 +194,7 @@ fn publishing_goes_through_the_supplied_repository_side() {
     assert_eq!(changes.len(), 1, "the supplied host holds the change");
     assert_eq!(
         published[0].outcome,
-        onevcs::PublishOutcome::ChangeOpen(changes[0].url.clone())
+        onevcs::PublishOutcome::ChangeReviewDraft(changes[0].url.clone())
     );
 
     // And a repository side with no record of the session refuses it, which it

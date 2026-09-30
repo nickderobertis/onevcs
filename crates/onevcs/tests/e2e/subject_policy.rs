@@ -207,7 +207,9 @@ fn a_commit_msg_hook_that_accepts_the_subject_leaves_the_publication_alone() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(messages_seen(&record), ["feat: add the releasing thing"]);
     let said = stderr_of(&assert);
@@ -249,7 +251,9 @@ fn a_repository_with_no_commit_msg_hook_is_given_no_subject_policy() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let said = stderr_of(&assert);
     assert!(
@@ -284,7 +288,9 @@ fn a_commit_msg_hook_git_itself_would_skip_is_skipped_here_too() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert!(
         !record.exists(),
@@ -506,7 +512,9 @@ fn a_hook_that_rewrites_the_message_publishes_the_subject_it_was_asked_about() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let title = std::fs::read_to_string(hosted.world.path("gh-state/pr-1.title"))
         .expect("the host records the title it was given");

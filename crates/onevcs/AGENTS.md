@@ -386,6 +386,25 @@ accident.
   "this merge path requires nothing" are opposite facts, and a consumer that read the
   first as the second would stop waiting on a check that is still coming.
 
+## Every change request is a draft while its checks run
+
+What is easy to undo is how `publish.rs` holds the lifecycle's rules.
+
+- **One `Watcher` carries the whole watch** — the draft's phase, the one after an early
+  lift, a ready change's, and `change-auto`'s merge — so one bound covers it, each check
+  transition is reported once (keyed on status, conclusion *and* the run's start, since a
+  re-run can complete exactly as the skipped run had), and `checks-settled` is recorded
+  once.
+- **`policy::GreenDraft` is the one statement of the table**, asked by the publication
+  and by `rules check`; a second `match` on publication and approvals would drift.
+- **A post-lift run is told from a draft-era one by its `started_at`** (`ran_after_the_lift`),
+  never by what it concluded: a re-run on `ready_for_review` can conclude `skipped` just as
+  the draft's run did, and never by its status either. A check — running or settled — with
+  the draft's start or none is the draft's: the safe side. `onevcs-testing` mirrors the rule, so a seeded re-run needs a start of its own.
+- **`drafts: {disabled: true}` is the pre-lifecycle path kept whole**, and it is how a
+  journey reaches a merge the host holds past the watch (`AUTOMATED_READY` in
+  `tests/e2e/host.rs`) — a draft whose checks never settle is never armed at all.
+
 ## A publication observes, captures, and does not settle early
 
 - **Polling is driven by `context.effective`, and by nothing else.** What a policy
@@ -708,9 +727,12 @@ script written beside them that answered to what they asked.
   it can leave behind is a merged (or, on a failure between opening and merging,
   an open) pull request, which is deliberate — that is the evidence it ran.
 - **The scratch repository declares no required check.** Its `change-direct`
-  journeys still consult the host's checks — every automated policy does — and a
-  host that declares none has *answered*, so they proceed and the merge is the
-  host's own to refuse. What cannot be proved there is the waiting: a publication
+  journeys still consult the host's checks — every change policy does, and opens its
+  change request as a draft while they run — and a host that declares none has
+  *answered*, so they proceed and the merge is the host's own to refuse. Under a
+  credential refused classic branch protection that answer is incomplete, so a draft
+  there waits `ONEVCS_DRAFT_CHECKS_GRACE_SECONDS` before it is read by the host's own
+  marking. What cannot be proved there is the waiting: a publication
   that ends at a check going green stays covered by the offline tier, and this tier
   proves `change_checks`, `check_log`, and `merged_at` themselves against the real
   workflow the repository carries. Making its check required would need branch

@@ -63,7 +63,9 @@ mod state;
 mod store;
 
 pub use remote::{FileHost, Host, MemoryHost, DEFAULT_HOST, DEFAULT_SLUG};
-pub use repository::{FileVcs, MemoryVcs, Repository, DEFAULT_BASE, DEFAULT_PUBLICATION};
+pub use repository::{
+    FileVcs, MemoryVcs, Repository, DEFAULT_APPROVALS, DEFAULT_BASE, DEFAULT_PUBLICATION,
+};
 pub use state::{
     Described, HostState, VcsState, DEFAULT_AUTHENTICATED_USER, OLDEST_READABLE_VERSION,
     STATE_VERSION,

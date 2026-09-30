@@ -9,6 +9,7 @@
 mod failures;
 mod golden;
 mod host;
+mod lifecycle;
 mod publication;
 mod refs;
 mod repository;

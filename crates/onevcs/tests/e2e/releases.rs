@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, AUTOMATED, DIRECT, REVIEWED};
+use crate::host::{Hosted, AUTOMATED_READY, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::support::{documented_actor_limit, documented_probe_environment};
 use crate::world::{Check, World};
@@ -2042,7 +2042,7 @@ fn a_change_auto_landing_discovered_after_its_publication_ended_is_reconciled_at
     // The host holds the change behind a check that has not settled, so the
     // publication watches to its bound and exits — the process that would have
     // recorded the landing and captured the baselines is gone before the merge.
-    let hosted = Hosted::new(AUTOMATED);
+    let hosted = Hosted::new(AUTOMATED_READY);
     let answers = hosted.world.path("answers");
     std::fs::create_dir_all(&answers).expect("an answers directory");
     std::fs::write(answers.join("crate"), "1.0.0\n").expect("what is released now");

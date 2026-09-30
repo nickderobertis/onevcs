@@ -17,7 +17,7 @@
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{hosted_stack, squash_the_change_below, Hosted, REVIEWED};
+use crate::host::{hosted_stack, squash_the_change_below, Hosted, OPEN, REVIEWED};
 use crate::lifecycle::local_direct;
 use crate::publish_branch::stderr_of;
 
@@ -295,7 +295,7 @@ fn a_held_draft_is_republished_and_lifted_by_the_reasonless_publication() {
     // The other closeout: no `change ready` at all. A second `publish --draft` pushes
     // the work and adopts the draft, and the `publish` with no reason lifts it and
     // lands it in one step — which is what the consumer's closeout types.
-    let hosted = Hosted::new(REVIEWED);
+    let hosted = Hosted::new(OPEN);
     let token = hosted.change("feature/relifted", "feat: add the relifted thing");
     hosted
         .world
@@ -383,7 +383,7 @@ fn a_held_draft_is_republished_and_lifted_by_the_reasonless_publication() {
 fn a_held_draft_over_a_change_open_for_review_is_refused_before_anything_is_pushed() {
     // A change the host holds open for review can land, so asking to hold it back
     // as a draft is refused — before the push, spelled for the held kind.
-    let hosted = Hosted::new(REVIEWED);
+    let hosted = Hosted::new(OPEN);
     let token = hosted.change("feature/reviewed", "feat: add the reviewed thing");
     hosted
         .world
@@ -423,7 +423,15 @@ fn a_held_draft_over_a_change_open_for_review_is_refused_before_anything_is_push
         pushed,
         "nothing reached the remote"
     );
-    assert!(hosted.world.events_of(&token, "change-drafted").is_empty());
+    // The first publication's own draft, awaiting its checks, is the only draft ever
+    // recorded: nothing recorded the held reason the refused one asked for.
+    let drafted = hosted.world.events_of(&token, "change-drafted");
+    assert!(
+        drafted
+            .iter()
+            .all(|event| event["payload"]["kind"] == "awaiting-checks"),
+        "{drafted:?}"
+    );
 }
 
 #[test]
@@ -877,7 +885,14 @@ fn status_names_the_change_request_change_show_answers_for_a_stacked_session() {
         report["publication"]["change_url"], change["url"],
         "{report}"
     );
-    assert_eq!(report["publication"]["held_as_draft"], false, "{report}");
+    // A reasonless publication adopts the held draft as awaiting its checks, and on
+    // this team identity — change-open, approvals required — green keeps it a draft
+    // for its user's review rather than lifting it.
+    assert_eq!(report["publication"]["held_as_draft"], true, "{report}");
+    assert_eq!(
+        report["publication"]["draft"]["kind"], "awaiting-checks",
+        "{report}"
+    );
 }
 
 #[test]

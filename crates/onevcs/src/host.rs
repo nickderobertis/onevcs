@@ -178,9 +178,11 @@ pub trait RemoteHost {
 
     /// Take a change request out of its draft state, so the host will let it land.
     ///
-    /// What lifts a draft. A publication that carries no
-    /// [`DraftReason`](crate::DraftReason) is a caller saying the reason no longer
-    /// holds, and this is the call that says so to the host.
+    /// What lifts a draft: a publication whose required checks came back green on it
+    /// (or whose grace window elapsed with none run), `onevcs change ready`, and a
+    /// publication adopting a draft with the lifecycle off. It is always asked
+    /// **before** the host is asked to merge or arm a merge, because a host does
+    /// neither to a draft.
     ///
     /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
     /// stays additive — and to the same refusal: a host that was never taught to
@@ -412,6 +414,23 @@ pub struct ChangeSpec {
     /// the contract asks it to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
+    /// Open it as a draft **while its required checks run**, with no
+    /// [`DraftReason`]: what a lifecycle publication asks for when its caller asked
+    /// for no draft. A host lifts or keeps it once the checks settle, by the rules
+    /// the publication states; nothing here is a reason a caller gave.
+    ///
+    /// Beside `draft` rather than a third kind of it, because [`DraftReason`] is what
+    /// a *caller* asks for and this is what the lifecycle asks for when the caller
+    /// asked for none. Defaulted and omitted when false, so a spec written before it
+    /// reads and writes as it did. Where both are set the reason is what the host
+    /// records: either way the change opens as a draft.
+    // llmlint: ignore[invalid_states_unrepresentable] one sum type over both would
+    // change `draft`, which the approved contract declares verbatim as
+    // `Option<DraftReason>`, and the manager's ruling for this amendment forbids widening
+    // `DraftReason` itself. So the lifecycle's draft is an additive, defaulted field beside
+    // it, and the one combination both allow is given a meaning above rather than refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub draft_awaiting_checks: bool,
 }
 
 /// An open change request on the host.
@@ -496,6 +515,26 @@ pub struct Check {
     /// look at it. `None` where the host reported no address for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<Url>,
+    /// When the host says this run of the check started, spelled as the host spelled
+    /// it, or `None` where it did not say.
+    ///
+    /// The run's own identity: a check re-run under the same name — the run a
+    /// workflow starts when a draft is lifted — is a new run with a new start, even
+    /// where it concludes exactly as the one before it did. That is what a
+    /// publication tells a run the host attached after an early lift from the
+    /// draft's by, so it is compared for equality and never parsed or ordered: two
+    /// clocks never meet in it.
+    ///
+    /// Defaulted and omitted when empty, as `head` and `url` are, so a check an
+    /// earlier build serialized still reads and one without a start serializes as
+    /// it always did.
+    // llmlint: ignore[invalid_states_unrepresentable] the host's own timestamp, carried
+    // as an opaque token: this crate only ever asks whether two runs report the same
+    // one, so parsing it would add a failure mode and decide nothing. `reported_start`
+    // is the one place it enters, and it drops GitHub's zero time for a run that has
+    // not started rather than letting every queued run share one identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 impl Check {
@@ -504,29 +543,67 @@ impl Check {
         self.status.eq_ignore_ascii_case("completed")
     }
 
-    /// Whether a settled check ended in a way that does not block a merge.
+    /// Which of the five states this check is in — the one classifier every reading
+    /// and every rendering of a check follows.
+    ///
+    /// A skipped check is its own state and never a passed one: a job a workflow
+    /// gated on the change not being a draft reports `skipped` without having run,
+    /// so reading it as green would call a change verified that nothing verified.
+    /// What the publication watch does with a skipped *required* check is its own
+    /// rule, stated where the watch is.
+    pub fn state(&self) -> CheckState {
+        if !self.settled() {
+            return CheckState::Pending;
+        }
+        match self
+            .conclusion
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("success" | "neutral") => CheckState::Passed,
+            Some("skipped") => CheckState::Skipped,
+            Some("cancelled" | "stale") => CheckState::NoVerdict,
+            _ => CheckState::Failed,
+        }
+    }
+
+    /// Whether a settled check passed. A skipped one did not: see [`Check::state`].
     pub fn green(&self) -> bool {
-        self.settled()
-            && self.conclusion.as_deref().is_some_and(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "success" | "skipped" | "neutral"
-                )
-            })
+        self.state() == CheckState::Passed
     }
 
     /// Whether the host ended this run without a verdict either way.
     pub(crate) fn no_verdict(&self) -> bool {
-        self.settled()
-            && self.conclusion.as_deref().is_some_and(|value| {
-                matches!(value.to_ascii_lowercase().as_str(), "cancelled" | "stale")
-            })
+        self.state() == CheckState::NoVerdict
     }
 
     /// Whether a settled check ended in a way that blocks a merge.
     pub fn red(&self) -> bool {
-        self.settled() && !self.green() && !self.no_verdict()
+        self.state() == CheckState::Failed
     }
+}
+
+/// Which of five states one check is in, as [`Check::state`] classifies it.
+///
+/// Exported so a consumer holds its own copy of "what reads as green" to this
+/// declaration rather than to a list it keeps beside it. Serialized kebab-case, which
+/// is how the `change-check` event's `state`, the `checks-settled` event and `onevcs
+/// status` spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckState {
+    /// Concluded `success` or `neutral`.
+    Passed,
+    /// Concluded in a way that blocks a merge: every settled conclusion not named by
+    /// another state.
+    Failed,
+    /// Concluded `skipped`: it did not run, and it is never read as passed.
+    Skipped,
+    /// Not settled yet.
+    Pending,
+    /// Concluded `cancelled` or `stale`: the host ended the run with no verdict.
+    NoVerdict,
 }
 
 /// One place a host's answer about a change request's checks was read from.
@@ -845,6 +922,7 @@ impl GitHub {
                     conclusion: job.conclusion,
                     head: job.head,
                     url: job.url,
+                    started_at: job.started_at,
                 })
                 .collect(),
             sources: [CheckSource::Actions, CheckSource::BranchRules]
@@ -1162,6 +1240,8 @@ struct Job {
     head: Option<Sha>,
     /// Where a human reads this job on the host.
     url: Option<Url>,
+    /// When the host says this job started.
+    started_at: Option<String>,
 }
 
 /// One job of an Actions listing, required to say what it is.
@@ -1203,6 +1283,7 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Res
             .map(str::to_ascii_lowercase),
         head: head.cloned(),
         url: reported_url(entry, "html_url"),
+        started_at: reported_start(entry, "started_at"),
     })
 }
 
@@ -1355,7 +1436,7 @@ impl RemoteHost for GitHub {
         ];
         // The whole of what the reason does at the host: it opens as a draft. Nothing
         // of the reason itself is written there — see `DraftReason`.
-        if req.draft.is_some() {
+        if req.draft.is_some() || req.draft_awaiting_checks {
             args.push("--draft");
         }
         let raw = gh::invoke(&args)?;
@@ -1709,7 +1790,21 @@ fn check(
         // before an address is looked for. Reading the second spelling would be a
         // branch nothing can drive, on a path that already cannot be taken.
         url: reported_url(entry, "detailsUrl"),
+        started_at: reported_start(entry, "startedAt"),
     })
+}
+
+/// When a host response says a run started, or `None` where it did not say.
+///
+/// GitHub answers a run that is queued and has not started with the zero time rather
+/// than with nothing, and that is read as nothing: a start every queued run shares is
+/// no run's identity.
+fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
+    entry
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty() && !value.starts_with("0001-01-01"))
+        .map(str::to_owned)
 }
 
 /// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.

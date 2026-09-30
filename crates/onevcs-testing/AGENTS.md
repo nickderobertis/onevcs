@@ -32,16 +32,25 @@ really opened on the `Hosting` the publication was handed, really adopted when t
 host already holds one, and really merged under the policy. The **repository** side
 is not, and none of it is claimed — there is no origin to fetch, no tree to run a
 gate in, nothing to push, and no lock to queue behind, so a publication here emits
-`change-opened`, `change-drafted`, `draft-lifted`, `change-merged`, and
-`merge-completed` and never `fetch`,
-`gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
-`merge-queued`. Two more things it cannot read, and states instead of inventing:
-the policy comes from `VcsState::policy` rather than a rules file (narrowed through
-`MergePolicy::narrow`, which is the rules system's own rule), and an unrequested
+`change-opened`, `change-drafted`, `draft-lifted`, `draft-lifted-early`,
+`draft-kept-for-review`, `checks-settled`, `change-merged`, and `merge-completed` and
+never `fetch`, `gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
+`merge-queued`. What it records before a failure stays recorded, as it does next
+door. Two more things it cannot read, and states instead of inventing: the policy
+comes from `VcsState::policy`, `approvals` and `drafts` rather than a rules file
+(narrowed through `MergePolicy::narrow`, which is the rules system's own rule), and an
+unrequested
 change-request title names the branch rather than a commit subject there is no
 commit to take. A *requested* title needs no check here — `PublishRequest::title`
 is a `Subject`, so one that could not be a commit subject never reaches a
 provider.
+
+**The draft lifecycle has no clock here, and must not grow one.** Each phase of the
+watch is one reading of the host — one that has not settled stands for the bound, and
+a draft nothing ran on for the grace window — so a consumer drives a row by seeding
+the reading it wants —
+`checks_after_lift`, `required_checks` — never by timing one. A counter or a clock
+outside the state would make those rows unrepeatable.
 
 The two description methods are host-side and performed: `describe_change` writes
 into the same `titles` and `bodies` `open_change` wrote and records the call in

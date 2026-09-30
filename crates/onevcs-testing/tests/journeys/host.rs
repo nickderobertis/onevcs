@@ -20,6 +20,7 @@ fn spec(head: &str) -> ChangeSpec {
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
         draft: None,
+        draft_awaiting_checks: false,
     }
 }
 
@@ -209,6 +210,7 @@ fn auto_merge_waits_for_the_required_checks_and_lands_once_they_are_green() {
                 required: true,
                 head: None,
                 url: None,
+                started_at: None,
             },
             green_check("lint"),
         ],
@@ -310,6 +312,7 @@ fn a_seeded_log_is_what_the_host_hands_over() {
             required: true,
             head: None,
             url: None,
+            started_at: None,
         }],
     );
     let factory = MemoryHost::seeded(HostState {
@@ -428,6 +431,7 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
         let refused = host
             .open_change(ChangeSpec {
                 draft: Some(unusable),
+                draft_awaiting_checks: false,
                 ..spec("feature/unusable")
             })
             .expect_err("a reason nothing could render is not one to open a draft with");

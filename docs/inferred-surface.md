@@ -23,7 +23,7 @@ quietly in passing.
 | `PreservedBranch` | `branch`, `base`, `provenance`, `change_url`, `change_base` | The last two are named explicitly as the host-neutral stack metadata; the first three are what `preserve` must return to be usable. |
 | `Scope` | `all` / `repo(String)` | `recoverable` is documented both across every registered identity and for one repository (`onevcs recover BRANCH --repo PATH`). |
 | `Recoverable` | `identity`, `branch`, `checkout`, `landed`, `stopped_because`, `recover_command`, `held_by`, `net_negative`, `on_origin`, `retirement` | What a "recoverable" view has to answer: where the work is, whether the work reached its base, why its workstream stopped, and the exact command that lands it. `landed`, `held_by`, and `net_negative` are what make "the exact command" true of the branch as well as of the argv, and each is recorded below. `on_origin` is the one field that changes nothing about the command: it says the work would survive this host going away, which is what `onevcs preserve` puts there. `retirement` is the branch's classification for being deleted, made from records and local refs alone; the retirement amendment in `docs/contract.md` is its one source. |
-| `ChangeSpec` | `head`, `base`, `title`, `body`, `draft` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. `draft` came with the draft amendment and asks the host for one thing: open it as a draft. The whole reason travels rather than a flag, because a host that could not be handed one would have to be trusted to have been told separately — but nothing of it is written *at* the host beyond `--draft`, which is the ruling recorded on `PublishRequest` above. |
+| `ChangeSpec` | `head`, `base`, `title`, `body`, `draft`, `draft_awaiting_checks` | `open_change` must say what to open from, into what, and under what title — `--title` is a `publish` option. `body` is optional so the host's own template applies when nothing is supplied. `draft` came with the draft amendment and asks the host for one thing: open it as a draft. The whole reason travels rather than a flag, because a host that could not be handed one would have to be trusted to have been told separately — but nothing of it is written *at* the host beyond `--draft`, which is the ruling recorded on `PublishRequest` above. `draft_awaiting_checks` came with the draft-lifecycle amendment: the draft a publication asks for while its required checks run, when its caller asked for none — a flag beside `draft` rather than a third `DraftReason`, because nobody gave a reason for it. |
 | `MergeOutcome` | `merged(Sha)` / `queued` / `open` | The three ways `publish` exits 0, plus the `merge-queued` / `merge-completed` events. |
 | `Check.status` / `Check.conclusion` | `String` / `Option<String>` | See the open question below. |
 | `ArtifactRef.kind` | `String` | The contract shows only `log` and names no closed set. |
@@ -145,7 +145,7 @@ for the same reason. -->
 | `SessionRecord` | `session`, `identity`, `lifecycle`, `provenance`, `retried_by` | What every command that takes a token needed off the private record and could not derive from a `Session`: which repository it belongs to, whether it is still open, and whether its branch carries an incomplete-step marker. `retried_by` is the fifth and arrived later: a branch outlives the run that cut it, so two records can hold one name, and this is the only thing that says which of them the work went on in. A `SessionToken` rather than a whole record, because that is what the rest of this surface takes. |
 | `PublishRequest` | `policy`, `title`, `body`, `draft` | Exactly the options a publication takes beyond the token — the first three are what `onevcs publish` accepts, and `draft` is what `--draft` composes for the held kind and the library's alone for the release-awaiting kind. `title` is a `Subject` rather than a `String`: a publication commits and merges before it composes a message, so the check has to be in the conversion that builds the request rather than where the message is composed. `body` is a plain `String` for the opposite reason — a host places no shape on prose, so there is nothing for a conversion to check and an unusable body does not exist. `draft` is a `DraftReason` rather than a flag and a sentence: it is one of two kinds, and for the release-awaiting kind what decides when the draft is lifted is which release is awaited, and a consumer that had to parse that back out of prose is the defect `PublishOutcome` already exists because of. The held kind *is* a sentence, because the session holding it is what decides when it is lifted, and the `kind` tag is what tells a consumer which it is reading. |
 | `Publication` | `session`, `branch`, `policy`, `outcome` | What a caller journals about a publication: which session and branch, the policy it was actually taken under (after the rules file and any narrowing), and what happened. |
-| `PublishOutcome` | `merged` / `change-open` / `change-draft` / `queued` / `nothing-to-publish` / `failed` | The endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. The shape column beside this is the list, and `the_inferred_surface_row_lists_every_ending_publish_outcome_actually_has` holds it to the type — so the endings are counted in one place, by the suite, rather than restated as a number here that an amendment can leave behind. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. `change-draft` came with the draft amendment and is deliberately not a shade of `change-open`: the two differ in whether the change can land, which is the one thing a caller acts on. |
+| `PublishOutcome` | `merged` / `change-open` / `change-draft` / `change-review-draft` / `queued` / `nothing-to-publish` / `failed` | The endings the CLI printed as prose, plus the failure it printed to stderr and reported as an exit code. The shape column beside this is the list, and `the_inferred_surface_row_lists_every_ending_publish_outcome_actually_has` holds it to the type — so the endings are counted in one place, by the suite, rather than restated as a number here that an amendment can leave behind. `Retention` is on the failure because the branch is the only record of the work, and whether it survived is the first thing a caller asks. `change-draft` came with the draft amendment and is deliberately not a shade of `change-open`: the two differ in whether the change can land, which is the one thing a caller acts on. `change-review-draft` came with the draft-lifecycle amendment: green, and kept a draft for its own user's review, which is neither a change held back by a reason nor one already asking the team for review. |
 
 **A host's checks used to be a bare `Vec<Check>`, and no longer are.** The
 credential decides which of GitHub's check sources can be read at all, and one
@@ -337,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `9`, and it is deliberately not a migration boundary
+The report's schema version is `10`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -378,6 +378,13 @@ as landed, with `landed.evidence.tier` `retired` naming that proof, because a pr
 it held nothing beyond its base answers whether its work is there; the human rendering
 prints a `retired:` line. Omitted for a branch nobody retired, and for a name re-cut
 since, whose old retirement says nothing about the work it holds now.
+Version 10 is the draft lifecycle's two readings. Every row of `checks.checks` carries
+`state` — `passed`, `failed`, `skipped`, `pending` or `no-verdict`, which is
+`Check::state()` — so a skipped check reads as skipped beside the host's raw `status`
+and `conclusion` rather than as whatever a reader made of the conclusion, and the human
+rendering prints the state as each row's second column. And `publication.draft` may be
+`{"kind": "awaiting-checks"}`: the draft a publication opened while its required checks
+run, which carries no reason because nobody asked for it.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -393,8 +400,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v9.json` and
-`status-report-v9-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v10.json` and
+`status-report-v10-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in

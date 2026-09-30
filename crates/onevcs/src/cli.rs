@@ -364,7 +364,8 @@ pub struct PublishArgs {
     pub body_file: Option<PathBuf>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Open the change request as a draft the session holds while its work is still
-    /// being made. A later `publish` carrying no `--draft`, or `change ready`, lifts it.
+    /// being made. `change ready` lifts it; a later `publish` without `--draft` lifts or
+    /// keeps it on its checks' verdict.
     #[arg(long)]
     pub draft: bool,
     /// Why the session is holding the change request as a draft, on one line.

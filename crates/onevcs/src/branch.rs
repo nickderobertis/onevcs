@@ -537,8 +537,10 @@ impl Landing {
             body,
             // A branch-keyed verb has no caller to take a reason from, and landing a
             // branch somebody else drafted is exactly the call that says the reason
-            // no longer holds: publishing without one is what lifts the draft.
+            // no longer holds. Publishing without one takes the draft lifecycle — the
+            // same one a session's publication takes, through the same `publish::run`.
             draft: None,
+            drafts: self.resolved.drafts.clone(),
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,

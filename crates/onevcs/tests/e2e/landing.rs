@@ -141,7 +141,9 @@ fn a_branch_the_host_squash_merged_reads_as_landed_after_the_base_moves_over_its
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     hosted
         .world
         .onevcs()
@@ -789,7 +791,9 @@ fn a_change_request_a_merge_commit_names_is_read_off_the_bases_history() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     hosted
         .world
         .onevcs()
@@ -844,7 +848,9 @@ fn a_change_request_its_own_url_names_is_read_off_the_bases_history() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     hosted
         .world
         .onevcs()
@@ -1348,7 +1354,9 @@ fn a_branch_that_landed_and_then_took_more_commits_answers_with_its_landing_and_
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     hosted
         .world
         .onevcs()

@@ -87,6 +87,7 @@ fn green_gate() -> Check {
         required: true,
         head: None,
         url: None,
+        started_at: None,
     }
 }
 
@@ -273,6 +274,7 @@ fn the_real_commands_read_what_a_provider_wrote() {
             title: "feat: the written thing".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("opened");
     let artifact = host

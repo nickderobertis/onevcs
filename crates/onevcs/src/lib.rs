@@ -108,8 +108,8 @@ pub use event::{
     MatchFields, Phase, PhaseOf, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 pub use host::{
-    ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description, GitHub,
-    Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
+    ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description,
+    GitHub, Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use import::{Imported, Source as ImportSource, Wrote};
 pub use integrate::{

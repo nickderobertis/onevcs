@@ -38,7 +38,24 @@ if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
     CHECKS="$STATE/checks.rows.next"
   fi
 fi
+# A repository whose workflow skips drafts registers its real run only once the
+# change is lifted: `checks.rows.after-ready` takes over once any change request here
+# has been made ready for review, which is the moment GitHub fires the workflow.
+if [ -f "$STATE/checks.rows.after-ready" ] && ls "$STATE"/ready-* >/dev/null 2>&1; then
+  CHECKS="$STATE/checks.rows.after-ready"
+fi
+# When each run started, which is a run's own identity: the rows a lift or a flip
+# brings in are runs of their own, so they report a start the rows before them did
+# not — which is how GitHub tells a re-run from the run it replaced.
+case "$CHECKS" in
+  */checks.rows.after-ready) STARTED="2026-09-30T12:02:00Z" ;;
+  */checks.rows.next) STARTED="2026-09-30T12:01:00Z" ;;
+  *) STARTED="2026-09-30T12:00:00Z" ;;
+esac
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
+# A run queued and not started, which GitHub reports with the zero time rather than
+# with no start at all.
+case "$malformed" in *zero-start) STARTED="0001-01-01T00:00:00Z" ;; esac
 
 # Which commit this host believes a change request is at, which is not necessarily
 # where the branch is: GitHub records that when it *processes* a push rather than
@@ -167,7 +184,7 @@ case "$command" in
           [ -n "$name" ] || continue
           row=$((row + 1))
           if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\"}"
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\",\"started_at\":\"$STARTED\"}"
           separator=","
         done <"$CHECKS" 2>/dev/null || true
         total="$row"
@@ -305,8 +322,8 @@ rollup() {
     # `detailsUrl` is where a check run says it is, and it is the same address
     # `pr checks` reports as that row's `link` — one check, one place on the host,
     # whichever call asked about it.
-    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s"}' \
-      "$separator" "$name" "$status" "$entry" "$repo" "$row"
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s","startedAt":"%s"}' \
+      "$separator" "$name" "$status" "$entry" "$repo" "$row" "$STARTED"
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'
@@ -539,20 +556,25 @@ case "$subcommand" in
     wanted() { case ",$json_fields," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
     merge_commit=null
     if [ -n "$PR_MERGE_COMMIT" ]; then merge_commit="{\"oid\":\"$PR_MERGE_COMMIT\"}"; fi
+    # Whether the host holds it as a draft: opened as one and not made ready since,
+    # which is what makes lifting it observable and lifting it twice a no-op. Every
+    # shape of answer below reports it, the malformed ones included.
+    is_draft=false
+    if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then is_draft=true; fi
     case "$malformed" in
       no-head)
-        printf '{"number":%s,"state":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":[]}\n' \
-          "$PR_NUMBER" "$PR_STATE"
+        printf '{"number":%s,"state":"%s","isDraft":%s,"mergeCommit":null,"statusCheckRollup":[]}\n' \
+          "$PR_NUMBER" "$PR_STATE" "$is_draft"
         exit 0 ;;
       rollup-not-a-list)
-        printf '{"number":%s,"state":"%s","headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":"soon"}\n' \
-          "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA"
+        printf '{"number":%s,"state":"%s","headRefOid":"%s","isDraft":%s,"mergeCommit":null,"statusCheckRollup":"soon"}\n' \
+          "$PR_NUMBER" "$PR_STATE" "$PR_HEAD_SHA" "$is_draft"
         exit 0 ;;
       no-state)
         # Its checks are answered as usual, so the publication reaches the merge —
         # which is the call that has to know whether the change is already merged.
-        printf '{"number":%s,"headRefOid":"%s","isDraft":false,"mergeCommit":null,"statusCheckRollup":%s}\n' \
-          "$PR_NUMBER" "$PR_HEAD_SHA" "$(rollup)"
+        printf '{"number":%s,"headRefOid":"%s","isDraft":%s,"mergeCommit":null,"statusCheckRollup":%s}\n' \
+          "$PR_NUMBER" "$PR_HEAD_SHA" "$is_draft" "$(rollup)"
         exit 0 ;;
       misleading-refusal)
         if wanted statusCheckRollup; then
@@ -580,10 +602,6 @@ case "$subcommand" in
     # not the same as saying it is not one: whether the change may be asked to merge
     # rests on this field, so its absence is a refusal rather than a `false`.
     if wanted isDraft && [ "$malformed" != "no-draft-state" ]; then
-      is_draft=false
-      # A draft the host was asked to make ready for review is not one any more,
-      # which is what makes lifting it observable and lifting it twice a no-op.
-      if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then is_draft=true; fi
       printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
     fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
@@ -626,6 +644,11 @@ case "$subcommand" in
     ;;
   merge)
     . "$STATE/pr-$number.env"
+    # GitHub will neither merge a draft nor enable auto-merge on one, and says so.
+    if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then
+      printf 'GraphQL: Pull Request is still a draft (mergePullRequest)\n' >&2
+      exit 1
+    fi
     if [ "$auto" = "1" ] && [ -f "$STATE/auto-merge-unavailable" ]; then
       printf 'Auto-merge is not enabled for this repository\n' >&2
       exit 1

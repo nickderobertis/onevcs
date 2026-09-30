@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -67,11 +67,13 @@
         "name": "gate",
         "status": "completed",
         "conclusion": "success",
+        "state": "passed",
         "required": true
       },
       {
         "name": "advisory",
         "status": "in_progress",
+        "state": "pending",
         "required": false
       }
     ],

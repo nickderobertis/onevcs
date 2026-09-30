@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::registry::Registry;
-use crate::rules::{Approvals, MergePolicy, Policy, RuleMatch, RulesFile};
+use crate::rules::{Approvals, Drafts, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::{Normalized, Resolution};
 use crate::{home, ids};
 
@@ -49,6 +49,22 @@ const TRAILER_PREFIX_VERSION: u32 = 2;
 /// operator's document on their own host, and refusing every command before they
 /// can re-apply it is worse than reading a key this build has nothing to do with.
 const GATE_REMOVED_VERSION: u32 = 3;
+
+/// The version from which a rule and `default:` may carry `drafts:`.
+///
+/// Admitted at the current version with **no bump**, deliberately: nothing in the
+/// shape is refused by an older build, which ignores the block and opens ready change
+/// requests — exactly its behaviour before the lifecycle existed. A file declaring an
+/// earlier version and naming the key is refused by name, for the reason
+/// `trailer_prefix` is at version 1: a key its own version does not have reads one way
+/// here and another wherever that version is trusted.
+const DRAFTS_VERSION: u32 = 3;
+
+/// The shipped default of `drafts.disabled`: the lifecycle is on.
+pub const DRAFTS_DISABLED_DEFAULT: bool = false;
+
+/// The shipped default of `drafts.warn_on_early_lift`: an early lift says so.
+pub const WARN_ON_EARLY_LIFT_DEFAULT: bool = true;
 
 /// How much review a publication policy leaves in the path.
 ///
@@ -95,6 +111,81 @@ pub struct Resolved {
     pub publication_from: String,
     /// Where `approvals` came from.
     pub approvals_from: String,
+    /// How the draft lifecycle resolved, key by key.
+    pub drafts: DraftLifecycle,
+}
+
+/// The two `drafts:` keys as one repository resolves them, each with the layer that
+/// decided it: the matched rule, the file's default, or the shipped default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftLifecycle {
+    /// Whether the lifecycle is off, so change requests open ready.
+    pub disabled: bool,
+    /// Which layer decided `disabled`.
+    pub disabled_from: String,
+    /// Whether an early lift prints its warning line.
+    pub warn_on_early_lift: bool,
+    /// Which layer decided `warn_on_early_lift`.
+    pub warn_on_early_lift_from: String,
+}
+
+/// What a change whose required checks came back green does with its draft, which is
+/// derived from `publication` and `approvals` and is never a key of its own.
+///
+/// One statement of the table, asked by the publication that acts on it and by
+/// `onevcs rules check` that reports it, so the two cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GreenDraft {
+    /// Lifted to ready — and then, under `change-auto` or `change-direct`, merged.
+    Lift,
+    /// Kept a draft for its own user's review: `change-open` with approvals required.
+    KeepForReview,
+    /// No change request is opened, so there is no draft: `local-direct`.
+    NotApplicable,
+}
+
+impl GreenDraft {
+    /// The row of the table one policy is on.
+    pub(crate) fn of(publication: MergePolicy, approvals: Approvals) -> Self {
+        match (publication, approvals) {
+            (MergePolicy::LocalDirect, _) => GreenDraft::NotApplicable,
+            (MergePolicy::ChangeOpen, Approvals::Required) => GreenDraft::KeepForReview,
+            _ => GreenDraft::Lift,
+        }
+    }
+
+    /// How `onevcs rules check` spells it.
+    pub(crate) fn spell(self) -> &'static str {
+        match self {
+            GreenDraft::Lift => "lift",
+            GreenDraft::KeepForReview => "keep for review",
+            GreenDraft::NotApplicable => "not applicable",
+        }
+    }
+}
+
+/// Resolve each `drafts:` key: the matched rule's, then the default's, then shipped.
+fn resolve_drafts(rule: Option<(&str, &Drafts)>, default: Option<&Drafts>) -> DraftLifecycle {
+    let pick = |key: fn(&Drafts) -> Option<bool>, shipped: bool| -> (bool, String) {
+        if let Some((named, drafts)) = rule {
+            if let Some(value) = key(drafts) {
+                return (value, named.to_owned());
+            }
+        }
+        if let Some(value) = default.and_then(key) {
+            return (value, "the default".to_owned());
+        }
+        (shipped, "the shipped default".to_owned())
+    };
+    let (disabled, disabled_from) = pick(|d| d.disabled, DRAFTS_DISABLED_DEFAULT);
+    let (warn_on_early_lift, warn_on_early_lift_from) =
+        pick(|d| d.warn_on_early_lift, WARN_ON_EARLY_LIFT_DEFAULT);
+    DraftLifecycle {
+        disabled,
+        disabled_from,
+        warn_on_early_lift,
+        warn_on_early_lift_from,
+    }
 }
 
 /// Where the rules a repository resolved against came from.
@@ -137,6 +228,7 @@ pub fn built_in_default() -> Policy {
     Policy {
         publication: MergePolicy::ChangeOpen,
         approvals: Approvals::Required,
+        drafts: None,
     }
 }
 
@@ -190,6 +282,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
             refuse_removed_gate(&path, &document)?;
         }
     }
+    refuse_malformed_drafts(&path, &document)?;
     let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
     validate(&path, &file)?;
     Ok((file, RulesSource::File(path)))
@@ -259,6 +352,71 @@ fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<(
     }
 }
 
+/// Refuse, naming the key and where it is, a `drafts:` that is not two optional
+/// booleans.
+///
+/// The shape refuses both of these too — `Drafts` denies a key it does not know — but
+/// its message names neither the rule the mapping was in nor, for a value that is not
+/// a boolean, the key the value was given for. So each key is put to the type on its
+/// own here, where the document still says which rule is which: the type stays the one
+/// statement of which keys there are, and an operator is told the rule and the key
+/// rather than that something somewhere "expected a boolean".
+fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+    let mut found: Vec<(String, &serde_yaml_ng::Value)> = Vec::new();
+    if let Some(drafts) = document
+        .get("default")
+        .and_then(|policy| policy.get("drafts"))
+    {
+        found.push(("default".to_owned(), drafts));
+    }
+    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get("rules") {
+        for (index, rule) in rules.iter().enumerate() {
+            if let Some(drafts) = rule.get("drafts") {
+                found.push((format!("rule {}", index + 1), drafts));
+            }
+        }
+    }
+    let refused = |where_: &str, what: String| Error::Invalid {
+        reason: format!(
+            "the rules file at {} is malformed: {where_} drafts: {what}",
+            path.display()
+        ),
+    };
+    for (where_, drafts) in found {
+        let serde_yaml_ng::Value::Mapping(fields) = drafts else {
+            return Err(refused(&where_, "is not a mapping".to_owned()));
+        };
+        for (key, value) in fields {
+            let mut alone = serde_yaml_ng::Mapping::new();
+            alone.insert(key.clone(), value.clone());
+            let Err(said) =
+                serde_yaml_ng::from_value::<Drafts>(serde_yaml_ng::Value::Mapping(alone))
+            else {
+                continue;
+            };
+            let key = serde_yaml_ng::to_string(key)
+                .map(|spelled| spelled.trim().to_owned())
+                .unwrap_or_default();
+            // Every key the type has takes a boolean, so a boolean it refused is a key
+            // it does not have — and its own refusal lists the ones it does.
+            return Err(refused(
+                &where_,
+                if value.is_bool() {
+                    format!("names {key:?}, which it does not have: {said}")
+                } else {
+                    format!(
+                        "{key} is {}, which is not a boolean; write true or false",
+                        serde_yaml_ng::to_string(value)
+                            .map(|spelled| spelled.trim().to_owned())
+                            .unwrap_or_default()
+                    )
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Say, naming the file, that a rules file still names what no longer verifies.
 ///
 /// One line per load, and no `onevcs` command reads the rules file twice — so this
@@ -304,6 +462,29 @@ fn validate(path: &Path, file: &RulesFile) -> Result<()> {
                 file.version
             ),
         });
+    }
+    if file.version < DRAFTS_VERSION {
+        let named = file
+            .default
+            .drafts
+            .map(|_| "default".to_owned())
+            .or_else(|| {
+                file.rules
+                    .iter()
+                    .position(|rule| rule.drafts.is_some())
+                    .map(|index| format!("rule {}", index + 1))
+            });
+        if let Some(where_) = named {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the rules file at {} declares version {} and {where_} names drafts, which \
+                     version {DRAFTS_VERSION} admits; declare version {DRAFTS_VERSION} to \
+                     configure the draft lifecycle",
+                    path.display(),
+                    file.version
+                ),
+            });
+        }
     }
     let mut checked: Vec<(String, MergePolicy, Approvals)> = vec![(
         "default".to_owned(),
@@ -351,7 +532,12 @@ pub fn resolve(
             policy: Policy {
                 publication: rule.publication.unwrap_or(file.default.publication),
                 approvals: rule.approvals.unwrap_or(file.default.approvals),
+                drafts: rule.drafts.or(file.default.drafts),
             },
+            drafts: resolve_drafts(
+                rule.drafts.as_ref().map(|drafts| (named.as_str(), drafts)),
+                file.default.drafts.as_ref(),
+            ),
             source: source.to_string(),
             matched: Some(Matched {
                 index: index + 1,
@@ -367,6 +553,7 @@ pub fn resolve(
         matched: None,
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),
+        drafts: resolve_drafts(None, file.default.drafts.as_ref()),
     }
 }
 

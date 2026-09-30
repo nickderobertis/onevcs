@@ -52,7 +52,7 @@ impl Hosted {
             .success();
         configure_rules(
             &world,
-            format!("version: 1\nrules: []\ndefault: {default_policy}\n"),
+            format!("version: 3\nrules: []\ndefault: {default_policy}\n"),
         );
         world.install_fake_host(&origin);
         Self {
@@ -114,7 +114,17 @@ impl Hosted {
 }
 
 pub const REVIEWED: &str = "{publication: change-open, approvals: required}";
+/// A policy that opens a change request and leaves it open with no approval required:
+/// green checks lift its draft to ready rather than keeping it for review, which is the
+/// row a journey about *lifting* a draft needs.
+pub const OPEN: &str = "{publication: change-open, approvals: none}";
 pub const AUTOMATED: &str = "{publication: change-auto, approvals: required}";
+/// `change-auto` with the draft lifecycle off: armed on its first reading of the
+/// checks, as every publication was before the lifecycle. The path a merge the host
+/// holds past the watch comes from — with the lifecycle on, a draft whose checks never
+/// settle is never armed at all, and stays a draft.
+pub const AUTOMATED_READY: &str =
+    "{publication: change-auto, approvals: required, drafts: {disabled: true}}";
 /// Asks the host for the merge itself, so it is the policy that waits on whatever
 /// checks the host says block one first.
 pub const DIRECT: &str = "{publication: change-direct, approvals: none}";
@@ -126,9 +136,12 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
     // call over it — so a build that asked for a change request's checks alongside
     // its head commit could not even open one under a token allowed to do it.
     // Worse, it only broke once a check had appeared, so the same credential opened
-    // a young change request and failed on an older one. `change-open` is the policy
-    // that asks the host nothing about its checks, which is what makes this the
-    // question about opening alone.
+    // a young change request and failed on an older one. Opening asks the host for
+    // the new change's head alone, which is what makes this the question about
+    // opening. `change-open` then watches the checks like every change policy — its
+    // draft is lifted or kept on their verdict — so a host that will not describe
+    // them leaves the publication a merge path nobody could read, with the change
+    // request open.
     let hosted = Hosted::new(REVIEWED);
     hosted.world.answer_malformed("checks-refused");
     let token = hosted.change("feature/checkless-host", "feat: add the thing anyway");
@@ -136,22 +149,28 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
     hosted
         .world
         .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
         .args(["publish", &token])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .code(1)
+        .stderr(predicate::str::contains("pushed, merge path unverified"))
+        .stderr(predicate::str::contains("unknown rather than empty"));
     assert!(
         hosted.world.path("gh-state/pr-1.env").exists(),
         "the change request was opened under a host that would not describe its checks"
     );
+    let calls = hosted.world.host_calls();
+    let opened = calls
+        .iter()
+        .position(|call| call.starts_with("pr create "))
+        .expect("the change request was opened");
+    let head_read = calls[opened + 1..]
+        .iter()
+        .find(|call| call.starts_with("pr view "))
+        .expect("the opened change's head is read");
     assert!(
-        !hosted
-            .world
-            .host_calls()
-            .iter()
-            .any(|call| call.contains("statusCheckRollup")),
-        "opening one must not ask for the checks alongside it: {:?}",
-        hosted.world.host_calls()
+        !head_read.contains("statusCheckRollup"),
+        "opening one must not ask for the checks alongside it: {calls:?}"
     );
 
     // And a host that would not say what its checks are has not said there are none,
@@ -448,10 +467,17 @@ fn an_explicit_status_check_source_never_falls_back_to_actions() {
 /// endpoints under `Actions: Read`, and the repository's rules, which needs no
 /// permission beyond the repository access every fine-grained token carries. Not one
 /// of them resolves a check run, which is the permission that does not exist.
-const CHECK_ENDPOINTS: [&str; 4] = [
+///
+/// Classic branch protection is on the list because a draft's watch asks which checks
+/// a merge into the base requires (`RemoteHost::required_checks_on`), and that read
+/// asks both protection sources. A fine-grained token is refused the classic one, and
+/// the refusal is recorded as the part of the answer it is — never a failure of the
+/// read — so the rulesets it *can* read still answer.
+const CHECK_ENDPOINTS: [&str; 5] = [
     "repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
     "repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100",
     "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=100",
+    "repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
     "repos/{owner}/{repo}/rules/branches/{branch}",
 ];
 
@@ -609,7 +635,7 @@ fn a_reviewed_change_is_pushed_and_left_open() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "change request open at https://github.com/acme-corp/hosted/pull/1",
+            "green at https://github.com/acme-corp/hosted/pull/1",
         ));
 
     // The branch is really on the origin; only the decision to open a change for it
@@ -723,7 +749,9 @@ fn a_hosted_stack_whose_change_below_landed_opens_its_review_against_the_root() 
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let opened = hosted.world.events_of(&token, "change-opened");
     assert_eq!(opened.len(), 1);
@@ -763,7 +791,9 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
 
     squash_the_change_below(&hosted, true);
@@ -782,7 +812,9 @@ fn a_review_opened_against_the_change_below_is_reopened_against_the_root_once_it
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let opened = hosted.world.events_of(&token, "change-opened");
     assert_eq!(opened.len(), 2, "one review each time: {opened:?}");
@@ -1174,7 +1206,9 @@ fn a_recovery_that_replays_a_branch_the_host_has_replaces_it_there() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(
         world
@@ -1373,7 +1407,9 @@ fn a_hosted_stack_the_root_independently_matches_is_answered_the_same_way() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let opened = hosted.world.events_of(&token, "change-opened");
     assert_eq!(opened[0]["payload"]["base"], "main", "{opened:?}");
@@ -1438,7 +1474,9 @@ fn a_branch_that_left_its_recorded_stack_behind_is_merged_rather_than_replayed()
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
     // The merge is what brought the change below in, so the branch carries it by name
@@ -1480,7 +1518,9 @@ fn a_stack_merged_with_its_own_commits_keeps_targeting_the_stack() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
     let published = hosted.world.git(
@@ -1543,7 +1583,9 @@ fn a_stack_that_shares_no_history_with_the_root_keeps_targeting_the_stack() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
 }
@@ -1616,7 +1658,9 @@ fn a_stack_that_renamed_a_file_the_root_still_has_keeps_targeting_the_stack() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     assert_eq!(opened_against(&hosted, &token), "feature/engine");
     let published = world.git(&hosted.origin, &["log", "--format=%s", "feature/renaming"]);
@@ -1639,7 +1683,9 @@ fn the_command_line_gives_a_change_request_its_body_as_text_or_as_a_file() {
         .args(["publish", &typed, "--body", "One line, as typed."])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(hosted.world.change_request_body(1), "One line, as typed.");
 
     let drafted = "## What\n\nA body with headings, blank lines, and a trailing newline.\n\n\
@@ -1659,7 +1705,9 @@ fn the_command_line_gives_a_change_request_its_body_as_text_or_as_a_file() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     // Whole and unaltered: the file's own bytes are what the host was given.
     assert_eq!(hosted.world.change_request_body(2), drafted);
 
@@ -1742,7 +1790,9 @@ fn naming_the_body_twice_is_refused_by_name_before_anything_is_published() {
         .args(["publish", &token, "--body-file", &file.to_string_lossy()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     // The file's own bytes, its trailing newline included.
     assert_eq!(
         hosted.world.change_request_body(1),
@@ -2404,7 +2454,7 @@ fn a_gh_that_has_not_heard_of_the_escape_flag_is_asked_again_without_it() {
 
 #[test]
 fn a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever() {
-    let hosted = Hosted::new(AUTOMATED);
+    let hosted = Hosted::new(AUTOMATED_READY);
     hosted.world.host_checks(&[Check {
         name: "gate",
         status: "in_progress",
@@ -2812,7 +2862,7 @@ fn a_change_the_host_never_lands_ends_at_the_bound_and_names_what_was_pending() 
     // silent stop: the check never settles, the host never merges, and the
     // publication has to say so — naming the check it was still being held for, so
     // whoever routes the failure can tell "CI said no" from "nobody answered".
-    let hosted = Hosted::new("{publication: change-auto, approvals: required}");
+    let hosted = Hosted::new(AUTOMATED_READY);
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
     hosted.world.host_checks(&[Check {
         name: "gate",

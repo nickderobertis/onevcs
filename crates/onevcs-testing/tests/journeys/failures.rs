@@ -88,6 +88,7 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             title: "feat: the thing".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("opened");
     let refused = host
@@ -112,6 +113,7 @@ fn an_unusable_state_root_is_refused_by_name() {
             title: "feat: the thing".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("opened");
     let check = crate::support::green_check("gate");
@@ -428,6 +430,7 @@ fn a_change_with_no_checks_at_all_is_not_one_auto_merge_lands() {
             title: "feat: the thing".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("opened");
 
@@ -454,6 +457,7 @@ fn a_check_named_something_that_is_not_a_filename_still_has_its_log_stored() {
         required: true,
         head: None,
         url: None,
+        started_at: None,
     };
     let mut checks = BTreeMap::new();
     checks.insert(ChangeId("1".to_owned()), vec![check.clone()]);
@@ -469,6 +473,7 @@ fn a_check_named_something_that_is_not_a_filename_still_has_its_log_stored() {
             title: "feat: the thing".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("opened");
 
