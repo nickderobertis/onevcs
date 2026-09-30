@@ -196,6 +196,37 @@ fn red_and_the_bound_leave_the_draft_standing_under_every_change_policy() {
 }
 
 #[test]
+fn with_the_lifecycle_off_a_red_check_fails_change_auto_before_any_merge_is_armed() {
+    // The ready change `change-auto` arms without watching first, as next door does —
+    // and as next door does, a required check that already concluded red is the
+    // refusal, naming it, rather than a merge armed over it.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, off());
+    let failing = host(vec![check("gate", Some("failure"), 1)], None);
+
+    let (outcome, kinds) = published(&vcs, &failing, &home, &PublishRequest::default());
+
+    assert!(
+        matches!(&outcome, PublishOutcome::Failed { kind: FailureKind::ChecksFailed, reason, .. }
+            if reason.contains("\"gate\"")),
+        "{outcome:?}"
+    );
+    assert!(failing.state().merges.is_empty(), "nothing armed or merged");
+    assert!(!kinds.contains(&"change-drafted".to_owned()), "{kinds:?}");
+
+    // One still running is not a verdict: the merge is armed and the host holds it.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, off());
+    let running = host(vec![check("gate", None, 1)], None);
+    let (outcome, _) = published(&vcs, &running, &home, &PublishRequest::default());
+    assert!(matches!(outcome, PublishOutcome::Queued(_)), "{outcome:?}");
+    assert_eq!(
+        running.state().merges.get(&first()),
+        Some(&MergeOutcome::Queued)
+    );
+}
+
+#[test]
 fn a_repository_that_requires_nothing_is_green_at_once_and_an_incomplete_answer_is_not_none() {
     let home = Home::new();
     let vcs = repository(MergePolicy::ChangeOpen, Approvals::Required, None);

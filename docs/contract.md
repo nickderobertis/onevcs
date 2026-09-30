@@ -3729,8 +3729,10 @@ declaring no required check (`HostState::required_checks`), so a consumer can dr
 row of the table. Its repository side takes the policy's other two fields from
 `VcsState::approvals` and `VcsState::drafts`. It has no clock, so each phase of its watch is
 one reading of the host: a reading that has not settled is the bound elapsing, and a draft
-none of whose required checks has run is the grace window elapsing. Its state document is
-version 14.
+none of whose required checks has run is the grace window elapsing. With the lifecycle off,
+its `change-auto` arms the merge on a ready change without watching first, as the real one
+does, and refuses a required check that has already concluded red before arming, as the
+real merge watch does. Its state document is version 14.
 
 ---
 

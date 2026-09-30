@@ -781,9 +781,17 @@ fn publish_as_change(
 
     // Every change policy watches — except that `change-auto` on a change nobody
     // drafted arms the host's own merge and leaves the checks to it, as next door.
+    // Next door's merge watch still refuses a required check that already concluded
+    // red rather than arm a merge over it, so this reading does too; one still
+    // running arms it, and the host's hold is what the outcome reports.
     let still_draft = if drafted || policy != MergePolicy::ChangeAuto {
         watch(host.as_ref(), publishing, &change, drafted, emissions)?
     } else {
+        let answered = host.change_checks(&change)?;
+        let checks: Vec<&Check> = answered.checks.iter().collect();
+        if let Some(failed) = red(&checks, &standings(&checks, &Declared::Unknown)) {
+            return Err(failed);
+        }
         false
     };
     if still_draft {
