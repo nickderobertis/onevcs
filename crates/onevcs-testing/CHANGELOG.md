@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.8.6...onevcs-testing-v0.9.0) - 2026-09-30
+
+### Added
+
+- *(publish)* [**breaking**] open every change request as a draft and lift or keep it by policy once its checks settle ([#259](https://github.com/nickderobertis/onevcs/pull/259))
+
 ## [0.8.4](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.8.3...onevcs-testing-v0.8.4) - 2026-09-26
 
 ### Added
