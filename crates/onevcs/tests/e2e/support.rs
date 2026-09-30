@@ -206,6 +206,35 @@ pub fn documented_sweep_report() -> serde_json::Value {
     serde_json::from_str(fixtures[0]).expect("the documented sweep report is JSON")
 }
 
+/// How many times a wall-clock bound reads what it times, keeping the fastest.
+///
+/// What a bound holds is what the binary costs, and a read that is only ever read can
+/// be taken again: the fastest of three is that cost, where any one of them can carry
+/// a stall a neighbouring journey's fixture put on the runner.
+#[cfg(unix)]
+pub const TIMED_RUNS: usize = 3;
+
+/// The one stopwatch every wall-clock bound in this suite reads under, held until the
+/// guard is dropped.
+///
+/// A file lock rather than a mutex, because nextest runs each journey in a process of
+/// its own. Without it two bounds on a three-core runner time each other: CI's macOS
+/// runner put `recoverable`'s host-wide read at 15.2s against its 15s bound while this
+/// suite's host-shaped sweeps ran beside it.
+#[cfg(unix)]
+pub fn stopwatch() -> std::fs::File {
+    use fs4::fs_std::FileExt;
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-stopwatch.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|failure| panic!("the stopwatch at {} opens: {failure}", path.display()));
+    FileExt::lock_exclusive(&file).expect("the stopwatch is taken");
+    file
+}
+
 /// A verdict record, as the verdict amendment spells one.
 ///
 /// The record is private to this crate and no consumer reads it, but the amendment names

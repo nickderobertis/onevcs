@@ -293,7 +293,8 @@ fn swept(command: &mut assert_cmd::Command) -> (Vec<Value>, f64) {
 ///   unpublished.
 ///
 /// A quarter is twice the worst of those, for a runner loaded unevenly between the
-/// two sweeps. A pass that re-derived its verdicts or asked the origin one ref at a
+/// two sweeps. Each repeat figure is the fastest of the repeats the journey takes, and
+/// neither sweep shares the runner with another of this suite's timed reads. A pass that re-derived its verdicts or asked the origin one ref at a
 /// time would cost about what the first sweep did, and fail it.
 const REPEAT_SWEEP_MAX_FRACTION: f64 = 0.25;
 
@@ -325,8 +326,22 @@ fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again()
         "the premise: at least 150 candidate branches"
     );
 
+    // The deriving sweep happens once, and can only be timed once; every repeat after it
+    // is over the same unchanged estate, so the fastest of them is what a repeat costs.
+    let _stopwatch = crate::support::stopwatch();
     let (first, derived) = swept(&mut world.onevcs());
-    let (repeat, reused) = swept(&mut world.onevcs());
+    let repeats: Vec<(Vec<Value>, f64)> = (0..crate::support::TIMED_RUNS)
+        .map(|_| swept(&mut world.onevcs()))
+        .collect();
+    for (again, _) in &repeats {
+        for entry in again {
+            assert_eq!(entry["derivation"], "reused", "{entry}");
+        }
+    }
+    let (repeat, reused) = repeats
+        .into_iter()
+        .min_by(|(_, one), (_, other)| one.total_cmp(other))
+        .expect("the estate was swept again");
     eprintln!(
         "first sweep {derived:.2}s, repeat sweep {reused:.2}s over {} branches",
         repeat.len()

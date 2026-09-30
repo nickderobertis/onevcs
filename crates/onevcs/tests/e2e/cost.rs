@@ -909,20 +909,27 @@ fn preserved_in(identity: usize) -> usize {
 ///
 /// The bounds below are about the binary a hook runs, so they are read off a run of
 /// exactly that — the counting `git` doubles the cost of every spawn, and a bound
-/// measured through it would be a bound on the fixture.
+/// measured through it would be a bound on the fixture. The read changes nothing, so
+/// it is taken [`TIMED_RUNS`](crate::support::TIMED_RUNS) times under the suite's one
+/// [`stopwatch`](crate::support::stopwatch) and the fastest is its cost.
 fn timed(world: &World, extra: &[&str]) -> (Vec<Value>, f64) {
-    let started = Instant::now();
-    let assert = world
-        .onevcs()
-        .args(["recoverable", "--json"])
-        .args(extra)
-        .assert()
-        .success();
-    let elapsed = started.elapsed().as_secs_f64();
-    (
-        serde_json::from_slice(&assert.get_output().stdout).expect("rows"),
-        elapsed,
-    )
+    let _stopwatch = crate::support::stopwatch();
+    let mut fastest: Option<(Vec<Value>, f64)> = None;
+    for _ in 0..crate::support::TIMED_RUNS {
+        let started = Instant::now();
+        let assert = world
+            .onevcs()
+            .args(["recoverable", "--json"])
+            .args(extra)
+            .assert()
+            .success();
+        let elapsed = started.elapsed().as_secs_f64();
+        let rows = serde_json::from_slice(&assert.get_output().stdout).expect("rows");
+        if fastest.as_ref().is_none_or(|(_, best)| elapsed < *best) {
+            fastest = Some((rows, elapsed));
+        }
+    }
+    fastest.expect("the read was timed at least once")
 }
 
 /// Open and close one identity's share of the sessions, leaving its preserved
