@@ -39,6 +39,10 @@ use crate::world::{Check, World};
 struct Estate {
     world: World,
     identities: Vec<Identity>,
+    /// This estate's share of the suite's stopwatch, held from before it is built until
+    /// it is dropped or [`timing`](Self::timing) gives it up, so no timed command of
+    /// another journey runs while this one builds or drives it.
+    fixture_work: std::cell::Cell<Option<std::fs::File>>,
 }
 
 /// One registered identity of an [`Estate`].
@@ -71,6 +75,7 @@ struct Shape {
 
 impl Estate {
     fn new(identities: usize, shape: Shape) -> Self {
+        let fixture_work = std::cell::Cell::new(Some(crate::support::fixture_work()));
         let world = World::new();
         crate::registry::configure_rules(
             &world,
@@ -82,6 +87,7 @@ impl Estate {
         let estate = Estate {
             world,
             identities: built,
+            fixture_work,
         };
         // Sessions of different identities are opened concurrently on the host this is
         // shaped like, and each identity's locks and run roots are its own.
@@ -105,6 +111,13 @@ impl Estate {
             }
         }
         estate
+    }
+
+    /// Give up this estate's share of the stopwatch and take the stopwatch itself, so
+    /// what runs next is timed with no host-scale fixture beside it.
+    fn timing(&self) -> std::fs::File {
+        drop(self.fixture_work.take());
+        crate::support::stopwatch()
     }
 
     /// How many branches the estate cut across every identity, the sessions' own aside.
@@ -293,9 +306,10 @@ fn swept(command: &mut assert_cmd::Command) -> (Vec<Value>, f64) {
 ///   unpublished.
 ///
 /// A quarter is twice the worst of those, for a runner loaded unevenly between the
-/// two sweeps. Each repeat figure is the fastest of the repeats the journey takes, and
-/// neither sweep shares the runner with another of this suite's timed reads. A pass that re-derived its verdicts or asked the origin one ref at a
-/// time would cost about what the first sweep did, and fail it.
+/// two sweeps. Neither sweep shares the runner with another host-scale fixture of this
+/// suite, which hold [`fixture_work`](crate::support::fixture_work) while they run. A
+/// pass that re-derived its verdicts or asked the origin one ref at a time would cost
+/// about what the first sweep did, and fail it.
 const REPEAT_SWEEP_MAX_FRACTION: f64 = 0.25;
 
 /// The most a repeat `onevcs sweep --dry-run` over that unchanged estate may take on any
@@ -326,22 +340,9 @@ fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again()
         "the premise: at least 150 candidate branches"
     );
 
-    // The deriving sweep happens once, and can only be timed once; every repeat after it
-    // is over the same unchanged estate, so the fastest of them is what a repeat costs.
-    let _stopwatch = crate::support::stopwatch();
+    let _stopwatch = estate.timing();
     let (first, derived) = swept(&mut world.onevcs());
-    let repeats: Vec<(Vec<Value>, f64)> = (0..crate::support::TIMED_RUNS)
-        .map(|_| swept(&mut world.onevcs()))
-        .collect();
-    for (again, _) in &repeats {
-        for entry in again {
-            assert_eq!(entry["derivation"], "reused", "{entry}");
-        }
-    }
-    let (repeat, reused) = repeats
-        .into_iter()
-        .min_by(|(_, one), (_, other)| one.total_cmp(other))
-        .expect("the estate was swept again");
+    let (repeat, reused) = swept(&mut world.onevcs());
     eprintln!(
         "first sweep {derived:.2}s, repeat sweep {reused:.2}s over {} branches",
         repeat.len()

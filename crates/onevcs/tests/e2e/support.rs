@@ -206,33 +206,45 @@ pub fn documented_sweep_report() -> serde_json::Value {
     serde_json::from_str(fixtures[0]).expect("the documented sweep report is JSON")
 }
 
-/// How many times a wall-clock bound reads what it times, keeping the fastest.
-///
-/// What a bound holds is what the binary costs, and a read that is only ever read can
-/// be taken again: the fastest of three is that cost, where any one of them can carry
-/// a stall a neighbouring journey's fixture put on the runner.
-#[cfg(unix)]
-pub const TIMED_RUNS: usize = 3;
-
-/// The one stopwatch every wall-clock bound in this suite reads under, held until the
-/// guard is dropped.
+/// The stopwatch the host-scale wall-clock bounds of this suite time under, held
+/// exclusively until the guard is dropped.
 ///
 /// A file lock rather than a mutex, because nextest runs each journey in a process of
-/// its own. Without it two bounds on a three-core runner time each other: CI's macOS
-/// runner put `recoverable`'s host-wide read at 15.2s against its 15s bound while this
-/// suite's host-shaped sweeps ran beside it.
+/// its own. The host-shaped fixtures hold the same lock shared through
+/// [`fixture_work`] for as long as they build and drive their estates, so a timed
+/// command runs with none of them beside it. Without that, CI's three-core macOS
+/// runner put `recoverable`'s host-wide read at 15.2s against its 15s bound while the
+/// verdict journeys' host-shaped sweeps ran next to it.
+///
+/// A journey holding [`fixture_work`] drops it first: `flock` answers a second open
+/// of the lock in one process as a stranger, so taking both would wait on itself.
 #[cfg(unix)]
 pub fn stopwatch() -> std::fs::File {
     use fs4::fs_std::FileExt;
+    let file = timing_lock();
+    FileExt::lock_exclusive(&file).expect("the stopwatch is taken");
+    file
+}
+
+/// Host-scale fixture work, which no timed command may run beside: the lock
+/// [`stopwatch`] takes, held shared until the guard is dropped.
+#[cfg(unix)]
+pub fn fixture_work() -> std::fs::File {
+    use fs4::fs_std::FileExt;
+    let file = timing_lock();
+    FileExt::lock_shared(&file).expect("the fixture's share of the stopwatch is taken");
+    file
+}
+
+#[cfg(unix)]
+fn timing_lock() -> std::fs::File {
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-stopwatch.lock");
-    let file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&path)
-        .unwrap_or_else(|failure| panic!("the stopwatch at {} opens: {failure}", path.display()));
-    FileExt::lock_exclusive(&file).expect("the stopwatch is taken");
-    file
+        .unwrap_or_else(|failure| panic!("the stopwatch at {} opens: {failure}", path.display()))
 }
 
 /// A verdict record, as the verdict amendment spells one.

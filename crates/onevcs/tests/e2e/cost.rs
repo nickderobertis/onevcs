@@ -909,27 +909,23 @@ fn preserved_in(identity: usize) -> usize {
 ///
 /// The bounds below are about the binary a hook runs, so they are read off a run of
 /// exactly that — the counting `git` doubles the cost of every spawn, and a bound
-/// measured through it would be a bound on the fixture. The read changes nothing, so
-/// it is taken [`TIMED_RUNS`](crate::support::TIMED_RUNS) times under the suite's one
-/// [`stopwatch`](crate::support::stopwatch) and the fastest is its cost.
+/// measured through it would be a bound on the fixture. It is read once, under the
+/// suite's [`stopwatch`](crate::support::stopwatch), so no host-scale fixture is being
+/// built or driven beside it.
 fn timed(world: &World, extra: &[&str]) -> (Vec<Value>, f64) {
     let _stopwatch = crate::support::stopwatch();
-    let mut fastest: Option<(Vec<Value>, f64)> = None;
-    for _ in 0..crate::support::TIMED_RUNS {
-        let started = Instant::now();
-        let assert = world
-            .onevcs()
-            .args(["recoverable", "--json"])
-            .args(extra)
-            .assert()
-            .success();
-        let elapsed = started.elapsed().as_secs_f64();
-        let rows = serde_json::from_slice(&assert.get_output().stdout).expect("rows");
-        if fastest.as_ref().is_none_or(|(_, best)| elapsed < *best) {
-            fastest = Some((rows, elapsed));
-        }
-    }
-    fastest.expect("the read was timed at least once")
+    let started = Instant::now();
+    let assert = world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .args(extra)
+        .assert()
+        .success();
+    let elapsed = started.elapsed().as_secs_f64();
+    (
+        serde_json::from_slice(&assert.get_output().stdout).expect("rows"),
+        elapsed,
+    )
 }
 
 /// Open and close one identity's share of the sessions, leaving its preserved
@@ -989,6 +985,10 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
     // checkout an answer must consider, and thirty for each preserved branch it
     // actually decides. The clocks are generous multiples of what this measures, so a
     // busy machine does not fail them and a regression does.
+    //
+    // Building nine identities' sessions and counting reads over them is host-scale
+    // work of its own, which another journey's timed command must not run beside.
+    let fixture_work = crate::support::fixture_work();
     let world = World::new();
     crate::registry::configure_rules(
         &world,
@@ -1046,6 +1046,7 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
          branches",
         calls.len()
     );
+    drop(fixture_work);
     let (timed_rows, whole) = timed(&world, &[]);
     assert_eq!(timed_rows.len(), PRESERVED);
     assert!(
