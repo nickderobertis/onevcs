@@ -388,8 +388,7 @@ accident.
 
 ## Every change request is a draft while its checks run
 
-The rules are the draft-lifecycle amendment's in `docs/contract.md`; what is easy to
-undo is how `publish.rs` holds them.
+What is easy to undo is how `publish.rs` holds the lifecycle's rules.
 
 - **One `Watcher` carries the whole watch** — the draft's phase, the one after an early
   lift, a ready change's, and `change-auto`'s merge — so one bound covers it, each check

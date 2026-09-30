@@ -46,8 +46,9 @@ is a `Subject`, so one that could not be a commit subject never reaches a
 provider.
 
 **The draft lifecycle has no clock here, and must not grow one.** Each phase of the
-watch is one reading of the host (the amendment in `docs/contract.md` states what a
-reading stands for), so a consumer drives a row by seeding the reading it wants —
+watch is one reading of the host — one that has not settled stands for the bound, and
+a draft nothing ran on for the grace window — so a consumer drives a row by seeding
+the reading it wants —
 `checks_after_lift`, `required_checks` — never by timing one. A counter or a clock
 outside the state would make those rows unrepeatable.
 
