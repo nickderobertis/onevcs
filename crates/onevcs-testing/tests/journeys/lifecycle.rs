@@ -444,3 +444,41 @@ fn this_host_will_neither_merge_nor_arm_a_merge_on_a_draft() {
         Ok(MergeOutcome::Merged(_))
     ));
 }
+
+#[test]
+fn the_grace_window_an_early_lift_records_is_the_one_onevcs_defaults_to() {
+    // The provider records the grace window a real publication would have waited out,
+    // and with nothing set that is `onevcs`'s own default — which is private to it, so
+    // it is read out of its source here and the two are held together.
+    let declared: f64 = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onevcs/src/gh.rs"),
+    )
+    .expect("onevcs's host module")
+    .lines()
+    .find_map(|line| {
+        line.trim()
+            .strip_prefix("pub const DEFAULT_DRAFT_GRACE_SECONDS: f64 = ")?
+            .strip_suffix(";")
+            .map(str::to_owned)
+    })
+    .expect("onevcs declares the default grace window")
+    .parse()
+    .expect("a number of seconds");
+    std::env::remove_var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS");
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+    let host = host(
+        vec![check("gate", Some("skipped"), 1)],
+        Some(vec![check("gate", Some("success"), 2)]),
+    );
+
+    let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+
+    assert!(matches!(outcome, PublishOutcome::Merged(_)), "{outcome:?}");
+    let early: Vec<serde_json::Value> = home
+        .events("s-testing-1")
+        .into_iter()
+        .filter(|event| event["kind"] == "draft-lifted-early")
+        .collect();
+    assert_eq!(early[0]["payload"]["grace_seconds"], declared);
+}

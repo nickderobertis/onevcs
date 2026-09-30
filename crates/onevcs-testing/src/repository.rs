@@ -1075,6 +1075,12 @@ fn watch(
     Ok(false)
 }
 
+/// The default grace window of the real publication, which is `onevcs`'s own and
+/// private to it. A copy, so it is gated: `lifecycle.rs`'s
+/// `the_grace_window_an_early_lift_records_is_the_one_onevcs_defaults_to` reads the
+/// constant out of `onevcs`'s source and holds this to it.
+const DEFAULT_DRAFT_GRACE_SECONDS: f64 = 120.0;
+
 /// The grace window a real publication would have waited out, as the operator set it
 /// or the default — recorded on `draft-lifted-early` so the payload reads as the real
 /// one does, though nothing here waits.
@@ -1083,7 +1089,7 @@ fn grace_seconds() -> f64 {
         .ok()
         .and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-        .unwrap_or(120.0)
+        .unwrap_or(DEFAULT_DRAFT_GRACE_SECONDS)
 }
 
 /// The draft a publication asked for, as the two refusals next door spell it: "a

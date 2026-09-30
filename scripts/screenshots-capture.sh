@@ -323,6 +323,9 @@ ONEVCS_CHECKS_TIMEOUT_SECONDS=1 onevcs publish "$PLATFORM_TOKEN" >/dev/null \
 if [ "$published" != 1 ]; then
   echo "screenshots: the platform publication ended $published, not checks-unsettled:" >&2
   cat "$WORK/tmp/platform-publish.err" >&2
+  echo "screenshots: fix what the error above names; if how a change-open publication" >&2
+  echo "  ends changed on purpose, update this scene in scripts/screenshots-capture.sh" >&2
+  echo "  and re-run 'just screenshots-bless'" >&2
   exit 1
 fi
 

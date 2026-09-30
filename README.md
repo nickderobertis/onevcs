@@ -68,8 +68,7 @@ it to ready — and only then arms or performs the merge, since a host merges no
 except under `change-open` with `approvals: required`, where it stays a draft for its own
 user's review and the publication ends `change-review-draft`. Red, or the bound, leaves it
 a draft. A repository whose CI skips drafts is lifted after a grace window
-(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`, 120 by default) so its checks can run, with one
-warning line. Lifting is one-way, and `drafts: {disabled: true}` in the rules file opens
+(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`) so its checks can run, with one warning line. Lifting is one-way, and `drafts: {disabled: true}` in the rules file opens
 change requests ready, as before:
 
 ```yaml
