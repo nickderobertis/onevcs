@@ -14,11 +14,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+use std::collections::BTreeSet;
+
+use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
-    ChangeSpec, DraftReason, Error, EventKind, FailureKind, HeldBy, Holding, Hosting, Identity,
-    Landed, Lifecycle, MergeOutcome, MergePolicy, PreservedBranch, Provenance, Publication,
-    PublishOutcome, PublishRequest, Recoverable, Result, Scope, Session, SessionRecord,
-    SessionRequest, SessionToken, Sha, Vcs,
+    ChangeRequest, ChangeSpec, Check, CheckState, DraftReason, Error, EventKind, FailureKind,
+    HeldBy, Holding, Hosting, Identity, Landed, Lifecycle, MergeOutcome, MergePolicy,
+    PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
+    RemoteHost, Result, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha, Vcs,
 };
 
 use crate::events::{self, Emission};
@@ -37,6 +40,10 @@ pub const DEFAULT_BASE: &str = "main";
 /// The policy the contract's own `default:` names, which is what the real
 /// implementation resolves to for a registry with no rules file.
 pub const DEFAULT_PUBLICATION: MergePolicy = MergePolicy::ChangeOpen;
+
+/// The approvals a publication takes when nothing was seeded: the contract's own
+/// `default:`, as [`DEFAULT_PUBLICATION`] is.
+pub const DEFAULT_APPROVALS: Approvals = Approvals::Required;
 
 /// The repository side of a run, over whichever store holds its state.
 ///
@@ -449,7 +456,17 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             } else {
                 match slug(&identity) {
                     Some(slug) => match publish_as_change(
-                        hosting, &slug, &identity, &session, policy, request, token,
+                        hosting,
+                        &Publishing {
+                            slug: &slug,
+                            identity: &identity,
+                            session: &session,
+                            policy,
+                            approvals: state.approvals.unwrap_or(DEFAULT_APPROVALS),
+                            drafts: state.drafts.unwrap_or_default(),
+                            request,
+                            token,
+                        },
                     ) {
                         Ok(published) => published,
                         // Once a publication has started, what stops it is an outcome
@@ -581,22 +598,63 @@ fn record_local_landing(
     (PublishOutcome::Merged(Sha(sha)), vec![emission])
 }
 
+/// Everything one provider publication knows about itself.
+struct Publishing<'a> {
+    slug: &'a str,
+    identity: &'a str,
+    session: &'a Session,
+    policy: MergePolicy,
+    approvals: Approvals,
+    drafts: Drafts,
+    request: &'a PublishRequest,
+    token: &'a SessionToken,
+}
+
+impl Publishing<'_> {
+    /// One event on the session's own stream, under this identity.
+    fn emission(&self, kind: EventKind, payload: Value) -> Emission {
+        Emission {
+            stream: self.token.0.clone(),
+            identity: Some(self.identity.to_owned()),
+            kind,
+            payload: object(payload),
+        }
+    }
+}
+
 /// Publish as a change request: open the session's change on the host, or adopt
-/// the one it already holds, and then do with it what the policy asks — which for
-/// `change-open` is to leave it open and ask the host for nothing more.
+/// the one it already holds, watch its required checks, and then do with it what
+/// the policy asks.
+///
+/// **The draft lifecycle, as next door.** A publication carrying no reason opens its
+/// change request as a draft while the checks run — or, adopting a draft, records it
+/// as awaiting them rather than lifting it on the spot — and once they are green lifts
+/// it before asking for any merge, or keeps it under `change-open` with approvals
+/// required. `drafts: {disabled: true}` opens ready and lifts an adopted draft at once.
+///
+/// **What this provider cannot do is wait.** It has no clock, so each phase of the
+/// watch is **one reading** of the host: a reading that has not settled is the bound
+/// elapsing (`checks-unsettled`), and a draft on which no required check has run is
+/// the grace window elapsing — it is lifted early, and the next reading is the host's
+/// answer after the lift, which is where [`HostState::checks_after_lift`](crate::HostState::checks_after_lift)
+/// comes in. A consumer drives each row of the lifecycle by seeding the reading it
+/// wants rather than by timing one.
 fn publish_as_change(
     hosting: &dyn Hosting,
-    slug: &str,
-    identity: &str,
-    session: &Session,
-    policy: MergePolicy,
-    request: &PublishRequest,
-    token: &SessionToken,
+    publishing: &Publishing<'_>,
 ) -> Result<(PublishOutcome, Vec<Emission>)> {
+    let Publishing {
+        slug,
+        session,
+        policy,
+        request,
+        ..
+    } = *publishing;
     let host = hosting.for_repo(slug)?;
     // Who the host believes is calling travels with the change, as it does in the
     // real publication and for the same reason.
     let author = host.authenticated_user()?;
+    let lifecycle = !publishing.drafts.disabled.unwrap_or(false);
     let existing = host.find_changes(&session.branch, &session.base)?;
     // Whether the host already held it, which is what decides whether there can be a
     // draft to lift — and, as next door, keeps a publication that opens its own change
@@ -623,20 +681,19 @@ fn publish_as_change(
             // The reason travels to the host and no further, as it does there: what
             // the host does with it is open the change as a draft.
             draft: request.draft.clone(),
+            draft_awaiting_checks: lifecycle && request.draft.is_none(),
         })?,
     };
-    let mut emissions = vec![Emission {
-        stream: token.0.clone(),
-        identity: Some(identity.to_owned()),
-        kind: EventKind::ChangeOpened,
-        payload: object(json!({
+    let mut emissions = vec![publishing.emission(
+        EventKind::ChangeOpened,
+        json!({
             "url": change.url.to_string(),
             "host": "github",
             "id": change.id.0,
             "base": change.base,
             "author": author,
-        })),
-    }];
+        }),
+    )];
     if let Some(reason) = &request.draft {
         // The same question the real publication asks, for the same reason: a host
         // that ignored the request, or a change request already open for review,
@@ -667,40 +724,73 @@ fn publish_as_change(
         {
             drafted.extend(fields);
         }
-        emissions.push(Emission {
-            stream: token.0.clone(),
-            identity: Some(identity.to_owned()),
-            kind: EventKind::ChangeDrafted,
-            payload: drafted,
-        });
+        emissions.push(publishing.emission(EventKind::ChangeDrafted, Value::Object(drafted)));
         // Under every policy: a draft is unmergeable in that state, so nothing below
         // asks this host to merge it.
         return Ok((PublishOutcome::ChangeDraft(change.url.clone()), emissions));
     }
-    // Publishing without a reason is what lifts a draft, and a change that is not one
-    // is asked for nothing — which is what makes a second publication idempotent.
-    // Asked only of a change the host already held, as next door: one opened moments
-    // ago without a reason is one nobody drafted. Three answers, told apart the same
-    // way — a host that was never taught to draft one has nothing to lift and is
-    // passed over, and a host that *could not say* is a refusal rather than a change
-    // nobody is holding.
-    match if adopted {
+    // Three answers about whether the host holds it as a draft, told apart as next
+    // door: a host that was never taught to draft one is holding nothing, and a host
+    // that *could not say* is a refusal rather than a change nobody is holding.
+    // Asked of a change this publication just opened only under the lifecycle, which
+    // asked for a draft: without it, one opened moments ago without a reason is one
+    // nobody drafted, and a host written against the earlier surface is asked nothing.
+    let is_draft = match if lifecycle || adopted {
         host.is_draft(&change)
     } else {
         Ok(false)
     } {
-        Ok(true) => {
-            host.ready_for_review(&change)?;
-            emissions.push(Emission {
-                stream: token.0.clone(),
-                identity: Some(identity.to_owned()),
-                kind: EventKind::DraftLifted,
-                payload: object(json!({"url": change.url.to_string(), "id": change.id.0})),
-            });
-        }
-        Ok(false) => {}
-        Err(Error::NotImplemented { .. }) => {}
+        Ok(draft) => draft,
+        Err(Error::NotImplemented { .. }) => false,
         Err(unreadable) => return Err(unreadable),
+    };
+    let drafted = if lifecycle {
+        if is_draft {
+            emissions.push(publishing.emission(
+                EventKind::ChangeDrafted,
+                json!({
+                    "url": change.url.to_string(),
+                    "id": change.id.0,
+                    "base": change.base,
+                    "kind": "awaiting-checks",
+                }),
+            ));
+        }
+        is_draft
+    } else {
+        // Without the lifecycle, publishing without a reason lifts an adopted draft
+        // on the spot, as it always did; one opened moments ago is one nobody drafted.
+        if adopted && is_draft {
+            lift(host.as_ref(), publishing, &change, &mut emissions)?;
+        }
+        false
+    };
+
+    // Every change policy watches — except that `change-auto` on a change nobody
+    // drafted arms the host's own merge and leaves the checks to it, as next door.
+    let still_draft = if drafted || policy != MergePolicy::ChangeAuto {
+        watch(host.as_ref(), publishing, &change, drafted, &mut emissions)?
+    } else {
+        false
+    };
+    if still_draft {
+        if policy == MergePolicy::ChangeOpen && publishing.approvals == Approvals::Required {
+            emissions.push(publishing.emission(
+                EventKind::DraftKeptForReview,
+                json!({
+                    "url": change.url.to_string(),
+                    "id": change.id.0,
+                    "base": change.base,
+                }),
+            ));
+            return Ok((
+                PublishOutcome::ChangeReviewDraft(change.url.clone()),
+                emissions,
+            ));
+        }
+        // Lifted before any merge is asked for: this host, like GitHub, will neither
+        // merge a draft nor arm its own merge on one.
+        lift(host.as_ref(), publishing, &change, &mut emissions)?;
     }
 
     if policy == MergePolicy::ChangeOpen {
@@ -708,23 +798,276 @@ fn publish_as_change(
     }
     Ok(match host.merge(&change, policy)? {
         MergeOutcome::Merged(sha) => {
-            emissions.push(Emission {
-                stream: token.0.clone(),
-                identity: Some(identity.to_owned()),
-                kind: EventKind::ChangeMerged,
-                payload: object(json!({"url": change.url.to_string(), "sha": sha.0})),
-            });
-            emissions.push(Emission {
-                stream: token.0.clone(),
-                identity: Some(identity.to_owned()),
-                kind: EventKind::MergeCompleted,
-                payload: object(json!({"identity": identity, "sha": sha.0})),
-            });
+            emissions.push(publishing.emission(
+                EventKind::ChangeMerged,
+                json!({"url": change.url.to_string(), "sha": sha.0}),
+            ));
+            emissions.push(publishing.emission(
+                EventKind::MergeCompleted,
+                json!({"identity": publishing.identity, "sha": sha.0}),
+            ));
             (PublishOutcome::Merged(sha), emissions)
         }
         MergeOutcome::Queued => (PublishOutcome::Queued(change.url.clone()), emissions),
         MergeOutcome::Open => (PublishOutcome::ChangeOpen(change.url.clone()), emissions),
     })
+}
+
+/// Take a change out of its draft on the host, and record the lift.
+fn lift(
+    host: &dyn RemoteHost,
+    publishing: &Publishing<'_>,
+    change: &ChangeRequest,
+    emissions: &mut Vec<Emission>,
+) -> Result<()> {
+    host.ready_for_review(change)?;
+    emissions.push(publishing.emission(
+        EventKind::DraftLifted,
+        json!({"url": change.url.to_string(), "id": change.id.0}),
+    ));
+    Ok(())
+}
+
+/// Which checks a merge requires, as the host said: nothing, these names, or unknown.
+enum Declared {
+    Nothing,
+    Names(BTreeSet<String>),
+    Unknown,
+}
+
+/// Each required check's name and the state its entries add up to — `None` where the
+/// host reported none — ranked as next door: red, then running, then passed, then no
+/// verdict, then skipped.
+fn standings(checks: &[&Check], declared: &Declared) -> Vec<(String, Option<CheckState>)> {
+    let names: BTreeSet<String> = match declared {
+        Declared::Names(names) => names.clone(),
+        Declared::Nothing => BTreeSet::new(),
+        Declared::Unknown => checks
+            .iter()
+            .filter(|check| check.required)
+            .map(|check| check.name.clone())
+            .collect(),
+    };
+    let rank = |state: CheckState| match state {
+        CheckState::Failed => 0,
+        CheckState::Pending => 1,
+        CheckState::Passed => 2,
+        CheckState::NoVerdict => 3,
+        CheckState::Skipped => 4,
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let state = checks
+                .iter()
+                .filter(|check| check.name == name)
+                .map(|check| check.state())
+                .min_by_key(|state| rank(*state));
+            (name, state)
+        })
+        .collect()
+}
+
+/// The refusal for the first required check that concluded red.
+fn red(checks: &[&Check], standing: &[(String, Option<CheckState>)]) -> Option<Error> {
+    let (name, _) = standing
+        .iter()
+        .find(|(_, state)| *state == Some(CheckState::Failed))?;
+    let check = checks
+        .iter()
+        .find(|check| &check.name == name && check.state() == CheckState::Failed)?;
+    Some(Error::ChecksFailed {
+        reason: format!(
+            "required check {:?} concluded {}.",
+            check.name,
+            check
+                .conclusion
+                .as_deref()
+                .unwrap_or("without a conclusion")
+        ),
+    })
+}
+
+/// Whether every required check lets the change through: passed, or skipped.
+fn through(standing: &[(String, Option<CheckState>)]) -> bool {
+    standing
+        .iter()
+        .all(|(_, state)| matches!(state, Some(CheckState::Passed | CheckState::Skipped)))
+}
+
+/// The skipped required checks, by name.
+fn skipped(standing: &[(String, Option<CheckState>)]) -> Vec<String> {
+    standing
+        .iter()
+        .filter(|(_, state)| *state == Some(CheckState::Skipped))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The watch, one reading per phase: `Ok(true)` is green on a draft still standing,
+/// `Ok(false)` green on a ready change. See [`publish_as_change`] for what a reading
+/// stands for.
+fn watch(
+    host: &dyn RemoteHost,
+    publishing: &Publishing<'_>,
+    change: &ChangeRequest,
+    drafted: bool,
+    emissions: &mut Vec<Emission>,
+) -> Result<bool> {
+    let settled = |emissions: &mut Vec<Emission>, skipped: Vec<String>| {
+        let verdict = if skipped.is_empty() {
+            "passed"
+        } else {
+            "passed-with-skipped"
+        };
+        emissions.push(publishing.emission(
+            EventKind::ChecksSettled,
+            json!({
+                "url": change.url.to_string(),
+                "id": change.id.0,
+                "head": change.head_sha.0,
+                "verdict": verdict,
+                "skipped": skipped,
+            }),
+        ));
+    };
+    let unsettled = |standing: &[(String, Option<CheckState>)]| Error::ChecksUnsettled {
+        reason: format!(
+            "the host had not settled its required checks on {}; still unsettled: {}",
+            change.url,
+            standing
+                .iter()
+                .filter(|(_, state)| !matches!(state, Some(CheckState::Passed)))
+                .map(|(name, _)| format!("{name:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let answered = host.change_checks(change)?;
+    let complete = answered.complete();
+    let checks: Vec<&Check> = answered.checks.iter().collect();
+
+    if !drafted {
+        let standing = standings(&checks, &Declared::Unknown);
+        if let Some(failed) = red(&checks, &standing) {
+            return Err(failed);
+        }
+        if !through(&standing) {
+            return Err(unsettled(&standing));
+        }
+        settled(emissions, skipped(&standing));
+        return Ok(false);
+    }
+
+    // The draft: what the host requires, and a skipped check has not run.
+    let mut declared = match host.required_checks_on(&change.base) {
+        Ok(answer) if answer.checks.is_empty() && answer.complete() => Declared::Nothing,
+        Ok(answer) if !answer.checks.is_empty() => Declared::Names(answer.checks),
+        _ => Declared::Unknown,
+    };
+    if matches!(declared, Declared::Unknown)
+        && complete
+        && !checks.is_empty()
+        && checks.iter().all(|check| !check.required)
+    {
+        declared = Declared::Nothing;
+    }
+    if matches!(declared, Declared::Nothing) {
+        settled(emissions, Vec::new());
+        return Ok(true);
+    }
+    let standing = standings(&checks, &declared);
+    if let Some(failed) = red(&checks, &standing) {
+        return Err(failed);
+    }
+    if !standing.is_empty()
+        && standing
+            .iter()
+            .all(|(_, state)| *state == Some(CheckState::Passed))
+    {
+        settled(emissions, Vec::new());
+        return Ok(true);
+    }
+    let not_run: Vec<String> = standing
+        .iter()
+        .filter(|(_, state)| matches!(state, None | Some(CheckState::Skipped)))
+        .map(|(name, _)| name.clone())
+        .collect();
+    let running = standing
+        .iter()
+        .any(|(_, state)| matches!(state, Some(CheckState::Pending | CheckState::NoVerdict)));
+    let unseen = matches!(declared, Declared::Unknown) && standing.is_empty();
+    if running || (not_run.is_empty() && !unseen) {
+        return Err(unsettled(&standing));
+    }
+
+    // The grace window elapsed with nothing required run: lift early, say so, and read
+    // the host again as a ready change whose checks must run after the lift.
+    let snapshot: Vec<Check> = answered.checks.clone();
+    lift(host, publishing, change, emissions)?;
+    let warned = publishing.drafts.warn_on_early_lift.unwrap_or(true);
+    let grace = grace_seconds();
+    if warned {
+        eprintln!(
+            "onevcs: warning: {} was lifted out of its draft before its required checks ran on \
+             it ({}): none had run within {grace}s, which is what a workflow that skips drafts \
+             looks like",
+            change.url,
+            not_run.join(", ")
+        );
+    }
+    emissions.push(publishing.emission(
+        EventKind::DraftLiftedEarly,
+        json!({
+            "url": change.url.to_string(),
+            "id": change.id.0,
+            "base": change.base,
+            "awaited": not_run,
+            "grace_seconds": grace,
+            "warned": warned,
+        }),
+    ));
+    let after = host.change_checks(change)?.checks;
+    let from_the_draft = |check: &Check| snapshot.iter().any(|seen| seen == check);
+    let counted: Vec<&Check> = after
+        .iter()
+        .filter(|check| !(from_the_draft(check) && check.state() == CheckState::Skipped))
+        .collect();
+    let standing = standings(&counted, &declared);
+    if let Some(failed) = red(&counted, &standing) {
+        return Err(failed);
+    }
+    let rerun = after.iter().any(|check| {
+        !from_the_draft(check)
+            && (standing.is_empty() || standing.iter().any(|(name, _)| *name == check.name))
+    });
+    if !rerun {
+        return Err(Error::ChecksUnsettled {
+            reason: format!(
+                "the required checks on {} did not re-run after its draft was lifted: no run \
+                 the host attached after the lift appeared, and the runs from while it was a \
+                 draft were skipped, which is not a verdict. The likely cause is a workflow that \
+                 does not trigger on `ready_for_review`",
+                change.url
+            ),
+        });
+    }
+    if !through(&standing) {
+        return Err(unsettled(&standing));
+    }
+    settled(emissions, skipped(&standing));
+    Ok(false)
+}
+
+/// The grace window a real publication would have waited out, as the operator set it
+/// or the default — recorded on `draft-lifted-early` so the payload reads as the real
+/// one does, though nothing here waits.
+fn grace_seconds() -> f64 {
+    std::env::var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .unwrap_or(120.0)
 }
 
 /// The draft a publication asked for, as the two refusals next door spell it: "a

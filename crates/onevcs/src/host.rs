@@ -412,6 +412,17 @@ pub struct ChangeSpec {
     /// the contract asks it to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
+    /// Open it as a draft **while its required checks run**, with no
+    /// [`DraftReason`]: what a lifecycle publication asks for when its caller asked
+    /// for no draft. A host lifts or keeps it once the checks settle, by the rules
+    /// the publication states; nothing here is a reason a caller gave.
+    ///
+    /// Beside `draft` rather than a third kind of it, because [`DraftReason`] is what
+    /// a *caller* asks for and this is what the lifecycle asks for when the caller
+    /// asked for none. Defaulted and omitted when false, so a spec written before it
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub draft_awaiting_checks: bool,
 }
 
 /// An open change request on the host.
@@ -504,29 +515,67 @@ impl Check {
         self.status.eq_ignore_ascii_case("completed")
     }
 
-    /// Whether a settled check ended in a way that does not block a merge.
+    /// Which of the five states this check is in — the one classifier every reading
+    /// and every rendering of a check follows.
+    ///
+    /// A skipped check is its own state and never a passed one: a job a workflow
+    /// gated on the change not being a draft reports `skipped` without having run,
+    /// so reading it as green would call a change verified that nothing verified.
+    /// What the publication watch does with a skipped *required* check is its own
+    /// rule, stated where the watch is.
+    pub fn state(&self) -> CheckState {
+        if !self.settled() {
+            return CheckState::Pending;
+        }
+        match self
+            .conclusion
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("success" | "neutral") => CheckState::Passed,
+            Some("skipped") => CheckState::Skipped,
+            Some("cancelled" | "stale") => CheckState::NoVerdict,
+            _ => CheckState::Failed,
+        }
+    }
+
+    /// Whether a settled check passed. A skipped one did not: see [`Check::state`].
     pub fn green(&self) -> bool {
-        self.settled()
-            && self.conclusion.as_deref().is_some_and(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "success" | "skipped" | "neutral"
-                )
-            })
+        self.state() == CheckState::Passed
     }
 
     /// Whether the host ended this run without a verdict either way.
     pub(crate) fn no_verdict(&self) -> bool {
-        self.settled()
-            && self.conclusion.as_deref().is_some_and(|value| {
-                matches!(value.to_ascii_lowercase().as_str(), "cancelled" | "stale")
-            })
+        self.state() == CheckState::NoVerdict
     }
 
     /// Whether a settled check ended in a way that blocks a merge.
     pub fn red(&self) -> bool {
-        self.settled() && !self.green() && !self.no_verdict()
+        self.state() == CheckState::Failed
     }
+}
+
+/// Which of five states one check is in, as [`Check::state`] classifies it.
+///
+/// Exported so a consumer holds its own copy of "what reads as green" to this
+/// declaration rather than to a list it keeps beside it. Serialized kebab-case, which
+/// is how the `change-check` event's `state`, the `checks-settled` event and `onevcs
+/// status` spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckState {
+    /// Concluded `success` or `neutral`.
+    Passed,
+    /// Concluded in a way that blocks a merge: every settled conclusion not named by
+    /// another state.
+    Failed,
+    /// Concluded `skipped`: it did not run, and it is never read as passed.
+    Skipped,
+    /// Not settled yet.
+    Pending,
+    /// Concluded `cancelled` or `stale`: the host ended the run with no verdict.
+    NoVerdict,
 }
 
 /// One place a host's answer about a change request's checks was read from.
@@ -1355,7 +1404,7 @@ impl RemoteHost for GitHub {
         ];
         // The whole of what the reason does at the host: it opens as a draft. Nothing
         // of the reason itself is written there — see `DraftReason`.
-        if req.draft.is_some() {
+        if req.draft.is_some() || req.draft_awaiting_checks {
             args.push("--draft");
         }
         let raw = gh::invoke(&args)?;

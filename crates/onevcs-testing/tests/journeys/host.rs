@@ -20,6 +20,7 @@ fn spec(head: &str) -> ChangeSpec {
         title: "feat: the thing".to_owned(),
         body: Some("## What\n\nthe thing\n".to_owned()),
         draft: None,
+        draft_awaiting_checks: false,
     }
 }
 
@@ -428,6 +429,7 @@ fn a_change_request_opened_directly_with_an_unusable_reason_is_refused() {
         let refused = host
             .open_change(ChangeSpec {
                 draft: Some(unusable),
+                draft_awaiting_checks: false,
                 ..spec("feature/unusable")
             })
             .expect_err("a reason nothing could render is not one to open a draft with");

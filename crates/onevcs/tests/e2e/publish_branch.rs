@@ -223,7 +223,9 @@ fn a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_requi
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     // The branch reached the origin and the base did not move: `change-open` opens
     // the review and stops there, which is the whole of what a team identity asked
@@ -456,7 +458,9 @@ fn a_complete_branch_opens_its_change_request_with_the_body_the_caller_drafted()
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     // The file's own bytes, whole: nothing composed, trimmed, or appended.
     assert_eq!(hosted.world.change_request_body(1), drafted);
@@ -486,7 +490,9 @@ fn a_complete_branch_opens_its_change_request_with_the_body_the_caller_drafted()
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(hosted.world.change_request_body(2), "One line, as typed.");
     assert_eq!(
         change_request_title(&hosted, 2),
@@ -591,7 +597,9 @@ fn naming_a_branchs_body_twice_is_refused_by_the_invocation_that_keeps_each_one(
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(
         hosted.world.change_request_body(1),
         "The body that was drafted.\n"
@@ -638,7 +646,9 @@ fn a_per_run_policy_narrows_the_rules_resolved_one_and_never_widens_it() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(
         hosted.origin_log().len(),
         1,
@@ -1132,7 +1142,9 @@ fn an_identity_with_no_rules_file_publishes_under_the_built_in_default() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     // …and a refusal that tells an operator which file to edit names the file they
     // would create, not the sentence a report prints when there is none.

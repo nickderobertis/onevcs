@@ -330,6 +330,9 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeOpened,
         EventKind::ChangeDrafted,
         EventKind::DraftLifted,
+        EventKind::DraftLiftedEarly,
+        EventKind::DraftKeptForReview,
+        EventKind::ChecksSettled,
         EventKind::ChangeDescribed,
         EventKind::ChangeCheck,
         EventKind::ChangeMerged,
@@ -357,6 +360,9 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted
+            | EventKind::DraftLiftedEarly
+            | EventKind::DraftKeptForReview
+            | EventKind::ChecksSettled
             | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged
@@ -752,6 +758,7 @@ fn the_rules_fixture_round_trips() {
                 },
                 publication: Some(MergePolicy::ChangeOpen),
                 approvals: Some(Approvals::Required),
+                drafts: None,
             },
             Rule {
                 r#match: RuleMatch {
@@ -761,6 +768,7 @@ fn the_rules_fixture_round_trips() {
                 publication: Some(MergePolicy::LocalDirect),
                 // Unset in the fixture, so it falls back to the default policy.
                 approvals: None,
+                drafts: None,
             },
         ]
     );
@@ -769,6 +777,7 @@ fn the_rules_fixture_round_trips() {
         Policy {
             publication: MergePolicy::ChangeOpen,
             approvals: Approvals::Required,
+            drafts: None,
         }
     );
 
@@ -2151,6 +2160,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         title: "feat: add the seam".to_owned(),
         body: None,
         draft: None,
+        draft_awaiting_checks: false,
     };
     assert_eq!(session.branch, "feature");
     assert_eq!(request.repo, "nickderobertis/onevcs");
@@ -3133,6 +3143,7 @@ fn the_inferred_surface_row_lists_the_fields_a_change_spec_actually_has() {
             reference: "feature/the-pinned-branch".to_owned(),
             because: "the pin moves when the release lands".to_owned(),
         }),
+        draft_awaiting_checks: true,
     };
     let serialized = serde_json::to_value(&spec).expect("a spec serializes");
     let fields: BTreeSet<String> = serialized
@@ -4825,6 +4836,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
         PublishOutcome::Merged(Sha("0f1e2d3".to_owned())),
         PublishOutcome::ChangeOpen(url.clone()),
         PublishOutcome::ChangeDraft(url.clone()),
+        PublishOutcome::ChangeReviewDraft(url.clone()),
         PublishOutcome::Queued(url),
         PublishOutcome::NothingToPublish,
         PublishOutcome::Failed {
@@ -4840,6 +4852,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
             PublishOutcome::Merged(_) => "Merged",
             PublishOutcome::ChangeOpen(_) => "ChangeOpen",
             PublishOutcome::ChangeDraft(_) => "ChangeDraft",
+            PublishOutcome::ChangeReviewDraft(_) => "ChangeReviewDraft",
             PublishOutcome::Queued(_) => "Queued",
             PublishOutcome::NothingToPublish => "NothingToPublish",
             PublishOutcome::Failed { .. } => "Failed",

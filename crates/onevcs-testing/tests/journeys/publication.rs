@@ -9,6 +9,7 @@
 
 use clap::Parser;
 use onevcs::cli::Cli;
+use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
     DraftReason, FailureKind, Hosting, Lifecycle, MergePolicy, Provenance, Providers,
     PublishOutcome, PublishRequest, Session, SessionRequest, SessionToken, TargetName, Vcs,
@@ -49,9 +50,12 @@ fn a_publication_opens_its_change_request_on_the_host_it_was_handed() {
         .publish(&session.token, &PublishRequest::default(), &host)
         .expect("the publication runs");
 
+    // The contract's own default — change-open, approvals required — over a host
+    // that requires no check: the change opens as a draft, is green at once, and is
+    // kept a draft for its own user's review.
     assert_eq!(published.policy, MergePolicy::ChangeOpen);
-    let PublishOutcome::ChangeOpen(url) = published.outcome.clone() else {
-        panic!("change-open leaves a change request open: {published:?}");
+    let PublishOutcome::ChangeReviewDraft(url) = published.outcome.clone() else {
+        panic!("a green team change is kept for its user's review: {published:?}");
     };
     // On the host, not merely reported: the change is one the host holds, opened
     // from this session's branch onto its base.
@@ -63,14 +67,26 @@ fn a_publication_opens_its_change_request_on_the_host_it_was_handed() {
     // And the provider recorded it, which is what a journey asserts on.
     assert_eq!(vcs.state().publications, vec![published]);
 
-    // One event, and it is the one the real implementation emits for the same
-    // decision: no fetch, no gate, no push, no lock — none of which happened.
+    // The events the real implementation emits for the same decisions: no fetch, no
+    // gate, no push, no lock — none of which happened.
     let events = home.events(&session.token.0);
     let kinds: Vec<&str> = events
         .iter()
         .map(|event| event["kind"].as_str().expect("a kind"))
         .collect();
-    assert_eq!(kinds, vec!["session-opened", "change-opened"]);
+    assert_eq!(
+        kinds,
+        vec![
+            "session-opened",
+            "change-opened",
+            "change-drafted",
+            "checks-settled",
+            "draft-kept-for-review"
+        ]
+    );
+    assert_eq!(events[2]["payload"]["kind"], "awaiting-checks");
+    assert_eq!(events[3]["payload"]["verdict"], "passed");
+    assert!(state.made_ready.is_empty(), "a kept draft is not lifted");
     let opened = &events[1];
     assert_eq!(opened["seq"], 2, "one stream, one sequence");
     assert_eq!(opened["labels"]["identity"], identity().origin);
@@ -109,22 +125,35 @@ fn an_automated_publication_asks_the_host_to_land_it_and_reports_what_it_did() {
         .iter()
         .map(|event| event["kind"].as_str().expect("a kind"))
         .collect();
+    // Drafted while the checks ran, green, lifted — and only then merged.
     assert_eq!(
         kinds,
         vec![
             "session-opened",
             "change-opened",
+            "change-drafted",
+            "checks-settled",
+            "draft-lifted",
             "change-merged",
             "merge-completed"
         ]
     );
-    assert_eq!(events[2]["payload"]["sha"], sha.0);
-    assert_eq!(events[3]["payload"]["identity"], identity().origin);
+    assert_eq!(events[5]["payload"]["sha"], sha.0);
+    assert_eq!(events[6]["payload"]["identity"], identity().origin);
 
     // A host that holds the change instead of landing it says so, and the outcome
-    // is the queue rather than a merge nobody performed.
-    let second = open(&vcs, "feature/queued");
-    let queued = vcs
+    // is the queue rather than a merge nobody performed. A ready change — the
+    // lifecycle off — is armed without waiting, which is where the host's hold shows.
+    let ready = MemoryVcs::seeded(VcsState {
+        policy: Some(MergePolicy::ChangeAuto),
+        drafts: Some(Drafts {
+            disabled: Some(true),
+            warn_on_early_lift: None,
+        }),
+        ..one_repository()
+    });
+    let second = open(&ready, "feature/queued");
+    let queued = ready
         .publish(&second.token, &PublishRequest::default(), &host)
         .expect("the publication runs");
     assert!(
@@ -211,6 +240,7 @@ fn a_publication_adopts_the_change_request_the_host_already_holds() {
             title: "feat: the earlier attempt".to_owned(),
             body: None,
             draft: None,
+            draft_awaiting_checks: false,
         })
         .expect("a change request");
 
@@ -515,7 +545,11 @@ fn a_drafted_publication_opens_a_draft_here_the_way_it_opens_one_next_door() {
 #[test]
 fn a_second_lift_here_asks_the_host_for_nothing_and_reports_the_original() {
     let _home = Home::new();
-    let vcs = MemoryVcs::seeded(one_repository());
+    // Approvals none, so a green change is lifted rather than kept for review.
+    let vcs = MemoryVcs::seeded(VcsState {
+        approvals: Some(Approvals::None),
+        ..one_repository()
+    });
     let host = MemoryHost::new();
     let session = open(&vcs, "feature/twice-lifted");
 
@@ -589,7 +623,10 @@ fn drafting_is_refused_here_where_it_is_refused_next_door() {
 
     // And a change request already open for review is not put back into a draft:
     // this host is holding nothing, so saying the work is held back would be false.
-    let open_already = MemoryVcs::seeded(one_repository());
+    let open_already = MemoryVcs::seeded(VcsState {
+        approvals: Some(Approvals::None),
+        ..one_repository()
+    });
     let second = MemoryHost::new();
     let other = open(&open_already, "feature/already-open");
     open_already
@@ -717,14 +754,20 @@ fn a_host_that_cannot_say_whether_it_is_holding_a_draft_is_reported_rather_than_
 }
 
 #[test]
-fn a_change_request_this_publication_opened_itself_is_not_asked_about() {
-    // The other half of the same call: a change opened moments ago without a reason
-    // is one nobody drafted, so there is nothing to lift and the host is asked
-    // nothing extra — which is what keeps a host written against the earlier surface
+fn a_change_request_this_publication_opened_itself_is_asked_about_only_under_the_lifecycle() {
+    // With the draft lifecycle off, a change opened moments ago without a reason is
+    // one nobody drafted, so there is nothing to lift and the host is asked nothing
+    // extra — which is what keeps a host written against the earlier surface
     // publishing exactly as it did. The host below refuses the question, so a
     // publication that asked it could not succeed.
     let _home = Home::new();
-    let vcs = MemoryVcs::seeded(one_repository());
+    let vcs = MemoryVcs::seeded(VcsState {
+        drafts: Some(Drafts {
+            disabled: Some(true),
+            warn_on_early_lift: None,
+        }),
+        ..one_repository()
+    });
     let session = open(&vcs, "feature/freshly-opened");
 
     let published = vcs
@@ -738,6 +781,31 @@ fn a_change_request_this_publication_opened_itself_is_not_asked_about() {
         matches!(published.outcome, PublishOutcome::ChangeOpen(_)),
         "nothing asked this host whether the change it had just opened was a draft: {published:?}"
     );
+
+    // With it on, the change was opened asking for a draft, and whether the host
+    // honoured that is asked rather than assumed — so a host that will not say is a
+    // refusal here, as it is next door.
+    let lifecycle = MemoryVcs::seeded(one_repository());
+    let session = open(&lifecycle, "feature/freshly-opened");
+    let asked = lifecycle
+        .publish(
+            &session.token,
+            &PublishRequest::default(),
+            &Only { holds: false },
+        )
+        .expect("the publication runs and reports what stopped it");
+    assert!(
+        matches!(&asked.outcome, PublishOutcome::Failed { reason, .. } if reason.contains("would not say")),
+        "{asked:?}"
+    );
+}
+
+/// What a repository with no CI answers about a change's checks, from its whole rollup.
+fn no_checks() -> onevcs::ChangeChecks {
+    onevcs::ChangeChecks {
+        checks: Vec::new(),
+        sources: [onevcs::CheckSource::StatusChecks].into_iter().collect(),
+    }
 }
 
 /// A host that opens or holds one change request and will not say what state it is
@@ -792,7 +860,8 @@ impl onevcs::RemoteHost for Unreadable {
     }
 
     fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
-        unreachable!("change-open asks a host nothing about its checks")
+        // A repository with no CI, answered from the whole rollup.
+        Ok(no_checks())
     }
 
     fn check_log(
@@ -800,7 +869,7 @@ impl onevcs::RemoteHost for Unreadable {
         _: &onevcs::ChangeRequest,
         _: &onevcs::Check,
     ) -> onevcs::Result<onevcs::ArtifactId> {
-        unreachable!("change-open asks a host for no log")
+        unreachable!("a host reporting no check is asked for no log")
     }
 
     fn merge(
@@ -845,14 +914,15 @@ fn a_host_written_before_drafts_publishes_here_the_way_it_always_did() {
             }])
         }
         fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
-            unreachable!("change-open asks a host nothing about its checks")
+            // Every change policy watches its checks now; this repository has none.
+            Ok(no_checks())
         }
         fn check_log(
             &self,
             _: &onevcs::ChangeRequest,
             _: &onevcs::Check,
         ) -> onevcs::Result<onevcs::ArtifactId> {
-            unreachable!("change-open asks a host for no log")
+            unreachable!("a host reporting no check is asked for no log")
         }
         fn merge(
             &self,

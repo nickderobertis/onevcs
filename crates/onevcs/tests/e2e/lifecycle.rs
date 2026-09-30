@@ -7171,7 +7171,9 @@ fn a_per_run_policy_may_narrow_the_rules_but_never_widen_them() {
         .args(["publish", &token, "--policy", "change-open"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 }
 
 #[test]

@@ -93,6 +93,22 @@ pub enum EventKind {
     /// draft *by* carrying none. `onevcs change ready` emits the same kind, because it
     /// is the same lift asked for as a verb.
     DraftLifted,
+    /// A draft the publication opened while its required checks ran was lifted
+    /// **before** any of them had run on it, because the grace window elapsed and
+    /// the repository's checks skip drafts; carries its URL, identifier and base,
+    /// the required checks that had not run, the grace window in seconds, and whether
+    /// the warning line was printed. Emitted beside the
+    /// [`DraftLifted`](EventKind::DraftLifted) every lift emits.
+    DraftLiftedEarly,
+    /// Green required checks left a `change-open` change whose approvals are required
+    /// a draft, for its own user's review rather than the team's; carries its URL,
+    /// identifier and base.
+    DraftKeptForReview,
+    /// A publication's watch saw every required check stop blocking; carries the
+    /// change request's URL and identifier, the commit watched, the verdict —
+    /// `passed`, or `passed-with-skipped` where a required check concluded skipped —
+    /// and the skipped required checks by name.
+    ChecksSettled,
     /// The change request's description was replaced after it was opened; carries
     /// its URL, the host's identifier for it, its base, the title where the
     /// description replaced it, and the artifact the body was stored as.
@@ -167,6 +183,9 @@ impl EventKind {
             EventKind::ChangeOpened => "change-opened",
             EventKind::ChangeDrafted => "change-drafted",
             EventKind::DraftLifted => "draft-lifted",
+            EventKind::DraftLiftedEarly => "draft-lifted-early",
+            EventKind::DraftKeptForReview => "draft-kept-for-review",
+            EventKind::ChecksSettled => "checks-settled",
             EventKind::ChangeDescribed => "change-described",
             EventKind::ChangeCheck => "change-check",
             EventKind::ChangeMerged => "change-merged",
@@ -250,6 +269,9 @@ impl PhaseOf for Phase {
             EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted
+            | EventKind::DraftLiftedEarly
+            | EventKind::DraftKeptForReview
+            | EventKind::ChecksSettled
             | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged => Phase::Review,

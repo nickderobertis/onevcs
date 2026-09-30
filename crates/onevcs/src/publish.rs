@@ -19,7 +19,11 @@ use crate::error::{Error, Result};
 use crate::event::{EventKind, Phase};
 use url::Url;
 
-use crate::host::{ChangeRequest, ChangeSpec, Check, Hosting, MergeOutcome, RemoteHost, Sha};
+use std::collections::BTreeSet;
+
+use crate::host::{
+    ChangeRequest, ChangeSpec, Check, CheckState, Hosting, MergeOutcome, RemoteHost, Sha,
+};
 use crate::releases::TargetName;
 use crate::rules::{MergePolicy, Policy};
 use crate::session::{Lifecycle, Provenance, SessionToken};
@@ -338,6 +342,16 @@ pub enum PublishOutcome {
     /// change can land — and folding them together would make every exhaustive match
     /// on this enum go on compiling while meaning something else.
     ChangeDraft(Url),
+    /// A change request whose required checks came back green, kept **as a draft**
+    /// for its own user's review: what the draft lifecycle ends in under `change-open`
+    /// with approvals required.
+    ///
+    /// Its own case rather than a shade of [`ChangeDraft`](PublishOutcome::ChangeDraft)
+    /// or [`ChangeOpen`](PublishOutcome::ChangeOpen), for the reason `ChangeDraft` is
+    /// one: a consumer acts on the difference. This work is done — green, and waiting
+    /// for the person who dispatched it — while a `ChangeDraft` is held back by a
+    /// reason, and a `ChangeOpen` is already asking the team for review.
+    ChangeReviewDraft(Url),
     /// The host queued the merge and will land it once its checks pass.
     Queued(Url),
     /// The branch had nothing the base did not already carry.
@@ -371,6 +385,10 @@ impl PublishOutcome {
                     "change request open as a draft at {url}, which cannot land while it is one"
                 )
             }
+            PublishOutcome::ChangeReviewDraft(url) => format!(
+                "change request's checks are green at {url}, and it is kept as a draft for its \
+                 user's review"
+            ),
             PublishOutcome::Queued(url) => format!("merge queued for {url}"),
             PublishOutcome::NothingToPublish => {
                 "nothing to publish: the base already carries this branch's content".to_owned()
@@ -547,6 +565,7 @@ pub fn run_for_session(
         title: request.title.clone(),
         body: request.body.clone(),
         draft: request.draft.clone(),
+        drafts: resolved.drafts.clone(),
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
         hosting,
@@ -651,6 +670,10 @@ pub struct Context<'a> {
     /// as it does with a body: landing a branch somebody else drafted is exactly the
     /// call that says the reason no longer holds.
     pub draft: Option<DraftReason>,
+    /// How the draft lifecycle resolved for this identity: whether a reasonless
+    /// publication opens a draft while its checks run, and whether an early lift
+    /// warns.
+    pub drafts: policy::DraftLifecycle,
     /// Trailers the publication commit must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which
@@ -883,6 +906,7 @@ impl<'a> Context<'a> {
             title: self.title.clone(),
             body: self.body.clone(),
             draft: self.draft.clone(),
+            drafts: self.drafts.clone(),
             trailers: self.trailers.clone(),
             provenance: self.provenance.clone(),
             hosting: self.hosting,
@@ -1665,11 +1689,13 @@ fn publish_as_change(
             return Err(refusal);
         }
     }
-    if context.effective != MergePolicy::ChangeOpen {
-        // Only the policies that watch read these, so only those are held to them.
-        gh::checks_timeout()?;
-        gh::checks_poll()?;
-        crate::host::check_source_names_a_source()?;
+    // Every change policy watches its checks now, `change-open` included, so every one
+    // is held to the knobs that bound the watch — before anything is pushed.
+    gh::checks_timeout()?;
+    gh::checks_poll()?;
+    crate::host::check_source_names_a_source()?;
+    if !context.drafts.disabled {
+        gh::draft_grace()?;
     }
 
     // A branch this publication replayed is not a descendant of the one the host has
@@ -1819,6 +1845,16 @@ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> 
 ///
 /// Separate from the push above so that what every failure in here has in common is a
 /// property of the function rather than a comment somebody has to keep true.
+///
+/// **The draft lifecycle** is here. A publication carrying no [`DraftReason`] opens its
+/// change request as a draft while the pushed commit's required checks run, records
+/// `change-drafted` with `kind: "awaiting-checks"`, and once they settle lifts or keeps
+/// it by the policy's row of [`policy::GreenDraft`]: every change policy watches, and
+/// the lift comes **before** the merge is armed or asked for, because a host will do
+/// neither to a draft. Adopting a draft is the same — it is not lifted on the spot but
+/// watched into a lift or a keep. Adopting a change the host holds ready never
+/// re-drafts it: the lift is one-way. `drafts: {disabled: true}` opens ready and lifts
+/// an adopted draft at once, as before the lifecycle.
 fn land_as_change(
     context: &Context<'_>,
     stream: &mut Stream,
@@ -1831,6 +1867,7 @@ fn land_as_change(
     // opened by an identity nobody expected is the thing an operator reads this to
     // find out.
     let author = host.authenticated_user()?;
+    let lifecycle = !context.drafts.disabled;
 
     let existing = host.find_changes(&context.branch, context.target.base())?;
     // Whether the host already held this change request, which is what decides
@@ -1851,6 +1888,8 @@ fn land_as_change(
             // draft, and no further: what the host renders of a draft is the state,
             // never the reason. The reason is recorded below, on the stream.
             draft: context.draft.clone(),
+            // No reason, and the lifecycle on: a draft while the checks run.
+            draft_awaiting_checks: lifecycle && context.draft.is_none(),
         })?,
     };
     stream.emit(
@@ -1867,11 +1906,39 @@ fn land_as_change(
     if let Some(reason) = &context.draft {
         return hold_as_draft(context, host.as_ref(), &change, reason, stream);
     }
-    if adopted {
-        lift_any_draft(host.as_ref(), &change, stream)?;
-    }
+    let drafted = if lifecycle {
+        await_as_draft(host.as_ref(), &change, stream)?
+    } else {
+        if adopted {
+            lift_any_draft(host.as_ref(), &change, stream)?;
+        }
+        false
+    };
 
+    let mut watcher = Watcher::new(
+        host.as_ref(),
+        &change,
+        pushed,
+        context.drafts.warn_on_early_lift,
+    )?;
+    let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
     if context.effective == MergePolicy::ChangeOpen {
+        // No merge is asked for, so the identity's merge queue is not taken: what
+        // this waits for is the verdict a person reviews against, not a turn.
+        if settle(&mut watcher, stream, drafted)? {
+            if green == policy::GreenDraft::KeepForReview {
+                stream.emit(
+                    EventKind::DraftKeptForReview,
+                    object(json!({
+                        "url": change.url.to_string(),
+                        "id": change.id.0,
+                        "base": change.base,
+                    })),
+                );
+                return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));
+            }
+            lift_draft(host.as_ref(), &change, stream)?;
+        }
         return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
     }
 
@@ -1896,9 +1963,13 @@ fn land_as_change(
         // What is watched, and until when, follows the **merge policy** and nothing
         // else — least of all anything a repository *calls* its verification. A
         // change-direct publication asks for the merge itself, so it waits for the
-        // checks the host says block one first.
-        if context.effective == MergePolicy::ChangeDirect {
-            await_checks(host.as_ref(), &change, pushed, stream)?;
+        // checks the host says block one first; a draft waits for its checks under
+        // either policy, because it is lifted on their verdict and a host will
+        // neither merge a draft nor arm its own merge on one.
+        if (drafted || context.effective == MergePolicy::ChangeDirect)
+            && settle(&mut watcher, stream, drafted)?
+        {
+            lift_draft(host.as_ref(), &change, stream)?;
         }
         stream.emit(
             EventKind::MergeQueued,
@@ -1913,21 +1984,7 @@ fn land_as_change(
             // checks: a host that will not say what its checks are is refused with
             // nothing armed against it, and one loop rather than a read followed by a
             // watch reports each transition exactly once.
-            let mut armed = false;
-            watch(
-                host.as_ref(),
-                &change,
-                pushed,
-                stream,
-                "merged",
-                |host, _| {
-                    if !armed {
-                        host.merge(&change, MergePolicy::ChangeAuto)?;
-                        armed = true;
-                    }
-                    host.merged_at(&change)
-                },
-            )?
+            watch_the_merge(&mut watcher, stream)?
         } else {
             match host.merge(&change, context.effective)? {
                 MergeOutcome::Merged(sha) => sha,
@@ -1951,6 +2008,47 @@ fn land_as_change(
     drop(turn);
     outcome
 }
+
+/// Whether the change a reasonless publication holds is a draft awaiting its checks,
+/// recording it as one where it is.
+///
+/// Asked of the host rather than assumed from having asked for one, both for a change
+/// this publication just opened — a host written before `draft_awaiting_checks`
+/// opens it ready, and a ready change is watched as one — and for one it adopted,
+/// whatever drafted it: a held draft, a release-awaiting one, or one an earlier red run
+/// left awaiting its checks is watched into a lift or a keep rather than lifted on the
+/// spot. A change the host holds **ready** is never asked to be a draft again, and
+/// records nothing: lifting is one-way.
+///
+/// A host that was never taught to say whether it drafted anything has drafted
+/// nothing this can lift, so it answers "not a draft" exactly as [`lift_any_draft`]
+/// reads it; a host that could not say is a refusal.
+fn await_as_draft(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    stream: &mut Stream,
+) -> Result<bool> {
+    match host.is_draft(change) {
+        Ok(true) => {}
+        Ok(false) | Err(Error::NotImplemented { .. }) => return Ok(false),
+        Err(unreadable) => return Err(unreadable),
+    }
+    stream.emit(
+        EventKind::ChangeDrafted,
+        object(json!({
+            "url": change.url.to_string(),
+            "id": change.id.0,
+            "base": change.base,
+            "kind": AWAITING_CHECKS,
+        })),
+    );
+    Ok(true)
+}
+
+/// The `kind` a `change-drafted` payload carries for a draft the lifecycle opened
+/// while the checks run — the one kind that is no [`DraftReason`], because nobody
+/// asked for it.
+const AWAITING_CHECKS: &str = "awaiting-checks";
 
 /// Hold a change request open as a draft, and record why.
 ///
@@ -2076,6 +2174,15 @@ pub(crate) fn lift_any_draft(
         Err(Error::NotImplemented { .. }) => return Ok(()),
         Err(unreadable) => return Err(unreadable),
     }
+    lift_draft(host, change, stream)
+}
+
+/// Ask the host to take a change it holds as a draft out of it, and record the lift.
+///
+/// The one place a lift is performed and recorded, whichever path decided on it: a
+/// publication lifting on green checks or early, `onevcs change ready`, and a
+/// publication under `drafts: {disabled: true}` lifting an adopted draft.
+fn lift_draft(host: &dyn RemoteHost, change: &ChangeRequest, stream: &mut Stream) -> Result<()> {
     host.ready_for_review(change)?;
     stream.emit(
         EventKind::DraftLifted,
@@ -2199,48 +2306,6 @@ fn excerpt(log: &str, whole: &str) -> String {
     format!("[…earlier output omitted; {whole}…]\n{tail}")
 }
 
-/// Wait until every required check the host reports has settled without blocking.
-///
-/// What a `change-direct` publication does before it asks the host to merge: this
-/// run performs the merge, so asking for one the host's own checks have already
-/// failed is a request that can only be refused — slowly, and with the reason on
-/// the host rather than in this stream.
-///
-/// A host that reports **no required check at all** is not a stall here. It has
-/// answered, and its answer is that nothing blocks the merge; the merge below is
-/// then the host's own to refuse under its own rules. `change-auto` is the policy
-/// that fails closed on that, because its watch ends at a merge the host performs
-/// and a host holding a change behind a check nobody declared never performs one.
-fn await_checks(
-    host: &dyn RemoteHost,
-    change: &ChangeRequest,
-    pushed: &Sha,
-    stream: &mut Stream,
-) -> Result<()> {
-    watch(
-        host,
-        change,
-        pushed,
-        stream,
-        "settled its required checks on",
-        |_, reported| {
-            let Reported::About(checks) = reported else {
-                // The host has posted nothing about the commit this publication
-                // pushed. That is a clock and not an answer — the checks it *is*
-                // reporting belong to a head this run replaced — so the watch keeps
-                // waiting rather than merging on an emptiness that is really
-                // somebody else's verdict having been filtered out.
-                return Ok(None);
-            };
-            let settled = checks
-                .iter()
-                .filter(|check| check.required)
-                .all(|check| check.green());
-            Ok(settled.then_some(()))
-        },
-    )
-}
-
 /// What a host's answer about a change request says about **one commit**.
 ///
 /// The publication path's whole defence against a verdict that is about the wrong
@@ -2253,25 +2318,26 @@ fn await_checks(
 /// checks seconds to minutes later, and until it does, the change request still
 /// carries the *previous* head's — a red one of which used to end the publication
 /// with a verdict that predated the check it claimed to have read.
-enum Reported<'a> {
+enum Reported {
     /// What this answer holds about the commit: the checks the host attached to it,
     /// and the checks the host attached to no commit at all. Empty is an answer —
     /// the one a repository that declares no check gives — and it is only ever
     /// reached when the host reported no checks whatsoever.
-    About(Vec<&'a Check>),
+    About(Vec<Check>),
     /// Every check the host reported names some *other* commit, so it has said
     /// nothing about this one. What a head pushed moments ago looks like.
     NotYet,
 }
 
-impl<'a> Reported<'a> {
+impl Reported {
     /// Read one host answer as what it says about `commit`.
-    fn of(answered: &'a [Check], commit: &Sha) -> Self {
-        let about: Vec<&Check> = answered
-            .iter()
+    fn of(answered: Vec<Check>, commit: &Sha) -> Self {
+        let reported = !answered.is_empty();
+        let about: Vec<Check> = answered
+            .into_iter()
             .filter(|check| is_about(check, commit))
             .collect();
-        if about.is_empty() && !answered.is_empty() {
+        if about.is_empty() && reported {
             return Self::NotYet;
         }
         Self::About(about)
@@ -2279,7 +2345,7 @@ impl<'a> Reported<'a> {
 
     /// The checks that are about the commit, which is none of them until the host
     /// has said anything about it.
-    fn checks(&self) -> &[&'a Check] {
+    fn checks(&self) -> &[Check] {
         match self {
             Self::About(checks) => checks,
             Self::NotYet => &[],
@@ -2303,58 +2369,201 @@ fn is_about(check: &Check, commit: &Sha) -> bool {
     check.head.as_ref().is_none_or(|head| head == commit)
 }
 
-/// Watch a change request **at one commit** until `ending` answers, reporting every
-/// check transition as it happens.
+/// One reading of the host, narrowed to the pushed commit, with whether the answer
+/// came from the host's complete rollup.
+struct Reading {
+    reported: Reported,
+    /// Whether the checks were read from the source that sees every check — which is
+    /// what makes "none of them is required" the host's own answer that nothing is.
+    complete: bool,
+}
+
+/// Which checks a repository requires before a merge, as far as the host said.
 ///
-/// Three ways out, and each one says which it was: `ending` answers, a **required**
-/// check concludes red ([`Error::ChecksFailed`], naming it and quoting its log), or
-/// the bound elapses ([`Error::ChecksUnsettled`], naming what was still pending).
-/// The bound used to just stop with a sentence about settled checks that was true
-/// of two different situations; a caller routing a failure has to be able to tell
-/// "CI said no" from "nobody answered in an hour".
+/// Three answers, never two: "none is required" is the one a draft may act on at once,
+/// and it is only ever the host's **complete** answer. An incomplete or unreadable one
+/// is [`Declared::Unknown`], which waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Declared {
+    /// The host answered, completely, that nothing is required.
+    Nothing,
+    /// The checks the host names as required, from every source that answered.
+    Names(BTreeSet<String>),
+    /// The host did not say — a source it could not read, or no answer at all. What
+    /// is required is then read off the checks' own `required` as they arrive.
+    Unknown,
+}
+
+/// What the host says it requires before a merge into this change's base.
 ///
-/// Only required checks may end it: a non-blocking check never holds or fails a
-/// merge, which is the whole reason `required` travels on a [`Check`].
+/// Asked once, before the draft's checks are watched, through the same seam the audit
+/// reads. A host that was never taught to answer, or would not, has not said nothing
+/// is required.
+fn declared_required(host: &dyn RemoteHost, change: &ChangeRequest) -> Declared {
+    match host.required_checks_on(&change.base) {
+        Ok(answer) if answer.checks.is_empty() && answer.complete() => Declared::Nothing,
+        Ok(answer) if !answer.checks.is_empty() => Declared::Names(answer.checks),
+        _ => Declared::Unknown,
+    }
+}
+
+impl Declared {
+    /// This answer, sharpened by one reading: where the host would not say what it
+    /// requires, a **complete** rollup reporting checks of which none is required is
+    /// that same answer given another way — `gh pr checks --required`'s "no required
+    /// checks reported" — and is read as it.
+    fn given(&self, reading: &Reading) -> Declared {
+        match (self, &reading.reported) {
+            (Declared::Unknown, Reported::About(checks))
+                if reading.complete
+                    && !checks.is_empty()
+                    && checks.iter().all(|check| !check.required) =>
+            {
+                Declared::Nothing
+            }
+            _ => self.clone(),
+        }
+    }
+}
+
+/// Where one required check stands in a reading: its name, the state its entries
+/// add up to — `None` where the host reported none — and the entry that decided it.
+struct Standing<'c> {
+    name: String,
+    state: Option<CheckState>,
+    check: Option<&'c Check>,
+}
+
+/// Each required check's standing in `checks`.
 ///
-/// `pushed` is what the checks are read *about*, and it is the commit this run put
-/// on the remote rather than the head the host reports for the change request —
-/// which is the same value only once the host has noticed the push. A change
-/// request is a resource that outlives any one commit on it, so a watch keyed on
-/// the change request alone answers from whatever head the host last attached
-/// checks to. [`Reported`] is where that is decided, and everything past it — the
-/// stream, the red-check verdict, and the bound's own sentence — sees only checks
-/// about `pushed`.
-fn watch<T>(
-    host: &dyn RemoteHost,
-    change: &ChangeRequest,
-    pushed: &Sha,
-    stream: &mut Stream,
-    awaited: &str,
-    mut ending: impl FnMut(&dyn RemoteHost, &Reported<'_>) -> Result<Option<T>>,
-) -> Result<T> {
-    let bound = std::time::Duration::from_secs_f64(gh::checks_timeout()?);
-    let poll = std::time::Duration::from_secs_f64(gh::checks_poll()?);
-    let started = std::time::Instant::now();
-    let mut reported: Vec<(String, String)> = Vec::new();
-    // What each settled check's log was stored as, so the refusal that names a red
-    // check can quote it without fetching it from the host a second time.
-    let mut logs: Vec<(String, crate::event::ArtifactId)> = Vec::new();
-    loop {
+/// The names come from the host's declaration where it made one, so a required
+/// check it has not reported yet is *absent* rather than overlooked; otherwise from
+/// the checks' own `required`. A name reported more than once — a run re-attached
+/// after a lift, a run that ended with no verdict and was re-run — stands at the most
+/// decisive of its entries: a red one fails it, a running one holds it, and a passed
+/// one outranks a run that ended with no verdict or was skipped, which is how a later
+/// green run of a check that was cancelled or skipped proceeds.
+fn standings<'c>(checks: &[&'c Check], declared: &Declared) -> Vec<Standing<'c>> {
+    let names: BTreeSet<String> = match declared {
+        Declared::Names(names) => names.clone(),
+        Declared::Nothing => BTreeSet::new(),
+        Declared::Unknown => checks
+            .iter()
+            .filter(|check| check.required)
+            .map(|check| check.name.clone())
+            .collect(),
+    };
+    let rank = |state: CheckState| match state {
+        CheckState::Failed => 0,
+        CheckState::Pending => 1,
+        CheckState::Passed => 2,
+        CheckState::NoVerdict => 3,
+        CheckState::Skipped => 4,
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let decided = checks
+                .iter()
+                .copied()
+                .filter(|check| check.name == name)
+                .min_by_key(|check| rank(check.state()));
+            Standing {
+                state: decided.map(Check::state),
+                check: decided,
+                name,
+            }
+        })
+        .collect()
+}
+
+/// The standings' red one, where a required check concluded red.
+fn red<'c>(standings: &[Standing<'c>]) -> Option<&'c Check> {
+    standings
+        .iter()
+        .find(|standing| standing.state == Some(CheckState::Failed))
+        .and_then(|standing| standing.check)
+}
+
+/// A publication watching one change request at one commit, across every phase of
+/// its watch — the draft's, the one after an early lift, and the ready change's up to
+/// the merge — so that each check transition is reported once and one bound covers
+/// the whole of it.
+///
+/// Three ways out of any phase, and each one says which it was: the phase's own
+/// ending, a **required** check concluding red ([`Error::ChecksFailed`], naming it and
+/// quoting its log), or the bound elapsing ([`Error::ChecksUnsettled`], naming what was
+/// still pending). A caller routing a failure has to be able to tell "CI said no" from
+/// "nobody answered in an hour".
+///
+/// `pushed` is what the checks are read *about*, and it is the commit this run put on
+/// the remote rather than the head the host reports for the change request — which is
+/// the same value only once the host has noticed the push. [`Reported`] is where that
+/// is decided, and everything past it — the stream, the red-check verdict, and the
+/// bound's own sentence — sees only checks about `pushed`.
+struct Watcher<'a> {
+    host: &'a dyn RemoteHost,
+    change: &'a ChangeRequest,
+    pushed: &'a Sha,
+    bound: std::time::Duration,
+    poll: std::time::Duration,
+    started: std::time::Instant,
+    /// What each check was last reported as, so only a transition is reported. Keyed
+    /// on the status *and* the conclusion, because a run the host re-attaches after a
+    /// lift can complete under the same status the skipped one had.
+    reported: Vec<(String, (String, Option<String>))>,
+    /// What each settled check's log was stored as, so the refusal that names a red
+    /// check can quote it without fetching it from the host a second time.
+    logs: Vec<(String, crate::event::ArtifactId)>,
+    /// Whether `checks-settled` has been recorded, which it is once per watch.
+    settled: bool,
+    /// Whether an early lift prints its warning line: the resolved
+    /// `drafts.warn_on_early_lift`.
+    warn_on_early_lift: bool,
+}
+
+impl<'a> Watcher<'a> {
+    fn new(
+        host: &'a dyn RemoteHost,
+        change: &'a ChangeRequest,
+        pushed: &'a Sha,
+        warn_on_early_lift: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            warn_on_early_lift,
+            host,
+            change,
+            pushed,
+            bound: std::time::Duration::from_secs_f64(gh::checks_timeout()?),
+            poll: std::time::Duration::from_secs_f64(gh::checks_poll()?),
+            started: std::time::Instant::now(),
+            reported: Vec::new(),
+            logs: Vec::new(),
+            settled: false,
+        })
+    }
+
+    /// Ask the host once, narrow its answer to the pushed commit, and report every
+    /// check that moved.
+    fn read(&mut self, stream: &mut Stream) -> Result<Reading> {
         // What was consulted travels with the checks and is deliberately not acted
         // on here: a credential that can see only GitHub Actions still gates a merge
         // on what it *can* see, and a credential that could see nothing was a
-        // refusal above rather than an empty answer.
-        let answered = host.change_checks(change)?.checks;
+        // refusal rather than an empty answer.
+        let answered = self.host.change_checks(self.change)?;
+        let complete = answered.complete();
         // Narrowed to the commit this publication pushed before anything is reported
         // or acted on, so a check the host attached to a head this run replaced
         // reaches neither the stream nor the verdict.
-        let about = Reported::of(&answered, pushed);
-        for check in about.checks() {
-            let previous = reported
+        let reported = Reported::of(answered.checks, self.pushed);
+        for check in reported.checks() {
+            let now = (check.status.clone(), check.conclusion.clone());
+            let previous = self
+                .reported
                 .iter()
                 .find(|(name, _)| name == &check.name)
-                .map(|(_, status)| status.clone());
-            if previous.as_deref() == Some(check.status.as_str()) {
+                .map(|(_, was)| was.clone());
+            if previous.as_ref() == Some(&now) {
                 continue;
             }
             let mut artifacts = Vec::new();
@@ -2363,10 +2572,10 @@ fn watch<T>(
                 // is what decides whether it blocks. So a host that will not hand
                 // one over is reported the way a stream that cannot be written is —
                 // on stderr, without failing the command over it.
-                match host.check_log(change, check) {
+                match self.host.check_log(self.change, check) {
                     Ok(id) => {
-                        logs.retain(|(name, _)| name != &check.name);
-                        logs.push((check.name.clone(), id.clone()));
+                        self.logs.retain(|(name, _)| name != &check.name);
+                        self.logs.push((check.name.clone(), id.clone()));
                         artifacts.push(crate::event::ArtifactRef {
                             id: id.0,
                             kind: "log".to_owned(),
@@ -2375,7 +2584,7 @@ fn watch<T>(
                     }
                     Err(error) => eprintln!(
                         "onevcs: warning: check {:?} on {} is recorded without its log: {error}",
-                        check.name, change.url
+                        check.name, self.change.url
                     ),
                 }
             }
@@ -2385,28 +2594,348 @@ fn watch<T>(
                     "name": check.name,
                     "required": check.required,
                     "status": check.status,
-                    "from_status": previous,
+                    "from_status": previous.map(|(status, _)| status),
                     "conclusion": check.conclusion,
+                    "state": check.state(),
                 })),
                 artifacts,
             );
-            reported.retain(|(name, _)| name != &check.name);
-            reported.push((check.name.clone(), check.status.clone()));
+            self.reported.retain(|(name, _)| name != &check.name);
+            self.reported.push((check.name.clone(), now));
         }
-        if let Some(failed) = about
-            .checks()
-            .iter()
-            .find(|check| check.required && check.red())
+        Ok(Reading { reported, complete })
+    }
+
+    /// The refusal for a required check that concluded red.
+    fn failed(&self, check: &Check) -> Error {
+        checks_failed(check, &self.logs)
+    }
+
+    /// Whether the bound on the whole watch has elapsed.
+    fn out_of_time(&self) -> bool {
+        self.started.elapsed() >= self.bound
+    }
+
+    /// Wait out one interval between readings.
+    fn pause(&self) {
+        std::thread::sleep(self.poll);
+    }
+
+    /// The bound elapsed, naming what the host had not settled.
+    fn unsettled(&self, reading: &Reading, awaited: &str) -> Error {
+        unsettled(
+            self.change,
+            self.pushed,
+            &reading.reported,
+            self.bound,
+            awaited,
+        )
+    }
+
+    /// Record, once, that the required checks stopped blocking — `passed`, or
+    /// `passed-with-skipped` naming the required checks that concluded skipped.
+    fn record_settled(&mut self, stream: &mut Stream, skipped: Vec<String>) {
+        if std::mem::replace(&mut self.settled, true) {
+            return;
+        }
+        let verdict = if skipped.is_empty() {
+            "passed"
+        } else {
+            "passed-with-skipped"
+        };
+        stream.emit(
+            EventKind::ChecksSettled,
+            object(json!({
+                "url": self.change.url.to_string(),
+                "id": self.change.id.0,
+                "head": self.pushed.0,
+                "verdict": verdict,
+                "skipped": skipped,
+            })),
+        );
+    }
+}
+
+/// Wait until the change's required checks stop blocking, and answer whether it is
+/// still a draft then.
+///
+/// A change that is not a draft is watched as it always was — [`settle_ready`]. A
+/// draft is watched by the draft's rule, [`settle_draft`]: a skipped required check
+/// on it has **not run**, and a draft none of whose required checks has run by the
+/// grace window is lifted so that they can, after which it is a ready change whose
+/// checks must run again. `true` means the checks came back green on the draft, which
+/// is still standing for the caller to lift or keep.
+fn settle(watcher: &mut Watcher<'_>, stream: &mut Stream, drafted: bool) -> Result<bool> {
+    if drafted {
+        settle_draft(watcher, stream)
+    } else {
+        settle_ready(watcher, stream).map(|()| false)
+    }
+}
+
+/// Wait until every required check the host reports has settled without blocking.
+///
+/// What a `change-direct` publication does before it asks the host to merge, and what
+/// every ready change does before its policy's ending: this run performs the merge,
+/// or reports the change as open, so an answer the host's own checks have already
+/// refused is one to report rather than act past.
+///
+/// A skipped required check satisfies this, as it satisfies the host's own merge path
+/// — and the watch then records `checks-settled` as `passed-with-skipped`, naming it,
+/// so the record says what the host accepted rather than calling it green. A host that
+/// reports **no required check at all** is not a stall here. It has answered, and its
+/// answer is that nothing blocks; `change-auto` is the policy that fails closed on
+/// that, because its watch ends at a merge the host performs.
+fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
+    loop {
+        let reading = watcher.read(stream)?;
+        if let Reported::About(checks) = &reading.reported {
+            let about: Vec<&Check> = checks.iter().collect();
+            let standing = standings(&about, &Declared::Unknown);
+            if let Some(failed) = red(&standing) {
+                return Err(watcher.failed(failed));
+            }
+            if standing.iter().all(|standing| {
+                matches!(
+                    standing.state,
+                    Some(CheckState::Passed | CheckState::Skipped)
+                )
+            }) {
+                watcher.record_settled(stream, skipped_in(&standing));
+                return Ok(());
+            }
+        }
+        // Otherwise the host has posted nothing about the commit this publication
+        // pushed, or something it requires is still running. The first is a clock and
+        // not an answer — the checks it *is* reporting belong to a head this run
+        // replaced — so the watch keeps waiting rather than merging on an emptiness
+        // that is really somebody else's verdict having been filtered out.
+        if watcher.out_of_time() {
+            return Err(watcher.unsettled(&reading, "settled its required checks on"));
+        }
+        watcher.pause();
+    }
+}
+
+/// The required checks that concluded skipped, by name.
+fn skipped_in(standing: &[Standing<'_>]) -> Vec<String> {
+    standing
+        .iter()
+        .filter(|standing| standing.state == Some(CheckState::Skipped))
+        .map(|standing| standing.name.clone())
+        .collect()
+}
+
+/// Watch a draft's required checks until they are green on it, lifting it early where
+/// none of them has run by the grace window. `true` is green on the draft; `false` is
+/// a draft lifted early whose checks then ran green as a ready change's.
+///
+/// **A skipped required check has not run** while the change is a draft: a workflow
+/// that gates a job on the change not being one reports `skipped` without having
+/// verified anything. So green on a draft is every required check `passed`, and a
+/// draft where the only thing stopping that is checks that have not run — absent, or
+/// skipped — is the draft-skipping repository: once the grace window elapses it is
+/// lifted, `draft-lifted` and `draft-lifted-early` are recorded, one warning line is
+/// printed unless `drafts.warn_on_early_lift` is off, and the watch goes on as
+/// [`settle_after_early_lift`].
+///
+/// A host that says, completely, that nothing is required is green at once: no grace
+/// window and no warning.
+fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> {
+    let grace = std::time::Duration::from_secs_f64(gh::draft_grace()?);
+    let declared = declared_required(watcher.host, watcher.change);
+    loop {
+        let reading = watcher.read(stream)?;
+        let declared = declared.given(&reading);
+        if declared == Declared::Nothing {
+            watcher.record_settled(stream, Vec::new());
+            return Ok(true);
+        }
+        let about: Vec<&Check> = reading.reported.checks().iter().collect();
+        let standing = standings(&about, &declared);
+        if let Some(failed) = red(&standing) {
+            return Err(watcher.failed(failed));
+        }
+        if !standing.is_empty()
+            && standing
+                .iter()
+                .all(|standing| standing.state == Some(CheckState::Passed))
         {
-            return Err(checks_failed(failed, &logs));
+            watcher.record_settled(stream, Vec::new());
+            return Ok(true);
         }
-        if let Some(answer) = ending(host, &about)? {
-            return Ok(answer);
+        let not_run: Vec<String> = standing
+            .iter()
+            .filter(|standing| matches!(standing.state, None | Some(CheckState::Skipped)))
+            .map(|standing| standing.name.clone())
+            .collect();
+        let running = standing.iter().any(|standing| {
+            matches!(
+                standing.state,
+                Some(CheckState::Pending | CheckState::NoVerdict)
+            )
+        });
+        // Nothing is known to be required and nothing required has shown up: a host
+        // that will not say, over a repository whose workflow did not start on the
+        // draft at all. Lifting is the only way to learn which, because a draft that
+        // is never lifted is never verified.
+        let unseen = declared == Declared::Unknown && standing.is_empty();
+        if watcher.started.elapsed() >= grace && !running && (!not_run.is_empty() || unseen) {
+            let snapshot = reading.reported.checks().to_vec();
+            lift_early(watcher, stream, &not_run, grace)?;
+            return settle_after_early_lift(watcher, stream, &declared, &snapshot, grace)
+                .map(|()| false);
         }
-        if started.elapsed() >= bound {
-            return Err(unsettled(change, pushed, &about, bound, awaited));
+        if watcher.out_of_time() {
+            return Err(watcher.unsettled(&reading, "settled its required checks on"));
         }
-        std::thread::sleep(poll);
+        watcher.pause();
+    }
+}
+
+/// Lift a draft whose required checks had not run on it, and say so.
+fn lift_early(
+    watcher: &mut Watcher<'_>,
+    stream: &mut Stream,
+    awaited: &[String],
+    grace: std::time::Duration,
+) -> Result<()> {
+    let change = watcher.change;
+    lift_draft(watcher.host, change, stream)?;
+    let warned = watcher.warn_on_early_lift;
+    if warned {
+        eprintln!(
+            "onevcs: warning: {url} was lifted out of its draft before its required checks ran \
+             on it ({awaited}): none had run within {seconds}s, which is what a workflow that \
+             skips drafts looks like. It is watched as a ready change from here; set \
+             `drafts: {{warn_on_early_lift: false}}` in the rules file to silence this",
+            url = change.url,
+            awaited = if awaited.is_empty() {
+                "the host named none".to_owned()
+            } else {
+                guidance::listed(awaited)
+            },
+            seconds = grace.as_secs_f64(),
+        );
+    }
+    stream.emit(
+        EventKind::DraftLiftedEarly,
+        object(json!({
+            "url": change.url.to_string(),
+            "id": change.id.0,
+            "base": change.base,
+            "awaited": awaited,
+            "grace_seconds": grace.as_secs_f64(),
+            "warned": warned,
+        })),
+    );
+    Ok(())
+}
+
+/// Watch a change lifted early until a run the host attached **after** the lift
+/// settles its required checks.
+///
+/// What was reported while it was a draft is `snapshot`, and a draft-era `skipped` in
+/// it is not a verdict: nothing ran. So the watch needs a run the host attached since,
+/// and where none of the required checks has one within another grace window, it ends
+/// [`Error::ChecksUnsettled`] saying they did not re-run — never merging, and never
+/// lifting anything, on skips from the draft. Once one has, the ordinary rule applies,
+/// under which a skipped required check from a post-lift run satisfies the watch and
+/// is recorded as `passed-with-skipped`.
+fn settle_after_early_lift(
+    watcher: &mut Watcher<'_>,
+    stream: &mut Stream,
+    declared: &Declared,
+    snapshot: &[Check],
+    grace: std::time::Duration,
+) -> Result<()> {
+    let lifted = std::time::Instant::now();
+    let from_the_draft = |check: &Check| snapshot.iter().any(|seen| seen == check);
+    loop {
+        let reading = watcher.read(stream)?;
+        let checks = reading.reported.checks();
+        // A draft-era skip is not a verdict, so it is as though it were not there.
+        let counted: Vec<&Check> = checks
+            .iter()
+            .filter(|check| !(from_the_draft(check) && check.state() == CheckState::Skipped))
+            .collect();
+        let standing = standings(&counted, declared);
+        if let Some(failed) = red(&standing) {
+            return Err(watcher.failed(failed));
+        }
+        let rerun = checks.iter().any(|check| {
+            !from_the_draft(check)
+                && (standing.is_empty() || standing.iter().any(|s| s.name == check.name))
+        });
+        if rerun
+            && standing.iter().all(|standing| {
+                matches!(
+                    standing.state,
+                    Some(CheckState::Passed | CheckState::Skipped)
+                )
+            })
+        {
+            watcher.record_settled(stream, skipped_in(&standing));
+            return Ok(());
+        }
+        if !rerun && lifted.elapsed() >= grace {
+            return Err(Error::ChecksUnsettled {
+                reason: format!(
+                    "the required checks on {url} did not re-run after its draft was lifted: no \
+                     run the host attached to {commit} after the lift appeared within {seconds}s, \
+                     and the runs from while it was a draft were skipped, which is not a verdict. \
+                     The likely cause is a workflow that does not trigger on `ready_for_review` \
+                     — add it to the workflow's pull_request types, or run the checks by hand",
+                    url = watcher.change.url,
+                    commit = watcher.pushed.0,
+                    seconds = grace.as_secs_f64(),
+                ),
+            });
+        }
+        if watcher.out_of_time() {
+            return Err(watcher.unsettled(&reading, "settled its required checks on"));
+        }
+        watcher.pause();
+    }
+}
+
+/// Arm the host's own merge and watch until it performs it.
+///
+/// Arming happens after the first reading of the checks: a host that will not say
+/// what its checks are is refused with nothing armed against it. Only required checks
+/// may end it: a non-blocking check never holds or fails a merge.
+fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
+    let mut armed = false;
+    loop {
+        let reading = watcher.read(stream)?;
+        if let Reported::About(checks) = &reading.reported {
+            let about: Vec<&Check> = checks.iter().collect();
+            let standing = standings(&about, &Declared::Unknown);
+            if let Some(failed) = red(&standing) {
+                return Err(watcher.failed(failed));
+            }
+            if standing.iter().all(|standing| {
+                matches!(
+                    standing.state,
+                    Some(CheckState::Passed | CheckState::Skipped)
+                )
+            }) {
+                watcher.record_settled(stream, skipped_in(&standing));
+            }
+        }
+        if !armed {
+            watcher
+                .host
+                .merge(watcher.change, MergePolicy::ChangeAuto)?;
+            armed = true;
+        }
+        if let Some(sha) = watcher.host.merged_at(watcher.change)? {
+            return Ok(sha);
+        }
+        if watcher.out_of_time() {
+            return Err(watcher.unsettled(&reading, "merged"));
+        }
+        watcher.pause();
     }
 }
 
@@ -2468,7 +2997,7 @@ fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> 
 fn unsettled(
     change: &ChangeRequest,
     pushed: &Sha,
-    reported: &Reported<'_>,
+    reported: &Reported,
     bound: std::time::Duration,
     awaited: &str,
 ) -> Error {
@@ -2487,14 +3016,10 @@ fn unsettled(
             ),
         };
     };
-    let required: Vec<&Check> = checks
-        .iter()
-        .copied()
-        .filter(|check| check.required)
-        .collect();
+    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
     let pending: Vec<&str> = required
         .iter()
-        .filter(|check| !check.green() && !check.red())
+        .filter(|check| check.state() == CheckState::Pending)
         .map(|check| check.name.as_str())
         .collect();
     let no_verdict: Vec<String> = required
@@ -2508,6 +3033,11 @@ fn unsettled(
             )
         })
         .collect();
+    let skipped: Vec<&str> = required
+        .iter()
+        .filter(|check| check.state() == CheckState::Skipped)
+        .map(|check| check.name.as_str())
+        .collect();
     let named = if !pending.is_empty() {
         let verdicts = if no_verdict.is_empty() {
             String::new()
@@ -2515,6 +3045,13 @@ fn unsettled(
             format!("; completed with no verdict: {}", no_verdict.join(", "))
         };
         format!("still unsettled: {}{verdicts}", guidance::listed(&pending))
+    } else if !no_verdict.is_empty() {
+        format!("completed with no verdict: {}", no_verdict.join(", "))
+    } else if !skipped.is_empty() {
+        format!(
+            "skipped on the draft, so not run on it: {}",
+            guidance::listed(&skipped)
+        )
     } else if required.is_empty() {
         "the host declared no required check on it at all".to_owned()
     } else {

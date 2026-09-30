@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::host::{Hosted, AUTOMATED, REVIEWED};
+use crate::host::{Hosted, AUTOMATED_READY, REVIEWED};
 use crate::lifecycle::{orphan_working_in, stop_orphan, Fixture};
 use crate::pool::{pooled, sized};
 use crate::world::{token_of, worktree_of, Check, World};
@@ -344,7 +344,7 @@ fn a_change_request_that_merged_after_its_watch_ended_is_retired_once_the_pass_r
     // branch's local tip is an empty landing-record commit on top of the work the merged
     // head contains; the origin's copy is gone, and a slot clone and the publication
     // checkout still hold it.
-    let hosted = Hosted::new(AUTOMATED);
+    let hosted = Hosted::new(AUTOMATED_READY);
     crate::pool::configure_workspaces(&hosted.world, sized(1, "unlimited"));
     hosted.world.host_checks(&[Check {
         name: "gate",

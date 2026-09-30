@@ -29,7 +29,7 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::cost::{Call, Counting};
-use crate::host::{Hosted, AUTOMATED};
+use crate::host::{Hosted, AUTOMATED_READY};
 use crate::lifecycle::local_direct;
 use crate::retire::{events, Yard};
 use crate::world::{Check, World};
@@ -811,7 +811,7 @@ fn held_open(hosted: &Hosted, branch: &str) {
 
 #[test]
 fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merged_one_retires() {
-    let hosted = Hosted::new(AUTOMATED);
+    let hosted = Hosted::new(AUTOMATED_READY);
     let world = &hosted.world;
     world.host_checks(&[Check {
         name: "gate",

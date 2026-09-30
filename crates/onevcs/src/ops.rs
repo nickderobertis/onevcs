@@ -50,6 +50,15 @@ pub struct ResolvedPolicy {
     pub approvals: Approvals,
     /// What decided `approvals`, in the same words `publication_from` uses.
     pub approvals_from: String,
+    /// Whether the draft lifecycle is off, so a change request opens ready.
+    pub drafts_disabled: bool,
+    /// What decided `drafts_disabled`: a numbered rule, the default, or the shipped
+    /// default.
+    pub drafts_disabled_from: String,
+    /// Whether an early lift of a draft prints its warning line.
+    pub warn_on_early_lift: bool,
+    /// What decided `warn_on_early_lift`, in the same words.
+    pub warn_on_early_lift_from: String,
 }
 
 impl ResolvedPolicy {
@@ -59,6 +68,10 @@ impl ResolvedPolicy {
             publication_from: resolved.publication_from.clone(),
             approvals: resolved.policy.approvals,
             approvals_from: resolved.approvals_from.clone(),
+            drafts_disabled: resolved.drafts.disabled,
+            drafts_disabled_from: resolved.drafts.disabled_from.clone(),
+            warn_on_early_lift: resolved.drafts.warn_on_early_lift,
+            warn_on_early_lift_from: resolved.drafts.warn_on_early_lift_from.clone(),
         }
     }
 }

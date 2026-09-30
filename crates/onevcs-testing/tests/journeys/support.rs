@@ -8,11 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
     BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource, DraftReason,
     FailureKind, HeldBy, Holding, Identity, Landed, LineChange, MergeOutcome, MergePolicy,
-    NetNegative, OnOrigin, PreservedBranch, Provenance, Publication, PublishOutcome, Recoverable,
-    Retirement, RetirementClass, Session, SessionToken, Sha, SupersededBy, TargetName, Url,
+    NetNegative, OnOrigin, PreservedBranch, ProtectionSource, Provenance, Publication,
+    PublishOutcome, Recoverable, RequiredChecks, Retirement, RetirementClass, Session,
+    SessionToken, Sha, SupersededBy, TargetName, Url,
 };
 use onevcs_testing::{Described, HostState, VcsState};
 
@@ -111,12 +113,27 @@ pub fn full_vcs_state() -> VcsState {
         session_labels,
         closed_sessions: BTreeSet::from([token.clone()]),
         policy: Some(MergePolicy::ChangeAuto),
+        approvals: Some(Approvals::None),
+        drafts: Some(Drafts {
+            disabled: Some(false),
+            warn_on_early_lift: Some(false),
+        }),
         publications: vec![
             Publication {
                 session: token.clone(),
                 branch: "feature/seeded".to_owned(),
                 policy: MergePolicy::ChangeAuto,
                 outcome: PublishOutcome::Merged(Sha("abc123".to_owned())),
+            },
+            // The ending version 14 added: a team change green on its draft, kept for
+            // its own user's review.
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::ChangeOpen,
+                outcome: PublishOutcome::ChangeReviewDraft(
+                    Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
+                ),
             },
             // A failure spelled as every version has spelled it, beside the one kind
             // version 10 added, so the golden holds both side by side.
@@ -282,7 +299,7 @@ pub fn full_host_state() -> HostState {
         authenticated_user: "seeded-user".to_owned(),
         changes: vec![
             ChangeRequest {
-                id,
+                id: id.clone(),
                 url: Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
                 head_sha: Sha("def456".to_owned()),
                 base: "main".to_owned(),
@@ -299,6 +316,29 @@ pub fn full_host_state() -> HostState {
         bodies,
         drafts,
         made_ready: vec![drafted.clone()],
+        // The lifecycle's own draft — no reason, opened while the checks ran — and the
+        // run its lift registers: the document has to hold both beside the reasoned
+        // draft above.
+        awaiting_checks: BTreeSet::from([id.clone()]),
+        checks_after_lift: BTreeMap::from([(
+            id.clone(),
+            vec![Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("skipped".to_owned()),
+                required: true,
+                head: None,
+                url: Url::parse("https://github.com/acme-corp/widgets/runs/8").ok(),
+            }],
+        )]),
+        // A host that could read its rulesets and not its classic protection.
+        required_checks: Some(RequiredChecks {
+            checks: BTreeSet::from(["gate".to_owned()]),
+            unconsulted: BTreeMap::from([(
+                ProtectionSource::BranchProtection,
+                "Resource not accessible by personal access token (HTTP 403)".to_owned(),
+            )]),
+        }),
         // The description a closeout wrote to the drafted change after it was opened:
         // the document has to hold what `describe_change` was handed, title included.
         described: vec![Described {

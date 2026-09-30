@@ -32,7 +32,7 @@ use predicates::prelude::*;
 use serde_json::Value;
 
 use crate::honesty::inhabit;
-use crate::host::{Hosted, AUTOMATED, REVIEWED};
+use crate::host::{Hosted, AUTOMATED, OPEN, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_report_version, documented_trailer};
@@ -40,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v9.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v9-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v10.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v10-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -63,9 +63,6 @@ const OPTIONAL: &[&[&str]] = &[
     &["publication", "described"],
     &["merge_path"],
 ];
-
-/// A change-auto identity, which arms the host's own merge and then watches it.
-const AUTOMATED_POLICY: &str = "{publication: change-auto, approvals: required}";
 
 /// Why a fast-adopting caller holds a change back: the work is finished and the
 /// dependency is still pinned to a branch, so merging it now would make the pin
@@ -133,7 +130,9 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     let by_token = report(&hosted.world, &token);
     let url = by_token["publication"]["change_url"]
@@ -207,11 +206,18 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
     assert_eq!(
         by_token["checks"]["checks"],
         serde_json::json!([
-            {"name": "gate", "status": "completed", "conclusion": "success", "required": true},
+            {
+                "name": "gate",
+                "status": "completed",
+                "conclusion": "success",
+                "state": "passed",
+                "required": true,
+            },
             {
                 "name": "advisory",
                 "status": "completed",
                 "conclusion": "failure",
+                "state": "failed",
                 "required": false,
             },
         ])
@@ -231,10 +237,10 @@ fn every_spelling_of_one_piece_of_work_resolves_to_the_same_report() {
         .stdout(predicate::str::contains("work: feature/accounted"))
         .stdout(predicate::str::contains("state: open"))
         .stdout(predicate::str::contains(
-            "gate\tcompleted\tsuccess\trequired",
+            "gate\tpassed\tcompleted\tsuccess\trequired",
         ))
         .stdout(predicate::str::contains(
-            "advisory\tcompleted\tfailure\tnot required",
+            "advisory\tfailed\tcompleted\tfailure\tnot required",
         ))
         .stdout(predicate::str::contains("sources: status-checks"));
 }
@@ -561,7 +567,7 @@ fn landing_is_told_apart_from_a_queued_merge_and_from_a_change_that_closed() {
     // watches it to the bound and stops there rather than reporting a landing, and
     // the accounting is about what the *host* holds — so the work is still queued
     // whatever became of the command that asked for it.
-    let queued = Hosted::new(AUTOMATED_POLICY);
+    let queued = Hosted::new(crate::host::AUTOMATED_READY);
     queued.world.host_checks(&[Check {
         name: "gate",
         status: "in_progress",
@@ -797,8 +803,12 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         3,
         "each unreadable draft record is its own gap:\n{notes}"
     );
-    assert!(
-        answer["publication"].get("draft").is_none(),
+    // The draft that does stand is the one the publication itself recorded — its
+    // own, awaiting its checks and kept for review — and none of the unreadable
+    // records became a reason in its place.
+    assert_eq!(
+        answer["publication"]["draft"],
+        serde_json::json!({"kind": "awaiting-checks"}),
         "a record that could not be read is a gap, never a reason to render: {answer}"
     );
     // …and the two kinds this build has no word for cost nothing at all. One note
@@ -1634,7 +1644,7 @@ fn a_drafted_publication_reports_why_it_is_held_and_a_lifted_one_reports_no_draf
     // no reason — which also puts the draft and the lift in **two different streams**
     // of one branch. A reader that consulted only the drafting session's stream would
     // go on reporting a reason nothing is holding.
-    let hosted = Hosted::new(REVIEWED);
+    let hosted = Hosted::new(OPEN);
     let assert = hosted
         .world
         .onevcs()
@@ -1967,7 +1977,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v9.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v10.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -2010,7 +2020,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v9-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v10-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different

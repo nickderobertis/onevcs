@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use url::Url;
 
 use onevcs::{
-    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, Description,
-    Error, Hosting, MergeOutcome, MergePolicy, RemoteHost, Result, Sha,
+    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState,
+    Description, Error, Hosting, MergeOutcome, MergePolicy, RemoteHost, RequiredChecks, Result,
+    Sha,
 };
 
 use crate::events;
@@ -172,6 +173,10 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             // change request rather than from a flag nobody kept.
             if let Some(reason) = req.draft.clone() {
                 state.drafts.insert(id, reason);
+            } else if req.draft_awaiting_checks {
+                // The lifecycle's own draft, which carries no reason: recorded apart
+                // from the reasons a caller gave, so a journey can tell the two apart.
+                state.awaiting_checks.insert(id);
             }
             state.changes.push(change.clone());
             Ok(change)
@@ -213,7 +218,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             });
         }
         Ok(ChangeChecks {
-            checks: state.checks.get(&cr.id).cloned().unwrap_or_default(),
+            checks: current_checks(&state, &cr.id),
             sources,
         })
     }
@@ -232,6 +237,20 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
 
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
         self.store.with(|state| {
+            // What GitHub answers: a draft can be neither merged nor armed to merge
+            // itself (`Pull Request is still a draft`), so a publication that asked
+            // before lifting it fails here rather than landing work nobody lifted.
+            if matches!(policy, MergePolicy::ChangeAuto | MergePolicy::ChangeDirect)
+                && drafted(state, &cr.id)
+            {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "{} is still a draft, and a draft can be neither merged nor armed to \
+                         merge itself",
+                        cr.url
+                    ),
+                });
+            }
             // A seeded outcome is the host's decision and outranks the policy: it is
             // how a journey says "this one is queued behind something" or "this one
             // has already landed".
@@ -280,8 +299,27 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     // — "this host would not say" — is the `Err` arm rather than a value inside it, and the
     // reason is recorded on the declaration in the crate next door.
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
+        Ok(drafted(&self.store.snapshot()?, &cr.id))
+    }
+
+    /// What the repository requires before a merge into `base`: the seeded answer,
+    /// or — unset — exactly the checks seeded as required, completely.
+    fn required_checks_on(&self, _base: &str) -> Result<RequiredChecks> {
         let state = self.store.snapshot()?;
-        Ok(state.drafts.contains_key(&cr.id) && !state.made_ready.contains(&cr.id))
+        if let Some(seeded) = state.required_checks {
+            return Ok(seeded);
+        }
+        Ok(RequiredChecks {
+            checks: state
+                .checks
+                .values()
+                .chain(state.checks_after_lift.values())
+                .flatten()
+                .filter(|check| check.required)
+                .map(|check| check.name.clone())
+                .collect(),
+            unconsulted: std::collections::BTreeMap::new(),
+        })
     }
 
     /// Replace the description, recording the call.
@@ -381,17 +419,37 @@ fn complete_sources() -> std::collections::BTreeSet<CheckSource> {
     [CheckSource::StatusChecks].into_iter().collect()
 }
 
-/// Whether every required check on a change request has settled green.
+/// Whether every required check on a change request lets the host merge it.
 ///
 /// A change with no required checks is not green: nothing has vouched for it, which
-/// is the state auto-merge waits in rather than lands from.
+/// is the state auto-merge waits in rather than lands from. A skipped required check
+/// lets the merge through, as it does on GitHub's own merge path — which is why that
+/// is a state of its own rather than a pass.
 fn required_checks_green(state: &HostState, id: &ChangeId) -> bool {
-    let checks = match state.checks.get(id) {
-        Some(checks) => checks,
-        None => return false,
-    };
+    let checks = current_checks(state, id);
     let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
-    !required.is_empty() && required.iter().all(|check| check.green())
+    !required.is_empty()
+        && required
+            .iter()
+            .all(|check| matches!(check.state(), CheckState::Passed | CheckState::Skipped))
+}
+
+/// Whether this host holds a change request as a draft: opened as one, for a reason
+/// or while its checks run, and not lifted since.
+fn drafted(state: &HostState, id: &ChangeId) -> bool {
+    (state.drafts.contains_key(id) || state.awaiting_checks.contains(id))
+        && !state.made_ready.contains(id)
+}
+
+/// The checks the host reports on a change request right now: the ones registered
+/// after a lift, once it has been lifted and some are seeded, otherwise its own.
+fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
+    if state.made_ready.contains(id) {
+        if let Some(after) = state.checks_after_lift.get(id) {
+            return after.clone();
+        }
+    }
+    state.checks.get(id).cloned().unwrap_or_default()
 }
 
 /// The id one check's log is stored under.

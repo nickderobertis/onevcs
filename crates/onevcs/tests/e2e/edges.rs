@@ -2090,7 +2090,9 @@ fn a_recovery_given_no_body_carries_its_attestation_on_the_branch_and_opens_with
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     // The attestation is a commit on the branch, and the branch is what was pushed:
     // every provenance trailer this crate writes is on the commit side, so the fact
@@ -2138,7 +2140,9 @@ fn a_recovery_opens_its_change_request_with_the_body_the_caller_drafted() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
 
     // The file's own bytes, whole — beside an attestation that still travels on the
     // commits rather than in what a reviewer reads.
@@ -2170,7 +2174,9 @@ fn a_recovery_opens_its_change_request_with_the_body_the_caller_drafted() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(world.change_request_body(2), "One line, as typed.");
     let composed = std::fs::read_to_string(world.path("gh-state/pr-2.title")).expect("a title");
     assert_eq!(
@@ -2271,7 +2277,9 @@ fn naming_a_recoverys_body_twice_is_refused_before_anything_is_attested() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("change request open at"));
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
     assert_eq!(world.change_request_body(1), "The body that was drafted.\n");
 }
 

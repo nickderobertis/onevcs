@@ -130,6 +130,10 @@ pub struct Rule {
     /// Whether approvals are required. Unset falls back to the default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvals: Option<Approvals>,
+    /// How this rule's change requests take the draft lifecycle. Each key it leaves
+    /// unset falls back to the default policy's, and then to the shipped default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafts: Option<Drafts>,
 }
 
 /// What a rule applies to. Every field is optional; the ones that are set must
@@ -151,12 +155,48 @@ pub struct RuleMatch {
 }
 
 /// A complete policy: every field a rule may set, all of them decided.
+///
+/// `drafts` is the one exception to "decided": each of its keys has a shipped
+/// default, so a `default:` that names none of them is complete, and the resolution
+/// reports which layer decided each key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     /// How a change is published.
     pub publication: MergePolicy,
     /// Whether approvals are required.
     pub approvals: Approvals,
+    /// How a change request takes the draft lifecycle, where the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafts: Option<Drafts>,
+}
+
+/// The `drafts:` mapping a rule and `default:` may carry: how a publication's change
+/// request takes the draft lifecycle.
+///
+/// Every change request a publication carrying no draft reason opens starts as a
+/// draft while its required checks run, and is lifted to ready or kept a draft once
+/// they settle — by the identity's `publication` and `approvals`, which stay the
+/// whole of the routing. These two keys only switch the lifecycle and its one
+/// warning; neither says what a green change does.
+///
+/// Unlike the rest of the file, this mapping **refuses a key it does not know**, by
+/// name, where the file is loaded: it is new, nothing wrote a later key into it, and
+/// a misspelt `disable:` read as absent would leave an operator believing they had
+/// opted out. A file that carries no `drafts:` at all is read exactly as it was, and
+/// an older build ignores the whole block — which is that build's pre-draft
+/// behaviour, so no version bump is owed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Drafts {
+    /// `true` opens change requests ready, as before the lifecycle, while an explicit
+    /// held or release-awaiting draft keeps working. Shipped default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    /// Whether lifting a draft early — its required checks never ran on it, which is
+    /// what a workflow that skips drafts looks like — prints one warning line on
+    /// stderr. Shipped default `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn_on_early_lift: Option<bool>,
 }
 
 /// How a change reaches the base branch.

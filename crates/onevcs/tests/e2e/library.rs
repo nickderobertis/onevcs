@@ -25,6 +25,7 @@
 // a real session record under a real state root, and the same substituted `gh` every
 // journey in this suite uses.
 
+use onevcs::rules::Approvals;
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
     EventStream, FailureKind, Git, GitHub, Holding, Hosting, Identity, Landed, MatchFields,
@@ -41,6 +42,10 @@ use crate::world::World;
 /// A policy that opens a change request and leaves it open: the shortest path that
 /// still reaches the host, and the one both backends are compared on.
 const REVIEWED: &str = "{publication: change-open, approvals: required}";
+/// A policy that opens a change request and leaves it open with no approval required:
+/// green checks lift its draft to ready rather than keeping it for review, which is the
+/// row a journey about *lifting* a draft needs.
+const OPEN: &str = "{publication: change-open, approvals: none}";
 
 /// A local-first policy, verified by the repository's own `pre-push` hook at the
 /// publishing push and by nothing else.
@@ -65,7 +70,7 @@ fn hosted(world: &World, rules: &str) -> (std::path::PathBuf, Identity) {
         0,
         "the repository registers"
     );
-    configure_rules(world, format!("version: 1\nrules: []\ndefault: {rules}\n"));
+    configure_rules(world, format!("version: 3\nrules: []\ndefault: {rules}\n"));
     (
         origin,
         Git.resolve_identity("hosted").expect("the identity"),
@@ -170,7 +175,7 @@ fn a_publication_through_the_providers_answers_which_ending_it_reached() {
     // The ending is a case, not a sentence: this is exactly what the consumer that
     // parsed stdout could not do.
     let url = match &published.outcome {
-        PublishOutcome::ChangeOpen(url) => url.clone(),
+        PublishOutcome::ChangeReviewDraft(url) => url.clone(),
         other => panic!("change-open must open a change request, not {other:?}"),
     };
     assert_eq!(published.policy, MergePolicy::ChangeOpen);
@@ -187,7 +192,7 @@ fn a_publication_through_the_providers_answers_which_ending_it_reached() {
     // holds what the base does not.
     let again = onevcs::publish(&providers, &session.token, &PublishRequest::default())
         .expect("a second publication runs");
-    assert_eq!(again.outcome, PublishOutcome::ChangeOpen(url));
+    assert_eq!(again.outcome, PublishOutcome::ChangeReviewDraft(url));
     assert_eq!(
         host.state().changes.len(),
         1,
@@ -386,7 +391,7 @@ fn following_a_provided_sessions_events_stops_when_that_session_closes() {
 fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_it() {
     let world = World::new();
     inhabit(&world);
-    let (_origin, identity) = hosted(&world, REVIEWED);
+    let (_origin, identity) = hosted(&world, OPEN);
     let mut state = VcsState {
         identities: vec![identity],
         ..VcsState::default()
@@ -415,9 +420,11 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
     )
     .expect("the publication runs");
     assert_eq!(published.policy, MergePolicy::ChangeOpen);
+    // Narrowed to `change-open` under an identity whose approvals are required, a
+    // green change is kept for its own user's review.
     assert!(matches!(
         published.outcome,
-        PublishOutcome::ChangeOpen { .. }
+        PublishOutcome::ChangeReviewDraft { .. }
     ));
 
     // Less is a widening, and no implementation may take it.
@@ -461,7 +468,7 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     .expect("the publication runs");
     assert_eq!(published.policy, MergePolicy::ChangeOpen);
     assert_eq!(published.branch, "feature/real");
-    let PublishOutcome::ChangeOpen(url) = &published.outcome else {
+    let PublishOutcome::ChangeReviewDraft(url) = &published.outcome else {
         panic!("change-open must open a change request, not {published:?}");
     };
     // The URL the host answered, not one this journey composed.
@@ -847,7 +854,13 @@ fn the_commands_read_the_same_over_a_provided_session_as_over_a_real_one() {
     });
     assert_eq!(code, 0);
     let url = host.state().changes[0].url.to_string();
-    assert_eq!(published, format!("change request open at {url}\n"));
+    assert_eq!(
+        published,
+        format!(
+            "change request's checks are green at {url}, and it is kept as a draft for its \
+             user's review\n"
+        )
+    );
 
     // And closing names the session it released.
     let closed = stdout_of(|| {
@@ -945,7 +958,7 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
     .expect("the publication runs");
     assert!(matches!(
         published.outcome,
-        PublishOutcome::ChangeOpen { .. }
+        PublishOutcome::ChangeReviewDraft { .. }
     ));
 
     // What the host was actually told, read back off the host's own state rather
@@ -990,7 +1003,7 @@ fn a_requested_body_is_what_the_change_request_is_opened_with_verbatim() {
     .expect("the publication runs");
     assert!(matches!(
         published.outcome,
-        PublishOutcome::ChangeOpen { .. }
+        PublishOutcome::ChangeReviewDraft { .. }
     ));
 
     // Byte for byte, blank lines and all: a body a caller drafted that arrives
@@ -1370,7 +1383,7 @@ fn publishing_a_dirty_session_preserves_its_work_on_one_gapless_stream() {
     .expect("the publication runs");
     assert!(matches!(
         published.outcome,
-        PublishOutcome::ChangeOpen { .. }
+        PublishOutcome::ChangeReviewDraft { .. }
     ));
 
     let events = world.events(&session.token.0);
@@ -1490,6 +1503,11 @@ fn two_concurrent_sessions_each_get_their_own_events() {
             .collect::<Vec<onevcs::EventKind>>(),
         vec![
             onevcs::EventKind::ChangeOpened,
+            // Opened as a draft while its checks ran, green at once on a host that
+            // requires none, and kept for its user's review under this policy.
+            onevcs::EventKind::ChangeDrafted,
+            onevcs::EventKind::ChecksSettled,
+            onevcs::EventKind::DraftKeptForReview,
             onevcs::EventKind::SessionClosed
         ]
     );
@@ -1499,7 +1517,12 @@ fn two_concurrent_sessions_each_get_their_own_events() {
             .iter()
             .map(kind_of)
             .collect::<Vec<onevcs::EventKind>>(),
-        vec![onevcs::EventKind::ChangeOpened],
+        vec![
+            onevcs::EventKind::ChangeOpened,
+            onevcs::EventKind::ChangeDrafted,
+            onevcs::EventKind::ChecksSettled,
+            onevcs::EventKind::DraftKeptForReview
+        ],
         "the session that was not closed is not told that it was"
     );
     for (stream, token) in [(&fresh, &first.token), (&theirs, &second.token)] {
@@ -1789,6 +1812,11 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
             .collect::<Vec<_>>(),
         vec![
             onevcs::EventKind::ChangeOpened,
+            // Opened as a draft while its checks ran, green at once on a host that
+            // requires none, and kept for its user's review under this policy.
+            onevcs::EventKind::ChangeDrafted,
+            onevcs::EventKind::ChecksSettled,
+            onevcs::EventKind::DraftKeptForReview,
             onevcs::EventKind::SessionClosed
         ]
     );
@@ -1837,6 +1865,9 @@ fn a_filtered_event_stream_hands_a_consumer_only_what_it_asked_for() {
             vec![
                 onevcs::EventKind::SessionOpened,
                 onevcs::EventKind::ChangeOpened,
+                onevcs::EventKind::ChangeDrafted,
+                onevcs::EventKind::ChecksSettled,
+                onevcs::EventKind::DraftKeptForReview,
                 onevcs::EventKind::SessionClosed
             ],
             "excluding {word} dropped an event this session wrote"
@@ -2212,7 +2243,17 @@ fn a_reviewed_publication_stamps_its_own_branch_push_as_development_and_reads_by
             .into_iter()
             .map(|event| kind_of(&event))
             .collect();
-    assert_eq!(reviewed, vec![onevcs::EventKind::ChangeOpened]);
+    // Every kind the lifecycle adds is review too: the draft awaiting its checks,
+    // their verdict, and the draft kept for its user's review.
+    assert_eq!(
+        reviewed,
+        vec![
+            onevcs::EventKind::ChangeOpened,
+            onevcs::EventKind::ChangeDrafted,
+            onevcs::EventKind::ChecksSettled,
+            onevcs::EventKind::DraftKeptForReview
+        ]
+    );
 
     // This repository releases nothing, so the release phase is not one this session
     // has — and a filter that named it would be answered with nothing for ever.
@@ -2949,6 +2990,16 @@ fn awaiting_a_release() -> DraftReason {
     }
 }
 
+/// The `change-drafted` records that carry a caller's reason — every one but the
+/// lifecycle's own draft awaiting its checks, which no caller asked for.
+fn reasons_recorded(world: &World, token: &str) -> Vec<serde_json::Value> {
+    world
+        .events_of(token, "change-drafted")
+        .into_iter()
+        .filter(|event| event["payload"]["kind"] != "awaiting-checks")
+        .collect()
+}
+
 /// A session on `branch` over the registered repository, with one commit on it —
 /// real git, in the run clone the real repository side cut.
 fn worked(world: &World, branch: &str) -> Session {
@@ -2980,7 +3031,7 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
     // state and never its reason.
     let world = World::new();
     inhabit(&world);
-    let (origin, _identity) = hosted(&world, REVIEWED);
+    let (origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let providers = Providers {
         vcs: &Git,
@@ -3237,11 +3288,13 @@ fn a_local_direct_publication_refuses_a_draft_by_name_before_anything_is_pushed(
 #[test]
 fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
     // The other half of the same seam, and the one every existing caller is: a
-    // publication with no reason opens a change request that is not a draft, and it
-    // carries the body that was drafted for it.
+    // publication with no reason gives no reason — the change request it opens is the
+    // lifecycle's draft awaiting its checks, never one carrying a reason, and once
+    // they are green (this host requires none) it is lifted. It carries the body that
+    // was drafted for it.
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let (_origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let session = worked(&world, "feature/undrafted");
 
@@ -3271,11 +3324,16 @@ fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
             .expect("a host")
             .is_draft(&opened)
             .expect("the host answers"),
-        "a publication that asked for no draft opened no draft"
+        "a publication that asked for no draft leaves no draft standing once green"
     );
     assert!(
-        host.state().drafts.is_empty() && host.state().made_ready.is_empty(),
-        "nothing was drafted and no lift was asked for"
+        host.state().drafts.is_empty() && host.state().awaiting_checks.contains(&opened.id),
+        "no reason was recorded, and the change opened as a draft awaiting its checks"
+    );
+    assert_eq!(
+        host.state().made_ready,
+        vec![opened.id.clone()],
+        "lifted once"
     );
     assert_eq!(
         host.state().bodies.get(&opened.id).map(String::as_str),
@@ -3283,11 +3341,12 @@ fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
         "and it carries the body that was drafted for it"
     );
     assert!(
-        world
-            .events_of(&session.token.0, "change-drafted")
-            .is_empty(),
-        "nothing recorded a draft"
+        reasons_recorded(&world, &session.token.0).is_empty(),
+        "nothing recorded a reason"
     );
+    let drafted = world.events_of(&session.token.0, "change-drafted");
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(drafted[0]["payload"]["kind"], "awaiting-checks");
 }
 
 #[test]
@@ -3430,7 +3489,7 @@ fn the_real_host_is_asked_for_a_draft_and_asked_to_lift_it() {
     // `gh` every journey in this suite drives.
     let world = World::new();
     inhabit(&world);
-    let (origin, _identity) = hosted(&world, REVIEWED);
+    let (origin, _identity) = hosted(&world, OPEN);
     world.install_fake_host(&origin);
     let session = worked(&world, "feature/really-drafted");
 
@@ -3542,7 +3601,7 @@ fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
     // to report that rather than go on to ask for a merge. The change stays a draft.
     let world = World::new();
     inhabit(&world);
-    let (origin, _identity) = hosted(&world, REVIEWED);
+    let (origin, _identity) = hosted(&world, OPEN);
     world.install_fake_host(&origin);
     let session = worked(&world, "feature/unliftable");
 
@@ -3599,7 +3658,7 @@ fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() 
     // which is exactly what says the reason no longer holds.
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let (_origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let providers = || Providers {
         vcs: &Git,
@@ -3751,10 +3810,15 @@ fn a_host_written_before_drafts_adopts_its_change_request_and_publishes_unchange
             }])
         }
         fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
-            unreachable!("change-open asks a host nothing about its checks")
+            // Every change policy watches its checks; this repository has none, and
+            // says so from its whole rollup.
+            Ok(onevcs::ChangeChecks {
+                checks: Vec::new(),
+                sources: [CheckSource::StatusChecks].into_iter().collect(),
+            })
         }
         fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
-            unreachable!("change-open asks a host for no log")
+            unreachable!("a host reporting no check is asked for no log")
         }
         fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
             unreachable!("change-open asks a host to merge nothing")
@@ -3769,7 +3833,7 @@ fn a_host_written_before_drafts_adopts_its_change_request_and_publishes_unchange
 
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let (_origin, _identity) = hosted(&world, OPEN);
     let session = worked(&world, "feature/earlier-host");
 
     let published = onevcs::publish(
@@ -3805,7 +3869,7 @@ fn a_change_request_already_open_for_review_is_not_put_back_into_a_draft() {
     // assumed from having asked.
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let (_origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let providers = || Providers {
         vcs: &Git,
@@ -3850,9 +3914,7 @@ fn a_change_request_already_open_for_review_is_not_put_back_into_a_draft() {
         "nothing recorded a draft the host is not holding"
     );
     assert!(
-        world
-            .events_of(&session.token.0, "change-drafted")
-            .is_empty(),
+        reasons_recorded(&world, &session.token.0).is_empty(),
         "and nothing wrote the reason into the record"
     );
     assert_eq!(
@@ -3966,6 +4028,7 @@ fn the_real_host_refuses_an_unusable_reason_before_it_reaches_the_host_at_all() 
             title: "feat: the thing".to_owned(),
             body: None,
             draft: Some(awaiting_a_release_with("feature/the-pinned-branch", "")),
+            draft_awaiting_checks: false,
         })
         .expect_err("a reason nothing could render is not one to open a draft with");
     assert!(
@@ -4143,7 +4206,7 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
         &PublishRequest::default(),
     )
     .expect("the publication runs");
-    let PublishOutcome::ChangeOpen(url) = &published.outcome else {
+    let PublishOutcome::ChangeReviewDraft(url) = &published.outcome else {
         panic!("change-open must open a change request, not {published:?}");
     };
     onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
@@ -4532,7 +4595,7 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
     // create call was given.
     let world = World::new();
     inhabit(&world);
-    let (origin, _identity) = hosted(&world, REVIEWED);
+    let (origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let providers = Providers {
         vcs: &Git,
@@ -4710,7 +4773,7 @@ fn a_draft_of_either_kind_is_refused_over_a_change_request_already_open_for_revi
     // is holding it. Refused before anything reaches the remote, and spelled per kind.
     let world = World::new();
     inhabit(&world);
-    let (_origin, _identity) = hosted(&world, REVIEWED);
+    let (_origin, _identity) = hosted(&world, OPEN);
     let host = MemoryHost::new();
     let providers = || Providers {
         vcs: &Git,
@@ -4755,9 +4818,7 @@ fn a_draft_of_either_kind_is_refused_over_a_change_request_already_open_for_revi
         );
         assert!(host.state().drafts.is_empty(), "nothing recorded a draft");
         assert!(
-            world
-                .events_of(&session.token.0, "change-drafted")
-                .is_empty(),
+            reasons_recorded(&world, &session.token.0).is_empty(),
             "nothing wrote a {kind} reason into the record"
         );
     }
@@ -5046,7 +5107,13 @@ fn a_consumer_drives_a_whole_closeout_against_the_providers() {
     let world = World::new();
     inhabit(&world);
     let (_origin, identity) = hosted(&world, REVIEWED);
-    let vcs = knowing(&identity);
+    // No approval required, so the reasonless publication lifts the draft once its
+    // checks are green rather than keeping it for review.
+    let vcs = MemoryVcs::seeded(VcsState {
+        identities: vec![identity.clone()],
+        approvals: Some(Approvals::None),
+        ..VcsState::default()
+    });
     let host = MemoryHost::new();
     let providers = Providers {
         vcs: &vcs,
@@ -6617,7 +6684,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
     )
     .expect("the completed branch publishes");
     assert!(
-        matches!(outcome, PublishOutcome::ChangeOpen(_)),
+        matches!(outcome, PublishOutcome::ChangeReviewDraft(_)),
         "an identity that publishes through a change request opens one: {outcome:?}"
     );
     assert!(
@@ -6674,7 +6741,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
     )
     .expect("the interrupted branch recovers");
     assert!(
-        matches!(outcome, PublishOutcome::ChangeOpen(_)),
+        matches!(outcome, PublishOutcome::ChangeReviewDraft(_)),
         "recovery publishes under the identity's own policy: {outcome:?}"
     );
     assert!(

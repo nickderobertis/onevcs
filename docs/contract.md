@@ -23,7 +23,10 @@ A required check whose conclusion is `cancelled` or `stale` has no verdict. Publ
 keeps reading checks for a later run under the same name. A later green conclusion proceeds,
 a later red conclusion refuses as `checks-failed`, and reaching the existing bound reports
 `checks-unsettled`, naming the check and its no-verdict conclusion. Every other completed
-conclusion that is not green remains red. This adds no `FailureKind`.
+conclusion that is not green remains red. This adds no `FailureKind`. *(Superseded in part
+by the draft-lifecycle amendment below: `skipped` is no longer green, and is not red either
+— it is a state of its own, `CheckState::Skipped`, which the publication watch reads by its
+own rule.)*
 
 `onevcs release acknowledge <REFERENCE> --target <NAME> --version <VERSION>
 [--supersede] [--json]` also accepts an automated target when that landing's baseline
@@ -202,8 +205,8 @@ pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<S
 pub struct Subject(String);                  // TryFrom<String>: a title that can be one
 pub struct Publication { pub session: SessionToken, pub branch: String,
                          pub policy: MergePolicy, pub outcome: PublishOutcome }
-pub enum PublishOutcome {                    // widened by the draft amendment
-    Merged(Sha), ChangeOpen(Url), ChangeDraft(Url), Queued(Url), NothingToPublish,
+pub enum PublishOutcome {                    // widened by the draft and draft-lifecycle amendments
+    Merged(Sha), ChangeOpen(Url), ChangeDraft(Url), ChangeReviewDraft(Url), Queued(Url), NothingToPublish,
     Failed { kind: FailureKind, reason: String, retained: Option<Retention> },
 }
 pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }  // 1 | 2 | 3 | 70
@@ -594,7 +597,10 @@ as its verification:
   never performs.
 - **`change-open` is the stated exception**: a human decides when a reviewed change
   merges, so there is no bounded wait to have and it settles at change-request-open
-  exactly as before. That is a decision, not an oversight.
+  exactly as before. That is a decision, not an oversight. *(Superseded by the
+  draft-lifecycle amendment below: `change-open` watches the pushed commit's required
+  checks to the same bound, because whether its draft is lifted or kept is decided on
+  their verdict — and it takes no merge-queue turn, since it asks for no merge.)*
 
 Watching needs one question the six methods could not ask, so `RemoteHost` gains a
 seventh:
@@ -1209,7 +1215,8 @@ development  session-opened fetch lock-wait lock-acquired commit-preserved
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired
 review       change-opened change-drafted draft-lifted change-described
-             change-check change-merged
+             change-check change-merged draft-lifted-early draft-kept-for-review
+             checks-settled
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -1798,6 +1805,13 @@ change lands — and `local-direct` refuses a `DraftReason` by name at the bound
 because it opens no change request at all and would land the work carrying the very
 pin the draft exists to hold back.
 
+*(The sentence that follows, and the statement in the held-draft amendment below that a
+reasonless publication lifts a held draft on the spot, are superseded by the
+draft-lifecycle amendment below: a publication carrying no `DraftReason` is no longer an
+ordinary ready change request that lifts any draft it adopts. It opens or adopts the
+change as a draft awaiting its checks and lifts it only on their verdict, or keeps it for
+review; under `drafts: {disabled: true}` it behaves exactly as stated here.)*
+
 **A publication carrying no `DraftReason` is what lifts the draft**, which is why
 there is no separate verb for it: the caller that republishes with the pin moved is
 saying the reason no longer holds. It is idempotent because the host decides — a
@@ -1982,7 +1996,11 @@ request; it never opens a second one. `publish --draft` over a change request th
 holds as a draft records `change-drafted` again and ends `ChangeDraft`; over one open
 for review it is refused as today, spelled per variant. A `publish` carrying no reason
 over a held draft lifts it and lands under the policy, exactly as it lifts a
-release-awaiting draft today.
+release-awaiting draft today. *(Superseded by the draft-lifecycle amendment below: that
+publication records the adopted draft as awaiting its checks and follows the lifecycle's
+table rather than lifting it on the spot — so a worker's own draft on a `change-open`
+identity whose approvals are required stays a draft when green. Under `drafts: {disabled:
+true}` it lifts at once, as stated here.)*
 
 **Where the reason lives.** As today: the publication record and nowhere in the
 change request's body. `change describe` is the one path that writes a body after the
@@ -3465,6 +3483,211 @@ impl Derivation { pub fn as_str(self) -> &'static str; }
  "outcome": "kept", "deleted": [], "failed": [], "slots_returned": [],
  "run_roots_removed": [], "sessions_closed": [], "derivation": "reused"}
 ```
+
+### Every change request is a draft while its checks run, and green decides whether it is lifted
+
+**Recorded as the user's ruling, relayed by the manager** (plan project
+`authoring:draft-pr-lifecycle`, contracts C1–C5, fixed for the run). A change request's
+draft/ready state is to tell the people who see it the truth: a draft is work that may
+still change or that its own user has not vetted, and ready is green and good to merge or
+review. So every change request a lifecycle publication opens under `change-auto`,
+`change-direct` or `change-open` starts as a **draft** while its required checks run, and
+once they settle it is lifted to ready or kept a draft by the identity's `publication` and
+`approvals`. Five sentences of earlier amendments are superseded and are marked where they
+stand: "`change-open` is the stated exception"; "A publication carrying no `DraftReason` is
+what lifts the draft" and, with it, the reading that a reasonless publication opens an
+ordinary change request and never drafts; the held-draft amendment's statement that a
+reasonless publication over a held draft lifts it on the spot; and the no-verdict
+amendment's "every other completed conclusion that is not green remains red", as it bore on
+`skipped`. The approved text below the rule is unedited.
+
+**The rule.**
+
+| Checks on the draft | Policy | Result |
+| --- | --- | --- |
+| green | `change-auto` | lift to ready, **then** arm the host's merge, watch → `Merged` |
+| green | `change-direct` | lift to ready, **then** merge → `Merged` |
+| green | `change-open` + `approvals: none` | lift to ready, stop → `ChangeOpen` |
+| green | `change-open` + `approvals: required` | stay a draft → `ChangeReviewDraft(Url)` |
+| red | any | stay a draft → `ChecksFailed` |
+| bound elapsed | any | stay a draft → `ChecksUnsettled` |
+
+`change-direct` with `approvals: required` is already refused where the rules file is
+loaded, so it has one row. `local-direct` opens no change request and is untouched,
+including its refusal of a draft reason by name.
+
+**C1 — `drafts:` in the rules file.** Every rule and `default:` may carry an optional
+`drafts:` mapping with two optional booleans, `disabled` (shipped default `false`) and
+`warn_on_early_lift` (shipped default `true`). Each key falls back on its own: the matched
+rule's, then `default:`'s, then the shipped default — as `publication` and `approvals`
+fall back. An unknown key inside `drafts:`, or a value that is not a boolean, is refused by
+name where the file is loaded. It is admitted at rules-file version 3 and later **with no
+version bump**: the rules file declares no `deny_unknown_fields`, so an older onevcs
+sharing the host ignores the block and opens ready change requests, which is exactly the
+pre-draft behaviour; a file declaring version 1 or 2 and naming `drafts:` is refused by
+name, as a `trailer_prefix` at version 1 is. `publication` and `approvals` stay the whole
+routing: what a green draft does is derived from them and is never a key. `drafts:
+{disabled: true}` opens change requests ready, exactly as before, while an explicit `held`
+or `awaiting-release` draft keeps working.
+
+```yaml
+default:
+  publication: change-open
+  approvals: required
+  drafts: {warn_on_early_lift: false}
+rules:
+  - match: {host: github.com, owner: acme-corp, name: legacy}
+    drafts: {disabled: true}
+```
+
+`onevcs rules check <repo>` prints, beside the policy, three lines — each with the layer
+that decided it:
+
+```text
+drafts: on (from the shipped default)
+green draft: keep for review (from publication change-open and approvals required)
+early-lift warning: off (from the default)
+```
+
+`drafts:` is `on` or `off`; `green draft:` is `lift`, `keep for review`, or `not
+applicable` — for `local-direct`, which opens no change request, and for any policy while
+the lifecycle is off, where the line says so; `early-lift warning:` is `on` or `off`. The
+command has no `--json`. `ResolvedPolicy`, which `rules check`, `register` and `repos`
+render, carries the same four values.
+
+```rust
+// onevcs::rules
+#[serde(deny_unknown_fields)]
+pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<bool> }
+//   Rule     pub drafts: Option<Drafts>     // omitted when absent
+//   Policy   pub drafts: Option<Drafts>     // omitted when absent
+
+// onevcs::ResolvedPolicy gains, each beside the layer that decided it:
+//   pub drafts_disabled: bool,     pub drafts_disabled_from: String,
+//   pub warn_on_early_lift: bool,  pub warn_on_early_lift_from: String,
+```
+
+**C2 — the publication lifecycle.**
+
+- A publication carrying **no** draft reason that opens a change request, the lifecycle
+  on, opens it as a draft — `ChangeSpec` gains `draft_awaiting_checks: bool`, defaulted
+  and omitted when false, which `GitHub::open_change` passes as `--draft` — and records
+  `change-drafted` with `kind: "awaiting-checks"`. `DraftReason`, the caller's request type,
+  is **not** widened: awaiting checks is what a caller gets by asking for no draft. Whether
+  the host honoured the request is asked (`is_draft`) rather than assumed, so a host written
+  before the field opens it ready and it is watched as a ready change.
+- All three change policies watch the pushed commit's required checks to the existing
+  bound. `change-open` takes no merge-queue turn, since it asks for no merge; `change-auto`
+  and `change-direct` keep theirs exactly as before.
+- The lift comes **before** the merge is armed (`change-auto`) or asked for
+  (`change-direct`). GitHub's constraint is exact: a draft pull request cannot be merged —
+  the merge is refused with *"Pull Request is still a draft"* (REST `405`, and the
+  `mergePullRequest` mutation likewise) — and auto-merge cannot be enabled on one
+  (`enablePullRequestAutoMerge` refuses a draft), so the only order that lands is
+  `markPullRequestReadyForReview` (`gh pr ready`) first.
+- A publication carrying a `Held` or `AwaitingRelease` reason ends `ChangeDraft` exactly as
+  before, and is never watched into a lift, under any `drafts` setting.
+- A reasonless publication **adopting** a draft — held, awaiting-release, or
+  awaiting-checks from an earlier run — no longer lifts it on the spot: it records
+  `change-drafted` with `kind: "awaiting-checks"` and follows the table. Under `drafts:
+  {disabled: true}` it lifts at once, as before. So a worker's own `--draft` change on a
+  `change-open` identity whose approvals are required stays a draft when green.
+- **Lifting is one-way.** Adopting a change the host holds ready never asks the host to
+  re-draft it and records no `change-drafted`; green then reads as a ready change, so
+  `change-open` with approvals required ends `ChangeOpen`.
+- **No required check declared** — the host's complete, empty answer: `required_checks_on`
+  complete and naming nothing, or a complete rollup reporting checks of which none is
+  required, which is what `gh pr checks --required`'s "no required checks reported" says —
+  is green at once: no grace wait and no warning. An incomplete, unknown or unreadable
+  answer is never read as "none".
+- **Draft-skipping CI.** A workflow job gated on `draft == false` reports `skipped`. So
+  while the change is a draft, a required check that is **absent or concluded `skipped`**
+  has not run. If none of the required checks has run when the grace window
+  `ONEVCS_DRAFT_CHECKS_GRACE_SECONDS` elapses — it defaults to **120 seconds**, and is
+  validated like `ONEVCS_CHECKS_POLL_SECONDS` and `ONEVCS_CHECKS_TIMEOUT_SECONDS`, a finite
+  number of seconds above zero, before anything is pushed — the draft is lifted,
+  `draft-lifted` and `draft-lifted-early` are recorded, one warning line is printed on
+  stderr unless `warn_on_early_lift` is false, and the watch goes on. The same holds where
+  some required checks ran and passed on the draft and the rest had not run: the draft is
+  lifted early so they can, rather than held to the bound. Where the host would not say what
+  it requires and no required check has shown up at all, the draft is likewise lifted at
+  the grace window, since a draft that is never lifted is never verified. From then on the
+  change is a ready change: green ends `Merged` (`change-auto`, `change-direct`) or
+  `ChangeOpen` (`change-open`, either approvals — the one case a team change is ready before
+  green, which the user accepted), and red or the bound end `ChecksFailed` /
+  `ChecksUnsettled` with the change ready.
+- **After an early lift**, a draft-era `skipped` is not a verdict: the watch needs a run
+  the host attached after the lift, and if none of the required checks has one within the
+  grace window it ends `ChecksUnsettled` with a reason saying the required checks did not
+  re-run after the lift, naming the likely cause — a workflow that does not trigger on
+  `ready_for_review`. It never merges, and never lifts anything, on draft-era skips. A
+  post-lift run is told from a draft-era one by the check itself: a check the host reports
+  after the lift that is not identical — name, status, conclusion, commit and address — to
+  one it reported on the draft is a run it attached since. That needs nothing `Check` does
+  not already carry, so neither `Check` nor `RemoteHost` is widened for it. Once a post-lift
+  run exists the ordinary rules apply, under which a post-lift `skipped` satisfies the
+  watch and is recorded as `passed-with-skipped`, never as passed.
+- `publish-branch` and `recover` take the same lifecycle; both reach it through the one
+  publication path.
+
+**C3 — the new ending.** `PublishOutcome::ChangeReviewDraft(Url)`, serialized
+`change-review-draft`, whose `describe()` says the change request's checks are green and it
+is kept as a draft for its user's review. Its own case, not a shade of `ChangeDraft` or
+`ChangeOpen`, for the reason `ChangeDraft` is its own: a consumer acts on the difference.
+The session record closes on it, as on every ending but a `Held` draft: the work is done.
+`FailureKind` does not change.
+
+**C4 — event kinds, `review` phase.**
+
+Event kinds added: `draft-lifted-early`, `draft-kept-for-review`, `checks-settled`.
+
+- `change-drafted` — its `kind` admits `awaiting-checks`, whose payload is `{url, id, base,
+  kind}`.
+- `draft-kept-for-review` — `{url, id, base}`, when green checks leave a `change-open`
+  change whose approvals are required a draft.
+- `draft-lifted-early` — `{url, id, base, awaited, grace_seconds, warned}`: `awaited` the
+  required check names that had not run, and `warned` false when `warn_on_early_lift`
+  suppressed the stderr line. Emitted beside `draft-lifted`, which keeps being emitted for
+  every lift.
+- `checks-settled` — `{url, id, head, verdict, skipped}`, recorded once per watch when its
+  required checks stop blocking: `verdict` is `passed` or `passed-with-skipped`, and
+  `skipped` the required check names that concluded skipped, empty for `passed`. So a
+  publication's record says it passed with skipped required checks rather than plain green.
+
+**C5 — `skipped` is its own check state** (the user's ruling, relayed by the manager).
+Every check is classified into exactly one state, and a skipped check is **never
+classified or reported as passed**: `Check::green` and `Check::red` and every rendering
+follow `Check::state()`, the one classifier.
+
+```rust
+// onevcs::host, exported from the crate root. Serialized kebab-case.
+pub enum CheckState { Passed, Failed, Skipped, Pending, NoVerdict }
+impl Check { pub fn state(&self) -> CheckState; }
+// passed: success, neutral · skipped: skipped · no-verdict: cancelled, stale ·
+// pending: not yet settled · failed: every other settled conclusion
+```
+
+It surfaces in three places. The `change-check` event's payload gains `state` beside the
+host's raw `status` and `conclusion`. `checks-settled`, above. And `onevcs status` — the
+read `just work-status` renders — shows each check's state, in its human rendering and in
+its `--json`, whose report version is **10**: every check carries `state`, and
+`publication.draft` may be `{"kind": "awaiting-checks"}`. What the watch does with
+`skipped` is C2's rule on the new state: while the change is a draft a skipped required
+check has not run; after an early lift a draft-era skip never counts; otherwise a skipped
+required check satisfies the watch, as the host's own merge path does, and the watch records
+`checks-settled` with `verdict: "passed-with-skipped"`.
+
+**The testing crate follows.** `onevcs-testing`'s repository-side publication and its host
+implement the same lifecycle — drafts by default, the watch for all three change policies,
+and the lift before any merge. The host refuses to arm or perform a merge on a change it
+holds as a draft, and a journey can seed checks that register only after a lift
+(`HostState::checks_after_lift`), checks concluded `skipped` on the draft, and a repository
+declaring no required check (`HostState::required_checks`), so a consumer can drive every
+row of the table. Its repository side takes the policy's other two fields from
+`VcsState::approvals` and `VcsState::drafts`. It has no clock, so each phase of its watch is
+one reading of the host: a reading that has not settled is the bound elapsing, and a draft
+none of whose required checks has run is the grace window elapsing. Its state document is
+version 14.
 
 ---
 

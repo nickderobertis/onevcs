@@ -32,7 +32,9 @@ onevcs release status "$token"                     # …and whether a release ca
 
 `onevcs rules check REPO` is the second line of that, on its own: it resolves the
 checkout to an identity, says which rule of the rules file matched it, and gives the
-publication and approvals that rule decided with the source of each.
+publication and approvals that rule decided with the source of each — and, beside them,
+whether the draft lifecycle below is on, what a green change does under that policy, and
+whether an early lift warns.
 
 ![`onevcs rules check widgets` printing repo, identity, checkout and rules-file paths, the matched rule with its host/owner/name matcher, then publication change-auto and approvals none, each marked "(from rule 1)", and the trailer prefix taken from the rules file](docs/screenshots/rules-check.svg)
 
@@ -52,12 +54,27 @@ onevcs publish "$token" --draft                    # open it as a draft the sess
 onevcs change describe "$token" --body-file pr.md  # replace the description with the evidence
 onevcs change show "$token" --json                 # what the host holds: url, id, base, draft, title, body
 onevcs change ready "$token"                       # lift the draft without landing anything
-onevcs publish "$token"                            # …or lift it and land it in one step
+onevcs publish "$token"                            # …or publish it: its checks decide the lift
 ```
 
 Each of those addresses the session's own change request — the one open from its
 branch into its base — so nothing names a URL. The library forms are
 `session_change`, `describe_change`, and `ready_change`.
+
+**Every change request starts as a draft while its required checks run.** A plain
+`onevcs publish` under `change-auto`, `change-direct` or `change-open` opens (or adopts)
+the change request as a draft and watches the pushed commit's required checks. Green lifts
+it to ready — and only then arms or performs the merge, since a host merges no draft —
+except under `change-open` with `approvals: required`, where it stays a draft for its own
+user's review and the publication ends `change-review-draft`. Red, or the bound, leaves it
+a draft. A repository whose CI skips drafts is lifted after a grace window
+(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`, 120 by default) so its checks can run, with one
+warning line. Lifting is one-way, and `drafts: {disabled: true}` in the rules file opens
+change requests ready, as before:
+
+```yaml
+default: {publication: change-open, approvals: required, drafts: {warn_on_early_lift: false}}
+```
 
 A branch that outlived the session that cut it is landed by name instead, under
 that same rules-resolved policy: `onevcs publish-branch feature/thing --repo
@@ -266,9 +283,12 @@ let published = onevcs::publish(&providers, &token, &PublishRequest::default())?
 match published.outcome {
     PublishOutcome::Merged(sha) => journal.landed(sha),
     PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
-    // A draft cannot land while it stands; publishing again with no `draft` lifts
-    // it, and so does `ready_change`. Whether it awaits a dependency's release or
-    // is held by the session still making it is the `DraftReason` the request carried.
+    // Green, and kept a draft for the person who dispatched the work to review.
+    PublishOutcome::ChangeReviewDraft(url) => journal.for_review(url),
+    // A draft cannot land while it stands; `ready_change` lifts it, and so does a
+    // publication with no `draft` once its checks are green. Whether it awaits a
+    // dependency's release or is held by the session still making it is the
+    // `DraftReason` the request carried.
     PublishOutcome::ChangeDraft(url) => journal.held_back(url),
     PublishOutcome::NothingToPublish => journal.nothing(),
     PublishOutcome::Failed { kind, reason, retained } => journal.failed(kind, reason, retained),
