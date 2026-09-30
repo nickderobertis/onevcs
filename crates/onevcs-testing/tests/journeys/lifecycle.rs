@@ -518,3 +518,56 @@ fn a_grace_window_that_is_not_a_number_of_seconds_is_refused_by_name_as_it_is_ne
         );
     }
 }
+
+#[test]
+fn a_green_read_from_the_hosts_marking_because_the_declaration_is_unreadable_says_so() {
+    // An incomplete declaration, and a required-marked check green on the draft: the
+    // marking decides, and `checks-settled` says that is what it was read from and why.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeOpen, Approvals::Required, None);
+    let partial = MemoryHost::seeded(HostState {
+        checks: BTreeMap::from([(first(), vec![check("gate", Some("success"), 1)])]),
+        required_checks: Some(RequiredChecks {
+            checks: BTreeSet::new(),
+            unconsulted: BTreeMap::from([(
+                ProtectionSource::BranchProtection,
+                "HTTP 403".to_owned(),
+            )]),
+        }),
+        ..HostState::default()
+    });
+
+    let (outcome, _) = published(&vcs, &partial, &home, &PublishRequest::default());
+
+    assert!(
+        matches!(outcome, PublishOutcome::ChangeReviewDraft(_)),
+        "{outcome:?}"
+    );
+    let settled: Vec<serde_json::Value> = home
+        .events("s-testing-1")
+        .into_iter()
+        .filter(|event| event["kind"] == "checks-settled")
+        .collect();
+    assert_eq!(
+        settled[0]["payload"]["requirement"]["read_from"], "host-marking",
+        "{settled:?}"
+    );
+    assert!(settled[0]["payload"]["requirement"]["because"]
+        .as_str()
+        .is_some_and(|why| why.contains("answered only in part")));
+
+    // A complete declaration settles with no such disclosure.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeOpen, Approvals::Required, None);
+    let complete = host(vec![check("gate", Some("success"), 1)], None);
+    published(&vcs, &complete, &home, &PublishRequest::default());
+    let settled: Vec<serde_json::Value> = home
+        .events("s-testing-1")
+        .into_iter()
+        .filter(|event| event["kind"] == "checks-settled")
+        .collect();
+    assert!(
+        settled[0]["payload"].get("requirement").is_none(),
+        "{settled:?}"
+    );
+}

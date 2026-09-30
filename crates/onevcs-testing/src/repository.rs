@@ -924,22 +924,30 @@ fn watch(
     drafted: bool,
     emissions: &mut Vec<Emission>,
 ) -> Result<bool> {
-    let settled = |emissions: &mut Vec<Emission>, skipped: Vec<String>| {
+    // `unread`: the requirement was read from the host's own per-check marking because
+    // its declaration could not be read, which the record says, as next door.
+    let settled = |emissions: &mut Vec<Emission>, skipped: Vec<String>, unread: Option<&str>| {
         let verdict = if skipped.is_empty() {
             "passed"
         } else {
             "passed-with-skipped"
         };
-        emissions.push(publishing.emission(
-            EventKind::ChecksSettled,
-            json!({
-                "url": change.url.to_string(),
-                "id": change.id.0,
-                "head": change.head_sha.0,
-                "verdict": verdict,
-                "skipped": skipped,
-            }),
-        ));
+        let mut payload = json!({
+            "url": change.url.to_string(),
+            "id": change.id.0,
+            "head": change.head_sha.0,
+            "verdict": verdict,
+            "skipped": skipped,
+        });
+        if let Some(because) = unread {
+            eprintln!(
+                "onevcs: warning: the required checks on {} were read from the host's own \
+                 per-check marking, because the declaration could not be read: {because}",
+                change.url
+            );
+            payload["requirement"] = json!({"read_from": "host-marking", "because": because});
+        }
+        emissions.push(publishing.emission(EventKind::ChecksSettled, payload));
     };
     let unsettled = |standing: &[(String, Option<CheckState>)]| Error::ChecksUnsettled {
         reason: format!(
@@ -965,15 +973,28 @@ fn watch(
         if !through(&standing) {
             return Err(unsettled(&standing));
         }
-        settled(emissions, skipped(&standing));
+        settled(emissions, skipped(&standing), None);
         return Ok(false);
     }
 
     // The draft: what the host requires, and a skipped check has not run.
-    let mut declared = match host.required_checks_on(&change.base) {
-        Ok(answer) if answer.checks.is_empty() && answer.complete() => Declared::Nothing,
-        Ok(answer) if !answer.checks.is_empty() => Declared::Names(answer.checks),
-        _ => Declared::Unknown,
+    let (mut declared, mut unread) = match host.required_checks_on(&change.base) {
+        Ok(answer) if answer.checks.is_empty() && answer.complete() => (Declared::Nothing, None),
+        Ok(answer) if !answer.checks.is_empty() => (Declared::Names(answer.checks), None),
+        Ok(_) => (
+            Declared::Unknown,
+            Some(format!(
+                "the host answered only in part about which checks a merge into {} requires",
+                change.base
+            )),
+        ),
+        Err(refused) => (
+            Declared::Unknown,
+            Some(format!(
+                "the host would not say which checks a merge into {} requires: {refused}",
+                change.base
+            )),
+        ),
     };
     if matches!(declared, Declared::Unknown)
         && complete
@@ -981,11 +1002,13 @@ fn watch(
         && checks.iter().all(|check| !check.required)
     {
         declared = Declared::Nothing;
+        unread = None;
     }
     if matches!(declared, Declared::Nothing) {
-        settled(emissions, Vec::new());
+        settled(emissions, Vec::new(), None);
         return Ok(true);
     }
+    let unread = unread.as_deref();
     let standing = standings(&checks, &declared);
     if let Some(failed) = red(&checks, &standing) {
         return Err(failed);
@@ -995,7 +1018,7 @@ fn watch(
             .iter()
             .all(|(_, state)| *state == Some(CheckState::Passed))
     {
-        settled(emissions, Vec::new());
+        settled(emissions, Vec::new(), unread);
         return Ok(true);
     }
     let not_run: Vec<String> = standing
@@ -1015,7 +1038,7 @@ fn watch(
             .iter()
             .all(|check| check.state() != CheckState::Skipped)
     {
-        settled(emissions, Vec::new());
+        settled(emissions, Vec::new(), unread);
         return Ok(true);
     }
     if running || (not_run.is_empty() && !unseen) {
@@ -1076,7 +1099,7 @@ fn watch(
     if !through(&standing) {
         return Err(unsettled(&standing));
     }
-    settled(emissions, skipped(&standing));
+    settled(emissions, skipped(&standing), unread);
     Ok(false)
 }
 

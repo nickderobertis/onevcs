@@ -3607,15 +3607,28 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   validated like `ONEVCS_CHECKS_POLL_SECONDS` and `ONEVCS_CHECKS_TIMEOUT_SECONDS`, a finite
   number of seconds above zero, before anything is pushed — the draft is lifted,
   `draft-lifted` and `draft-lifted-early` are recorded, one warning line is printed on
-  stderr unless `warn_on_early_lift` is false, and the watch goes on. The same holds where
-  some required checks ran and passed on the draft and the rest had not run: the draft is
-  lifted early so they can, rather than held to the bound. Where the host would not say what
-  it requires and none of the checks it reports is marked required, the draft is not green
-  at once — that answer is not "none" — but waits the grace window: then, if checks ran on
-  it and none was skipped, the host's own marking is the answer, as a ready change's watch
-  reads it, and the draft is green; if nothing ran, or something was skipped, it is lifted
-  early, since a draft that is never lifted is never verified. From then on the
-  change is a ready change: green ends `Merged` (`change-auto`, `change-direct`) or
+  stderr unless `warn_on_early_lift` is false, and the watch goes on. Two further cases
+  are **the manager's rulings on this amendment**, accepted as part of C2 rather than read
+  out of its first text:
+  - *Partial draft-skipping CI.* Where some required checks ran and passed on the draft
+    and the rest are absent or concluded `skipped`, the draft is lifted early at the grace
+    window as well — the user's lift-and-warn ruling applied to a repository whose CI skips
+    only some checks on drafts — with the same warning line, `draft-lifted-early` event and
+    `warn_on_early_lift` suppression. A pending or failed required check never triggers an
+    early lift.
+  - *An unreadable requirement.* Where the host will not say what it requires — a refused
+    or incomplete `required_checks_on` — the draft is not green at once, since that answer
+    is not "none": it waits the grace window and then reads the host's own per-check
+    `required` marking, the way a ready change's watch already does. If checks ran on it
+    and none was skipped it is then judged by that marking; if nothing ran, or something
+    was skipped, it is lifted early, since a draft that is never lifted is never verified.
+    The host's merge path still rules on any merge. **The record says so**: a settlement
+    read from the host's marking because the declaration could not be read never reads as
+    an ordinary complete answer — its `checks-settled` carries `requirement: {read_from:
+    "host-marking", because}`, naming what could not be read, and one warning line on
+    stderr says the same.
+
+  Once lifted early, the change is a ready change: green ends `Merged` (`change-auto`, `change-direct`) or
   `ChangeOpen` (`change-open`, either approvals — the one case a team change is ready before
   green, which the user accepted), and red or the bound end `ChecksFailed` /
   `ChecksUnsettled` with the change ready.
@@ -3656,6 +3669,10 @@ Event kinds added: `draft-lifted-early`, `draft-kept-for-review`, `checks-settle
   required checks stop blocking: `verdict` is `passed` or `passed-with-skipped`, and
   `skipped` the required check names that concluded skipped, empty for `passed`. So a
   publication's record says it passed with skipped required checks rather than plain green.
+  Where the draft's requirement was read from the host's own per-check marking because
+  its declaration could not be read, the payload also carries `requirement` — `{read_from:
+  "host-marking", because}` — per the manager's ruling above; every other settlement omits
+  it, so its payload is the five fields named here.
 
 **C5 — `skipped` is its own check state** (the user's ruling, relayed by the manager).
 Every check is classified into exactly one state, and a skipped check is **never

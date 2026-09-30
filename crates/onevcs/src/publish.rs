@@ -2404,11 +2404,35 @@ enum Declared {
 /// Asked once, before the draft's checks are watched, through the same seam the audit
 /// reads. A host that was never taught to answer, or would not, has not said nothing
 /// is required.
-fn declared_required(host: &dyn RemoteHost, change: &ChangeRequest) -> Declared {
+///
+/// Beside a [`Declared::Unknown`] is why the declaration could not be read, which is
+/// what a settlement read from the host's own per-check marking has to say it was: by
+/// the manager's ruling on the amendment, such a green must never read as an ordinary
+/// complete answer.
+fn declared_required(host: &dyn RemoteHost, change: &ChangeRequest) -> (Declared, Option<String>) {
     match host.required_checks_on(&change.base) {
-        Ok(answer) if answer.checks.is_empty() && answer.complete() => Declared::Nothing,
-        Ok(answer) if !answer.checks.is_empty() => Declared::Names(answer.checks),
-        _ => Declared::Unknown,
+        Ok(answer) if answer.checks.is_empty() && answer.complete() => (Declared::Nothing, None),
+        Ok(answer) if !answer.checks.is_empty() => (Declared::Names(answer.checks), None),
+        Ok(answer) => (
+            Declared::Unknown,
+            Some(format!(
+                "the host could not read {} for which checks a merge into {} requires",
+                answer
+                    .unconsulted
+                    .keys()
+                    .map(|source| source.describe())
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+                change.base
+            )),
+        ),
+        Err(refused) => (
+            Declared::Unknown,
+            Some(format!(
+                "the host would not say which checks a merge into {} requires: {refused}",
+                change.base
+            )),
+        ),
     }
 }
 
@@ -2639,7 +2663,13 @@ impl<'a> Watcher<'a> {
 
     /// Record, once, that the required checks stopped blocking — `passed`, or
     /// `passed-with-skipped` naming the required checks that concluded skipped.
-    fn record_settled(&mut self, stream: &mut Stream, skipped: Vec<String>) {
+    ///
+    /// `unread` is set where the draft's requirement was read from the host's own
+    /// per-check `required` marking because its declaration could not be read — and
+    /// then the record says so, in the payload's `requirement` and on stderr, so the
+    /// settlement never reads as the host's ordinary complete answer. Omitted
+    /// otherwise, so every other settlement's payload is the five fields it always was.
+    fn record_settled(&mut self, stream: &mut Stream, skipped: Vec<String>, unread: Option<&str>) {
         if std::mem::replace(&mut self.settled, true) {
             return;
         }
@@ -2648,16 +2678,26 @@ impl<'a> Watcher<'a> {
         } else {
             "passed-with-skipped"
         };
-        stream.emit(
-            EventKind::ChecksSettled,
-            object(json!({
-                "url": self.change.url.to_string(),
-                "id": self.change.id.0,
-                "head": self.pushed.0,
-                "verdict": verdict,
-                "skipped": skipped,
-            })),
-        );
+        let mut payload = object(json!({
+            "url": self.change.url.to_string(),
+            "id": self.change.id.0,
+            "head": self.pushed.0,
+            "verdict": verdict,
+            "skipped": skipped,
+        }));
+        if let Some(because) = unread {
+            eprintln!(
+                "onevcs: warning: the required checks on {url} were read from the host's own \
+                 per-check marking, because the declaration could not be read: {because}. The \
+                 host's merge path still rules on any merge",
+                url = self.change.url,
+            );
+            payload.insert(
+                "requirement".to_owned(),
+                json!({"read_from": "host-marking", "because": because}),
+            );
+        }
+        stream.emit(EventKind::ChecksSettled, payload);
     }
 }
 
@@ -2706,7 +2746,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
                     Some(CheckState::Passed | CheckState::Skipped)
                 )
             }) {
-                watcher.record_settled(stream, skipped_in(&standing));
+                watcher.record_settled(stream, skipped_in(&standing), None);
                 return Ok(());
             }
         }
@@ -2748,14 +2788,19 @@ fn skipped_in(standing: &[Standing<'_>]) -> Vec<String> {
 /// window and no warning.
 fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> {
     let grace = std::time::Duration::from_secs_f64(gh::draft_grace()?);
-    let declared = declared_required(watcher.host, watcher.change);
+    let (declared, unread) = declared_required(watcher.host, watcher.change);
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
         if declared == Declared::Nothing {
-            watcher.record_settled(stream, Vec::new());
+            watcher.record_settled(stream, Vec::new(), None);
             return Ok(true);
         }
+        // Whether what is required is being read off the host's marking because the
+        // declaration could not be read, which a settlement then has to say.
+        let marked = (declared == Declared::Unknown)
+            .then_some(unread.as_deref())
+            .flatten();
         let about: Vec<&Check> = reading.reported.checks().iter().collect();
         let standing = standings(&about, &declared);
         if let Some(failed) = red(&standing) {
@@ -2766,7 +2811,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 .iter()
                 .all(|standing| standing.state == Some(CheckState::Passed))
         {
-            watcher.record_settled(stream, Vec::new());
+            watcher.record_settled(stream, Vec::new(), marked);
             return Ok(true);
         }
         let not_run: Vec<String> = standing
@@ -2797,13 +2842,13 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 .iter()
                 .all(|check| check.state() != CheckState::Skipped)
         {
-            watcher.record_settled(stream, Vec::new());
+            watcher.record_settled(stream, Vec::new(), marked);
             return Ok(true);
         }
         if grace_elapsed && !running && (!not_run.is_empty() || unseen) {
             let snapshot = reading.reported.checks().to_vec();
             lift_early(watcher, stream, &not_run, grace)?;
-            return settle_after_early_lift(watcher, stream, &declared, &snapshot, grace)
+            return settle_after_early_lift(watcher, stream, &declared, marked, &snapshot, grace)
                 .map(|()| false);
         }
         if watcher.out_of_time() {
@@ -2826,7 +2871,7 @@ fn lift_early(
     if warned {
         eprintln!(
             "onevcs: warning: {url} was lifted out of its draft before its required checks ran \
-             on it ({awaited}): none had run within {seconds}s, which is what a workflow that \
+             on it ({awaited} had not run within {seconds}s), which is what a workflow that \
              skips drafts looks like. It is watched as a ready change from here; set \
              `drafts: {{warn_on_early_lift: false}}` in the rules file to silence this",
             url = change.url,
@@ -2866,6 +2911,7 @@ fn settle_after_early_lift(
     watcher: &mut Watcher<'_>,
     stream: &mut Stream,
     declared: &Declared,
+    unread: Option<&str>,
     snapshot: &[Check],
     grace: std::time::Duration,
 ) -> Result<()> {
@@ -2895,7 +2941,7 @@ fn settle_after_early_lift(
                 )
             })
         {
-            watcher.record_settled(stream, skipped_in(&standing));
+            watcher.record_settled(stream, skipped_in(&standing), unread);
             return Ok(());
         }
         if !rerun && lifted.elapsed() >= grace {
@@ -2940,7 +2986,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
                     Some(CheckState::Passed | CheckState::Skipped)
                 )
             }) {
-                watcher.record_settled(stream, skipped_in(&standing));
+                watcher.record_settled(stream, skipped_in(&standing), None);
             }
         }
         if !armed {

@@ -1530,8 +1530,11 @@ fn a_host_that_will_not_say_what_it_requires_is_waited_out_and_then_read_by_its_
         ..HostState::default()
     });
     let started = Instant::now();
-
-    let published = publish(&host, &session, &PublishRequest::default());
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+    let published = published.expect("it ran");
 
     assert!(
         started.elapsed() >= Duration::from_secs(1),
@@ -1546,4 +1549,149 @@ fn a_host_that_will_not_say_what_it_requires_is_waited_out_and_then_read_by_its_
         .events_of(&session.token.0, "draft-lifted-early")
         .is_empty());
     assert!(is_draft(&host));
+    // …and the record says how it was judged green, so it never reads as the host's
+    // ordinary complete answer: on the event, and on stderr.
+    assert_marked(&world, &session, &said, "classic branch protection");
+}
+
+/// That a settlement was read from the host's own per-check marking because the
+/// required-checks declaration could not be read, and says why, on `checks-settled`
+/// and on stderr.
+fn assert_marked(world: &World, session: &Session, said: &str, because: &str) {
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    let requirement = &settled[0]["payload"]["requirement"];
+    assert_eq!(requirement["read_from"], "host-marking", "{settled:?}");
+    assert!(
+        requirement["because"]
+            .as_str()
+            .is_some_and(|why| why.contains(because)),
+        "{requirement}"
+    );
+    assert!(
+        said.contains(
+            "read from the host's own per-check marking, because the declaration \
+             could not be read"
+        ) && said.contains(because),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_host_that_refuses_to_say_what_it_requires_is_green_by_its_marking_and_the_record_says_so() {
+    // The declaration refused outright, and a required-marked check green on the draft:
+    // the marking is what decides, and the record names the refusal it stands in for.
+    let (world, _origin, session) = scene(AUTO, "60", "20");
+    let host = WillNotSay(MemoryHost::seeded(host_with(
+        vec![check("gate", Some("success"), true, 1)],
+        None,
+    )));
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+
+    assert!(
+        matches!(
+            published.expect("it ran").outcome,
+            PublishOutcome::Merged(_)
+        ),
+        "lifted and merged on the host's own marking"
+    );
+    assert_marked(
+        &world,
+        &session,
+        &said,
+        "the credential may read neither protection source",
+    );
+}
+
+#[test]
+fn a_settlement_on_the_hosts_complete_answer_carries_no_requirement_disclosure() {
+    let (world, _origin, session) = scene(TEAM, "60", "20");
+    let host = MemoryHost::seeded(host_with(
+        vec![check("gate", Some("success"), true, 1)],
+        None,
+    ));
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+
+    assert!(matches!(
+        published.expect("it ran").outcome,
+        PublishOutcome::ChangeReviewDraft(_)
+    ));
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert!(
+        settled[0]["payload"].get("requirement").is_none(),
+        "{settled:?}"
+    );
+    assert!(!said.contains("per-check marking"), "{said}");
+}
+
+#[test]
+fn a_draft_whose_ci_skips_only_some_required_checks_is_lifted_early_for_the_rest() {
+    // The manager's ruling on partial draft-skipping CI: `gate` ran and passed on the
+    // draft, `lint` was skipped, so the draft is lifted at the grace window for `lint`
+    // alone, with the same warning and event, and the run after the lift decides.
+    let (world, _origin, session) = scene(AUTO, "0.3", "20");
+    let host = MemoryHost::seeded(host_with(
+        vec![
+            check("gate", Some("success"), true, 1),
+            check("lint", Some("skipped"), true, 2),
+        ],
+        Some(vec![
+            check("gate", Some("success"), true, 1),
+            check("lint", Some("success"), true, 3),
+        ]),
+    ));
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+
+    assert!(
+        matches!(
+            published.expect("it ran").outcome,
+            PublishOutcome::Merged(_)
+        ),
+        "lifted, and merged on the run after the lift"
+    );
+    let early = world.events_of(&session.token.0, "draft-lifted-early");
+    assert_eq!(early[0]["payload"]["awaited"], serde_json::json!(["lint"]));
+    assert_eq!(early[0]["payload"]["warned"], true);
+    assert!(said.contains("lifted out of its draft"), "{said}");
+}
+
+#[test]
+fn a_pending_required_check_never_triggers_an_early_lift() {
+    // `lint` was skipped on the draft, but `gate` is still running: nothing is lifted
+    // however long the grace window has been over, and the bound ends it a draft.
+    let (world, _origin, session) = scene(AUTO, "0.2", "1.2");
+    let host = MemoryHost::seeded(host_with(
+        vec![
+            check("gate", None, true, 1),
+            check("lint", Some("skipped"), true, 2),
+        ],
+        None,
+    ));
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(
+            &published.outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                ..
+            }
+        ),
+        "{published:?}"
+    );
+    assert!(is_draft(&host), "still a draft");
+    assert!(world
+        .events_of(&session.token.0, "draft-lifted-early")
+        .is_empty());
+    assert!(world.events_of(&session.token.0, "draft-lifted").is_empty());
 }
