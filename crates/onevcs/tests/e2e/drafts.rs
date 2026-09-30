@@ -1030,6 +1030,63 @@ fn a_draft_era_skip_the_host_still_reports_after_the_lift_is_never_accepted_what
     }
 }
 
+#[test]
+fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_by_its_status() {
+    // The draft's `gate` finished `skipped`; after the lift the host reports `gate`
+    // running. Its status moved, and that is not a run's identity: with the draft's
+    // start, or with none, it is the draft's run as far as anything the host said goes,
+    // so the watch ends saying the checks did not re-run — at the grace window, not at
+    // the bound it would reach waiting on a run it had taken for a new one.
+    let draft = check("gate", Some("skipped"), true, 1);
+    for (label, started_at) in [
+        ("the draft's own start", Some(started(1))),
+        ("no start at all", None),
+    ] {
+        let (world, origin, session) = scene(AUTO, "0.3", "5");
+        let base = origin_tip(&world, &origin, "main");
+        let running = Check {
+            started_at,
+            ..check("gate", None, true, 1)
+        };
+        let host = MemoryHost::seeded(host_with(vec![draft.clone()], Some(vec![running])));
+
+        let published = publish(&host, &session, &PublishRequest::default());
+
+        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+            panic!("{label}: {published:?}");
+        };
+        assert_eq!(*kind, FailureKind::ChecksUnsettled, "{label}");
+        assert!(
+            reason.contains("did not re-run after its draft was lifted"),
+            "{label}: {reason}"
+        );
+        assert!(host.state().merges.is_empty(), "{label}: nothing merged");
+        assert!(
+            world
+                .events_of(&session.token.0, "checks-settled")
+                .is_empty(),
+            "{label}"
+        );
+        assert_eq!(origin_tip(&world, &origin, "main"), base, "{label}");
+    }
+
+    // A genuinely new run — a start of its own — concluding `skipped` exactly as the
+    // draft's run did still satisfies the watch.
+    let (world, _origin, session) = scene(AUTO, "0.3", "5");
+    let host = MemoryHost::seeded(skipped_again(Some(Some(started(2)))));
+    let published = publish(&host, &session, &PublishRequest::default());
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed-with-skipped");
+    assert_eq!(
+        settled[0]["payload"]["skipped"],
+        serde_json::json!(["gate"])
+    );
+}
+
 // Drafts somebody asked for, adoption, and the one-way lift.
 
 fn held() -> DraftReason {

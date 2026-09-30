@@ -2910,13 +2910,14 @@ fn lift_early(
 /// that check it reported on the draft — `snapshot`.
 ///
 /// Decided by the run's own identity as the host reports it, never by what it
-/// concluded: a re-run a workflow starts on `ready_for_review` can conclude `skipped`
-/// exactly as the draft's run did, and it is still a run. So a check the draft never
-/// reported is new; a check running now whose draft-era run had settled is new; and a
-/// settled one is new only where the host reports a start for it that no draft-era run
-/// of that check had. A settled run reporting no start, or the draft's own start, is
-/// the draft's — which is the side a wrong answer must fall on, since a draft-era skip
-/// read as a post-lift one is a merge nothing verified.
+/// concluded or where it stands: a re-run a workflow starts on `ready_for_review` can
+/// conclude `skipped` exactly as the draft's run did, and it is still a run. So a check
+/// the draft never reported is new, and one it did report is new only where the host
+/// reports a start for it that no draft-era run of that check had — running or settled
+/// alike. One reporting no start, or the draft's own start, is the draft's — which is
+/// the side a wrong answer must fall on, since a draft-era skip read as a post-lift one
+/// is a merge nothing verified. A re-run queued without a start yet therefore counts
+/// once the host says it has started.
 fn ran_after_the_lift(check: &Check, snapshot: &[Check]) -> bool {
     let earlier: Vec<&Check> = snapshot
         .iter()
@@ -2924,9 +2925,6 @@ fn ran_after_the_lift(check: &Check, snapshot: &[Check]) -> bool {
         .collect();
     if earlier.is_empty() {
         return true;
-    }
-    if !check.settled() {
-        return earlier.iter().all(|seen| seen.settled());
     }
     check.started_at.as_ref().is_some_and(|started| {
         earlier

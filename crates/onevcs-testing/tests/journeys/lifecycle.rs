@@ -376,6 +376,49 @@ fn a_run_after_the_lift_is_told_from_the_drafts_by_its_start_and_never_by_its_co
 }
 
 #[test]
+fn a_check_running_after_the_lift_is_never_a_new_run_by_its_status_alone() {
+    // The draft's run finished `skipped`; after the lift `gate` is reported running with
+    // the draft's start, or with none. Its status moved, and that is no run's identity:
+    // the publication ends saying the checks did not re-run, and merges nothing.
+    let draft = check("gate", Some("skipped"), 1);
+    for started_at in [Some(started(1)), None] {
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+        let running = Check {
+            started_at: started_at.clone(),
+            ..check("gate", None, 1)
+        };
+        let host = host(vec![draft.clone()], Some(vec![running]));
+
+        let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+
+        assert!(
+            matches!(
+                &outcome,
+                PublishOutcome::Failed {
+                    kind: FailureKind::ChecksUnsettled,
+                    reason,
+                    ..
+                } if reason.contains("did not re-run")
+            ),
+            "{started_at:?}: {outcome:?}"
+        );
+        assert!(host.state().merges.is_empty(), "{started_at:?}");
+    }
+
+    // A new run by its own start, concluding `skipped` as the draft's did, still counts.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+    let rerun = Check {
+        started_at: Some(started(2)),
+        ..draft.clone()
+    };
+    let host = host(vec![draft], Some(vec![rerun]));
+    let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+    assert!(matches!(outcome, PublishOutcome::Merged(_)), "{outcome:?}");
+}
+
+#[test]
 fn a_draft_somebody_asked_for_is_never_watched_into_a_lift_and_an_adopted_one_follows_the_table() {
     let held = DraftReason::Held {
         because: "still being made".to_owned(),

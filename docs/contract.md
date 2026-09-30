@@ -3658,11 +3658,13 @@ pub struct Check {                       // beside head and url:
   has not started reads as `None`, since every queued run shares it. It is omitted when
   `None`, and a check an earlier build serialized still reads, as one whose start that
   build never recorded. `RemoteHost` is not widened. After an early lift a check is a run
-  the host attached since when the draft never reported that check, when it is running and
-  the draft's run of it had settled, or when it has settled and reports a `started_at` that
-  no draft-era run of that check reported. A settled check reporting the draft's start, or
-  no start at all, is the draft's run still standing — the side a wrong answer must fall
-  on, since a draft-era skip read as a verdict is a merge nothing verified.
+  the host attached since when the draft never reported that check, or when it reports a
+  `started_at` that no draft-era run of that check reported — whether it is running or has
+  settled: a status is no more a run's identity than a conclusion is. A check reporting the
+  draft's start, or no start at all, is the draft's run still standing — the side a wrong
+  answer must fall on, since a draft-era skip read as a verdict is a merge nothing
+  verified. So a re-run queued without a start counts once the host reports that it has
+  started.
 - `publish-branch` and `recover` take the same lifecycle; both reach it through the one
   publication path.
 
