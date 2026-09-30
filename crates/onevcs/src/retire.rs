@@ -581,6 +581,12 @@ pub struct Retired {
     /// Whether the verdict was derived on this pass or reused from the one recorded
     /// under unchanged inputs. `onevcs retire` and `reclaim` always derive; a document
     /// written before this field existed reads as `derived`.
+    ///
+    /// A field rather than a map beside the entries, though a caller's exhaustive
+    /// literal of this struct stops compiling (cargo-semver-checks'
+    /// `constructible_struct_adds_field`), which before 1.0 is a minor release: the
+    /// contract fixes `derivation` on every examined entry, and a sidecar keyed by
+    /// branch would be a second place to look for one entry's answer.
     #[serde(default)]
     pub derivation: Derivation,
 }
