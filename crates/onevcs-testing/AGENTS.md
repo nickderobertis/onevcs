@@ -32,16 +32,31 @@ really opened on the `Hosting` the publication was handed, really adopted when t
 host already holds one, and really merged under the policy. The **repository** side
 is not, and none of it is claimed — there is no origin to fetch, no tree to run a
 gate in, nothing to push, and no lock to queue behind, so a publication here emits
-`change-opened`, `change-drafted`, `draft-lifted`, `change-merged`, and
-`merge-completed` and never `fetch`,
-`gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
-`merge-queued`. Two more things it cannot read, and states instead of inventing:
-the policy comes from `VcsState::policy` rather than a rules file (narrowed through
-`MergePolicy::narrow`, which is the rules system's own rule), and an unrequested
+`change-opened`, `change-drafted`, `draft-lifted`, `draft-lifted-early`,
+`draft-kept-for-review`, `checks-settled`, `change-merged`, and `merge-completed` and
+never `fetch`, `gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
+`merge-queued`. What it records before a failure stays recorded, as it does next
+door. Two more things it cannot read, and states instead of inventing: the policy
+comes from `VcsState::policy`, `approvals` and `drafts` rather than a rules file
+(narrowed through `MergePolicy::narrow`, which is the rules system's own rule), and an
+unrequested
 change-request title names the branch rather than a commit subject there is no
 commit to take. A *requested* title needs no check here — `PublishRequest::title`
 is a `Subject`, so one that could not be a commit subject never reaches a
 provider.
+
+**The draft lifecycle is performed, and it has no clock.** A reasonless publication
+opens its change request as a draft awaiting its checks, watches them under all three
+change policies, lifts before any merge — this host refuses to merge or arm a draft,
+as GitHub does — or keeps a green team change for review. Where the real publication
+polls, this one reads the host **once per phase**: a reading that has not settled *is*
+the bound elapsing, and a draft none of whose required checks has run *is* the grace
+window elapsing, after which the next reading is what `checks_after_lift` seeds. A
+consumer drives a row by seeding the reading it wants, never by timing one; that
+approximation is the one stated here rather than hidden.
+`required_checks_on` answers from `required_checks` where it is seeded and otherwise
+from the checks seeded as required, completely — so a scenario written before the
+lifecycle, with no required check seeded, reads as a repository that requires none.
 
 The two description methods are host-side and performed: `describe_change` writes
 into the same `titles` and `bodies` `open_change` wrote and records the call in

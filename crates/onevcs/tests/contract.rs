@@ -34,12 +34,12 @@ use onevcs::releases::{
     ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
-use onevcs::rules::{Approvals, Policy, Rule, RuleMatch, RulesFile};
+use onevcs::rules::{Approvals, Drafts, Policy, Rule, RuleMatch, RulesFile};
 use onevcs::workspaces::{MaintenanceCommand, WorkspaceDefault, WorkspacesFile};
 use onevcs::{
     ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
-    ChangeSpec, Check, CheckSource, Description, Dimensions, DraftReason, Envelope, Error,
-    EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding,
+    ChangeSpec, Check, CheckSource, CheckState, Description, Dimensions, DraftReason, Envelope,
+    Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding,
     IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange,
     Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome, MergePolicy,
     NetNegative, OnOrigin, Phase, PhaseOf, PoolStatus, PreservedBranch, ProtectionSource,
@@ -4389,6 +4389,186 @@ fn the_host_prerequisite_marker_has_one_spelling_and_the_amendment_states_it() {
         }),
         FailureKind::HostPrerequisite
     );
+}
+
+#[test]
+fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_state() {
+    // The amendment is where a consumer reads the lifecycle first — onepipeline
+    // settles on the new ending and onepipeline-ui holds its copy of the green
+    // conclusions to `CheckState` — so what it declares is what the code has.
+    let declared = amendment_declaring("pub enum CheckState");
+    for line in [
+        "pub enum CheckState { Passed, Failed, Skipped, Pending, NoVerdict }",
+        "impl Check { pub fn state(&self) -> CheckState; }",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let rules = amendment_declaring("pub struct Drafts");
+    for line in [
+        "#[serde(deny_unknown_fields)]",
+        "pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<bool> }",
+        "Rule     pub drafts: Option<Drafts>",
+        "Policy   pub drafts: Option<Drafts>",
+        "pub drafts_disabled: bool,     pub drafts_disabled_from: String,",
+        "pub warn_on_early_lift: bool,  pub warn_on_early_lift_from: String,",
+    ] {
+        assert!(
+            rules.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+
+    // One classifier, and a skipped check is never passed by it or by anything that
+    // follows it.
+    let with = |status: &str, conclusion: Option<&str>| Check {
+        name: "gate".to_owned(),
+        status: status.to_owned(),
+        conclusion: conclusion.map(str::to_owned),
+        required: true,
+        head: None,
+        url: None,
+    };
+    for (status, conclusion, state) in [
+        ("completed", Some("success"), CheckState::Passed),
+        ("completed", Some("NEUTRAL"), CheckState::Passed),
+        ("completed", Some("skipped"), CheckState::Skipped),
+        ("completed", Some("cancelled"), CheckState::NoVerdict),
+        ("completed", Some("stale"), CheckState::NoVerdict),
+        ("completed", Some("failure"), CheckState::Failed),
+        ("completed", Some("timed_out"), CheckState::Failed),
+        ("completed", Some("action_required"), CheckState::Failed),
+        ("completed", None, CheckState::Failed),
+        ("in_progress", None, CheckState::Pending),
+        ("queued", Some("success"), CheckState::Pending),
+    ] {
+        let check = with(status, conclusion);
+        assert_eq!(check.state(), state, "{status} {conclusion:?}");
+        assert_eq!(check.green(), state == CheckState::Passed);
+        assert_eq!(check.red(), state == CheckState::Failed);
+    }
+    let skipped = with("completed", Some("skipped"));
+    assert!(!skipped.green(), "a skipped check is never read as passed");
+    // Serialized kebab-case, which is what every payload and report spells.
+    assert_eq!(
+        [
+            CheckState::Passed,
+            CheckState::Failed,
+            CheckState::Skipped,
+            CheckState::Pending,
+            CheckState::NoVerdict,
+        ]
+        .iter()
+        .map(|state| serde_json::to_value(state).expect("a state serializes"))
+        .collect::<Vec<Value>>(),
+        vec![
+            json!("passed"),
+            json!("failed"),
+            json!("skipped"),
+            json!("pending"),
+            json!("no-verdict"),
+        ]
+    );
+
+    // The new ending, as it travels and as it reads.
+    let url = Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL");
+    let kept = PublishOutcome::ChangeReviewDraft(url.clone());
+    assert_eq!(
+        serde_json::to_value(&kept).expect("an outcome serializes"),
+        json!({"change-review-draft": url.to_string()})
+    );
+    assert!(
+        kept.describe().contains("checks are green"),
+        "{}",
+        kept.describe()
+    );
+    assert!(
+        kept.describe()
+            .contains("kept as a draft for its user's review"),
+        "{}",
+        kept.describe()
+    );
+
+    // The `drafts:` fixture reads as the type declares, and a key it does not know is
+    // refused by the type too.
+    let fixture = amendment_yaml_spelling("drafts: {disabled: true}");
+    let file: RulesFile = serde_yaml_ng::from_str(&format!("version: 3\n{fixture}"))
+        .expect("the amendment's drafts fixture is a rules file at version 3");
+    assert_eq!(
+        file.default.drafts,
+        Some(Drafts {
+            disabled: None,
+            warn_on_early_lift: Some(false),
+        })
+    );
+    assert_eq!(
+        file.rules[0].drafts,
+        Some(Drafts {
+            disabled: Some(true),
+            warn_on_early_lift: None,
+        })
+    );
+    assert!(
+        serde_yaml_ng::from_str::<Drafts>("{disable: true}").is_err(),
+        "an unknown key inside drafts is refused"
+    );
+    // A file naming no drafts writes none back.
+    let plain: RulesFile = serde_yaml_ng::from_str(
+        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
+    )
+    .expect("a plain rules file");
+    assert!(!serde_yaml_ng::to_string(&plain)
+        .expect("it writes")
+        .contains("drafts"));
+
+    // The spec a lifecycle publication hands a host, and the grace window's default.
+    let spec = ChangeSpec {
+        head: "feature".to_owned(),
+        base: "main".to_owned(),
+        title: "feat: the thing".to_owned(),
+        body: None,
+        draft: None,
+        draft_awaiting_checks: false,
+    };
+    assert!(
+        serde_json::to_value(&spec)
+            .expect("a spec serializes")
+            .get("draft_awaiting_checks")
+            .is_none(),
+        "false is omitted, so a spec written before the field reads and writes as it did"
+    );
+    let grace = repo_file("crates/onevcs/src/gh.rs")
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DEFAULT_DRAFT_GRACE_SECONDS: f64 = ")?
+                .strip_suffix(";")
+                .map(str::to_owned)
+        })
+        .expect("gh.rs declares the default grace window");
+    let seconds: f64 = grace.parse().expect("a number of seconds");
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        amendments.contains(&format!(
+            "`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS` elapses — it defaults to **{seconds:.0} \
+             seconds**"
+        )),
+        "the amendment no longer states the {seconds:.0}-second grace window"
+    );
+    // …and the payload each added kind carries is stated beside it.
+    for payload in [
+        "`draft-kept-for-review` — `{url, id, base}`",
+        "`draft-lifted-early` — `{url, id, base, awaited, grace_seconds, warned}`",
+        "`checks-settled` — `{url, id, head, verdict, skipped}`",
+        "whose payload is `{url, id, base, kind}`",
+    ] {
+        assert!(
+            amendments.contains(payload),
+            "the amendment no longer states {payload}"
+        );
+    }
 }
 
 #[test]

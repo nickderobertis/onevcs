@@ -53,7 +53,7 @@ const LOCAL: &str = "{publication: local-direct, approvals: none}";
 
 /// A registered hosted repository, its origin, and the identity the registry
 /// derived for it.
-fn hosted(world: &World, rules: &str) -> (std::path::PathBuf, Identity) {
+pub(crate) fn hosted(world: &World, rules: &str) -> (std::path::PathBuf, Identity) {
     let origin = world.bare_origin("hosted");
     let checkout = world.clone_of(&origin, "hosted");
     assert_eq!(
@@ -95,7 +95,7 @@ fn run(args: &[&str], providers: Providers<'_>) -> u8 {
 
 /// Run `act` with this process's standard error redirected, and hand back what it
 /// wrote there.
-fn stderr_of(act: impl FnOnce()) -> String {
+pub(crate) fn stderr_of(act: impl FnOnce()) -> String {
     written_to(libc::STDERR_FILENO, act)
 }
 
@@ -137,12 +137,12 @@ fn written_to(descriptor: i32, act: impl FnOnce()) -> String {
 }
 
 /// A title that can be a publication's subject.
-fn subject(title: &str) -> onevcs::Subject {
+pub(crate) fn subject(title: &str) -> onevcs::Subject {
     onevcs::Subject::try_from(title.to_owned()).expect("a usable title")
 }
 
 /// A session on `branch`, opened through whichever repository side is supplied.
-fn open(vcs: &dyn Vcs, branch: &str) -> Session {
+pub(crate) fn open(vcs: &dyn Vcs, branch: &str) -> Session {
     vcs.open_session(SessionRequest {
         repo: "hosted".to_owned(),
         branch: Some(branch.to_owned()),
@@ -2981,7 +2981,7 @@ fn awaiting_a_release_with(reference: &str, because: &str) -> DraftReason {
 
 /// The reason a fast-adopting caller drafts a change request with: the work is done
 /// and the dependency is still pinned to a branch.
-fn awaiting_a_release() -> DraftReason {
+pub(crate) fn awaiting_a_release() -> DraftReason {
     DraftReason::AwaitingRelease {
         awaiting: "github.com/acme-corp/upstream".to_owned(),
         target: TargetName::try_from("crate".to_owned()).expect("a target name"),
@@ -3002,7 +3002,7 @@ fn reasons_recorded(world: &World, token: &str) -> Vec<serde_json::Value> {
 
 /// A session on `branch` over the registered repository, with one commit on it —
 /// real git, in the run clone the real repository side cut.
-fn worked(world: &World, branch: &str) -> Session {
+pub(crate) fn worked(world: &World, branch: &str) -> Session {
     let session = open(&Git, branch);
     world.commit_file(
         &session.worktree,
@@ -3015,7 +3015,7 @@ fn worked(world: &World, branch: &str) -> Session {
 
 /// The commit a bare origin has one of its branches at, or nothing where it has no
 /// such branch — which is how a journey says the base did not move.
-fn origin_tip(world: &World, origin: &std::path::Path, branch: &str) -> Option<String> {
+pub(crate) fn origin_tip(world: &World, origin: &std::path::Path, branch: &str) -> Option<String> {
     let read = world.git_raw(origin, &["rev-parse", &format!("refs/heads/{branch}")]);
     read.status
         .success()

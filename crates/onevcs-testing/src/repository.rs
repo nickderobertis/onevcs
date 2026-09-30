@@ -455,25 +455,32 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 }
             } else {
                 match slug(&identity) {
-                    Some(slug) => match publish_as_change(
-                        hosting,
-                        &Publishing {
-                            slug: &slug,
-                            identity: &identity,
-                            session: &session,
-                            policy,
-                            approvals: state.approvals.unwrap_or(DEFAULT_APPROVALS),
-                            drafts: state.drafts.unwrap_or_default(),
-                            request,
-                            token,
-                        },
-                    ) {
-                        Ok(published) => published,
-                        // Once a publication has started, what stops it is an outcome
-                        // rather than a refusal — the same split the real
-                        // implementation keeps, so a caller reads one shape.
-                        Err(error) => (failed(&error), Vec::new()),
-                    },
+                    Some(slug) => {
+                        // Recorded as it happens, as next door: a publication that
+                        // fails after opening, drafting or lifting keeps that record.
+                        let mut emissions = Vec::new();
+                        let outcome = match publish_as_change(
+                            hosting,
+                            &Publishing {
+                                slug: &slug,
+                                identity: &identity,
+                                session: &session,
+                                policy,
+                                approvals: state.approvals.unwrap_or(DEFAULT_APPROVALS),
+                                drafts: state.drafts.unwrap_or_default(),
+                                request,
+                                token,
+                            },
+                            &mut emissions,
+                        ) {
+                            Ok(outcome) => outcome,
+                            // Once a publication has started, what stops it is an outcome
+                            // rather than a refusal — the same split the real
+                            // implementation keeps, so a caller reads one shape.
+                            Err(error) => failed(&error),
+                        };
+                        (outcome, emissions)
+                    }
                     None => (refusal(&identity), Vec::new()),
                 }
             };
@@ -642,7 +649,8 @@ impl Publishing<'_> {
 fn publish_as_change(
     hosting: &dyn Hosting,
     publishing: &Publishing<'_>,
-) -> Result<(PublishOutcome, Vec<Emission>)> {
+    emissions: &mut Vec<Emission>,
+) -> Result<PublishOutcome> {
     let Publishing {
         slug,
         session,
@@ -684,7 +692,7 @@ fn publish_as_change(
             draft_awaiting_checks: lifecycle && request.draft.is_none(),
         })?,
     };
-    let mut emissions = vec![publishing.emission(
+    emissions.push(publishing.emission(
         EventKind::ChangeOpened,
         json!({
             "url": change.url.to_string(),
@@ -693,7 +701,7 @@ fn publish_as_change(
             "base": change.base,
             "author": author,
         }),
-    )];
+    ));
     if let Some(reason) = &request.draft {
         // The same question the real publication asks, for the same reason: a host
         // that ignored the request, or a change request already open for review,
@@ -727,7 +735,7 @@ fn publish_as_change(
         emissions.push(publishing.emission(EventKind::ChangeDrafted, Value::Object(drafted)));
         // Under every policy: a draft is unmergeable in that state, so nothing below
         // asks this host to merge it.
-        return Ok((PublishOutcome::ChangeDraft(change.url.clone()), emissions));
+        return Ok(PublishOutcome::ChangeDraft(change.url.clone()));
     }
     // Three answers about whether the host holds it as a draft, told apart as next
     // door: a host that was never taught to draft one is holding nothing, and a host
@@ -761,7 +769,7 @@ fn publish_as_change(
         // Without the lifecycle, publishing without a reason lifts an adopted draft
         // on the spot, as it always did; one opened moments ago is one nobody drafted.
         if adopted && is_draft {
-            lift(host.as_ref(), publishing, &change, &mut emissions)?;
+            lift(host.as_ref(), publishing, &change, emissions)?;
         }
         false
     };
@@ -769,7 +777,7 @@ fn publish_as_change(
     // Every change policy watches — except that `change-auto` on a change nobody
     // drafted arms the host's own merge and leaves the checks to it, as next door.
     let still_draft = if drafted || policy != MergePolicy::ChangeAuto {
-        watch(host.as_ref(), publishing, &change, drafted, &mut emissions)?
+        watch(host.as_ref(), publishing, &change, drafted, emissions)?
     } else {
         false
     };
@@ -783,18 +791,15 @@ fn publish_as_change(
                     "base": change.base,
                 }),
             ));
-            return Ok((
-                PublishOutcome::ChangeReviewDraft(change.url.clone()),
-                emissions,
-            ));
+            return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));
         }
         // Lifted before any merge is asked for: this host, like GitHub, will neither
         // merge a draft nor arm its own merge on one.
-        lift(host.as_ref(), publishing, &change, &mut emissions)?;
+        lift(host.as_ref(), publishing, &change, emissions)?;
     }
 
     if policy == MergePolicy::ChangeOpen {
-        return Ok((PublishOutcome::ChangeOpen(change.url.clone()), emissions));
+        return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
     }
     Ok(match host.merge(&change, policy)? {
         MergeOutcome::Merged(sha) => {
@@ -806,10 +811,10 @@ fn publish_as_change(
                 EventKind::MergeCompleted,
                 json!({"identity": publishing.identity, "sha": sha.0}),
             ));
-            (PublishOutcome::Merged(sha), emissions)
+            PublishOutcome::Merged(sha)
         }
-        MergeOutcome::Queued => (PublishOutcome::Queued(change.url.clone()), emissions),
-        MergeOutcome::Open => (PublishOutcome::ChangeOpen(change.url.clone()), emissions),
+        MergeOutcome::Queued => PublishOutcome::Queued(change.url.clone()),
+        MergeOutcome::Open => PublishOutcome::ChangeOpen(change.url.clone()),
     })
 }
 

@@ -56,6 +56,8 @@ mod comparison;
 // fixes: a second Nx project would run the same `--workspace` commands twice.
 mod cost;
 #[cfg(unix)]
+mod drafts;
+#[cfg(unix)]
 mod edges;
 // Linux only: it lets a held fetch go once the kernel's lock table shows the second
 // fetch queued behind it, and `/proc/locks` is the only place an outside process can

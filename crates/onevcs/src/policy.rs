@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{Approvals, Drafts, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::{Normalized, Resolution};
-use crate::{home, ids};
+use crate::{guidance, home, ids};
 
 /// The version of the rules file this build writes, and the newest it has an
 /// opinion about.
@@ -282,6 +282,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
             refuse_removed_gate(&path, &document)?;
         }
     }
+    refuse_malformed_drafts(&path, &document)?;
     let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
     validate(&path, &file)?;
     Ok((file, RulesSource::File(path)))
@@ -349,6 +350,75 @@ fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<(
             ),
         }),
     }
+}
+
+/// The keys a `drafts:` mapping takes.
+const DRAFTS_KEYS: [&str; 2] = ["disabled", "warn_on_early_lift"];
+
+/// Refuse, naming the key and where it is, a `drafts:` that is not two optional
+/// booleans.
+///
+/// The shape refuses both of these too — `Drafts` denies a key it does not know — but
+/// its message names neither the rule the mapping was in nor, for a value that is not
+/// a boolean, the key the value was given for. So they are refused here first, where
+/// the document still says which rule is which: an operator told only that something
+/// somewhere "expected a boolean" has the whole file to search.
+fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+    let mut found: Vec<(String, &serde_yaml_ng::Value)> = Vec::new();
+    if let Some(drafts) = document
+        .get("default")
+        .and_then(|policy| policy.get("drafts"))
+    {
+        found.push(("default".to_owned(), drafts));
+    }
+    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get("rules") {
+        for (index, rule) in rules.iter().enumerate() {
+            if let Some(drafts) = rule.get("drafts") {
+                found.push((format!("rule {}", index + 1), drafts));
+            }
+        }
+    }
+    let refused = |where_: &str, what: String| Error::Invalid {
+        reason: format!(
+            "the rules file at {} is malformed: {where_} drafts: {what}",
+            path.display()
+        ),
+    };
+    for (where_, drafts) in found {
+        let serde_yaml_ng::Value::Mapping(fields) = drafts else {
+            return Err(refused(
+                &where_,
+                format!(
+                    "is not a mapping; it takes {}",
+                    guidance::listed(&DRAFTS_KEYS)
+                ),
+            ));
+        };
+        for (key, value) in fields {
+            let key = key.as_str().unwrap_or_default();
+            if !DRAFTS_KEYS.contains(&key) {
+                return Err(refused(
+                    &where_,
+                    format!(
+                        "names {key:?}, which it does not have; it takes {}",
+                        guidance::listed(&DRAFTS_KEYS)
+                    ),
+                ));
+            }
+            if !value.is_bool() {
+                return Err(refused(
+                    &where_,
+                    format!(
+                        "{key} is {}, which is not a boolean; write true or false",
+                        serde_yaml_ng::to_string(value)
+                            .map(|spelled| spelled.trim().to_owned())
+                            .unwrap_or_else(|_| "not a value".to_owned())
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Say, naming the file, that a rules file still names what no longer verifies.
