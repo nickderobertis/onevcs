@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0](https://github.com/nickderobertis/onevcs/compare/v0.34.1...v0.35.0) - 2026-09-30
+
+### Added
+
+- *(retire)* record branch verdicts and reuse them while inputs hold ([#256](https://github.com/nickderobertis/onevcs/pull/256))
+
 ## [0.34.1](https://github.com/nickderobertis/onevcs/compare/v0.34.0...v0.34.1) - 2026-09-26
 
 ### Fixed
