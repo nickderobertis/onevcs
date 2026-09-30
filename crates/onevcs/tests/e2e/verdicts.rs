@@ -297,6 +297,15 @@ fn swept(command: &mut assert_cmd::Command) -> (Vec<Value>, f64) {
 /// time would cost about what the first sweep did, and fail it.
 const REPEAT_SWEEP_MAX_FRACTION: f64 = 0.25;
 
+/// The most a repeat `onevcs sweep --dry-run` over that unchanged estate may take on any
+/// runner, whatever the deriving sweep cost — the user's "tens of seconds, not minutes",
+/// held absolutely so a runner slow across both sweeps cannot pass the fraction alone.
+///
+/// Chosen from the measurements above: the slowest repeat seen anywhere was CI's
+/// `macos-latest` runner at 5.48s, and the loaded Linux build host's at 3.26s. Thirty
+/// seconds is over five times the slowest of those.
+const REPEAT_SWEEP_CEILING_SECONDS: f64 = 30.0;
+
 #[test]
 fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again() {
     let estate = Estate::new(
@@ -362,6 +371,12 @@ fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again()
         repeat.len(),
         reused / derived * 100.0,
         REPEAT_SWEEP_MAX_FRACTION * 100.0
+    );
+    assert!(
+        reused <= REPEAT_SWEEP_CEILING_SECONDS,
+        "the repeat sweep took {reused:.2}s over {} branches, and the ceiling is \
+         {REPEAT_SWEEP_CEILING_SECONDS}s",
+        repeat.len()
     );
 }
 
