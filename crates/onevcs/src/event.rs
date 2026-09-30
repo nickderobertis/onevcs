@@ -89,9 +89,9 @@ pub enum EventKind {
     ///
     /// The reason is not repeated here: it is on the
     /// [`ChangeDrafted`](EventKind::ChangeDrafted) this answers, and the publication
-    /// that lifts a draft is a later one that never held the reason — it lifts the
-    /// draft *by* carrying none. `onevcs change ready` emits the same kind, because it
-    /// is the same lift asked for as a verb.
+    /// that lifts a draft is one carrying none — on green checks, early when they
+    /// never ran on the draft, or at once with the lifecycle off. `onevcs change ready`
+    /// emits the same kind, because it is the same lift asked for as a verb.
     DraftLifted,
     /// A draft the publication opened while its required checks ran was lifted
     /// **before** any of them had run on it, because the grace window elapsed and

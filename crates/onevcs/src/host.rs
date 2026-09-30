@@ -178,9 +178,11 @@ pub trait RemoteHost {
 
     /// Take a change request out of its draft state, so the host will let it land.
     ///
-    /// What lifts a draft. A publication that carries no
-    /// [`DraftReason`](crate::DraftReason) is a caller saying the reason no longer
-    /// holds, and this is the call that says so to the host.
+    /// What lifts a draft: a publication whose required checks came back green on it
+    /// (or whose grace window elapsed with none run), `onevcs change ready`, and a
+    /// publication adopting a draft with the lifecycle off. It is always asked
+    /// **before** the host is asked to merge or arm a merge, because a host does
+    /// neither to a draft.
     ///
     /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
     /// stays additive — and to the same refusal: a host that was never taught to

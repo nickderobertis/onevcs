@@ -3610,8 +3610,11 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   stderr unless `warn_on_early_lift` is false, and the watch goes on. The same holds where
   some required checks ran and passed on the draft and the rest had not run: the draft is
   lifted early so they can, rather than held to the bound. Where the host would not say what
-  it requires and no required check has shown up at all, the draft is likewise lifted at
-  the grace window, since a draft that is never lifted is never verified. From then on the
+  it requires and none of the checks it reports is marked required, the draft is not green
+  at once — that answer is not "none" — but waits the grace window: then, if checks ran on
+  it and none was skipped, the host's own marking is the answer, as a ready change's watch
+  reads it, and the draft is green; if nothing ran, or something was skipped, it is lifted
+  early, since a draft that is never lifted is never verified. From then on the
   change is a ready change: green ends `Merged` (`change-auto`, `change-direct`) or
   `ChangeOpen` (`change-open`, either approvals — the one case a team change is ready before
   green, which the user accepted), and red or the bound end `ChecksFailed` /

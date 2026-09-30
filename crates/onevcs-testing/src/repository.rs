@@ -1002,6 +1002,17 @@ fn watch(
         .iter()
         .any(|(_, state)| matches!(state, Some(CheckState::Pending | CheckState::NoVerdict)));
     let unseen = matches!(declared, Declared::Unknown) && standing.is_empty();
+    // The grace window, elapsed: where the host would not say what it requires and
+    // checks ran on the draft with none skipped, its own marking is the answer.
+    if unseen
+        && !checks.is_empty()
+        && checks
+            .iter()
+            .all(|check| check.state() != CheckState::Skipped)
+    {
+        settled(emissions, Vec::new());
+        return Ok(true);
+    }
     if running || (not_run.is_empty() && !unseen) {
         return Err(unsettled(&standing));
     }

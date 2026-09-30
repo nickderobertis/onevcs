@@ -64,8 +64,10 @@ pub struct PublishRequest {
     pub body: Option<String>,
     /// Open the change request as a **draft**, and why it is not ready.
     ///
-    /// Absent is every publication that came before this field: an ordinary change
-    /// request, opened for review. Present is one of two things, and the reason
+    /// Absent is a publication giving no reason, which takes the draft lifecycle: its
+    /// change request opens as a draft while the required checks run and is lifted or
+    /// kept for review on their verdict — or opens ready, where the rules file says
+    /// `drafts: {disabled: true}`. Present is one of two things, and the reason
     /// says which: a change whose work is as far along as it can go while something
     /// outside this repository has not happened yet, or a change the session that
     /// opened it is still making. The reason travels with it, because a draft
@@ -74,9 +76,10 @@ pub struct PublishRequest {
     ///
     /// A draft is unmergeable in that state, and this crate keeps it so: nothing
     /// merges it, arms the host's own merge on it, or advances a base from it while
-    /// the draft stands. A publication of the same branch carrying **no**
-    /// `DraftReason` is what lifts it — and so is `onevcs change ready`, for a
-    /// session that wants its draft lifted without landing anything.
+    /// the draft stands, under any `drafts:` setting. A later publication of the same
+    /// branch carrying **no** `DraftReason` adopts it as awaiting its checks and lifts
+    /// it only on their verdict, or keeps it for review; `onevcs change ready` lifts it
+    /// at once, for a session that wants its draft lifted without landing anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
 }
@@ -141,8 +144,9 @@ pub enum DraftReason {
     },
     /// A change request the session that opened it is holding open as a draft while
     /// its work is still being made: evidence gathered, description started. Lifted
-    /// by a later publication of the same session carrying no reason, or by
-    /// `onevcs change ready`.
+    /// by `onevcs change ready`, or taken by a later publication of the same session
+    /// carrying no reason into the draft lifecycle — which keeps it a draft when green
+    /// on a `change-open` identity whose approvals are required.
     Held {
         /// One line a person reads, saying why the session is holding it. Prose,
         /// held to the one line it is printed on by `checked`, as the line above is.
@@ -1870,9 +1874,9 @@ fn land_as_change(
     let lifecycle = !context.drafts.disabled;
 
     let existing = host.find_changes(&context.branch, context.target.base())?;
-    // Whether the host already held this change request, which is what decides
-    // whether there can be a draft to lift: a change this publication just opened
-    // without a reason is one nobody drafted.
+    // Whether the host already held this change request: with the lifecycle off,
+    // that decides whether there can be a draft to lift, since a change this
+    // publication just opened without a reason is one nobody drafted.
     let adopted = !existing.is_empty();
     let change = match existing.into_iter().next() {
         Some(change) => change,
@@ -2141,11 +2145,12 @@ fn refuse_a_draft_over_a_reviewed_change(
     }
 }
 
-/// Lift the draft on a change request this publication is landing without one.
+/// Lift any draft on a change request, at once.
 ///
-/// The lift, and the whole of it: a publication carrying no [`DraftReason`] is a
-/// caller saying the reason no longer holds, so the change it adopts goes open for
-/// review before anything asks the host to land it.
+/// What `onevcs change ready` asks for, and what a publication carrying no
+/// [`DraftReason`] does with a draft it adopts when the rules file says `drafts:
+/// {disabled: true}` — the behaviour before the draft lifecycle. With the lifecycle
+/// on, an adopted draft is watched into a lift or a keep instead (`await_as_draft`).
 ///
 /// **Idempotent, because the host decides.** A change request that is not a draft is
 /// asked for nothing, so a second publication after a lift makes no call and reports
@@ -2775,12 +2780,27 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 Some(CheckState::Pending | CheckState::NoVerdict)
             )
         });
-        // Nothing is known to be required and nothing required has shown up: a host
-        // that will not say, over a repository whose workflow did not start on the
-        // draft at all. Lifting is the only way to learn which, because a draft that
-        // is never lifted is never verified.
+        // Nothing is known to be required and nothing reported is marked required: a
+        // host that will not say what a merge needs. That is never read as "none", so
+        // it is not green at once — it waits the grace window. Then, where checks ran
+        // on the draft and none of them was skipped, the host's own marking is the
+        // answer, exactly as a ready change's watch reads it; where nothing ran, or
+        // something was skipped, it is the draft-skipping repository, and only a lift
+        // can show what runs.
         let unseen = declared == Declared::Unknown && standing.is_empty();
-        if watcher.started.elapsed() >= grace && !running && (!not_run.is_empty() || unseen) {
+        let grace_elapsed = watcher.started.elapsed() >= grace;
+        let about = reading.reported.checks();
+        if unseen
+            && grace_elapsed
+            && !about.is_empty()
+            && about
+                .iter()
+                .all(|check| check.state() != CheckState::Skipped)
+        {
+            watcher.record_settled(stream, Vec::new());
+            return Ok(true);
+        }
+        if grace_elapsed && !running && (!not_run.is_empty() || unseen) {
             let snapshot = reading.reported.checks().to_vec();
             lift_early(watcher, stream, &not_run, grace)?;
             return settle_after_early_lift(watcher, stream, &declared, &snapshot, grace)

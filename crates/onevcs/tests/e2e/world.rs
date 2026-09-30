@@ -521,6 +521,12 @@ impl World {
             .expect("a call count the rollup changes after");
     }
 
+    /// What the substituted host reports once a change request has been lifted out of
+    /// its draft — the run a workflow that skips drafts starts on `ready_for_review`.
+    pub fn host_checks_after_ready(&self, then: &[Check]) {
+        self.write_rows("gh-state/checks.rows.after-ready", then);
+    }
+
     /// Make the substituted host go on reporting the commit it already had for a
     /// change request until it has been asked for its rollup `after` times.
     ///

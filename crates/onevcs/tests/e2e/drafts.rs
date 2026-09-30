@@ -1431,3 +1431,135 @@ fn a_grace_window_that_is_not_a_number_of_seconds_is_refused_before_anything_is_
         );
     }
 }
+
+#[test]
+fn the_command_line_drafts_lifts_early_and_lands_through_the_github_implementation() {
+    // The same row as the draft-skipping journeys above, through the binary and the
+    // real `GitHub` implementation against the substituted `gh`: the change request is
+    // created with `--draft`, the required checks are read off the rulesets and classic
+    // protection, the skipped run on the draft is waited out, `gh pr ready` lifts it,
+    // the run that registers after the lift is watched, and only then is the merge
+    // armed — which this `gh` refuses on a draft, as GitHub does.
+    let hosted = crate::host::Hosted::new(AUTO);
+    let skipped = crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("skipped"),
+        required: true,
+    };
+    hosted.world.host_checks(&[skipped]);
+    hosted.world.host_checks_after_ready(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let token = hosted.change("feature/skips-drafts", "feat: land what the draft skipped");
+
+    let assert = hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", "0.5")
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains("lifted out of its draft"));
+    let said = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert_eq!(
+        said.lines()
+            .filter(|line| line.contains("lifted out of its draft"))
+            .count(),
+        1,
+        "{said}"
+    );
+
+    let calls = hosted.world.host_calls();
+    let asked = |prefix: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix} was asked: {calls:?}"))
+    };
+    assert!(
+        calls[asked("pr create ")].contains("--draft"),
+        "opened as a draft: {calls:?}"
+    );
+    assert!(
+        asked("pr ready ") < asked("pr merge "),
+        "lifted first: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|call| call.contains("/rules/branches/")),
+        "the required checks were read: {calls:?}"
+    );
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the base advanced by the merge"
+    );
+    let early = hosted.world.events_of(&token, "draft-lifted-early");
+    assert_eq!(early[0]["payload"]["awaited"], serde_json::json!(["gate"]));
+    let settled = hosted.world.events_of(&token, "checks-settled");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed");
+    let checked = hosted.world.events_of(&token, "change-check");
+    assert!(
+        checked
+            .iter()
+            .any(|event| event["payload"]["state"] == "skipped"),
+        "the draft's run is reported as skipped: {checked:?}"
+    );
+    assert!(
+        checked
+            .iter()
+            .any(|event| event["payload"]["state"] == "passed"),
+        "and the run after the lift as passed: {checked:?}"
+    );
+}
+
+#[test]
+fn a_host_that_will_not_say_what_it_requires_is_waited_out_and_then_read_by_its_own_marking() {
+    // The credential GitHub steers people toward: it reads GitHub Actions and the
+    // rulesets and is refused classic protection, so the answer to "what does a merge
+    // need" is incomplete, and the rollup it reads is not the whole one. A check ran on
+    // the draft and nothing marks it required. That is not "none required", so it is
+    // not green at once — the grace window is waited out — and then, since checks ran
+    // and none was skipped, the host's own marking is the answer: green, no early lift.
+    let (world, _origin, session) = scene(TEAM, "1", "20");
+    let host = MemoryHost::seeded(HostState {
+        checks: BTreeMap::from([(first(), vec![check("build", Some("success"), false, 1)])]),
+        check_sources: Some(
+            [
+                onevcs::CheckSource::Actions,
+                onevcs::CheckSource::BranchRules,
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        required_checks: Some(RequiredChecks {
+            checks: BTreeSet::new(),
+            unconsulted: BTreeMap::from([(
+                ProtectionSource::BranchProtection,
+                "Resource not accessible by personal access token (HTTP 403)".to_owned(),
+            )]),
+        }),
+        ..HostState::default()
+    });
+    let started = Instant::now();
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "the grace window was waited out: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(published.outcome, PublishOutcome::ChangeReviewDraft(_)),
+        "{published:?}"
+    );
+    assert!(world
+        .events_of(&session.token.0, "draft-lifted-early")
+        .is_empty());
+    assert!(is_draft(&host));
+}

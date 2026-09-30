@@ -209,7 +209,9 @@ pub struct Drafts {
 pub enum MergePolicy {
     /// Merged in a local checkout and pushed; no change request is opened.
     LocalDirect,
-    /// An ordinary, ready-for-review change request is opened and left open.
+    /// A change request is opened and left open — as a draft while its checks run,
+    /// then ready, or kept a draft for its user's review where approvals are
+    /// required.
     ChangeOpen,
     /// A change request is opened and set to merge itself once its checks pass.
     ChangeAuto,
