@@ -204,7 +204,7 @@ mod sweep;
 // Every journey of this suite lives in the one `e2e` binary of the one crate project, which
 // `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
 // commands twice, and the affected selection already fails closed to everything on a base
-// it cannot derive. The twenty-two journeys here run offline, credential-free and in about
+// it cannot derive. The twenty-three journeys here run offline, credential-free and in about
 // eight seconds, and the two programs they substitute are the note above this module's.
 // llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
 mod verdicts;
