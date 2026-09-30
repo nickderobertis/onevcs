@@ -93,6 +93,7 @@ mod store;
 mod stream;
 mod sweep;
 mod vcs;
+mod verdict;
 mod vocabulary;
 mod workspace;
 pub mod workspaces;
@@ -142,9 +143,9 @@ pub use releases::{
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 pub use retire::{
-    BranchHolder, BranchHolderKind, BranchRef, FailedHolder, KeepReason, RetireMode, RetireOutcome,
-    RetirePass, RetireRequest, Retired, Retirement, RetirementClass, RetirementPassReport,
-    RetirementProof, RetirementQuery, SupersededBy, Supersession,
+    BranchHolder, BranchHolderKind, BranchRef, Derivation, FailedHolder, KeepReason, RetireMode,
+    RetireOutcome, RetirePass, RetireRequest, Retired, Retirement, RetirementClass,
+    RetirementPassReport, RetirementProof, RetirementQuery, SupersededBy, Supersession,
 };
 pub use rules::MergePolicy;
 pub use session::{

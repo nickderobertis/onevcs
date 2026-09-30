@@ -201,11 +201,29 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// inside it has moved. The scope is this thread's and ends when `read` returns:
 /// nothing is remembered across invocations, because the repositories a library
 /// caller holds move between them.
+///
+/// Two answers outlive a write inside the scope, because no write this crate makes
+/// can move them: that a repository holds a commit, and whether one commit reaches
+/// another. A commit is never taken out of a store by a ref moving, and ancestry is a
+/// fact about two commits rather than about any ref. So a pass that fetches or
+/// deletes part way asks neither question twice — and a repository that did *not*
+/// hold a commit is asked again after the write, since a fetch is what brings one.
 pub(crate) fn memoized<T>(read: impl FnOnce() -> T) -> T {
     reads::enter();
     let answered = read();
     reads::leave();
     answered
+}
+
+/// Run `read` asking git itself, past whatever the enclosing scope remembers.
+///
+/// For the reads whose whole point is that they are made *now*: where a branch stands
+/// immediately before it is deleted, and which branch a worktree has checked out. A
+/// scope that answered either from what it read minutes earlier would decide a
+/// deletion on a tip that has since moved. Only reads belong in here — a write made
+/// inside it does not empty the scope's memo.
+pub(crate) fn unremembered<T>(read: impl FnOnce() -> T) -> T {
+    reads::bypass(read)
 }
 
 /// The per-invocation memo of git reads, and what may go in it.
@@ -217,6 +235,9 @@ mod reads {
     thread_local! {
         static DEPTH: Cell<usize> = const { Cell::new(0) };
         static MEMO: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
+        /// The answers no write inside the scope can move, kept past every write.
+        static SETTLED: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
+        static BYPASSED: Cell<bool> = const { Cell::new(false) };
     }
 
     pub(super) fn enter() {
@@ -228,12 +249,31 @@ mod reads {
             depth.set(depth.get() - 1);
             if depth.get() == 0 {
                 MEMO.with(|memo| memo.borrow_mut().clear());
+                SETTLED.with(|settled| settled.borrow_mut().clear());
             }
         });
     }
 
+    pub(super) fn bypass<T>(read: impl FnOnce() -> T) -> T {
+        let before = BYPASSED.with(|bypassed| bypassed.replace(true));
+        let answered = read();
+        BYPASSED.with(|bypassed| bypassed.set(before));
+        answered
+    }
+
     fn active() -> bool {
-        DEPTH.with(|depth| depth.get() > 0)
+        DEPTH.with(|depth| depth.get() > 0) && !BYPASSED.with(Cell::get)
+    }
+
+    /// Whether an answer is one no write can move: a commit the repository holds, or
+    /// whether one commit reaches another. A commit it does *not* hold is not one of
+    /// them — a fetch is exactly what brings it.
+    fn settled(args: &[&str], output: &Output) -> bool {
+        match (args.first().copied(), args.get(1).copied()) {
+            (Some("cat-file"), Some("-e")) => output.status == 0,
+            (Some("merge-base"), Some("--is-ancestor")) => matches!(output.status, 0 | 1),
+            _ => false,
+        }
     }
 
     fn key(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Key {
@@ -278,8 +318,12 @@ mod reads {
         if !active() {
             return None;
         }
+        let asked = key(args, cwd, env);
+        if let Some(settled) = SETTLED.with(|settled| settled.borrow().get(&asked).cloned()) {
+            return Some(settled);
+        }
         if remembered(args) {
-            return MEMO.with(|memo| memo.borrow().get(&key(args, cwd, env)).cloned());
+            return MEMO.with(|memo| memo.borrow().get(&asked).cloned());
         }
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
@@ -294,6 +338,13 @@ mod reads {
         output: &Output,
     ) {
         if active() && remembered(args) {
+            if settled(args, output) {
+                SETTLED.with(|settled| {
+                    settled
+                        .borrow_mut()
+                        .insert(key(args, cwd, env), output.clone());
+                });
+            }
             MEMO.with(|memo| {
                 memo.borrow_mut()
                     .insert(key(args, cwd, env), output.clone());
@@ -1655,6 +1706,40 @@ pub fn current_branch(cwd: &Path) -> Result<String> {
     Ok(checked(&["rev-parse", "--abbrev-ref", "HEAD"], Some(cwd))?.trimmed())
 }
 
+/// The branch a worktree has checked out, or `HEAD` when it is detached — read off
+/// its own `HEAD` file where the layout is the one git writes, and asked of git past
+/// any remembered answer where it is anything else.
+///
+/// Asked of every open session's worktree about every branch a pass examines, so a
+/// process each time is the whole cost of the question; and it is asked to decide
+/// whether a live session holds a branch, so it is never answered from earlier in the
+/// pass.
+pub fn checked_out_branch(worktree: &Path) -> Result<String> {
+    let dot_git = worktree.join(".git");
+    let admin = if dot_git.is_dir() {
+        Some(dot_git)
+    } else {
+        std::fs::read_to_string(&dot_git).ok().and_then(|text| {
+            text.trim()
+                .strip_prefix("gitdir: ")
+                .map(|dir| worktree.join(dir))
+        })
+    };
+    let named = admin
+        .and_then(|admin| std::fs::read_to_string(admin.join("HEAD")).ok())
+        .and_then(|head| {
+            let head = head.trim();
+            match head.strip_prefix("ref: ") {
+                Some(reference) => reference.strip_prefix("refs/heads/").map(str::to_owned),
+                None => ObjectId::parse(head).map(|_| "HEAD".to_owned()),
+            }
+        });
+    match named {
+        Some(branch) => Ok(branch),
+        None => unremembered(|| current_branch(worktree)),
+    }
+}
+
 /// When a commit was committed, as this repository records it, or `None` where it
 /// does not hold the commit.
 ///
@@ -1779,6 +1864,49 @@ pub fn unpublished_branches_among(
         }
     }
     Ok(unpublished)
+}
+
+/// Every local branch whose tip no `origin` remote-tracking ref reaches — the branches
+/// [`unpublished_branches`] answers — asked in two listings however many branches the
+/// repository holds, rather than a count per branch.
+///
+/// A branch reached by some remote-tracking ref holds nothing that ref does not, which
+/// is exactly a count of zero; `--no-merged` given once per tip keeps the branches
+/// reached by none of them, in one walk of the history.
+///
+/// Each tip the first listing prints is parsed as an [`ObjectId`] before it becomes an
+/// argument of the second, and a line that is not one refuses the whole answer: a
+/// listing this cannot read names no branch as published.
+pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
+    let listing = checked(
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/remotes/origin",
+        ],
+        Some(cwd),
+    )?;
+    let mut unreached = Vec::new();
+    for line in listing.stdout.lines().filter(|line| !line.is_empty()) {
+        let tip = ObjectId::parse(line).ok_or_else(|| {
+            error::invalid(format!(
+                "`git for-each-ref` in {} printed {line:?} where a remote-tracking tip belongs",
+                cwd.display()
+            ))
+        })?;
+        unreached.push(format!("--no-merged={}", tip.as_str()));
+    }
+    unreached.sort();
+    unreached.dedup();
+    let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
+    args.extend(unreached.iter().map(String::as_str));
+    args.push("refs/heads");
+    Ok(checked(&args, Some(cwd))?
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// How many commits `reference` holds that no `origin` remote-tracking ref has and
@@ -2838,6 +2966,39 @@ pub fn remote_tip(
     })
 }
 
+/// Every branch a remote has and the commit each stands at, in one listing — or
+/// `None` where the remote could not be asked or answered with something that is not
+/// a listing, which is not the same fact as a remote with no branches.
+///
+/// One `ls-remote` for however many branches a caller then asks about, where
+/// [`remote_tip`] is one per branch: a pass over a few hundred branches of one origin
+/// asks it once. Every line has to be an object id and a branch; one that is not
+/// leaves the whole answer unknown rather than half of it believed.
+pub fn remote_branch_tips(cwd: &Path, remote: &str) -> Result<Option<BTreeMap<String, ObjectId>>> {
+    let listing = run(&["ls-remote", "--heads", remote], Some(cwd))?;
+    if !listing.ok() {
+        return Ok(None);
+    }
+    let mut tips = BTreeMap::new();
+    for line in listing
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let parsed = line.split_once('\t').and_then(|(id, reference)| {
+            Some((
+                reference.strip_prefix("refs/heads/")?.to_owned(),
+                ObjectId::parse(id)?,
+            ))
+        });
+        let Some((branch, tip)) = parsed else {
+            return Ok(None);
+        };
+        tips.insert(branch, tip);
+    }
+    Ok(Some(tips))
+}
+
 /// The one object id a listing advertises for one ref, if that is what it is.
 ///
 /// `ls-remote` answers `<id>\t<ref>` and, for a fully spelled ref, one line of it.
@@ -3553,7 +3714,8 @@ mod fetch_turns {
     }
 
     /// Hold the first fetch into `checkout` at `prepared` until `<gate>/release`
-    /// exists, recording the git being held as `<gate>/held/git`; while
+    /// exists, recording the git being held as `<gate>/held/git` — renamed into
+    /// place, so a test that sees the file never reads it before its pid; while
     /// `<gate>/refuse` exists, refuse every update instead.
     fn gate(root: &Path, checkout: &Path) -> PathBuf {
         let gate = root.join(format!(
@@ -3571,7 +3733,8 @@ mod fetch_turns {
                  grep -q ' refs/remotes/origin/main$' || exit 0\n\
                  [ -e {gate}/refuse ] && exit 1\n\
                  mkdir {gate}/held 2>/dev/null || exit 0\n\
-                 echo \"$PPID\" > {gate}/held/git\n\
+                 echo \"$PPID\" > {gate}/held/git.tmp\n\
+                 mv {gate}/held/git.tmp {gate}/held/git\n\
                  until [ -e {gate}/release ]; do sleep 0.02; done\n",
                 gate = gate.display()
             ),

@@ -30,6 +30,11 @@
 //! `branch-retired`, under `$ONEVCS_HOME/streams`. Nothing about the registry or the
 //! session record moves, which is what lets an older `onevcs` sharing the state root
 //! go on reading it: a kind it has no word for is one it passes over.
+//!
+//! **A pass remembers what it derived.** The automatic pass records each branch's
+//! verdict in [`crate::verdict`] under everything its derivation read, and a later pass
+//! whose reads are all unchanged reuses the derivation — never the checks made fresh
+//! around it, which [`Census::classify`] asks on every pass whatever is on record.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -519,6 +524,35 @@ impl RetireOutcome {
     }
 }
 
+/// Whether a pass derived a branch's verdict or reused one it recorded earlier.
+///
+/// A pass records each verdict it derives under everything the derivation read, and
+/// reuses it only while every one of those inputs is unchanged. What it reuses is the
+/// derivation — the ancestry, landing and content proofs — and nothing else: live
+/// holders, exclusions, checked-out and dirty worktrees, and every read around a
+/// deletion are asked fresh on every pass whichever this is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Derivation {
+    /// Decided on this pass: the proofs were run, or a check made fresh decided it
+    /// before any proof was needed.
+    #[default]
+    Derived,
+    /// The proofs were answered by the verdict recorded under inputs this pass read
+    /// unchanged.
+    Reused,
+}
+
+impl Derivation {
+    /// The word this answer travels as.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Derivation::Derived => "derived",
+            Derivation::Reused => "reused",
+        }
+    }
+}
+
 /// One branch's retirement: its classification, and what was done about it.
 // llmlint: ignore[invalid_states_unrepresentable] the retirement amendment in
 // `docs/contract.md` fixes this public type field for field — `onepipeline` links it and
@@ -544,6 +578,17 @@ pub struct Retired {
     pub run_roots_removed: Vec<PathBuf>,
     /// The session records closed.
     pub sessions_closed: Vec<SessionToken>,
+    /// Whether the verdict was derived on this pass or reused from the one recorded
+    /// under unchanged inputs. `onevcs retire` and `reclaim` always derive; a document
+    /// written before this field existed reads as `derived`.
+    ///
+    /// A field rather than a map beside the entries, though a caller's exhaustive
+    /// literal of this struct stops compiling (cargo-semver-checks'
+    /// `constructible_struct_adds_field`), which before 1.0 is a minor release: the
+    /// contract fixes `derivation` on every examined entry, and a sidecar keyed by
+    /// branch would be a second place to look for one entry's answer.
+    #[serde(default)]
+    pub derivation: Derivation,
 }
 
 impl Retired {
@@ -556,6 +601,7 @@ impl Retired {
             slots_returned: Vec::new(),
             run_roots_removed: Vec::new(),
             sessions_closed: Vec::new(),
+            derivation: Derivation::Derived,
         }
     }
 }
@@ -786,6 +832,9 @@ pub(crate) struct Ask<'a> {
     /// checkout's remote-tracking copy.
     remote: bool,
     exclude: &'a [BranchRef],
+    /// Where a pass reuses the verdicts it recorded and records the ones it derives, or
+    /// `None` for a classification that derives every verdict it answers.
+    verdicts: Option<&'a crate::verdict::Store>,
 }
 
 impl<'a> Ask<'a> {
@@ -797,6 +846,7 @@ impl<'a> Ask<'a> {
             reconcile: false,
             remote: false,
             exclude: &[],
+            verdicts: None,
         }
     }
 
@@ -807,6 +857,7 @@ impl<'a> Ask<'a> {
             reconcile: false,
             remote: true,
             exclude: &[],
+            verdicts: None,
         }
     }
 
@@ -817,6 +868,7 @@ impl<'a> Ask<'a> {
             reconcile: !dry_run,
             remote: true,
             exclude,
+            verdicts: None,
         }
     }
 }
@@ -842,6 +894,16 @@ struct Place {
     repo: PathBuf,
     /// The slot directory, for a slot's clone.
     slot: Option<PathBuf>,
+}
+
+/// Where a read of a branch's tips comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tips {
+    /// The census's listings: each place's branches once, and the origin's once.
+    Listed,
+    /// Git itself, ref by ref and past anything the pass remembers — the read made
+    /// immediately before a deletion.
+    Now,
 }
 
 /// Which place a copy is in.
@@ -893,6 +955,14 @@ pub(crate) struct Census<'a> {
     /// The publication checkout's remote-tracking branches, for a read that does not
     /// ask the origin itself.
     tracked: std::cell::OnceCell<std::result::Result<BTreeMap<String, String>, String>>,
+    /// Every branch the origin has, from the one listing a census that reaches the
+    /// origin makes — where the origin is asked, it is asked this once, and the tip of
+    /// every branch and of the base is read out of the answer. `None` for a census that
+    /// does not ask the origin.
+    origin_heads: Option<std::result::Result<BTreeMap<String, ObjectId>, String>>,
+    /// Whether every stream under the state root could be listed, without which no
+    /// branch's records can be said to be unchanged.
+    stream_listing: status::Listing,
     sessions: &'a [Record],
     streams: &'a [status::Recorded],
     trailers: &'a Trailers,
@@ -918,12 +988,29 @@ impl<'a> Census<'a> {
         // origin's base. So the base is unknown rather than stale.
         let fetched = reach != Reach::Fetch || git::fetch(&publication, "origin").is_ok();
         let base = git::default_branch(&publication, "origin").ok();
+        let origin = git::remote_url(&publication, "origin").ok();
+        // One listing of the origin's branches for the whole identity, which answers
+        // where the origin has every branch and the base alike. A listing that failed
+        // says nothing about any of them, so it is carried as the reason rather than as
+        // an empty origin.
+        let origin_heads = match (reach, &origin) {
+            (Reach::Offline, _) | (_, None) => None,
+            (Reach::Remote | Reach::Fetch, Some(_)) => {
+                Some(match git::remote_branch_tips(&publication, "origin") {
+                    Ok(Some(tips)) => Ok(tips),
+                    Ok(None) => Err("it could not be asked which branches it has".to_owned()),
+                    Err(failure) => Err(failure.to_string()),
+                })
+            }
+        };
         let base_tip = match (reach, base.as_deref()) {
             (_, None) => None,
-            (Reach::Remote, Some(base)) => remote_base(&publication, base),
-            (Reach::Offline | Reach::Fetch, Some(base)) => fetched
-                .then(|| git::tip(&publication, &format!("refs/remotes/origin/{base}")))
+            (Reach::Remote | Reach::Fetch, Some(base)) => fetched
+                .then(|| remote_base(&publication, base, origin_heads.as_ref()))
                 .flatten(),
+            (Reach::Offline, Some(base)) => {
+                git::tip(&publication, &format!("refs/remotes/origin/{base}"))
+            }
         };
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
@@ -986,8 +1073,10 @@ impl<'a> Census<'a> {
             registry,
             heads: places.iter().map(|_| std::cell::OnceCell::new()).collect(),
             tracked: std::cell::OnceCell::new(),
+            origin_heads,
+            stream_listing: status::Listing::Whole,
             lent: git::objects_dir(&publication).ok(),
-            origin: git::remote_url(&publication, "origin").ok(),
+            origin,
             resolution,
             base,
             base_tip,
@@ -1003,12 +1092,23 @@ impl<'a> Census<'a> {
         &self.resolution.publication
     }
 
+    /// One repository, to ask about a commit through the store the publication
+    /// checkout lends — which the publication checkout itself has no need to borrow, so
+    /// it is asked the one way and a question about it is one question.
+    fn asked<'r>(&'r self, repo: &'r Path) -> git::Asked<'r> {
+        match repo == self.publication() {
+            true => git::Asked::borrowing(repo, None),
+            false => git::Asked::borrowing(repo, self.lent.as_deref()),
+        }
+    }
+
     /// Where one place has the branch: from the listing of its branches, or — asked
-    /// `fresh`, which is what a read immediately before deleting is — from git now.
-    fn local_tip(&self, index: usize, branch: &str, fresh: bool) -> LocalTip {
+    /// [`Tips::Now`], which is what a read immediately before deleting is — from git
+    /// now, past anything the pass remembers.
+    fn local_tip(&self, index: usize, branch: &str, tips: Tips) -> LocalTip {
         let place = &self.places[index];
-        if fresh {
-            return git::local_tip(&place.repo, branch);
+        if tips == Tips::Now {
+            return git::unremembered(|| git::local_tip(&place.repo, branch));
         }
         if !place.repo.exists() {
             return LocalTip::Absent;
@@ -1027,14 +1127,26 @@ impl<'a> Census<'a> {
         }
     }
 
-    /// Where each copy of the branch stands, read now.
+    /// Where each copy of the branch stands, as the census's listings have it: each
+    /// place's branches, and the origin's where the census asked the origin.
     fn copies(&self, branch: &str, ask: &Ask<'_>) -> Copies {
+        self.copies_read(branch, ask, Tips::Listed)
+    }
+
+    /// Where each copy stands now, asked of every place and of the origin one ref at a
+    /// time: the read immediately before a deletion, and the only one that asks the
+    /// origin about a single branch.
+    fn copies_now(&self, branch: &str, ask: &Ask<'_>) -> Copies {
+        self.copies_read(branch, ask, Tips::Now)
+    }
+
+    fn copies_read(&self, branch: &str, ask: &Ask<'_>, tips: Tips) -> Copies {
         let mut read = Copies {
             unreadable: self.unlisted.clone(),
             ..Copies::default()
         };
         for (index, place) in self.places.iter().enumerate() {
-            match self.local_tip(index, branch, ask.remote) {
+            match self.local_tip(index, branch, tips) {
                 LocalTip::At(tip) => read.copies.push(Copy {
                     at: Holding::Local(index),
                     tip: tip.as_str().to_owned(),
@@ -1048,8 +1160,8 @@ impl<'a> Census<'a> {
         if self.origin.is_none() {
             return read;
         }
-        match ask.remote {
-            true => match git::remote_tip(self.publication(), "origin", branch, &[]) {
+        match (ask.remote, tips) {
+            (true, Tips::Now) => match git::remote_tip(self.publication(), "origin", branch, &[]) {
                 Ok(RemoteTip::At(tip)) => read.copies.push(Copy {
                     at: Holding::Origin,
                     tip: tip.as_str().to_owned(),
@@ -1060,7 +1172,21 @@ impl<'a> Census<'a> {
                     .push("the origin could not be asked where the branch is".to_owned()),
                 Err(failure) => read.unreadable.push(format!("the origin: {failure}")),
             },
-            false => {
+            (true, Tips::Listed) => match &self.origin_heads {
+                Some(Ok(tips)) => {
+                    if let Some(tip) = tips.get(branch) {
+                        read.copies.push(Copy {
+                            at: Holding::Origin,
+                            tip: tip.as_str().to_owned(),
+                        });
+                    }
+                }
+                Some(Err(said)) => read.unreadable.push(format!("the origin: {said}")),
+                None => read
+                    .unreadable
+                    .push("the origin was not asked where the branch is".to_owned()),
+            },
+            (false, _) => {
                 // A listing that failed says nothing about where the origin has the
                 // branch, so it is a place this read could not see rather than absence.
                 let tracked = self.tracked.get_or_init(|| {
@@ -1122,7 +1248,7 @@ impl<'a> Census<'a> {
                 continue;
             }
             let over = *record.branch == *branch
-                || git::current_branch(&record.worktree).is_ok_and(|current| current == branch);
+                || git::checked_out_branch(&record.worktree).is_ok_and(|current| current == branch);
             if !over {
                 continue;
             }
@@ -1181,14 +1307,26 @@ impl<'a> Census<'a> {
         Ok(None)
     }
 
-    /// Classify one branch.
-    fn classify(&self, branch: &str, ask: &Ask<'_>) -> Result<Classified> {
-        let copies = self.copies(branch, ask);
-        let classified = |retirement: Retirement| Classified {
+    /// Classify one branch from where its copies stand.
+    ///
+    /// What is asked fresh comes first and last, whatever a pass remembers: whether it
+    /// is the base, whether a live session holds it, whether the caller excluded it and
+    /// whether every place could be read — and, for a verdict the derivation reached
+    /// past the change request, whether a checkout has it checked out or a worktree over
+    /// it is dirty. Between them is the derivation, which a pass may answer from the
+    /// verdict it recorded under inputs it reads unchanged.
+    fn classify(&self, branch: &str, copies: Copies, ask: &Ask<'_>) -> Result<Classified> {
+        let classified = |retirement: Retirement, derivation| Classified {
             retirement,
             copies: copies.clone(),
+            derivation,
         };
-        let keep = |reason| classified(Retirement::kept(self, branch, reason, &copies));
+        let keep = |reason| {
+            classified(
+                Retirement::kept(self, branch, reason, &copies),
+                Derivation::Derived,
+            )
+        };
         let (Some(base), Some(base_tip)) = (self.base.as_deref(), self.base_tip.as_deref()) else {
             return Ok(keep(KeepReason::Unknown));
         };
@@ -1210,71 +1348,243 @@ impl<'a> Census<'a> {
         if !copies.unreadable.is_empty() {
             return Ok(keep(KeepReason::Unknown));
         }
+        let (verdict, derivation) = self.verdict(branch, base, base_tip, &copies, ask);
+        if verdict.reached == crate::verdict::Reached::Early {
+            return Ok(classified(verdict.retirement, derivation));
+        }
         // Every read below that fails is a proof that did not hold, and the answer to
         // that is `unknown` — never a class a read that was not made decided.
-        let judged = match self.judge(branch, base_tip, &copies, ask) {
-            Ok(judged) => judged,
-            Err(_) => return Ok(keep(KeepReason::Unknown)),
+        let retirement = match self.worked_in(branch, &copies) {
+            Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
+            Ok(None) => verdict.retirement,
+            Err(_) => Retirement::kept(self, branch, KeepReason::Unknown, &copies),
         };
-        Ok(classified(judged))
+        Ok(classified(retirement, derivation))
     }
 
-    /// Everything past the reads that decide nothing on their own.
-    fn judge(
+    /// Whether somebody is working on the branch where it is: a registered checkout
+    /// has it checked out, or a worktree over it holds changes nobody committed.
+    fn worked_in(&self, branch: &str, copies: &Copies) -> Result<Option<KeepReason>> {
+        if self.checked_out(branch, copies)?.is_some() {
+            return Ok(Some(KeepReason::CheckedOut));
+        }
+        if self.dirty(branch, copies)?.is_some() {
+            return Ok(Some(KeepReason::DirtyWorktree));
+        }
+        Ok(None)
+    }
+
+    /// The branch's derived verdict: the one recorded under exactly the inputs this
+    /// pass reads, where there is one and asking the host again hears what it heard —
+    /// otherwise derived now, and recorded where nothing it read was unreadable.
+    fn verdict(
+        &self,
+        branch: &str,
+        base: &str,
+        base_tip: &str,
+        copies: &Copies,
+        ask: &Ask<'_>,
+    ) -> (crate::verdict::Verdict, Derivation) {
+        let recorded = ask
+            .verdicts
+            .and_then(|store| Some((store, self.key(branch, base, base_tip, copies, ask)?)));
+        let mut replies = None;
+        if let Some((store, key)) = &recorded {
+            if let Some(verdict) = store
+                .read(key)
+                .filter(|verdict| self.describes(&verdict.retirement, branch, base, copies))
+            {
+                let Some(history) = verdict.history else {
+                    return (verdict, Derivation::Reused);
+                };
+                // The derivation asked the host, so this pass asks it the same
+                // questions; a different answer is a changed input, and one it could not
+                // hear is not an unchanged one.
+                let mut evidence = self.evidence(branch);
+                let (heard, _) = self.consult(
+                    branch,
+                    &mut evidence,
+                    &copies.first_tip(),
+                    history,
+                    ask,
+                    None,
+                );
+                if !heard.failed() && heard.same_as(&verdict.host) {
+                    return (verdict, Derivation::Reused);
+                }
+                replies = Some(heard);
+            }
+        }
+        let derived = self.derive(branch, base_tip, copies, ask, replies.as_ref());
+        let reusable =
+            derived.retirement.reason != Some(KeepReason::Unknown) && !derived.host.failed();
+        if let (Some((store, key)), true) = (&recorded, reusable) {
+            store.write(key, &derived);
+        }
+        (derived, Derivation::Derived)
+    }
+
+    /// Everything a branch's derivation reads, or `None` where one of those inputs
+    /// could not be read — which is never an unchanged input.
+    fn key(
+        &self,
+        branch: &str,
+        base: &str,
+        base_tip: &str,
+        copies: &Copies,
+        ask: &Ask<'_>,
+    ) -> Option<crate::verdict::Key> {
+        if self.stream_listing == status::Listing::Partial {
+            return None;
+        }
+        let session = self
+            .session_of(branch)
+            .map(|record| record.token.to_string());
+        let records = status::recorded_digest(
+            self.streams,
+            &self.resolution.key,
+            branch,
+            session.as_deref(),
+        )?;
+        Some(crate::verdict::Key {
+            identity: self.resolution.key.clone(),
+            branch: branch.to_owned(),
+            base: base.to_owned(),
+            base_tip: Sha(base_tip.to_owned()),
+            copies: copies
+                .copies
+                .iter()
+                .map(|copy| {
+                    let holder = self.holder(copy.at);
+                    crate::verdict::KeyedCopy {
+                        kind: holder.kind,
+                        location: holder.location,
+                        tip: Sha(copy.tip.clone()),
+                    }
+                })
+                .collect(),
+            unreadable: copies.unreadable.clone(),
+            records,
+            session,
+            landed_trailer: self.trailers.landed().to_owned(),
+            asking: match ask.host {
+                Some(_) => crate::verdict::Asking::Host,
+                None => crate::verdict::Asking::Records,
+            },
+        })
+    }
+
+    /// Whether a recorded retirement is about this branch as its copies now stand — the
+    /// fields a key does not spell, held to what a derivation would write.
+    fn describes(
+        &self,
+        retirement: &Retirement,
+        branch: &str,
+        base: &str,
+        copies: &Copies,
+    ) -> bool {
+        retirement.identity == self.resolution.key
+            && retirement.branch == branch
+            && retirement.base == base
+            && retirement.tip.0 == copies.first_tip()
+            && retirement.holders == self.holders_of(copies)
+    }
+
+    fn evidence(&self, branch: &str) -> Evidence {
+        let session = self
+            .session_of(branch)
+            .map(|record| record.token.to_string());
+        Evidence::of(self, branch, session.as_deref())
+    }
+
+    /// Derive a branch's verdict: every copy judged against the base, the change
+    /// request asked about where the records do not decide it, and the proofs.
+    /// `replies` are the host's answers where this pass already asked it.
+    fn derive(
         &self,
         branch: &str,
         base_tip: &str,
         copies: &Copies,
         ask: &Ask<'_>,
-    ) -> Result<Retirement> {
+        replies: Option<&crate::verdict::HostAnswer>,
+    ) -> crate::verdict::Verdict {
         let kept = |reason| Retirement::kept(self, branch, reason, copies);
-        let mut judged: Vec<(Copy, Judged)> = Vec::new();
-        let session = self
-            .session_of(branch)
-            .map(|record| record.token.to_string());
-        let mut evidence = Evidence::of(self, branch, session.as_deref());
-        for copy in &copies.copies {
-            let Some(repo) = self.readable(copy, branch, ask) else {
-                return Ok(kept(KeepReason::Unknown));
-            };
-            let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-            judged.push((
-                copy.clone(),
-                self.judge_copy(asked, &copy.tip, base_tip, &evidence)?,
-            ));
-        }
+        let mut verdict = crate::verdict::Verdict {
+            retirement: kept(KeepReason::Unknown),
+            reached: crate::verdict::Reached::Early,
+            history: None,
+            host: crate::verdict::HostAnswer::not_asked(),
+        };
+        let mut evidence = self.evidence(branch);
+        let Some(mut judged) = self.judged(branch, base_tip, copies, &evidence, ask) else {
+            return verdict;
+        };
         if judged.iter().all(|(_, one)| one.at_base) {
-            return Ok(kept(KeepReason::IsBase));
+            verdict.retirement = kept(KeepReason::IsBase);
+            return verdict;
         }
-        if let Some(open) = self.open_change(branch, &mut evidence, &judged, ask)? {
-            return Ok(kept(open));
+        match self.open_change(branch, &mut evidence, &judged, ask, replies) {
+            Err(_) => return verdict,
+            Ok((open, history, heard)) => {
+                verdict.history = history;
+                verdict.host = heard;
+                if let Some(reason) = open {
+                    verdict.retirement = kept(reason);
+                    return verdict;
+                }
+            }
         }
-        if self.checked_out(branch, copies)?.is_some() {
-            return Ok(kept(KeepReason::CheckedOut));
-        }
-        if self.dirty(branch, copies)?.is_some() {
-            return Ok(kept(KeepReason::DirtyWorktree));
-        }
+        verdict.reached = crate::verdict::Reached::Concluded;
         // The change request may have been found merged since the copies were judged,
         // so they are judged again under what is now known.
         if evidence.changed {
-            judged.clear();
-            for copy in &copies.copies {
-                let Some(repo) = self.readable(copy, branch, ask) else {
-                    return Ok(kept(KeepReason::Unknown));
-                };
-                let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-                judged.push((
-                    copy.clone(),
-                    self.judge_copy(asked, &copy.tip, base_tip, &evidence)?,
-                ));
+            match self.judged(branch, base_tip, copies, &evidence, ask) {
+                Some(again) => judged = again,
+                None => return verdict,
             }
         }
+        if let Ok(concluded) = self.conclude(branch, base_tip, copies, &judged, ask) {
+            verdict.retirement = concluded;
+        }
+        verdict
+    }
+
+    /// Every copy judged against the base's tip, or `None` where one of them could not
+    /// be read.
+    fn judged(
+        &self,
+        branch: &str,
+        base_tip: &str,
+        copies: &Copies,
+        evidence: &Evidence,
+        ask: &Ask<'_>,
+    ) -> Option<Vec<(Copy, Judged)>> {
+        let mut judged = Vec::new();
+        for copy in &copies.copies {
+            let repo = self.readable(copy, branch, ask)?;
+            let one = self
+                .judge_copy(self.asked(&repo), &copy.tip, base_tip, evidence)
+                .ok()?;
+            judged.push((copy.clone(), one));
+        }
+        Some(judged)
+    }
+
+    /// The class the judged copies add up to.
+    fn conclude(
+        &self,
+        branch: &str,
+        base_tip: &str,
+        copies: &Copies,
+        judged: &[(Copy, Judged)],
+        ask: &Ask<'_>,
+    ) -> Result<Retirement> {
+        let kept = |reason| Retirement::kept(self, branch, reason, copies);
         let mut free: Vec<String> = Vec::new();
         let mut differing: BTreeSet<String> = BTreeSet::new();
         let mut proof: Option<RetirementProof> = None;
         let mut uncovered: Option<(PathBuf, String, Option<String>)> = None;
-        for (copy, one) in &judged {
+        for (copy, one) in judged {
             for commit in &one.content_free {
                 if !free.contains(commit) {
                     free.push(commit.clone());
@@ -1312,8 +1622,9 @@ impl<'a> Census<'a> {
             return Ok(retirement);
         };
         retirement.differing_paths = differing.into_iter().collect();
-        let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-        if let Some(by) = self.superseded(asked, branch, base_tip, &tip, fork.as_deref())? {
+        if let Some(by) =
+            self.superseded(self.asked(&repo), branch, base_tip, &tip, fork.as_deref())?
+        {
             retirement.class = RetirementClass::SupersededWithChanges;
             retirement.reason = None;
             retirement.superseded_by = Some(by);
@@ -1333,7 +1644,7 @@ impl<'a> Census<'a> {
         // A local copy at the same commit first, which asks git nothing; then the
         // publication checkout, which a fetch of the origin fills; then every other.
         let local_twin = self.places.iter().enumerate().find(|(index, _)| {
-            matches!(self.local_tip(*index, branch, false), LocalTip::At(tip) if tip.as_str() == copy.tip)
+            matches!(self.local_tip(*index, branch, Tips::Listed), LocalTip::At(tip) if tip.as_str() == copy.tip)
         });
         if let Some((_, place)) = local_twin {
             return Some(place.repo.clone());
@@ -1341,20 +1652,14 @@ impl<'a> Census<'a> {
         let found = self
             .places
             .iter()
-            .find(|place| {
-                place.repo.exists()
-                    && git::has_commit(
-                        git::Asked::borrowing(&place.repo, self.lent.as_deref()),
-                        &wanted,
-                    )
-            })
+            .find(|place| place.repo.exists() && git::has_commit(self.asked(&place.repo), &wanted))
             .map(|place| place.repo.clone());
         if found.is_some() || !ask.fetch_objects {
             return found;
         }
         let publication = self.publication().to_path_buf();
         match git::fetch_objects_of(&publication, "origin", branch) {
-            Ok(true) if git::has_commit(publication.as_path(), &wanted) => Some(publication),
+            Ok(true) if git::has_commit(self.asked(&publication), &wanted) => Some(publication),
             _ => None,
         }
     }
@@ -1468,121 +1773,189 @@ impl<'a> Census<'a> {
 
     /// Whether a change request opened from the branch is still open, asked of the
     /// records first and of the host only where they do not decide it — and whether
-    /// the host answered that it merged, which is then evidence of its own.
+    /// the host answered that it merged, which is then evidence of its own. Answers
+    /// the keep reason where there is one, whether the base's history names the change
+    /// request where that was asked, and what the host said.
     fn open_change(
         &self,
         branch: &str,
         evidence: &mut Evidence,
         judged: &[(Copy, Judged)],
         ask: &Ask<'_>,
-    ) -> Result<Option<KeepReason>> {
+        replies: Option<&crate::verdict::HostAnswer>,
+    ) -> Result<(
+        Option<KeepReason>,
+        Option<crate::verdict::History>,
+        crate::verdict::HostAnswer,
+    )> {
         let Some(change) = evidence.change.clone() else {
-            return Ok(None);
+            return Ok((None, None, crate::verdict::HostAnswer::not_asked()));
         };
         if evidence.landing.is_some() {
-            return Ok(None);
-        }
-        // A pass that may record takes a late merge up first, once, through the
-        // reconciliation a read that meets one makes — whatever else the base says —
-        // so the landing is on the record the way every late merge's is.
-        if let (true, Some(hosting)) = (ask.reconcile, ask.host) {
-            let session = self
-                .session_of(branch)
-                .map(|record| record.token.to_string());
-            if let Some(opened) = status::opened_change(
-                self.streams,
-                &self.resolution.key,
-                branch,
-                session.as_deref(),
-            ) {
-                if let (Some(id), Some(target)) = (&opened.id, &opened.base) {
-                    let head = judged
-                        .first()
-                        .map(|(copy, _)| copy.tip.clone())
-                        .unwrap_or_default();
-                    let merged = crate::publish::reconcile_late_merge(
-                        self.registry,
-                        &crate::publish::Watched {
-                            identity: &self.resolution.key,
-                            branch,
-                            url: &opened.url,
-                            id: &id.0,
-                            base: target,
-                            head: &head,
-                            stream: opened.stream.as_deref(),
-                        },
-                        hosting,
-                    );
-                    if let Some(landing) = merged.as_deref().and_then(ObjectId::parse) {
-                        evidence.landing = Some(landing);
-                        evidence.changed = true;
-                        return Ok(None);
-                    }
-                }
-            }
+            return Ok((None, None, crate::verdict::HostAnswer::not_asked()));
         }
         // Named on the base by the host's own squash commit is merged, whoever merged
         // it — the same tier the landing decision reads.
+        let mut named = crate::verdict::History::DoesNotName;
         for (copy, one) in judged {
             let Some(fork) = &one.fork else { continue };
             let Some(repo) = self.readable(copy, branch, ask) else {
                 continue;
             };
-            let asked = git::Asked::borrowing(&repo, self.lent.as_deref());
-            let history = git::log_messages(asked, fork, self.base_tip.as_deref().unwrap_or(""))?;
+            let history = git::log_messages(
+                self.asked(&repo),
+                fork,
+                self.base_tip.as_deref().unwrap_or(""),
+            )?;
             if landed::names_the_change(&history, change.as_str()).is_some() {
-                return Ok(None);
+                named = crate::verdict::History::NamesTheChange;
+                break;
             }
         }
-        let Some(hosting) = ask.host else {
-            return Ok(Some(KeepReason::OpenChangeRequest));
-        };
-        let session = self
-            .session_of(branch)
-            .map(|record| record.token.to_string());
-        let Some(opened) = status::opened_change(
-            self.streams,
-            &self.resolution.key,
-            branch,
-            session.as_deref(),
-        ) else {
-            return Ok(Some(KeepReason::OpenChangeRequest));
-        };
-        let (Some(id), Some(target)) = (&opened.id, &opened.base) else {
-            return Ok(Some(KeepReason::Unknown));
-        };
         let head = judged
             .first()
             .map(|(copy, _)| copy.tip.clone())
             .unwrap_or_default();
-        let Ok(host) = crate::publish::change_host(&self.resolution.key)
-            .and_then(|slug| hosting.for_repo(&slug))
-        else {
-            return Ok(Some(KeepReason::Unknown));
+        let (heard, open) = self.consult(branch, evidence, &head, named, ask, replies);
+        Ok((open, Some(named), heard))
+    }
+
+    /// Put to the host what the derivation asks it about the branch's change request,
+    /// given whether the base's history already names it — or take the answers from
+    /// `replies`, where this pass already asked. Answers what was heard, and the keep
+    /// reason it decides.
+    ///
+    /// A pass that may record takes a late merge up first, once, through the
+    /// reconciliation a read that meets one makes — whatever else the base says — so
+    /// the landing is on the record the way every late merge's is. A read that may not
+    /// record asks whether it merged without writing anything down, and only where the
+    /// base's history does not already say.
+    fn consult(
+        &self,
+        branch: &str,
+        evidence: &mut Evidence,
+        head: &str,
+        history: crate::verdict::History,
+        ask: &Ask<'_>,
+        replies: Option<&crate::verdict::HostAnswer>,
+    ) -> (crate::verdict::HostAnswer, Option<KeepReason>) {
+        use crate::verdict::{ChangeState, HostAnswer, Reply};
+        let mut heard = HostAnswer::not_asked();
+        // An answer this pass already heard, or the host asked now.
+        let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<Sha>>| match replies {
+            Some(replied) if replied.merged.asked() => replied.merged.clone(),
+            _ => ask_now(),
         };
-        // A read that may not record asks whether it merged without writing anything
-        // down; one that may has already reconciled above.
-        if !ask.reconcile {
-            match host.merged_at(&change_request(&opened, id, target, &head)) {
-                Ok(Some(sha)) => {
-                    if let Some(landing) = ObjectId::parse(&sha.0) {
-                        evidence.landing = Some(landing);
-                        evidence.changed = true;
-                        return Ok(None);
+        let session = self
+            .session_of(branch)
+            .map(|record| record.token.to_string());
+        let opened = status::opened_change(
+            self.streams,
+            &self.resolution.key,
+            branch,
+            session.as_deref(),
+        );
+        let host = ask.host.and_then(|hosting| {
+            crate::publish::change_host(&self.resolution.key)
+                .and_then(|slug| hosting.for_repo(&slug))
+                .ok()
+        });
+        let merged_now = |sha: &Option<Sha>, evidence: &mut Evidence| match sha
+            .as_ref()
+            .and_then(|sha| ObjectId::parse(&sha.0))
+        {
+            Some(landing) => {
+                evidence.landing = Some(landing);
+                evidence.changed = true;
+                true
+            }
+            None => false,
+        };
+        if ask.reconcile {
+            if let (Some(host), Some(opened)) = (&host, &opened) {
+                if let (Some(id), Some(target)) = (&opened.id, &opened.base) {
+                    heard.merged = merged_heard(&|| match host
+                        .merged_at(&change_request(opened, id, target, head))
+                    {
+                        Ok(Some(sha)) => Reply::Answered(
+                            crate::publish::record_late_merge(
+                                self.registry,
+                                &crate::publish::Watched {
+                                    identity: &self.resolution.key,
+                                    branch,
+                                    url: &opened.url,
+                                    id: &id.0,
+                                    base: target,
+                                    head,
+                                    stream: opened.stream.as_deref(),
+                                },
+                                &sha,
+                            )
+                            .map(Sha),
+                        ),
+                        Ok(None) => Reply::Answered(None),
+                        Err(_) => Reply::Failed,
+                    });
+                    if let Reply::Answered(sha) = &heard.merged {
+                        if merged_now(sha, evidence) {
+                            return (heard, None);
+                        }
                     }
                 }
-                Ok(None) => {}
-                Err(_) => return Ok(Some(KeepReason::Unknown)),
             }
         }
-        match host.find_changes(branch, target) {
-            Ok(open) if open.iter().any(|found| found.url == opened.url) => {
-                Ok(Some(KeepReason::OpenChangeRequest))
+        if history == crate::verdict::History::NamesTheChange {
+            return (heard, None);
+        }
+        if ask.host.is_none() {
+            return (heard, Some(KeepReason::OpenChangeRequest));
+        }
+        let Some(opened) = opened else {
+            return (heard, Some(KeepReason::OpenChangeRequest));
+        };
+        let (Some(id), Some(target)) = (&opened.id, &opened.base) else {
+            return (heard, Some(KeepReason::Unknown));
+        };
+        let Some(host) = host else {
+            return (heard, Some(KeepReason::Unknown));
+        };
+        if !ask.reconcile {
+            heard.merged = merged_heard(&|| match host
+                .merged_at(&change_request(&opened, id, target, head))
+            {
+                Ok(Some(sha)) => Reply::Answered(Some(sha)),
+                Ok(None) => Reply::Answered(None),
+                Err(_) => Reply::Failed,
+            });
+            match &heard.merged {
+                Reply::Answered(sha) => {
+                    if merged_now(sha, evidence) {
+                        return (heard, None);
+                    }
+                }
+                Reply::Failed => return (heard, Some(KeepReason::Unknown)),
+                Reply::NotAsked => {}
             }
+        }
+        heard.open = match replies {
+            Some(replied) if replied.open.asked() => replied.open.clone(),
+            _ => match host.find_changes(branch, target) {
+                Ok(open) => {
+                    Reply::Answered(match open.iter().any(|found| found.url == opened.url) {
+                        true => ChangeState::Open,
+                        false => ChangeState::NotOpen,
+                    })
+                }
+                Err(_) => Reply::Failed,
+            },
+        };
+        let open = match heard.open {
+            Reply::Answered(ChangeState::Open) => Some(KeepReason::OpenChangeRequest),
             // Neither merged nor open is closed without merging, which holds nothing.
-            Ok(_) => Ok(None),
-            Err(_) => Ok(Some(KeepReason::Unknown)),
-        }
+            Reply::Answered(ChangeState::NotOpen) => None,
+            Reply::Failed | Reply::NotAsked => Some(KeepReason::Unknown),
+        };
+        (heard, open)
     }
 
     /// The supersession that makes a branch `superseded-with-changes`: the newest one
@@ -1625,12 +1998,15 @@ impl<'a> Census<'a> {
     }
 }
 
-/// Where the origin has the base now, with its commit readable in the publication
-/// checkout — or `None` where either could not be had, which leaves the base unknown.
-fn remote_base(publication: &Path, base: &str) -> Option<String> {
-    let RemoteTip::At(tip) = git::remote_tip(publication, "origin", base, &[]).ok()? else {
-        return None;
-    };
+/// Where the origin has the base now, read out of the one listing of its branches,
+/// with its commit readable in the publication checkout — or `None` where either could
+/// not be had, which leaves the base unknown.
+fn remote_base(
+    publication: &Path,
+    base: &str,
+    listed: Option<&std::result::Result<BTreeMap<String, ObjectId>, String>>,
+) -> Option<String> {
+    let tip = listed?.as_ref().ok()?.get(base)?;
     let wanted = Sha(tip.as_str().to_owned());
     if !git::has_commit(publication, &wanted) {
         git::fetch_objects_of(publication, "origin", base).ok()?;
@@ -1638,10 +2014,12 @@ fn remote_base(publication: &Path, base: &str) -> Option<String> {
     git::has_commit(publication, &wanted).then(|| tip.as_str().to_owned())
 }
 
-/// A classification and the copies it was made from.
+/// A classification, the copies it was made from, and whether its verdict was
+/// derived or reused.
 struct Classified {
     retirement: Retirement,
     copies: Copies,
+    derivation: Derivation,
 }
 
 /// What one copy's tip turned out to be.
@@ -2027,6 +2405,8 @@ struct Host {
     registry: Registry,
     sessions: Vec<Record>,
     streams: Vec<status::Recorded>,
+    /// Whether the streams directory was listed whole.
+    stream_listing: status::Listing,
     trailers: Trailers,
 }
 
@@ -2043,16 +2423,18 @@ impl Host {
             Some(listed) => listed,
             None => workspace::all()?,
         };
+        let (streams, stream_listing) = status::recorded_streams_whole(&mut Vec::new())?;
         Ok(Host {
             sessions,
-            streams: status::recorded_streams(&mut Vec::new())?,
+            streams,
+            stream_listing,
             trailers: provenance::from_rules(&rules),
             registry,
         })
     }
 
     fn census(&self, identity: &str, reach: Reach) -> Result<Census<'_>> {
-        Census::read(
+        let mut census = Census::read(
             &self.registry,
             identity,
             &self.sessions,
@@ -2060,7 +2442,9 @@ impl Host {
             &self.trailers,
             reach,
             None,
-        )
+        )?;
+        census.stream_listing = self.stream_listing;
+        Ok(census)
     }
 
     /// Every identity with a registered checkout, in key order.
@@ -2123,7 +2507,7 @@ pub(crate) fn classify(hosting: &dyn Hosting, query: &RetirementQuery) -> Result
     let identity = host.identity_of(query.repo.as_deref(), &query.branch)?;
     let census = host.census(&identity, Reach::Remote)?;
     let ask = Ask::query(hosting);
-    let classified = census.classify(&query.branch, &ask)?;
+    let classified = census.classify(&query.branch, census.copies(&query.branch, &ask), &ask)?;
     if !classified.copies.copies.is_empty() || !classified.copies.unreadable.is_empty() {
         return Ok(classified.retirement);
     }
@@ -2146,8 +2530,9 @@ fn nowhere(identity: &str, branch: &str) -> Error {
 /// The classification `recoverable` reports on each row, made from records and
 /// local refs alone.
 pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Retirement> {
+    let ask = Ask::offline();
     census
-        .classify(branch, &Ask::offline())
+        .classify(branch, census.copies(branch, &ask), &ask)
         .ok()
         .map(|classified| classified.retirement)
 }
@@ -2170,6 +2555,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
         let classified = Classified {
             retirement: record.retirement(census.base.as_deref().unwrap_or_default()),
             copies,
+            derivation: Derivation::Derived,
         };
         // Every copy is gone, and what a retirement stopped part way can still have left
         // is beside them: a run root it could not remove, or a session record it could
@@ -2195,6 +2581,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
                     .filter(|record| record.state == Lifecycle::Open)
                     .map(session_token)
                     .collect(),
+                derivation: Derivation::Derived,
             },
             (true, false) => census.finish(
                 &request.branch,
@@ -2211,6 +2598,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
     act(
         &census,
         &request.branch,
+        copies,
         acting,
         Trigger::Verb,
         request.dry_run,
@@ -2282,28 +2670,38 @@ pub(crate) fn pass_over(
         Scope::All => host.identities(),
         Scope::Repo(repo) => vec![store::resolve(&host.registry, repo)?.key],
     };
-    let ask = Ask::acting(hosting, request.dry_run, &exclude);
+    let verdicts = crate::verdict::Store::open()?;
+    let mut ask = Ask::acting(hosting, request.dry_run, &exclude);
+    ask.verdicts = Some(&verdicts);
     let mut report = RetirementPassReport {
         dry_run: request.dry_run,
         examined: Vec::new(),
     };
-    for identity in identities {
-        let census = host.census(&identity, reach_for(request.dry_run))?;
-        for branch in candidates(&census, &host)? {
-            let copies = census.copies(&branch, &ask);
-            if copies.copies.is_empty() && copies.unreadable.is_empty() {
-                continue;
+    // One scope for the whole pass, so no existence or ancestry question about one
+    // repository's objects is asked twice across every branch it examines.
+    git::memoized(|| -> Result<()> {
+        for identity in identities {
+            let census = host.census(&identity, reach_for(request.dry_run))?;
+            for branch in candidates(&census, &host)? {
+                let copies = census.copies(&branch, &ask);
+                if copies.copies.is_empty() && copies.unreadable.is_empty() {
+                    verdicts.forget(&identity, &branch);
+                    continue;
+                }
+                report.examined.push(act(
+                    &census,
+                    &branch,
+                    copies,
+                    Acting::Automatic,
+                    trigger,
+                    request.dry_run,
+                    &ask,
+                )?);
             }
-            report.examined.push(act(
-                &census,
-                &branch,
-                Acting::Automatic,
-                trigger,
-                request.dry_run,
-                &ask,
-            )?);
         }
-    }
+        Ok(())
+    })?;
+    verdicts.report();
     Ok(report)
 }
 
@@ -2332,10 +2730,15 @@ fn candidates(census: &Census<'_>, host: &Host) -> Result<Vec<String>> {
         let Ok(heads) = git::heads(&place.repo) else {
             continue;
         };
-        let unpublished: BTreeSet<String> = git::unpublished_branches(&place.repo)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        // Whether a branch no record names holds commits no origin ref has, asked of
+        // the whole place at once — and not at all where the records name every one
+        // but the base, which is never a candidate however much it holds.
+        let unpublished: BTreeSet<String> = match heads.iter().all(|(branch, _)| {
+            named.contains(branch) || census.base.as_deref() == Some(branch.as_str())
+        }) {
+            true => BTreeSet::new(),
+            false => git::unpublished_heads(&place.repo).unwrap_or_default(),
+        };
         for (branch, _) in heads {
             if named.contains(&branch) || unpublished.contains(&branch) {
                 found.insert(branch);
@@ -2374,13 +2777,15 @@ pub(crate) fn after_close(record: &Record) {
         }
         let census = host.census(&record.identity, Reach::Fetch)?;
         let ask = Ask::acting(None, false, &[]);
-        let classified = census.classify(&record.branch, &ask)?;
+        let copies = census.copies(&record.branch, &ask);
+        let classified = census.classify(&record.branch, copies.clone(), &ask)?;
         if classified.retirement.class != RetirementClass::Retirable {
             return Ok(None);
         }
         act(
             &census,
             &record.branch,
+            copies,
             Acting::Automatic,
             Trigger::SessionClose,
             false,
@@ -2423,20 +2828,28 @@ pub(crate) fn after_close(record: &Record) {
 /// the retirement gives up on it.
 const RECLASSIFICATIONS: usize = 3;
 
-/// Classify a branch and, where its class permits what was asked, retire it.
+/// Classify a branch from where its copies stand and, where its class permits what
+/// was asked, retire it.
+#[allow(clippy::too_many_arguments)] // each is one fact about the one act, named where it is asked
 fn act(
     census: &Census<'_>,
     branch: &str,
+    copies: Copies,
     acting: Acting,
     trigger: Trigger,
     dry_run: bool,
     ask: &Ask<'_>,
 ) -> Result<Retired> {
+    let mut copies = copies;
     let mut attempts = 0;
     loop {
-        let classified = census.classify(branch, ask)?;
+        let classified = census.classify(branch, copies, ask)?;
+        let derivation = classified.derivation;
         if !acting.permits(classified.retirement.class) {
-            return Ok(Retired::nothing(classified.retirement, RetireOutcome::Kept));
+            return Ok(Retired {
+                derivation,
+                ..Retired::nothing(classified.retirement, RetireOutcome::Kept)
+            });
         }
         let plan = census.plan(branch, &classified);
         if dry_run {
@@ -2448,18 +2861,29 @@ fn act(
                 slots_returned: plan.slots,
                 run_roots_removed: plan.run_roots,
                 sessions_closed: plan.sessions.iter().map(session_token).collect(),
+                derivation,
             });
         }
-        // Immediately before anything is deleted, where every copy stands now: a copy
-        // that moved since it was judged is judged again, and nothing is deleted on the
-        // strength of the tip it used to have.
-        let now = census.copies(branch, ask);
+        // Immediately before anything is deleted, where every copy stands now — asked
+        // of each place and of the origin itself, whatever the pass listed or recorded:
+        // a copy that moved since it was judged is judged again, and nothing is deleted
+        // on the strength of the tip it used to have.
+        let now = census.copies_now(branch, ask);
         let moved = now != classified.copies;
         if !moved {
             match census.delete(branch, &classified.copies) {
                 Deletion::Moved => {}
                 Deletion::Done(done) => {
-                    return Ok(census.finish(branch, classified, plan, done, (acting, trigger)));
+                    let finished = census.finish(branch, classified, plan, done, (acting, trigger));
+                    if let (Some(verdicts), RetireOutcome::Retired) =
+                        (ask.verdicts, finished.outcome)
+                    {
+                        verdicts.forget(&census.resolution.key, branch);
+                    }
+                    return Ok(Retired {
+                        derivation,
+                        ..finished
+                    });
                 }
             }
         }
@@ -2473,6 +2897,7 @@ fn act(
             retirement.differing_paths = Vec::new();
             return Ok(Retired::nothing(retirement, RetireOutcome::Kept));
         }
+        copies = census.copies_now(branch, ask);
     }
 }
 
@@ -2541,8 +2966,8 @@ impl Census<'_> {
         }
         for place in &self.places {
             let Some(slot) = &place.slot else { continue };
-            let on_branch =
-                git::current_branch(&slot.join("worktree")).is_ok_and(|current| current == branch);
+            let on_branch = git::checked_out_branch(&slot.join("worktree"))
+                .is_ok_and(|current| current == branch);
             if on_branch && !slots.contains(slot) {
                 slots.push(slot.clone());
             }
@@ -2719,6 +3144,7 @@ impl Census<'_> {
             slots_returned,
             run_roots_removed,
             sessions_closed,
+            derivation: Derivation::Derived,
         };
         record_retirement(&retired, branch, acting, trigger);
         retired

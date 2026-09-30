@@ -51,20 +51,20 @@ use crate::world::World;
 /// The directory is recorded beside the arguments, because half of what a filtered
 /// read promises is about *where* it looked: "this checkout was never opened" is not
 /// a claim any argument list can make.
-struct Counting {
+pub(crate) struct Counting {
     directory: PathBuf,
     log: PathBuf,
 }
 
 /// One recorded invocation: the directory it ran in, and its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Call {
-    cwd: PathBuf,
-    args: String,
+pub(crate) struct Call {
+    pub(crate) cwd: PathBuf,
+    pub(crate) args: String,
 }
 
 impl Counting {
-    fn installed(world: &World) -> Self {
+    pub(crate) fn installed(world: &World) -> Self {
         let directory = world.path("counting");
         std::fs::create_dir_all(&directory).expect("a directory for the counting git");
         let log = world.path("counting.log");
@@ -96,12 +96,12 @@ impl Counting {
 
     /// Forget everything recorded so far, so one read is counted rather than a
     /// fixture's whole construction.
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         let _ = std::fs::remove_file(&self.log);
     }
 
     /// Every invocation recorded since the last [`clear`](Self::clear).
-    fn calls(&self) -> Vec<Call> {
+    pub(crate) fn calls(&self) -> Vec<Call> {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
             .lines()
@@ -114,7 +114,7 @@ impl Counting {
     }
 
     /// `onevcs`, with this `git` first on `PATH`.
-    fn onevcs(&self, world: &World) -> assert_cmd::Command {
+    pub(crate) fn onevcs(&self, world: &World) -> assert_cmd::Command {
         let mut path = std::ffi::OsString::from(&self.directory);
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -909,8 +909,11 @@ fn preserved_in(identity: usize) -> usize {
 ///
 /// The bounds below are about the binary a hook runs, so they are read off a run of
 /// exactly that — the counting `git` doubles the cost of every spawn, and a bound
-/// measured through it would be a bound on the fixture.
+/// measured through it would be a bound on the fixture. It is read once, under the
+/// suite's [`stopwatch`](crate::support::stopwatch), so no host-scale fixture is being
+/// built or driven beside it.
 fn timed(world: &World, extra: &[&str]) -> (Vec<Value>, f64) {
+    let _stopwatch = crate::support::stopwatch();
     let started = Instant::now();
     let assert = world
         .onevcs()
@@ -982,6 +985,10 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
     // checkout an answer must consider, and thirty for each preserved branch it
     // actually decides. The clocks are generous multiples of what this measures, so a
     // busy machine does not fail them and a regression does.
+    //
+    // Building nine identities' sessions and counting reads over them is host-scale
+    // work of its own, which another journey's timed command must not run beside.
+    let fixture_work = crate::support::fixture_work();
     let world = World::new();
     crate::registry::configure_rules(
         &world,
@@ -1039,6 +1046,7 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
          branches",
         calls.len()
     );
+    drop(fixture_work);
     let (timed_rows, whole) = timed(&world, &[]);
     assert_eq!(timed_rows.len(), PRESERVED);
     assert!(

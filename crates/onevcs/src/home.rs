@@ -90,6 +90,15 @@ pub fn probes_dir() -> Result<PathBuf> {
     Ok(root()?.join("probes"))
 }
 
+/// The directory the finished-branches pass records each branch's verdict in.
+///
+/// Its own directory rather than a key in the registry or a field of a session record,
+/// so recording verdicts moves neither schema, and a build that predates it never
+/// looks here.
+pub fn verdicts_dir() -> Result<PathBuf> {
+    Ok(root()?.join("verdicts"))
+}
+
 /// Expand a leading `~` against this user's home directory.
 ///
 /// Only a leading `~/`, and only where a home directory is known — anything else

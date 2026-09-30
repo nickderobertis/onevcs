@@ -3332,6 +3332,140 @@ One existing kind gains a field: a `push` of the branch's own name gains `head`,
 commit it put on the origin — what a change request opened from the branch carries, and
 what `merged-change-request` asks the branch's content to be contained in.
 
+### A finished-branches pass reuses the verdict it recorded while nothing it read has changed
+
+The pass above re-derived the same `keep` for the same branches on every run, and asked
+the origin where each one was one ref at a time: on one host a `sweep --dry-run` over 639
+branches took 1,336 seconds and 69,148 git and `gh` calls, 14,839 of them distinct, and
+retired nothing. **So the pass — `retire_finished`, `onevcs retire-finished`, and `onevcs
+sweep`'s `finished-branches` family alike — records each branch's verdict under
+everything its derivation read, reuses it while every one of those inputs reads unchanged,
+reads the origin's refs in one listing, and asks no existence or ancestry question twice.
+A reused verdict never makes a branch retirable that a fresh derivation would keep.**
+This amendment is the one statement of it; the `onepipeline` and `ai-orchestrator` sides
+restate it from here.
+
+**What is recorded.** Every branch a pass classifies gets a record of the verdict its
+derivation reached — its `Retirement`: class, reason or proof, and evidence — and the key
+it was derived under. A dry run records too: a record is a derivation, not an action.
+`onevcs retire`, `onevcs reclaim` and `classify_retirement` neither read nor write one.
+
+**What the key covers: everything the derivation reads.**
+
+- The record's format version, and the version of the `onevcs` that wrote it; any other
+  release derives again.
+- The identity key and the branch.
+- The base branch's name and the base's tip on the origin.
+- Every copy: its place (kind and path, or the origin's URL) and its tip. The origin's
+  copy is one of them where the origin has the branch, so its tip or its absence is in the
+  key.
+- The places the census could not read or list.
+- A digest of every stream record the derivation reads for the branch — the recorded
+  change request and landing, the heads pushed for it, the change request's own record,
+  its supersessions and its prior retirement — and the landed-commit trailer prefix the
+  rules name.
+- Where the derivation asked the host about the branch's change request (`gh pr view`,
+  `gh pr list`), what the host answered. A pass whose derivation would ask the host asks
+  it again, and a different answer is a changed input.
+
+A record is one JSON document: the format, the writer, the key, and the verdict beside
+what reusing it has to ask again — where the derivation reached it (`early`, before the
+checked-out and dirty-worktree checks, or `concluded`, from the proofs), whether the
+base's history names the change request where the host came to be asked, and the host's
+two answers. No consumer reads one; the shape is spelled so the record and this text
+cannot drift apart.
+
+```json
+{"format": 1, "onevcs": "0.35.0",
+ "key": {"identity": "github.com/acme/project", "branch": "feature/unfinished",
+         "base": "main", "base_tip": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+         "copies": [{"kind": "checkout", "location": "/home/me/src/project",
+                     "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"}],
+         "unreadable": [],
+         "records": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+         "session": "s-abc", "landed_trailer": "Onevcs-Landed-Commit:", "asking": "host"},
+ "verdict": {"retirement": {"class": "keep", "reason": "unmerged-unique-commits",
+                            "identity": "github.com/acme/project",
+                            "branch": "feature/unfinished",
+                            "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+                            "base": "main", "proof": null, "content_free_commits": [],
+                            "superseded_by": null, "differing_paths": ["src/lib.rs"],
+                            "holders": [{"kind": "checkout",
+                                         "location": "/home/me/src/project"}]},
+             "reached": "concluded", "history": "does-not-name",
+             "host": {"merged": {"answered": null}, "open": {"answered": "open"}}}}
+```
+
+`asking` is `host` or `records`; `history` is `names-the-change`, `does-not-name`, or
+`null` where the host was never in question; each host answer is `"not-asked"`,
+`{"answered": ...}` — a merge commit or `null`, and `open` or `not-open` — or `"failed"`,
+which no reusable record holds.
+
+**What a reused verdict may skip: only the derivation** — the ancestry, landing and
+content proofs. These are evaluated fresh on every pass and are never part of what a
+record answers: live holders (`held-by-live-session`), exclusions (`excluded`),
+checked-out and dirty worktrees (`checked-out`, `dirty-worktree`), and the pre-deletion
+re-read, the compare-and-delete and the push under a lease.
+
+**When a verdict is derived again.** When any key input differs; when the record is
+missing, unreadable, malformed, of another format version, or written by another `onevcs`
+version; and when any key input cannot be read on this pass — a copy's tip, the origin's
+listing, a stream file or a line of one, the host's answer. Unreadable is never
+unchanged. A verdict whose own derivation met an unreadable input — `keep` / `unknown`, or
+a host that could not be asked — is not recorded as reusable.
+
+**Where records are stored, and how that coexists.** `$ONEVCS_HOME/verdicts/`, one JSON
+file per identity and branch, named by a digest of the two. Each is written whole to a
+temporary file beside it and renamed into place, so a sweep and an engine's idle pass
+running at once never leave a torn record: the last writer's is the one there, and each
+writer's is a correct derivation under its own key. A record that cannot be written costs
+only its reuse — the pass completes and says so on stderr. A pass removes the record of a
+branch it retired, and of a candidate no copy holds any more; a stale record never
+decides anything, because its key cannot match. **Nothing else under the state root
+moves:** `registry.json` stays at version 6 and session records at version 3, and no
+stream event kind is added — so a build that predates `verdicts/`, every linked copy a
+live engine carries included, never reads it, and adopting this release migrates nothing.
+`compat/tests/verdicts.rs` holds the pinned 0.32.2 to operating over a state root holding
+records, and holds 0.13.0 — which already refuses a version 6 registry — to giving every
+answer, that refusal included, byte for byte as it gave it before a pass wrote them.
+
+**The origin is read in bulk.** A census that reaches the origin reads its branches once
+per identity with one `git ls-remote --heads origin`, and answers every origin tip and the
+base's tip from that listing. A listing that fails leaves every branch of the identity
+`keep` / `unknown` and derives nothing. The one per-ref read left is the one immediately
+before a deletion.
+
+**No question is asked twice in one pass.** Within a pass, no commit-existence question
+(`git cat-file -e`) and no ancestry question (`git merge-base --is-ancestor`) about one
+repository's objects is asked twice: the answers are remembered for the pass, and a
+repository that did not hold a commit is asked again only after the pass has written
+something — a fetch is what brings one, and a deletion is the only other write it makes.
+
+**What the report says.** Every examined entry of `RetirementPassReport` carries
+`derivation`: `derived` where this pass decided it — its proofs were run, or a check made
+fresh decided it before any proof was needed — and `reused` where the proofs were answered
+by the recorded verdict. It is serialized under that name with those two values in
+`onevcs retire-finished --json` and on every `finished-branches` entry of `onevcs sweep
+--format json`, and `onevcs retire --json` and `reclaim --json` carry it as `derived`.
+
+```rust
+pub enum Derivation { Derived, Reused }
+impl Derivation { pub fn as_str(self) -> &'static str; }
+
+// `Retired` gains one member, and nothing else about it moves:
+//   Retired   pub derivation: Derivation   // `derived` where a document omits it
+```
+
+```json
+{"class": "keep", "reason": "unmerged-unique-commits",
+ "identity": "github.com/acme/project", "branch": "feature/unfinished",
+ "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main", "proof": null,
+ "content_free_commits": [], "superseded_by": null, "differing_paths": ["src/lib.rs"],
+ "holders": [{"kind": "checkout", "location": "/home/me/src/project"}],
+ "outcome": "kept", "deleted": [], "failed": [], "slots_returned": [],
+ "run_roots_removed": [], "sessions_closed": [], "derivation": "reused"}
+```
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

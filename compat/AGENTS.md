@@ -30,7 +30,7 @@ before a producer writes a new kind.
 Pin the version **exactly**. What is proved is a property of *that* build, and a
 range that quietly moved would change what was proved without anyone deciding to.
 
-It makes three claims now, against two released builds, and each is the build the
+It makes four claims now, against two released builds, and each is the build the
 claim is about:
 
 - `tests/released.rs` holds **0.13.0** — a build from before an envelope carried
@@ -58,6 +58,17 @@ claim is about:
   journey's premise never holds there. The file's head says where that was observed,
   and its `diagnosis` is what a failed retirement prints, so the day it is re-enabled
   on Windows it names the read that failed.
+- `tests/verdicts.rs` holds both to a state root on which this build's
+  finished-branches pass has recorded verdicts under `$ONEVCS_HOME/verdicts/`. The pass
+  moves nothing an older build reads — the registry and every session record stay the
+  bytes they were, at versions 6 and 3 — and **0.32.2** answers every read it makes
+  (the registry, the session records, `recoverable`, `status`, every stream) exactly as
+  before. **0.13.0 already refuses the base's registry**: it reads registry versions 2
+  to 5 and parses a later one as version 5's shape, and version 6 dropped two fields
+  that shape requires, so every verb of it that loads the registry fails on a host
+  this build registered. That journey therefore holds it to something narrower and
+  exact: every answer it gives — that refusal included — is byte-identical before and
+  after the records are written. Unix only, for the reason `retired.rs` is.
 
 The 0.32.2 claims need this build to *write* what is read, so this build is linked
 too, from the path beside it, as `onevcs-current`: each journey writes with it and
