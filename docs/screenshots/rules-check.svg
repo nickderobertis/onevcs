@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.0//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
-<svg width="868.00" height="201.00" xmlns="http://www.w3.org/2000/svg">
+<svg width="868.00" height="251.00" xmlns="http://www.w3.org/2000/svg">
 <style>
 @font-face {
 	font-family: &apos;JetBrains Mono&apos;;
@@ -8,8 +8,8 @@
 	font-weight: normal;
 	font-style: normal;
 }
-</style><rect width="868.00" height="201.00" fill="#0d1117" rx="8.00" ry="8.00" x="0.00px" y="0.00px"/>
+</style><rect width="868.00" height="251.00" fill="#0d1117" rx="8.00" ry="8.00" x="0.00px" y="0.00px"/>
 <g font-family="JetBrains Mono" font-size="14.00px" fill="#c4c4c4" clip-path="url(#terminalMask)">
-<text x="30.00px" y="51.80px" xml:space="preserve"><tspan xml:space="preserve">repo: widgets</tspan></text><text x="30.00px" y="68.60px" xml:space="preserve"><tspan xml:space="preserve">identity: github.com/acme-corp/widgets</tspan></text><text x="30.00px" y="85.40px" xml:space="preserve"><tspan xml:space="preserve">checkout: /home/dev/projects/widgets</tspan></text><text x="30.00px" y="102.20px" xml:space="preserve"><tspan xml:space="preserve">rules: /home/dev/.onevcs/rules.yml</tspan></text><text x="30.00px" y="119.00px" xml:space="preserve"><tspan xml:space="preserve">matched: rule 1 {host: github.com, owner: acme-corp, name: widgets}</tspan></text><text x="30.00px" y="135.80px" xml:space="preserve"><tspan xml:space="preserve">publication: change-auto (from rule 1)</tspan></text><text x="30.00px" y="152.60px" xml:space="preserve"><tspan xml:space="preserve">approvals: none (from rule 1)</tspan></text><text x="30.00px" y="169.40px" xml:space="preserve"><tspan xml:space="preserve">trailer_prefix: Onevcs- (from the rules file)</tspan></text>
+<text x="30.00px" y="51.80px" xml:space="preserve"><tspan xml:space="preserve">repo: widgets</tspan></text><text x="30.00px" y="68.60px" xml:space="preserve"><tspan xml:space="preserve">identity: github.com/acme-corp/widgets</tspan></text><text x="30.00px" y="85.40px" xml:space="preserve"><tspan xml:space="preserve">checkout: /home/dev/projects/widgets</tspan></text><text x="30.00px" y="102.20px" xml:space="preserve"><tspan xml:space="preserve">rules: /home/dev/.onevcs/rules.yml</tspan></text><text x="30.00px" y="119.00px" xml:space="preserve"><tspan xml:space="preserve">matched: rule 1 {host: github.com, owner: acme-corp, name: widgets}</tspan></text><text x="30.00px" y="135.80px" xml:space="preserve"><tspan xml:space="preserve">publication: change-auto (from rule 1)</tspan></text><text x="30.00px" y="152.60px" xml:space="preserve"><tspan xml:space="preserve">approvals: none (from rule 1)</tspan></text><text x="30.00px" y="169.40px" xml:space="preserve"><tspan xml:space="preserve">drafts: on (from the shipped default)</tspan></text><text x="30.00px" y="186.20px" xml:space="preserve"><tspan xml:space="preserve">green draft: lift (from publication change-auto and approvals none)</tspan></text><text x="30.00px" y="203.00px" xml:space="preserve"><tspan xml:space="preserve">early-lift warning: on (from the shipped default)</tspan></text><text x="30.00px" y="219.80px" xml:space="preserve"><tspan xml:space="preserve">trailer_prefix: Onevcs- (from the rules file)</tspan></text>
 </g>
-<svg x="0.00px" y="0.00px"><circle cx="13.50" cy="12.00" r="5.50" fill="#FF5A54"/><circle cx="32.50" cy="12.00" r="5.50" fill="#E6BF29"/><circle cx="51.50" cy="12.00" r="5.50" fill="#52C12B"/></svg><defs><clipPath id="terminalMask"><rect x="0.00" y="0.00" width="868.00" height="181.00"/></clipPath></defs></svg>
+<svg x="0.00px" y="0.00px"><circle cx="13.50" cy="12.00" r="5.50" fill="#FF5A54"/><circle cx="32.50" cy="12.00" r="5.50" fill="#E6BF29"/><circle cx="51.50" cy="12.00" r="5.50" fill="#52C12B"/></svg><defs><clipPath id="terminalMask"><rect x="0.00" y="0.00" width="868.00" height="231.00"/></clipPath></defs></svg>

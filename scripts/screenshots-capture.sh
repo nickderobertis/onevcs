@@ -313,7 +313,18 @@ pub fn queue_depth() -> usize {
 SOURCE
 git -C "$PLATFORM_TREE" add -A
 git -C "$PLATFORM_TREE" commit -q -m "feat(queue): report the depth a queue is holding"
-onevcs publish "$PLATFORM_TOKEN" >/dev/null
+# Every change policy watches its checks, `change-open` included, and this one's are
+# still running: the publication watches them to a short bound and stops there, with
+# the change request open as a draft awaiting them — the state `status` pictures. It
+# ends `checks-unsettled` (exit 1), and anything else is a capture that went wrong.
+published=0
+ONEVCS_CHECKS_TIMEOUT_SECONDS=1 onevcs publish "$PLATFORM_TOKEN" >/dev/null \
+  2>"$WORK/tmp/platform-publish.err" || published=$?
+if [ "$published" != 1 ]; then
+  echo "screenshots: the platform publication ended $published, not checks-unsettled:" >&2
+  cat "$WORK/tmp/platform-publish.err" >&2
+  exit 1
+fi
 
 # Work that must not be lost and is not ready to land: one branch put on its origin
 # by `preserve`, and one a run left open behind it.
