@@ -388,38 +388,22 @@ accident.
 
 ## Every change request is a draft while its checks run
 
-`publish.rs`'s `land_as_change` is the draft lifecycle (the draft-lifecycle amendment
-in `docs/contract.md`): a publication with no `DraftReason` opens or adopts its change
-request as a draft awaiting its checks, and `policy::GreenDraft` — the one statement of
-the table, which `rules check` renders too — decides what green does. Six things are
-easy to undo.
+The rules are the draft-lifecycle amendment's in `docs/contract.md`; what is easy to
+undo is how `publish.rs` holds them.
 
-- **One `Watcher` carries the whole watch.** The draft phase (`settle_draft`), the phase
-  after an early lift (`settle_after_early_lift`), a ready change's (`settle_ready`) and
-  `change-auto`'s merge watch (`watch_the_merge`) share one bound, one record of what
-  each check was last reported as — keyed on status *and* conclusion, because a run
-  re-attached after a lift can complete under the status the skipped one had — and one
-  `checks-settled`. A second watch loop would report every transition twice.
-- **The lift comes before any merge is asked for**, because GitHub neither merges a draft
-  nor arms auto-merge on one. `onevcs-testing`'s host and `tests/fixtures/gh` both refuse
-  a draft's merge, so a journey that lifted late fails rather than passing on a host that
-  did not care.
-- **`skipped` is `CheckState::Skipped`, never green.** `Check::state()` is the only
-  classifier and `green`/`red` follow it. What the watch does with a skip is its own
-  rule: on a draft it has not run, after an early lift a draft-era skip is not a verdict
-  (a post-lift run is any check the host reports that is not identical to one it
-  reported on the draft), and otherwise it satisfies the watch and is recorded as
-  `passed-with-skipped`.
-- **Only the host's complete answer is "nothing required".** `declared_required` reads
-  `required_checks_on`; an incomplete or refused answer is `Declared::Unknown`, which
-  waits the grace window rather than going green at once.
-- **The lift is one-way.** A change the host holds ready is never re-drafted, and a draft
-  somebody asked for (`Held`, `AwaitingRelease`) is never watched into a lift.
-- **`drafts: {disabled: true}` is the pre-lifecycle path, kept whole**: ready change
-  requests, an adopted draft lifted at once, and `change-auto` armed on its first reading.
-  It is also how a journey reaches a merge the host holds past the watch, which a draft
-  whose checks never settle cannot, since it is never armed (`AUTOMATED_READY` in
-  `tests/e2e/host.rs`).
+- **One `Watcher` carries the whole watch** — the draft's phase, the one after an early
+  lift, a ready change's, and `change-auto`'s merge — so one bound covers it, each check
+  transition is reported once (keyed on status *and* conclusion, since a re-run can
+  complete under the status the skipped run had), and `checks-settled` is recorded once.
+- **`policy::GreenDraft` is the one statement of the table**, asked by the publication
+  and by `rules check`; a second `match` on publication and approvals would drift.
+- **A post-lift run is told from a draft-era one by the check itself**: anything the host
+  reports after the lift that is not identical to what it reported on the draft. Neither
+  `Check` nor `RemoteHost` was widened for it; keep it that way unless a host proves the
+  comparison insufficient.
+- **`drafts: {disabled: true}` is the pre-lifecycle path kept whole**, and it is how a
+  journey reaches a merge the host holds past the watch (`AUTOMATED_READY` in
+  `tests/e2e/host.rs`) — a draft whose checks never settle is never armed at all.
 
 ## A publication observes, captures, and does not settle early
 

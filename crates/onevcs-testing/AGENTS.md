@@ -45,18 +45,11 @@ commit to take. A *requested* title needs no check here — `PublishRequest::tit
 is a `Subject`, so one that could not be a commit subject never reaches a
 provider.
 
-**The draft lifecycle is performed, and it has no clock.** A reasonless publication
-opens its change request as a draft awaiting its checks, watches them under all three
-change policies, lifts before any merge — this host refuses to merge or arm a draft,
-as GitHub does — or keeps a green team change for review. Where the real publication
-polls, this one reads the host **once per phase**: a reading that has not settled *is*
-the bound elapsing, and a draft none of whose required checks has run *is* the grace
-window elapsing, after which the next reading is what `checks_after_lift` seeds. A
-consumer drives a row by seeding the reading it wants, never by timing one; that
-approximation is the one stated here rather than hidden.
-`required_checks_on` answers from `required_checks` where it is seeded and otherwise
-from the checks seeded as required, completely — so a scenario written before the
-lifecycle, with no required check seeded, reads as a repository that requires none.
+**The draft lifecycle has no clock here, and must not grow one.** Each phase of the
+watch is one reading of the host (the amendment in `docs/contract.md` states what a
+reading stands for), so a consumer drives a row by seeding the reading it wants —
+`checks_after_lift`, `required_checks` — never by timing one. A counter or a clock
+outside the state would make those rows unrepeatable.
 
 The two description methods are host-side and performed: `describe_change` writes
 into the same `titles` and `bodies` `open_change` wrote and records the call in

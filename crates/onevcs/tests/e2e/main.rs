@@ -5,8 +5,8 @@
 //! exit code, stdout, and stderr, the way a user or a CI job meets it. Nothing
 //! here calls into the library.
 //!
-//! Five modules are the exception, and they are the ones *about* the library:
-//! `honesty`, `seam`, and `library` drive it in-process because supplying an
+//! Six modules are the exception, and they are the ones *about* the library:
+//! `honesty`, `seam`, `library` and `drafts` drive it in-process because supplying an
 //! implementation is something only a caller embedding the crate can do — the
 //! binary deliberately has no flag for it — and `declaration` and `discovery` do
 //! because what they hold *is* the promise that a linking consumer reaches these
@@ -55,7 +55,13 @@ mod comparison;
 // lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
 // fixes: a second Nx project would run the same `--workspace` commands twice.
 mod cost;
+// Unix only: the draft lifecycle, row by row, through real git against a real bare
+// origin and the host from `onevcs-testing` — a supplied host is the seam the rows are
+// driven through, and the crate a consumer drives them with. Its `rules check` journeys
+// and one publication through the real `GitHub` implementation drive the binary. Its
+// own header carries the reason in full.
 #[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod drafts;
 #[cfg(unix)]
 mod edges;

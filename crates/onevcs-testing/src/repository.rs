@@ -663,6 +663,11 @@ fn publish_as_change(
     // real publication and for the same reason.
     let author = host.authenticated_user()?;
     let lifecycle = !publishing.drafts.disabled.unwrap_or(false);
+    // Checked before anything is opened, as the real publication checks it before
+    // anything is pushed.
+    if lifecycle {
+        grace_seconds()?;
+    }
     let existing = host.find_changes(&session.branch, &session.base)?;
     // Whether the host already held it, which is what decides whether there can be a
     // draft to lift — and, as next door, keeps a publication that opens its own change
@@ -1022,7 +1027,7 @@ fn watch(
     let snapshot: Vec<Check> = answered.checks.clone();
     lift(host, publishing, change, emissions)?;
     let warned = publishing.drafts.warn_on_early_lift.unwrap_or(true);
-    let grace = grace_seconds();
+    let grace = grace_seconds()?;
     if warned {
         eprintln!(
             "onevcs: warning: {} was lifted out of its draft before its required checks ran on \
@@ -1081,15 +1086,32 @@ fn watch(
 /// constant out of `onevcs`'s source and holds this to it.
 const DEFAULT_DRAFT_GRACE_SECONDS: f64 = 120.0;
 
+/// The knob a real publication waits its grace window by.
+const DRAFT_GRACE_ENV: &str = "ONEVCS_DRAFT_CHECKS_GRACE_SECONDS";
+
 /// The grace window a real publication would have waited out, as the operator set it
 /// or the default — recorded on `draft-lifted-early` so the payload reads as the real
 /// one does, though nothing here waits.
-fn grace_seconds() -> f64 {
-    std::env::var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<f64>().ok())
-        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-        .unwrap_or(DEFAULT_DRAFT_GRACE_SECONDS)
+///
+/// Validated as the real publication validates it, and refused by name where it is
+/// not a finite number of seconds above zero: a provider that quietly took the default
+/// would let a consumer's suite pass on a setting the real one refuses.
+fn grace_seconds() -> Result<f64> {
+    let Some(raw) = std::env::var_os(DRAFT_GRACE_ENV) else {
+        return Ok(DEFAULT_DRAFT_GRACE_SECONDS);
+    };
+    let raw = raw.to_string_lossy().into_owned();
+    let seconds: f64 = raw.trim().parse().map_err(|_| Error::Invalid {
+        reason: format!("{DRAFT_GRACE_ENV} must be a number of seconds, not {raw:?}"),
+    })?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(Error::Invalid {
+            reason: format!(
+                "{DRAFT_GRACE_ENV} must be a finite number of seconds above zero, not {raw:?}"
+            ),
+        });
+    }
+    Ok(seconds)
 }
 
 /// The draft a publication asked for, as the two refusals next door spell it: "a

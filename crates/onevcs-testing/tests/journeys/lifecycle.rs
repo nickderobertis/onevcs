@@ -482,3 +482,25 @@ fn the_grace_window_an_early_lift_records_is_the_one_onevcs_defaults_to() {
         .collect();
     assert_eq!(early[0]["payload"]["grace_seconds"], declared);
 }
+
+#[test]
+fn a_grace_window_that_is_not_a_number_of_seconds_is_refused_by_name_as_it_is_next_door() {
+    for grace in ["soon", "0", "-1"] {
+        std::env::set_var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", grace);
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+        let host = host(vec![check("gate", Some("success"), 1)], None);
+
+        let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+
+        assert!(
+            matches!(&outcome, PublishOutcome::Failed { kind: FailureKind::Invalid, reason, .. }
+                if reason.contains("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS")),
+            "{grace}: {outcome:?}"
+        );
+        assert!(
+            host.state().changes.is_empty(),
+            "{grace}: nothing was opened"
+        );
+    }
+}
