@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{Approvals, Drafts, MergePolicy, Policy, RuleMatch, RulesFile};
 use crate::store::{Normalized, Resolution};
-use crate::{guidance, home, ids};
+use crate::{home, ids};
 
 /// The version of the rules file this build writes, and the newest it has an
 /// opinion about.
@@ -352,17 +352,15 @@ fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<(
     }
 }
 
-/// The keys a `drafts:` mapping takes.
-const DRAFTS_KEYS: [&str; 2] = ["disabled", "warn_on_early_lift"];
-
 /// Refuse, naming the key and where it is, a `drafts:` that is not two optional
 /// booleans.
 ///
 /// The shape refuses both of these too — `Drafts` denies a key it does not know — but
 /// its message names neither the rule the mapping was in nor, for a value that is not
-/// a boolean, the key the value was given for. So they are refused here first, where
-/// the document still says which rule is which: an operator told only that something
-/// somewhere "expected a boolean" has the whole file to search.
+/// a boolean, the key the value was given for. So each key is put to the type on its
+/// own here, where the document still says which rule is which: the type stays the one
+/// statement of which keys there are, and an operator is told the rule and the key
+/// rather than that something somewhere "expected a boolean".
 fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
     let mut found: Vec<(String, &serde_yaml_ng::Value)> = Vec::new();
     if let Some(drafts) = document
@@ -386,36 +384,34 @@ fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Resu
     };
     for (where_, drafts) in found {
         let serde_yaml_ng::Value::Mapping(fields) = drafts else {
-            return Err(refused(
-                &where_,
-                format!(
-                    "is not a mapping; it takes {}",
-                    guidance::listed(&DRAFTS_KEYS)
-                ),
-            ));
+            return Err(refused(&where_, "is not a mapping".to_owned()));
         };
         for (key, value) in fields {
-            let key = key.as_str().unwrap_or_default();
-            if !DRAFTS_KEYS.contains(&key) {
-                return Err(refused(
-                    &where_,
-                    format!(
-                        "names {key:?}, which it does not have; it takes {}",
-                        guidance::listed(&DRAFTS_KEYS)
-                    ),
-                ));
-            }
-            if !value.is_bool() {
-                return Err(refused(
-                    &where_,
+            let mut alone = serde_yaml_ng::Mapping::new();
+            alone.insert(key.clone(), value.clone());
+            let Err(said) =
+                serde_yaml_ng::from_value::<Drafts>(serde_yaml_ng::Value::Mapping(alone))
+            else {
+                continue;
+            };
+            let key = serde_yaml_ng::to_string(key)
+                .map(|spelled| spelled.trim().to_owned())
+                .unwrap_or_default();
+            // Every key the type has takes a boolean, so a boolean it refused is a key
+            // it does not have — and its own refusal lists the ones it does.
+            return Err(refused(
+                &where_,
+                if value.is_bool() {
+                    format!("names {key:?}, which it does not have: {said}")
+                } else {
                     format!(
                         "{key} is {}, which is not a boolean; write true or false",
                         serde_yaml_ng::to_string(value)
                             .map(|spelled| spelled.trim().to_owned())
-                            .unwrap_or_else(|_| "not a value".to_owned())
-                    ),
-                ));
-            }
+                            .unwrap_or_default()
+                    )
+                },
+            ));
         }
     }
     Ok(())

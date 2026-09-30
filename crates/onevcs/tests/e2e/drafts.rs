@@ -287,8 +287,8 @@ fn a_drafts_key_this_build_does_not_know_or_a_value_that_is_not_a_boolean_is_ref
         .stderr(predicate::str::contains(
             "default drafts: names \"disable\"",
         ))
-        .stderr(predicate::str::contains("\"disabled\""))
-        .stderr(predicate::str::contains("\"warn_on_early_lift\""));
+        .stderr(predicate::str::contains("`disabled`"))
+        .stderr(predicate::str::contains("`warn_on_early_lift`"));
 
     // …and a value that is not a boolean, naming the key it was given for.
     configure_rules(

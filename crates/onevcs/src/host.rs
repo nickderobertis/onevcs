@@ -422,7 +422,13 @@ pub struct ChangeSpec {
     /// Beside `draft` rather than a third kind of it, because [`DraftReason`] is what
     /// a *caller* asks for and this is what the lifecycle asks for when the caller
     /// asked for none. Defaulted and omitted when false, so a spec written before it
-    /// reads and writes as it did.
+    /// reads and writes as it did. Where both are set the reason is what the host
+    /// records: either way the change opens as a draft.
+    // llmlint: ignore[invalid_states_unrepresentable] one sum type over both would
+    // change `draft`, which the approved contract declares verbatim as
+    // `Option<DraftReason>`, and the manager's ruling for this amendment forbids widening
+    // `DraftReason` itself. So the lifecycle's draft is an additive, defaulted field beside
+    // it, and the one combination both allow is given a meaning above rather than refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub draft_awaiting_checks: bool,
 }

@@ -445,26 +445,37 @@ fn this_host_will_neither_merge_nor_arm_a_merge_on_a_draft() {
     ));
 }
 
+/// One `pub const` of `onevcs`'s private host module, read out of its source: the
+/// grace window's knob and default are `onevcs`'s own and not part of its surface, so
+/// this crate's copies are held to them here rather than by widening that surface.
+fn declared_in_onevcs(name: &str) -> String {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onevcs/src/gh.rs"),
+    )
+    .expect("onevcs's host module");
+    source
+        .lines()
+        .find_map(|line| {
+            let rest = line.trim().strip_prefix(&format!("pub const {name}: "))?;
+            Some(
+                rest.split_once(" = ")?
+                    .1
+                    .strip_suffix(';')?
+                    .trim_matches('"')
+                    .to_owned(),
+            )
+        })
+        .unwrap_or_else(|| panic!("onevcs declares {name}"))
+}
+
 #[test]
 fn the_grace_window_an_early_lift_records_is_the_one_onevcs_defaults_to() {
     // The provider records the grace window a real publication would have waited out,
-    // and with nothing set that is `onevcs`'s own default — which is private to it, so
-    // it is read out of its source here and the two are held together.
-    let declared: f64 = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onevcs/src/gh.rs"),
-    )
-    .expect("onevcs's host module")
-    .lines()
-    .find_map(|line| {
-        line.trim()
-            .strip_prefix("pub const DEFAULT_DRAFT_GRACE_SECONDS: f64 = ")?
-            .strip_suffix(";")
-            .map(str::to_owned)
-    })
-    .expect("onevcs declares the default grace window")
-    .parse()
-    .expect("a number of seconds");
-    std::env::remove_var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS");
+    // and with nothing set that is `onevcs`'s own default.
+    let declared: f64 = declared_in_onevcs("DEFAULT_DRAFT_GRACE_SECONDS")
+        .parse()
+        .expect("a number of seconds");
+    std::env::remove_var(declared_in_onevcs("DRAFT_GRACE_ENV"));
     let home = Home::new();
     let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
     let host = host(
@@ -485,8 +496,11 @@ fn the_grace_window_an_early_lift_records_is_the_one_onevcs_defaults_to() {
 
 #[test]
 fn a_grace_window_that_is_not_a_number_of_seconds_is_refused_by_name_as_it_is_next_door() {
+    // Set under the name `onevcs` reads it by, so a provider reading any other name
+    // would take the default and publish — which this refuses.
+    let knob = declared_in_onevcs("DRAFT_GRACE_ENV");
     for grace in ["soon", "0", "-1"] {
-        std::env::set_var("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", grace);
+        std::env::set_var(&knob, grace);
         let home = Home::new();
         let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
         let host = host(vec![check("gate", Some("success"), 1)], None);
@@ -495,7 +509,7 @@ fn a_grace_window_that_is_not_a_number_of_seconds_is_refused_by_name_as_it_is_ne
 
         assert!(
             matches!(&outcome, PublishOutcome::Failed { kind: FailureKind::Invalid, reason, .. }
-                if reason.contains("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS")),
+                if reason.contains(&knob)),
             "{grace}: {outcome:?}"
         );
         assert!(
