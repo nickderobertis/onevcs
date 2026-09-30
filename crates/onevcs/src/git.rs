@@ -3714,7 +3714,8 @@ mod fetch_turns {
     }
 
     /// Hold the first fetch into `checkout` at `prepared` until `<gate>/release`
-    /// exists, recording the git being held as `<gate>/held/git`; while
+    /// exists, recording the git being held as `<gate>/held/git` — renamed into
+    /// place, so a test that sees the file never reads it before its pid; while
     /// `<gate>/refuse` exists, refuse every update instead.
     fn gate(root: &Path, checkout: &Path) -> PathBuf {
         let gate = root.join(format!(
@@ -3732,7 +3733,8 @@ mod fetch_turns {
                  grep -q ' refs/remotes/origin/main$' || exit 0\n\
                  [ -e {gate}/refuse ] && exit 1\n\
                  mkdir {gate}/held 2>/dev/null || exit 0\n\
-                 echo \"$PPID\" > {gate}/held/git\n\
+                 echo \"$PPID\" > {gate}/held/git.tmp\n\
+                 mv {gate}/held/git.tmp {gate}/held/git\n\
                  until [ -e {gate}/release ]; do sleep 0.02; done\n",
                 gate = gate.display()
             ),
