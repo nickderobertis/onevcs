@@ -1419,6 +1419,151 @@ fn a_pass_killed_part_way_leaves_no_torn_record_where_one_is_read() {
     }
 }
 
+/// Every branch of `repo` and the commit it is on.
+fn heads(world: &World, repo: &std::path::Path) -> BTreeMap<String, String> {
+    world
+        .git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short) %(objectname)",
+                "refs/heads",
+            ],
+        )
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(branch, tip)| (branch.to_owned(), tip.to_owned()))
+        .collect()
+}
+
+/// Every stream under the state root, each read as `(seq, kind)` in file order.
+fn stream_sequences(world: &World) -> BTreeMap<String, Vec<(u64, String)>> {
+    let Ok(listed) = std::fs::read_dir(world.home().join("streams")) else {
+        return BTreeMap::new();
+    };
+    listed
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "ndjson"))
+        .map(|entry| {
+            let text = std::fs::read_to_string(entry.path()).expect("a stream");
+            let records = text
+                .lines()
+                .map(|line| {
+                    let envelope: Value = serde_json::from_str(line)
+                        .unwrap_or_else(|_| panic!("a whole envelope: {line}"));
+                    (
+                        envelope["seq"].as_u64().expect("a seq"),
+                        envelope["kind"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            (entry.file_name().to_string_lossy().into_owned(), records)
+        })
+        .collect()
+}
+
+// Two passes that act, over one state root, at once — the engine's idle maintenance
+// (`onevcs::retire_finished`) and an operator's `onevcs retire-finished`, which nothing
+// serializes. What is shared is refs in three places, the verdict records and the event
+// streams, and each is held here to what one pass alone would leave.
+#[test]
+fn two_passes_that_act_at_once_lose_no_work_and_leave_whole_streams() {
+    let providers = onevcs::Providers::real();
+    let idle = onevcs::RetirePass {
+        scope: onevcs::Scope::All,
+        exclude: Vec::new(),
+        dry_run: false,
+    };
+    for _ in 0..3 {
+        let estate = Estate::new(
+            1,
+            Shape {
+                unmerged: 12,
+                retirable: 12,
+                copied: 3,
+                advanced: 5,
+                sessions: 2,
+            },
+        );
+        let world = &estate.world;
+        let identity = &estate.identities[0];
+        // Every retirable branch in both checkouts and on the origin, so the two passes
+        // race over every kind of deletion: a compare-and-delete in each checkout and a
+        // push under a lease.
+        for branch in &identity.retirable {
+            world.git(
+                &identity.second,
+                &[
+                    "fetch",
+                    "-q",
+                    &identity.checkout.to_string_lossy(),
+                    &format!("{branch}:{branch}"),
+                ],
+            );
+            world.git(&identity.checkout, &["push", "-q", "origin", branch]);
+        }
+        let places = [&identity.checkout, &identity.second, &identity.origin];
+        let before: Vec<_> = places.iter().map(|repo| heads(world, repo)).collect();
+        crate::honesty::inhabit(world);
+
+        let mut operator = world
+            .onevcs_std()
+            .args(["retire-finished", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the operator's pass starts");
+        let engine = onevcs::retire_finished(&providers, &idle).expect("the engine's pass");
+        let operator = {
+            let output = std::io::Read::bytes(operator.stdout.take().expect("its stdout"))
+                .collect::<Result<Vec<u8>, _>>()
+                .expect("its report");
+            assert!(operator.wait().expect("it ends").success());
+            let report: Value = serde_json::from_slice(&output).expect("its JSON report");
+            report["examined"].as_array().expect("examined").clone()
+        };
+
+        // No unmerged branch moved or went anywhere, in any place.
+        for (repo, was) in places.iter().zip(&before) {
+            let now = heads(world, repo);
+            for branch in &identity.unmerged {
+                assert_eq!(now.get(branch), was.get(branch), "{branch} in {repo:?}");
+            }
+            // …and every retirable one is gone from it, whichever pass took it.
+            for branch in &identity.retirable {
+                assert!(!now.contains_key(branch), "{branch} is still in {repo:?}");
+            }
+        }
+        // Each retirable branch was retired by one pass or the other, and neither pass
+        // reports it as something a fresh derivation would not.
+        for branch in &identity.retirable {
+            let by_engine = engine
+                .examined
+                .iter()
+                .find(|entry| &entry.retirement.branch == branch);
+            let by_operator = operator.iter().find(|entry| entry["branch"] == **branch);
+            assert!(
+                by_engine.is_some_and(|entry| entry.outcome == onevcs::RetireOutcome::Retired)
+                    || by_operator.is_some_and(|entry| entry["outcome"] == "retired"),
+                "{branch}: engine {by_engine:?}, operator {by_operator:?}"
+            );
+        }
+        // Every stream is whole and numbered without a gap or a repeat, though both
+        // passes appended to the same ones.
+        for (stream, records) in stream_sequences(world) {
+            let numbered: Vec<u64> = records.iter().map(|(seq, _)| *seq).collect();
+            let expected: Vec<u64> = (1..=numbered.len() as u64).collect();
+            assert_eq!(numbered, expected, "{stream}: {records:?}");
+        }
+        // Every verdict record either wrote is whole: `records` refuses one that is not.
+        records(world);
+        // And a pass after both finds nothing left to retire.
+        for entry in rehearsed(&mut world.onevcs()) {
+            assert_eq!(entry["class"], "keep", "{entry}");
+        }
+    }
+}
+
 #[test]
 fn the_library_pass_called_twice_over_unchanged_state_reuses_every_verdict() {
     let estate = counted_estate();
