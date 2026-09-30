@@ -1873,24 +1873,31 @@ pub fn unpublished_branches_among(
 /// A branch reached by some remote-tracking ref holds nothing that ref does not, which
 /// is exactly a count of zero; `--no-merged` given once per tip keeps the branches
 /// reached by none of them, in one walk of the history.
+///
+/// Each tip the first listing prints is parsed as an [`ObjectId`] before it becomes an
+/// argument of the second, and a line that is not one refuses the whole answer: a
+/// listing this cannot read names no branch as published.
 pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
-    let tracked: BTreeSet<String> = checked(
+    let listing = checked(
         &[
             "for-each-ref",
             "--format=%(objectname)",
             "refs/remotes/origin",
         ],
         Some(cwd),
-    )?
-    .stdout
-    .lines()
-    .filter(|line| !line.is_empty())
-    .map(str::to_owned)
-    .collect();
-    let unreached: Vec<String> = tracked
-        .iter()
-        .map(|tip| format!("--no-merged={tip}"))
-        .collect();
+    )?;
+    let mut unreached = Vec::new();
+    for line in listing.stdout.lines().filter(|line| !line.is_empty()) {
+        let tip = ObjectId::parse(line).ok_or_else(|| {
+            error::invalid(format!(
+                "`git for-each-ref` in {} printed {line:?} where a remote-tracking tip belongs",
+                cwd.display()
+            ))
+        })?;
+        unreached.push(format!("--no-merged={}", tip.as_str()));
+    }
+    unreached.sort();
+    unreached.dedup();
     let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
     args.extend(unreached.iter().map(String::as_str));
     args.push("refs/heads");
