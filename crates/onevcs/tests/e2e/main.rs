@@ -59,12 +59,12 @@ mod cost;
 // origin and the host from `onevcs-testing` — a supplied host is the seam the rows are
 // driven through, and the crate a consumer drives them with. Its `rules check` journeys
 // and one publication through the real `GitHub` implementation drive the binary. Its
-// own header carries the reason in full.
+// own header carries the reason in full. It lives in this one `e2e` binary of the one
+// crate project, as every journey here does, because `crates/onevcs/AGENTS.md` fixes
+// that: a second Nx project would run the same `--workspace` commands twice.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
 mod drafts;
 #[cfg(unix)]
 mod edges;

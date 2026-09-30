@@ -165,8 +165,6 @@ fn assert_awaiting_checks(world: &World, session: &Session) {
     assert_eq!(drafted[0]["phase"], "review");
 }
 
-// The rules file, through the real loader and the real binary.
-
 /// `onevcs rules check hosted`, as a user runs it.
 fn rules_check(world: &World) -> assert_cmd::assert::Assert {
     world.onevcs().args(["rules", "check", "hosted"]).assert()
@@ -320,8 +318,6 @@ fn a_drafts_key_this_build_does_not_know_or_a_value_that_is_not_a_boolean_is_ref
         .stderr(predicate::str::contains("names drafts"))
         .stderr(predicate::str::contains("declare version 3"));
 }
-
-// Green checks: one journey per row.
 
 #[test]
 fn green_checks_lift_a_change_auto_draft_before_the_host_is_asked_to_merge_it() {
@@ -492,8 +488,6 @@ fn with_the_lifecycle_disabled_a_publication_opens_its_change_ready_and_records_
     }
 }
 
-// Red, and the bound.
-
 #[test]
 fn a_red_required_check_ends_every_change_policy_checks_failed_and_leaves_the_draft_standing() {
     for rules in [AUTO, DIRECT, OPEN, TEAM] {
@@ -581,8 +575,6 @@ fn the_bound_ends_every_change_policy_checks_unsettled_and_leaves_the_draft_stan
         }
     }
 }
-
-// What the host says it requires.
 
 #[test]
 fn a_host_that_answers_completely_that_nothing_is_required_is_green_at_once() {
@@ -706,8 +698,6 @@ fn an_incomplete_or_unreadable_required_checks_answer_is_never_read_as_none() {
         assert!(at(&kinds, "draft-lifted-early") > at(&kinds, "change-drafted"));
     }
 }
-
-// A repository whose CI skips drafts.
 
 /// A draft on which the required check was skipped, and the run its lift triggers.
 fn skipped_then(after: Option<&str>) -> HostState {
@@ -1087,8 +1077,6 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
     );
 }
 
-// Drafts somebody asked for, adoption, and the one-way lift.
-
 fn held() -> DraftReason {
     DraftReason::Held {
         because: "the session is still making it".to_owned(),
@@ -1338,8 +1326,6 @@ fn lifting_is_one_way_a_change_the_host_holds_ready_is_never_drafted_again() {
     assert_eq!(drafted.len(), 1, "only the held draft: {drafted:?}");
 }
 
-// `skipped` is its own state.
-
 #[test]
 fn outside_a_draft_a_skipped_required_check_satisfies_the_watch_and_is_recorded_as_such() {
     for (checks, verdict, skipped) in [
@@ -1447,8 +1433,6 @@ fn a_skipped_check_is_reported_as_skipped_and_never_as_passed_wherever_a_check_i
     assert_eq!(skipped.state(), CheckState::Skipped);
     assert!(!skipped.green() && !skipped.red());
 }
-
-// The branch-keyed verbs take the same lifecycle.
 
 #[test]
 fn publish_branch_opens_a_draft_and_keeps_it_for_review_on_a_team_identity() {
