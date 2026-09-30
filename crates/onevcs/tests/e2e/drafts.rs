@@ -54,8 +54,14 @@ fn first() -> ChangeId {
     ChangeId("1".to_owned())
 }
 
-/// One check as the host reports it. `at` is where the run is on the host, which is
-/// what tells one run of a check from another run of it.
+/// When the host says run `at` started: the run's own identity, which is what tells one
+/// run of a check from another run of it.
+fn started(at: u32) -> String {
+    format!("2026-09-30T12:{at:02}:00Z")
+}
+
+/// One check as the host reports it. `at` is which run of it this is: where the run is
+/// on the host, and when it started.
 fn check(name: &str, conclusion: Option<&str>, required: bool, at: u32) -> Check {
     Check {
         name: name.to_owned(),
@@ -72,6 +78,7 @@ fn check(name: &str, conclusion: Option<&str>, required: bool, at: u32) -> Check
             "https://github.com/acme-corp/hosted/actions/runs/{at}/job/{at}"
         ))
         .ok(),
+        started_at: Some(started(at)),
     }
 }
 
@@ -934,6 +941,93 @@ fn a_run_after_the_early_lift_that_concludes_skipped_satisfies_the_watch_as_pass
         serde_json::json!(["gate"])
     );
     assert!(settled[0]["payload"]["head"].as_str().is_some());
+}
+
+/// The draft's skipped `gate` run, and what the host reports once it is lifted: the
+/// same check at the same address, concluded `skipped` again — identical to the
+/// draft's run in everything but, where `restarted` is set, the start the host
+/// reports for it.
+fn skipped_again(restarted: Option<Option<String>>) -> HostState {
+    let draft = check("gate", Some("skipped"), true, 1);
+    let after = restarted.map(|started_at| {
+        vec![Check {
+            started_at,
+            ..draft.clone()
+        }]
+    });
+    host_with(vec![draft], after)
+}
+
+#[test]
+fn a_rerun_after_an_early_lift_that_concludes_skipped_exactly_as_the_drafts_run_did_is_accepted_by_its_start(
+) {
+    // Same name, same address, same status, same conclusion: only the start the host
+    // reports tells the run the lift triggered from the one on the draft. Were the
+    // watch comparing values, this is the one it could not see, and would end
+    // unsettled with a verdict standing in front of it.
+    let (world, _origin, session) = scene(AUTO, "0.3", "20");
+    let host = MemoryHost::seeded(skipped_again(Some(Some(started(2)))));
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    assert_eq!(host.state().merges.len(), 1, "the host was asked to merge");
+    let early = world.events_of(&session.token.0, "draft-lifted-early");
+    assert_eq!(early[0]["payload"]["awaited"], serde_json::json!(["gate"]));
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed-with-skipped");
+    assert_eq!(
+        settled[0]["payload"]["skipped"],
+        serde_json::json!(["gate"])
+    );
+    // The re-run is reported as a check event of its own, though it concluded as the
+    // draft's run had.
+    let gate = world
+        .events_of(&session.token.0, "change-check")
+        .into_iter()
+        .filter(|event| event["payload"]["name"] == "gate")
+        .count();
+    assert_eq!(gate, 2, "the draft's run and the re-run are both reported");
+}
+
+#[test]
+fn a_draft_era_skip_the_host_still_reports_after_the_lift_is_never_accepted_whatever_else_it_says()
+{
+    // The draft's run standing unchanged after the lift — reported again verbatim, or
+    // with no start at all — is never a verdict, and the watch ends unsettled rather
+    // than merging on it.
+    for (label, after) in [
+        ("left exactly as it was", Some(Some(started(1)))),
+        ("reported with no start", Some(None)),
+        ("not re-seeded at all", None),
+    ] {
+        let (world, origin, session) = scene(AUTO, "0.3", "20");
+        let base = origin_tip(&world, &origin, "main");
+        let host = MemoryHost::seeded(skipped_again(after));
+
+        let published = publish(&host, &session, &PublishRequest::default());
+
+        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+            panic!("{label}: {published:?}");
+        };
+        assert_eq!(*kind, FailureKind::ChecksUnsettled, "{label}");
+        assert!(
+            reason.contains("did not re-run after its draft was lifted"),
+            "{label}: {reason}"
+        );
+        assert!(host.state().merges.is_empty(), "{label}: nothing merged");
+        assert!(
+            world
+                .events_of(&session.token.0, "checks-settled")
+                .is_empty(),
+            "{label}"
+        );
+        assert_eq!(origin_tip(&world, &origin, "main"), base, "{label}");
+    }
 }
 
 // Drafts somebody asked for, adoption, and the one-way lift.

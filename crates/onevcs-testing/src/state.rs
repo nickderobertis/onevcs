@@ -355,6 +355,12 @@ pub struct HostState {
     /// What a repository whose workflow skips drafts looks like from outside: the
     /// draft's checks are skipped or absent, and the run the lift triggers registers
     /// after it. A change with no entry reports the same checks either side of a lift.
+    ///
+    /// A publication tells the run a lift triggered from the draft's by the run's own
+    /// identity, as it would on a real host: a settled check named here is a new run
+    /// only where its [`started_at`](Check::started_at) is one no draft-era run of that
+    /// check reported. So seed a re-run with a start of its own — an entry repeating
+    /// the draft's start, or reporting none, is the draft's run still standing.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub checks_after_lift: BTreeMap<ChangeId, Vec<Check>>,
     /// What this host answers when asked which checks a merge into a base requires.

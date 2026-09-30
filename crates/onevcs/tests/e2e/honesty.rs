@@ -87,6 +87,7 @@ fn green_gate() -> Check {
         required: true,
         head: None,
         url: None,
+        started_at: None,
     }
 }
 

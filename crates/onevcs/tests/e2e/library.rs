@@ -539,6 +539,7 @@ impl RemoteHost for Earlier {
                 required: true,
                 head: None,
                 url: None,
+                started_at: None,
             }],
             sources: [CheckSource::StatusChecks].into_iter().collect(),
         })
@@ -598,6 +599,7 @@ fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
                 required: true,
                 head: None,
                 url: None,
+                started_at: None,
             }],
         )]
         .into_iter()
@@ -684,6 +686,12 @@ fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
     );
     assert_eq!(complete.checks.len(), 1);
     assert!(complete.checks[0].required);
+    // When the run started, as the host reported it: the run's own identity, which is
+    // what tells a re-run from the run it replaced.
+    assert_eq!(
+        complete.checks[0].started_at.as_deref(),
+        Some("2026-09-30T12:00:00Z")
+    );
 
     // The same host under a fine-grained token: the rollup is refused, the Actions
     // API answers, and the answer says so rather than passing itself off as
@@ -704,6 +712,19 @@ fn the_checks_a_host_reports_say_which_of_its_sources_they_were_read_from() {
         actions.checks, complete.checks,
         "the same checks, seen another way"
     );
+
+    // A run queued and not started is reported with GitHub's zero time, and through
+    // either source that is no start: every queued run shares it, so it is no run's
+    // identity.
+    for (shape, source) in [
+        ("zero-start", CheckSource::StatusChecks),
+        ("actions-only-zero-start", CheckSource::Actions),
+    ] {
+        world.answer_malformed(shape);
+        let queued = host.change_checks(change).expect("the host's checks");
+        assert!(queued.sources.contains(&source), "{shape}");
+        assert_eq!(queued.checks[0].started_at, None, "{shape}");
+    }
 
     // And the log of one, fetched from the job the Actions listing named.
     let artifact = host
@@ -3194,6 +3215,7 @@ fn a_draft_is_merged_by_nothing_under_any_policy_this_crate_publishes_under() {
                     required: true,
                     head: None,
                     url: None,
+                    started_at: None,
                 }],
             )]
             .into_iter()

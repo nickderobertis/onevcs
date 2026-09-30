@@ -2530,6 +2530,10 @@ fn red<'c>(standings: &[Standing<'c>]) -> Option<&'c Check> {
 /// the same value only once the host has noticed the push. [`Reported`] is where that
 /// is decided, and everything past it — the stream, the red-check verdict, and the
 /// bound's own sentence — sees only checks about `pushed`.
+/// Where one check stood when it was last reported: its status, its conclusion, and
+/// when the run started.
+type Transition = (String, Option<String>, Option<String>);
+
 struct Watcher<'a> {
     host: &'a dyn RemoteHost,
     change: &'a ChangeRequest,
@@ -2538,9 +2542,10 @@ struct Watcher<'a> {
     poll: std::time::Duration,
     started: std::time::Instant,
     /// What each check was last reported as, so only a transition is reported. Keyed
-    /// on the status *and* the conclusion, because a run the host re-attaches after a
-    /// lift can complete under the same status the skipped one had.
-    reported: Vec<(String, (String, Option<String>))>,
+    /// on the status, the conclusion *and* the run's start, because a run the host
+    /// re-attaches after a lift can complete exactly as the skipped one had, and it is
+    /// still a run of its own.
+    reported: Vec<(String, Transition)>,
     /// What each settled check's log was stored as, so the refusal that names a red
     /// check can quote it without fetching it from the host a second time.
     logs: Vec<(String, crate::event::ArtifactId)>,
@@ -2586,7 +2591,11 @@ impl<'a> Watcher<'a> {
         // reaches neither the stream nor the verdict.
         let reported = Reported::of(answered.checks, self.pushed);
         for check in reported.checks() {
-            let now = (check.status.clone(), check.conclusion.clone());
+            let now = (
+                check.status.clone(),
+                check.conclusion.clone(),
+                check.started_at.clone(),
+            );
             let previous = self
                 .reported
                 .iter()
@@ -2623,7 +2632,7 @@ impl<'a> Watcher<'a> {
                     "name": check.name,
                     "required": check.required,
                     "status": check.status,
-                    "from_status": previous.map(|(status, _)| status),
+                    "from_status": previous.map(|(status, _, _)| status),
                     "conclusion": check.conclusion,
                     "state": check.state(),
                 })),
@@ -2897,16 +2906,46 @@ fn lift_early(
     Ok(())
 }
 
+/// Whether `check` is a run the host attached after the lift, rather than the run of
+/// that check it reported on the draft — `snapshot`.
+///
+/// Decided by the run's own identity as the host reports it, never by what it
+/// concluded: a re-run a workflow starts on `ready_for_review` can conclude `skipped`
+/// exactly as the draft's run did, and it is still a run. So a check the draft never
+/// reported is new; a check running now whose draft-era run had settled is new; and a
+/// settled one is new only where the host reports a start for it that no draft-era run
+/// of that check had. A settled run reporting no start, or the draft's own start, is
+/// the draft's — which is the side a wrong answer must fall on, since a draft-era skip
+/// read as a post-lift one is a merge nothing verified.
+fn ran_after_the_lift(check: &Check, snapshot: &[Check]) -> bool {
+    let earlier: Vec<&Check> = snapshot
+        .iter()
+        .filter(|seen| seen.name == check.name)
+        .collect();
+    if earlier.is_empty() {
+        return true;
+    }
+    if !check.settled() {
+        return earlier.iter().all(|seen| seen.settled());
+    }
+    check.started_at.as_ref().is_some_and(|started| {
+        earlier
+            .iter()
+            .all(|seen| seen.started_at.as_ref() != Some(started))
+    })
+}
+
 /// Watch a change lifted early until a run the host attached **after** the lift
 /// settles its required checks.
 ///
 /// What was reported while it was a draft is `snapshot`, and a draft-era `skipped` in
-/// it is not a verdict: nothing ran. So the watch needs a run the host attached since,
-/// and where none of the required checks has one within another grace window, it ends
-/// [`Error::ChecksUnsettled`] saying they did not re-run — never merging, and never
-/// lifting anything, on skips from the draft. Once one has, the ordinary rule applies,
-/// under which a skipped required check from a post-lift run satisfies the watch and
-/// is recorded as `passed-with-skipped`.
+/// it is not a verdict: nothing ran. So the watch needs a run the host attached since
+/// — told from the draft's by [`ran_after_the_lift`] — and where none of the required
+/// checks has one within another grace window, it ends [`Error::ChecksUnsettled`]
+/// saying they did not re-run — never merging, and never lifting anything, on skips
+/// from the draft. Once one has, the ordinary rule applies, under which a skipped
+/// required check from a post-lift run satisfies the watch and is recorded as
+/// `passed-with-skipped`.
 fn settle_after_early_lift(
     watcher: &mut Watcher<'_>,
     stream: &mut Stream,
@@ -2916,7 +2955,7 @@ fn settle_after_early_lift(
     grace: std::time::Duration,
 ) -> Result<()> {
     let lifted = std::time::Instant::now();
-    let from_the_draft = |check: &Check| snapshot.iter().any(|seen| seen == check);
+    let from_the_draft = |check: &Check| !ran_after_the_lift(check, snapshot);
     loop {
         let reading = watcher.read(stream)?;
         let checks = reading.reported.checks();

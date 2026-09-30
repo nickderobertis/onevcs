@@ -392,14 +392,15 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
 
 - **One `Watcher` carries the whole watch** — the draft's phase, the one after an early
   lift, a ready change's, and `change-auto`'s merge — so one bound covers it, each check
-  transition is reported once (keyed on status *and* conclusion, since a re-run can
-  complete under the status the skipped run had), and `checks-settled` is recorded once.
+  transition is reported once (keyed on status, conclusion *and* the run's start, since a
+  re-run can complete exactly as the skipped run had), and `checks-settled` is recorded
+  once.
 - **`policy::GreenDraft` is the one statement of the table**, asked by the publication
   and by `rules check`; a second `match` on publication and approvals would drift.
-- **A post-lift run is told from a draft-era one by the check itself**: anything the host
-  reports after the lift that is not identical to what it reported on the draft. Neither
-  `Check` nor `RemoteHost` was widened for it; keep it that way unless a host proves the
-  comparison insufficient.
+- **A post-lift run is told from a draft-era one by its `started_at`** (`ran_after_the_lift`),
+  never by what it concluded: a re-run on `ready_for_review` can conclude `skipped` just as
+  the draft's run did. A settled check with the draft's start or none is the draft's — the
+  safe side. `onevcs-testing` mirrors the rule, so a seeded re-run needs a start of its own.
 - **`drafts: {disabled: true}` is the pre-lifecycle path kept whole**, and it is how a
   journey reaches a merge the host holds past the watch (`AUTOMATED_READY` in
   `tests/e2e/host.rs`) — a draft whose checks never settle is never armed at all.

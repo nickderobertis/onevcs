@@ -24,7 +24,13 @@ fn first() -> ChangeId {
     ChangeId("1".to_owned())
 }
 
-/// One check; `run` is which run of it this is, and is where the host says it is.
+/// When the host says run `run` started: the run's own identity.
+fn started(run: u32) -> String {
+    format!("2026-09-30T12:{run:02}:00Z")
+}
+
+/// One check; `run` is which run of it this is, and is where and when the host says it
+/// ran.
 fn check(name: &str, conclusion: Option<&str>, run: u32) -> Check {
     Check {
         name: name.to_owned(),
@@ -38,6 +44,7 @@ fn check(name: &str, conclusion: Option<&str>, run: u32) -> Check {
         required: true,
         head: None,
         url: onevcs::Url::parse(&format!("https://github.com/acme-corp/widgets/runs/{run}")).ok(),
+        started_at: Some(started(run)),
     }
 }
 
@@ -313,6 +320,59 @@ fn a_draft_nothing_ran_on_is_lifted_early_and_ends_on_the_run_after_the_lift() {
         settled[0]["payload"]["skipped"],
         serde_json::json!(["gate"])
     );
+}
+
+#[test]
+fn a_run_after_the_lift_is_told_from_the_drafts_by_its_start_and_never_by_its_conclusion() {
+    // The draft's run, and after the lift the same check at the same address,
+    // concluded `skipped` again: `after` is the start the host reports for it then.
+    let draft = check("gate", Some("skipped"), 1);
+    for (after, merged) in [
+        // A start of its own: a re-run, accepted though it concluded as the draft's.
+        (Some(Some(started(2))), true),
+        // The draft's own start, no start at all, or nothing re-seeded: the draft's
+        // run still standing, never accepted.
+        (Some(Some(started(1))), false),
+        (Some(None), false),
+        (None, false),
+    ] {
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+        let host = host(
+            vec![draft.clone()],
+            after.clone().map(|started_at| {
+                vec![Check {
+                    started_at,
+                    ..draft.clone()
+                }]
+            }),
+        );
+
+        let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+
+        if merged {
+            assert!(matches!(outcome, PublishOutcome::Merged(_)), "{outcome:?}");
+            let settled: Vec<serde_json::Value> = home
+                .events("s-testing-1")
+                .into_iter()
+                .filter(|event| event["kind"] == "checks-settled")
+                .collect();
+            assert_eq!(settled[0]["payload"]["verdict"], "passed-with-skipped");
+        } else {
+            assert!(
+                matches!(
+                    &outcome,
+                    PublishOutcome::Failed {
+                        kind: FailureKind::ChecksUnsettled,
+                        reason,
+                        ..
+                    } if reason.contains("did not re-run")
+                ),
+                "{after:?}: {outcome:?}"
+            );
+            assert!(host.state().merges.is_empty(), "{after:?}: nothing merged");
+        }
+    }
 }
 
 #[test]

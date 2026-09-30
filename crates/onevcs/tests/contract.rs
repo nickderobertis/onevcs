@@ -2153,6 +2153,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         required: true,
         head: Some(Sha("0f1e2d3".to_owned())),
         url: Url::parse("https://github.com/nickderobertis/onevcs/runs/7").ok(),
+        started_at: None,
     };
     let spec = ChangeSpec {
         head: "feature".to_owned(),
@@ -3263,6 +3264,7 @@ fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
             required: true,
             head: None,
             url: None,
+            started_at: None,
         }],
         sources: [CheckSource::Actions, CheckSource::BranchRules]
             .into_iter()
@@ -3331,6 +3333,7 @@ fn the_amendment_declares_the_commit_a_check_is_attached_to() {
         required: true,
         head: Some(Sha("0f1e2d3".to_owned())),
         url: Url::parse("https://github.com/nickderobertis/onevcs/actions/runs/1/job/2").ok(),
+        started_at: None,
     };
     let unsaid = Check {
         head: None,
@@ -4430,6 +4433,7 @@ fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_st
         required: true,
         head: None,
         url: None,
+        started_at: None,
     };
     for (status, conclusion, state) in [
         ("completed", Some("success"), CheckState::Passed),
@@ -4451,6 +4455,44 @@ fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_st
     }
     let skipped = with("completed", Some("skipped"));
     assert!(!skipped.green(), "a skipped check is never read as passed");
+
+    // A run's start, which is what tells a re-run from the draft's run of the same
+    // check: declared by the amendment as the manager's ruling, omitted when the host
+    // gave none, and read back from a check an earlier build wrote without it.
+    let started = amendment_declaring("pub started_at: Option<String>");
+    assert!(
+        started.contains(
+            "pub started_at: Option<String>,      // when the host says this run started"
+        ),
+        "the amendment no longer declares a run's start"
+    );
+    assert!(
+        contract()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("never by comparing conclusion values"),
+        "the amendment no longer states how a post-lift run is told apart"
+    );
+    let rerun = Check {
+        started_at: Some("2026-09-30T12:02:00Z".to_owned()),
+        ..skipped.clone()
+    };
+    let written = serde_json::to_value(&rerun).expect("a check serializes");
+    assert_eq!(written["started_at"], json!("2026-09-30T12:02:00Z"));
+    assert_eq!(
+        serde_json::from_value::<Check>(written).expect("it reads back"),
+        rerun
+    );
+    let unstarted = serde_json::to_value(&skipped).expect("a check serializes");
+    assert!(
+        unstarted.get("started_at").is_none(),
+        "an absent start is omitted: {unstarted}"
+    );
+    assert_eq!(
+        serde_json::from_value::<Check>(unstarted).expect("an older check reads"),
+        skipped
+    );
     // Serialized kebab-case, which is what every payload and report spells.
     assert_eq!(
         [

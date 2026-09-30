@@ -44,7 +44,18 @@ fi
 if [ -f "$STATE/checks.rows.after-ready" ] && ls "$STATE"/ready-* >/dev/null 2>&1; then
   CHECKS="$STATE/checks.rows.after-ready"
 fi
+# When each run started, which is a run's own identity: the rows a lift or a flip
+# brings in are runs of their own, so they report a start the rows before them did
+# not — which is how GitHub tells a re-run from the run it replaced.
+case "$CHECKS" in
+  */checks.rows.after-ready) STARTED="2026-09-30T12:02:00Z" ;;
+  */checks.rows.next) STARTED="2026-09-30T12:01:00Z" ;;
+  *) STARTED="2026-09-30T12:00:00Z" ;;
+esac
 malformed="$(cat "$STATE/malformed" 2>/dev/null || printf '')"
+# A run queued and not started, which GitHub reports with the zero time rather than
+# with no start at all.
+case "$malformed" in *zero-start) STARTED="0001-01-01T00:00:00Z" ;; esac
 
 # Which commit this host believes a change request is at, which is not necessarily
 # where the branch is: GitHub records that when it *processes* a push rather than
@@ -173,7 +184,7 @@ case "$command" in
           [ -n "$name" ] || continue
           row=$((row + 1))
           if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\"}"
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\",\"started_at\":\"$STARTED\"}"
           separator=","
         done <"$CHECKS" 2>/dev/null || true
         total="$row"
@@ -311,8 +322,8 @@ rollup() {
     # `detailsUrl` is where a check run says it is, and it is the same address
     # `pr checks` reports as that row's `link` — one check, one place on the host,
     # whichever call asked about it.
-    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s"}' \
-      "$separator" "$name" "$status" "$entry" "$repo" "$row"
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s","startedAt":"%s"}' \
+      "$separator" "$name" "$status" "$entry" "$repo" "$row" "$STARTED"
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'

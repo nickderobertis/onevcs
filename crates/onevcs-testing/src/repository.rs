@@ -1072,7 +1072,7 @@ fn watch(
         }),
     ));
     let after = host.change_checks(change)?.checks;
-    let from_the_draft = |check: &Check| snapshot.iter().any(|seen| seen == check);
+    let from_the_draft = |check: &Check| !ran_after_the_lift(check, &snapshot);
     let counted: Vec<&Check> = after
         .iter()
         .filter(|check| !(from_the_draft(check) && check.state() == CheckState::Skipped))
@@ -1101,6 +1101,30 @@ fn watch(
     }
     settled(emissions, skipped(&standing), unread);
     Ok(false)
+}
+
+/// Whether `check` is a run the host attached after the lift rather than the draft's
+/// run of it in `snapshot`, decided as the real publication decides it: by the run's
+/// own identity, never by its conclusion. A check the draft never reported is new, a
+/// running one whose draft-era run had settled is new, and a settled one is new only
+/// where it reports a `started_at` no draft-era run of that check reported — so a
+/// consumer seeds a re-run by giving it a start of its own.
+fn ran_after_the_lift(check: &Check, snapshot: &[Check]) -> bool {
+    let earlier: Vec<&Check> = snapshot
+        .iter()
+        .filter(|seen| seen.name == check.name)
+        .collect();
+    if earlier.is_empty() {
+        return true;
+    }
+    if !check.settled() {
+        return earlier.iter().all(|seen| seen.settled());
+    }
+    check.started_at.as_ref().is_some_and(|started| {
+        earlier
+            .iter()
+            .all(|seen| seen.started_at.as_ref() != Some(started))
+    })
 }
 
 /// The default grace window of the real publication, which is `onevcs`'s own and

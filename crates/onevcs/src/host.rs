@@ -515,6 +515,26 @@ pub struct Check {
     /// look at it. `None` where the host reported no address for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<Url>,
+    /// When the host says this run of the check started, spelled as the host spelled
+    /// it, or `None` where it did not say.
+    ///
+    /// The run's own identity: a check re-run under the same name — the run a
+    /// workflow starts when a draft is lifted — is a new run with a new start, even
+    /// where it concludes exactly as the one before it did. That is what a
+    /// publication tells a run the host attached after an early lift from the
+    /// draft's by, so it is compared for equality and never parsed or ordered: two
+    /// clocks never meet in it.
+    ///
+    /// Defaulted and omitted when empty, as `head` and `url` are, so a check an
+    /// earlier build serialized still reads and one without a start serializes as
+    /// it always did.
+    // llmlint: ignore[invalid_states_unrepresentable] the host's own timestamp, carried
+    // as an opaque token: this crate only ever asks whether two runs report the same
+    // one, so parsing it would add a failure mode and decide nothing. `reported_start`
+    // is the one place it enters, and it drops GitHub's zero time for a run that has
+    // not started rather than letting every queued run share one identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 impl Check {
@@ -902,6 +922,7 @@ impl GitHub {
                     conclusion: job.conclusion,
                     head: job.head,
                     url: job.url,
+                    started_at: job.started_at,
                 })
                 .collect(),
             sources: [CheckSource::Actions, CheckSource::BranchRules]
@@ -1219,6 +1240,8 @@ struct Job {
     head: Option<Sha>,
     /// Where a human reads this job on the host.
     url: Option<Url>,
+    /// When the host says this job started.
+    started_at: Option<String>,
 }
 
 /// One job of an Actions listing, required to say what it is.
@@ -1260,6 +1283,7 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Res
             .map(str::to_ascii_lowercase),
         head: head.cloned(),
         url: reported_url(entry, "html_url"),
+        started_at: reported_start(entry, "started_at"),
     })
 }
 
@@ -1766,7 +1790,21 @@ fn check(
         // before an address is looked for. Reading the second spelling would be a
         // branch nothing can drive, on a path that already cannot be taken.
         url: reported_url(entry, "detailsUrl"),
+        started_at: reported_start(entry, "startedAt"),
     })
+}
+
+/// When a host response says a run started, or `None` where it did not say.
+///
+/// GitHub answers a run that is queued and has not started with the zero time rather
+/// than with nothing, and that is read as nothing: a start every queued run shares is
+/// no run's identity.
+fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
+    entry
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty() && !value.starts_with("0001-01-01"))
+        .map(str::to_owned)
 }
 
 /// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.

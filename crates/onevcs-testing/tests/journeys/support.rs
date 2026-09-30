@@ -261,6 +261,7 @@ pub fn full_host_state() -> HostState {
                 required: true,
                 head: Some(Sha("def456".to_owned())),
                 url: Url::parse("https://github.com/acme-corp/widgets/runs/7").ok(),
+                started_at: None,
             },
             Check {
                 name: "coverage".to_owned(),
@@ -269,6 +270,7 @@ pub fn full_host_state() -> HostState {
                 required: false,
                 head: None,
                 url: None,
+                started_at: None,
             },
         ],
     );
@@ -329,6 +331,7 @@ pub fn full_host_state() -> HostState {
                 required: true,
                 head: None,
                 url: Url::parse("https://github.com/acme-corp/widgets/runs/8").ok(),
+                started_at: None,
             }],
         )]),
         // A host that could read its rulesets and not its classic protection.
@@ -370,5 +373,6 @@ pub fn green_check(name: &str) -> Check {
         required: true,
         head: None,
         url: None,
+        started_at: None,
     }
 }

@@ -3636,13 +3636,33 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   the host attached after the lift, and if none of the required checks has one within the
   grace window it ends `ChecksUnsettled` with a reason saying the required checks did not
   re-run after the lift, naming the likely cause — a workflow that does not trigger on
-  `ready_for_review`. It never merges, and never lifts anything, on draft-era skips. A
-  post-lift run is told from a draft-era one by the check itself: a check the host reports
-  after the lift that is not identical — name, status, conclusion, commit and address — to
-  one it reported on the draft is a run it attached since. That needs nothing `Check` does
-  not already carry, so neither `Check` nor `RemoteHost` is widened for it. Once a post-lift
-  run exists the ordinary rules apply, under which a post-lift `skipped` satisfies the
-  watch and is recorded as `passed-with-skipped`, never as passed.
+  `ready_for_review`. It never merges, and never lifts anything, on draft-era skips. Once a
+  post-lift run exists the ordinary rules apply, under which a post-lift `skipped` satisfies
+  the watch and is recorded as `passed-with-skipped`, never as passed.
+
+  *How a post-lift run is told from a draft-era one* is **the manager's ruling on this
+  amendment**: by the run's own identity as the host reports it, **never by comparing
+  conclusion values** — a re-run a workflow starts on `ready_for_review` can conclude
+  `skipped` exactly as the draft's run did, and it is still a run. The identity is the run's
+  start, which `Check` carries as one additive, defaulted field:
+
+```rust
+pub struct Check {                       // beside head and url:
+    pub started_at: Option<String>,      // when the host says this run started
+}
+```
+
+  It is the host's own spelling — GitHub's rollup `startedAt`, an Actions job's
+  `started_at` — carried as an opaque token that is compared for equality and never parsed
+  or ordered, so no two clocks ever meet in it; GitHub's zero time for a queued run that
+  has not started reads as `None`, since every queued run shares it. It is omitted when
+  `None`, and a check an earlier build serialized still reads, as one whose start that
+  build never recorded. `RemoteHost` is not widened. After an early lift a check is a run
+  the host attached since when the draft never reported that check, when it is running and
+  the draft's run of it had settled, or when it has settled and reports a `started_at` that
+  no draft-era run of that check reported. A settled check reporting the draft's start, or
+  no start at all, is the draft's run still standing — the side a wrong answer must fall
+  on, since a draft-era skip read as a verdict is a merge nothing verified.
 - `publish-branch` and `recover` take the same lifecycle; both reach it through the one
   publication path.
 
@@ -3701,7 +3721,8 @@ required check satisfies the watch, as the host's own merge path does, and the w
 implement the same lifecycle — drafts by default, the watch for all three change policies,
 and the lift before any merge. The host refuses to arm or perform a merge on a change it
 holds as a draft, and a journey can seed checks that register only after a lift
-(`HostState::checks_after_lift`), checks concluded `skipped` on the draft, and a repository
+(`HostState::checks_after_lift`, each told from the draft's run by a `started_at` of its
+own), checks concluded `skipped` on the draft, and a repository
 declaring no required check (`HostState::required_checks`), so a consumer can drive every
 row of the table. Its repository side takes the policy's other two fields from
 `VcsState::approvals` and `VcsState::drafts`. It has no clock, so each phase of its watch is
