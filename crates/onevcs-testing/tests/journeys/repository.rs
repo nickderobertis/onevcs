@@ -88,6 +88,68 @@ fn opening_a_session_records_it_and_emits_the_event_the_real_one_emits() {
 }
 
 #[test]
+fn a_session_that_refuses_conflicts_opens_clean_and_reports_none() {
+    // A provider has no base to merge into a continued branch, so the opt-out has
+    // nothing to refuse: the session opens exactly as it would without it, and
+    // neither the session nor its event carries a `conflict`.
+    let home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+
+    let code = run(
+        &vcs,
+        &[
+            "onevcs",
+            "session",
+            "open",
+            "widgets",
+            "--branch",
+            "feature/one",
+            "--refuse-conflicts",
+        ],
+    );
+
+    assert_eq!(
+        code, 0,
+        "refusing conflicts refuses nothing that opens clean"
+    );
+    let state = vcs.state();
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].branch, "feature/one");
+    assert_eq!(state.sessions[0].conflict, None);
+    let events = home.events(&state.sessions[0].token.0);
+    assert_eq!(events.len(), 1, "one session open is one event");
+    assert_eq!(events[0]["kind"], "session-opened");
+    assert!(
+        events[0]["payload"].get("conflict").is_none(),
+        "a clean open carries no conflict key: {}",
+        events[0]["payload"]
+    );
+
+    let again = vcs
+        .open_session(SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some("feature/two".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+            refuse_conflicts: true,
+        })
+        .expect("the library's opt-out opens a clean session too");
+    assert_eq!(again.conflict, None);
+    assert!(
+        serde_json::to_value(&again)
+            .expect("a session serializes")
+            .get("conflict")
+            .is_none(),
+        "and its JSON omits the key"
+    );
+}
+
+#[test]
 fn a_session_over_a_repository_the_provider_does_not_know_is_refused() {
     let _home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
