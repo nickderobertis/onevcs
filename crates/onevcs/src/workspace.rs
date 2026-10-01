@@ -1971,7 +1971,8 @@ fn integrate(
         // resolves to by the time anybody asks.
         let base_commit = git::tip(worktree, "MERGE_HEAD").ok_or_else(|| {
             error::invalid(format!(
-                "the merge of {integrated} into {branch:?} in {} stopped on a conflict but                  names no MERGE_HEAD",
+                "the merge of {integrated} into {branch:?} in {} stopped on a conflict but \
+                 names no MERGE_HEAD",
                 worktree.display()
             ))
         })?;
