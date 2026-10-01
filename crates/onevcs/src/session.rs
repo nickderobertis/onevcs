@@ -94,6 +94,18 @@ pub struct SessionRequest {
     /// request names over the one it had and keeps the rest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
+    /// Refuse a continued branch whose base conflicts with it, rather than open the
+    /// session with the merge left in progress.
+    ///
+    /// `false` — the default, and what a request that never names it reads as — opens
+    /// the session over the conflicted merge: git's markers in the worktree, the
+    /// unmerged paths in its index and `MERGE_HEAD` naming the base, with
+    /// [`Session::conflict`] saying so. `true` aborts that merge where it was
+    /// attempted and refuses the open as [`Error::SyncConflict`](crate::Error), with
+    /// the branch untouched — which is what every open did before this field existed.
+    /// Omitted when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refuse_conflicts: bool,
 }
 
 /// The handle a session is adopted, published, and closed by.
@@ -114,6 +126,36 @@ pub struct Session {
     /// The branch this session's work is merged with and published into, which for
     /// a branch cut fresh is also the one it was cut from.
     pub base: String,
+    /// The merge this session opened with still in progress, where the branch it
+    /// continued conflicted with its base.
+    ///
+    /// `None` for every session that opened on a clean tree — a fresh cut, a
+    /// continuation that merged cleanly, and every handle a call other than an open
+    /// returns. Omitted when `None`, so a session without one serializes exactly as
+    /// it did before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<OpenConflict>,
+}
+
+/// A merge left in progress in a session's worktree, for the session to conclude.
+///
+/// What a continued branch whose base conflicts with it opens with unless the
+/// request [refuses conflicts](SessionRequest::refuse_conflicts). Publication refuses
+/// the session as a sync conflict until the merge is concluded — resolved, staged and
+/// committed in the worktree — and every teardown aborts it rather than committing
+/// it.
+// llmlint: ignore[invalid_states_unrepresentable] the contract amendment fixes these
+// three fields as `String`s and `Vec<String>`, the way `Recoverable` and
+// `PreservedBranch` spell a sha and a path list, and a consuming repository builds
+// against that spelling; every value is git's own answer to a command the open ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenConflict {
+    /// The paths git left unmerged, in the order it listed them. Never empty.
+    pub paths: Vec<String>,
+    /// The full sha of the integration target that was merged into the branch.
+    pub base_commit: String,
+    /// The full sha the branch stood at before the merge.
+    pub branch_tip: String,
 }
 
 /// Where a session is in its life.

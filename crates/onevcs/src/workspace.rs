@@ -39,7 +39,9 @@ use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::registry::Registry;
 use crate::remainder::Remainder;
-use crate::session::{Lifecycle, Liveness, Session, SessionHolder, SessionRequest, SessionToken};
+use crate::session::{
+    Lifecycle, Liveness, OpenConflict, Session, SessionHolder, SessionRequest, SessionToken,
+};
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspaces::Sourced;
@@ -496,6 +498,7 @@ impl Record {
             worktree: self.worktree.clone(),
             branch: self.branch.to_string(),
             base: self.base.to_string(),
+            conflict: None,
         }
     }
 
@@ -999,7 +1002,13 @@ pub(crate) fn identity_dir(identity: &str) -> Result<PathBuf> {
 
 /// Open a session over a clone and an isolated worktree: a warm pool slot where the
 /// host keeps one for the identity, else a run root cut for this session alone.
-pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, Stream)> {
+///
+/// Answers the conflicted merge the session opened with beside its record, where a
+/// continued branch conflicted with its base and the request did not refuse that.
+pub fn open(
+    registry: &Registry,
+    request: &SessionRequest,
+) -> Result<(Record, Stream, Option<OpenConflict>)> {
     let resolution = store::resolve(registry, &request.repo)?;
     let execution =
         execution_checkout(registry, &resolution, request.execution_checkout.as_deref())?;
@@ -1067,7 +1076,7 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // cut. Never for a generated name: that one is this token's own. Declining only
     // falls through to the ordinary open below, which continues the branch instead.
     if let Some((held, lease)) = resumable(&resolution, pinned.as_ref(), &base, &execution)? {
-        return resume(&held, lease, &execution, &request.labels);
+        return resume(&held, lease, &execution, request);
     }
 
     let token = ids::session_token();
@@ -1176,7 +1185,10 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
     // a clone and a worktree left behind under a token no record names is litter
     // nothing would come back for. A warm slot is put back as it was found: detached
     // on the base, clean, and idle.
-    let stack_tip = match cut_or_continue(&Cut {
+    let Placing {
+        stack_tip,
+        conflict,
+    } = match cut_or_continue(&Cut {
         clone: &clone,
         worktree: &worktree,
         branch: &branch,
@@ -1185,8 +1197,9 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         continued: continued.as_ref(),
         publication: &resolution.publication,
         placed,
+        refuse_conflicts: request.refuse_conflicts,
     }) {
-        Ok(stack_tip) => stack_tip,
+        Ok(placing) => placing,
         Err(error) => {
             drop(lease);
             match cut {
@@ -1255,12 +1268,31 @@ pub fn open(registry: &Registry, request: &SessionRequest) -> Result<(Record, St
         true => Some(&prefix),
         false => None,
     };
+    if let Some(conflict) = &conflict {
+        say_conflict(&record, conflict);
+    }
     stream.emit(
         EventKind::SessionOpened,
-        opened(&record, reuse, created, applied),
+        opened(&record, reuse, created, applied, conflict.as_ref()),
     );
     drop(lease);
-    Ok((record, stream))
+    Ok((record, stream, conflict))
+}
+
+/// The one line a session opened over a conflicted merge says on stderr, beside the
+/// `conflict` its JSON carries: a person reading the terminal is told what the worker
+/// is told.
+fn say_conflict(record: &Record, conflict: &OpenConflict) {
+    eprintln!(
+        "onevcs: session {token} opened with a merge in progress: {base} conflicts with branch \
+         {branch:?} in {paths}. Conclude it in {worktree} — resolve, stage and commit the merge \
+         — before publishing; publication refuses the session until then",
+        token = record.token,
+        base = conflict.base_commit,
+        branch = record.branch,
+        paths = guidance::listed(&conflict.paths),
+        worktree = record.worktree.display(),
+    );
 }
 
 /// Put a warm slot's tree back as a return leaves it, before a session takes it.
@@ -1413,11 +1445,16 @@ enum Reuse {
 /// writes the payload it always wrote. It carries the prefix and the layer that
 /// decided it, because an operator meeting an unexpected namespace on a branch has
 /// to be able to find which of the three set it.
+///
+/// `conflict` is written the same way again: only where the session opened over a
+/// merge left in progress, as the same object [`Session::conflict`] carries, so a
+/// session that opened clean writes the payload it always wrote.
 fn opened(
     record: &Record,
     reuse: Reuse,
     created: bool,
     prefix: Option<&Sourced<String>>,
+    conflict: Option<&OpenConflict>,
 ) -> Map<String, Value> {
     // Where the session was placed, always: a slot it took or was cut, or a run root
     // of its own. A resumed session reports the slot it already held, taken warm.
@@ -1453,6 +1490,9 @@ fn opened(
             "branch_prefix".to_owned(),
             json!({"prefix": prefix.value, "from": prefix.from}),
         );
+    }
+    if let Some(conflict) = conflict {
+        payload.insert("conflict".to_owned(), json!(conflict));
     }
     payload
 }
@@ -1547,11 +1587,28 @@ fn resume(
     held: &Record,
     lease: lock::Guard,
     execution: &Path,
-    labels: &BTreeMap<String, String>,
-) -> Result<(Record, Stream)> {
-    let (mut record, mut stream, _preserved) = adopt(&held.token)?;
+    request: &SessionRequest,
+) -> Result<(Record, Stream, Option<OpenConflict>)> {
+    let labels = &request.labels;
+    // A session resumed part way through the merge it opened with is handed back over
+    // that merge, exactly as its first opening handed it over — never committed on the
+    // way, which is what an adoption does with any other tree it finds dirty. A
+    // request refusing conflicts is refused instead, and nothing is touched.
+    let on_merge = match request.refuse_conflicts {
+        true => OnMerge::Refuse,
+        false => OnMerge::Keep,
+    };
+    let (mut record, mut stream, _preserved) = adopt_with(&held.token, on_merge)?;
     // Held until the adoption has taken a lease of its own, and no longer.
     drop(lease);
+    let conflict = match git::merge_in_progress(&record.worktree)? {
+        Some(merging) if !merging.unmerged.is_empty() => Some(OpenConflict {
+            paths: merging.unmerged,
+            base_commit: merging.merging,
+            branch_tip: git::head_sha(&record.worktree)?,
+        }),
+        _ => None,
+    };
     // The request that resumed this session is the newest thing said about who is
     // running it, so each key it names replaces that key; a key it does not name is
     // kept, because a caller that says nothing has not said "forget it".
@@ -1571,11 +1628,14 @@ fn resume(
     // names included.
     let carried = git::carry_remote_refs(execution, &record.clone, &record.base)?;
     note_base(&carried, &record.base, &record.worktree, execution);
+    if let Some(conflict) = &conflict {
+        say_conflict(&record, conflict);
+    }
     stream.emit(
         EventKind::SessionOpened,
-        opened(&record, Reuse::Resumed, false, None),
+        opened(&record, Reuse::Resumed, false, None, conflict.as_ref()),
     );
-    Ok((record, stream))
+    Ok((record, stream, conflict))
 }
 
 /// The commit one copy of a continued branch stands at, and where that copy is.
@@ -1785,6 +1845,19 @@ struct Cut<'a> {
     publication: &'a Path,
     /// Whether the worktree is cut for this session or already there.
     placed: Placed,
+    /// Whether a continuation whose base conflicts with it is refused rather than
+    /// opened over the merge.
+    refuse_conflicts: bool,
+}
+
+/// What putting a branch in a session's worktree answers: the stack its record has
+/// to write down, and the merge it left for the session to conclude.
+struct Placing {
+    /// Where the branch's own work begins, for a session that named its own base.
+    stack_tip: Option<String>,
+    /// The conflicted merge left in progress, for a continuation whose base
+    /// conflicts with it.
+    conflict: Option<OpenConflict>,
 }
 
 /// Put the session's branch in its worktree, and answer the stack its record has to
@@ -1796,7 +1869,7 @@ struct Cut<'a> {
 /// something already carries is **continued**: the worktree is opened at that
 /// branch's tip and the base is merged into it, so the session starts from the work
 /// rather than from an empty branch wearing its name.
-fn cut_or_continue(cut: &Cut<'_>) -> Result<Option<String>> {
+fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
     let Cut {
         clone,
         worktree,
@@ -1806,6 +1879,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Option<String>> {
         continued,
         publication,
         placed,
+        refuse_conflicts,
     } = *cut;
     let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
@@ -1816,10 +1890,14 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Option<String>> {
         // Read off the worktree that was just cut, which is where the commit it was
         // cut at is by construction — asking the name it was cut from again could
         // answer something else, or nothing.
-        return match root {
-            Some(root) if *root != **base => git::head_sha(worktree).map(Some),
-            _ => Ok(None),
+        let stack_tip = match root {
+            Some(root) if *root != **base => Some(git::head_sha(worktree)?),
+            _ => None,
         };
+        return Ok(Placing {
+            stack_tip,
+            conflict: None,
+        });
     };
 
     let opened = opened_at(clone, branch, continued)?;
@@ -1844,34 +1922,74 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Option<String>> {
     // argument this session was opened with. A session opened against a base nothing
     // has would publish against nothing, so git's own refusal of the name is
     // the answer.
-    integrate(worktree, &integrated, branch, &opened, publication)?;
-    Ok(stack_tip)
+    let conflict = integrate(
+        worktree,
+        &integrated,
+        branch,
+        &opened,
+        publication,
+        refuse_conflicts,
+    )?;
+    Ok(Placing {
+        stack_tip,
+        conflict,
+    })
 }
 
 /// Merge the integration target into the branch this session continues.
 ///
 /// A continued branch was cut from a base that has since moved, and a session that
 /// opened on it without the base would commit and publish against a tree
-/// nobody has seen. The merge is [`crate::publish::reconcile`], the one this crate
-/// uses everywhere a branch is brought level with what it lands on, so a session and
-/// a publication cannot come to disagree about what a sync does.
+/// nobody has seen. The merge is the one [`crate::publish::reconcile`] runs, the one
+/// this crate uses everywhere a branch is brought level with what it lands on, so a
+/// session and a publication cannot come to disagree about what a sync does.
 ///
-/// A conflict is refused rather than left in the worktree: an opened session whose
-/// tree does not build is a session whose first act must be a merge resolution
-/// nobody asked it for. The branch is untouched — the merge is aborted where it was
-/// attempted, and the copy this session read is where it always was — so the refusal
-/// names that copy and the command that lands the branch as it stands.
+/// A conflict is **left in the worktree** and answered as the session's
+/// [`OpenConflict`]: the worker holding the session knows what its branch meant, and
+/// its own checks and judge are what should review the resolution — refusing here
+/// instead stopped the whole run on a merge only a person could then make. Nothing is
+/// committed: `MERGE_HEAD`, the unmerged paths and git's markers are what the session
+/// opens with, publication refuses the session until the merge is concluded, and every
+/// teardown aborts it.
+///
+/// A request that [refuses conflicts](crate::SessionRequest::refuse_conflicts) is
+/// answered as every open was before: the merge is aborted where it was attempted, the
+/// branch is untouched — the copy this session read is where it always was — and the
+/// refusal names that copy and the command that lands the branch as it stands.
 fn integrate(
     worktree: &Path,
     integrated: &str,
     branch: &Ref,
     opened: &Carried,
     publication: &Path,
-) -> Result<()> {
+    refuse_conflicts: bool,
+) -> Result<Option<OpenConflict>> {
+    if !refuse_conflicts {
+        let message = crate::publish::merge_message(integrated, branch);
+        let git::Integrated::Conflicted(conflict) =
+            git::merge_leaving_conflict(worktree, integrated, &message)?
+        else {
+            return Ok(None);
+        };
+        // Read off the merge git is standing in rather than off the name it was
+        // given: `MERGE_HEAD` is the commit that was merged, whatever the name
+        // resolves to by the time anybody asks.
+        let base_commit = git::tip(worktree, "MERGE_HEAD").ok_or_else(|| {
+            error::invalid(format!(
+                "the merge of {integrated} into {branch:?} in {} stopped on a conflict but                  names no MERGE_HEAD",
+                worktree.display()
+            ))
+        })?;
+        return Ok(Some(OpenConflict {
+            paths: conflict.paths().to_vec(),
+            base_commit,
+            branch_tip: opened.tip.clone(),
+        }));
+    }
     let crate::publish::Reconciled::Conflicted(_, conflict) =
         crate::publish::reconcile(worktree, integrated, branch, None)?
     else {
-        return Ok(());
+        return Ok(None);
     };
     Err(Error::SyncConflict {
         reason: format!(
@@ -2055,7 +2173,25 @@ pub(crate) fn execution_checkout(
 /// before anything else happens, so the work is durable and the branch says plainly
 /// that a step did not finish — which is what makes it require the merge path
 /// before it may be published.
+///
+/// A worktree holding an unfinished merge is refused as a sync conflict instead,
+/// with nothing committed: the commit an adoption writes would conclude that merge
+/// with git's markers in it.
 pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
+    adopt_with(token, OnMerge::Refuse)
+}
+
+/// What an adoption does with a worktree part way through a merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnMerge {
+    /// Refuse, committing nothing: what `session adopt` does.
+    Refuse,
+    /// Leave the merge standing for the session to conclude: what resuming a session
+    /// opened over one does.
+    Keep,
+}
+
+fn adopt_with(token: &str, on_merge: OnMerge) -> Result<(Record, Stream, Option<String>)> {
     let mut record = load(token)?;
     // A closed session that returned its slot, or whose slot a later session has
     // taken, has no tree to re-attach to: what is in the slot is somebody else's, and
@@ -2108,7 +2244,18 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     // and the branch says plainly that a step did not finish. One place writes that
     // commit, so the marker a recovery later reads cannot have two shapes.
     let mut preserved = None;
-    if git::is_dirty(&record.worktree)? {
+    let merging = git::merge_in_progress(&record.worktree)?.is_some();
+    if merging && on_merge == OnMerge::Refuse {
+        crate::vcs::refuse_unfinished_merge(
+            &record.worktree,
+            &record.branch,
+            &format!(
+                "adopt it again with `{}`",
+                guidance::command(["onevcs", "session", "adopt", token])
+            ),
+        )?;
+    }
+    if !merging && git::is_dirty(&record.worktree)? {
         let branch = crate::vcs::preserve_into(
             &record,
             &mut stream,
@@ -2352,8 +2499,14 @@ struct HandedBack {
 /// `git worktree remove` forces past an unclean tree and a reset discards one, so
 /// what is not committed here is gone a few lines later without ever having been
 /// reported — which is how about fifteen minutes of finished work went.
+///
+/// A merge the session left in progress — the one it opened over, concluded by
+/// nobody — is aborted before anything is read: committing it would conclude it with
+/// git's markers in the files, and what the abort discards is a resolution nobody
+/// committed. Every commit the branch carries stays.
 fn preserve_and_hand_back(record: &Record, stream: &mut Stream) -> Result<HandedBack> {
     let mut preserved = None;
+    git::abort_merge(&record.worktree);
     if record.worktree.is_dir() && git::is_dirty(&record.worktree)? {
         let branch =
             crate::vcs::preserve_into(record, stream, crate::session::Provenance::IncompleteStep)?;
@@ -2400,6 +2553,10 @@ pub(crate) fn reset_onto_base(worktree: &Path, base: &str, delete: &[PathBuf]) -
             worktree.display()
         )));
     }
+    // Before the checkout, which git refuses over an unmerged index — and so that a
+    // merge a session left standing is never carried into the next one to take the
+    // slot.
+    git::abort_merge(worktree);
     git::checkout_detached(worktree)?;
     git::reset_hard(worktree, base)?;
     git::clean_untracked(worktree)?;

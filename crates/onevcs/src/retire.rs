@@ -835,6 +835,10 @@ pub(crate) struct Ask<'a> {
     /// Where a pass reuses the verdicts it recorded and records the ones it derives, or
     /// `None` for a classification that derives every verdict it answers.
     verdicts: Option<&'a crate::verdict::Store>,
+    /// Abort a merge a session's worktree over the branch left in progress, once no
+    /// live session holds it — what a retirement that is going to act does, and never
+    /// a read or a dry run.
+    settle_merges: bool,
 }
 
 impl<'a> Ask<'a> {
@@ -847,6 +851,7 @@ impl<'a> Ask<'a> {
             remote: false,
             exclude: &[],
             verdicts: None,
+            settle_merges: false,
         }
     }
 
@@ -858,6 +863,7 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude: &[],
             verdicts: None,
+            settle_merges: false,
         }
     }
 
@@ -869,6 +875,7 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude,
             verdicts: None,
+            settle_merges: !dry_run,
         }
     }
 }
@@ -1286,6 +1293,31 @@ impl<'a> Census<'a> {
         Ok(None)
     }
 
+    /// Abort every merge a worktree over the branch — a session's, a slot's, a run's —
+    /// left in progress, which is the merge a session opened over and nobody concluded.
+    ///
+    /// Asked only once no live session holds the branch, so the merge is nobody's to
+    /// conclude any more, and before anything reads the tree: a merge left standing
+    /// reads as a dirty worktree, keeping a branch nobody is working on, and is carried
+    /// into whatever next takes the tree. What it discards is a resolution nobody
+    /// committed; every commit stays. A registered checkout is the operator's own and
+    /// is never touched, as [`Self::dirty`] never reads one.
+    fn abort_merges(&self, branch: &str, copies: &Copies) {
+        for place in self.holding(copies) {
+            if place.kind == BranchHolderKind::Checkout {
+                continue;
+            }
+            let Ok(heads) = git::worktree_heads(&place.repo) else {
+                continue;
+            };
+            for (worktree, on) in heads {
+                if on.as_deref() == Some(branch) && worktree != place.repo {
+                    git::abort_merge(&worktree);
+                }
+            }
+        }
+    }
+
     /// A worktree over the branch — a session's, a slot's, a run's — holding changes
     /// nobody committed.
     fn dirty(&self, branch: &str, copies: &Copies) -> Result<Option<PathBuf>> {
@@ -1344,6 +1376,9 @@ impl<'a> Census<'a> {
             .any(|excluded| excluded.identity == self.resolution.key && excluded.branch == branch)
         {
             return Ok(keep(KeepReason::Excluded));
+        }
+        if ask.settle_merges {
+            self.abort_merges(branch, &copies);
         }
         if !copies.unreadable.is_empty() {
             return Ok(keep(KeepReason::Unknown));

@@ -106,6 +106,7 @@ fn worked(providers: &CurrentProviders<'_>, branch: &str, file: &str) {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("this build opens a session");
     commit(&session.worktree, file, &format!("{branch}\n"));

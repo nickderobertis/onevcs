@@ -94,6 +94,7 @@ fn published(
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .or_else(|_| {
             vcs.state().sessions.first().cloned().ok_or(Error::Invalid {

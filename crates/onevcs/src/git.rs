@@ -2653,6 +2653,20 @@ pub fn worktree_prune(cwd: &Path) -> Result<()> {
 /// git failure stays an error, so a caller does not mistake an invalid ref for a
 /// sync conflict.
 pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<Integrated> {
+    let integrated = merge_leaving_conflict(cwd, reference, message)?;
+    if let Integrated::Conflicted(_) = integrated {
+        run(&["merge", "--abort"], Some(cwd))?;
+    }
+    Ok(integrated)
+}
+
+/// [`merge_into_branch`], except that a conflict is left standing where git stopped:
+/// `MERGE_HEAD`, the unmerged index entries and git's markers in the files, for
+/// whoever holds the worktree to conclude.
+///
+/// A merge that fails without conflicting is still aborted and raised, because what
+/// it leaves is no merge anybody can conclude.
+pub fn merge_leaving_conflict(cwd: &Path, reference: &str, message: &str) -> Result<Integrated> {
     let merged = run(&["merge", "--no-edit", "-m", message, reference], Some(cwd))?;
     if merged.ok() {
         return Ok(Integrated::Settled);
@@ -2662,8 +2676,63 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<I
             reason: format!("git merge {reference} failed: {}", merged.diagnostic()),
         });
     };
-    run(&["merge", "--abort"], Some(cwd))?;
     Ok(Integrated::Conflicted(conflict))
+}
+
+/// A merge a worktree holds in progress: what it is merging, and which of its paths
+/// are still unmerged.
+///
+/// `unmerged` is empty once every conflicted path has been staged — which is still a
+/// merge in progress, because nothing has committed it, and is exactly the state a
+/// `git add -A && git commit` would conclude with whatever the files then held.
+// llmlint: ignore-block[invalid_states_unrepresentable] git's own answers, read off a
+// worktree the moment it is asked; an empty `unmerged` is a state git has, not one to
+// rule out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Merging {
+    /// The commit `MERGE_HEAD` names.
+    pub merging: String,
+    /// The paths git still lists as unmerged, in its order.
+    pub unmerged: Vec<String>,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// The merge `worktree` holds in progress, or `None` where it holds none.
+///
+/// Asked of `MERGE_HEAD` rather than of the index: a merge whose every conflict has
+/// been staged has no unmerged path left and is still not concluded.
+///
+/// Asked of git itself past any enclosing memo, because the answer is about the
+/// worktree as it stands now and a teardown or a resolution moves it.
+pub fn merge_in_progress(worktree: &Path) -> Result<Option<Merging>> {
+    reads::bypass(|| {
+        let Some(merging) = tip(worktree, "MERGE_HEAD") else {
+            return Ok(None);
+        };
+        let unmerged = conflict_in(worktree)?
+            .map(|conflict| conflict.paths)
+            .unwrap_or_default();
+        Ok(Some(Merging { merging, unmerged }))
+    })
+}
+
+/// Abort whatever merge `worktree` holds in progress, putting it back at the commit
+/// its branch stands on. `true` where there was one.
+///
+/// Best effort, and never a failure of whatever is tearing the tree down: what it
+/// discards is a resolution nobody committed, and every commit stays where it is.
+/// `git merge --abort` first, which keeps changes that predate the merge; where git
+/// will not, a hard reset to `HEAD` is what still ends it, because a teardown that
+/// left the merge standing would hand it to whatever touches the tree next.
+pub fn abort_merge(worktree: &Path) -> bool {
+    if !worktree.is_dir() || reads::bypass(|| tip(worktree, "MERGE_HEAD")).is_none() {
+        return false;
+    }
+    let aborted = run(&["merge", "--abort"], Some(worktree)).is_ok_and(|out| out.ok());
+    if !aborted || reads::bypass(|| tip(worktree, "MERGE_HEAD")).is_some() {
+        let _ = run(&["reset", "-q", "--hard", "HEAD"], Some(worktree));
+    }
+    true
 }
 
 /// Squash-merge a ref and commit it, or report that it added no content.

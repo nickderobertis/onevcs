@@ -113,6 +113,7 @@ fn preserved_work_is_what_recoverable_reports() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session over a known repository");
 
@@ -207,6 +208,7 @@ fn preserving_the_same_branch_twice_reports_it_once() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session named by its identity key");
 
@@ -232,6 +234,7 @@ fn preserving_a_session_the_provider_never_opened_is_refused() {
         worktree: std::path::PathBuf::from("/nowhere"),
         branch: "feature/stranger".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
 
     let refused = vcs
@@ -262,6 +265,7 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
 
@@ -378,6 +382,7 @@ fn a_name_to_cut_is_taken_as_the_branch_and_naming_both_is_refused() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect_err("a request naming both is refused");
     let said = refused.to_string();

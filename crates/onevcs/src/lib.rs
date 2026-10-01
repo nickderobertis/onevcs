@@ -149,9 +149,9 @@ pub use retire::{
 };
 pub use rules::MergePolicy;
 pub use session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, PreservedBranch,
-    Provenance, Recoverable, Scope, Selection, Session, SessionHolder, SessionRecord,
-    SessionRequest, SessionToken,
+    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
+    PreservedBranch, Provenance, Recoverable, Scope, Selection, Session, SessionHolder,
+    SessionRecord, SessionRequest, SessionToken,
 };
 pub use stream::{EventLine, EventLines, EventStream};
 pub use sweep::Report as SweepReport;

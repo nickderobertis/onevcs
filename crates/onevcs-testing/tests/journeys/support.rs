@@ -96,6 +96,7 @@ pub fn full_vcs_state() -> VcsState {
         worktree: PathBuf::from("/scratch/s-testing-1/worktree"),
         branch: "feature/seeded".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
     let mut session_identities = BTreeMap::new();
     session_identities.insert(token.clone(), identity().origin);

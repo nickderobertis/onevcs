@@ -537,6 +537,17 @@ pub fn run_for_session(
     hosting: &dyn Hosting,
 ) -> Result<Publication> {
     let mut record = workspace::load(&token.0)?;
+    // Before anything is read, locked or committed: a session opened over a conflicted
+    // merge is one whose worker has not concluded it yet, and the preserve below would
+    // conclude it for them, markers and all.
+    vcs::refuse_unfinished_merge(
+        &record.worktree,
+        &record.branch,
+        &format!(
+            "publish it again with `{}`",
+            crate::guidance::command(["onevcs", "publish", &record.token])
+        ),
+    )?;
     let registry = store::load()?;
     let resolution = store::resolve(&registry, &record.identity)?;
     let (file, source) = policy::load(&registry)?;
@@ -1184,17 +1195,19 @@ pub(crate) fn reconcile(
         ),
         None => (
             Reconciliation::Merge,
-            git::merge_into_branch(
-                worktree,
-                compared,
-                &format!("Merge {compared} into {branch}"),
-            )?,
+            git::merge_into_branch(worktree, compared, &merge_message(compared, branch))?,
         ),
     };
     Ok(match integrated {
         git::Integrated::Settled => Reconciled::Settled,
         git::Integrated::Conflicted(conflict) => Reconciled::Conflicted(shape, conflict),
     })
+}
+
+/// The subject of the commit a sync's merge writes, so a session's opening merge
+/// and a publication's read the same in `git log`.
+pub(crate) fn merge_message(compared: &str, branch: &str) -> String {
+    format!("Merge {compared} into {branch}")
 }
 
 /// Report the conflict that stopped a publication: which paths, and the hunks.

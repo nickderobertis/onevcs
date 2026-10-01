@@ -125,6 +125,11 @@ mod maintain;
 // the reason the judge it resolves is one this suite installs.
 #[cfg(unix)]
 mod llmlint_cache;
+// Unix only: a continued branch whose base conflicts with it, opened over the merge and
+// then published, preserved, adopted, closed, swept and retired through the binary, on
+// `world.rs`'s POSIX fixture and in real slots. Its own header carries the reason.
+#[cfg(unix)]
+mod open_conflict;
 mod packaging;
 // Unix only: real slots under a real state root, cut and returned through the binary,
 // with the typed surface's in-process journeys at its end; its own header carries the

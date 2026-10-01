@@ -3914,6 +3914,8 @@ fn a_continued_branch_publishes_the_commits_its_base_does_not_carry() {
     );
 }
 
+/// The refusal every open gave before a conflict was left for the session, kept byte
+/// for byte for a request that asks for it with `--refuse-conflicts`.
 #[test]
 fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_what_lands_it() {
     let fixture = Fixture::local(&local_direct());
@@ -3950,6 +3952,7 @@ fn a_continued_branch_whose_base_conflicts_is_refused_naming_where_it_is_and_wha
             "project",
             "--branch",
             "feature/two-minds",
+            "--refuse-conflicts",
         ])
         .assert()
         .code(3)
@@ -6856,6 +6859,7 @@ fn opening_a_session_leaves_a_live_session_of_the_same_identity_alone() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("the embedding process opens a real session");
     let run_root = live.worktree.parent().expect("a run root").to_owned();

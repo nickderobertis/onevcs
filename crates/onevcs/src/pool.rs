@@ -1164,6 +1164,7 @@ pub fn pool_status(repo: &str) -> Result<PoolStatus> {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     };
     let asked = asked(&request)?;
     let survey = survey(&asked.resolution.key, &pool_dir(&asked.identity_root))?;
@@ -1190,6 +1191,7 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     };
     let asked = asked(&request)?;
     let pool = pool_dir(&asked.identity_root);

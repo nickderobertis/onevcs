@@ -42,12 +42,12 @@ use onevcs::{
     Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding,
     IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange,
     Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome, MergePolicy,
-    NetNegative, OnOrigin, Phase, PhaseOf, PoolStatus, PreservedBranch, ProtectionSource,
-    Provenance, Providers, PruneReport, Publication, PublishOutcome, PublishRequest, Recoverable,
-    RemoteHost, RequiredChecks, Retention, Scope, Selection, Session, SessionChange, SessionHolder,
-    SessionRecord, SessionRequest, SessionToken, Sha, SlotMaintenance, SlotOutcome, SlotState,
-    SlotStatus, Source, Span, Subject, Url, Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS,
-    SOURCE_WORD,
+    NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
+    ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
+    PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
+    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
+    WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 use serde_json::{json, Value};
 
@@ -2068,6 +2068,7 @@ fn the_declared_structs_have_exactly_the_declared_fields() {
         worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
         branch: "feature".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
 
     let declarations = block("rust");
@@ -2128,6 +2129,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
         branch: "feature".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
     let request = SessionRequest {
         repo: "nickderobertis/onevcs".to_owned(),
@@ -2139,6 +2141,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     };
     let change = ChangeRequest {
         id: ChangeId("42".to_owned()),
@@ -2476,6 +2479,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session request serializes"),
         json!({
@@ -2989,6 +2993,7 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
             worktree: PathBuf::from("/run/onevcs/s-7f3a/worktree"),
             branch: "feature".to_owned(),
             base: "main".to_owned(),
+            conflict: None,
         },
         identity: "github.com/nickderobertis/onevcs".to_owned(),
         lifecycle: Lifecycle::Open,
@@ -6352,6 +6357,7 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         pool: Some(0),
         overflow: Some(Bound::Unlimited),
         labels: Default::default(),
+        refuse_conflicts: false,
     };
     assert_eq!(
         serde_json::to_value(&request).expect("serializes")["overflow"],
@@ -7097,6 +7103,7 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session request serializes"),
         json!({"repo": "onevcs", "branch": null, "base": null, "execution_checkout": null})
@@ -7112,6 +7119,7 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session request serializes");
     assert_eq!(named["branch_name"], json!("ENG-123/aio-adopt-op"));
@@ -7122,6 +7130,132 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
         serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
     assert_eq!(read.branch_name, None);
     assert_eq!(read.branch_prefix, None);
+}
+
+/// The conflicted-open amendment's `Session` fixture, as the document it spells.
+fn documented_conflicted_session() -> Value {
+    serde_json::from_str(&amendment_block_declaring("json", "\"branch_tip\""))
+        .expect("the conflicted-open amendment's fixture is JSON")
+}
+
+#[test]
+fn the_conflicted_open_amendment_declares_the_surface_it_added() {
+    // Built from outside with every field named, which is the half the compiler
+    // checks: a field added, removed or renamed stops this compiling.
+    let conflict = OpenConflict {
+        paths: vec!["a.txt".to_owned()],
+        base_commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_owned(),
+        branch_tip: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_owned(),
+    };
+    let declarations = amendment_declaring("SessionRequest  pub refuse_conflicts");
+    for declared in [
+        "SessionRequest  pub refuse_conflicts: bool",
+        "Session         pub conflict: Option<OpenConflict>",
+        "pub struct OpenConflict {",
+        "pub paths: Vec<String>,",
+        "pub base_commit: String,",
+        "pub branch_tip: String,",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the amendment no longer declares: {declared}"
+        );
+    }
+    // The three fields are the three keys, under the names the amendment spells.
+    assert_eq!(
+        serde_json::to_value(&conflict).expect("a conflict serializes"),
+        json!({
+            "paths": ["a.txt"],
+            "base_commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "branch_tip": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+        })
+    );
+    let amendments = regions().0;
+    assert!(
+        amendments.contains("`session-opened` gains `conflict`"),
+        "the amendment must name the key the opening event gains"
+    );
+}
+
+#[test]
+fn the_conflicted_open_fixture_reads_as_a_session_and_round_trips() {
+    let fixture = documented_conflicted_session();
+    let session: Session =
+        serde_json::from_value(fixture.clone()).expect("the fixture reads as a session");
+    let conflict = session
+        .conflict
+        .clone()
+        .expect("the fixture carries a conflict");
+    assert_eq!(conflict.paths, ["a.txt", "b.txt"]);
+    assert_eq!(conflict.base_commit.len(), 40, "a full sha");
+    assert_eq!(conflict.branch_tip.len(), 40, "a full sha");
+    assert_eq!(
+        serde_json::to_value(&session).expect("a session serializes"),
+        fixture,
+        "the fixture is exactly what this build prints"
+    );
+
+    // A session without one is the object it always was, and an older one reads as
+    // carrying none.
+    let clean = Session {
+        conflict: None,
+        ..session
+    };
+    let written = serde_json::to_value(&clean).expect("a session serializes");
+    assert!(written.get("conflict").is_none(), "{written}");
+    let read: Session = serde_json::from_value(written).expect("an older session reads");
+    assert_eq!(read.conflict, None);
+}
+
+#[test]
+fn refusing_conflicts_is_omitted_from_a_request_that_does_not_ask_for_it() {
+    let request = |refuse_conflicts| SessionRequest {
+        repo: "onevcs".to_owned(),
+        branch: None,
+        branch_name: None,
+        branch_prefix: None,
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts,
+    };
+    assert_eq!(
+        serde_json::to_value(request(false)).expect("a session request serializes"),
+        json!({"repo": "onevcs", "branch": null, "base": null, "execution_checkout": null})
+    );
+    assert_eq!(
+        serde_json::to_value(request(true)).expect("a session request serializes")
+            ["refuse_conflicts"],
+        json!(true)
+    );
+    let read: SessionRequest =
+        serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
+    assert!(
+        !read.refuse_conflicts,
+        "the default leaves the conflict in place"
+    );
+}
+
+#[test]
+fn the_conflicted_open_amendment_spells_exactly_the_flags_session_open_takes() {
+    // The newest amendment's `session open` usage, held to the parser in both
+    // directions the way the branch-prefix one is.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .rfind(|body| {
+            body.contains("--refuse-conflicts")
+                && body
+                    .lines()
+                    .all(|line| line.starts_with("onevcs session open "))
+        })
+        .expect("the conflicted-open amendment spells the `session open` usage on its own");
+    assert_eq!(
+        spelled_flags(&usage),
+        parser_flags(&["session", "open"]),
+        "the amendment's `session open` usage and the parser disagree about its flags"
+    );
 }
 
 /// The retirement amendment's `Retirement` fixture, as the document it spells.
