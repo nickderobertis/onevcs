@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.9.0...onevcs-testing-v0.10.0) - 2026-10-01
+
+### Added
+
+- *(session)* [**breaking**] leave a continued branch's conflicting merge for the worker to resolve ([#269](https://github.com/nickderobertis/onevcs/pull/269))
+
 ## [0.9.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.8.6...onevcs-testing-v0.9.0) - 2026-09-30
 
 ### Added
