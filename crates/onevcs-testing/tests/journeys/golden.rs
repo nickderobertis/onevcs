@@ -30,19 +30,23 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v14-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v14-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v15-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v15-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v14.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v14.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v15.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v15.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v13.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v13.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v14.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v14.json");
+/// The same, as the build before that wrote them: the documents with none of the
+/// draft lifecycle's fields, which version 14 is the adding of.
+const VCS_V13: &str = include_str!("../golden/vcs-state-v13.json");
+const HOST_V13: &str = include_str!("../golden/host-state-v13.json");
 /// The same, as the build before that wrote them: the documents whose preserved rows
 /// carry no retirement classification, which version 13 is the adding of.
 const VCS_V12: &str = include_str!("../golden/vcs-state-v12.json");
@@ -214,10 +218,97 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_publishes_under_the_lifecycle_and_is_written_back_at_this_one(
+fn a_document_at_the_previous_version_reads_its_sessions_as_opened_clean_and_is_written_back_at_this_one(
 ) {
     // A consumer's checked-in scenario, written by the build before this one: the
-    // version went up because the draft lifecycle needs three host fields and two
+    // version went up because a session may now carry the merge it opened over, and a
+    // version 14 document's sessions carry none — which is what they were, since that
+    // build opened no session over a merge. So every one reads with `conflict: None`,
+    // and is written back that way: omitted, as nothing is.
+    let home = Home::new();
+    let vcs_path = home.path("vcs.json");
+    let scenario: serde_json::Value =
+        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+    assert_eq!(scenario["version"], 14);
+    let sessions = scenario["sessions"]
+        .as_array()
+        .expect("the previous document holds sessions");
+    assert!(
+        !sessions.is_empty()
+            && sessions
+                .iter()
+                .all(|session| session.get("conflict").is_none()),
+        "the previous document is the one whose sessions carry no conflict, or it proves nothing"
+    );
+    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(home.path("host.json"), HOST_PREVIOUS)
+        .expect("a document a previous build wrote");
+
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+    FileHost::create(home.path("host.json")).expect("the previous version reads");
+    let state = vcs.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert_eq!(state.sessions.len(), sessions.len());
+    assert!(
+        state
+            .sessions
+            .iter()
+            .all(|session| session.conflict.is_none()),
+        "a session written before the field opened clean: {:?}",
+        state.sessions
+    );
+    let adopted = vcs
+        .adopt_session(state.sessions[0].token.clone())
+        .expect("the previous document's session is adopted");
+    assert_eq!(adopted.conflict, None);
+
+    vcs.open_session(SessionRequest {
+        repo: "widgets".to_owned(),
+        branch: Some("feature/after-the-bump".to_owned()),
+        branch_name: None,
+        branch_prefix: None,
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts: false,
+    })
+    .expect("a session over the seeded repository");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&vcs_path).expect("a document"))
+            .expect("JSON");
+    assert_eq!(written["version"], STATE_VERSION);
+    assert!(
+        written["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .all(|session| session.get("conflict").is_none()),
+        "what no session holds is written as nothing: {written}"
+    );
+
+    // …and the field this version added is what the writer spells when it holds
+    // something, as the golden this build writes holds it.
+    let full: VcsState = serde_json::from_str(VCS_FULL).expect("the golden reads back");
+    assert!(
+        full.sessions
+            .iter()
+            .any(|session| session.conflict.is_some()),
+        "the golden holds a session's conflict: {VCS_FULL}"
+    );
+    for field in ["\"conflict\"", "\"base_commit\"", "\"branch_tip\""] {
+        assert!(
+            VCS_FULL.contains(field),
+            "the golden holds {field}: {VCS_FULL}"
+        );
+    }
+}
+
+#[test]
+fn a_version_13_document_publishes_under_the_lifecycle_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written two builds back: version 14 was
+    // the bump the draft lifecycle needed, because it needs three host fields and two
     // policy fields, and a version 13 document carries none of them — which is what
     // it said, since that build drafted nothing it was not asked to. So it reads with
     // every one of them absent, and a publication over it takes the defaults those
@@ -227,25 +318,25 @@ fn a_document_at_the_previous_version_publishes_under_the_lifecycle_and_is_writt
     let vcs_path = home.path("vcs.json");
     let host_path = home.path("host.json");
     let scenario: serde_json::Value =
-        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+        serde_json::from_str(VCS_V13).expect("the version 13 document is JSON");
     assert_eq!(scenario["version"], 13);
     for absent in ["approvals", "drafts"] {
         assert!(
             scenario.get(absent).is_none(),
-            "the previous document is the one with no {absent}, or it proves nothing"
+            "the version 13 document is the one with no {absent}, or it proves nothing"
         );
     }
     for absent in ["awaiting_checks", "checks_after_lift", "required_checks"] {
         assert!(
-            !HOST_PREVIOUS.contains(absent),
-            "the previous host document is the one with no {absent}, or it proves nothing"
+            !HOST_V13.contains(absent),
+            "the version 13 host document is the one with no {absent}, or it proves nothing"
         );
     }
-    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
-    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&vcs_path, VCS_V13).expect("a document a build two back wrote");
+    std::fs::write(&host_path, HOST_V13).expect("a document a build two back wrote");
 
-    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
-    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let vcs = FileVcs::create(&vcs_path).expect("version 13 reads");
+    let host = FileHost::create(&host_path).expect("version 13 reads");
     let state = vcs.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
     assert_eq!((state.approvals, state.drafts), (None, None));
@@ -263,6 +354,7 @@ fn a_document_at_the_previous_version_publishes_under_the_lifecycle_and_is_writt
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -296,7 +388,7 @@ fn a_document_at_the_previous_version_publishes_under_the_lifecycle_and_is_writt
 
 #[test]
 fn a_version_12_document_reads_its_rows_as_unclassified_and_is_written_back_at_this_one() {
-    // A consumer's checked-in scenario, written two builds back: the
+    // A consumer's checked-in scenario, written three builds back: the
     // version went up because a preserved row may now carry its retirement
     // classification, and a version 12 document's rows carry none — which is what they
     // said, since that build had none to record. So it reads, its rows read back with
@@ -337,6 +429,7 @@ fn a_version_12_document_reads_its_rows_as_unclassified_and_is_written_back_at_t
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -413,6 +506,7 @@ fn a_version_11_document_reads_its_rows_as_unlabelled_and_is_written_back_at_thi
         pool: None,
         overflow: None,
         labels: std::collections::BTreeMap::from([("run".to_owned(), "r-7".to_owned())]),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -483,6 +577,7 @@ fn a_version_10_document_reads_its_rows_with_no_origin_and_is_written_back_at_th
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
     let written = std::fs::read_to_string(&vcs_path).expect("a document");
@@ -564,6 +659,7 @@ fn a_version_9_document_keeps_its_failures_and_is_written_back_at_this_one() {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -688,6 +784,7 @@ fn a_version_8_document_is_read_and_written_back_at_this_one() {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository");
 

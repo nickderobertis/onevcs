@@ -112,6 +112,7 @@ fn session_adopt_hands_back_the_supplied_repository_sides_session() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
 
@@ -169,6 +170,7 @@ fn publishing_goes_through_the_supplied_repository_side() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
     let host = MemoryHost::new();
@@ -229,6 +231,7 @@ fn closing_a_session_goes_through_the_supplied_repository_side() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
 
@@ -283,6 +286,7 @@ fn recovering_a_branch_opens_its_change_on_the_supplied_host() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
     // A commit that describes the change, and then work that did not finish: a
@@ -356,6 +360,7 @@ fn the_change_verbs_go_through_the_supplied_repository_side_and_host() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
     let host = MemoryHost::new();

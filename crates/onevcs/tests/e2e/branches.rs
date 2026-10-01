@@ -607,6 +607,7 @@ fn request(branch: Option<&str>, name: Option<&str>, prefix: Option<&str>) -> Se
         pool: None,
         overflow: None,
         labels: BTreeMap::new(),
+        refuse_conflicts: false,
     }
 }
 

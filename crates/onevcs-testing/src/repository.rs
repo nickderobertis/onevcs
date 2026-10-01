@@ -186,11 +186,17 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
             for (key, value) in &req.labels {
                 state::label_pair(key, value)?;
             }
+            // Never a conflict: a provider has no base to merge into a continued
+            // branch, so every session it opens opens clean — which is also why its
+            // `session-opened` below never carries the `conflict` key the real one
+            // writes over a merge it left in progress, and why `refuse_conflicts`
+            // has nothing here to refuse.
             let session = Session {
                 worktree: run_root.join("worktree"),
                 branch: state::requested_branch(&req, &token)?,
                 base,
                 token: token.clone(),
+                conflict: None,
             };
             state.sessions.push(session.clone());
             state

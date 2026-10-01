@@ -35,6 +35,7 @@ fn open(vcs: &dyn Vcs, branch: &str) -> Session {
         pool: None,
         overflow: None,
         labels: Default::default(),
+        refuse_conflicts: false,
     })
     .expect("a session over the seeded repository")
 }

@@ -83,6 +83,7 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session over the scratch repository");
     assert_eq!(session.branch, branch);

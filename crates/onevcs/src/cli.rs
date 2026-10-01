@@ -314,6 +314,15 @@ pub struct SessionOpenArgs {
     /// `session holders` and `recoverable` report and filter by it.
     #[arg(long, value_name = "KEY=VALUE")]
     pub label: Vec<String>,
+    /// Refuse a continued branch whose base conflicts with it (exit 3, the branch
+    /// untouched) rather than open the session with the merge left in progress for it
+    /// to conclude.
+    // llmlint: ignore[invalid_states_unrepresentable] a presence flag, which is all the
+    // amendment's `--refuse-conflicts` spells, rendered straight into the contract-fixed
+    // `SessionRequest::refuse_conflicts: bool`; an enum here would be a value-taking
+    // option the contract does not name.
+    #[arg(long)]
+    pub refuse_conflicts: bool,
 }
 
 /// A session token, for the commands that take nothing else.

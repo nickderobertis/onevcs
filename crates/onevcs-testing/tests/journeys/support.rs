@@ -12,8 +12,8 @@ use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
     BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource, DraftReason,
     FailureKind, HeldBy, Holding, Identity, Landed, LineChange, MergeOutcome, MergePolicy,
-    NetNegative, OnOrigin, PreservedBranch, ProtectionSource, Provenance, Publication,
-    PublishOutcome, Recoverable, RequiredChecks, Retirement, RetirementClass, Session,
+    NetNegative, OnOrigin, OpenConflict, PreservedBranch, ProtectionSource, Provenance,
+    Publication, PublishOutcome, Recoverable, RequiredChecks, Retirement, RetirementClass, Session,
     SessionToken, Sha, SupersededBy, TargetName, Url,
 };
 use onevcs_testing::{Described, HostState, VcsState};
@@ -96,6 +96,13 @@ pub fn full_vcs_state() -> VcsState {
         worktree: PathBuf::from("/scratch/s-testing-1/worktree"),
         branch: "feature/seeded".to_owned(),
         base: "main".to_owned(),
+        // The field version 15 added: a continued branch's session opened over a
+        // merge it left in progress.
+        conflict: Some(OpenConflict {
+            paths: vec!["a.txt".to_owned(), "b.txt".to_owned()],
+            base_commit: "1111111111111111111111111111111111111111".to_owned(),
+            branch_tip: "2222222222222222222222222222222222222222".to_owned(),
+        }),
     };
     let mut session_identities = BTreeMap::new();
     session_identities.insert(token.clone(), identity().origin);

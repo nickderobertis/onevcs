@@ -2674,7 +2674,7 @@ answer to act on.
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
 onevcs session holders REPO [--label KEY=VALUE]... [--json]
 ```
 
@@ -3086,7 +3086,7 @@ pub mod branches {                                       // the host setting, be
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]...
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
 ```
 
 Event kinds added: none.
@@ -3733,6 +3733,89 @@ none of whose required checks has run is the grace window elapsing. With the lif
 its `change-auto` arms the merge on a ready change without watching first, as the real one
 does, and refuses a required check that has already concluded red before arming, as the
 real merge watch does. Its state document is version 14.
+
+### A continued branch whose base conflicts with it opens with the merge left for the session
+
+**Recorded as the user's ruling, relayed by the manager** (plan node
+`onevcs-open-conflicted`, the contract fixed for the run and shared with onepipeline's
+next node). A merge conflict is always handed back to the worker to resolve. Until this
+amendment a session continuing a branch whose base had moved to conflict with it was
+refused as a `sync-conflict`, with the merge aborted, and the only way on was a person
+merging the two by hand outside the run — which no manager may do and no judge reviewed.
+The worker knows what its branch meant, and its own checks and judge are what should
+review the resolution. So **leaving the conflict in place is the default**, and the old
+refusal is what a caller asks for by name. This changes every caller's default, and is
+released as a breaking change.
+
+**The open.** By default a conflicted continuation keeps the merge in progress — git's
+`MERGE_HEAD` naming the base, the unmerged index entries, and git's markers in the
+worktree — and nothing is committed. The session opens, is recorded and is held like any
+other, and `Session::conflict` says what it opened over. A continuation that merges
+cleanly is unchanged and carries no `conflict`. `SessionRequest::refuse_conflicts: true`
+keeps the earlier behaviour byte for byte: the merge is aborted where it was attempted,
+`Error::SyncConflict` is returned (exit `3`), the branch is untouched, no holder is
+recorded, and the reason is the one it always was. A pin that *resumes* an open session
+still mid-merge is handed back over that merge, never committed on the way: its
+`conflict` names the paths still unmerged, and is absent once every one of them is
+staged — the merge is then still in progress, and publication still refuses it. With
+`refuse_conflicts: true` such a resume is refused, touching nothing.
+
+```rust
+// Two declared types gain one field each, and one type is added beside them:
+//   SessionRequest  pub refuse_conflicts: bool            // serde default false; omitted when false
+//   Session         pub conflict: Option<OpenConflict>    // serde default None; omitted when None
+
+pub struct OpenConflict {            // onevcs::OpenConflict, re-exported from the crate root
+    pub paths: Vec<String>,          // the unmerged paths, as git lists them; never empty
+    pub base_commit: String,         // the full sha of the integration target that was merged
+    pub branch_tip: String,          // the full sha the branch stood at before the merge
+}
+```
+
+**The command line.** `session open` gains `--refuse-conflicts`, which sets the request
+field. Without it a conflicted open exits `0` and prints the `Session` on stdout as it
+always did, now carrying the object below, and says on stderr in one line that the
+session opened with a merge in progress.
+
+```
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+```
+
+```json
+{"token": "s-7f3a", "worktree": "/run/onevcs/s-7f3a/worktree", "branch": "feature/two-minds", "base": "main",
+ "conflict": {"paths": ["a.txt", "b.txt"], "base_commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "branch_tip": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"}}
+```
+
+Event kinds added: none.
+
+One existing kind gains a field: `session-opened` gains `conflict` — the same object
+`Session::conflict` carries — written **only** where the session opened over a merge left
+in progress, so a session that opened clean writes the payload it always wrote.
+`sync-conflict` is not emitted at open: a conflict left for the session is not a refusal.
+
+**Publication refuses an unfinished merge.** Every path that would commit or publish a
+worktree refuses one holding `MERGE_HEAD` — **even with every conflict staged and no path
+unmerged** — or unmerged paths, as `Error::SyncConflict` (`FailureKind::SyncConflict`,
+exit `3`), with a reason naming the unmerged paths and saying the merge must be concluded
+first. That is `publish`, `publish-branch` and `recover` on the branch, `preserve`, `session
+adopt`, and `Vcs::preserve`: committing such a tree with `git add -A && git commit` would
+conclude the merge with the markers in it. Nothing is committed, concluded or pushed by a
+refusal. A session concludes the merge in its worktree — resolve, stage, `git commit` —
+and publishes as any other, with the base as a parent of its merge commit.
+
+**Teardown abandons an unfinished merge.** Closing a session, returning a pooled slot
+(and settling one before the next session takes it), putting a refused swap back, the
+retirement pass (`retire`, `reclaim`, `retire-finished`, the pass after a close) and
+`onevcs sweep` each abort a merge left in progress in a session's worktree before
+anything else touches the tree — the retirement pass only once no live session holds the
+branch, and never on a dry run. That discards a resolution nobody committed and keeps
+every commit; none of them fails on it, none commits it, and none carries it into the next
+session on a slot. A registered checkout is the operator's own and is never touched.
+
+**The testing crate follows.** `onevcs-testing`'s providers construct every `Session` with
+`conflict: None` and accept `refuse_conflicts`: a provider has no base to merge into a
+continued branch, so every session it opens opens clean and its `session-opened` never
+carries the key. A consumer proving the conflicted open drives the real `onevcs`.
 
 ---
 

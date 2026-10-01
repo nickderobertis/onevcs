@@ -157,6 +157,15 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
     // used only to compare the copies of the branch below, never pushed to and never
     // merged with.
     let base = git::default_branch(&resolution.publication, "origin")?;
+    // A worktree over the branch that is part way through a merge holds work the branch
+    // does not carry yet, and pushing the branch as it stands would put a copy on the
+    // origin that the merge's conclusion then has to be reconciled with.
+    branch::refuse_unfinished_merges(
+        registry,
+        &resolution,
+        branch,
+        &format!("preserve it with `{}`", command(&resolution, branch)),
+    )?;
     // The one location search `recover`, `publish-branch`, `import` and `status` use,
     // run clones included — so a branch a live dispatch committed to a moment ago is
     // found, and a branch this verb can preserve is a branch those verbs can land.

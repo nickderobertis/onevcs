@@ -129,8 +129,11 @@ impl Vcs for Git {
 
     fn open_session(&self, req: SessionRequest) -> Result<Session> {
         let registry = store::load()?;
-        let (record, _stream) = workspace::open(&registry, &req)?;
-        Ok(record.session())
+        let (record, _stream, conflict) = workspace::open(&registry, &req)?;
+        Ok(Session {
+            conflict,
+            ..record.session()
+        })
     }
 
     fn adopt_session(&self, token: SessionToken) -> Result<Session> {
@@ -234,11 +237,20 @@ impl Vcs for Git {
 /// the same branch name, and a refusal is reported rather than swallowed: the
 /// branch a caller is then told about would name something nothing outside this
 /// session carries.
+///
+/// A worktree holding an unfinished merge is refused rather than committed: `git add
+/// -A && git commit` there would conclude the merge with whatever the files hold,
+/// git's markers included, and record that as the session's work.
 pub fn preserve_into(
     record: &workspace::Record,
     stream: &mut Stream,
     kind: Provenance,
 ) -> Result<PreservedBranch> {
+    refuse_unfinished_merge(
+        &record.worktree,
+        &record.branch,
+        "close the session, which abandons the merge and keeps every commit, or ask again",
+    )?;
     let trailers = provenance::configured()?;
     if git::is_dirty(&record.worktree)? {
         git::add_all(&record.worktree)?;
@@ -280,6 +292,42 @@ pub fn preserve_into(
         provenance: provenance::provenance_of(&record.clone, &base, &record.branch, &trailers)?,
         change_url: None,
         change_base: record.change_base.as_ref().map(ToString::to_string),
+    })
+}
+
+/// Refuse to commit or publish `worktree` while it holds a merge nobody concluded.
+///
+/// Both halves of an unfinished merge are refused, and the second is why this asks
+/// `MERGE_HEAD` rather than the index: paths git still lists as unmerged, and a merge
+/// whose every conflict has been staged but which nothing has committed. A guard that
+/// read only the first would let the second through to a commit that concludes the
+/// merge implicitly. `then` is what to do once the merge is concluded.
+pub(crate) fn refuse_unfinished_merge(worktree: &Path, branch: &str, then: &str) -> Result<()> {
+    if !worktree.is_dir() {
+        return Ok(());
+    }
+    let Some(merging) = git::merge_in_progress(worktree)? else {
+        return Ok(());
+    };
+    let state = match merging.unmerged.is_empty() {
+        true => "every conflicted path is staged, but the merge is not committed".to_owned(),
+        false => format!(
+            "{} still unmerged",
+            crate::guidance::listed(&merging.unmerged)
+        ),
+    };
+    let at = worktree.to_string_lossy();
+    Err(Error::SyncConflict {
+        reason: format!(
+            "the worktree {at} of branch {branch:?} holds an unfinished merge of {merging}: \
+             {state}. The merge must be concluded first — committing or publishing the tree \
+             now would conclude it with whatever the files hold, markers included — so \
+             nothing was committed or pushed. Resolve each path, stage it and commit the merge \
+             with `{commit}`, or abandon it with `{abort}`; then {then}",
+            merging = merging.merging,
+            commit = crate::guidance::command(["git", "-C", &at, "commit", "--no-edit"]),
+            abort = crate::guidance::command(["git", "-C", &at, "merge", "--abort"]),
+        ),
     })
 }
 

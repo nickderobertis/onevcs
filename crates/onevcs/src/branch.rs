@@ -178,6 +178,12 @@ pub fn prepare(
     let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
+    refuse_unfinished_merges(
+        registry,
+        &resolution,
+        branch,
+        &format!("land it with `{}`", verb.command(branch, repo)),
+    )?;
     let source = locate(
         registry,
         &resolution,
@@ -590,6 +596,33 @@ impl Held {
             }
         )
     }
+}
+
+/// Refuse a branch some worktree of its identity holds an unfinished merge into.
+///
+/// What a session opened over a conflicted continuation leaves until its worker
+/// concludes the merge. Every checkout and run clone [`locate`] searches is asked,
+/// and every worktree of each that has the branch checked out: the merge is in a
+/// worktree, never in a ref, so the copy `locate` would pick carries none of it and a
+/// landing read from that copy would publish the branch as if the conflict were not
+/// there. `then` is what to do once the merge is concluded.
+pub(crate) fn refuse_unfinished_merges(
+    registry: &Registry,
+    resolution: &Resolution,
+    branch: &str,
+    then: &str,
+) -> Result<()> {
+    for checkout in crate::workspace::checkouts_of(registry, resolution)? {
+        if !git::is_repo(&checkout) {
+            continue;
+        }
+        for (worktree, on) in git::worktree_heads(&checkout)? {
+            if on.as_deref() == Some(branch) {
+                crate::vcs::refuse_unfinished_merge(&worktree, branch, then)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Find the checkout a branch can be read out of, and the copy of it that is the

@@ -629,6 +629,7 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
         // Refused here, where the command line handed them over, so a pair that is
         // not a label is answered before a session is cut for it.
         labels: label::parse_all(&args.label)?,
+        refuse_conflicts: args.refuse_conflicts,
     };
     let _ = &registry;
     let session = providers.vcs.open_session(request)?;

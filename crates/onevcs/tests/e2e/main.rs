@@ -125,6 +125,17 @@ mod maintain;
 // the reason the judge it resolves is one this suite installs.
 #[cfg(unix)]
 mod llmlint_cache;
+// Unix only: a continued branch whose base conflicts with it, opened over the merge and
+// then published, preserved, adopted, closed, swept and retired through the binary, on
+// `world.rs`'s POSIX fixture and in real slots. Its own header carries the reason.
+#[cfg(unix)]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice, and the
+// affected selection already fails closed to everything on a base it cannot derive. What
+// these journeys exercise is `session open`, `close` and publication, which every crate
+// change can reach — and all of them run offline in under a second.
+mod open_conflict;
 mod packaging;
 // Unix only: real slots under a real state root, cut and returned through the binary,
 // with the typed surface's in-process journeys at its end; its own header carries the

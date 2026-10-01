@@ -71,6 +71,7 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("the session opens even though its event cannot be written");
     vcs.preserve(&session, Provenance::Complete)
@@ -160,6 +161,7 @@ fn an_unusable_state_root_is_refused_by_name() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
     assert!(fallback
@@ -318,6 +320,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
                 pool: None,
                 overflow: None,
                 labels: Default::default(),
+                refuse_conflicts: false,
             })
             .err()
             .unwrap_or_else(|| panic!("{name:?} is a name git would not accept"));
@@ -338,6 +341,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .is_err());
     assert!(
@@ -358,6 +362,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .unwrap_or_else(|e| panic!("{name:?} is a name git accepts: {e}"));
     }
@@ -375,6 +380,7 @@ fn a_session_whose_token_could_name_another_file_records_no_event_there() {
         worktree: home.path("tree"),
         branch: "feature/escaping".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
     let mut seeded = one_repository();
     seeded.sessions.push(stranger.clone());
@@ -412,6 +418,7 @@ fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect_err("nowhere to put the worktree");
 

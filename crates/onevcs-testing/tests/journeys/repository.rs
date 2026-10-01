@@ -88,6 +88,68 @@ fn opening_a_session_records_it_and_emits_the_event_the_real_one_emits() {
 }
 
 #[test]
+fn a_session_that_refuses_conflicts_opens_clean_and_reports_none() {
+    // A provider has no base to merge into a continued branch, so the opt-out has
+    // nothing to refuse: the session opens exactly as it would without it, and
+    // neither the session nor its event carries a `conflict`.
+    let home = Home::new();
+    let vcs = MemoryVcs::seeded(one_repository());
+
+    let code = run(
+        &vcs,
+        &[
+            "onevcs",
+            "session",
+            "open",
+            "widgets",
+            "--branch",
+            "feature/one",
+            "--refuse-conflicts",
+        ],
+    );
+
+    assert_eq!(
+        code, 0,
+        "refusing conflicts refuses nothing that opens clean"
+    );
+    let state = vcs.state();
+    assert_eq!(state.sessions.len(), 1);
+    assert_eq!(state.sessions[0].branch, "feature/one");
+    assert_eq!(state.sessions[0].conflict, None);
+    let events = home.events(&state.sessions[0].token.0);
+    assert_eq!(events.len(), 1, "one session open is one event");
+    assert_eq!(events[0]["kind"], "session-opened");
+    assert!(
+        events[0]["payload"].get("conflict").is_none(),
+        "a clean open carries no conflict key: {}",
+        events[0]["payload"]
+    );
+
+    let again = vcs
+        .open_session(SessionRequest {
+            repo: "widgets".to_owned(),
+            branch: Some("feature/two".to_owned()),
+            branch_name: None,
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+            refuse_conflicts: true,
+        })
+        .expect("the library's opt-out opens a clean session too");
+    assert_eq!(again.conflict, None);
+    assert!(
+        serde_json::to_value(&again)
+            .expect("a session serializes")
+            .get("conflict")
+            .is_none(),
+        "and its JSON omits the key"
+    );
+}
+
+#[test]
 fn a_session_over_a_repository_the_provider_does_not_know_is_refused() {
     let _home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
@@ -113,6 +175,7 @@ fn preserved_work_is_what_recoverable_reports() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session over a known repository");
 
@@ -207,6 +270,7 @@ fn preserving_the_same_branch_twice_reports_it_once() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session named by its identity key");
 
@@ -232,6 +296,7 @@ fn preserving_a_session_the_provider_never_opened_is_refused() {
         worktree: std::path::PathBuf::from("/nowhere"),
         branch: "feature/stranger".to_owned(),
         base: "main".to_owned(),
+        conflict: None,
     };
 
     let refused = vcs
@@ -262,6 +327,7 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect("a session");
 
@@ -378,6 +444,7 @@ fn a_name_to_cut_is_taken_as_the_branch_and_naming_both_is_refused() {
             pool: None,
             overflow: None,
             labels: Default::default(),
+            refuse_conflicts: false,
         })
         .expect_err("a request naming both is refused");
     let said = refused.to_string();

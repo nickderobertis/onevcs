@@ -516,12 +516,18 @@ and what a name already means are each stated rather than left to be inferred.
   passed over.
 - **…which makes `base` the integration target and not the starting point.** For a
   continued branch it is only what the work is merged with and published into, through
-  the same reconciliation every landing syncs with; a conflict refuses the session
-  rather than leaving one in a worktree nobody asked to resolve, and a branch named as
-  its own base is refused, because it would publish the branch into itself.
+  the same merge every landing syncs with; and a branch named as its own base is
+  refused, because it would publish the branch into itself.
 - **…and a pin an *open* session already holds is that session, resumed** — the same
   base, the same execution checkout, and a run root that is there and free. Closed is
   not one of them, because closing hands the branch back and means finished.
+- **A conflict at a continuation's merge is the session's to resolve, and nothing may
+  conclude it for it.** The merge is left in progress and `Session::conflict` says so,
+  unless the request sets `refuse_conflicts`. Two halves hold it, and each is easy to drop:
+  everything that would commit or land the tree refuses while `MERGE_HEAD` stands —
+  asked of `MERGE_HEAD`, never only of the unmerged paths, because a fully staged merge
+  has none and `git add -A && git commit` would still conclude it — and every teardown
+  aborts it first with `git::abort_merge` rather than committing it.
 
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
