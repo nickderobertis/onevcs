@@ -764,12 +764,19 @@ fn a_slot_closed_with_its_merge_staged_is_returned_without_the_merge() {
 /// branch's tip by the automatic passes — which keep the branch, because it still
 /// holds work the base does not.
 fn an_automatic_pass_over_an_abandoned_merge(state: Unfinished, pass: &[&str]) {
+    a_pass_over_an_abandoned_merge(state, pass, 0);
+}
+
+/// [`an_automatic_pass_over_an_abandoned_merge`], for any pass that acts, answering
+/// `code`: a retirement asked for by name refuses a branch that holds work with `4`,
+/// and has abandoned the merge by then all the same.
+fn a_pass_over_an_abandoned_merge(state: Unfinished, pass: &[&str], code: i32) {
     let conflicted = Conflicted::new();
     let world = conflicted.world();
     let (token, worktree) = conflicted.open_in(state);
     let clone = clone_of(&worktree);
 
-    world.onevcs().args(pass).assert().success();
+    world.onevcs().args(pass).assert().code(code);
 
     assert!(
         worktree.is_dir(),
@@ -813,6 +820,42 @@ fn the_retirement_pass_over_a_branch_whose_merge_is_staged_abandons_the_merge() 
     an_automatic_pass_over_an_abandoned_merge(
         Unfinished::Staged,
         &["retire-finished", "--repo", "project"],
+    );
+}
+
+#[test]
+fn retiring_a_branch_with_paths_still_unmerged_by_name_abandons_the_merge() {
+    a_pass_over_an_abandoned_merge(
+        Unfinished::Unmerged,
+        &["retire", BRANCH, "--repo", "project"],
+        4,
+    );
+}
+
+#[test]
+fn retiring_a_branch_whose_merge_is_staged_by_name_abandons_the_merge() {
+    a_pass_over_an_abandoned_merge(
+        Unfinished::Staged,
+        &["retire", BRANCH, "--repo", "project"],
+        4,
+    );
+}
+
+#[test]
+fn reclaiming_a_branch_with_paths_still_unmerged_abandons_the_merge() {
+    a_pass_over_an_abandoned_merge(
+        Unfinished::Unmerged,
+        &["reclaim", BRANCH, "--repo", "project"],
+        4,
+    );
+}
+
+#[test]
+fn reclaiming_a_branch_whose_merge_is_staged_abandons_the_merge() {
+    a_pass_over_an_abandoned_merge(
+        Unfinished::Staged,
+        &["reclaim", BRANCH, "--repo", "project"],
+        4,
     );
 }
 
