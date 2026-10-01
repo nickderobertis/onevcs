@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 
-use onevcs::{Error, Git, SessionRequest, Vcs};
+use onevcs::{Error, Git, Provenance, SessionRequest, Vcs};
 use predicates::prelude::*;
 use serde_json::{json, Value};
 
@@ -398,6 +398,62 @@ fn the_seam_refuses_when_asked_to_and_hands_the_conflict_back_when_not() {
     assert_eq!(conflict.paths, ["a.txt", "b.txt"]);
     assert_eq!(conflict.base_commit, conflicted.base_commit);
     assert_eq!(conflict.branch_tip, conflicted.branch_tip);
+}
+
+/// `Vcs::preserve` is the seam's own way to commit a session's tree, and it refuses
+/// one mid-merge in both states — committing, concluding and handing back nothing.
+#[test]
+fn the_seam_refuses_to_preserve_a_session_whose_merge_is_unfinished() {
+    let conflicted = Conflicted::new();
+    let world = conflicted.world();
+    inhabit(world);
+    let session = Git
+        .open_session(SessionRequest {
+            repo: "project".to_owned(),
+            branch: Some(BRANCH.to_owned()),
+            branch_name: None,
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+            refuse_conflicts: false,
+        })
+        .expect("the default opens over the merge");
+    assert!(session.conflict.is_some(), "the premise: {session:?}");
+
+    for state in [Unfinished::Unmerged, Unfinished::Staged] {
+        if state == Unfinished::Staged {
+            resolve(world, &session.worktree);
+        }
+        let refused = Git
+            .preserve(&session, Provenance::IncompleteStep)
+            .expect_err("an unfinished merge is not preserved");
+        let Error::SyncConflict { reason } = &refused else {
+            panic!("{state:?}: refused as something else: {refused:?}");
+        };
+        assert!(reason.contains("must be concluded first"), "{reason}");
+        assert_eq!(
+            merge_head(world, &session.worktree).as_deref(),
+            Some(conflicted.base_commit.as_str()),
+            "{state:?}: the merge was concluded"
+        );
+        assert_eq!(
+            world.git(&session.worktree, &["rev-parse", "HEAD"]),
+            conflicted.branch_tip,
+            "{state:?}: a commit was made"
+        );
+        assert_eq!(
+            tip(world, &conflicted.fixture.checkout, BRANCH),
+            None,
+            "{state:?}: the branch was handed back"
+        );
+    }
+    assert!(world
+        .events_of(&session.token.0, "commit-preserved")
+        .is_empty());
+    assert_eq!(conflicted.origin_tip(BRANCH), conflicted.branch_tip);
 }
 
 #[test]
