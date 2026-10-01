@@ -1849,6 +1849,10 @@ struct Cut<'a> {
 /// to write down, and the merge it left for the session to conclude.
 struct Placing {
     /// Where the branch's own work begins, for a session that named its own base.
+    // llmlint: ignore[invalid_states_unrepresentable] the value `Record::stack_tip`
+    // is written from, unchanged: git's own printed SHA, under that field's own reason —
+    // the crate's `Sha` wraps an unvalidated `String` and would make no state here
+    // unrepresentable.
     stack_tip: Option<String>,
     /// The conflicted merge left in progress, for a continuation whose base
     /// conflicts with it.
