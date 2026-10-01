@@ -37,7 +37,7 @@ const BRANCH: &str = "feature/two-minds";
 const MARKER: &str = "<<<<<<<";
 
 /// A registered repository whose origin carries [`BRANCH`] and a base that has moved
-/// on to disagree with it in `a.txt` and `b.txt`.
+/// on to disagree with it in `a.txt` and `b.txt`, and to add `c.txt` beside them.
 struct Conflicted {
     fixture: Fixture,
     /// The commit the branch stands at on the origin, before anything merges.
@@ -77,6 +77,13 @@ impl Conflicted {
         let elsewhere = world.clone_of(&fixture.origin, "elsewhere");
         world.commit_file(&elsewhere, "a.txt", "the base's a\n", "feat: the base's a");
         world.commit_file(&elsewhere, "b.txt", "the base's b\n", "feat: the base's b");
+        // And one file only the base has, which the merge brings in cleanly.
+        world.commit_file(
+            &elsewhere,
+            "c.txt",
+            "only the base's c\n",
+            "feat: the base's c",
+        );
         world.git(&elsewhere, &["push", "-q", "origin", "main"]);
         let base_commit = world.git(&fixture.origin, &["rev-parse", "main"]);
         Self {
@@ -683,6 +690,32 @@ fn closing_a_session_with_paths_still_unmerged_abandons_the_merge_and_commits_no
 #[test]
 fn closing_a_session_whose_merge_is_staged_abandons_it_and_commits_nothing() {
     closing_a_run_root_session(Unfinished::Staged);
+}
+
+/// A worker that edited a file the merge brought in, without staging it, leaves a
+/// merge `git merge --abort` itself refuses to undo ("not uptodate") — and the close
+/// still ends it rather than committing it or leaving it standing.
+#[test]
+fn closing_a_session_whose_merge_git_will_not_abort_still_abandons_it() {
+    let conflicted = Conflicted::new();
+    let world = conflicted.world();
+    let (token, worktree) = conflicted.open_in(Unfinished::Unmerged);
+    std::fs::write(worktree.join("c.txt"), "the worker's c\n").expect("an edit");
+    let refused = world.git_raw(&worktree, &["merge", "--abort"]);
+    assert!(
+        !refused.status.success(),
+        "the premise: git will not abort this merge on its own"
+    );
+    let clone = clone_of(&worktree);
+
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    assert!(world.events_of(&token, "commit-preserved").is_empty());
+    conflicted.assert_torn_down_cleanly(&[conflicted.fixture.checkout.clone(), clone]);
 }
 
 /// Closing a session on a pooled slot returns the slot without the merge, and the
