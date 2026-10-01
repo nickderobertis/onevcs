@@ -144,10 +144,11 @@ pub struct Session {
 /// the session as a sync conflict until the merge is concluded — resolved, staged and
 /// committed in the worktree — and every teardown aborts it rather than committing
 /// it.
-// llmlint: ignore[invalid_states_unrepresentable] the contract amendment fixes these
-// three fields as `String`s and `Vec<String>`, the way `Recoverable` and
-// `PreservedBranch` spell a sha and a path list, and a consuming repository builds
-// against that spelling; every value is git's own answer to a command the open ran.
+// llmlint: ignore-block[invalid_states_unrepresentable] the contract amendment fixes
+// these three fields as `Vec<String>` and `String`, the way `Recoverable` and
+// `PreservedBranch` spell a sha and a path list, and onepipeline builds against exactly
+// that spelling; every value is git's own answer to a command the open ran, and a path
+// git prints is lossily decoded text, as `git::Conflict::paths` already carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenConflict {
     /// The paths git left unmerged, in the order it listed them. Never empty.
@@ -157,6 +158,7 @@ pub struct OpenConflict {
     /// The full sha the branch stood at before the merge.
     pub branch_tip: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Where a session is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

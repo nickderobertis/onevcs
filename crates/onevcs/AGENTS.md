@@ -518,20 +518,16 @@ and what a name already means are each stated rather than left to be inferred.
   continued branch it is only what the work is merged with and published into, through
   the same merge every landing syncs with; and a branch named as its own base is
   refused, because it would publish the branch into itself.
-- **A conflict at that merge is the session's to resolve, and nothing may conclude it
-  for it.** The merge is left in progress and `Session::conflict` says so, unless the
-  request asked to `refuse_conflicts` (the old refusal, kept byte for byte). Two halves
-  hold it, and each is easy to drop: everything that would commit or land the tree —
-  `vcs::preserve_into`, `publish::run_for_session`, `branch::prepare`, `preserve`,
-  `adopt` — refuses while `MERGE_HEAD` stands (asked of `MERGE_HEAD`, never only of the
-  unmerged paths, because a fully staged merge has none and `git add -A && git commit`
-  would still conclude it); and every teardown — `preserve_and_hand_back`,
-  `reset_onto_base`, the retirement pass once no live session holds the branch — aborts
-  it first with `git::abort_merge`. `tests/e2e/open_conflict.rs` drives both halves over
-  both states.
 - **…and a pin an *open* session already holds is that session, resumed** — the same
   base, the same execution checkout, and a run root that is there and free. Closed is
   not one of them, because closing hands the branch back and means finished.
+- **A conflict at a continuation's merge is the session's to resolve, and nothing may conclude it
+  for it.** The merge is left in progress and `Session::conflict` says so, unless the
+  request sets `refuse_conflicts`. Two halves hold it, and each is easy to drop:
+  everything that would commit or land the tree refuses while `MERGE_HEAD` stands —
+  asked of `MERGE_HEAD`, never only of the unmerged paths, because a fully staged merge
+  has none and `git add -A && git commit` would still conclude it — and every teardown
+  aborts it first with `git::abort_merge` rather than committing it.
 
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
