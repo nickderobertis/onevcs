@@ -1197,7 +1197,7 @@ pub fn open(
         continued: continued.as_ref(),
         publication: &resolution.publication,
         placed,
-        refuse_conflicts: request.refuse_conflicts,
+        on_conflict: OnMerge::asked_by(request),
     }) {
         Ok(placing) => placing,
         Err(error) => {
@@ -1594,11 +1594,7 @@ fn resume(
     // that merge, exactly as its first opening handed it over — never committed on the
     // way, which is what an adoption does with any other tree it finds dirty. A
     // request refusing conflicts is refused instead, and nothing is touched.
-    let on_merge = match request.refuse_conflicts {
-        true => OnMerge::Refuse,
-        false => OnMerge::Keep,
-    };
-    let (mut record, mut stream, _preserved) = adopt_with(&held.token, on_merge)?;
+    let (mut record, mut stream, _preserved) = adopt_with(&held.token, OnMerge::asked_by(request))?;
     // Held until the adoption has taken a lease of its own, and no longer.
     drop(lease);
     let conflict = match git::merge_in_progress(&record.worktree)? {
@@ -1845,9 +1841,8 @@ struct Cut<'a> {
     publication: &'a Path,
     /// Whether the worktree is cut for this session or already there.
     placed: Placed,
-    /// Whether a continuation whose base conflicts with it is refused rather than
-    /// opened over the merge.
-    refuse_conflicts: bool,
+    /// What a continuation whose base conflicts with it does with the merge.
+    on_conflict: OnMerge,
 }
 
 /// What putting a branch in a session's worktree answers: the stack its record has
@@ -1879,7 +1874,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         continued,
         publication,
         placed,
-        refuse_conflicts,
+        on_conflict,
     } = *cut;
     let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
@@ -1928,7 +1923,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         branch,
         &opened,
         publication,
-        refuse_conflicts,
+        on_conflict,
     )?;
     Ok(Placing {
         stack_tip,
@@ -1962,9 +1957,9 @@ fn integrate(
     branch: &Ref,
     opened: &Carried,
     publication: &Path,
-    refuse_conflicts: bool,
+    on_conflict: OnMerge,
 ) -> Result<Option<OpenConflict>> {
-    if !refuse_conflicts {
+    if on_conflict == OnMerge::Keep {
         let message = crate::publish::merge_message(integrated, branch);
         let git::Integrated::Conflicted(conflict) =
             git::merge_leaving_conflict(worktree, integrated, &message)?
@@ -2181,14 +2176,26 @@ pub fn adopt(token: &str) -> Result<(Record, Stream, Option<String>)> {
     adopt_with(token, OnMerge::Refuse)
 }
 
-/// What an adoption does with a worktree part way through a merge.
+/// What a session does with a merge that conflicted: the one its open stopped in, or
+/// the one an adoption finds still in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnMerge {
-    /// Refuse, committing nothing: what `session adopt` does.
+    /// Refuse, committing nothing and leaving the branch as it was: what `session
+    /// adopt` does, and what an open does for a request that refuses conflicts.
     Refuse,
-    /// Leave the merge standing for the session to conclude: what resuming a session
-    /// opened over one does.
+    /// Leave the merge standing for the session to conclude: what an open and a
+    /// resume do by default.
     Keep,
+}
+
+impl OnMerge {
+    /// What a session request asks for.
+    fn asked_by(request: &SessionRequest) -> Self {
+        match request.refuse_conflicts {
+            true => Self::Refuse,
+            false => Self::Keep,
+        }
+    }
 }
 
 fn adopt_with(token: &str, on_merge: OnMerge) -> Result<(Record, Stream, Option<String>)> {

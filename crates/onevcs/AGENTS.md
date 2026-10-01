@@ -521,9 +521,9 @@ and what a name already means are each stated rather than left to be inferred.
 - **…and a pin an *open* session already holds is that session, resumed** — the same
   base, the same execution checkout, and a run root that is there and free. Closed is
   not one of them, because closing hands the branch back and means finished.
-- **A conflict at a continuation's merge is the session's to resolve, and nothing may conclude it
-  for it.** The merge is left in progress and `Session::conflict` says so, unless the
-  request sets `refuse_conflicts`. Two halves hold it, and each is easy to drop:
+- **A conflict at a continuation's merge is the session's to resolve, and nothing may
+  conclude it for it.** The merge is left in progress and `Session::conflict` says so,
+  unless the request sets `refuse_conflicts`. Two halves hold it, and each is easy to drop:
   everything that would commit or land the tree refuses while `MERGE_HEAD` stands —
   asked of `MERGE_HEAD`, never only of the unmerged paths, because a fully staged merge
   has none and `git add -A && git commit` would still conclude it — and every teardown

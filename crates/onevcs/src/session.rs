@@ -104,6 +104,10 @@ pub struct SessionRequest {
     /// attempted and refuses the open as [`Error::SyncConflict`](crate::Error), with
     /// the branch untouched — which is what every open did before this field existed.
     /// Omitted when `false`.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract amendment fixes this
+    // field as `refuse_conflicts: bool`, omitted when false, and onepipeline's next node
+    // is written against exactly that name and type; both values are valid requests, and
+    // the crate turns it into its own two-variant choice where the open acts on it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refuse_conflicts: bool,
 }

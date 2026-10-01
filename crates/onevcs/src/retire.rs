@@ -835,10 +835,19 @@ pub(crate) struct Ask<'a> {
     /// Where a pass reuses the verdicts it recorded and records the ones it derives, or
     /// `None` for a classification that derives every verdict it answers.
     verdicts: Option<&'a crate::verdict::Store>,
-    /// Abort a merge a session's worktree over the branch left in progress, once no
-    /// live session holds it — what a retirement that is going to act does, and never
-    /// a read or a dry run.
-    settle_merges: bool,
+    /// What becomes of a merge a session's worktree over the branch left in progress,
+    /// once no live session holds it.
+    merges: LeftMerges,
+}
+
+/// What a census does with a merge a session left in progress in a worktree over a
+/// branch it classifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeftMerges {
+    /// Leave it: a read, and a dry run, change nothing.
+    Leave,
+    /// Abort it, keeping every commit: what a retirement that is going to act does.
+    Abort,
 }
 
 impl<'a> Ask<'a> {
@@ -851,7 +860,7 @@ impl<'a> Ask<'a> {
             remote: false,
             exclude: &[],
             verdicts: None,
-            settle_merges: false,
+            merges: LeftMerges::Leave,
         }
     }
 
@@ -863,7 +872,7 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude: &[],
             verdicts: None,
-            settle_merges: false,
+            merges: LeftMerges::Leave,
         }
     }
 
@@ -875,7 +884,10 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude,
             verdicts: None,
-            settle_merges: !dry_run,
+            merges: match dry_run {
+                true => LeftMerges::Leave,
+                false => LeftMerges::Abort,
+            },
         }
     }
 }
@@ -1377,7 +1389,7 @@ impl<'a> Census<'a> {
         {
             return Ok(keep(KeepReason::Excluded));
         }
-        if ask.settle_merges {
+        if ask.merges == LeftMerges::Abort {
             self.abort_merges(branch, &copies);
         }
         if !copies.unreadable.is_empty() {
