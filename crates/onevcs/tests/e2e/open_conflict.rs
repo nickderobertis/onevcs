@@ -439,6 +439,68 @@ fn a_continuation_that_merges_cleanly_says_nothing_about_a_conflict() {
     );
 }
 
+/// A pin naming a session that is still open mid-merge resumes it over that merge —
+/// never committing it the way an adoption commits any other tree it finds dirty —
+/// and a request refusing conflicts is refused without touching it.
+#[test]
+fn reopening_a_session_left_mid_merge_resumes_it_over_the_merge() {
+    let conflicted = Conflicted::new();
+    let world = conflicted.world();
+    let (token, worktree) = conflicted.open_in(Unfinished::Unmerged);
+
+    let (again, tree, printed) = conflicted.open();
+    assert_eq!(again, token, "the open session was resumed, not cut again");
+    assert_eq!(tree, worktree);
+    assert_eq!(
+        printed["conflict"],
+        json!({
+            "paths": ["a.txt", "b.txt"],
+            "base_commit": conflicted.base_commit,
+            "branch_tip": conflicted.branch_tip,
+        })
+    );
+    let opening = world.events_of(&token, "session-opened");
+    assert_eq!(opening.len(), 2, "the first opening and the resume");
+    assert_eq!(opening[1]["payload"]["reused"], true);
+    assert_eq!(opening[1]["payload"]["conflict"], printed["conflict"]);
+
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            BRANCH,
+            "--refuse-conflicts",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("unfinished merge"))
+        .stderr(predicate::str::contains("\"a.txt\""));
+
+    // Staged and not committed: no path is unmerged, so nothing names one — and the
+    // merge is still standing for the session to commit.
+    resolve(world, &worktree);
+    let (_, _, printed) = conflicted.open();
+    assert!(printed.get("conflict").is_none(), "{printed}");
+
+    assert_eq!(
+        merge_head(world, &worktree).as_deref(),
+        Some(conflicted.base_commit.as_str()),
+        "the merge is still in progress across the resumes"
+    );
+    assert_eq!(
+        world.git(&worktree, &["rev-parse", "HEAD"]),
+        conflicted.branch_tip,
+        "nothing was committed across the resumes"
+    );
+    assert!(
+        world.events_of(&token, "commit-preserved").is_empty(),
+        "no resume committed the merge"
+    );
+}
+
 /// Every verb that would commit or publish the session's tree, or land its branch, is
 /// refused as a sync conflict naming what is unfinished — and nothing it refused is
 /// committed, concluded or pushed.

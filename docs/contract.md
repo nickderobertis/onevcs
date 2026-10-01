@@ -3755,8 +3755,10 @@ cleanly is unchanged and carries no `conflict`. `SessionRequest::refuse_conflict
 keeps the earlier behaviour byte for byte: the merge is aborted where it was attempted,
 `Error::SyncConflict` is returned (exit `3`), the branch is untouched, no holder is
 recorded, and the reason is the one it always was. A pin that *resumes* an open session
-still mid-merge is handed back over that merge with the same `conflict`, and with
-`refuse_conflicts: true` is refused, touching nothing.
+still mid-merge is handed back over that merge, never committed on the way: its
+`conflict` names the paths still unmerged, and is absent once every one of them is
+staged — the merge is then still in progress, and publication still refuses it. With
+`refuse_conflicts: true` such a resume is refused, touching nothing.
 
 ```rust
 // Two declared types gain one field each, and one type is added beside them:

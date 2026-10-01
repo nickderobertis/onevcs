@@ -2664,8 +2664,9 @@ pub fn merge_into_branch(cwd: &Path, reference: &str, message: &str) -> Result<I
 /// `MERGE_HEAD`, the unmerged index entries and git's markers in the files, for
 /// whoever holds the worktree to conclude.
 ///
-/// A merge that fails without conflicting is still aborted and raised, because what
-/// it leaves is no merge anybody can conclude.
+/// A merge that fails without conflicting is still raised as an error, exactly as
+/// [`merge_into_branch`] raises it: git left no unmerged path, so there is nothing
+/// for anybody to conclude.
 pub fn merge_leaving_conflict(cwd: &Path, reference: &str, message: &str) -> Result<Integrated> {
     let merged = run(&["merge", "--no-edit", "-m", message, reference], Some(cwd))?;
     if merged.ok() {
