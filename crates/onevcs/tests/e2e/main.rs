@@ -134,7 +134,7 @@ mod llmlint_cache;
 // fixes: a second Nx project would run the same `--workspace` commands twice, and the
 // affected selection already fails closed to everything on a base it cannot derive. What
 // these journeys exercise is `session open`, `close` and publication, which every crate
-// change can reach — and the seventeen of them run offline in under a second.
+// change can reach — and all of them run offline in under a second.
 mod open_conflict;
 mod packaging;
 // Unix only: real slots under a real state root, cut and returned through the binary,
