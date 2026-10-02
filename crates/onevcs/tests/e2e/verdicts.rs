@@ -995,7 +995,6 @@ fn a_tip_that_moves_after_a_reused_verdict_chose_it_for_deletion_is_refused_and_
             "[ \"$1\" = committed ] || exit 0\n\
              while read -r old new ref; do\n\
                if [ \"$ref\" = refs/heads/feature/moving ] && [ \"$new\" = {zero} ]; then\n\
-                 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX\n\
                  rm -rf {pusher}\n\
                  git clone -q {origin} {pusher}\n\
                  git -C {pusher} checkout -q feature/moving\n\

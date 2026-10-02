@@ -165,20 +165,34 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
+    let hooked = runs_repository_hooks(args);
+    // A command that runs the repository's hooks reaches them through shims that
+    // hand each hook the environment of the tree it starts in — see [`HookShims`].
+    // Without a directory there is no repository whose hooks it runs: that is a
+    // `clone`, whose new repository has none yet.
+    let shims = match cwd {
+        Some(cwd) if hooked => HookShims::cut(cwd)?,
+        _ => None,
+    };
     let mut command = Command::new("git");
     command.args(args);
     let ran = bounded(
         command,
         cwd,
-        env,
-        if runs_repository_hooks(args) {
+        &shims
+            .as_ref()
+            .map(|shims| [env, &shims.env()].concat())
+            .unwrap_or_else(|| env.to_vec()),
+        if hooked {
             Bound::Hooks
         } else {
             Bound::Ordinary
         },
         &format!("git {}", args.join(" ")),
         |e| unstarted(&e, args, cwd),
-    )?;
+    );
+    drop(shims);
+    let ran = ran?;
     let output = Output {
         status: ran.status,
         ended: ran.ended,
@@ -1489,6 +1503,12 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
     ))?;
     let mut command = Command::new(git_path(&hook));
     command.arg(git_path(&file));
+    // The hook starts where git would start it with nothing pointing it elsewhere,
+    // so a git command it runs in a fixture acts on that fixture — see
+    // [`local_env_vars`].
+    for name in local_env_vars()? {
+        command.env_remove(name);
+    }
     let ran = bounded(
         command,
         Some(cwd),
@@ -2949,6 +2969,137 @@ fn pushed(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Result<Pushed>
             output: output.combined(),
         }
     })
+}
+
+/// The variables git calls *local* to a repository, as the installed git lists them.
+///
+/// githooks(5): git exports `GIT_DIR`, `GIT_WORK_TREE` and their kin to every hook
+/// it runs, so that the hook's own git commands find the repository. In a linked
+/// worktree `GIT_DIR` is the worktree's absolute administrative directory, which
+/// every git command the hook starts — in a fixture directory included — then acts
+/// on. These are the names git itself clears before it talks to another repository,
+/// and so the ones a hook is handed without.
+///
+/// The list is the installed git's and does not change while this process runs, so it
+/// is asked once.
+fn local_env_vars() -> Result<&'static [String]> {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    if let Some(names) = NAMES.get() {
+        return Ok(names);
+    }
+    let names = checked(&["rev-parse", "--local-env-vars"], None)?
+        .stdout
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    Ok(NAMES.get_or_init(|| names))
+}
+
+/// The repository's hooks, each reached through a script that first drops git's
+/// local repository variables, for the one hook-running command they are cut for.
+///
+/// git exports those variables to a hook *after* onevcs has spawned it — a
+/// publication pushes from a linked worktree, where `GIT_DIR` is that worktree's
+/// absolute administrative directory — so they cannot be withheld from the command
+/// itself; they can only be removed between git and the hook. Each shim is named for
+/// a hook the repository's effective hooks directory holds and git would run, unsets
+/// [`local_env_vars`], and `exec`s that hook with the arguments and standard input
+/// git gave it. git has already moved to the root of the working tree, so a command
+/// the hook runs where it starts discovers that repository from its own `.git` and
+/// reads the commit being pushed or committed, and a command it runs in a fixture
+/// discovers the fixture. Every command this crate runs hooks through commits
+/// without pathspecs and without `-a`, so the index git would have named is the one
+/// discovery finds.
+///
+/// The command is pointed at the shims through `GIT_CONFIG_COUNT` — appended after
+/// whatever the caller's environment already configures — and that variable is
+/// among those the shims drop, so the hook reads the repository's own
+/// `core.hooksPath`. The directory lives in the git directory, as the message file
+/// [`message_policy`] writes does, and is removed when this is dropped.
+struct HookShims {
+    dir: PathBuf,
+}
+
+impl HookShims {
+    /// Shims for every hook git would run in `cwd`, or nothing when it would run none.
+    fn cut(cwd: &Path) -> Result<Option<Self>> {
+        // A directory that is not a repository, or a hooks directory or entry that
+        // will not answer, is one git cannot run a hook out of either, so the command
+        // is left to git exactly as it stands: git says what is wrong with the first,
+        // and whether the second is a refusal is the question [`message_policy`] asks.
+        let Ok(real) = hooks_dir(cwd) else {
+            return Ok(None);
+        };
+        let Ok(entries) = std::fs::read_dir(&real) else {
+            return Ok(None);
+        };
+        let hooks: Vec<_> = entries
+            .flatten()
+            .map(|entry| (entry.file_name(), entry.path()))
+            .filter(|(_, path)| is_executable(path).unwrap_or(false))
+            .collect();
+        if hooks.is_empty() {
+            return Ok(None);
+        }
+        let unset = local_env_vars()?.join(" ");
+        let dir = git_owned_path(cwd, &format!("onevcs-hooks-{}", ids::unique()))?;
+        std::fs::create_dir(&dir).map_err(error::at("create the hook shims in", &dir))?;
+        let shims = HookShims { dir };
+        for (name, hook) in hooks {
+            let shim = shims.dir.join(name);
+            let target = shell_quoted(&git_path(&hook).to_string_lossy());
+            std::fs::write(
+                &shim,
+                format!("#!/bin/sh\nunset {unset}\nexec {target} \"$@\"\n"),
+            )
+            .map_err(error::at("write the hook shim", &shim))?;
+            make_executable(&shim)?;
+        }
+        Ok(Some(shims))
+    }
+
+    /// The configuration that points one git command at these shims, after any the
+    /// environment already carries.
+    fn env(&self) -> Vec<(String, String)> {
+        let count = std::env::var("GIT_CONFIG_COUNT")
+            .ok()
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or(0);
+        vec![
+            ("GIT_CONFIG_COUNT".to_owned(), (count + 1).to_string()),
+            (
+                format!("GIT_CONFIG_KEY_{count}"),
+                "core.hooksPath".to_owned(),
+            ),
+            (
+                format!("GIT_CONFIG_VALUE_{count}"),
+                git_path(&self.dir).to_string_lossy().into_owned(),
+            ),
+        ]
+    }
+}
+
+impl Drop for HookShims {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// `value` as one single-quoted POSIX shell word.
+fn shell_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(error::at("make the hook shim executable at", path))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// The remote refs a `--porcelain` push reported it declined to update.
