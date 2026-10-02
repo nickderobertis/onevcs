@@ -67,7 +67,12 @@ use crate::store::Checked;
 /// be `change-review-draft`. `15` is the field a `Session` gained inside
 /// [`VcsState::sessions`]: `conflict`, the merge a continued branch's session opened
 /// over and left in progress. No provider here merges a base into a branch, so a
-/// session this crate opens carries none; a scenario may seed one.
+/// session this crate opens carries none; a scenario may seed one. `16` is the failure
+/// vocabulary a publication's outcome inside [`VcsState::publications`] may name
+/// widening by one kind, `cancelled`, the way `10` widened it — no field moved, but a
+/// document naming it is one a version 15 build cannot read. No provider here waits on
+/// anything, so a publication this crate runs is never cancelled; a scenario may seed
+/// one.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -77,7 +82,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 15;
+pub const STATE_VERSION: u32 = 16;
 
 /// The oldest document version this build reads.
 ///
@@ -124,7 +129,9 @@ pub const STATE_VERSION: u32 = 15;
 /// their defaults — which is what that build published under. `14` to `15` added the
 /// session's conflict, which appears only where a session holds one, so a version 14
 /// document's sessions read as sessions that opened clean — which is what they were,
-/// since that build opened none over a merge.
+/// since that build opened none over a merge. `15` to `16` changed no field and no
+/// meaning, as `9` to `10` did not: every failure kind a version 15 document can hold is
+/// spelled here as it was there, so it reads unchanged.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a

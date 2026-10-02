@@ -166,6 +166,20 @@ pub fn full_vcs_state() -> VcsState {
                     retained: None,
                 },
             },
+            // The kind version 16 added: a publication its caller cancelled while it
+            // waited.
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::ChangeAuto,
+                outcome: PublishOutcome::Failed {
+                    kind: FailureKind::Cancelled,
+                    reason: "publication cancelled: the caller cancelled the publication while \
+                             it watched https://github.com/acme-corp/widgets/pull/1"
+                        .to_owned(),
+                    retained: None,
+                },
+            },
         ],
         preserved: vec![Recoverable {
             identity: identity().origin,
