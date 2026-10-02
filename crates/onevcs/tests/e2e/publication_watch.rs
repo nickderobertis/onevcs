@@ -699,3 +699,180 @@ fn publish_is_the_never_cancelled_form_and_a_kind_of_its_own_says_cancelled() {
         FailureKind::Cancelled
     );
 }
+
+/// A host written against `RemoteHost` as it stood before `mergeability`: every method
+/// it implements is one the trait already had, and it is answered by the testing
+/// crate's host. It omits every method this change added.
+struct EarlierHost(Box<dyn onevcs::RemoteHost>);
+
+impl onevcs::RemoteHost for EarlierHost {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        self.0.authenticated_user()
+    }
+    fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+        self.0.open_change(req)
+    }
+    fn find_changes(&self, head: &str, base: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+        self.0.find_changes(head, base)
+    }
+    fn change_checks(&self, cr: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+        self.0.change_checks(cr)
+    }
+    fn check_log(
+        &self,
+        cr: &onevcs::ChangeRequest,
+        check: &onevcs::Check,
+    ) -> onevcs::Result<onevcs::ArtifactId> {
+        self.0.check_log(cr, check)
+    }
+    fn merge(
+        &self,
+        cr: &onevcs::ChangeRequest,
+        policy: onevcs::MergePolicy,
+    ) -> onevcs::Result<onevcs::MergeOutcome> {
+        self.0.merge(cr, policy)
+    }
+    fn merged_at(&self, cr: &onevcs::ChangeRequest) -> onevcs::Result<Option<onevcs::Sha>> {
+        self.0.merged_at(cr)
+    }
+    fn ready_for_review(&self, cr: &onevcs::ChangeRequest) -> onevcs::Result<()> {
+        self.0.ready_for_review(cr)
+    }
+    fn is_draft(&self, cr: &onevcs::ChangeRequest) -> onevcs::Result<bool> {
+        self.0.is_draft(cr)
+    }
+}
+
+struct EarlierHosting(onevcs_testing::MemoryHost);
+
+impl onevcs::Hosting for EarlierHosting {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn onevcs::RemoteHost>> {
+        Ok(Box::new(EarlierHost(self.0.for_repo(slug)?)))
+    }
+}
+
+/// A repository side written against `Vcs` as it stood before
+/// `publish_with_cancellation`, answered by the testing crate's provider.
+struct EarlierVcs(onevcs_testing::MemoryVcs);
+
+impl onevcs::Vcs for EarlierVcs {
+    fn resolve_identity(&self, origin_or_path: &str) -> onevcs::Result<onevcs::Identity> {
+        self.0.resolve_identity(origin_or_path)
+    }
+    fn open_session(&self, req: onevcs::SessionRequest) -> onevcs::Result<Session> {
+        self.0.open_session(req)
+    }
+    fn adopt_session(&self, token: onevcs::SessionToken) -> onevcs::Result<Session> {
+        self.0.adopt_session(token)
+    }
+    fn session(&self, token: &onevcs::SessionToken) -> onevcs::Result<onevcs::SessionRecord> {
+        self.0.session(token)
+    }
+    fn close_session(&self, token: &onevcs::SessionToken) -> onevcs::Result<Session> {
+        self.0.close_session(token)
+    }
+    fn preserve(
+        &self,
+        s: &Session,
+        provenance: onevcs::Provenance,
+    ) -> onevcs::Result<onevcs::PreservedBranch> {
+        self.0.preserve(s, provenance)
+    }
+    fn publish(
+        &self,
+        token: &onevcs::SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn onevcs::Hosting,
+    ) -> onevcs::Result<Publication> {
+        self.0.publish(token, request, hosting)
+    }
+    fn recoverable(&self, scope: onevcs::Scope) -> onevcs::Result<Vec<onevcs::Recoverable>> {
+        self.0.recoverable(scope)
+    }
+    fn preserved(&self, scope: onevcs::Scope) -> onevcs::Result<Vec<onevcs::Recoverable>> {
+        self.0.preserved(scope)
+    }
+}
+
+#[test]
+fn implementations_written_before_this_change_still_compile_and_publish() {
+    // The real repository side over a host that was never taught `mergeability`: its
+    // armed merge is watched exactly as before — the refusal its default answers is a
+    // host that said nothing, never a conflict — and it lands.
+    let world = World::new();
+    let (_origin, session) = publishing(&world, AUTOMATED_READY, "feature/earlier-host", None);
+    // One required check, green on the change request the publication opens first.
+    let hosting = EarlierHosting(onevcs_testing::MemoryHost::seeded(
+        onevcs_testing::HostState {
+            checks: std::collections::BTreeMap::from([(
+                onevcs::ChangeId("1".to_owned()),
+                vec![onevcs::Check {
+                    name: "gate".to_owned(),
+                    status: "completed".to_owned(),
+                    conclusion: Some("success".to_owned()),
+                    required: true,
+                    head: None,
+                    url: None,
+                    started_at: None,
+                }],
+            )]),
+            ..onevcs_testing::HostState::default()
+        },
+    ));
+    let never = Switch::default();
+    let published = onevcs::publish_with_cancellation(
+        &Providers {
+            vcs: &Git,
+            hosting: &hosting,
+        },
+        &session.token,
+        &PublishRequest::default(),
+        &never,
+    )
+    .expect("the publication runs");
+    let PublishOutcome::Merged(sha) = &published.outcome else {
+        panic!("a host without `mergeability` still lands a change-auto merge: {published:?}");
+    };
+    assert_eq!(
+        hosting.0.state().merges.len(),
+        1,
+        "and the host it was handed performed it, at {}",
+        sha.0
+    );
+
+    // A repository side that was never taught `publish_with_cancellation` answers it
+    // with its own `publish` — it cannot stop, so even a cancelled caller is answered
+    // with the publication it ran rather than with a cancellation it never observed.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, "{publication: change-open, approvals: required}");
+    let vcs = EarlierVcs(onevcs_testing::MemoryVcs::seeded(
+        onevcs_testing::VcsState {
+            identities: vec![identity],
+            ..onevcs_testing::VcsState::default()
+        },
+    ));
+    let host = onevcs_testing::MemoryHost::new();
+    let earlier = open(&vcs, "feature/earlier-vcs");
+    let cancelled = Switch::default();
+    cancelled.cancel();
+    let published = onevcs::publish_with_cancellation(
+        &Providers {
+            vcs: &vcs,
+            hosting: &host,
+        },
+        &earlier.token,
+        &PublishRequest::default(),
+        &cancelled,
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(published.outcome, PublishOutcome::ChangeReviewDraft(_)),
+        "{published:?}"
+    );
+    assert_eq!(
+        host.state().changes.len(),
+        1,
+        "the change request was opened"
+    );
+}
