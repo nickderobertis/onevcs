@@ -5,10 +5,12 @@
 //! exit code, stdout, and stderr, the way a user or a CI job meets it. Nothing
 //! here calls into the library.
 //!
-//! Six modules are the exception, and they are the ones *about* the library:
+//! Seven modules are the exception, and they are the ones *about* the library:
 //! `honesty`, `seam`, `library` and `drafts` drive it in-process because supplying an
 //! implementation is something only a caller embedding the crate can do — the
-//! binary deliberately has no flag for it — and `declaration` and `discovery` do
+//! binary deliberately has no flag for it — `publication_watch` because handing a
+//! publication a cancellation is the same kind of thing, and `declaration` and
+//! `discovery` do
 //! because what they hold *is* the promise that a linking consumer reaches these
 //! answers without spawning anything, which no binary can show. Each says so at its
 //! head.
@@ -169,6 +171,22 @@ mod preserve;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod publish_branch;
+// Unix only: a publication's watch ending on a conflict the host confirms and on its
+// caller's cancellation, through the same substituted `gh` as `host.rs` and real git.
+// In-process, because a cancellation is handed over only by a caller embedding the
+// crate. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore-block[e2e_not_mocked] see the note above this module's declaration: a
+// cancellation is handed over only in-process, and the one stand-in is the substituted
+// `gh` every hosted journey here uses, over real git and a real bare origin.
+// llmlint: ignore-block[expensive_tests_stay_behind_their_own_edge] every journey of this
+// suite lives in the one `e2e` binary of the one crate project, which
+// `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
+// commands twice. These journeys run offline and credential-free, the whole module in
+// about five seconds.
+mod publication_watch;
+// llmlint: ignore-end[expensive_tests_stay_behind_their_own_edge]
+// llmlint: ignore-end[e2e_not_mocked]
 // Linux only: it mounts a filesystem of its own, and an unprivileged mount there
 // needs nothing outside the distribution's own `fuse3`. Its head carries the reason
 // in full, and the one journey that uses it is gated the same way.

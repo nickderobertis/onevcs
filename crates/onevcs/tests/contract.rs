@@ -2238,6 +2238,12 @@ fn every_error_says_what_failed_and_which_exit_code_it_is() {
              https://cli.github.com",
         ),
         (
+            Error::Cancelled {
+                reason: "the caller cancelled the publication".to_owned(),
+            },
+            "publication cancelled: the caller cancelled the publication",
+        ),
+        (
             Error::PoolExhausted {
                 reason: "no session of github.com/acme/x can be placed now".to_owned(),
             },
@@ -4307,6 +4313,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
         FailureKind::PushRejected,
         FailureKind::PushedUnverified,
         FailureKind::HostPrerequisite,
+        FailureKind::Cancelled,
     ]
     .into_iter()
     .map(|kind| {
@@ -4320,6 +4327,7 @@ fn all_failure_kinds() -> Vec<(&'static str, u8)> {
             FailureKind::PushRejected => "PushRejected",
             FailureKind::PushedUnverified => "PushedUnverified",
             FailureKind::HostPrerequisite => "HostPrerequisite",
+            FailureKind::Cancelled => "Cancelled",
         };
         (named, kind.exit_code())
     })
@@ -4334,7 +4342,7 @@ fn the_amendment_declares_every_failure_a_publication_can_end_with_and_its_exit_
     // matter as much as the names: four of the eight are new and every one of them
     // keeps the code the contract already fixes for a verification failure, so a
     // process that only reads the code sees nothing change.
-    let declared = amendment_declaring("HostPrerequisite }");
+    let declared = amendment_declaring("HostPrerequisite, Cancelled }");
     let kinds = all_failure_kinds();
     for (named, _) in &kinds {
         assert!(
@@ -4396,6 +4404,88 @@ fn the_host_prerequisite_marker_has_one_spelling_and_the_amendment_states_it() {
             reason: String::new()
         }),
         FailureKind::HostPrerequisite
+    );
+}
+
+#[test]
+fn the_cancellation_amendment_declares_its_surface_and_the_conflict_it_ends_a_watch_on() {
+    // Two consumers hold to this amendment's text — onepipeline imports the entry point
+    // and routes on the kind — so what it declares is what the crate exports, and the
+    // promises it makes in prose are the ones the journeys in
+    // `tests/e2e/publication_watch.rs` hold the code to.
+    let declared = amendment_declaring("pub trait PublicationCancellation");
+    for line in [
+        "pub trait PublicationCancellation { fn is_cancelled(&self) -> bool; }",
+        "pub fn publish_with_cancellation(",
+        "    providers: &Providers<'_>,",
+        "    token: &SessionToken,",
+        "    request: &PublishRequest,",
+        "    cancellation: &dyn PublicationCancellation,",
+        ") -> Result<Publication>;",
+        "fn publish_with_cancellation(&self, token: &SessionToken, request: &PublishRequest,",
+        "hosting: &dyn Hosting, cancellation: &dyn PublicationCancellation)",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let entry: fn(
+        &Providers<'_>,
+        &SessionToken,
+        &PublishRequest,
+        &dyn onevcs::PublicationCancellation,
+    ) -> onevcs::Result<Publication> = onevcs::publish_with_cancellation;
+    let _ = entry;
+
+    let host = amendment_declaring("pub enum Mergeability");
+    for line in [
+        "fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability>;",
+        "#[non_exhaustive]",
+        "Mergeable,",
+        "Conflicting { reported: String },",
+        "Unknown,",
+    ] {
+        assert!(
+            host.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let reported = |answer: onevcs::Mergeability| match answer {
+        onevcs::Mergeability::Conflicting { reported } => Some(reported),
+        // Non-exhaustive, so a consumer reads anything it does not name as no conflict.
+        _ => None,
+    };
+    assert_eq!(
+        reported(onevcs::Mergeability::Conflicting {
+            reported: "mergeable: CONFLICTING".to_owned()
+        })
+        .as_deref(),
+        Some("mergeable: CONFLICTING")
+    );
+
+    let text = regions().0;
+    for stated in [
+        "ends the publication as the\nexisting `PublishOutcome::Failed { kind: FailureKind::SyncConflict, reason, retained }`",
+        "GitHub's `UNKNOWN` — is **never** read as a conflict",
+        "**A\ngit command already running is never interrupted**, the publishing push and its `pre-push`\nhook included",
+        "`Cancelled` serializes as `cancelled`",
+    ] {
+        assert!(
+            text.contains(stated),
+            "the amendment no longer states: {stated}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(FailureKind::Cancelled).expect("a kind serializes"),
+        "cancelled"
+    );
+    assert_eq!(FailureKind::Cancelled.exit_code(), 75);
+    assert_eq!(
+        FailureKind::of(&Error::Cancelled {
+            reason: String::new()
+        }),
+        FailureKind::Cancelled
     );
 }
 

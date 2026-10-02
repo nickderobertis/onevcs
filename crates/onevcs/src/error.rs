@@ -130,6 +130,25 @@ pub enum Error {
         reason: String,
     },
 
+    /// A publication its caller cancelled, through
+    /// [`publish_with_cancellation`](crate::publish_with_cancellation), while it waited
+    /// on the host or on the identity's merge queue. The CLI never produces it.
+    ///
+    /// A kind of its own for the reason [`Error::PushedUnverified`] is one: a router
+    /// branches on the kind, and "the caller stopped waiting" is neither a verdict on
+    /// the work nor a merge path that could not be read. Nothing is undone by it — the
+    /// branch stays on its remote and any change request stays open — so publishing the
+    /// same session again continues the same branch.
+    #[error("publication cancelled: {reason}")]
+    // llmlint: ignore[invalid_states_unrepresentable] one `reason: String` like every
+    // sibling variant, which is the shape three libraries route on; where the branch is
+    // and which change request stays open are prose for the reader of the failure.
+    Cancelled {
+        /// What the publication was waiting on when it was cancelled, and where its
+        /// branch and change request were left.
+        reason: String,
+    },
+
     /// A session could not be placed: every slot of the identity's pool is held and
     /// its overflow admits no more. `onevcs session open` reports this as exit code 4,
     /// and nothing waits — a caller decides whether to queue, close something, or open

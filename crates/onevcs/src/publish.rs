@@ -22,7 +22,8 @@ use url::Url;
 use std::collections::BTreeSet;
 
 use crate::host::{
-    ChangeRequest, ChangeSpec, Check, CheckState, Hosting, MergeOutcome, RemoteHost, Sha,
+    ChangeRequest, ChangeSpec, Check, CheckState, Hosting, MergeOutcome, Mergeability, RemoteHost,
+    Sha,
 };
 use crate::releases::TargetName;
 use crate::rules::{MergePolicy, Policy};
@@ -458,6 +459,17 @@ pub enum FailureKind {
     /// [`PushedUnverified`](FailureKind::PushedUnverified) is one: a router branches
     /// on the kind, and this is a refusal no change to the work can clear.
     HostPrerequisite,
+    /// The caller cancelled the publication while it waited — on the host's checks,
+    /// on a merge the host was armed to perform, or on the identity's merge queue —
+    /// through [`publish_with_cancellation`](crate::publish_with_cancellation). The
+    /// reason names what it was waiting on.
+    ///
+    /// Nothing is undone: the branch stays on its remote, any change request stays
+    /// open, and the session is left so that publishing it again continues the same
+    /// branch. A kind of its own, with an exit code of its own, because it is neither a
+    /// verdict on the work nor a merge path that could not be read, and a router that
+    /// read it as either would retry or abandon work nobody judged.
+    Cancelled,
 }
 
 impl FailureKind {
@@ -482,6 +494,10 @@ impl FailureKind {
             FailureKind::Invalid => 2,
             FailureKind::SyncConflict => 3,
             FailureKind::NotImplemented => 70,
+            // `EX_TEMPFAIL`: nothing failed, and the same publication can be asked for
+            // again. Distinct from every other kind's, so a caller reading `$?` alone
+            // cannot take a cancellation for a verdict.
+            FailureKind::Cancelled => 75,
         }
     }
 
@@ -502,6 +518,7 @@ impl FailureKind {
             Error::PushRejected { .. } => FailureKind::PushRejected,
             Error::PushedUnverified { .. } => FailureKind::PushedUnverified,
             Error::HostPrerequisite { .. } => FailureKind::HostPrerequisite,
+            Error::Cancelled { .. } => FailureKind::Cancelled,
             _ => FailureKind::Invalid,
         }
     }
@@ -521,6 +538,67 @@ pub enum Retention {
     Refused(PathBuf),
 }
 
+/// Whether the caller of a publication has asked it to stop.
+///
+/// Handed to [`publish_with_cancellation`](crate::publish_with_cancellation) and asked,
+/// at least once a second, by every phase of a publication that waits: the watch of the
+/// host's checks, a draft's settle and the one after an early lift, the watch of a
+/// merge the host was armed to perform, and the wait for the identity's merge queue.
+/// A cancelled publication ends as [`FailureKind::Cancelled`] and undoes nothing.
+///
+/// A git command already running — the publishing push and its `pre-push` hook
+/// included — is never interrupted: the answer is asked again once it returns.
+pub trait PublicationCancellation {
+    /// Whether the publication should stop at the next point it is asked.
+    fn is_cancelled(&self) -> bool;
+}
+
+/// The cancellation nobody can trigger, which is every publication [`crate::publish`]
+/// and the command line run.
+pub(crate) struct NeverCancelled;
+
+impl PublicationCancellation for NeverCancelled {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// The longest a waiting phase sleeps between two askings of its cancellation, so a
+/// cancellation is observed within it whatever `ONEVCS_CHECKS_POLL_SECONDS` says.
+pub(crate) const CANCELLATION_GRAIN: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Sleep for `span`, asking `cancellation` at least every [`CANCELLATION_GRAIN`], and
+/// answer `cancelled()` the first time it says so.
+pub(crate) fn pause_unless_cancelled(
+    span: std::time::Duration,
+    cancellation: &dyn PublicationCancellation,
+    cancelled: impl Fn() -> Error,
+) -> Result<()> {
+    let until = std::time::Instant::now() + span;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(cancelled());
+        }
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(CANCELLATION_GRAIN));
+    }
+}
+
+/// The failure a cancelled publication ends with, saying what it was doing and that
+/// nothing was undone.
+pub(crate) fn cancelled_while(doing: &str) -> Error {
+    Error::Cancelled {
+        reason: format!(
+            "the caller cancelled the publication while {doing}. Nothing was undone: the \
+             branch stays where it is, any change request stays open, and publishing the \
+             session again continues it"
+        ),
+    }
+}
+
 /// Publish one session's branch, as the git implementation does it.
 ///
 /// The whole of `onevcs publish` behind the interface, which is where it had to
@@ -531,10 +609,15 @@ pub enum Retention {
 /// exactly: a publication that could not *start* — an unknown token, an unreadable
 /// registry, a `--policy` that widens — is a refusal, and one that started and did
 /// not land is an outcome carrying what became of the branch.
+///
+/// `cancellation` is asked by every phase that waits, and a publication it stops ends
+/// as [`FailureKind::Cancelled`] with the record left open, exactly as every other
+/// failure leaves it — so publishing the session again continues the same branch.
 pub fn run_for_session(
     token: &SessionToken,
     request: &PublishRequest,
     hosting: &dyn Hosting,
+    cancellation: &dyn PublicationCancellation,
 ) -> Result<Publication> {
     let mut record = workspace::load(&token.0)?;
     // Before anything is read, locked or committed: a session opened over a conflicted
@@ -584,6 +667,7 @@ pub fn run_for_session(
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
         hosting,
+        cancellation,
     };
     let branch = record.branch.to_string();
     let outcome = match run_resolving(&context, &mut stream) {
@@ -698,6 +782,9 @@ pub struct Context<'a> {
     /// the context rather than reached for at the call site, so every publication —
     /// a session's and a recovery's — goes through the one a caller supplied.
     pub hosting: &'a dyn Hosting,
+    /// Whether the caller has asked this publication to stop, asked by every phase
+    /// that waits. A branch-keyed verb has no caller to ask and is never cancelled.
+    pub cancellation: &'a dyn PublicationCancellation,
 }
 
 /// How a publication's branch reaches the host.
@@ -925,6 +1012,7 @@ impl<'a> Context<'a> {
             trailers: self.trailers.clone(),
             provenance: self.provenance.clone(),
             hosting: self.hosting,
+            cancellation: self.cancellation,
         }
     }
 }
@@ -1346,7 +1434,7 @@ fn publish_locally(
     let synced = git::tip(&context.repo, compared);
 
     let identity = lock::git_identity(&git::common_dir(publication)?);
-    let turn = queue::turn(&identity)?;
+    let turn = queue::turn(&identity, context.cancellation)?;
     stream.emit(
         EventKind::LockWait,
         object(json!({
@@ -1723,6 +1811,12 @@ fn publish_as_change(
         Push::Replacing { replaced } => Some(replaced.as_str()),
         Push::Forward => None,
     };
+    if context.cancellation.is_cancelled() {
+        return Err(cancelled_while(&format!(
+            "it prepared {:?} and before anything was pushed",
+            context.branch
+        )));
+    }
     let pushed = git::push_replacing(
         &context.worktree,
         &context.branch,
@@ -1797,6 +1891,18 @@ fn publish_as_change(
     // tree that was pushed rather than asked of the remote, because asking the remote
     // is one more read that can fail for the very reason being reported.
     let pushed_at = git::tip(&context.worktree, &context.branch);
+    // The push — and the `pre-push` hook it ran — is never interrupted, so a caller
+    // that cancelled while it ran is answered here, once it has returned and before
+    // anything on the host is opened or watched.
+    if context.cancellation.is_cancelled() {
+        return Err(cancelled_while(&format!(
+            "its publishing push ran; {:?} is on origin{}",
+            context.branch,
+            pushed_at
+                .as_deref()
+                .map_or_else(String::new, |sha| format!(" at {sha}")),
+        )));
+    }
     // The commit is what the watch below decides *which* of the host's checks are
     // about this publication, so a tree that will not say what it just pushed is a
     // merge path this build cannot read rather than one it reads about some other
@@ -1830,13 +1936,17 @@ fn refuse_an_unhosted_identity(identity: &str) -> Result<()> {
 /// This covers the answers nobody got. What passes through is every failure the
 /// contract already fixes a kind for — [`Error::GateFailed`] included, which it fixes
 /// for a host that took a merge and then reported it unperformed: that shares this
-/// defect's shape, and re-pointing a meaning is an amendment somebody approves.
+/// defect's shape, and re-pointing a meaning is an amendment somebody approves. A
+/// conflict the host confirmed and a caller's cancellation pass through too: both are
+/// answers, and neither is a merge path that could not be read.
 fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> Error {
     match unread {
         verdict @ (Error::ChecksFailed { .. }
         | Error::ChecksUnsettled { .. }
         | Error::GateFailed { .. }
-        | Error::NotImplemented { .. }) => verdict,
+        | Error::NotImplemented { .. }
+        | Error::SyncConflict { .. }
+        | Error::Cancelled { .. }) => verdict,
         unread => Error::PushedUnverified {
             reason: format!(
                 "{branch:?} is on origin{at} and the merge path could not be read: {unread}. The \
@@ -1937,6 +2047,7 @@ fn land_as_change(
         &change,
         pushed,
         context.drafts.warn_on_early_lift,
+        context.cancellation,
     )?;
     let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
     if context.effective == MergePolicy::ChangeOpen {
@@ -1962,7 +2073,7 @@ fn land_as_change(
     // Everything automated is serialized against the identity, so two sessions of
     // one repository cannot ask the host to land two changes at once.
     let identity = lock::git_identity(&git::common_dir(&context.resolution.publication)?);
-    let turn = queue::turn(&identity)?;
+    let turn = queue::turn(&identity, context.cancellation)?;
     stream.emit(
         EventKind::LockWait,
         object(json!({
@@ -2551,6 +2662,9 @@ struct Watcher<'a> {
     host: &'a dyn RemoteHost,
     change: &'a ChangeRequest,
     pushed: &'a Sha,
+    /// Asked between readings, at least every [`CANCELLATION_GRAIN`], so a caller's
+    /// cancellation ends any phase of the watch whatever the poll interval is.
+    cancellation: &'a dyn PublicationCancellation,
     bound: std::time::Duration,
     poll: std::time::Duration,
     started: std::time::Instant,
@@ -2575,12 +2689,14 @@ impl<'a> Watcher<'a> {
         change: &'a ChangeRequest,
         pushed: &'a Sha,
         warn_on_early_lift: bool,
+        cancellation: &'a dyn PublicationCancellation,
     ) -> Result<Self> {
         Ok(Self {
             warn_on_early_lift,
             host,
             change,
             pushed,
+            cancellation,
             bound: std::time::Duration::from_secs_f64(gh::checks_timeout()?),
             poll: std::time::Duration::from_secs_f64(gh::checks_poll()?),
             started: std::time::Instant::now(),
@@ -2667,9 +2783,32 @@ impl<'a> Watcher<'a> {
         self.started.elapsed() >= self.bound
     }
 
-    /// Wait out one interval between readings.
-    fn pause(&self) {
-        std::thread::sleep(self.poll);
+    /// Wait out one interval between readings, or end the watch as
+    /// [`Error::Cancelled`] the moment the caller cancels it.
+    fn pause(&self) -> Result<()> {
+        pause_unless_cancelled(self.poll, self.cancellation, || {
+            cancelled_while(&format!(
+                "it watched {url} at {commit}",
+                url = self.change.url,
+                commit = self.pushed.0,
+            ))
+        })
+    }
+
+    /// The refusal for a change request the host confirms conflicts with its base,
+    /// quoting what the host reported.
+    fn conflicting(&self, reported: &str) -> Error {
+        Error::SyncConflict {
+            reason: format!(
+                "{url} conflicts with its base {base:?}: the host reports it {reported}, so the \
+                 merge it was armed to perform can never happen. The branch stays on its remote \
+                 at {commit} and the change request stays open — merge {base} into the branch, \
+                 resolve the conflict, and publish the session again",
+                url = self.change.url,
+                base = self.change.base,
+                commit = self.pushed.0,
+            ),
+        }
     }
 
     /// The bound elapsed, naming what the host had not settled.
@@ -2780,7 +2919,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
         if watcher.out_of_time() {
             return Err(watcher.unsettled(&reading, "settled its required checks on"));
         }
-        watcher.pause();
+        watcher.pause()?;
     }
 }
 
@@ -2876,7 +3015,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         if watcher.out_of_time() {
             return Err(watcher.unsettled(&reading, "settled its required checks on"));
         }
-        watcher.pause();
+        watcher.pause()?;
     }
 }
 
@@ -3011,7 +3150,7 @@ fn settle_after_early_lift(
         if watcher.out_of_time() {
             return Err(watcher.unsettled(&reading, "settled its required checks on"));
         }
-        watcher.pause();
+        watcher.pause()?;
     }
 }
 
@@ -3020,6 +3159,13 @@ fn settle_after_early_lift(
 /// Arming happens after the first reading of the checks: a host that will not say
 /// what its checks are is refused with nothing armed against it. Only required checks
 /// may end it: a non-blocking check never holds or fails a merge.
+///
+/// A change request the host confirms **conflicts** with its base ends it too, as
+/// [`Error::SyncConflict`], at the first reading that says so: the base moved under the
+/// armed merge and the host can never perform it, so waiting out the bound would only
+/// report later what is known now. Its branch and its change request are left as they
+/// are for the session to resolve. A mergeability the host has not computed yet is
+/// never read as a conflict.
 fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
     let mut armed = false;
     loop {
@@ -3048,10 +3194,22 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
         if let Some(sha) = watcher.host.merged_at(watcher.change)? {
             return Ok(sha);
         }
+        // Asked after the merge, so a change the host landed is never reported as a
+        // conflict it had before it landed. A host that has not computed it yet is
+        // waited on like any other "not yet", and one that was never taught to answer
+        // has said nothing, which is no conflict.
+        match watcher.host.mergeability(watcher.change) {
+            Ok(Mergeability::Conflicting { reported }) => {
+                return Err(watcher.conflicting(&reported))
+            }
+            // Every other state, any added later included, is not a confirmed conflict.
+            Ok(_) | Err(Error::NotImplemented { .. }) => {}
+            Err(unreadable) => return Err(unreadable),
+        }
         if watcher.out_of_time() {
             return Err(watcher.unsettled(&reading, "merged"));
         }
-        watcher.pause();
+        watcher.pause()?;
     }
 }
 

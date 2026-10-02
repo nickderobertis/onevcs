@@ -521,6 +521,36 @@ impl World {
             .expect("a call count the rollup changes after");
     }
 
+    /// Whether the substituted host can merge a change request into its base, as
+    /// GitHub says it: `mergeable` and `mergeStateStatus`, e.g. `("CONFLICTING",
+    /// "DIRTY")`. Unset, every change merges cleanly. The host lands a held change
+    /// only while it reports `MERGEABLE`, as GitHub does.
+    pub fn host_mergeability(&self, mergeable: &str, state: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path("gh-state/mergeable"),
+            format!("{mergeable} {state}\n"),
+        )
+        .expect("a mergeability");
+    }
+
+    /// What the substituted host reports as a change request's mergeability from the
+    /// reading of the rollup `after` the way [`host_checks_after`](Self::host_checks_after)
+    /// counts it — so a journey can move the checks and the base at one reading.
+    pub fn host_mergeability_after(&self, after: usize, mergeable: &str, state: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path("gh-state/mergeable.next"),
+            format!("{mergeable} {state}\n"),
+        )
+        .expect("a mergeability");
+        std::fs::write(
+            self.path("gh-state/mergeable-flip-after"),
+            after.to_string(),
+        )
+        .expect("a call count the mergeability changes after");
+    }
+
     /// What the substituted host reports once a change request has been lifted out of
     /// its draft — the run a workflow that skips drafts starts on `ready_for_review`.
     pub fn host_checks_after_ready(&self, then: &[Check]) {
@@ -598,7 +628,9 @@ impl World {
     /// the change request is a draft, which is what a host that will not say looks
     /// like — never the same thing as a host saying it is not one. `no-description`
     /// answers one without the change request's body, which is likewise a host that
-    /// will not say rather than a change request with an empty one.
+    /// will not say rather than a change request with an empty one. `no-mergeable`
+    /// answers one without `mergeable`, which is a host that will not say whether the
+    /// change can merge — neither a conflict nor a clean merge.
     ///
     /// `classic-protection-refused` is a credential without administration rights
     /// meeting classic branch protection, which is every fine-grained token: the

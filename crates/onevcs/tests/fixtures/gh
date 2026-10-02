@@ -74,6 +74,27 @@ head_seen() {
   printf '%s' "$recorded"
 }
 
+# Whether this host can merge a change request into its base, as GitHub says it in
+# two words: `mergeable` (MERGEABLE, CONFLICTING, or UNKNOWN while it has not computed
+# it) and `mergeStateStatus` (CLEAN, DIRTY, ...). A world that says nothing is a change
+# that merges cleanly. A base moves under a change on its own clock, which this world
+# says the way it says a rollup that moves: `mergeable.next` takes over after the number
+# of *readings of the rollup* `mergeable-flip-after` names, so a journey can move the
+# checks and the mergeability at the same reading.
+mergeability_now() {
+  local source="$STATE/mergeable"
+  if [ -f "$STATE/mergeable-flip-after" ] && [ -f "$STATE/mergeable.next" ] \
+    && [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+         -gt "$(cat "$STATE/mergeable-flip-after")" ]; then
+    source="$STATE/mergeable.next"
+  fi
+  if [ -f "$source" ]; then
+    tr -s '[:space:]' ' ' <"$source" | sed 's/ $//'
+  else
+    printf 'MERGEABLE CLEAN'
+  fi
+}
+
 # What a credential GitHub will not let read a change request's check runs is told,
 # in the two shapes it is told it: the GraphQL rollup names the node it would not
 # produce, and the REST endpoints answer 403. Both are refusals, and neither says
@@ -406,6 +427,9 @@ settle_auto_merges() {
     [ ! -f "$STATE/closed-$pr" ] || continue
     [ ! -f "$STATE/refuse-merge" ] || continue
     [ "$(verdict)" = "green" ] || continue
+    # GitHub lands only a change it can merge: one that conflicts with its base, or
+    # whose mergeability it has not computed yet, stays held however green it is.
+    [ "$(mergeability_now | cut -d' ' -f1)" = "MERGEABLE" ] || continue
     ( . "$STATE/pr-$pr.env"; [ "$PR_STATE" = "OPEN" ] ) || continue
     # Silenced, because this runs *inside* whatever call happened to be the moment
     # the host landed it: `git merge --squash` prints a line even under `-q`, and on
@@ -596,7 +620,13 @@ case "$subcommand" in
     printf '{'
     if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi
     if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
-    if wanted mergeStateStatus; then printf '%s"mergeStateStatus":"CLEAN"' "$separator"; separator=","; fi
+    # A host that will not say whether the change can merge, which is neither answer.
+    if wanted mergeable && [ "$malformed" != "no-mergeable" ]; then
+      printf '%s"mergeable":"%s"' "$separator" "$(mergeability_now | cut -d' ' -f1)"; separator=","
+    fi
+    if wanted mergeStateStatus; then
+      printf '%s"mergeStateStatus":"%s"' "$separator" "$(mergeability_now | cut -d' ' -f2)"; separator=","
+    fi
     if wanted headRefOid; then printf '%s"headRefOid":"%s"' "$separator" "$PR_HEAD_SHA"; separator=","; fi
     # A host that answers the call and says nothing about the draft state, which is
     # not the same as saying it is not one: whether the change may be asked to merge
@@ -653,7 +683,8 @@ case "$subcommand" in
       printf 'Auto-merge is not enabled for this repository\n' >&2
       exit 1
     fi
-    if [ "$auto" = "1" ] && [ "$(verdict)" != "green" ]; then
+    if [ "$auto" = "1" ] && { [ "$(verdict)" != "green" ] \
+      || [ "$(mergeability_now | cut -d' ' -f1)" != "MERGEABLE" ]; }; then
       # Native auto-merge: the host holds the change and lands it when its own
       # required checks pass. Nothing merges now, and the hold is recorded so a
       # later call can land it the way GitHub would.
