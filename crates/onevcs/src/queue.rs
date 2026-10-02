@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{self, Error, Result};
+use crate::publish::PublicationCancellation;
 use crate::{home, ids, lock};
 
 /// How often a waiter re-reads the queue while it is not at the head.
@@ -55,7 +56,11 @@ impl Drop for Turn {
 }
 
 /// Take one FIFO turn for a git identity, waiting for the head of the queue.
-pub fn turn(identity: &str) -> Result<Turn> {
+///
+/// `cancellation` is asked on every look at the queue, so a publication its caller
+/// cancelled while it waited leaves the queue — its ticket taken back, as at the
+/// bound — rather than waiting out its turn.
+pub fn turn(identity: &str, cancellation: &dyn PublicationCancellation) -> Result<Turn> {
     let ticket = ids::unique();
     let lease =
         lock::try_shared(&ticket_identity(identity, &ticket))?.ok_or_else(|| Error::Invalid {
@@ -84,6 +89,14 @@ pub fn turn(identity: &str) -> Result<Turn> {
                 waited: started.elapsed(),
                 _lease: lease,
             });
+        }
+        if cancellation.is_cancelled() {
+            let _ = mutate(identity, |state| state.tickets.retain(|id| id != &ticket));
+            return Err(crate::publish::cancelled_while(&format!(
+                "it waited {:.1}s at position {position} of the merge queue of {identity}, so \
+                 nothing was merged",
+                started.elapsed().as_secs_f64(),
+            )));
         }
         if started.elapsed() >= bound {
             let _ = mutate(identity, |state| state.tickets.retain(|id| id != &ticket));

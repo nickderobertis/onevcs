@@ -109,7 +109,7 @@ pub use event::{
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description,
-    GitHub, Hosting, MergeOutcome, ProtectionSource, RemoteHost, RequiredChecks, Sha,
+    GitHub, Hosting, MergeOutcome, Mergeability, ProtectionSource, RemoteHost, RequiredChecks, Sha,
 };
 pub use import::{Imported, Source as ImportSource, Wrote};
 pub use integrate::{
@@ -132,8 +132,8 @@ pub use pool::{
 pub use preserve::{Preservation, PreserveRequest, Preserved};
 pub use providers::Providers;
 pub use publish::{
-    DraftReason, FailureKind, Publication, PublishOutcome, PublishRequest, Retention, Subject,
-    HOST_PREREQUISITE_MARKER,
+    DraftReason, FailureKind, Publication, PublicationCancellation, PublishOutcome, PublishRequest,
+    Retention, Subject, HOST_PREREQUISITE_MARKER,
 };
 pub use registry::Identity;
 pub use releases::{
@@ -198,6 +198,33 @@ pub fn publish(
     request: &PublishRequest,
 ) -> Result<Publication> {
     providers.vcs.publish(token, request, providers.hosting)
+}
+
+/// [`publish`], stopping once `cancellation` says so.
+///
+/// What a caller that may have to abandon a publication — a manager cancelling or
+/// retrying the work it belongs to — runs instead of [`publish`], which is this with a
+/// cancellation nobody can trigger. Every phase that waits asks it at least once a
+/// second, whatever `ONEVCS_CHECKS_POLL_SECONDS` says: the watch of the host's checks,
+/// a draft's settle and the one after an early lift, the watch of a merge the host was
+/// armed to perform, and the wait for the identity's merge queue. A cancelled
+/// publication answers `Ok` with [`PublishOutcome::Failed`] of kind
+/// [`FailureKind::Cancelled`].
+///
+/// **Nothing is undone.** The branch stays on its remote, a change request is neither
+/// closed nor deleted, and the session is left open, so a later publication of it
+/// continues the same branch. A git command already running — the publishing push and
+/// its `pre-push` hook included — is never interrupted: it runs to completion, and the
+/// cancellation is observed once it returns.
+pub fn publish_with_cancellation(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+    request: &PublishRequest,
+    cancellation: &dyn PublicationCancellation,
+) -> Result<Publication> {
+    providers
+        .vcs
+        .publish_with_cancellation(token, request, providers.hosting, cancellation)
 }
 
 /// Release a session's worktree and its occupancy lease, keeping its branch.

@@ -3817,6 +3817,110 @@ session on a slot. A registered checkout is the operator's own and is never touc
 continued branch, so every session it opens opens clean and its `session-opened` never
 carries the key. A consumer proving the conflicted open drives the real `onevcs`.
 
+### An armed merge the host confirms is conflicting ends at once, and a caller may cancel a publication
+
+**Recorded as the manager's ruling for plan `accepted-followups-1002`** (onevcs#278, and the
+cancellation contract onepipeline#692 consumes). Both changes are to the same polling loops,
+and both end a publication that would otherwise wait out a bound for an answer that is
+already known.
+
+**A confirmed conflict ends a `change-auto` watch as `SyncConflict`.** Once its merge is
+armed, a `change-auto` publication waits for the host to perform it. When the base moves
+under the change so that it conflicts, the host can never perform that merge — and a watch
+that read only the checks and the merge waited out the whole checks bound, an hour by
+default, reporting `checks-unsettled` for what the host had said at once. So the watch reads
+the host's mergeability on every reading, after asking whether the change merged, and a
+change request the host confirms conflicts with its base ends the publication as the
+existing `PublishOutcome::Failed { kind: FailureKind::SyncConflict, reason, retained }`
+(exit `3`), at the first reading that reports it — within one poll interval, never at the
+bound. On GitHub that is `mergeable: CONFLICTING` / `mergeStateStatus: DIRTY`. `reason` names
+the change request and the mergeability the host reported. The branch stays on its remote,
+the change request stays open (its armed merge is not disarmed), and the session record stays
+open, for the worker that owns the branch to resolve: a later publication of the session
+merges the base, and the change request is adopted again. A mergeability the host has not
+computed yet — GitHub's `UNKNOWN` — is **never** read as a conflict and is waited on like any
+other "not yet". No failure kind and no event word is added; the engine already reads
+`sync-conflict` as a preserving failure, retried onto the same branch with the merge handed
+to the worker.
+
+`RemoteHost` gains one defaulted method and the type it answers. The default is the refusal
+every additive method has, and a publication reads that refusal as a host that said nothing —
+no conflict — so a host written before this method watches exactly as it did:
+
+```rust
+pub trait RemoteHost {                                 // beside merged_at:
+    fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability>;  // default: NotImplemented
+}
+#[non_exhaustive]
+pub enum Mergeability {                                // onevcs::Mergeability, from the crate root
+    Mergeable,
+    Conflicting { reported: String },                  // the host's own words, quoted by the reason
+    Unknown,                                           // not computed yet; never a conflict
+}
+```
+
+`Mergeability` is `#[non_exhaustive]`, so a later state a host reports is not a breaking
+change, and the watch reads every state other than `Conflicting` as no conflict. `GitHub`
+answers it from `gh pr view --json mergeable,mergeStateStatus`, and refuses an answer
+that carries no `mergeable` or a value that is none of the three, rather than reading it as
+either a conflict or a clean merge.
+
+**A caller may cancel a publication.** Exported from the crate root, beside `publish`:
+
+```rust
+pub trait PublicationCancellation { fn is_cancelled(&self) -> bool; }
+pub fn publish_with_cancellation(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+    request: &PublishRequest,
+    cancellation: &dyn PublicationCancellation,
+) -> Result<Publication>;
+
+pub trait Vcs {                                        // one defaulted method, beside publish:
+    fn publish_with_cancellation(&self, token: &SessionToken, request: &PublishRequest,
+        hosting: &dyn Hosting, cancellation: &dyn PublicationCancellation)
+        -> Result<Publication>;                        // default: self.publish(..), never cancelled
+}
+
+pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented,
+                       ChecksFailed, ChecksUnsettled, PushRejected,
+                       PushedUnverified, HostPrerequisite, Cancelled }  // 1 | 2 | 3 | 70 | 1 | 1 | 1 | 1 | 1 | 75
+// Error gains the matching variant, Cancelled { reason }, beside the others.
+```
+
+`publish` keeps its exact signature and is the never-cancelled form; the command line runs it.
+Every phase of a publication that waits asks the cancellation at least once a second,
+whatever `ONEVCS_CHECKS_POLL_SECONDS` is: the watch of a ready change's checks, a draft's
+settle, the settle after an early lift, the watch of an armed `change-auto` merge, and the
+wait for the identity's merge queue. A cancelled publication returns `Ok(Publication {
+outcome: PublishOutcome::Failed { kind: FailureKind::Cancelled, reason, retained }, .. })`,
+and `reason` says what it was waiting on. **Nothing is undone**: the branch stays on its
+remote, a change request is neither closed nor deleted (a merge already armed stays armed),
+the merge queue ticket is taken back, and the session record stays open — so a later
+publication of the session continues the same branch and adopts the same change request. **A
+git command already running is never interrupted**, the publishing push and its `pre-push`
+hook included: it runs to completion, and the cancellation is observed once it returns —
+after the push, before any change request is opened or watched.
+
+`Cancelled` serializes as `cancelled`, and `FailureKind::of(&Error::Cancelled { .. })` is
+`Cancelled`. Its exit code is **75** (`EX_TEMPFAIL`: nothing failed, and the same publication
+can be asked for again), which no other kind has, so a caller reading `$?` alone cannot take a
+cancellation for a verdict. The command line never produces it. Adding the variant is the
+breaking part of this change.
+
+`Vcs::publish_with_cancellation` is defaulted to `publish`, so an implementation written
+before it compiles and publishes unchanged — and is never cancelled, which is the honest
+answer of an implementation that cannot stop: **a backend that does not override it cannot
+be cancelled mid-watch**, and a caller handing it a cancellation is answered with whatever
+its `publish` returned. `Git` overrides it.
+
+**The testing crate follows.** `onevcs-testing`'s providers take both defaults: their
+repository side publishes without waiting, so there is nothing to cancel, and their host never
+reports a conflict. Its state document may now name the `cancelled` failure kind inside
+`VcsState::publications`.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

@@ -176,6 +176,26 @@ pub trait RemoteHost {
         })
     }
 
+    /// Whether a change request can still merge into its base, as the host has
+    /// computed it.
+    ///
+    /// What a publication under `change-auto` reads beside
+    /// [`merged_at`](RemoteHost::merged_at) while it waits for the merge it armed: a
+    /// base that moved under the change so that it conflicts is a merge the host can
+    /// never perform, and [`Mergeability::Conflicting`] ends that wait at once as a
+    /// sync conflict rather than at the bound. [`Mergeability::Unknown`] is "not
+    /// computed yet" and is never read as a conflict.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal. A publication reads that refusal as a
+    /// host that said nothing, which is no conflict, so a host written before this
+    /// method watches exactly as it did.
+    fn mergeability(&self, _cr: &ChangeRequest) -> Result<Mergeability> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::mergeability",
+        })
+    }
+
     /// Take a change request out of its draft state, so the host will let it land.
     ///
     /// What lifts a draft: a publication whose required checks came back green on it
@@ -284,6 +304,28 @@ pub trait RemoteHost {
             operation: "RemoteHost::change_description",
         })
     }
+}
+
+/// Whether a change request can merge into its base, as
+/// [`RemoteHost::mergeability`] answers it.
+///
+/// `#[non_exhaustive]` so that a later state a host reports — a change that merges
+/// cleanly and is blocked for another reason, say — is not a breaking change. A caller
+/// matching on it reads anything it does not name as "not a conflict".
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Mergeability {
+    /// The host computed it, and the change merges into its base as it stands.
+    Mergeable,
+    /// The host confirms the change conflicts with its base, so it cannot merge until
+    /// the branch is reconciled with it.
+    Conflicting {
+        /// What the host reported, in its own words — on GitHub `mergeable` and
+        /// `mergeStateStatus` — which is what a refusal about it quotes.
+        reported: String,
+    },
+    /// The host has not computed it yet, which is never a conflict.
+    Unknown,
 }
 
 /// A change request's description as the host holds it.
@@ -1687,6 +1729,45 @@ impl RemoteHost for GitHub {
         merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
 
+    /// One `gh pr view`, reading exactly the two fields GitHub decides a merge's
+    /// mergeability by.
+    ///
+    /// `mergeable` is the answer — `MERGEABLE`, `CONFLICTING`, or `UNKNOWN` while
+    /// GitHub has not computed it — and `mergeStateStatus` is quoted beside it, since
+    /// `DIRTY` is how GitHub spells the same conflict there. A response that carries
+    /// no `mergeable`, or a value GitHub has never answered, is refused rather than
+    /// read as either: a conflict nobody reported ends a publication, and a mergeable
+    /// change nobody reported hides one.
+    fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability> {
+        addressable(&cr.id.0, "change request id")?;
+        let view = self.view(&cr.id.0, MERGEABILITY_FIELDS)?;
+        let mergeable = view
+            .get("mergeable")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr view answered about {} without saying whether it can merge: {view}",
+                    cr.url
+                ))
+            })?;
+        let status = view
+            .get("mergeStateStatus")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unreported");
+        match mergeable.to_ascii_uppercase().as_str() {
+            "MERGEABLE" => Ok(Mergeability::Mergeable),
+            "CONFLICTING" => Ok(Mergeability::Conflicting {
+                reported: format!("mergeable: {mergeable}, mergeStateStatus: {status}"),
+            }),
+            "UNKNOWN" => Ok(Mergeability::Unknown),
+            _ => Err(invalid(format!(
+                "gh pr view reports {} as mergeable {mergeable:?}, which is none of \
+                 MERGEABLE, CONFLICTING or UNKNOWN, so whether it can merge cannot be read",
+                cr.url
+            ))),
+        }
+    }
+
     fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {
         // The rulesets first, and their refusal is the whole read's: every
         // credential that can see the repository can read them, so one that cannot
@@ -1809,6 +1890,9 @@ fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
 
 /// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.
 const MERGE_FIELDS: &str = "state,mergeCommit";
+
+/// What [`GitHub`]'s `mergeability` reads.
+const MERGEABILITY_FIELDS: &str = "mergeable,mergeStateStatus";
 
 /// The commit a merged change request landed as, or `None` while it is still open.
 ///

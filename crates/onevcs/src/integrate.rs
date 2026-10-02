@@ -216,7 +216,7 @@ pub fn run(
     }
 
     let identity = lock::git_identity(&git::common_dir(root)?);
-    let turn = queue::turn(&identity)?;
+    let turn = queue::turn(&identity, &crate::publish::NeverCancelled)?;
     stream.emit(
         EventKind::LockWait,
         object(json!({
