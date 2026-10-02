@@ -550,6 +550,7 @@ impl Landing {
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,
+            cancellation: &publish::NeverCancelled,
         };
         let outcome = publish::run(&context, stream);
         if outcome.is_err() {

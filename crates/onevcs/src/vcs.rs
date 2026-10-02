@@ -7,7 +7,7 @@ use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::host::{Hosting, Sha};
 use crate::landed::{self, Landed};
-use crate::publish::{Publication, PublishRequest};
+use crate::publish::{Publication, PublicationCancellation, PublishRequest};
 use crate::registry::Identity;
 use crate::session::{
     HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, PreservedBranch,
@@ -63,6 +63,25 @@ pub trait Vcs {
         request: &PublishRequest,
         hosting: &dyn Hosting,
     ) -> Result<Publication>;
+
+    /// [`publish`](Self::publish), asking `cancellation` while it waits and ending as
+    /// [`FailureKind::Cancelled`](crate::FailureKind::Cancelled) once it says so.
+    ///
+    /// Defaulted to [`publish`](Self::publish), so an implementation written before
+    /// cancellation existed still compiles and publishes — and is never cancelled,
+    /// which is the answer an implementation that cannot stop has to give. [`Git`]
+    /// overrides it: every phase of its publication that waits asks the cancellation
+    /// at least once a second.
+    fn publish_with_cancellation(
+        &self,
+        token: &SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn Hosting,
+        cancellation: &dyn PublicationCancellation,
+    ) -> Result<Publication> {
+        let _ = cancellation;
+        self.publish(token, request, hosting)
+    }
 
     /// Every preserved-but-unpublished branch in scope, and what would land each.
     ///
@@ -205,7 +224,17 @@ impl Vcs for Git {
         request: &PublishRequest,
         hosting: &dyn Hosting,
     ) -> Result<Publication> {
-        publish::run_for_session(token, request, hosting)
+        publish::run_for_session(token, request, hosting, &publish::NeverCancelled)
+    }
+
+    fn publish_with_cancellation(
+        &self,
+        token: &SessionToken,
+        request: &PublishRequest,
+        hosting: &dyn Hosting,
+        cancellation: &dyn PublicationCancellation,
+    ) -> Result<Publication> {
+        publish::run_for_session(token, request, hosting, cancellation)
     }
 
     fn recoverable(&self, scope: Scope) -> Result<Vec<Recoverable>> {
