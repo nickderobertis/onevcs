@@ -3129,10 +3129,11 @@ fn shell_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Executable by its owner alone: git runs the shim as the user that cut it.
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .map_err(error::at("make the hook shim executable at", path))
 }
 
