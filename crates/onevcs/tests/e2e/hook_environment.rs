@@ -294,3 +294,37 @@ fn the_commit_msg_hook_a_publication_asks_acts_on_its_fixture_alone() {
         holds_only_the_publication(world, repository);
     }
 }
+
+#[test]
+fn configuration_the_operator_hands_git_through_the_environment_still_reaches_a_hooked_command() {
+    // The hooks are reached by adding one configuration pair to what the environment
+    // already carries; one the operator set is kept beside it rather than written over.
+    // The squash commit is a hook-running command, so the author it records says which.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let evidence = Evidence::in_world(world);
+    fixture.verified_by(&evidence.pre_push());
+    let (token, worktree) = fixture.open(&["--branch", "feature/configured"]);
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: land as the operator");
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.name")
+        .env("GIT_CONFIG_VALUE_0", "The Operator")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+
+    assert_eq!(
+        world.git(&fixture.origin, &["log", "-1", "--format=%an", "main"]),
+        "The Operator",
+        "the operator's configuration reached the squash commit"
+    );
+    evidence.fixtures_hold_their_own_work(world);
+    evidence.head_was_the_pushed_commit();
+    for repository in [&fixture.origin, &fixture.checkout, &worktree] {
+        holds_only_the_publication(world, repository);
+    }
+}

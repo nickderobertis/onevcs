@@ -2987,12 +2987,45 @@ fn local_env_vars() -> Result<&'static [String]> {
     if let Some(names) = NAMES.get() {
         return Ok(names);
     }
-    let names = checked(&["rev-parse", "--local-env-vars"], None)?
-        .stdout
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
+    let listed = checked(&["rev-parse", "--local-env-vars"], None)?.stdout;
+    let mut names = Vec::new();
+    for name in listed.split_whitespace() {
+        // Each name is written into a shell script's `unset`, so only a word that is
+        // a variable name and nothing else is taken.
+        let mut characters = name.chars();
+        let identifier = characters
+            .next()
+            .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+            && characters.all(|rest| rest == '_' || rest.is_ascii_alphanumeric());
+        if !identifier {
+            return Err(error::invalid(format!(
+                "`git rev-parse --local-env-vars` listed {name:?}, which is not an \
+                 environment variable name; check which git is first on PATH"
+            )));
+        }
+        names.push(name.to_owned());
+    }
     Ok(NAMES.get_or_init(|| names))
+}
+
+/// How many `GIT_CONFIG_KEY_<n>` pairs this process's environment already hands git,
+/// read the way git reads it: unset or empty is none, and anything else that is not a
+/// whole number is a value git refuses, so it is refused here naming it rather than
+/// written over.
+fn inherited_config_count() -> Result<usize> {
+    let Some(raw) = std::env::var_os("GIT_CONFIG_COUNT") else {
+        return Ok(0);
+    };
+    let count = raw.to_string_lossy();
+    if count.is_empty() {
+        return Ok(0);
+    }
+    count.parse().map_err(|_| {
+        error::invalid(format!(
+            "GIT_CONFIG_COUNT is {count:?}, which is not a count of configuration pairs \
+             and which git refuses too; unset it or set it to a whole number"
+        ))
+    })
 }
 
 /// The repository's hooks, each reached through a script that first drops git's
@@ -3018,6 +3051,8 @@ fn local_env_vars() -> Result<&'static [String]> {
 /// [`message_policy`] writes does, and is removed when this is dropped.
 struct HookShims {
     dir: PathBuf,
+    /// Where the shims' configuration pair goes: after every one inherited.
+    count: usize,
 }
 
 impl HookShims {
@@ -3041,10 +3076,11 @@ impl HookShims {
         if hooks.is_empty() {
             return Ok(None);
         }
+        let count = inherited_config_count()?;
         let unset = local_env_vars()?.join(" ");
         let dir = git_owned_path(cwd, &format!("onevcs-hooks-{}", ids::unique()))?;
         std::fs::create_dir(&dir).map_err(error::at("create the hook shims in", &dir))?;
-        let shims = HookShims { dir };
+        let shims = HookShims { dir, count };
         for (name, hook) in hooks {
             let shim = shims.dir.join(name);
             let target = shell_quoted(&git_path(&hook).to_string_lossy());
@@ -3061,10 +3097,7 @@ impl HookShims {
     /// The configuration that points one git command at these shims, after any the
     /// environment already carries.
     fn env(&self) -> Vec<(String, String)> {
-        let count = std::env::var("GIT_CONFIG_COUNT")
-            .ok()
-            .and_then(|count| count.parse::<usize>().ok())
-            .unwrap_or(0);
+        let count = self.count;
         vec![
             ("GIT_CONFIG_COUNT".to_owned(), (count + 1).to_string()),
             (
