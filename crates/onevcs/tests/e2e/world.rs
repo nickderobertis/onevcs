@@ -628,7 +628,9 @@ impl World {
     /// the change request is a draft, which is what a host that will not say looks
     /// like — never the same thing as a host saying it is not one. `no-description`
     /// answers one without the change request's body, which is likewise a host that
-    /// will not say rather than a change request with an empty one.
+    /// will not say rather than a change request with an empty one. `no-mergeable`
+    /// answers one without `mergeable`, which is a host that will not say whether the
+    /// change can merge — neither a conflict nor a clean merge.
     ///
     /// `classic-protection-refused` is a credential without administration rights
     /// meeting classic branch protection, which is every fine-grained token: the

@@ -438,6 +438,55 @@ fn a_mergeability_the_host_has_not_computed_is_waited_on_and_the_merge_lands() {
 }
 
 #[test]
+fn a_mergeability_the_host_will_not_state_is_a_merge_path_that_could_not_be_read() {
+    // Neither a conflict nor a clean merge can be read off an answer that does not say
+    // which, so either shape is refused — after the push, which makes it the merge path
+    // this build could not read rather than a verdict on the work — and the refusal
+    // names what the host said.
+    for (shape, said) in [
+        ("no-mergeable", "without saying whether it can merge"),
+        ("unrecognised", "as mergeable \"BLOCKED\""),
+    ] {
+        let world = World::new();
+        let (origin, session) = publishing(
+            &world,
+            AUTOMATED_READY,
+            "feature/unstated-mergeability",
+            None,
+        );
+        world.host_checks(&[pending()]);
+        if shape == "no-mergeable" {
+            world.answer_malformed(shape);
+        } else {
+            world.host_mergeability("BLOCKED", "BLOCKED");
+        }
+
+        let published = onevcs::publish(
+            &Providers::real(),
+            &session.token,
+            &PublishRequest::default(),
+        )
+        .expect("an unreadable host is an outcome, not a refusal to start");
+        let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+            panic!("{shape}: an unstated mergeability must not be waited past: {published:?}");
+        };
+        assert_eq!(*kind, FailureKind::PushedUnverified, "{shape}: {reason}");
+        assert!(reason.contains(said), "{shape}: {reason}");
+        assert!(
+            reason.contains("https://github.com/acme-corp/hosted/pull/1"),
+            "{shape}: {reason}"
+        );
+        let tip = world.git(&session.worktree, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            origin_tip(&world, &origin, &session.branch).as_deref(),
+            Some(tip.as_str()),
+            "{shape}: the branch is on its remote"
+        );
+        assert_eq!(change_state(&world, 1), "OPEN", "{shape}");
+    }
+}
+
+#[test]
 fn a_cancellation_ends_the_checks_watch_of_a_ready_change_within_a_second() {
     let world = World::new();
     let (origin, session) = publishing(&world, DIRECT_READY, "feature/cancel-ready", None);

@@ -172,6 +172,10 @@ mod publish_branch;
 // crate. Its own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice. These
+// journeys run offline and credential-free, the whole module in about five seconds.
 mod publication_watch;
 // Linux only: it mounts a filesystem of its own, and an unprivileged mount there
 // needs nothing outside the distribution's own `fuse3`. Its head carries the reason

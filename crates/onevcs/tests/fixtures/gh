@@ -620,7 +620,8 @@ case "$subcommand" in
     printf '{'
     if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi
     if wanted state; then printf '%s"state":"%s"' "$separator" "$PR_STATE"; separator=","; fi
-    if wanted mergeable; then
+    # A host that will not say whether the change can merge, which is neither answer.
+    if wanted mergeable && [ "$malformed" != "no-mergeable" ]; then
       printf '%s"mergeable":"%s"' "$separator" "$(mergeability_now | cut -d' ' -f1)"; separator=","
     fi
     if wanted mergeStateStatus; then
