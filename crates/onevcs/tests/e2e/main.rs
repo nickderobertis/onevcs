@@ -171,12 +171,17 @@ mod publish_branch;
 // In-process, because a cancellation is handed over only by a caller embedding the
 // crate. Its own header carries the reason in full.
 #[cfg(unix)]
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice. These
-// journeys run offline and credential-free, the whole module in about five seconds.
+// llmlint: ignore-block[e2e_not_mocked] see the note above this module's declaration: a
+// cancellation is handed over only in-process, and the one stand-in is the substituted
+// `gh` every hosted journey here uses, over real git and a real bare origin.
+// llmlint: ignore-block[expensive_tests_stay_behind_their_own_edge] every journey of this
+// suite lives in the one `e2e` binary of the one crate project, which
+// `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
+// commands twice. These journeys run offline and credential-free, the whole module in
+// about five seconds.
 mod publication_watch;
+// llmlint: ignore-end[expensive_tests_stay_behind_their_own_edge]
+// llmlint: ignore-end[e2e_not_mocked]
 // Linux only: it mounts a filesystem of its own, and an unprivileged mount there
 // needs nothing outside the distribution's own `fuse3`. Its head carries the reason
 // in full, and the one journey that uses it is gated the same way.

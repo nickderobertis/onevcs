@@ -696,6 +696,74 @@ fn a_cancellation_during_the_pre_push_hook_lets_it_finish_and_ends_before_any_wa
 }
 
 #[test]
+fn a_publication_cancelled_before_its_push_pushes_nothing() {
+    // A caller that has already cancelled is answered before anything reaches the
+    // remote: the work is committed in the session and nowhere else, which a
+    // publication of the same session later pushes as it would have.
+    let world = World::new();
+    let started = world.path("hook-ran");
+    let (origin, session) = publishing(
+        &world,
+        AUTO,
+        "feature/cancelled-early",
+        Some(&format!("touch '{}'", started.display())),
+    );
+    world.host_checks(&[green()]);
+    let cancelled = Switch::default();
+    cancelled.cancel();
+
+    let published = onevcs::publish_with_cancellation(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+        &cancelled,
+    )
+    .expect("a cancelled publication is an outcome, not a refusal to start");
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("an already-cancelled publication fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    assert!(reason.contains("before anything was pushed"), "{reason}");
+    assert_eq!(
+        origin_tip(&world, &origin, &session.branch),
+        None,
+        "nothing reached the remote"
+    );
+    assert!(!started.exists(), "no push ran, so no pre-push hook ran");
+    assert!(
+        world.events_of(&session.token.0, "push").is_empty(),
+        "no push was recorded"
+    );
+    assert!(
+        !world
+            .host_calls()
+            .iter()
+            .any(|call| call.starts_with("pr ")),
+        "the host was asked about no change request: {:?}",
+        world.host_calls()
+    );
+    assert_eq!(
+        onevcs::session(&Providers::real(), &session.token)
+            .expect("the record reads")
+            .lifecycle,
+        Lifecycle::Open
+    );
+
+    // And the session publishes as it would have, onto the same branch.
+    let again = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the session publishes again");
+    assert!(
+        matches!(again.outcome, PublishOutcome::Merged(_)),
+        "{again:?}"
+    );
+    assert!(started.exists(), "this time the push ran its hook");
+}
+
+#[test]
 fn publish_is_the_never_cancelled_form_and_a_kind_of_its_own_says_cancelled() {
     // `publish` keeps its signature and is `publish_with_cancellation` with a
     // cancellation nobody can trigger; `cancelled` is a word and an exit code no other
