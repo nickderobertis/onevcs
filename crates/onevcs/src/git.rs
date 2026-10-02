@@ -3068,6 +3068,12 @@ impl HookShims {
         let Ok(entries) = std::fs::read_dir(&real) else {
             return Ok(None);
         };
+        // llmlint: ignore[boundary_inputs_validated] an entry this process cannot read or
+        // stat is one git, running as this same user, cannot run either, so leaving it
+        // unshimmed changes nothing git does; refusing here would instead fail every
+        // hook-running command over a hook nothing could ever have run, and falling back
+        // to the unshimmed directory would hand every *readable* hook the inherited
+        // `GIT_DIR` this exists to keep out.
         let hooks: Vec<_> = entries
             .flatten()
             .map(|entry| (entry.file_name(), entry.path()))

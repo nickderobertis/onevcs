@@ -106,8 +106,29 @@ impl Evidence {
     }
 }
 
-/// A repository whose refs and history carry nothing of the hook's fixture.
+/// A repository whose refs and history carry nothing of the hook's fixture, and whose
+/// git directory kept none of the shims a hook was reached through.
 fn holds_only_the_publication(world: &World, repository: &Path) {
+    let common = PathBuf::from(world.git(
+        repository,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ));
+    let mut pending = vec![common];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("a git directory") {
+            let path = entry.expect("a git directory entry").path();
+            assert!(
+                !path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("onevcs-hooks-")),
+                "a hook-running command left its shims behind at {}",
+                path.display()
+            );
+            if path.is_dir() && !path.is_symlink() {
+                pending.push(path);
+            }
+        }
+    }
     let refs = world.git(repository, &["for-each-ref", "--format=%(refname)"]);
     assert!(
         !refs.contains(FIXTURE_BRANCH),
