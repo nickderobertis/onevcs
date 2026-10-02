@@ -308,7 +308,12 @@ pub trait RemoteHost {
 
 /// Whether a change request can merge into its base, as
 /// [`RemoteHost::mergeability`] answers it.
+///
+/// `#[non_exhaustive]` so that a later state a host reports — a change that merges
+/// cleanly and is blocked for another reason, say — is not a breaking change. A caller
+/// matching on it reads anything it does not name as "not a conflict".
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Mergeability {
     /// The host computed it, and the change merges into its base as it stands.
     Mergeable,

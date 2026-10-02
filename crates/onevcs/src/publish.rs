@@ -3202,8 +3202,8 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
             Ok(Mergeability::Conflicting { reported }) => {
                 return Err(watcher.conflicting(&reported))
             }
-            Ok(Mergeability::Mergeable | Mergeability::Unknown)
-            | Err(Error::NotImplemented { .. }) => {}
+            // Every other state, any added later included, is not a confirmed conflict.
+            Ok(_) | Err(Error::NotImplemented { .. }) => {}
             Err(unreadable) => return Err(unreadable),
         }
         if watcher.out_of_time() {

@@ -3851,6 +3851,7 @@ no conflict — so a host written before this method watches exactly as it did:
 pub trait RemoteHost {                                 // beside merged_at:
     fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability>;  // default: NotImplemented
 }
+#[non_exhaustive]
 pub enum Mergeability {                                // onevcs::Mergeability, from the crate root
     Mergeable,
     Conflicting { reported: String },                  // the host's own words, quoted by the reason
@@ -3858,7 +3859,9 @@ pub enum Mergeability {                                // onevcs::Mergeability, 
 }
 ```
 
-`GitHub` answers it from `gh pr view --json mergeable,mergeStateStatus`, and refuses an answer
+`Mergeability` is `#[non_exhaustive]`, so a later state a host reports is not a breaking
+change, and the watch reads every state other than `Conflicting` as no conflict. `GitHub`
+answers it from `gh pr view --json mergeable,mergeStateStatus`, and refuses an answer
 that carries no `mergeable` or a value that is none of the three, rather than reading it as
 either a conflict or a clean merge.
 
@@ -3907,7 +3910,9 @@ breaking part of this change.
 
 `Vcs::publish_with_cancellation` is defaulted to `publish`, so an implementation written
 before it compiles and publishes unchanged — and is never cancelled, which is the honest
-answer of an implementation that cannot stop. `Git` overrides it.
+answer of an implementation that cannot stop: **a backend that does not override it cannot
+be cancelled mid-watch**, and a caller handing it a cancellation is answered with whatever
+its `publish` returned. `Git` overrides it.
 
 **The testing crate follows.** `onevcs-testing`'s providers take both defaults: their
 repository side publishes without waiting, so there is nothing to cancel, and their host never

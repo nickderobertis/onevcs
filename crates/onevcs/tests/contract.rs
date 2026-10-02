@@ -4441,6 +4441,7 @@ fn the_cancellation_amendment_declares_its_surface_and_the_conflict_it_ends_a_wa
     let host = amendment_declaring("pub enum Mergeability");
     for line in [
         "fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability>;",
+        "#[non_exhaustive]",
         "Mergeable,",
         "Conflicting { reported: String },",
         "Unknown,",
@@ -4451,8 +4452,9 @@ fn the_cancellation_amendment_declares_its_surface_and_the_conflict_it_ends_a_wa
         );
     }
     let reported = |answer: onevcs::Mergeability| match answer {
-        onevcs::Mergeability::Mergeable | onevcs::Mergeability::Unknown => None,
         onevcs::Mergeability::Conflicting { reported } => Some(reported),
+        // Non-exhaustive, so a consumer reads anything it does not name as no conflict.
+        _ => None,
     };
     assert_eq!(
         reported(onevcs::Mergeability::Conflicting {

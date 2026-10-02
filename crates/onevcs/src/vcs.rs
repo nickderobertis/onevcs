@@ -69,7 +69,8 @@ pub trait Vcs {
     ///
     /// Defaulted to [`publish`](Self::publish), so an implementation written before
     /// cancellation existed still compiles and publishes — and is never cancelled,
-    /// which is the answer an implementation that cannot stop has to give. [`Git`]
+    /// which is the answer an implementation that cannot stop has to give: a backend
+    /// that does not override this cannot be cancelled mid-watch. [`Git`]
     /// overrides it: every phase of its publication that waits asks the cancellation
     /// at least once a second.
     fn publish_with_cancellation(

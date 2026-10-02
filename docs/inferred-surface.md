@@ -807,6 +807,26 @@ amendment left to inference.
 | a timestamp of the right shape naming no instant | due | The record's conversion holds the shape and not the calendar. What such a stamp fails to prove is that the slot was maintained recently, and a slot nothing can prove maintained is one that is not. |
 | the occupancy lease during a run | held exclusively for the duration of the command, beside the claim | The claim is what `open`, `prune` and the shed read; the exclusive take is what `remove` proves nobody is inside on, and holding it is what a prune meeting the slot mid-command refuses on rather than reasoning about. |
 
+## Mergeability and cancellation, and the shapes their amendment left to inference
+
+The amendment "An armed merge the host confirms is conflicting ends at once, and a caller
+may cancel a publication" in `docs/contract.md` fixed `PublicationCancellation`,
+`publish_with_cancellation`, `FailureKind::Cancelled` and its wire word `cancelled`, the
+conflict rule, and "a mergeability read on `RemoteHost`, defaulted to `NotImplemented`". The
+four rows below are what it left to inference. Each was put to the manager and **approved**
+(plan `accepted-followups-1002`, correlation `c-eb1b9501c671f59930c6b20ee2f069cd`), the first
+with the one change recorded in it. `the_cancellation_amendment_declares_its_surface_and_the_conflict_it_ends_a_watch_on`
+in `tests/contract.rs` holds the amendment to the code, and `tests/e2e/publication_watch.rs`
+drives every row.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| what the mergeability read answers | `#[non_exhaustive] pub enum Mergeability { Mergeable, Conflicting { reported: String }, Unknown }`, exported from the crate root and not serialized | The watch needs three answers, not two: "not computed yet" must keep waiting and only a confirmed conflict may end it as `SyncConflict`, which an `Option<String>` would fold together. `reported` is the host's own words, so the refusal quotes what the host said. `#[non_exhaustive]` is the manager's change: a later state (blocked but clean, say) is then not a breaking change, and the watch reads anything but `Conflicting` as no conflict. |
+| the method's signature and default | `fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability>`, defaulted to `Err(NotImplemented { operation: "RemoteHost::mergeability" })`, which the watch reads as no conflict | The same additive shape as `merged_at`; reading the refusal as "nothing said" keeps every existing host on today's behaviour. `GitHub` reads `gh pr view --json mergeable,mergeStateStatus` and refuses a missing or unrecognised `mergeable`, rather than guessing either a conflict or a clean merge. |
+| the error a cancellation travels as | `Error::Cancelled { reason: String }`, rendering `publication cancelled: {reason}`, with `FailureKind::of` answering `Cancelled` | `FailureKind::of` maps errors, so the kind needs an error to map from; one `reason: String` is the shape every sibling variant has. `Error` is `#[non_exhaustive]`, so adding it is not itself breaking — the `FailureKind` variant is. |
+| the exit code | `75`, `EX_TEMPFAIL`, from `FailureKind::Cancelled::exit_code` alone | Beside `1`, `2`, `3` and `70` for a publication (and `4` for `session open` and the retirement verbs), and different from all of them, so `$?` alone never reads a cancellation as a verdict. The command line never produces it; only a library caller can cancel. |
+| the repository side's hook | `Vcs::publish_with_cancellation(&self, token, request, hosting, cancellation) -> Result<Publication>`, defaulted to `self.publish(..)`; `Git` overrides it | The contract allows a defaulted `Vcs` method behind the free function. Delegating keeps an outside implementor compiling and publishing; **a backend that does not override it cannot be cancelled mid-watch**, which is the honest answer of one that cannot stop. |
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.
