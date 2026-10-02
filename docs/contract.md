@@ -3817,6 +3817,42 @@ session on a slot. A registered checkout is the operator's own and is never touc
 continued branch, so every session it opens opens clean and its `session-opened` never
 carries the key. A consumer proving the conflicted open drives the real `onevcs`.
 
+### A hook a publication runs finds its repository from where it starts, never from an inherited `GIT_DIR`
+
+**Recorded from onevcs#188, accepted by the user.** Every publication pushes from a
+linked worktree: `local-direct` from a scratch worktree cut for its squash, a change
+policy from the session's own worktree, and `integrate` from the publication checkout,
+which an operator's checkout may itself be. githooks(5) says git **itself** exports
+`GIT_DIR`, `GIT_WORK_TREE` and similar variables to every hook it runs, so that the hook's
+own git commands find the repository; in a linked worktree `GIT_DIR` is that worktree's
+absolute administrative directory, `.git/worktrees/<name>`. Because git sets them on the
+way into the hook, removing them from the command onevcs spawns does not keep them out.
+A hook whose tests built a fixture repository and ran git there therefore acted on the
+publication instead — the fixture's commit went onto the work being published and its
+branch rename renamed the publication's branch — with nothing to say so until history
+had changed.
+
+**The environment a hook runs in.** Every hook git runs for a command onevcs makes — the
+`pre-push` hook at every publishing push, and the `commit-msg`, `pre-commit` and other
+hooks a squash, merge or checkout runs — and the `commit-msg` hook onevcs asks a subject
+of itself, starts **without** any variable `git rev-parse --local-env-vars` lists
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_CONFIG_PARAMETERS`,
+`GIT_CONFIG_COUNT` and the rest). What stays is unchanged: the hook starts at the root
+of the working tree being published, so a git command it runs there with no change of
+directory reads that repository and sees the commit being pushed; a git command it runs
+inside a fixture acts on that fixture; `core.hooksPath` is honoured and carried into a
+session's clone as before; arguments, standard input and every other variable —
+`ONEVCS_COMPARISON_REMOTE` and `ONEVCS_COMPARISON_BASE` among them — reach the hook as
+git hands them over. A hook that read `$GIT_DIR` directly asks
+`git rev-parse --git-dir` instead.
+
+**How.** A hook-running command is pointed, for that command alone, at a directory of
+shims in the git directory — one per hook git would run, each unsetting those variables
+and `exec`ing the real hook — and the directory is removed when the command ends. No
+CLI flag, configuration key, type or event changes. A hooks directory git could not read
+is left to git as it stands, so whether that is a refusal stays the subject policy's
+question.
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)
