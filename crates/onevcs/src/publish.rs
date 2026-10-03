@@ -668,7 +668,7 @@ pub fn run_for_session(
         provenance: provenance::from_rules(&file),
         hosting,
         cancellation,
-        resumed: false,
+        built: Built::InWorkspace,
     };
     let branch = record.branch.to_string();
     let outcome = match run_resolving(&context, &mut stream) {
@@ -793,11 +793,21 @@ pub struct Context<'a> {
     /// Whether the caller has asked this publication to stop, asked by every phase
     /// that waits. A branch-keyed verb has no caller to ask and is never cancelled.
     pub cancellation: &'a dyn PublicationCancellation,
-    /// Whether this resumes a publication whose verification already passed, so
-    /// nothing was built for it: [`repo`](Context::repo) is the checkout that keeps the
-    /// branch, which is where its landing is recorded, and it is written by ref because
-    /// that checkout's worktree is somebody else's.
-    pub resumed: bool,
+    /// Where this publication was built, which decides how its landing is recorded.
+    pub built: Built,
+}
+
+/// Where a publication was built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Built {
+    /// In a workspace cut for it, whose [`worktree`](Context::worktree) has the branch
+    /// checked out: its landing is committed there and handed to the checkout that
+    /// keeps the branch.
+    InWorkspace,
+    /// Nowhere: it resumes a publication whose verification already passed, and
+    /// [`repo`](Context::repo) is the checkout that keeps the branch. Its landing is
+    /// recorded there by ref, because that checkout's worktree is somebody else's.
+    Resumed,
 }
 
 /// How a publication's branch reaches the host.
@@ -1026,7 +1036,7 @@ impl<'a> Context<'a> {
             provenance: self.provenance.clone(),
             hosting: self.hosting,
             cancellation: self.cancellation,
-            resumed: self.resumed,
+            built: self.built,
         }
     }
 }
@@ -2495,7 +2505,7 @@ fn write_landing(context: &Context<'_>, sha: &Sha) -> Result<()> {
         key = context.provenance.landed(),
         merged = sha.0,
     );
-    if context.resumed {
+    if context.built == Built::Resumed {
         // Nothing was built for a resumed publication, so the branch's own checkout is
         // the repository it works in, and the record goes onto the branch there.
         git::commit_empty_on_branch(&context.repo, &context.branch, &message)?;

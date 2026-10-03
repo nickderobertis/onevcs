@@ -625,7 +625,7 @@ impl Landing {
             provenance: self.trailers.clone(),
             hosting,
             cancellation: &publish::NeverCancelled,
-            resumed: false,
+            built: publish::Built::InWorkspace,
         };
         let outcome = publish::run(&context, stream);
         if outcome.is_err() {

@@ -320,7 +320,7 @@ made, so asking first moves none. **Whatever verification reads goes into
 hooks come from, belongs there in the same change, or a re-entry resumes a tree nothing
 verified under it. And **the resumed path is `land_opened_change`, the tail a first
 publication runs**, so its outcomes and events cannot drift; a resumed landing is
-recorded by ref (`Context::resumed`), because its repository is the operator's own
+recorded by ref (`publish::Built::Resumed`), because its repository is the operator's own
 checkout. `tests/e2e/resumption.rs` holds each component to forcing the whole path.
 
 ## …and one verb lands nothing, which is the whole of what it is

@@ -279,7 +279,7 @@ impl Resumed {
             provenance: self.trailers.clone(),
             hosting,
             cancellation: &publish::NeverCancelled,
-            resumed: true,
+            built: publish::Built::Resumed,
         };
         publish::resume(
             &context,
