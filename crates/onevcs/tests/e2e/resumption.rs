@@ -328,6 +328,72 @@ fn a_tip_base_or_verification_input_that_moved_takes_the_whole_path() {
     }
 }
 
+/// A first publication that could not record its boundary still ends as it would have,
+/// says so, and leaves a re-entry nothing to resume, so the re-entry verifies again and
+/// lands the change.
+fn unrecorded_publication_is_verified_again(hosted: &Hosted, warning: &str) {
+    hosted.world.host_checks(&[required("failure")]);
+    finished_hosted_branch(hosted, BRANCH, "feat: add the resumed thing");
+    publish(hosted)
+        .code(1)
+        .stderr(predicate::str::contains("required check failed"))
+        .stderr(predicate::str::contains(warning));
+    assert_eq!(hook_runs(hosted), 1, "the first publication ran the hook");
+    assert!(boundaries(hosted).is_empty(), "no boundary was recorded");
+
+    hosted.world.host_checks(&[required("success")]);
+    let assert = publish(hosted)
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(hook_runs(hosted), 2, "verification ran again");
+    assert_eq!(publications(hosted), 2, "a workspace was built");
+    assert_eq!(hosted.origin_log().len(), 2, "the host landed it");
+}
+
+#[test]
+fn a_boundary_whose_verification_inputs_cannot_be_read_is_not_recorded_and_not_resumed() {
+    let hosted = Hosted::new(AUTOMATED);
+    counting_hook(&hosted, "the first gate");
+    // A file in the installed hooks directory nobody may read: git still runs the
+    // `pre-push` hook beside it, and what verified the branch cannot be digested.
+    let hooks = hosted
+        .world
+        .path(format!(
+            "hooks-{}",
+            hosted
+                .checkout
+                .file_name()
+                .expect("a name")
+                .to_string_lossy()
+        ))
+        .join("notes");
+    std::fs::write(&hooks, "kept by somebody else\n").expect("a file");
+    std::fs::set_permissions(&hooks, std::os::unix::fs::PermissionsExt::from_mode(0o000))
+        .expect("permissions");
+    unrecorded_publication_is_verified_again(&hosted, "could not be read back");
+}
+
+#[test]
+fn a_boundary_that_cannot_be_written_is_said_and_the_publication_ends_as_it_would() {
+    let hosted = with_unwritable_records();
+    unrecorded_publication_is_verified_again(&hosted, "could not be recorded");
+    assert!(
+        hosted.world.home().join("verified").is_file(),
+        "nothing replaced what stood where the records go"
+    );
+}
+
+/// A host whose records directory is a file, so no boundary can be written under it.
+fn with_unwritable_records() -> Hosted {
+    let hosted = Hosted::new(AUTOMATED);
+    counting_hook(&hosted, "the first gate");
+    std::fs::create_dir_all(hosted.world.home()).expect("a state root");
+    std::fs::write(hosted.world.home().join("verified"), "not a directory\n").expect("a file");
+    hosted
+}
+
 #[test]
 fn a_base_that_moved_while_it_was_verified_is_recorded_as_verified_and_not_resumed() {
     let hosted = Hosted::new(AUTOMATED);

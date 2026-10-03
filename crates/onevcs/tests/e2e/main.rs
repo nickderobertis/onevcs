@@ -196,14 +196,13 @@ mod refusing_fs;
 mod registry;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`, over
 // real git and a real bare origin. Its own header carries the reason in full.
+// It lives in the one `e2e` binary of the one crate project, as every journey here does,
+// because `crates/onevcs/AGENTS.md` fixes that: a second Nx project would run the same
+// `--workspace` commands twice. What it exercises is `publish-branch`, which every crate
+// change can reach, and it reaches no external service, running offline in about two
+// seconds.
 #[cfg(unix)]
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice. What these
-// journeys exercise is `publish-branch`, which every crate change can reach, and they
-// reach no external service — local bare origins and the substituted `gh` — running
-// offline in under two seconds together.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
 mod resumption;
 // Unix only: a landing releasing what it built in, driven through real publications
 // whose POSIX-shell gates start real processes inside the workspace. One ending goes
