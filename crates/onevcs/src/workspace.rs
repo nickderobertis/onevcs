@@ -316,12 +316,17 @@ pub fn newest(from: &Record) -> Chain {
 /// Record that one session's branch was continued by another.
 ///
 /// Written onto the *older* record, because that is the one a later reader will
-/// otherwise take as the branch's answer. It goes through [`save`], which is where
-/// a link nothing could follow is refused.
+/// otherwise take as the branch's answer. It goes through [`update`], so a link a
+/// concurrent opening already wrote is the one that stands — a second edge out of one
+/// token would fork a chain that has one end by construction — and through [`save`],
+/// which is where a link nothing could follow is refused.
 pub fn record_retry(older: &Token, newer: &Token) -> Result<()> {
-    let mut record = load(older)?;
-    record.retried_by = Some(newer.clone());
-    save(&record)
+    update(older, |record| {
+        if record.retried_by.is_none() {
+            record.retried_by = Some(newer.clone());
+        }
+    })
+    .map(drop)
 }
 
 impl From<Record> for SessionHolder {
@@ -688,14 +693,65 @@ fn usable(path: &Path, token: &str, record: &Record) -> Result<()> {
     Ok(())
 }
 
-/// Write one session record.
+/// Take the lock every write of one session's record takes turns on.
+///
+/// Named after the token, in a directory of its own: an operator reading a timed-out
+/// wait can see whose record it was, and these are not mistaken for the occupancy
+/// leases beside them, which are named after a digest.
+fn record_lock(token: &str) -> Result<lock::Guard> {
+    let directory = home::locks_dir()?.join("sessions");
+    home::ensure_dir(&directory)?;
+    lock::exclusive_at(&directory.join(format!("{token}.lock")))
+}
+
+/// Change one session's record: under its own lock, re-read, change, save.
+///
+/// The one way a lifecycle step writes a record that already exists. Several
+/// processes write the same record — an opening superseding it, a close, a
+/// publication, a retirement — and each of them read it long before it writes: a
+/// copy saved whole from that read erases whatever another wrote in between, which
+/// is how a retirement's close came to delete the `retried_by` link a retry had just
+/// recorded. So the read the change is applied to is taken *under* the lock, and
+/// `change` sets only the fields its writer owns; every other field, and every key
+/// [`Record::carried`] keeps, is whatever the newest write left there.
+///
+/// Answers the record as it was saved. `change` must not write this record itself:
+/// the lock is a file lock, and a second take of it from this process waits on the
+/// first.
+pub(crate) fn update(token: &str, change: impl FnOnce(&mut Record)) -> Result<Record> {
+    let _guard = record_lock(token)?;
+    let mut record = load(token)?;
+    change(&mut record);
+    save(&record)?;
+    Ok(record)
+}
+
+/// Write a session's first record, under the same lock [`update`] takes.
+///
+/// A token names one session, so a record already there is refused rather than
+/// replaced: replacing it would be exactly the whole-document overwrite [`update`]
+/// exists to rule out.
+fn create(record: &Record) -> Result<()> {
+    let _guard = record_lock(&record.token)?;
+    let path = record_path(&record.token)?;
+    if path.exists() {
+        return Err(error::invalid(format!(
+            "a session record for {} already exists at {}; a token names one session",
+            record.token,
+            path.display()
+        )));
+    }
+    save(record)
+}
+
+/// Write one session record, whole, as [`update`] and [`create`] do under its lock.
 ///
 /// The retry link is checked *here* rather than where it is composed, because this
 /// is the boundary every write crosses: a link is a claim about this host's own
 /// state, and one nothing can follow is worse than no link at all — it is a chain
 /// that stops a reader answering about the branch, silently, long after whoever
 /// wrote it has gone.
-pub fn save(record: &Record) -> Result<()> {
+fn save(record: &Record) -> Result<()> {
     followable(record)?;
     let path = record_path(&record.token)?;
     let mut document = serde_json::to_value(record).map_err(error::at("serialize", &path))?;
@@ -1241,7 +1297,7 @@ pub fn open(
         labels: request.labels.clone(),
         carried: Remainder::default(),
     };
-    save(&record)?;
+    create(&record)?;
     // The record is what holds a slot from here on, so the placement's exclusive
     // take has done its work.
     drop(placement);
@@ -1609,10 +1665,11 @@ fn resume(
     // running it, so each key it names replaces that key; a key it does not name is
     // kept, because a caller that says nothing has not said "forget it".
     if !labels.is_empty() {
-        record
-            .labels
-            .extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
-        save(&record)?;
+        record = update(&record.token, |stored| {
+            stored
+                .labels
+                .extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
+        })?;
     }
     // The same label the session's first opening carried, so a reader filtering one
     // identity's events does not lose the run it resumed.
@@ -2204,7 +2261,7 @@ impl OnMerge {
 }
 
 fn adopt_with(token: &str, on_merge: OnMerge) -> Result<(Record, Stream, Option<String>)> {
-    let mut record = load(token)?;
+    let record = load(token)?;
     // A closed session that returned its slot, or whose slot a later session has
     // taken, has no tree to re-attach to: what is in the slot is somebody else's, and
     // committing it onto this session's branch is the one thing an adoption must
@@ -2276,10 +2333,11 @@ fn adopt_with(token: &str, on_merge: OnMerge) -> Result<(Record, Stream, Option<
         preserved = Some(branch.branch);
     }
 
-    record.state = Lifecycle::Open;
-    record.owner_pid = std::process::id();
-    record.owner_started = process_started(std::process::id());
-    save(&record)?;
+    let record = update(token, |stored| {
+        stored.state = Lifecycle::Open;
+        stored.owner_pid = std::process::id();
+        stored.owner_started = process_started(std::process::id());
+    })?;
     drop(lease);
     Ok((record, stream, preserved))
 }
@@ -2335,7 +2393,7 @@ struct Stray {
 /// then **refused over**: a close that reported nothing while work it was about to
 /// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
-    let mut record = load(token)?;
+    let record = load(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;
@@ -2383,8 +2441,7 @@ pub fn close(token: &str) -> Result<Record> {
     // queries state before its final drain; reversing these writes lets it observe
     // closure and drain the stream before the closing event exists.
     stream.emit(EventKind::SessionClosed, object(closed));
-    record.state = Lifecycle::Closed;
-    save(&record)?;
+    let record = update(token, |stored| stored.state = Lifecycle::Closed)?;
     drop(lease);
     Ok(record)
 }
