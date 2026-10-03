@@ -170,8 +170,8 @@ pub fn interrupted_branch(fixture: &Fixture, branch: &str) {
 /// and a publisher that died. Both need the landing caught inside its run, and the
 /// repository's own `pre-push` hook is the place: it runs inside the real
 /// publication, after its run root is cut and before its verdict is recorded. It
-/// parks only while [`Gate::PARK`] is there, so every other landing passes straight
-/// through to `body`.
+/// parks only while the gate's `park` file is there, so every other landing passes
+/// straight through to `body`.
 pub fn gated(fixture: &Fixture, body: &str) {
     let gate = Gate::of(fixture);
     fixture.verified_by(&format!(

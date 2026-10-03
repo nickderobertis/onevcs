@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::host::{Hosted, OPEN};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::publish_branch::finished_hosted_branch;
+use crate::support::{documented_default_prefix, documented_trailer};
 use crate::sweep::{
     finished_branch, gated, interrupted_branch, left_behind, only_run_root, publications,
     recoveries, still_running, swept,
@@ -217,6 +218,56 @@ fn a_recovery_releases_its_workspace_as_a_publication_does() {
         fixture.origin_log().len(),
         2,
         "and the work reached its base"
+    );
+}
+
+#[test]
+fn a_landing_refused_while_it_is_still_being_prepared_releases_what_it_had_cut() {
+    // Refused after its run root is cut and its clone made, before anything is judged:
+    // the branch records the change below it on a branch no ref resolves any more. The
+    // marker is written with `git`, as every stack journey here writes it — the
+    // `Change-Base:` trailer is a consumer's record that no verb of this crate writes.
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let prefix = documented_default_prefix();
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/orphaned"],
+    );
+    world.commit_file(&fixture.checkout, "one.txt", "one\n", "feat: add the thing");
+    world.git(
+        &fixture.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "chore: preserve work on feature/orphaned\n\n{}\n{} feature/gone",
+                documented_trailer("Status", &prefix),
+                documented_trailer("Change-Base", &prefix),
+            ),
+        ],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    let (code, stderr) = land(world, "recover", &fixture.checkout, "feature/orphaned");
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("records the base it was stacked on as \"feature/gone\""),
+        "the premise: it was refused where the record is read:\n{stderr}"
+    );
+    let run_root = only_run_root(&recoveries(world));
+    assert_eq!(
+        holds(&run_root),
+        ["released"],
+        "the clone and worktree it had cut are gone, and nothing was judged to keep:\n{stderr}"
+    );
+    assert!(
+        world
+            .git(&fixture.checkout, &["branch", "--list", "feature/orphaned"])
+            .contains("feature/orphaned"),
+        "and the branch is where it was left"
     );
 }
 
