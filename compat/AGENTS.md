@@ -68,12 +68,12 @@ claim is about:
   this build registered. That journey therefore holds it to something narrower and
   exact: every answer it gives — that refusal included — is byte-identical before and
   after the records are written. It runs on every platform, as `retired.rs` does.
-- `tests/verified.rs` holds **0.40.0** — the last release cut before a publication
+- `tests/verified.rs` holds **0.40.1** — the last release cut before a publication
   recorded its verified boundary, so the build a host upgrading to this one shares its
   `$ONEVCS_HOME` with — to a state root on which this build left a real boundary under
   `$ONEVCS_HOME/verified/`: a `change-auto` publication verified and pushed its branch,
   opened its change request, and stopped on a red required check. The registry and
-  every session record stay the bytes they were, at versions 6 and 3; 0.40.0 answers
+  every session record stay the bytes they were, at versions 6 and 3; 0.40.1 answers
   every read it makes (the registry, the session records, `recoverable`, `status`,
   every stream) exactly as it does with the record moved aside; and once the host's
   rerun is green it publishes the same branch through to the merge, leaving the record,
@@ -83,7 +83,7 @@ claim is about:
   that program is the host every hosted journey here publishes against. It is POSIX
   shell, so this journey is Unix-only, as every hosted e2e journey is.
 
-The 0.32.2 and 0.40.0 claims need this build to *write* what is read, so it is linked
+The 0.32.2 and 0.40.1 claims need this build to *write* what is read, so it is linked
 too, from the path beside it, as `onevcs-current`: each journey writes with it and
 reads back with the release, both through their libraries, in one process — which is
 why each sets `ONEVCS_HOME` (and the retirement journey `HOME`) in its own process and
@@ -102,9 +102,9 @@ twice. Moving this directory into `crates/` is therefore not a tidy-up.
 The cost of being outside is exact and worth stating: `cargo deny` and `cargo
 machete` are `--workspace`, so nothing here is licence-audited, advisory-audited,
 or checked for unused dependencies. Its dependencies are three published builds of
-this crate (0.40.0, 0.32.2 and 0.13.0), this crate itself by path, and `serde_json`;
+this crate (0.40.1, 0.32.2 and 0.13.0), this crate itself by path, and `serde_json`;
 adding another means saying so here. Four packages named `onevcs` resolve in this
-graph — 0.40.0 twice while this crate is still at that version, once from crates.io
+graph — 0.40.1 twice while this crate is still at that version, once from crates.io
 and once by path, which cargo keys apart by source —
 which is harmless *here* — nothing runs `--package onevcs` against this manifest —
 and is one more reason it stays out of the workspace next door.

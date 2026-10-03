@@ -5,13 +5,13 @@
 //! open records its boundary at `$ONEVCS_HOME/verified/<digest>.json`, and moves nothing
 //! else: the registry and the session records keep their schema versions, and no stream
 //! event kind is added. What that is worth is proved here against the release itself —
-//! 0.40.0, the last build cut before the record existed and the one a host upgrading to
+//! 0.40.1, the last build cut before the record existed and the one a host upgrading to
 //! this build shares its root with — rather than asserted from this build's sources.
 //!
 //! The boundary is a real one: this build publishes a `change-auto` branch against the
 //! substituted host every hosted journey in `crates/onevcs/tests/e2e/` publishes against
 //! (`crates/onevcs/tests/fixtures/gh`, included here unchanged), over a real bare origin,
-//! and stops on a red required check. Then 0.40.0 is asked everything it answers about the
+//! and stops on a red required check. Then 0.40.1 is asked everything it answers about the
 //! host — with the record there, and with it moved aside — and publishes the same branch
 //! once the host's rerun turns the check green.
 //!
@@ -147,25 +147,25 @@ fn stream_tokens(scratch: &Scratch) -> Vec<String> {
         .collect()
 }
 
-/// Every answer 0.40.0 gives about this host, as the documents it serializes.
+/// Every answer 0.40.1 gives about this host, as the documents it serializes.
 fn previous_answers(scratch: &Scratch) -> Vec<String> {
     use onevcs_previous as previous;
     let mut answers = vec![
         serde_json::to_string(
-            &previous::registered_identities().expect("0.40.0 reads the registry"),
+            &previous::registered_identities().expect("0.40.1 reads the registry"),
         )
         .expect("identities serialize"),
         serde_json::to_string(
-            &previous::session_holders("project").expect("0.40.0 loads every session record"),
+            &previous::session_holders("project").expect("0.40.1 loads every session record"),
         )
         .expect("holders serialize"),
         serde_json::to_string(
-            &previous::recoverable(&previous::Scope::All).expect("0.40.0 lists the host"),
+            &previous::recoverable(&previous::Scope::All).expect("0.40.1 lists the host"),
         )
         .expect("rows serialize"),
         serde_json::to_string(
             &previous::work_status(&previous::Providers::real(), BRANCH)
-                .expect("0.40.0 reports on the branch"),
+                .expect("0.40.1 reports on the branch"),
         )
         .expect("a report serializes"),
     ];
@@ -173,7 +173,7 @@ fn previous_answers(scratch: &Scratch) -> Vec<String> {
         let session = previous::SessionToken(token.clone());
         let read = previous::EventStream::open(&session)
             .and_then(|mut stream| stream.read())
-            .unwrap_or_else(|e| panic!("0.40.0 reads {token}: {e}"));
+            .unwrap_or_else(|e| panic!("0.40.1 reads {token}: {e}"));
         answers.push(format!("{token}: {} events", read.len()));
     }
     answers
@@ -285,7 +285,7 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
         assert_eq!(declared_version(bytes), 3);
     }
 
-    // 0.40.0 answers exactly as it does over the same host without the record.
+    // 0.40.1 answers exactly as it does over the same host without the record.
     let with_record = previous_answers(&scratch);
     let aside = scratch.path("verified-aside");
     std::fs::rename(&verified, &aside).expect("the record moves aside");
@@ -306,10 +306,10 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
             policy: None,
         },
     )
-    .expect("0.40.0 publishes over the host");
+    .expect("0.40.1 publishes over the host");
     assert!(
         matches!(landed, onevcs_previous::PublishOutcome::Merged(_)),
-        "0.40.0 lands the change: {landed:?}"
+        "0.40.1 lands the change: {landed:?}"
     );
     assert_eq!(
         git(&origin, &["log", "--format=%s", "-1", "main"]),
@@ -319,7 +319,7 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
     assert_eq!(
         files(&verified),
         recorded,
-        "0.40.0 never touched the record"
+        "0.40.1 never touched the record"
     );
     assert_eq!(
         std::fs::read(&registry).expect("the registry"),
