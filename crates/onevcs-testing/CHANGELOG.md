@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.11.1...onevcs-testing-v0.12.0) - 2026-10-03
+
+### Added
+
+- *(publish-branch)* [**breaking**] hold a branch for the whole of its out-of-band publication ([#292](https://github.com/nickderobertis/onevcs/pull/292))
+
 ## [0.11.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.11.0...onevcs-testing-v0.11.1) - 2026-10-03
 
 ### Fixed
