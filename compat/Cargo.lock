@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.40.0"
+version = "0.40.1"
 dependencies = [
  "clap",
  "dunce",
@@ -950,7 +950,7 @@ dependencies = [
  "onevcs 0.13.0",
  "onevcs 0.32.2",
  "onevcs 0.40.0",
- "onevcs 0.40.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "onevcs 0.40.1",
  "serde_json",
 ]
 
