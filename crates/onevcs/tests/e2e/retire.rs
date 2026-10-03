@@ -160,6 +160,24 @@ pub(crate) fn verb(world: &World, args: &[&str]) -> (i32, Value) {
     (output.status.code().expect("an exit code"), document)
 }
 
+/// The read a `keep` / `unknown` answer names, as its `cause` spells it: the operation,
+/// what it read, and the error it got — which is never blank.
+pub(crate) fn cause_of(document: &Value) -> (String, String, String) {
+    assert_eq!(document["reason"], "unknown", "{document}");
+    let field = |key: &str| {
+        document["cause"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("a cause naming its {key}: {document}"))
+            .to_owned()
+    };
+    let error = field("error");
+    assert!(
+        !error.trim().is_empty(),
+        "a cause with no error: {document}"
+    );
+    (field("operation"), field("subject"), error)
+}
+
 /// The one directory this world's identity keeps its run roots and pool under.
 fn identity_root(world: &World) -> PathBuf {
     std::fs::read_dir(world.home().join("workspaces"))
@@ -1035,6 +1053,8 @@ fn a_branch_a_live_session_holds_is_refused_and_nothing_is_deleted() {
         let (code, refused) = yard.verb(&[verb, "feature/live"]);
         assert_eq!(code, 4, "{refused}");
         assert_eq!(refused["reason"], "held-by-live-session");
+        // Written, as every key is, and `null` for every reason but `unknown`.
+        assert_eq!(refused.get("cause"), Some(&Value::Null), "{refused}");
     }
     yard.verb(&["retire-finished"]);
     assert_eq!(yard.held("feature/live"), before);
@@ -1097,12 +1117,24 @@ fn a_change_request_recorded_against_a_base_git_would_not_accept_keeps_the_branc
     let before = hosted.branch_on_origin("feature/mangled");
     let asked = hosted.world.host_calls().len();
 
-    let (code, kept) = verb(&hosted.world, &["retire", "feature/mangled", "--dry-run"]);
-    assert_eq!(code, 4, "{kept}");
-    assert_eq!(kept["reason"], "unknown", "{kept}");
-    let (code, kept) = verb(&hosted.world, &["retire", "feature/mangled"]);
-    assert_eq!(code, 4, "{kept}");
-    assert_eq!(kept["reason"], "unknown", "{kept}");
+    let url = opened[0]["payload"]["url"]
+        .as_str()
+        .expect("the change request's URL")
+        .to_owned();
+    for args in [
+        &["retire", "feature/mangled", "--dry-run"][..],
+        &["retire", "feature/mangled"],
+    ] {
+        let (code, kept) = verb(&hosted.world, args);
+        assert_eq!(code, 4, "{kept}");
+        // The host was never asked, and the answer says which question that left open.
+        let (operation, subject, error) = cause_of(&kept);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("host-consult", url.as_str())
+        );
+        assert!(error.contains("base"), "{kept}");
+    }
     assert_eq!(
         hosted.world.host_calls()[asked..],
         [] as [String; 0],
@@ -1353,18 +1385,38 @@ fn a_holder_git_will_not_read_keeps_the_branch_as_unknown() {
         .map(|verb| yard.verb(&[verb, "feature/unreadable"]))
         .collect();
     let (_, pass) = yard.verb(&["retire-finished"]);
+    let (code, text) = said(yard.world(), &["retire", "feature/unreadable"]);
     yard.world().onevcs().arg("sweep").assert().success();
     std::fs::set_permissions(&clone, original).expect("the clone is open again");
     // llmlint: ignore-end[tests_mirror_real_usage]
+    // Every answer names the read that failed: the branches of the clone it could not
+    // open, and what git said about it.
+    let named = clone.display().to_string();
     for (code, refused) in outcomes {
         assert_eq!(code, 4, "{refused}");
-        assert_eq!(refused["reason"], "unknown", "{refused}");
+        let (operation, subject, _) = cause_of(&refused);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("copy", named.as_str())
+        );
     }
-    assert!(pass["examined"]
-        .as_array()
-        .expect("a list")
+    let entries = pass["examined"].as_array().expect("a list");
+    assert!(entries.iter().all(|entry| entry["outcome"] != "retired"));
+    let entry = entries
         .iter()
-        .all(|entry| entry["outcome"] != "retired"));
+        .find(|entry| entry["branch"] == "feature/unreadable")
+        .expect("the pass examined it");
+    let (operation, subject, error) = cause_of(entry);
+    assert_eq!(
+        (operation.as_str(), subject.as_str()),
+        ("copy", named.as_str())
+    );
+    // …and the line a person reads says the same, in the words the contract spells.
+    assert_eq!(code, 4, "{text}");
+    says(
+        &text,
+        &format!("is keep / unknown: copy failed for {named}: {error}, which `onevcs retire` does not delete"),
+    );
     assert_eq!(yard.held("feature/unreadable"), before);
 }
 
@@ -1396,7 +1448,11 @@ fn a_run_directory_that_cannot_be_listed_keeps_the_branch_as_unknown() {
     // llmlint: ignore-end[tests_mirror_real_usage]
     for (code, refused) in outcomes {
         assert_eq!(code, 4, "{refused}");
-        assert_eq!(refused["reason"], "unknown", "{refused}");
+        let (operation, subject, _) = cause_of(&refused);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("census", runs.display().to_string().as_str())
+        );
     }
     assert!(pass["examined"]
         .as_array()
@@ -1405,6 +1461,107 @@ fn a_run_directory_that_cannot_be_listed_keeps_the_branch_as_unknown() {
         .all(|entry| entry["outcome"] != "retired"));
     assert!(events(yard.world(), "branch-retired").is_empty());
     assert_eq!(yard.held("feature/unlisted"), before);
+}
+
+#[test]
+fn a_session_lease_that_cannot_be_read_keeps_the_branch_as_unknown_and_names_its_run_root() {
+    let yard = Yard::new();
+    yard.landed("feature/leased", "leased.txt");
+    let locks = yard.world().locks();
+    let (_token, worktree) = yard.stale_session("feature/leased");
+    let opened: Vec<PathBuf> = yard.world().locks().difference(&locks).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    let run_root = worktree.parent().expect("a run root").to_path_buf();
+    let before = yard.held("feature/leased");
+    let original = std::fs::metadata(lease).expect("a lease").permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a lease this user cannot open is a
+    // fact about the host — an operator or a container closed it — reachable by no verb
+    // of this crate, which creates every lease it takes; what runs over it is the real
+    // binary. Whether the session holding the branch is live is then unknown, and so is
+    // whether the branch may go.
+    std::fs::set_permissions(lease, std::fs::Permissions::from_mode(0o000))
+        .expect("the lease is closed");
+    assert!(
+        std::fs::File::open(lease).is_err(),
+        "the premise: this suite runs as a user the mode binds"
+    );
+    let (code, refused) = yard.verb(&["retire", "feature/leased", "--dry-run"]);
+    std::fs::set_permissions(lease, original).expect("the lease is open again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    assert_eq!(code, 4, "{refused}");
+    let (operation, subject, _) = cause_of(&refused);
+    assert_eq!(
+        (operation.as_str(), subject.as_str()),
+        ("live-holder", run_root.display().to_string().as_str())
+    );
+    assert_eq!(yard.held("feature/leased"), before);
+}
+
+#[test]
+fn a_worktree_that_cannot_be_read_keeps_the_branch_as_unknown_and_names_the_worktree() {
+    let yard = Yard::new();
+    yard.landed("feature/sealed", "sealed.txt");
+    let (_token, worktree) = yard.stale_session("feature/sealed");
+    let before = yard.held("feature/sealed");
+    let original = std::fs::metadata(&worktree)
+        .expect("a worktree")
+        .permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a worktree this user cannot read is a
+    // fact about the host, reachable by no verb of this crate; what runs over it is the
+    // real binary. Whether it holds work nobody committed is then unknown, and a branch
+    // whose landing is proved is still kept for it.
+    std::fs::set_permissions(&worktree, std::fs::Permissions::from_mode(0o000))
+        .expect("the worktree is closed");
+    assert!(
+        std::fs::read_dir(&worktree).is_err(),
+        "the premise: this suite runs as a user the mode binds"
+    );
+    let outcomes: Vec<(i32, Value)> = ["retire", "reclaim"]
+        .iter()
+        .map(|verb| yard.verb(&[verb, "feature/sealed"]))
+        .collect();
+    std::fs::set_permissions(&worktree, original).expect("the worktree is open again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for (code, refused) in outcomes {
+        assert_eq!(code, 4, "{refused}");
+        let (operation, subject, _) = cause_of(&refused);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("worked-in", worktree.display().to_string().as_str())
+        );
+    }
+    assert_eq!(yard.held("feature/sealed"), before);
+}
+
+#[test]
+fn a_copy_whose_commit_cannot_be_read_keeps_the_branch_as_unknown_and_names_where_it_is() {
+    let yard = Yard::new();
+    yard.landed("feature/ghost", "ghost.txt");
+    yard.run(&[
+        "import",
+        "feature/ghost",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    // llmlint: ignore[tests_mirror_real_usage] a ref naming a commit its repository does
+    // not have is what a pruned or half-copied object store leaves, and git refuses to
+    // write one through any command; the file is written the way that damage writes it,
+    // and the real binary is what reads it.
+    std::fs::write(
+        yard.worker.join(".git/refs/heads/feature/ghost"),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .expect("the worker's copy names a commit nobody has");
+    let (code, refused) = yard.verb(&["retire", "feature/ghost", "--dry-run"]);
+    assert_eq!(code, 4, "{refused}");
+    let (operation, subject, _) = cause_of(&refused);
+    assert_eq!(
+        (operation.as_str(), subject.as_str()),
+        ("judge", yard.worker.display().to_string().as_str())
+    );
 }
 
 #[test]

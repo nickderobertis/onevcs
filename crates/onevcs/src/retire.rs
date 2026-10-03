@@ -1369,11 +1369,13 @@ impl<'a> Census<'a> {
             if !over {
                 continue;
             }
-            let occupied = lock::is_occupied(&record.lease()).map_err(|failure| {
-                UnknownCause::new("live-holder", record.run_root.display(), failure)
-            })?;
+            let occupied = || {
+                lock::is_occupied(&record.lease()).map_err(|failure| {
+                    UnknownCause::new("live-holder", record.run_root.display(), failure)
+                })
+            };
             if record.owner_is_running()
-                || occupied
+                || occupied()?
                 || !processes::holding(&record.run_root).is_empty()
             {
                 return Ok(Some(record.token.to_string()));
