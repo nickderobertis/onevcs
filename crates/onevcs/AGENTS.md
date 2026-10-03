@@ -309,9 +309,8 @@ guess that a rewrite supersedes what it rewrote. The workflow that reaches this 
 replay from where `sync_change_base` sends an operator — is recorded as a journey rather
 than described here.
 
-**A verified change request is resumed, not verified again** (`verified.rs`, the
-resumption amendment in `docs/contract.md`). Once a publication's push is accepted and
-its change request is open, `publish::record_boundary` writes the boundary under
+**A verified change request is resumed, not verified again** (`verified.rs`). Once a
+publication's push is accepted and its change request is open, `publish::record_boundary` writes the boundary under
 `$ONEVCS_HOME/verified/`, and `publish-branch` asks `publish_branch::resumable` before
 `branch::prepare` cuts anything. Three things are easy to undo. **Every way to fail to
 resume is `None`, never a refusal**: the whole path then makes every refusal it always
