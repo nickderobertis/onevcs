@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.37.0"
+version = "0.38.0"
 dependencies = [
  "clap",
  "dunce",
@@ -921,7 +921,7 @@ version = "0.0.0"
 dependencies = [
  "onevcs 0.13.0",
  "onevcs 0.32.2",
- "onevcs 0.37.0",
+ "onevcs 0.38.0",
  "serde_json",
 ]
 
