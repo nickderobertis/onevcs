@@ -160,12 +160,12 @@ fn children(directory: &Path) -> Vec<PathBuf> {
 /// What a classification that did not retire read, asked again with nothing
 /// swallowed.
 ///
-/// Every read the classifier makes that fails answers `unknown` and says no more, which
-/// is right for the verb and leaves a failing journey with nothing to go on. So this
-/// asks the same questions of the same places — the classification itself, the base on
-/// the origin, and in every checkout and clone the branch, its worktrees, its fork point
-/// with the base under the object store the classifier lends, and its first-parent tail
-/// — and adds every session record, for a failure on a platform nobody here can run.
+/// A classification that answers `unknown` names the read that failed in its `cause`,
+/// which is the first line here. The rest asks the same questions of the same places —
+/// the base on the origin, and in every checkout and clone the branch, its worktrees,
+/// its fork point with the base under the object store the classifier lends, and its
+/// first-parent tail — and adds every session record, for a failure on a platform
+/// nobody here can run.
 fn diagnosis(
     providers: &CurrentProviders<'_>,
     scratch: &Scratch,
@@ -229,16 +229,6 @@ fn diagnosis(
             repo,
             &["merge-base", &base_tip, &reference],
             &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", &lent)],
-        ));
-        // The same store in its plain spelling, so a failure that is the spelling alone
-        // reads as one line failing beside one succeeding.
-        lines.push(asked(
-            repo,
-            &["merge-base", &base_tip, &reference],
-            &[(
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-                &plain_path(lent.clone()),
-            )],
         ));
         lines.push(asked(
             repo,

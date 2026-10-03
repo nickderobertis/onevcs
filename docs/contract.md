@@ -4027,6 +4027,18 @@ refused: feature/done of github.com/acme/project is keep / unknown: copy failed 
 Every other verdict reads as it did. Exit statuses do not move: a refused retirement
 still exits `4`.
 
+**What it found on Windows.** The cause named the read that had kept every landed branch
+a run clone held as `unknown` there: walking the commits after a recorded landing, `git
+rev-list --reverse <landed>..<tip>` in the run clone died with `fatal: failed to stat
+'<landed>..<tip>': Filename too long`. Given no `--`, git asks of each revision argument
+whether it is also a file by `stat`-ing it under the working tree, and treats any answer
+but "no such file" as fatal; under a run clone's path that passes Windows' 260-character
+limit, the answer is "too long". So every git read this crate makes that takes a
+revision — `log`, `rev-list` and `diff` — ends its revisions with `--`, which tells git
+no argument before it is a path and leaves nothing to `stat`. No flag, output or
+answer changes anywhere else, and `compat/tests/retired.rs` and `compat/tests/verdicts.rs`
+now run on every leg, Windows included.
+
 **The testing crate follows.** `onevcs-testing`'s state document carries `Recoverable`
 rows, and a row's `retirement` now writes `cause`, so the document is written at version
 17; a version 16 document reads, its retirements reading as ones whose cause is `null`.
