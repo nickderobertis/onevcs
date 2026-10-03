@@ -100,12 +100,6 @@ pub(crate) enum Reply<T> {
     Failed,
 }
 
-impl<T> Reply<T> {
-    pub(crate) fn asked(&self) -> bool {
-        !matches!(self, Reply::NotAsked)
-    }
-}
-
 /// What the host answered while a verdict was derived: whether the change request
 /// opened from the branch merged, and whether it is still open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
