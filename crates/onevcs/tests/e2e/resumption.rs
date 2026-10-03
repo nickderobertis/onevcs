@@ -28,6 +28,7 @@ use serde_json::Value;
 
 use crate::host::{Hosted, AUTOMATED, DIRECT, OPEN, REVIEWED};
 use crate::publish_branch::finished_hosted_branch;
+use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::Check;
 
@@ -344,10 +345,16 @@ fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_t
             hosted.world.on_the_host(&["pr", "ready", "1"]);
             hosted.world.on_the_host(&["pr", "merge", "1", "--squash"]);
         }),
+        // llmlint: ignore-block[tests_mirror_real_usage] a torn record is a fact about the
+        // host — a disk that filled, a hand edit, a build that wrote another shape — and no
+        // verb can produce one, because every write of a record is a whole-file atomic
+        // replace. What is driven over it is the real binary, which must read it as a
+        // boundary that does not hold.
         ("unreadable", |hosted| {
             let [record] = boundaries(hosted).try_into().expect("one boundary record");
             std::fs::write(record, "{\"identity\": ").expect("a torn record");
         }),
+        // llmlint: ignore-end[tests_mirror_real_usage]
     ];
     for (case, change) in cases {
         let hosted = verified_and_red();
@@ -463,4 +470,37 @@ fn a_change_whose_head_moved_on_the_host_takes_the_whole_path() {
         "the head that moved is what is named: {stderr}"
     );
     assert!(!stderr.contains("resuming the verified"), "{stderr}");
+}
+
+#[test]
+fn an_identity_whose_rules_now_publish_local_direct_takes_the_whole_path() {
+    // The rules file is the operator's to change, and a change request is no longer
+    // what this identity lands through: there is nothing to resume, and the whole path
+    // lands the branch locally through the hook, as a first publication would.
+    let hosted = verified_and_red();
+    configure_rules(
+        &hosted.world,
+        "version: 3\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    );
+    let output = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            BRANCH,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stderr.contains("cannot be resumed — this identity now publishes local-direct"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(hook_runs(&hosted), 2, "verification ran again");
+    assert_eq!(publications(&hosted), 2, "a workspace was built");
+    assert!(boundaries(&hosted).is_empty(), "the boundary was forgotten");
 }
