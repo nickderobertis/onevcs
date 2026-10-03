@@ -504,3 +504,50 @@ fn an_identity_whose_rules_now_publish_local_direct_takes_the_whole_path() {
     assert_eq!(publications(&hosted), 2, "a workspace was built");
     assert!(boundaries(&hosted).is_empty(), "the boundary was forgotten");
 }
+
+#[test]
+fn a_change_the_whole_path_adopted_records_its_new_boundary_and_is_resumed_from_it() {
+    // The branch moves after a red check, so the next publication verifies it again and
+    // adopts the change request it already has — and the check is red again. What that
+    // publication records is the adopted change at the tip it just verified, which the
+    // next re-entry resumes from.
+    let hosted = verified_and_red();
+    let checkout = &hosted.checkout;
+    hosted.world.git(checkout, &["checkout", "-q", BRANCH]);
+    hosted
+        .world
+        .commit_file(checkout, "two.txt", "two\n", "feat: add a second thing");
+    hosted.world.git(checkout, &["checkout", "-q", "main"]);
+    hosted.world.host_notices_the_push_after(0);
+    publish(&hosted)
+        .code(1)
+        .stderr(predicate::str::contains("cannot be resumed"))
+        .stderr(predicate::str::contains("required check failed"));
+    assert_eq!(hook_runs(&hosted), 2, "the moved branch was verified again");
+
+    let [record] = boundaries(&hosted).try_into().expect("one boundary record");
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("a record")).expect("JSON");
+    assert_eq!(
+        written["change"], "1",
+        "the adopted change request: {written}"
+    );
+    assert_eq!(
+        written["tip"],
+        hosted
+            .branch_on_origin(BRANCH)
+            .expect("the branch is on origin")
+            .as_str(),
+        "at the tip the second publication verified: {written}"
+    );
+
+    hosted.world.host_checks(&[required("success")]);
+    publish(&hosted)
+        .success()
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains(
+            "resuming the verified publication",
+        ));
+    assert_eq!(hook_runs(&hosted), 2, "no local verification ran again");
+    assert_eq!(publications(&hosted), 2, "no workspace was allocated");
+}
