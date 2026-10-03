@@ -90,6 +90,11 @@ mod holders;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod honesty;
+// Unix only: its hooks are POSIX shell, and its change-policy journey publishes
+// through the same substituted `gh` as `host.rs`. Its own header carries the reason.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod hook_environment;
 #[cfg(unix)]
 mod host;
 // Linux and Windows: it takes a duplicate of another process's pipe, which is

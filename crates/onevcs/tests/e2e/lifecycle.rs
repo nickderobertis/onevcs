@@ -6067,7 +6067,6 @@ fn a_base_that_advances_conflictingly_while_a_publication_is_queued_is_reported_
         &format!(
             "[ -e {armed} ] || exit 0\n\
              rm -f {armed}\n\
-             unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n\
              cd {other}\n\
              git fetch -q origin\n\
              git checkout -q -B main origin/main\n\
@@ -6149,7 +6148,6 @@ fn a_root_that_advances_before_the_queue_turn_is_resynced_without_the_stack_retu
             "[ -e {armed} ] || exit 0\n\
              rm -f {armed}\n\
              : > {marker}\n\
-             unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n\
              cd {other}\n\
              git fetch -q origin\n\
              git checkout -q -B main origin/main\n\
