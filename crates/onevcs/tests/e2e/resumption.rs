@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, AUTOMATED};
+use crate::host::{Hosted, AUTOMATED, DIRECT, OPEN, REVIEWED};
 use crate::publish_branch::finished_hosted_branch;
 use crate::support::{documented_default_prefix, documented_trailer};
 use crate::world::Check;
@@ -50,7 +50,13 @@ fn required(conclusion: &'static str) -> Check {
 /// A `change-auto` identity whose branch was published once, verified by its hook, and
 /// stopped on a red required check — the state the ticket's retry was in.
 fn verified_and_red() -> Hosted {
-    let hosted = Hosted::new(AUTOMATED);
+    verified_and_red_under(AUTOMATED)
+}
+
+/// The same under any change policy: every one of them watches its checks as a draft,
+/// so every one of them stops on a red required check with its change request open.
+fn verified_and_red_under(policy: &str) -> Hosted {
+    let hosted = Hosted::new(policy);
     counting_hook(&hosted, "the first gate");
     hosted.world.host_checks(&[required("failure")]);
     finished_hosted_branch(&hosted, BRANCH, "feat: add the resumed thing");
@@ -367,4 +373,94 @@ fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_t
         );
         assert_eq!(publications(&hosted), 2, "{case}: a workspace was built");
     }
+}
+
+#[test]
+fn every_change_policy_is_resumed_into_the_outcome_it_reaches_once_verified() {
+    // The boundary is recorded wherever a change request is open on a verified push, so
+    // every change policy is resumed — and each ends where its own first publication
+    // ends once its checks are green: lifted and left open, kept for review, or merged.
+    for (policy, outcome, event) in [
+        (OPEN, "change request open at", "draft-lifted"),
+        (
+            REVIEWED,
+            "kept as a draft for its user's review",
+            "draft-kept-for-review",
+        ),
+        (DIRECT, "merged at", "change-merged"),
+    ] {
+        let hosted = verified_and_red_under(policy);
+        hosted.world.host_checks(&[required("success")]);
+        let before = kinds(&hosted).len();
+        let resumed = publish(&hosted)
+            .success()
+            .stdout(predicate::str::contains(outcome));
+        assert_eq!(
+            hook_runs(&hosted),
+            1,
+            "{policy}: no local verification ran again"
+        );
+        assert_eq!(
+            publications(&hosted),
+            1,
+            "{policy}: no workspace was allocated"
+        );
+        let stderr = String::from_utf8_lossy(&resumed.get_output().stderr).into_owned();
+        assert!(
+            stderr.contains("resuming the verified publication"),
+            "{policy}: {stderr}"
+        );
+        let after: Vec<String> = kinds(&hosted).split_off(before);
+        assert!(
+            after.iter().any(|seen| seen == event),
+            "{policy}: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|seen| seen == "push"),
+            "{policy}: {after:?}"
+        );
+    }
+}
+
+#[test]
+fn a_change_whose_head_moved_on_the_host_takes_the_whole_path() {
+    // The checkout's branch, the base and every input still read back the same; what
+    // moved is the change request itself — somebody pushed onto the branch on the host,
+    // so its checks are about a commit nothing here verified.
+    let hosted = verified_and_red();
+    hosted.world.host_notices_the_push_after(0);
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.git(
+        &elsewhere,
+        &["checkout", "-q", "-b", BRANCH, &format!("origin/{BRANCH}")],
+    );
+    hosted.world.commit_file(
+        &elsewhere,
+        "pushed.txt",
+        "pushed\n",
+        "feat: pushed on the host",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", BRANCH]);
+    hosted.world.host_checks(&[required("success")]);
+
+    let output = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            BRANCH,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(publications(&hosted), 2, "a workspace was built: {stderr}");
+    assert!(
+        stderr.contains("cannot be resumed") && stderr.contains("at the commit it verified"),
+        "the head that moved is what is named: {stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
 }
