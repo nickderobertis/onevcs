@@ -1108,12 +1108,13 @@ fn a_change_request_recorded_against_a_base_git_would_not_accept_keeps_the_branc
     let text = std::fs::read_to_string(&stream).expect("the session's stream");
     let recorded = format!("\"base\":\"{base}\"");
     assert!(text.contains(&recorded), "{text}");
-    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate records a change
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate records a change
     // request against a base git would refuse — publish records the base it published
     // against — so the input under test is a stream line some other writer left; the real
     // binary is what reads it.
     std::fs::write(&stream, text.replace(&recorded, "\"base\":\"main..bad\""))
         .expect("the stream rewritten");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let before = hosted.branch_on_origin("feature/mangled");
     let asked = hosted.world.host_calls().len();
 
@@ -1622,15 +1623,16 @@ fn a_copy_whose_commit_cannot_be_read_keeps_the_branch_as_unknown_and_names_wher
         &yard.worker.to_string_lossy(),
     ])
     .success();
-    // llmlint: ignore[tests_mirror_real_usage] a ref naming a commit its repository does
-    // not have is what a pruned or half-copied object store leaves, and git refuses to
-    // write one through any command; the file is written the way that damage writes it,
-    // and the real binary is what reads it.
+    // llmlint: ignore-block[tests_mirror_real_usage] a ref naming a commit its repository
+    // does not have is what a pruned or half-copied object store leaves, and git refuses
+    // to write one through any command; the file is written the way that damage writes
+    // it, and the real binary is what reads it.
     std::fs::write(
         yard.worker.join(".git/refs/heads/feature/ghost"),
         "1111111111111111111111111111111111111111\n",
     )
     .expect("the worker's copy names a commit nobody has");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let (code, refused) = yard.verb(&["retire", "feature/ghost", "--dry-run"]);
     assert_eq!(code, 4, "{refused}");
     let (operation, subject, _) = cause_of(&refused);
