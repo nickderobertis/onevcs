@@ -3478,3 +3478,289 @@ fn a_repository_that_declares_no_required_check_publishes_as_it_always_has() {
         "a repository that requires nothing still lands its change"
     );
 }
+
+/// A publication parked at its publishing push until the journey lets it go.
+///
+/// The repository's own `pre-push` hook is the parking place, because it runs inside
+/// the real publication — after the clone, the fetch and the merge of the base, and
+/// before the push and every event after it — so whatever a journey reads while it is
+/// parked is read from inside a publication that is really running.
+struct ParkedPush {
+    started: PathBuf,
+    release: PathBuf,
+    finished: PathBuf,
+}
+
+impl ParkedPush {
+    /// Park every push of `fixture`'s identity, answering `exit` once released.
+    fn install(fixture: &Fixture, exit: u8) -> Self {
+        let parked = Self {
+            started: fixture.world.path("parked-started"),
+            release: fixture.world.path("parked-release"),
+            finished: fixture.world.path("parked-finished"),
+        };
+        fixture.verified_by(&format!(
+            "touch '{started}'\nfor _ in $(seq 1 1200); do [ -f '{release}' ] && break; sleep \
+             0.05; done\ntouch '{finished}'\nexit {exit}",
+            started = parked.started.display(),
+            release = parked.release.display(),
+            finished = parked.finished.display(),
+        ));
+        parked
+    }
+
+    /// Wait until the publication `running` has reached the push.
+    fn reached(&self, running: &mut std::process::Child) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !self.started.exists() {
+            if let Some(status) = running.try_wait().expect("ask after the publication") {
+                panic!("the publication ended ({status}) before it reached its push");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the publication never reached its push"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Let the push go, and wait for the hook to have answered.
+    fn release(&self) {
+        std::fs::write(&self.release, "").expect("release the parked push");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !self.finished.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the parked push never answered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+/// Start a branch-keyed verb as a process this journey owns.
+fn start(fixture: &Fixture, verb: &str, branch: &str) -> std::process::Child {
+    fixture
+        .world
+        .onevcs_std()
+        .args([verb, branch, "--repo", &fixture.checkout.to_string_lossy()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary must be built")
+}
+
+/// Wait for a verb this journey started, and hand back its exit code and stderr.
+fn finish(running: std::process::Child) -> (Option<i32>, String) {
+    let output = running.wait_with_output().expect("the publication ends");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// The `held_by` of `branch`'s row in the whole inventory, `null` where the row
+/// carries none.
+fn held_by(fixture: &Fixture, branch: &str) -> serde_json::Value {
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json", "--all"])
+        .assert()
+        .success();
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+    let row = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .unwrap_or_else(|| panic!("no row for {branch}: {rows:#?}"));
+    row.get("held_by")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Hold a running publication's `held_by` to the C1 shape, and answer its worktree.
+fn held_by_the_publication(fixture: &Fixture, branch: &str, family: &str) -> PathBuf {
+    let held = held_by(fixture, branch);
+    assert_eq!(held["holding"], "publication-running", "{held:#}");
+    assert!(
+        held.get("token").is_some_and(serde_json::Value::is_null),
+        "a publication names no session, and says so with null: {held:#}"
+    );
+    let worktree = PathBuf::from(held["worktree"].as_str().expect("a worktree"));
+    assert!(worktree.is_absolute(), "{}", worktree.display());
+    assert!(
+        worktree.starts_with(fixture.world.home().join("workspaces").join(family))
+            && worktree.ends_with("worktree")
+            && worktree.is_dir(),
+        "the publication's own workspace, which it is working in now: {}",
+        worktree.display()
+    );
+    worktree
+}
+
+#[test]
+fn a_branch_whose_publication_is_running_is_held_by_it_until_it_lands() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/in-flight", "feat: land while read");
+    let parked = ParkedPush::install(&fixture, 0);
+    let mut running = start(&fixture, "publish-branch", "feature/in-flight");
+    parked.reached(&mut running);
+
+    held_by_the_publication(&fixture, "feature/in-flight", "publications");
+    // And the rendering an operator reads names the publication rather than offering
+    // the branch to be landed a second time.
+    let assert = fixture.world.onevcs().arg("recoverable").assert().success();
+    let reported = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        reported.contains("held by a running publication"),
+        "{reported}"
+    );
+    assert!(
+        reported.contains("Not ready: a running publication still holds this branch"),
+        "{reported}"
+    );
+    assert!(!reported.contains("Resume:"), "{reported}");
+
+    parked.release();
+    let (code, stderr) = finish(running);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(fixture.origin_log()[0], "feat: land while read");
+    assert!(
+        held_by(&fixture, "feature/in-flight").is_null(),
+        "a finished publication holds nothing"
+    );
+}
+
+#[test]
+fn a_publication_the_merge_path_refuses_lets_go_of_its_branch() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/refused", "feat: turned down");
+    let parked = ParkedPush::install(&fixture, 1);
+    let mut running = start(&fixture, "publish-branch", "feature/refused");
+    parked.reached(&mut running);
+    held_by_the_publication(&fixture, "feature/refused", "publications");
+
+    parked.release();
+    let (code, stderr) = finish(running);
+    // 1 is the contract's code for a gate that rejected the change.
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        held_by(&fixture, "feature/refused").is_null(),
+        "a refused publication holds nothing"
+    );
+    // So the branch is offered again, as the work nobody is doing that it now is.
+    fixture
+        .world
+        .onevcs()
+        .arg("recoverable")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Resume:"));
+}
+
+#[test]
+fn a_publisher_that_dies_holds_nothing_by_the_rule_a_stale_lease_is_read_by() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/orphaned", "feat: left mid-flight");
+    // The hook refuses once released, so the push the dead publisher had started
+    // lands nothing behind this journey's back.
+    let parked = ParkedPush::install(&fixture, 1);
+    let mut running = start(&fixture, "publish-branch", "feature/orphaned");
+    parked.reached(&mut running);
+    held_by_the_publication(&fixture, "feature/orphaned", "publications");
+
+    // Killed outright, so nothing of the publisher's own runs to clean up after it.
+    running
+        .kill()
+        .expect("stop the publication this journey started");
+    running.wait().expect("and reap it");
+    // Nothing of the publisher's ran after the kill, so whatever it recorded is still
+    // there: what answers is the lease the OS released with it.
+    assert!(
+        held_by(&fixture, "feature/orphaned").is_null(),
+        "a publisher that died holds nothing"
+    );
+    parked.release();
+    assert_eq!(fixture.origin_log().len(), 1, "nothing landed");
+}
+
+#[test]
+fn a_running_recovery_holds_its_branch_as_a_publication_does() {
+    let fixture = Fixture::local(&local_direct());
+    let parked = ParkedPush::install(&fixture, 0);
+    let (token, worktree) = fixture.open(&["--branch", "feature/recovering"]);
+    fixture
+        .world
+        .commit_file(&worktree, "one.txt", "one\n", "feat: the first half");
+    // Uncommitted work at adoption is what writes the incomplete marker.
+    std::fs::write(worktree.join("half.txt"), "half\n").expect("uncommitted work");
+    for stage in [["session", "adopt"], ["session", "close"]] {
+        fixture
+            .world
+            .onevcs()
+            .args(stage)
+            .arg(&token)
+            .assert()
+            .success();
+    }
+
+    let mut running = start(&fixture, "recover", "feature/recovering");
+    parked.reached(&mut running);
+    held_by_the_publication(&fixture, "feature/recovering", "recoveries");
+
+    parked.release();
+    let (code, stderr) = finish(running);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(fixture.origin_log()[0], "feat: the first half");
+    assert!(held_by(&fixture, "feature/recovering").is_null());
+}
+
+#[test]
+fn a_publication_record_onevcs_did_not_write_is_refused_by_name() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/tampered", "feat: read with care");
+    let parked = ParkedPush::install(&fixture, 1);
+    let mut running = start(&fixture, "publish-branch", "feature/tampered");
+    parked.reached(&mut running);
+    running
+        .kill()
+        .expect("stop the publication this journey started");
+    running.wait().expect("and reap it");
+    parked.release();
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is a record no onevcs
+    // wrote — one naming a workspace outside the run root whose lease is asked — and no
+    // command writes one, so the record a killed publisher really left behind is found
+    // the only way anything can find it, under the state root, and edited by hand. The
+    // real CLI then meets it.
+    let record = std::fs::read_dir(fixture.world.home().join("publishing"))
+        .expect("the publication recorded itself")
+        .flat_map(|branch| std::fs::read_dir(branch.expect("a branch's records").path()))
+        .flatten()
+        .map(|entry| entry.expect("a record").path())
+        .next()
+        .expect("the killed publisher's record");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("the record reads"))
+            .expect("the record is JSON");
+    document["worktree"] = serde_json::json!("/somewhere/else/worktree");
+    std::fs::write(&record, document.to_string()).expect("rewrite the record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            record.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(
+            "its workspace is not inside its run root",
+        ));
+    // And removing it, as the refusal says, is all it takes.
+    std::fs::remove_file(&record).expect("remove the record");
+    assert!(held_by(&fixture, "feature/tampered").is_null());
+}

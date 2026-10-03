@@ -99,6 +99,15 @@ pub fn verdicts_dir() -> Result<PathBuf> {
     Ok(root()?.join("verdicts"))
 }
 
+/// The directory a running publication records itself in, per branch.
+///
+/// What a branch-keyed publication holds while it runs, read by the branch inventory;
+/// see `publishing.rs`. A host where no such publication has run has no such
+/// directory at all.
+pub fn publishing_dir() -> Result<PathBuf> {
+    Ok(root()?.join("publishing"))
+}
+
 /// Expand a leading `~` against this user's home directory.
 ///
 /// Only a leading `~/`, and only where a home directory is known — anything else

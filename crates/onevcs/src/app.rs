@@ -38,7 +38,7 @@ use crate::releases::{
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
 };
 use crate::session::{
-    Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
+    Holding, Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
 };
 use crate::store;
 use crate::{git, guidance, label, lock, policy, publish};
@@ -1263,8 +1263,12 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             Landed::Unknown => marks.push("may have landed".to_owned()),
             Landed::No => {}
         }
-        if row.held_by.is_some() {
-            marks.push("held by a live session".to_owned());
+        match row.held_by.as_ref().map(|held| held.holding) {
+            Some(Holding::PublicationRunning) => {
+                marks.push("held by a running publication".to_owned());
+            }
+            Some(_) => marks.push("held by a live session".to_owned()),
+            None => {}
         }
         if let Some(net) = row.net_negative {
             marks.push(format!(
@@ -1373,15 +1377,29 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
             // Deliberately not spelled `Resume:` — the one label on this report that
             // is read as "paste this" belongs to a row whose work has stopped, and
             // this row's has not.
-            Some(held) => println!(
-                "    Not ready: session {token} still holds this branch and {because}, so \
-                 running `{command}` now would publish a branch mid-flight. Its worktree is \
-                  {worktree}; wait for it, or close it with `{close}`, and then run that command",
-                token = held.token.0,
-                because = held.holding.because(),
-                worktree = held.worktree.display(),
-                close = guidance::command(["onevcs", "session", "close", &held.token.0]),
-            ),
+            Some(held) => match &held.token {
+                Some(token) => println!(
+                    "    Not ready: session {token} still holds this branch and {because}, so \
+                     running `{command}` now would publish a branch mid-flight. Its worktree is \
+                      {worktree}; wait for it, or close it with `{close}`, and then run that \
+                     command",
+                    token = token.0,
+                    because = held.holding.because(),
+                    worktree = held.worktree.display(),
+                    close = guidance::command(["onevcs", "session", "close", &token.0]),
+                ),
+                // A publication has no session to close: what an operator can do is let
+                // it finish, after which the row says whether it landed.
+                None => println!(
+                    "    Not ready: {holder} still holds this branch and {because}, so \
+                     running `{command}` now would publish it a second time mid-flight. Its \
+                     workspace is {worktree}; wait for it to finish, and run that command only \
+                     if this branch is still listed afterwards",
+                    holder = crate::vcs::holder(held),
+                    because = held.holding.because(),
+                    worktree = held.worktree.display(),
+                ),
+            },
             None => println!("    Resume: {command}"),
         }
         render_reclaim(&registry, &row);

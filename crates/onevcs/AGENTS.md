@@ -515,9 +515,12 @@ and what a name already means are each stated rather than left to be inferred.
   which only `--all` lists and which carries an empty `recover_command`. A branch
   nothing can decide about is listed rather than withheld, because it may be work
   nobody published; it keeps the argv and loses the label that reads as "paste this".
-  Live is asked two ways — the process that opened
-  the session, and its run root's occupancy lease — because each is the true one at a
-  different time. A net-negative branch is marked instead of withheld: stripping work
+  Live is asked three ways — the process that opened
+  the session, its run root's occupancy lease, and the branch-scoped lease a running
+  `publish-branch` or `recover` holds under no session (`publishing.rs`, reported with a
+  `null` token) — because each is the true one at a different time. That last lease is
+  the `Landing`'s final field, so whatever a landing cleans up when it is dropped is
+  done while the branch still reads as held. A net-negative branch is marked instead of withheld: stripping work
   may be exactly right, and this report does not decide. Both are measured against the
   base the branch would be published into, so this report and that publication cannot
   disagree about what it would land.

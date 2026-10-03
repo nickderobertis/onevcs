@@ -1981,7 +1981,7 @@ fn a_branch_the_calling_process_still_holds_is_reported_as_held_rather_than_read
         .held_by
         .as_ref()
         .unwrap_or_else(|| panic!("a live session's hold is reported: {row:#?}"));
-    assert_eq!(held.token, session.token);
+    assert_eq!(held.token, Some(session.token.clone()));
     assert_eq!(held.worktree, session.worktree);
     assert_eq!(held.holding, Holding::OwnerRunning);
     assert!(

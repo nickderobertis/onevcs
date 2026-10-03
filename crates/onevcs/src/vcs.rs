@@ -16,7 +16,7 @@ use crate::session::{
 };
 use crate::stream::Stream;
 use crate::workspace::{self, object};
-use crate::{git, label, lock, provenance, publish, store};
+use crate::{git, label, lock, provenance, publish, publishing, store};
 
 use serde_json::json;
 use url::Url;
@@ -985,9 +985,9 @@ fn preserved_row(
         ),
         _ => match &held_by {
             Some(held) => format!(
-                "nothing has stopped: session {token} still holds this branch and \
+                "nothing has stopped: {holder} still holds this branch and \
                  {because}. Its work is being made in {worktree}",
-                token = held.token.0,
+                holder = holder(held),
                 because = held.holding.because(),
                 worktree = held.worktree.display(),
             ),
@@ -1178,10 +1178,10 @@ fn session_holding<'a>(
         .map(|record| record.token.as_ref())
 }
 
-/// The live session still writing to a preserved branch, when one is.
+/// What is still writing to a preserved branch, when anything is.
 ///
-/// Two ways of being live, because the two are true at different times and a report
-/// that knew only one would offer somebody a branch mid-flight. A consumer holding a
+/// Three ways of being live, because they are true at different times and a report
+/// that knew fewer would offer somebody a branch mid-flight. A consumer holding a
 /// [`Session`] keeps the process that opened it, which is the question
 /// [`Liveness`] already answers; the CLI takes an occupancy lease per command and
 /// outlives none of them, so what says a command is in there *now* is the lease
@@ -1190,6 +1190,12 @@ fn session_holding<'a>(
 /// Only an open session is asked about: closing one hands its branch back and means
 /// finished, and its run root going on being occupied afterwards says nothing about
 /// work nobody is doing on that branch any more.
+///
+/// The third is a branch-keyed publication, which holds the branch under no session
+/// at all and is found by the branch rather than by a record: [`publishing::running`]
+/// reads its lease with the same [`lock::is_occupied`] the run root's is read with,
+/// so a publisher that died is not running by the same rule. A session is asked
+/// first, because a held session names a token an operator can act on.
 fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Result<Option<HeldBy>> {
     for record in sessions {
         if record.identity != identity
@@ -1206,13 +1212,28 @@ fn held_by(sessions: &[workspace::Record], identity: &str, branch: &str) -> Resu
         };
         if let Some(holding) = holding {
             return Ok(Some(HeldBy {
-                token: SessionToken(record.token.to_string()),
+                token: Some(SessionToken(record.token.to_string())),
                 worktree: record.worktree.clone(),
                 holding,
             }));
         }
     }
-    Ok(None)
+    Ok(
+        publishing::running(identity, branch)?.map(|worktree| HeldBy {
+            token: None,
+            worktree,
+            holding: Holding::PublicationRunning,
+        }),
+    )
+}
+
+/// What holds a branch, named the way a report's sentence names it: the session by
+/// its token, and a running publication — which has none — as what it is.
+pub(crate) fn holder(held: &HeldBy) -> String {
+    match &held.token {
+        Some(token) => format!("session {}", token.0),
+        None => "a running publication".to_owned(),
+    }
 }
 
 /// What a branch would land, when it removes more lines than it adds.

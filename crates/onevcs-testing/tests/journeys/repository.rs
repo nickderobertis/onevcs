@@ -209,7 +209,7 @@ fn preserved_work_is_what_recoverable_reports() {
         .held_by
         .as_ref()
         .unwrap_or_else(|| panic!("an open session still holds its branch: {:#?}", rows[0]));
-    assert_eq!(held.token, session.token);
+    assert_eq!(held.token, Some(session.token.clone()));
     assert_eq!(held.worktree, session.worktree);
     assert_eq!(held.holding, Holding::OwnerRunning);
 

@@ -24,7 +24,7 @@ use crate::rules::MergePolicy;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspace::{self, Ref};
-use crate::{git, guidance, home, ids, lock, policy, provenance, sweep};
+use crate::{git, guidance, home, ids, lock, policy, provenance, publishing, sweep};
 
 /// Which verb is landing the branch.
 ///
@@ -138,6 +138,15 @@ pub struct Landing {
     // unvalidated `String` at the public surface and would make no state here
     // unrepresentable.
     pub stack_replay: Option<String>,
+    /// The hold this publication has on its branch, which is what the branch
+    /// inventory reads as `publication-running` while it lasts.
+    ///
+    /// Taken before the first fetch into this landing's clone and released when the
+    /// landing is dropped — after the publication's last event, since every event is
+    /// written while the landing is still borrowed — and by the OS if this process
+    /// dies first. Declared last, so it is the last field released: anything a
+    /// landing cleans up when it goes is done while the branch still reads as held.
+    _publication: publishing::Lease,
 }
 
 /// The tip a repository still has for a branch a preserved commit recorded.
@@ -227,6 +236,10 @@ pub fn prepare(
     })?;
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
+    // Before anything is fetched into the clone: from here until the landing is
+    // dropped, a reader of the branch inventory sees this branch as held by the
+    // publication being made in `worktree`.
+    let publication = publishing::Lease::take(&resolution.key, branch, &run_root, &worktree)?;
 
     // Where this run has actually *seen* the host's copy of the branch: the
     // remote-tracking ref in the checkout the branch was found in, read before
@@ -351,6 +364,7 @@ pub fn prepare(
         compared_change_base,
         observed,
         stack_replay,
+        _publication: publication,
     })
 }
 
