@@ -36,6 +36,11 @@ onevcs = "=0.32.2"
 # `tests/released.rs` makes and only a build that old can make it for.
 # llmlint: ignore[crates_stay_in_one_cargo_workspace] a released build pinned exactly is the subject of the claim, and a workspace dependency could only name this build.
 onevcs-envelope-era = { package = "onevcs", version = "=0.13.0" }
+# The release immediately before the verified-boundary record (`$ONEVCS_HOME/verified/`),
+# which `tests/verified.rs` holds to reading and publishing over a host this build left
+# one on. Pinned exactly, for the reason above: the claim is about that build.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a released build pinned exactly is the subject of the claim, and a workspace dependency could only name this build.
+onevcs-previous = { package = "onevcs", version = "=0.40.0" }
 # This build, linked beside the release so one journey writes a host's state with it
 # and reads that state back with the release. A path rather than a version, because
 # what writes the records has to be the tree under review.

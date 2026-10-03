@@ -4115,7 +4115,10 @@ it and renamed into place; one that cannot be written costs only the resume, sai
 stderr. **Nothing else under the state root moves:** the registry, the session records and
 the publication leases keep their shapes and versions, and no stream event kind is added,
 so the release before this one shares the root without ever reading `verified/` and needs
-no migration.
+no migration. `compat/tests/verified.rs` holds the released 0.40.0 to it: over a state
+root on which this build left a real boundary, the registry and every session record are
+the bytes they were, 0.40.0 answers every read as it does with the record moved aside, and
+it publishes the same branch through to the merge without touching the record.
 
 Event kinds added: none.
 

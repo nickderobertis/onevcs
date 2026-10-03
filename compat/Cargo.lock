@@ -916,12 +916,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "onevcs"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9fb47fe3bb2156fdb4003612e7839fddbf259ca1ab16565e2fb844c46ff2854"
+dependencies = [
+ "clap",
+ "dunce",
+ "filetime",
+ "fs4",
+ "icu_properties",
+ "libc",
+ "minijinja",
+ "onemessagebus",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "time",
+ "toml",
+ "url",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "onevcs-envelope-compat"
 version = "0.0.0"
 dependencies = [
  "onevcs 0.13.0",
  "onevcs 0.32.2",
  "onevcs 0.40.0",
+ "onevcs 0.40.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json",
 ]
 
