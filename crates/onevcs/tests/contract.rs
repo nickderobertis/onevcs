@@ -7678,7 +7678,16 @@ fn the_unknown_cause_amendment_declares_its_surface_and_the_json_and_line_it_spe
             "a cause beside another reason read: {document}"
         );
     }
-    // …every other reason writes `null`…
+    // …and so is a cause that names nothing.
+    for key in ["operation", "subject", "error"] {
+        let mut document = documented.clone();
+        document["cause"][key] = json!("  ");
+        assert!(
+            serde_json::from_value::<onevcs::Retirement>(document.clone()).is_err(),
+            "a cause with a blank {key} read: {document}"
+        );
+    }
+    // Every other reason writes `null`…
     let kept = onevcs::Retirement {
         reason: Some(onevcs::KeepReason::UnmergedUniqueCommits),
         cause: None,

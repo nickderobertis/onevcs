@@ -201,6 +201,15 @@ impl KeepReason {
 /// The read that failed, for a branch kept as [`KeepReason::Unknown`]: which read it
 /// was, what it read, and the error it got — so a kept branch says what to look at
 /// rather than only that something could not be read.
+// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] the
+// unknown-cause amendment in `docs/contract.md` fixes this type field for field as three
+// `String`s — the manager's ruling for plan `accepted-followups-1002`, which
+// `onepipeline` links — so an enum of operations would change a shared interface this
+// crate may not change alone. What is held where a document is read is what makes a
+// cause one at all: `AnyRetirement` refuses a cause beside any reason but `unknown`, and
+// one with a blank operation, subject or error. The operation's words stay open there on
+// purpose: a build that names a new read writes a document an older build still reads,
+// rather than one it refuses over the field that is only ever diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UnknownCause {
     /// The read that failed: `census`, `copy`, `live-holder`, `worked-in`, `judge`,
@@ -446,8 +455,21 @@ impl TryFrom<AnyRetirement> for Retirement {
                 "a retirement carries a proof exactly when its class is retirable".to_owned(),
             );
         }
-        if any.cause.is_some() && any.reason != Some(KeepReason::Unknown) {
-            return Err("a retirement carries a cause only when its reason is unknown".to_owned());
+        if let Some(cause) = &any.cause {
+            if any.reason != Some(KeepReason::Unknown) {
+                return Err(
+                    "a retirement carries a cause only when its reason is unknown".to_owned(),
+                );
+            }
+            if [&cause.operation, &cause.subject, &cause.error]
+                .iter()
+                .any(|field| field.trim().is_empty())
+            {
+                return Err(
+                    "a retirement's cause names its operation, its subject and its error"
+                        .to_owned(),
+                );
+            }
         }
         if any.class == RetirementClass::SupersededWithChanges && any.superseded_by.is_none() {
             return Err("a superseded-with-changes retirement names what superseded it".to_owned());

@@ -3988,8 +3988,9 @@ impl Retirement { pub fn cause(&self) -> Option<&UnknownCause>; }
 
 **The JSON.** Every `Retirement` writes `cause`, as every key of it is written: `null`,
 or `{"operation": string, "subject": string, "error": string}`. It is non-null exactly
-when `reason` is `unknown`. A document carrying a cause beside any other reason does not
-deserialize; a document without the key reads as `null`, which is what one written
+when `reason` is `unknown`. A document carrying a cause beside any other reason, or one
+whose operation, subject or error is blank, does not deserialize; a document without the
+key reads as `null`, which is what one written
 before this field existed said. So it is in every `retire`, `reclaim` and
 `retire-finished` `--json` entry, in the `retirement` of every `recoverable --json` row,
 and in the retirement a recorded verdict holds — which is never `unknown`, so its cause
