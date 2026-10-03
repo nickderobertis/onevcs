@@ -198,6 +198,12 @@ mod registry;
 // real git and a real bare origin. Its own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice. What these
+// journeys exercise is `publish-branch`, which every crate change can reach, and they
+// reach no external service — local bare origins and the substituted `gh` — running
+// offline in under two seconds together.
 mod resumption;
 // Unix only: a landing releasing what it built in, driven through real publications
 // whose POSIX-shell gates start real processes inside the workspace. One ending goes

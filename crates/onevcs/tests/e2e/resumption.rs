@@ -329,6 +329,65 @@ fn a_tip_base_or_verification_input_that_moved_takes_the_whole_path() {
 }
 
 #[test]
+fn a_base_that_moved_while_it_was_verified_is_recorded_as_verified_and_not_resumed() {
+    let hosted = Hosted::new(AUTOMATED);
+    let verified_base = hosted.world.git(&hosted.origin, &["rev-parse", "main"]);
+    // Somebody else's change lands on the base while the gate runs: after the
+    // publication fetched what it verifies against, before its boundary is recorded.
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "elsewhere");
+    hosted.world.commit_file(
+        &elsewhere,
+        "other.txt",
+        "other\n",
+        "feat: somebody else's change",
+    );
+    let landed = hosted.world.path("landed");
+    let counter = hosted.world.path("hook-runs");
+    hosted.world.install_pre_push(
+        &hosted.checkout,
+        &format!(
+            "echo ran >> '{counter}'\n\
+             if [ ! -e '{landed}' ]; then\n\
+             \x20 touch '{landed}'\n\
+             \x20 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+             git -C '{elsewhere}' push -q origin main\n\
+             fi",
+            counter = counter.display(),
+            landed = landed.display(),
+            elsewhere = elsewhere.display(),
+        ),
+    );
+    hosted.world.host_checks(&[required("failure")]);
+    finished_hosted_branch(&hosted, BRANCH, "feat: add the resumed thing");
+    publish(&hosted)
+        .code(1)
+        .stderr(predicate::str::contains("required check failed"));
+    assert_eq!(hook_runs(&hosted), 1, "the first publication ran the hook");
+    let moved_base = hosted.world.git(&hosted.origin, &["rev-parse", "main"]);
+    assert_ne!(moved_base, verified_base, "the base moved during the gate");
+
+    let [record] = boundaries(&hosted).try_into().expect("one boundary record");
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("a record")).expect("JSON");
+    assert_eq!(
+        written["base_commit"],
+        verified_base.as_str(),
+        "the record names the base the gate verified against, not where it moved"
+    );
+
+    hosted.world.host_notices_the_push_after(0);
+    hosted.world.host_checks(&[required("success")]);
+    let assert = publish(&hosted)
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("cannot be resumed"), "{stderr}");
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(hook_runs(&hosted), 2, "verification ran again");
+    assert_eq!(publications(&hosted), 2, "a workspace was built");
+}
+
+#[test]
 fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_the_whole_path() {
     let cases: [Between; 4] = [
         ("closed", |hosted| hosted.world.close_change_request(1)),
