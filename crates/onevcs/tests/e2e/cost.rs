@@ -151,14 +151,18 @@ fn validated_names(calls: &[Call]) -> Vec<String> {
 
 /// Every content comparison one read made, by the branch it compared.
 ///
-/// `git diff --name-only --no-renames -z <fork> <branch>` is the entry to the
+/// `git diff --name-only --no-renames -z <fork> <branch> --` is the entry to the
 /// landing decision's last tier and is reached from nowhere else, so counting it
 /// counts exactly the thing the cheaper tiers are supposed to make unnecessary.
 fn content_comparisons(calls: &[Call]) -> Vec<String> {
     calls
         .iter()
         .filter_map(|call| call.args.strip_prefix("diff --name-only --no-renames -z "))
-        .filter_map(|rest| rest.split_whitespace().next_back())
+        .filter_map(|rest| {
+            rest.split_whitespace()
+                .take_while(|word| *word != "--")
+                .last()
+        })
         .map(str::to_owned)
         .collect()
 }

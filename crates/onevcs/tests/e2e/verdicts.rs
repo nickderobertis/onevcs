@@ -587,7 +587,7 @@ fn a_repeat_pass_over_unchanged_state_reuses_every_verdict_and_asks_the_origin_o
         .into_iter()
         .filter(|call| {
             !(call.args.starts_with("rev-list --count refs/heads/")
-                && call.args.ends_with(" --not --remotes=origin"))
+                && call.args.ends_with(" --not --remotes=origin --"))
         })
         .collect();
     assert_eq!(swept.len(), first.len());
