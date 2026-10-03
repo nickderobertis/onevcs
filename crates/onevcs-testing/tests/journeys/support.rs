@@ -206,7 +206,7 @@ pub fn full_vcs_state() -> VcsState {
             // the scenario its manager has to skip — and it names a session this state
             // opened, because a hold on a session nobody opened is refused.
             held_by: Some(HeldBy {
-                token: token.clone(),
+                token: Some(token.clone()),
                 worktree: PathBuf::from("/scratch/s-testing-1/worktree"),
                 holding: Holding::OwnerRunning,
             }),

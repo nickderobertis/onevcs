@@ -79,6 +79,7 @@ pub mod provenance;
 mod providers;
 mod publish;
 mod publish_branch;
+mod publishing;
 mod queue;
 mod recover;
 pub mod registry;

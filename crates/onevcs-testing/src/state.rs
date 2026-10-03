@@ -675,11 +675,12 @@ impl Checked for VcsState {
             known_identity(self, &row.identity, "preserved work")?;
             named_branch(&row.branch.branch, "the preserved branch")?;
             named_branch(&row.branch.base, "the preserved branch's base")?;
-            // The hold names a session, so it is checked like the three below: a row
+            // A hold that names a session is checked like the three below: a row
             // held by a session nobody opened is the same fiction, and the costly one
-            // — it is the session an operator is told to wait for or close.
-            if let Some(held) = &row.held_by {
-                opened(self, &held.token, "holding preserved work")?;
+            // — it is the session an operator is told to wait for or close. A running
+            // publication holds a branch under no session and names none.
+            if let Some(token) = row.held_by.as_ref().and_then(|held| held.token.as_ref()) {
+                opened(self, token, "holding preserved work")?;
             }
         }
         // Both of these name a session, so both are checked twice over: the token

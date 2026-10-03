@@ -203,8 +203,8 @@ say nothing — a consumer that predates them reads the document it always read.
 | Item | Shape | Why |
 | --- | --- | --- |
 | `Recoverable.held_by` | `Option<HeldBy>` | Present is the whole answer: the work has not stopped. Excluding the row instead would hide live work from the one report that lists work nobody has, which is the failure this report exists for. |
-| `HeldBy` | `token`, `worktree`, `holding` | The token because acting on it means waiting for that session or closing it by name, and the worktree because that is where the work is being made. |
-| `Holding` | `owner-running` / `run-root-occupied` | Reported rather than derived, and two values because the two are true at different times: a consumer holding a `Session` keeps the process that opened it (which is `Liveness::Live`), while the CLI takes an occupancy lease per command and outlives none of them, so what says a command is in there *now* is the lease. `because` is public with it so a caller renders the crate's own clause rather than inventing a second one. |
+| `HeldBy` | `token: Option<SessionToken>`, `worktree`, `holding` | The token because acting on it means waiting for that session or closing it by name, and the worktree — absolute — because that is where the work is being made. The token is `None`, written as `null` rather than omitted, exactly when `holding` is `publication-running`: a branch-keyed publication is made under no session, so there is no token to name, and its `worktree` is that publication's own workspace. |
+| `Holding` | `owner-running` / `run-root-occupied` / `publication-running` | Reported rather than derived, and three values because they are true at different times: a consumer holding a `Session` keeps the process that opened it (which is `Liveness::Live`), while the CLI takes an occupancy lease per command and outlives none of them, so what says a command is in there *now* is the lease. `publication-running` is the third: `publish-branch` and `recover` publish a branch no session holds, and each holds a branch-scoped occupancy lease from before its first fetch until after its last event, released however it ends — a publisher that dies is read as not running by the same lock probe a stale run-root lease is. `because` is public with it so a caller renders the crate's own clause rather than inventing a second one. |
 | `Recoverable.net_negative` | `Option<NetNegative>` | Marked, never excluded: a branch that deletes far more than it adds may be exactly right, and this report is not the thing that decides. Present only when it is net-negative, so absence is the other answer rather than a number a consumer has to compare. |
 | `NetNegative` | a `LineChange` that removes more than it adds | The mark and its evidence are one value, so a row cannot carry a count saying the opposite of the field it is in, and the rule lives in one place rather than at the site that measures a branch and at every consumer reading one back. It serializes as the `LineChange` it holds, so `--json` carries the two counts either way, and a document naming a count that is not net-negative is refused where it is read. |
 | `LineChange` | `added`, `removed` | Counted from the commit the branch forked from, because that is what the branch did; against a base that has moved on, every line the base gained would read as a line the branch removed and never touched. |
@@ -986,3 +986,13 @@ question was:
    hand (`onevcs-testing` does, and moved in the same change). Confirming it means
    one amendment naming the two fields and the four types they carry, not a new
    answer to approve.
+14. **`HeldBy.token` became optional, and `Holding` gained `publication-running`.** A
+   branch whose `publish-branch` or `recover` was running read as idle preserved work,
+   because only an open session could hold one, and a stop guard reading `held_by`
+   refused a turn over a publication that was in flight. A publication holds no session,
+   so its hold names no token: `token` is `null` exactly when `holding` is
+   `publication-running`, and `worktree` is the publication's own workspace. Changing
+   the field's type is a break for anyone constructing or matching a `HeldBy`
+   (`onevcs-testing` does, and moved in the same change), and a reader that required a
+   token string meets `null` on this one hold. Confirming it means one amendment naming
+   the nullable token and the third value, not a new answer to approve.

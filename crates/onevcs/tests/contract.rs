@@ -2310,7 +2310,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     // into the type keeps both marks rather than dropping them into a lossy read.
     let marked = Recoverable {
         held_by: Some(HeldBy {
-            token: SessionToken("s-0123456789ab".to_owned()),
+            token: Some(SessionToken("s-0123456789ab".to_owned())),
             worktree: PathBuf::from("/home/agent/.onevcs/workspaces/run/worktree"),
             holding: Holding::OwnerRunning,
         }),
@@ -2345,6 +2345,36 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
     assert_eq!(
         serde_json::from_value::<Recoverable>(value.clone()).expect("a marked row reads back"),
         marked
+    );
+    // A running publication holds a branch under no session: its token is written as
+    // `null` rather than omitted, so a reader meets the key on every hold, and the row
+    // reads back as the hold it was.
+    let publishing = Recoverable {
+        held_by: Some(HeldBy {
+            token: None,
+            worktree: PathBuf::from(
+                "/home/agent/.onevcs/workspaces/publications/feature-1/worktree",
+            ),
+            holding: Holding::PublicationRunning,
+        }),
+        ..marked.clone()
+    };
+    let published = serde_json::to_value(&publishing).expect("a held row serializes");
+    assert_eq!(
+        published["held_by"],
+        json!({
+            "token": null,
+            "worktree": "/home/agent/.onevcs/workspaces/publications/feature-1/worktree",
+            "holding": "publication-running",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<Recoverable>(published).expect("a publication's hold reads back"),
+        publishing
+    );
+    assert_eq!(
+        Holding::PublicationRunning.because(),
+        "a publication is running on this branch right now"
     );
     // The mark carries its own rule, so a count that is not net-negative is not a mark
     // this reads back — neither from a document nor from a caller holding the type.

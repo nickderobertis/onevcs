@@ -391,11 +391,12 @@ pub struct Recoverable {
     /// pasted, so the answer is the absence of a command rather than a command with
     /// a warning beside it.
     pub recover_command: Vec<String>,
-    /// The live session still writing to this branch, when one is.
+    /// The live session still writing to this branch, or the publication of it
+    /// running right now, when either is.
     ///
     /// Present at all is the answer: this is not preserved work yet, and
-    /// [`recover_command`](Self::recover_command) must not be run until that session
-    /// is done with it. Absent — every row of a report about work that really did
+    /// [`recover_command`](Self::recover_command) must not be run until whatever holds
+    /// it is done with it. Absent — every row of a report about work that really did
     /// stop — and the row is exactly what it has always been.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_by: Option<HeldBy>,
@@ -526,23 +527,32 @@ pub struct OnOrigin {
     pub commit: String,
 }
 
-/// The live session that still holds a preserved branch.
+/// What still holds a preserved branch: a live session, or a publication of it
+/// running right now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldBy {
     /// The session, so an operator can wait for it or close it by name.
-    pub token: SessionToken,
-    /// The worktree its work is being made in.
+    ///
+    /// `None` exactly when [`holding`](Self::holding) is
+    /// [`Holding::PublicationRunning`]: a branch-keyed publication is made under no
+    /// session, so there is no token to name. Written as `null` rather than omitted,
+    /// so a reader meets the key on every row that carries this.
+    pub token: Option<SessionToken>,
+    /// The worktree its work is being made in — for a running publication, that
+    /// publication's own workspace. Absolute.
     pub worktree: PathBuf,
     /// How this host can tell it is still live.
     pub holding: Holding,
 }
 
-/// How a host can tell that a session still holds its branch.
+/// How a host can tell that something still holds a branch.
 ///
-/// Two answers rather than one, because the two are true at different times: a
+/// Three answers rather than one, because they are true at different times: a
 /// consumer holding a [`Session`] keeps the process that opened it alive, while the
-/// CLI takes an occupancy lease per command and outlives none of them. Either one is
-/// a session that has not finished with its branch.
+/// CLI takes an occupancy lease per command and outlives none of them — either is a
+/// session that has not finished with its branch — and a branch-keyed publication
+/// (`publish-branch`, `recover`) holds the branch under no session at all, for as
+/// long as it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Holding {
@@ -552,6 +562,9 @@ pub enum Holding {
     /// Something holds the occupancy lease on its run root right now, so a command
     /// is working in there whatever became of the process that opened the session.
     RunRootOccupied,
+    /// A publication of the branch is running right now, under no session. Its
+    /// [`HeldBy::token`] is `None`.
+    PublicationRunning,
 }
 
 impl Holding {
@@ -561,6 +574,7 @@ impl Holding {
         match self {
             Self::OwnerRunning => "the process that opened it is still running",
             Self::RunRootOccupied => "a command is working in its run root right now",
+            Self::PublicationRunning => "a publication is running on this branch right now",
         }
     }
 }

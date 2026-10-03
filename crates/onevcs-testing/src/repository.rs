@@ -558,7 +558,7 @@ fn held(state: &VcsState, row: Recoverable) -> Recoverable {
     });
     Recoverable {
         held_by: holder.map(|session| HeldBy {
-            token: session.token.clone(),
+            token: Some(session.token.clone()),
             worktree: session.worktree.clone(),
             holding: Holding::OwnerRunning,
         }),
