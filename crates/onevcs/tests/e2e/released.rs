@@ -56,6 +56,17 @@ fn daemon_pid(world: &World) -> i32 {
         .expect("a pid is a number")
 }
 
+/// The command line a process a gate leaves behind runs this crate's binary by,
+/// pointed at the world's scratch state root by name rather than by what the hook
+/// happened to inherit.
+fn onevcs_for_a_gate(world: &World) -> String {
+    format!(
+        "ONEVCS_HOME=\"{home}\" \"{binary}\"",
+        home = world.home().display(),
+        binary = crate::support::binary_dir().join("onevcs").display(),
+    )
+}
+
 /// What a run root holds, by name, sorted.
 fn holds(run_root: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(run_root)
@@ -440,16 +451,15 @@ fn the_branch_reads_as_held_until_its_workspace_is_released() {
     // under which the `sleep` the release stops beside it would end it before its trap
     // ran.
     let fixture = Fixture::local(&local_direct());
-    let onevcs = crate::support::binary_dir().join("onevcs");
+    let onevcs = onevcs_for_a_gate(&fixture.world);
     gated(
         &fixture,
         &format!(
             "root=$(cd ../.. && pwd)\n(\n  set +e\n  trap 'for v in $(compgen -e | grep \"^GIT_\"); do unset \"$v\"; done\n    \
              [ -d \"$root/clone\" ] && touch \"$HOME/still-standing\"\n    \
-             \"{onevcs}\" recoverable --json --all > \"$HOME/read.json\" 2> \"$HOME/read.err\"\n    \
+             {onevcs} recoverable --json --all > \"$HOME/read.json\" 2> \"$HOME/read.err\"\n    \
              exit 0' TERM\n  while :; do sleep 0.05; done\n) >/dev/null 2>&1 </dev/null &\n\
              echo $! > \"$HOME/daemon.pid\"\nexit 0",
-            onevcs = onevcs.display(),
         ),
     );
     finished_branch(&fixture, "feature/watched");
