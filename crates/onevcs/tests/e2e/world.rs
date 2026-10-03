@@ -204,13 +204,16 @@ impl World {
     /// Every advisory lock file this world's state root holds so far.
     ///
     /// A lock is named after a digest of what it guards, so which one guards a
-    /// given run root is read off *when it appears* rather than recomputed here.
+    /// given run root is read off *when it appears* rather than recomputed here. The
+    /// locks session records are written under live in a directory of their own and
+    /// are not among these.
     pub fn locks(&self) -> BTreeSet<PathBuf> {
         std::fs::read_dir(self.home().join("locks"))
             .into_iter()
             .flatten()
             .flatten()
             .map(|entry| entry.path())
+            .filter(|path| path.is_file())
             .collect()
     }
 

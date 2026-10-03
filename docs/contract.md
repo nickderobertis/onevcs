@@ -1335,6 +1335,16 @@ removed underneath one, an edge across identities, a cycle — **stops and answe
 whole point is that a wrong `no` here is the answer somebody pastes a publication
 under.
 
+**A lifecycle write preserves every field it does not own.** A session record is
+written by several processes — the opening that supersedes it, a close, a
+publication, a retirement — and each read it long before it writes. So every write
+of a record that already exists takes that session's own exclusive lock, re-reads
+the record under it, changes only the fields that writer owns, and saves: every
+other field survives, `retried_by` and the keys a newer build wrote that this one
+does not know included. Measured on onevcs#263: a retirement closed a session by
+saving the copy its census had read, and erased the `retried_by` link a retry had
+written in between. The record's shape does not move — it stays at version 3.
+
 ```rust
 pub enum Phase { Development, Integrate, Review, Release } // this crate's own declaration
 impl Phase {

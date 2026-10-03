@@ -194,6 +194,11 @@ mod publication_watch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: a git hook the step runs is what opens the retry inside it, and its hooks
+// are POSIX shell. Everything is local: real bare origin, real clones and slots, the
+// compiled binary on both sides of the race.
+#[cfg(unix)]
+mod record_writes;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`.
 // Its own header carries the reason in full.
 #[cfg(unix)]

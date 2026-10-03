@@ -619,7 +619,7 @@ pub fn run_for_session(
     hosting: &dyn Hosting,
     cancellation: &dyn PublicationCancellation,
 ) -> Result<Publication> {
-    let mut record = workspace::load(&token.0)?;
+    let record = workspace::load(&token.0)?;
     // Before anything is read, locked or committed: a session opened over a conflicted
     // merge is one whose worker has not concluded it yet, and the preserve below would
     // conclude it for them, markers and all.
@@ -679,10 +679,7 @@ pub fn run_for_session(
             // now, so there is no stack left to record. Recorded rather than
             // inferred, exactly as the stack itself was: this publication is the one
             // that moved it.
-            if landed != context.target {
-                record.change_base = Some(landed.base().clone());
-                record.stack_tip = None;
-            }
+            let moved = landed != context.target;
             // A publication is the end of a session's work, so the record closes
             // with it — with one exception. A draft the session itself is holding
             // is a session still being worked in: its worktree is still the
@@ -692,13 +689,23 @@ pub fn run_for_session(
             // `session open` reap the worktree the worker is committing in. A draft
             // held for a release is the other thing: the work is finished, and the
             // next worker opens a session of its own.
+            //
+            // Written through `workspace::update`, which re-reads the record under its
+            // lock: the copy loaded when this publication began is minutes old by now,
+            // and a session opened over the same branch meanwhile has recorded on it
+            // which session continued the work.
             let still_working = matches!(outcome, PublishOutcome::ChangeDraft(_))
                 && matches!(context.draft, Some(DraftReason::Held { .. }));
-            if !still_working {
-                record.state = Lifecycle::Closed;
-            }
-            if !still_working || landed != context.target {
-                workspace::save(&record)?;
+            if !still_working || moved {
+                workspace::update(&record.token, |stored| {
+                    if moved {
+                        stored.change_base = Some(landed.base().clone());
+                        stored.stack_tip = None;
+                    }
+                    if !still_working {
+                        stored.state = Lifecycle::Closed;
+                    }
+                })?;
             }
             outcome
         }

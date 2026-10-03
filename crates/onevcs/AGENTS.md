@@ -225,6 +225,15 @@ already carries. And the record keeps the keys this build has no opinion on acro
 that rewrite (`remainder.rs`), because recording a retry is a read-modify-write of a
 document a newer `onevcs` may have written.
 
+**Every write of a record that exists goes through `workspace::update`**, which takes
+the session's own lock, re-reads, applies the writer's change, and saves; an opening's
+first write is `workspace::create`, and `save` is private to both. A writer that saved
+the copy it read earlier — a census, a close mid hand-back, a publication after its
+merge path — erased a link a concurrent retry wrote (onevcs#263).
+`tests/e2e/record_writes.rs` opens that retry from a git hook *inside* each step, so the
+race is arranged rather than waited for. The closure must not write the same record:
+the lock is a file lock, and this process's second take of it waits on its first.
+
 ## Three verbs land a branch, and provenance is what chooses between them
 
 `publish` takes a session token; `recover` and `publish-branch` take a branch name

@@ -3131,9 +3131,12 @@ impl Census<'_> {
             if record.state != Lifecycle::Open {
                 continue;
             }
-            let mut closed = record.clone();
-            closed.state = Lifecycle::Closed;
-            if let Err(failure) = workspace::save(&closed) {
+            // Closed on the record as it stands now rather than on the copy this census
+            // read: a session opened over the branch since has recorded on it which
+            // session continued the work, and that link outlives this retirement.
+            if let Err(failure) =
+                workspace::update(&record.token, |stored| stored.state = Lifecycle::Closed)
+            {
                 failed.push(FailedHolder {
                     kind: match record.slot {
                         Some(_) => BranchHolderKind::Slot,
