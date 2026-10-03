@@ -316,17 +316,11 @@ pub fn newest(from: &Record) -> Chain {
 /// Record that one session's branch was continued by another.
 ///
 /// Written onto the *older* record, because that is the one a later reader will
-/// otherwise take as the branch's answer. It goes through [`update`], so a link a
-/// concurrent opening already wrote is the one that stands — a second edge out of one
-/// token would fork a chain that has one end by construction — and through [`save`],
+/// otherwise take as the branch's answer. It goes through [`update`], so nothing
+/// another process wrote on that record meanwhile is lost, and through [`save`],
 /// which is where a link nothing could follow is refused.
 pub fn record_retry(older: &Token, newer: &Token) -> Result<()> {
-    update(older, |record| {
-        if record.retried_by.is_none() {
-            record.retried_by = Some(newer.clone());
-        }
-    })
-    .map(drop)
+    update(older, |record| record.retried_by = Some(newer.clone())).map(drop)
 }
 
 impl From<Record> for SessionHolder {
