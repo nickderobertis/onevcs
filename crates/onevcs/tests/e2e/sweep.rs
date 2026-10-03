@@ -20,11 +20,13 @@
 // is the real binary against the real filesystem. An assertion here that a directory is
 // gone, or that a pid no longer answers, is therefore an assertion about this host.
 
+use std::collections::BTreeSet;
 use std::fs::{File, FileTimes};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use fs4::fs_std::FileExt;
 use predicates::prelude::*;
 
 use crate::lifecycle::{local_direct, Fixture};
@@ -34,11 +36,11 @@ use crate::world::World;
 
 const USAGE_ERROR: i32 = 2;
 
-fn publications(world: &World) -> PathBuf {
+pub fn publications(world: &World) -> PathBuf {
     world.home().join("workspaces").join("publications")
 }
 
-fn recoveries(world: &World) -> PathBuf {
+pub fn recoveries(world: &World) -> PathBuf {
     world.home().join("workspaces").join("recoveries")
 }
 
@@ -53,7 +55,7 @@ fn run_roots(family: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn only_run_root(family: &Path) -> PathBuf {
+pub fn only_run_root(family: &Path) -> PathBuf {
     let found = run_roots(family);
     let [only] = found.as_slice() else {
         panic!(
@@ -122,7 +124,7 @@ fn backdate_to(path: &Path, times: FileTimes) {
 
 /// A complete, unpublished branch of the local fixture, handed back by a session
 /// that closed without publishing.
-fn finished_branch(fixture: &Fixture, branch: &str) {
+pub fn finished_branch(fixture: &Fixture, branch: &str) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     let file = format!("{}.txt", branch.replace('/', "-"));
     fixture
@@ -140,7 +142,7 @@ fn finished_branch(fixture: &Fixture, branch: &str) {
 ///
 /// Uncommitted work at adoption is what writes the marker, which is the only way
 /// one is ever written.
-fn interrupted_branch(fixture: &Fixture, branch: &str) {
+pub fn interrupted_branch(fixture: &Fixture, branch: &str) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     // Named after the branch, as the finished one's file is: two branches committing
     // the same content leave the second with nothing to commit once the first lands.
@@ -160,8 +162,164 @@ fn interrupted_branch(fixture: &Fixture, branch: &str) {
     }
 }
 
-/// Publish a finished branch, leaving the run root that publication cut behind.
+/// The merge path every journey here publishes through: `body`, after parking where a
+/// journey that needs its landing held asks it to.
+///
+/// A landing releases its own build workspace when it ends, so what this verb reaps
+/// is what outlived one — a landing that ended while somebody else held its run root,
+/// and a publisher that died. Both need the landing caught inside its run, and the
+/// repository's own `pre-push` hook is the place: it runs inside the real
+/// publication, after its run root is cut and before its verdict is recorded. It
+/// parks only while the gate's `park` file is there, so every other landing passes
+/// straight through to `body`.
+pub fn gated(fixture: &Fixture, body: &str) {
+    let gate = Gate::of(fixture);
+    fixture.verified_by(&format!(
+        "if [ -e '{park}' ]; then\n  touch '{parked}'\n  while [ ! -e '{go}' ]; do sleep 0.02; \
+         done\n  if [ -e '{refuse}' ]; then touch '{answered}'; exit 1; fi\nfi\n{body}",
+        park = gate.park.display(),
+        parked = gate.parked.display(),
+        go = gate.go.display(),
+        refuse = gate.refuse.display(),
+        answered = gate.answered.display(),
+    ));
+    std::fs::write(&gate.installed, "").expect("the gate is installed");
+}
+
+/// The files [`gated`]'s hook and a journey talk to each other through.
+struct Gate {
+    installed: PathBuf,
+    park: PathBuf,
+    parked: PathBuf,
+    go: PathBuf,
+    refuse: PathBuf,
+    answered: PathBuf,
+}
+
+impl Gate {
+    fn of(fixture: &Fixture) -> Self {
+        let world = &fixture.world;
+        Self {
+            installed: world.path("gate-installed"),
+            park: world.path("gate-park"),
+            parked: world.path("gate-parked"),
+            go: world.path("gate-go"),
+            refuse: world.path("gate-refuse"),
+            answered: world.path("gate-answered"),
+        }
+    }
+
+    /// Start `verb` over `branch` with the gate set to park it, and wait until it has.
+    fn parked(fixture: &Fixture, verb: &str, branch: &str) -> (Self, std::process::Child) {
+        let gate = Self::of(fixture);
+        if !gate.installed.exists() {
+            gated(fixture, "exit 0");
+        }
+        for stale in [&gate.parked, &gate.go, &gate.refuse, &gate.answered] {
+            let _ = std::fs::remove_file(stale);
+        }
+        std::fs::write(&gate.park, "").expect("the gate is set to park");
+        let mut running = fixture
+            .world
+            .onevcs_std()
+            .args([verb, branch, "--repo", &fixture.checkout.to_string_lossy()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary must be built");
+        World::until("the landing has reached its gate", || {
+            if let Some(status) = running.try_wait().expect("ask after the landing") {
+                panic!("the landing ended ({status}) before it reached its gate");
+            }
+            gate.parked.exists()
+        });
+        // Only this landing parks: the next one through passes straight to the body.
+        std::fs::remove_file(&gate.park).expect("the gate is unset");
+        (gate, running)
+    }
+}
+
+/// Every lease somebody holds *shared* among `locks`, held shared here as well.
+///
+/// What a landing holds shared is its run root's occupancy lease and its branch's
+/// publication lease; what it holds exclusively — its turn in the merge queue — a
+/// shared take cannot join, and what it has let go of is left alone, since this
+/// journey taking one of those would be standing in a queue the landing has yet to
+/// join. Which lock guards which is a digest of what it guards, and not something a
+/// journey may recompute — so the leases are found by how they are held.
+fn joined(locks: &BTreeSet<PathBuf>) -> Vec<File> {
+    locks
+        .iter()
+        .filter_map(|lock| {
+            let open = || File::options().read(true).write(true).open(lock).ok();
+            let probe = open()?;
+            if FileExt::try_lock_exclusive(&probe).unwrap_or(false) {
+                let _ = FileExt::unlock(&probe);
+                return None;
+            }
+            let shared = open()?;
+            FileExt::try_lock_shared(&shared)
+                .unwrap_or(false)
+                .then_some(shared)
+        })
+        .collect()
+}
+
+/// Run a branch-keyed verb whose landing ends while somebody else is inside its run
+/// root, so it keeps that workspace whole — which is what this verb reaps afterwards.
+///
+/// Somebody else is a second holder of the run root's occupancy lease, taken while the
+/// landing is parked at its gate and let go once it has ended: the landing meets it
+/// when it comes to release the workspace, keeps it, and says why.
+// llmlint: ignore-block[tests_mirror_real_usage] no verb holds an occupancy lease across
+// a journey — a landing takes it and releases it as it ends — so the second holder is
+// this journey, taking the leases in the shared mode a landing takes them in, found by
+// how they are held rather than by a digest recomputed here. The landing that meets it
+// is the real binary, deciding through its real release.
+pub fn left_behind(fixture: &Fixture, verb: &str, branch: &str, code: i32) -> String {
+    let before = fixture.world.locks();
+    let (gate, running) = Gate::parked(fixture, verb, branch);
+    let new: BTreeSet<PathBuf> = fixture.world.locks().difference(&before).cloned().collect();
+    let occupants = joined(&new);
+    assert!(
+        !occupants.is_empty(),
+        "the landing holds a lease on the run root it is working in"
+    );
+    std::fs::write(&gate.go, "").expect("the gate is released");
+    let output = running.wait_with_output().expect("the landing ends");
+    drop(occupants);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(code), "{stderr}");
+    assert!(
+        stderr.contains("onevcs: kept the workspace this ")
+            && stderr.contains("a live session holds its occupancy lease"),
+        "the landing kept the workspace somebody else was inside, and said so:\n{stderr}"
+    );
+    stderr
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
+/// Start a branch-keyed verb, and kill it while it is parked at its gate — a publisher
+/// that died before its merge path reached a verdict. The gate then refuses, so the
+/// push the dead publisher had started lands nothing behind the journey's back.
+fn killed_at_its_gate(fixture: &Fixture, verb: &str, branch: &str) {
+    let (gate, mut running) = Gate::parked(fixture, verb, branch);
+    running
+        .kill()
+        .expect("stop the landing this journey started");
+    running.wait().expect("and reap it");
+    std::fs::write(&gate.refuse, "").expect("the gate will refuse");
+    std::fs::write(&gate.go, "").expect("the gate is released");
+    World::until("the orphaned gate has answered", || gate.answered.exists());
+}
+
+/// Publish a finished branch, leaving the whole run root that publication cut behind.
 fn publish_branch(fixture: &Fixture, branch: &str) {
+    left_behind(fixture, "publish-branch", branch, 0);
+}
+
+/// Publish a finished branch the way an operator does, releasing what it built in.
+fn publish_branch_released(fixture: &Fixture, branch: &str) {
     fixture
         .world
         .onevcs()
@@ -220,7 +378,8 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     let run_root = only_run_root(&publications(&fixture.world));
     assert!(
         run_root.join("clone").is_dir(),
-        "a publication leaves the clone it cut behind, which is what fills the disk"
+        "the premise: a landing somebody else was inside kept its clone, which is what \
+         fills the disk"
     );
     backdate(&run_root, 72);
 
@@ -267,11 +426,58 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
 }
 
 #[test]
+fn what_a_landing_released_keeps_its_evidence_for_the_age_floor_and_then_goes() {
+    // A landing that ends releases its own build output, so what it leaves under the
+    // family is the evidence and nothing else — kept for the floor the sweep promises
+    // it, and reclaimed by the same verb afterwards.
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/released");
+    publish_branch_released(&fixture, "feature/released");
+    let run_root = only_run_root(&publications(&fixture.world));
+    let mut left: Vec<String> = std::fs::read_dir(&run_root)
+        .expect("the run root")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["gate-logs", "released"],
+        "the premise: the landing kept its preserved logs and released everything else"
+    );
+
+    let held = swept(&fixture, &[]);
+    assert!(run_root.is_dir(), "the floor keeps the evidence:\n{held}");
+    assert!(
+        retained_reason(&held, &run_root)
+            .contains("inside the 24 hour(s) the age floor leaves alone"),
+        "and says the floor is why:\n{held}"
+    );
+
+    backdate(&run_root, 72);
+    let report = swept(&fixture, &[]);
+    assert!(
+        !run_root.exists(),
+        "past the floor, what a landing released is reclaimed with no clone to own it by \
+         and no verdict to wait on:\n{report}"
+    );
+    assert!(
+        report.starts_with("onevcs sweep: reclaimed 1 workspace(s), "),
+        "and it is counted as reclaimed:\n{report}"
+    );
+}
+
+#[test]
 fn a_recovery_workspace_is_reaped_by_the_same_verb_as_a_publication() {
     let fixture = Fixture::local(&local_direct());
     // A recovery attests that what stopped was verified after all, so the identity
     // needs something on its merge path that could have verified it.
-    fixture.verified_by("exit 0");
+    gated(&fixture, "exit 0");
     interrupted_branch(&fixture, "feature/interrupted");
     fixture
         .world
@@ -370,21 +576,10 @@ fn a_publication_somebody_is_still_making_is_retained_and_nothing_about_it_is_te
 #[test]
 fn a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason() {
     let fixture = Fixture::local(&local_direct());
-    interrupted_branch(&fixture, "feature/interrupted");
-    // Refused for its provenance, which happens after the run root is cut and long
-    // before anything is pushed — so what it leaves behind is a workspace nothing
-    // ever judged.
-    fixture
-        .world
-        .onevcs()
-        .args([
-            "publish-branch",
-            "feature/interrupted",
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        .code(2);
+    finished_branch(&fixture, "feature/unjudged");
+    // A publisher that died at its gate, before the merge path said anything — so what
+    // it leaves behind is a workspace nothing ever judged, and nothing released.
+    killed_at_its_gate(&fixture, "publish-branch", "feature/unjudged");
 
     let run_root = only_run_root(&publications(&fixture.world));
     assert!(
@@ -406,7 +601,7 @@ fn a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason
 
     // And what proves a verdict is a file a gate wrote, not a name: a directory
     // wearing one would otherwise answer for a judgement nobody reached.
-    std::fs::create_dir_all(run_root.join("gate-logs/feature-interrupted/gate-0001.log"))
+    std::fs::create_dir_all(run_root.join("gate-logs/feature-unjudged/gate-0001.log"))
         .expect("something shaped like a preserved log and holding nothing");
     backdate(&run_root, 72);
     let lookalike = swept(&fixture, &[]);
@@ -424,7 +619,7 @@ fn a_workspace_whose_merge_path_recorded_no_verdict_is_retained_with_that_reason
     // numbered `gate-0001.log` upwards, four digits wide; this directory is under a
     // state root a host shares, so `gate-1.log` and `gate-notes.log` are somebody
     // else's files and neither may answer that a publication was judged.
-    let branch_logs = run_root.join("gate-logs/feature-interrupted");
+    let branch_logs = run_root.join("gate-logs/feature-unjudged");
     std::fs::create_dir_all(&branch_logs).expect("the branch's log directory");
     for name in ["gate-1.log", "gate-notes.log"] {
         std::fs::write(branch_logs.join(name), "not this crate's evidence\n")
@@ -451,20 +646,10 @@ fn a_workspace_whose_merge_path_rejected_the_change_is_judged_and_keeps_the_work
     // holding it is kept under the bound rather than reaped like a landing that
     // finished.
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     finished_branch(&fixture, "feature/rejected");
-    fixture
-        .world
-        .onevcs()
-        .args([
-            "publish-branch",
-            "feature/rejected",
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        // 1 is the contract's code for a verification that rejected the change.
-        .code(1);
+    // 1 is the contract's code for a verification that rejected the change.
+    left_behind(&fixture, "publish-branch", "feature/rejected", 1);
 
     let run_root = only_run_root(&publications(&fixture.world));
     assert!(
@@ -1373,7 +1558,7 @@ fn a_sweep_whose_rules_are_malformed_refuses_rather_than_judging_blind() {
 /// whether that one process is there. Asked through the same interface the tool
 /// signals through, because a directory that has gone says nothing about a process
 /// that outlived it.
-fn still_running(pid: i32) -> bool {
+pub fn still_running(pid: i32) -> bool {
     // SAFETY: `kill` with a positive pid and signal nought delivers nothing and
     // borrows nothing; it answers whether that one process exists.
     unsafe { libc::kill(pid, 0) == 0 }
@@ -1394,9 +1579,10 @@ fn still_running(pid: i32) -> bool {
 /// it gone has observed a stop rather than a process that ran out on its own.
 fn a_merge_path_starting_a_daemon(body: &str) -> Fixture {
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by(&format!(
-        "{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid"
-    ));
+    gated(
+        &fixture,
+        &format!("{body} >/dev/null 2>&1 </dev/null & echo $! > $HOME/daemon.pid"),
+    );
     fixture
 }
 
@@ -1587,7 +1773,7 @@ fn the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_i
     // The failure history an operator reads is the recent one, and its preserved gate
     // logs go when it does.
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     let branches = [
         "feature/oldest",
         "feature/older",
@@ -1597,18 +1783,8 @@ fn the_workspaces_holding_work_no_origin_has_are_bounded_and_the_oldest_beyond_i
     let mut roots: Vec<PathBuf> = Vec::new();
     for branch in branches {
         finished_branch(&fixture, branch);
-        fixture
-            .world
-            .onevcs()
-            .args([
-                "publish-branch",
-                branch,
-                "--repo",
-                &fixture.checkout.to_string_lossy(),
-            ])
-            .assert()
-            // 1 is the contract's code for a gate that rejected the change.
-            .code(1);
+        // 1 is the contract's code for a gate that rejected the change.
+        left_behind(&fixture, "publish-branch", branch, 1);
         let cut: Vec<PathBuf> = run_roots(&publications(&fixture.world))
             .into_iter()
             .filter(|root| !roots.contains(root))
@@ -1684,10 +1860,11 @@ fn a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind() {
         "a workspace written minutes ago is inside the floor, whoever is asking"
     );
 
-    // Aged past it, the next landing is what removes it.
+    // Aged past it, the next landing is what removes it — one that releases its own
+    // build output as it ends, so what it leaves is its evidence.
     backdate(&spent, 72);
     finished_branch(&fixture, "feature/third");
-    publish_branch(&fixture, "feature/third");
+    publish_branch_released(&fixture, "feature/third");
     assert!(
         !spent.exists(),
         "the landing enforced the retention rule over its own family"
@@ -1704,18 +1881,9 @@ fn a_landing_reclaims_the_workspaces_the_landings_before_it_left_behind() {
     );
 }
 
+/// Recover an interrupted branch, leaving the whole run root that recovery cut behind.
 fn recover_branch(fixture: &Fixture, branch: &str) {
-    fixture
-        .world
-        .onevcs()
-        .args([
-            "recover",
-            branch,
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        .success();
+    left_behind(fixture, "recover", branch, 0);
 }
 
 #[test]
@@ -1726,7 +1894,7 @@ fn a_recovery_enforces_the_rule_over_its_own_family_and_not_the_publications() {
     let fixture = Fixture::local(&local_direct());
     // A recovery attests that what stopped was verified after all, so the identity
     // needs something on its merge path that could have verified it.
-    fixture.verified_by("exit 0");
+    gated(&fixture, "exit 0");
     finished_branch(&fixture, "feature/published");
     publish_branch(&fixture, "feature/published");
     let publication = only_run_root(&publications(&fixture.world));
@@ -1797,22 +1965,12 @@ fn a_landing_applies_the_same_bound_to_the_workspaces_holding_work_no_origin_has
     // The bound is the rule's, not the verb's: a host that never runs `onevcs sweep`
     // keeps the same failure history and no more of it.
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     let mut roots: Vec<PathBuf> = Vec::new();
     for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
         finished_branch(&fixture, branch);
-        fixture
-            .world
-            .onevcs()
-            .args([
-                "publish-branch",
-                branch,
-                "--repo",
-                &fixture.checkout.to_string_lossy(),
-            ])
-            .assert()
-            // 1 is the contract's code for a gate that rejected the change.
-            .code(1);
+        // 1 is the contract's code for a gate that rejected the change.
+        left_behind(&fixture, "publish-branch", branch, 1);
         let cut: Vec<PathBuf> = run_roots(&publications(&fixture.world))
             .into_iter()
             .filter(|root| !roots.contains(root))
@@ -2206,18 +2364,8 @@ fn branch_carrying(fixture: &Fixture, branch: &str, file: &str, subject: &str) {
 /// Publish a branch the repository's own verifier turns down, leaving the run root
 /// and the verdict recorded under it behind.
 fn rejected_publish_branch(fixture: &Fixture, branch: &str) {
-    fixture
-        .world
-        .onevcs()
-        .args([
-            "publish-branch",
-            branch,
-            "--repo",
-            &fixture.checkout.to_string_lossy(),
-        ])
-        .assert()
-        // 1 is the contract's code for a gate that rejected the change.
-        .code(1);
+    // 1 is the contract's code for a gate that rejected the change.
+    left_behind(fixture, "publish-branch", branch, 1);
 }
 
 /// Every run root under either family, and the branch its publication was about.
@@ -2440,7 +2588,7 @@ fn the_retention_rule_and_the_recovery_listing_answer_one_branch_one_way() {
 
     // Until the verifier is replaced below, every publication is turned down: what it
     // leaves is a run root with a verdict recorded under it and nothing on the base.
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     branch_carrying(&fixture, "feature/undecided", "undecided.txt", shared);
     rejected_publish_branch(&fixture, "feature/undecided");
     branch_carrying(
@@ -2452,7 +2600,7 @@ fn the_retention_rule_and_the_recovery_listing_answer_one_branch_one_way() {
     rejected_publish_branch(&fixture, "feature/unlanded");
 
     // …and now one that lands, under the subject the first of them shares.
-    fixture.verified_by("exit 0");
+    gated(&fixture, "exit 0");
     branch_carrying(&fixture, "feature/landed", "landed.txt", shared);
     publish_branch(&fixture, "feature/landed");
     assert!(
@@ -2559,7 +2707,7 @@ fn a_workspace_whose_branch_landed_in_part_keeps_the_commits_the_landing_never_c
         .args(["session", "close", &token])
         .assert()
         .success();
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     rejected_publish_branch(&fixture, "feature/continued");
     let continued = run_roots(&publications(&fixture.world))
         .into_iter()
@@ -2599,7 +2747,7 @@ fn a_workspace_left_by_a_failed_publication_goes_once_the_branch_lands_by_anothe
     // the base as this host knows it, drops the branch as landed. One report keeps
     // dozens of workspaces the other says are finished.
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by("exit 1");
+    gated(&fixture, "exit 1");
     branch_carrying(
         &fixture,
         "feature/late",
@@ -2609,7 +2757,7 @@ fn a_workspace_left_by_a_failed_publication_goes_once_the_branch_lands_by_anothe
     rejected_publish_branch(&fixture, "feature/late");
     let refused = only_run_root(&publications(&fixture.world));
 
-    fixture.verified_by("exit 0");
+    gated(&fixture, "exit 0");
     publish_branch(&fixture, "feature/late");
     let landed = run_roots(&publications(&fixture.world))
         .into_iter()
@@ -2699,7 +2847,7 @@ fn holds_the_documented_shape(
 /// session that opens and closes once the workspaces file names a pool.
 fn one_of_everything() -> Fixture {
     let fixture = Fixture::local(&local_direct());
-    fixture.verified_by("exit 0");
+    gated(&fixture, "exit 0");
     finished_branch(&fixture, "feature/landed");
     publish_branch(&fixture, "feature/landed");
     interrupted_branch(&fixture, "feature/interrupted");

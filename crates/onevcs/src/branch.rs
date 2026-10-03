@@ -97,16 +97,6 @@ pub struct Landing {
     pub worktree: PathBuf,
     /// Where preserved merge-path logs are written.
     pub run_root: PathBuf,
-    /// The occupancy lease this landing holds on that run root, for as long as the
-    /// landing lives.
-    ///
-    /// Held rather than read, which is why it is spelled the way `queue.rs` spells
-    /// the same thing: what it says is "a publication is being made in here", and it
-    /// says it to `onevcs sweep`, which proves a run root abandoned by taking this
-    /// same identity exclusively. Released when the landing is dropped, and by the
-    /// OS if this process dies first — so a crashed publication leaves a directory
-    /// the sweep may reap rather than one nothing will ever take.
-    _lease: lock::Guard,
     /// The branch itself.
     pub branch: Ref,
     /// What the branch is published onto and compared against: the branch below it
@@ -138,15 +128,79 @@ pub struct Landing {
     // unvalidated `String` at the public surface and would make no state here
     // unrepresentable.
     pub stack_replay: Option<String>,
+    /// This landing's two leases, and the release of its build workspace when it ends.
+    ///
+    /// Declared last, so it is the last field released: anything a landing cleans up
+    /// when it goes is done while the branch still reads as held.
+    _tenancy: Tenancy,
+}
+
+/// What a landing holds while it lives, and gives back when it ends.
+///
+/// Made the moment both leases are taken in [`prepare`] — before anything is cloned —
+/// so a landing refused anywhere after that point ends through the same release as
+/// one that published.
+struct Tenancy {
+    verb: Verb,
+    run_root: PathBuf,
+    /// The checkout the branch was read out of, which is where a branch this landing
+    /// did not land is preserved.
+    source: PathBuf,
+    /// The occupancy lease on the run root, for as long as the landing lives.
+    ///
+    /// Held rather than read, which is why it is spelled the way `queue.rs` spells
+    /// the same thing: what it says is "a publication is being made in here", and it
+    /// says it to `onevcs sweep`, which proves a run root abandoned by taking this
+    /// same identity exclusively. Handed to [`sweep::release`] when the landing ends,
+    /// and released by the OS if this process dies first — so a crashed publication
+    /// leaves a directory the sweep may reap rather than one nothing will ever take.
+    lease: Option<lock::Guard>,
     /// The hold this publication has on its branch, which is what the branch
     /// inventory reads as `publication-running` while it lasts.
     ///
-    /// Taken before the first fetch into this landing's clone and released when the
-    /// landing is dropped — after the publication's last event, since every event is
-    /// written while the landing is still borrowed — and by the OS if this process
-    /// dies first. Declared last, so it is the last field released: anything a
-    /// landing cleans up when it goes is done while the branch still reads as held.
+    /// Taken before the first fetch into this landing's clone and released after the
+    /// release of the workspace — after the publication's last event, since every
+    /// event is written while the landing is still borrowed — and by the OS if this
+    /// process dies first. Declared last, so nobody reading the inventory finds the
+    /// branch unheld while its workspace is being torn down.
     _publication: publishing::Lease,
+}
+
+impl Drop for Tenancy {
+    /// Release the build workspace, completed, refused or failed alike.
+    ///
+    /// Said on stderr and never a failure of the landing: whatever the publication
+    /// answered has already happened, and turning it into an error over the clean-up
+    /// would send somebody to land work that is landed. A workspace kept is said with
+    /// why; one released is said only where processes had to be stopped for it.
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        let verb = self.verb.name();
+        let run_root = self.run_root.display();
+        match sweep::release(&self.run_root, &self.source, lease) {
+            Ok(sweep::Release::Released { stopped }) if !stopped.is_empty() => eprintln!(
+                "onevcs: stopped {} still working in the workspace this {verb} built in, {run_root}, \
+                 and released it",
+                stopped
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            Ok(sweep::Release::Released { .. }) => {}
+            Ok(sweep::Release::Kept(why)) => eprintln!(
+                "onevcs: kept the workspace this {verb} built in, {run_root}: {why}. `onevcs \
+                 sweep` reclaims it once that no longer holds",
+                why = why.describe(),
+            ),
+            Err(error) => eprintln!(
+                "onevcs: warning: the workspace this {verb} built in, {run_root}, could not be \
+                 released: {error}. `onevcs sweep` reports what it kept and why"
+            ),
+        }
+    }
 }
 
 /// The tip a repository still has for a branch a preserved commit recorded.
@@ -240,6 +294,13 @@ pub fn prepare(
     // dropped, a reader of the branch inventory sees this branch as held by the
     // publication being made in `worktree`.
     let publication = publishing::Lease::take(&resolution.key, branch, &run_root, &worktree)?;
+    let tenancy = Tenancy {
+        verb,
+        run_root: run_root.clone(),
+        source: source.clone(),
+        lease: Some(lease),
+        _publication: publication,
+    };
 
     // Where this run has actually *seen* the host's copy of the branch: the
     // remote-tracking ref in the checkout the branch was found in, read before
@@ -358,13 +419,12 @@ pub fn prepare(
         clone,
         worktree,
         run_root,
-        _lease: lease,
         branch: Ref::from_git(branch),
         change_base,
         compared_change_base,
         observed,
         stack_replay,
-        _publication: publication,
+        _tenancy: tenancy,
     })
 }
 
@@ -547,8 +607,8 @@ impl Landing {
             },
             run_root: self.run_root.clone(),
             // The source keeps the branch, so the source is where the landing this
-            // publication records has to end up: the clone below it goes with the
-            // run root.
+            // publication records has to end up: the clone below it is released when
+            // the landing ends.
             preserved_into: self.source.clone(),
             title,
             // Both branch-keyed verbs carry a caller's body now: a branch is landed

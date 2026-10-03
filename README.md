@@ -221,6 +221,16 @@ a publication runs the repository's own verification and verifications start
 daemons, and
 unlinking files a live process holds open frees none of their blocks.
 
+**A landing releases its own build output as it ends**, so most of that never waits
+for the floor at all. Completed, refused by its merge path, or failed, `publish-branch`
+and `recover` remove the clone and the worktree they built in and stop what is still
+running there before they return — by the same proofs, and while the branch still reads
+as held by the publication. What stays is the evidence: the preserved logs, at the path
+every `push` event names, which the sweep then reaps once they are past the floor. A
+workspace one of those proofs does not cover — somebody else inside it, or a clone
+holding work that neither an origin nor the checkout the branch was read out of
+carries — is kept whole, and the verb says why on stderr.
+
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
 

@@ -1037,7 +1037,8 @@ rename. Seven things are easy to undo.
 ## The disk is a resource, and one retention rule frees it
 
 Every branch-keyed landing cuts a run root, and `sweep.rs` holds the only rule that
-removes one. It is asked two ways and they are the same judgement: deliberately, as
+removes one — its build output when the landing ends, and the rest once its evidence
+is past the floor. It is asked two ways and they are the same judgement: deliberately, as
 `onevcs sweep` over every family, and by `sweep::enforce` from `branch::prepare`, as
 a landing cuts the next run root under its own family. The second is what makes it a
 *rule* rather than a chore — nothing else runs between two landings on a host that
@@ -1045,7 +1046,7 @@ publishes all day. A pass that could not run is a warning on stderr and never a
 refused landing: what it reclaims is the *previous* runs' leftovers, and losing a
 publication to those is the failure the rule exists to prevent.
 
-Six rules govern how it decides.
+Seven rules govern how it decides.
 
 - **Proof, never inference.** A workspace is removed only where this crate can show
   it is finished. Every other answer retains and reports why.
@@ -1076,6 +1077,17 @@ Six rules govern how it decides.
   `the_two_reports_answer_one_piece_of_work_one_way` in `tests/e2e/sweep.rs` is what
   detects the divergence the doc comment forbids, and it is asked of both real
   reports through the real binary.
+- **A landing releases its own build output as it ends** (`sweep::release`, run by
+  the drop of the `Tenancy` that is the `Landing`'s last field — so on every ending,
+  a refusal in `prepare` included, and before the branch's publication lease goes).
+  It asks the proofs above but the verdict and the floor, which stand in for an end
+  the landing knows first-hand, and adds one: a branch `unpublished_work` names keeps
+  the workspace unless the checkout the branch was read out of reaches its tip. It
+  removes everything but `KEPT_ON_RELEASE` — the preserved logs, which `push` events
+  name by path, and the `released` mark that lets `judge` own a run root with no clone
+  and reap it past the floor. A record that must outlive the build output goes in that
+  list. The sweep's journeys cut their leftovers the two ways a whole run root still
+  outlives a landing (`left_behind`, `killed_at_its_gate` in `tests/e2e/sweep.rs`).
 - **Reclaiming a workspace stops what it left running** (`processes.rs`), because
   unlinking files a live process holds open frees none of their blocks — a
   publication runs the repository's own verification, and verifications start daemons

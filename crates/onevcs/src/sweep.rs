@@ -7,6 +7,12 @@
 //! is what makes it a *retention rule* rather than a verb somebody has to remember:
 //! nothing else runs between two landings on a host that publishes all day.
 //!
+//! **A landing also releases its own build output as it ends** ([`release`]), by the
+//! same proofs less the two that stand in for its having ended, and keeps the
+//! evidence. So what this verb meets is mostly a run root holding nothing but that
+//! evidence, which it reaps past the floor, and the whole run roots a landing kept or
+//! a dead publisher left.
+//!
 //! What makes a run root reclaimable is `onevcs` state and nothing a caller
 //! supplies: its gate has recorded a verdict under it, no live session holds its
 //! occupancy lease, and nothing under it was written inside the age floor. That is
@@ -371,6 +377,129 @@ pub fn enforce(verb: Verb) -> Result<()> {
     }
 }
 
+/// The file a landing's release leaves in its run root once the build output under it
+/// has been proven disposable.
+///
+/// Written after every proof [`release`] asks and before the first entry is removed, so
+/// a run root carrying it holds nothing a removal could lose — even one whose removal
+/// stopped part way. It is what lets [`judge`] own a run root that no longer has the
+/// clone [`not_this_crates`] looks for.
+const RELEASED: &str = "released";
+
+/// What a released run root keeps: the evidence a reader needs once the publication is
+/// over, and the mark that says the rest was released.
+///
+/// The preserved merge-path logs, which every `push` event names by a path under the
+/// run root and which a refusal sends an operator to read. Everything else under a run
+/// root — the clone, the worktree, and the scratch tree each landing pushes from — is
+/// build output, which [`release`] removes. A record that has to outlive the build
+/// output belongs in this list, and nowhere under those.
+const KEPT_ON_RELEASE: [&str; 2] = [merge_path::PRESERVED_LOG_DIRNAME, RELEASED];
+
+/// What became of a landing's own build workspace when the landing ended.
+pub(crate) enum Release {
+    /// The build output is gone, after these processes working inside it let it go.
+    Released { stopped: Vec<processes::Pid> },
+    /// Kept, and why — the reason `onevcs sweep` would retain it for.
+    Kept(Kept),
+}
+
+/// Release the build workspace of a landing that has just ended, however it ended.
+///
+/// The publication's own end is the proof [`judge`] needs a recorded verdict and the
+/// age floor for — that the run root is finished with — so those two are not asked:
+/// the floor exists to keep the *evidence*, and the evidence is kept
+/// ([`KEPT_ON_RELEASE`]). Every other proof the sweep holds is asked exactly as it
+/// asks it, and each one that does not hold keeps the whole run root:
+///
+/// - **occupancy**: `lease` is the landing's own shared lease, let go here so that the
+///   exclusive take that proves nobody else is inside can be made. Anybody else holding
+///   it keeps the workspace, and nothing in it is signalled.
+/// - **whether removing it is this host's to do**, by [`shows_it_may_empty`].
+/// - **what the clone still holds**, by [`unpublished_work`] — and a branch it names is
+///   kept unless `preserved_in`, the checkout the branch was read out of, reaches its
+///   tip: the test a returned slot and a closing session are held to. The branch is
+///   preserved somewhere else, or it holds this workspace.
+/// - **what is still running in it**, stopped by [`processes::stop`] as a reclamation
+///   stops it, and a holder that would not go keeps the workspace.
+pub(crate) fn release(run_root: &Path, preserved_in: &Path, lease: lock::Guard) -> Result<Release> {
+    drop(lease);
+    let Some(exclusive) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
+        return Ok(Release::Kept(Kept::Occupied));
+    };
+    if !shows_it_may_empty(run_root) {
+        return Ok(Release::Kept(Kept::Unproven));
+    }
+    let clone = run_root.join("clone");
+    // A landing refused before it cloned anything has no clone, and nothing in it to ask
+    // about.
+    if git::is_repo(&clone) {
+        // llmlint: ignore-block[changed_behavior_has_e2e] uncovered for the reason the
+        // same answer in `judge` gives: a clone already read as a repository that `git`
+        // then declines to answer about, which no interface this crate exposes leaves —
+        // a gate that removes the clone's origin and detaches its checkout mid-landing
+        // still leaves one git answers from. It keeps the workspace, the answer every
+        // unknown here resolves to.
+        let Ok(branches) = unpublished_work(&clone, &landings()?) else {
+            return Ok(Release::Kept(Kept::WorkUnknown));
+        };
+        // llmlint: ignore-end[changed_behavior_has_e2e]
+        let unpreserved: Vec<String> = branches
+            .into_iter()
+            .filter(|branch| {
+                !git::tip(&clone, &format!("refs/heads/{branch}"))
+                    .is_some_and(|tip| git::refs_reach(preserved_in, &tip))
+            })
+            .collect();
+        if !unpreserved.is_empty() {
+            return Ok(Release::Kept(Kept::Unpreserved {
+                branches: unpreserved,
+                checkout: preserved_in.to_path_buf(),
+            }));
+        }
+    }
+    let mut stopped: Vec<processes::Pid> = Vec::new();
+    let mut left: Vec<processes::Pid> = Vec::new();
+    for outcome in processes::stop(&processes::holding(run_root), run_root) {
+        match outcome {
+            processes::Outcome::Released(pid) => stopped.push(pid),
+            processes::Outcome::Holding(holder) => left.push(holder.pid()),
+        }
+    }
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered for the reason the
+    // same branch of `reclaim` gives: what survives `SIGKILL` is a process this user may
+    // not signal, and no journey can make one without a second account to run it as.
+    if !left.is_empty() {
+        return Ok(Release::Kept(Kept::StillRunning { pids: left }));
+    }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    home::atomic_write(
+        &run_root.join(RELEASED),
+        "the build output of this run root was released when its landing ended\n",
+    )?;
+    let entries = std::fs::read_dir(run_root).map_err(error::at("list the run root", run_root))?;
+    for entry in entries {
+        let entry = entry.map_err(error::at("list the run root", run_root))?;
+        if KEPT_ON_RELEASE
+            .iter()
+            .any(|kept| entry.file_name() == *kept)
+        {
+            continue;
+        }
+        let path = entry.path();
+        let removed = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
+        // llmlint: ignore[changed_behavior_has_e2e] every shape an operator meets is
+        // decided by `shows_it_may_empty` above, as in `reclaim`; what is left is the
+        // run root changing between the question and the act.
+        removed.map_err(error::at("release the build output at", &path))?;
+    }
+    drop(exclusive);
+    Ok(Release::Released { stopped })
+}
+
 fn family(report: &mut Report, verb: Verb, min_age: Duration, landings: &Landings) -> Result<()> {
     let directory = report.root.join(verb.runs());
     let entries = match std::fs::read_dir(&directory) {
@@ -489,6 +618,14 @@ fn not_this_crates(run_root: &Path) -> Option<&'static str> {
         );
     }
     None
+}
+
+/// Whether a run root is one a landing released: named the way a run root is, and
+/// carrying the mark [`release`] writes only once its build output has been proven
+/// disposable.
+fn released(run_root: &Path) -> bool {
+    names_a_run(run_root)
+        && std::fs::symlink_metadata(run_root.join(RELEASED)).is_ok_and(|meta| meta.is_file())
 }
 
 /// Whether a directory is named the way [`ids::unique`] leaves a run root named:
@@ -758,8 +895,15 @@ fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verd
             "it is not a directory, and every run root is one",
         )));
     }
-    if let Some(missing) = not_this_crates(run_root) {
-        return Ok(Verdict::Retain(Kept::OwnerUnproven(missing)));
+    // A run root its landing released holds the evidence and nothing else: no clone
+    // to own it by, no verdict to wait on — the landing ended, which is what a verdict
+    // stands in for here — and no work. What it is still asked is who is inside, the
+    // age floor its evidence is promised, and whether emptying it is this host's.
+    let released = released(run_root);
+    if !released {
+        if let Some(missing) = not_this_crates(run_root) {
+            return Ok(Verdict::Retain(Kept::OwnerUnproven(missing)));
+        }
     }
     // An exclusive take succeeds only while no shared occupancy lease is held, which
     // is what a landing holds for the whole of its run. Held, the answer is that
@@ -767,7 +911,7 @@ fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verd
     let Some(lease) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
         return Ok(Verdict::Retain(Kept::Occupied));
     };
-    if !merge_path::has_recorded_verdict(run_root) {
+    if !released && !merge_path::has_recorded_verdict(run_root) {
         return Ok(Verdict::Retain(Kept::NoVerdict));
     }
     let written = last_written(run_root);
@@ -785,6 +929,9 @@ fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verd
     // dead, and this asks whether emptying it can be shown to be ours to do.
     if !shows_it_may_empty(run_root) {
         return Ok(Verdict::Retain(Kept::Unproven));
+    }
+    if released {
+        return Ok(Verdict::Reclaim(lease));
     }
     // What the clone still holds. Bounded rather than kept forever, and bounded by
     // the caller — this workspace's place in that bound is a fact about the family.
@@ -1241,7 +1388,7 @@ const WORK_UNKNOWN: &str =
 /// and the last is one it had already decided was dead and could not show it may
 /// empty. A caller has to be able to tell those apart, so nothing downstream reads it
 /// back out of prose.
-enum Kept {
+pub(crate) enum Kept {
     /// Nothing here can show this crate cut it.
     OwnerUnproven(&'static str),
     /// Somebody holds its occupancy lease right now.
@@ -1257,6 +1404,12 @@ enum Kept {
     /// Its clone holds commits no origin has, and it is one of the newest such
     /// workspaces this family keeps.
     HoldsUnpublishedWork { branches: Vec<String> },
+    /// Its landing has ended, and its clone holds work no origin has and that the
+    /// checkout the branch was read out of does not carry either. Only a release asks.
+    Unpreserved {
+        branches: Vec<String>,
+        checkout: PathBuf,
+    },
     /// It is dead, and something it left running would not stop — so removing it
     /// would have freed none of what that process holds open.
     StillRunning { pids: Vec<processes::Pid> },
@@ -1264,7 +1417,7 @@ enum Kept {
 
 impl Kept {
     /// The reason as the report states it.
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match self {
             Kept::OwnerUnproven(what) => format!("its owner cannot be proven: {what}"),
             Kept::Occupied => OCCUPIED.to_owned(),
@@ -1280,6 +1433,13 @@ impl Kept {
                 "its clone holds work no origin has on {branches}, and it is one of the \
                  {RETAINED_UNPUBLISHED} most recently written workspaces of this family that do",
                 branches = describe_branches(branches),
+            ),
+            Kept::Unpreserved { branches, checkout } => format!(
+                "its clone holds work on {branches} that no origin has and that {checkout}, \
+                 the checkout the branch was read out of, does not carry — so it may be the \
+                 only copy, and nothing under it was removed",
+                branches = describe_branches(branches),
+                checkout = checkout.display(),
             ),
             Kept::StillRunning { pids } => format!(
                 "{processes} it left running are working inside it still, after being asked to \

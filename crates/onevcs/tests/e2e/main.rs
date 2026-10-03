@@ -194,6 +194,18 @@ mod publication_watch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: a landing releasing what it built in, driven through real publications
+// whose POSIX-shell gates start real processes inside the workspace. One ending goes
+// through the same substituted `gh` as `host.rs`; its own header carries the reason.
+#[cfg(unix)]
+// Every journey of this suite lives in the one `e2e` binary of the one crate project,
+// which `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same
+// `--workspace` commands twice, and the affected selection already fails closed to
+// everything on a base it cannot derive. What these journeys exercise is the end of
+// every branch-keyed landing, which any crate change can reach, and the ten of them run
+// offline, credential-free and in under a second.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+mod released;
 // Unix only: a git hook the step runs is what opens the retry inside it, and its hooks
 // are POSIX shell. Everything is local: real bare origin, real clones and slots, the
 // compiled binary on both sides of the race.
