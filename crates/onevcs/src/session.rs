@@ -484,6 +484,23 @@ impl TryFrom<AnyRecoverable> for Recoverable {
                 command = value.recover_command.join(" "),
             ));
         }
+        if let Some(held) = &value.held_by {
+            // A running publication is the one hold that names no session, so a token
+            // and a holding that say otherwise describe a hold nothing could be.
+            if held.token.is_none() != (held.holding == Holding::PublicationRunning) {
+                return Err(format!(
+                    "the row for branch {branch:?} carries a {holding:?} hold that {names} a \
+                     session; a running publication is the one hold that names none",
+                    branch = value.branch.branch,
+                    holding = held.holding,
+                    names = if held.token.is_some() {
+                        "names"
+                    } else {
+                        "names no"
+                    },
+                ));
+            }
+        }
         Ok(Recoverable {
             identity: value.identity,
             branch: value.branch,
@@ -529,6 +546,13 @@ pub struct OnOrigin {
 
 /// What still holds a preserved branch: a live session, or a publication of it
 /// running right now.
+// llmlint: ignore[invalid_states_unrepresentable] the shape is a shared contract fixed
+// for this change — `token` a session token or `null`, beside `holding` — which other
+// repositories build against as written; a tagged enum carrying the token only on a
+// session's hold would move the wire every reader of `held_by` parses. What is available
+// is what `Recoverable` does with its own two-field rule: `vcs::held_by` is the one place
+// that builds a hold and pairs `None` with `PublicationRunning` only, and the boundary
+// where a row is read refuses a hold whose token and holding disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldBy {
     /// The session, so an operator can wait for it or close it by name.

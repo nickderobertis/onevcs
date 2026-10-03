@@ -2372,6 +2372,24 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
         serde_json::from_value::<Recoverable>(published).expect("a publication's hold reads back"),
         publishing
     );
+    // …and a hold whose token and holding disagree is refused where it is read, both
+    // ways round: a session's hold that names no session, and a publication's that
+    // names one.
+    for (token, holding) in [
+        (json!(null), "owner-running"),
+        (json!("s-0123456789ab"), "publication-running"),
+    ] {
+        let mut lying = serde_json::to_value(&publishing).expect("a held row serializes");
+        lying["held_by"]["token"] = token;
+        lying["held_by"]["holding"] = json!(holding);
+        let refused = serde_json::from_value::<Recoverable>(lying)
+            .expect_err("a hold that contradicts itself is not one this reads")
+            .to_string();
+        assert!(
+            refused.contains("the one hold that names none"),
+            "the refusal says what was wrong with it: {refused}"
+        );
+    }
     assert_eq!(
         Holding::PublicationRunning.because(),
         "a publication is running on this branch right now"

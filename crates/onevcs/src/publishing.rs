@@ -46,14 +46,54 @@ impl Drop for Lease {
 }
 
 /// What a record says, and all a reader needs to answer from it.
+///
+/// It names the run root rather than the lock: the lock identity is derived from the
+/// run root by [`lease_of`] on both sides, so a record cannot point a reader at some
+/// other lock.
 #[derive(Debug, Serialize, Deserialize)]
 struct Record {
     identity: String,
     branch: String,
-    /// The lock identity whose occupancy is the answer.
-    lease: String,
-    /// The publication's own workspace, absolute.
+    /// The run root the publication cut, absolute.
+    run_root: PathBuf,
+    /// The publication's own workspace, absolute and inside `run_root`.
     worktree: PathBuf,
+}
+
+/// The lock identity a publication made under `run_root` holds.
+fn lease_of(run_root: &Path) -> String {
+    format!("publication:{}", run_root.display())
+}
+
+/// Refuse a record whose paths are not the shape [`Lease::take`] writes.
+///
+/// A record is read back from the state root, where anything may have written it, and
+/// what it names is reported to an operator as the place work is being made — so a
+/// relative path, or a workspace outside the run root whose lease is asked, is named
+/// as the defect it is rather than reported as a publication.
+fn checked(record: Record, path: &Path) -> Result<Record> {
+    let problem = if !record.run_root.is_absolute() {
+        Some("its run root is not an absolute path")
+    } else if !record.worktree.is_absolute() {
+        Some("its workspace is not an absolute path")
+    } else if !record.worktree.starts_with(&record.run_root) {
+        Some("its workspace is not inside its run root")
+    } else {
+        None
+    };
+    match problem {
+        None => Ok(record),
+        Some(problem) => Err(Error::Invalid {
+            reason: format!(
+                "the publication record at {} is not one onevcs wrote: {problem} (run root \
+                 {}, workspace {}). Remove it; a publication that is running rewrites \
+                 nothing there, and one that is not is what it would have reported",
+                path.display(),
+                record.run_root.display(),
+                record.worktree.display(),
+            ),
+        }),
+    }
 }
 
 /// The directory every publication of one branch of one identity records itself in.
@@ -67,7 +107,9 @@ impl Lease {
     /// Take the lease for a publication of `branch` of `identity`, made in `worktree`
     /// under the run root `run_root` this run has just cut.
     pub fn take(identity: &str, branch: &str, run_root: &Path, worktree: &Path) -> Result<Self> {
-        let lease = format!("publication:{}", run_root.display());
+        let run_root = std::path::absolute(run_root)
+            .map_err(error::at("resolve the publication run root", run_root))?;
+        let lease = lease_of(&run_root);
         // The run root is this run's own — its name carries `ids::unique()` — so
         // nothing else can be holding this identity, and a lease that will not come is
         // a state root something other than onevcs is writing in.
@@ -85,7 +127,7 @@ impl Lease {
         let document = serde_json::to_string(&Record {
             identity: identity.to_owned(),
             branch: branch.to_owned(),
-            lease,
+            run_root,
             worktree,
         })
         .map_err(|error| error::invalid(error.to_string()))?;
@@ -138,7 +180,8 @@ pub fn running(identity: &str, branch: &str) -> Result<Option<PathBuf>> {
         if record.identity != identity || record.branch != branch {
             continue;
         }
-        if lock::is_occupied(&record.lease)? {
+        let record = checked(record, &path)?;
+        if lock::is_occupied(&lease_of(&record.run_root))? {
             return Ok(Some(record.worktree));
         }
     }

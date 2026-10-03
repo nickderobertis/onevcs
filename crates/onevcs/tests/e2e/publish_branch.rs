@@ -3675,16 +3675,8 @@ fn a_publisher_that_dies_holds_nothing_by_the_rule_a_stale_lease_is_read_by() {
         .kill()
         .expect("stop the publication this journey started");
     running.wait().expect("and reap it");
-    let records: Vec<_> = std::fs::read_dir(fixture.world.home().join("publishing"))
-        .expect("the publication recorded itself")
-        .flat_map(|branch| std::fs::read_dir(branch.expect("a branch's records").path()))
-        .flatten()
-        .collect();
-    assert_eq!(
-        records.len(),
-        1,
-        "the dead publisher's record is left where it was: what decides is its lease"
-    );
+    // Nothing of the publisher's ran after the kill, so whatever it recorded is still
+    // there: what answers is the lease the OS released with it.
     assert!(
         held_by(&fixture, "feature/orphaned").is_null(),
         "a publisher that died holds nothing"
@@ -3722,4 +3714,53 @@ fn a_running_recovery_holds_its_branch_as_a_publication_does() {
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(fixture.origin_log()[0], "feat: the first half");
     assert!(held_by(&fixture, "feature/recovering").is_null());
+}
+
+#[test]
+fn a_publication_record_onevcs_did_not_write_is_refused_by_name() {
+    let fixture = Fixture::local(&local_direct());
+    finished_branch(&fixture, "feature/tampered", "feat: read with care");
+    let parked = ParkedPush::install(&fixture, 1);
+    let mut running = start(&fixture, "publish-branch", "feature/tampered");
+    parked.reached(&mut running);
+    running
+        .kill()
+        .expect("stop the publication this journey started");
+    running.wait().expect("and reap it");
+    parked.release();
+
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is a record no onevcs
+    // wrote — one naming a workspace outside the run root whose lease is asked — and no
+    // command writes one, so the record a killed publisher really left behind is found
+    // the only way anything can find it, under the state root, and edited by hand. The
+    // real CLI then meets it.
+    let record = std::fs::read_dir(fixture.world.home().join("publishing"))
+        .expect("the publication recorded itself")
+        .flat_map(|branch| std::fs::read_dir(branch.expect("a branch's records").path()))
+        .flatten()
+        .map(|entry| entry.expect("a record").path())
+        .next()
+        .expect("the killed publisher's record");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("the record reads"))
+            .expect("the record is JSON");
+    document["worktree"] = serde_json::json!("/somewhere/else/worktree");
+    std::fs::write(&record, document.to_string()).expect("rewrite the record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            record.to_string_lossy().into_owned(),
+        ))
+        .stderr(predicate::str::contains(
+            "its workspace is not inside its run root",
+        ));
+    // And removing it, as the refusal says, is all it takes.
+    std::fs::remove_file(&record).expect("remove the record");
+    assert!(held_by(&fixture, "feature/tampered").is_null());
 }
