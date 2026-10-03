@@ -219,7 +219,7 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
     )
     .expect("the host knows its origin");
     std::fs::write(bin.join("gh"), FAKE_GH).expect("the host program");
-    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o700))
         .expect("an executable host");
 
     let hosted = onevcs_current::Url::parse("https://github.com/acme-corp/project.git")
