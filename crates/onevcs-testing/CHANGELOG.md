@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.11.0...onevcs-testing-v0.11.1) - 2026-10-03
+
+### Fixed
+
+- *(retire)* retire landed branches on Windows and name an unknown read ([#290](https://github.com/nickderobertis/onevcs/pull/290))
+
 ## [0.11.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.10.0...onevcs-testing-v0.11.0) - 2026-10-03
 
 ### Added
