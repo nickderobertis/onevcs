@@ -201,7 +201,7 @@ impl KeepReason {
 /// The read that failed, for a branch kept as [`KeepReason::Unknown`]: which read it
 /// was, what it read, and the error it got — so a kept branch says what to look at
 /// rather than only that something could not be read.
-// llmlint: ignore[invalid_states_unrepresentable,boundary_inputs_validated] the
+// llmlint: ignore-block[invalid_states_unrepresentable,boundary_inputs_validated] the
 // unknown-cause amendment in `docs/contract.md` fixes this type field for field as three
 // `String`s — the manager's ruling for plan `accepted-followups-1002`, which
 // `onepipeline` links — so an enum of operations would change a shared interface this
@@ -209,7 +209,9 @@ impl KeepReason {
 // cause one at all: `AnyRetirement` refuses a cause beside any reason but `unknown`, and
 // one with a blank operation, subject or error. The operation's words stay open there on
 // purpose: a build that names a new read writes a document an older build still reads,
-// rather than one it refuses over the field that is only ever diagnostic.
+// rather than one it refuses over the field that is only ever diagnostic. A subject
+// is a path, the origin's URL or a change request's URL by its operation, as a holder's
+// location is, and is only ever read back as words a person reads.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UnknownCause {
     /// The read that failed: `census`, `copy`, `live-holder`, `worked-in`, `judge`,
@@ -220,6 +222,7 @@ pub struct UnknownCause {
     /// The error it got.
     pub error: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable,boundary_inputs_validated]
 
 impl UnknownCause {
     fn new(
