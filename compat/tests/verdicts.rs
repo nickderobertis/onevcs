@@ -12,10 +12,6 @@
 //! All three builds are linked into this one process and asked through their libraries,
 //! which are the same code paths their commands render.
 
-// Unix only, for the reason `retired.rs` gives: the retirement classifications this build
-// makes are proven on Linux and macOS, and a landed branch reads as `unknown` on Windows.
-#![cfg(unix)]
-
 // llmlint: ignore-file[new_code_lands_in_a_project] `compat/` is run by the `onevcs` crate
 // project's test target (`just _crate-compat`, from `_crate-test`), and `nx.json` names
 // `compat/**/*` among that target's inputs; a project of its own would run the same cargo
@@ -42,7 +38,9 @@ impl Scratch {
                 .subsec_nanos()
         ));
         std::fs::create_dir_all(&root).expect("a scratch directory");
-        let root = root.canonicalize().expect("a canonical scratch root");
+        // Plain, never verbatim: Windows' `canonicalize` answers `\\?\C:\...`, and git
+        // cannot read its configuration under a `HOME` spelled that way.
+        let root = plain_path(root.canonicalize().expect("a canonical scratch root"));
         std::fs::write(
             root.join(".gitconfig"),
             "[user]\n\tname = Compat\n\temail = compat@example.invalid\n[init]\n\t\
@@ -64,6 +62,14 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `path` without Windows' verbatim `\\?\` prefix, which git and a `HOME` cannot take.
+fn plain_path(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) => PathBuf::from(plain),
+        None => path,
     }
 }
 
