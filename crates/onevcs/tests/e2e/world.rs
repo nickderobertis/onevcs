@@ -727,6 +727,27 @@ impl World {
         assert!(listed.status.success(), "the host answers: {listed:?}");
     }
 
+    /// Do something on the host the way a person does it there, outside every verb of
+    /// this crate: retarget a change request, lift it, or merge it by hand.
+    ///
+    /// Asked of the program that answers as `gh`, exactly as [`let_the_host_act`]
+    /// asks it, so what the host holds afterwards is what that program records for the
+    /// same call from anybody.
+    ///
+    /// [`let_the_host_act`]: Self::let_the_host_act
+    pub fn on_the_host(&self, args: &[&str]) {
+        let acted = Command::new(self.path("bin/gh"))
+            .args(args)
+            .env("ONEVCS_FAKE_GH_STATE", self.path("gh-state"))
+            .env("HOME", &self.root)
+            .output()
+            .expect("the substituted host runs");
+        assert!(
+            acted.status.success(),
+            "the host acts on {args:?}: {acted:?}"
+        );
+    }
+
     /// Make the substituted host accept a merge and then not perform it.
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")

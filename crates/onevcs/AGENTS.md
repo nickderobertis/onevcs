@@ -309,6 +309,20 @@ guess that a rewrite supersedes what it rewrote. The workflow that reaches this 
 replay from where `sync_change_base` sends an operator — is recorded as a journey rather
 than described here.
 
+**A verified change request is resumed, not verified again** (`verified.rs`, the
+resumption amendment in `docs/contract.md`). Once a publication's push is accepted and
+its change request is open, `publish::record_boundary` writes the boundary under
+`$ONEVCS_HOME/verified/`, and `publish-branch` asks `publish_branch::resumable` before
+`branch::prepare` cuts anything. Three things are easy to undo. **Every way to fail to
+resume is `None`, never a refusal**: the whole path then makes every refusal it always
+made, so asking first moves none. **Whatever verification reads goes into
+`verified::inputs`** — a new environment variable handed to the hook, or a new place
+hooks come from, belongs there in the same change, or a re-entry resumes a tree nothing
+verified under it. And **the resumed path is `land_opened_change`, the tail a first
+publication runs**, so its outcomes and events cannot drift; a resumed landing is
+recorded by ref (`Context::resumed`), because its repository is the operator's own
+checkout. `tests/e2e/resumption.rs` holds each component to forcing the whole path.
+
 ## …and one verb lands nothing, which is the whole of what it is
 
 `preserve.rs` is `onevcs preserve`, and it is the only verb here that reaches a remote

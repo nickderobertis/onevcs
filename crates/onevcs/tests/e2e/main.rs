@@ -194,6 +194,11 @@ mod publication_watch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: its journeys publish through the same substituted `gh` as `host.rs`, over
+// real git and a real bare origin. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod resumption;
 // Unix only: a landing releasing what it built in, driven through real publications
 // whose POSIX-shell gates start real processes inside the workspace. One ending goes
 // through the same substituted `gh` as `host.rs`; its own header carries the reason.

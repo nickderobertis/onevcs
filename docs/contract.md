@@ -4046,6 +4046,79 @@ rows, and a row's `retirement` now writes `cause`, so the document is written at
 
 Event kinds added: none.
 
+### A verified change request is resumed at its hosted checks, not verified again
+
+**Recorded as the manager's ruling for plan `accepted-followups-1002`** (onevcs#276). A
+`change-auto` publication that stops on a red required check has already pushed — and so
+verified — its branch and opened its change request, and a host rerun can turn that check
+green. Publishing it again used to build a fresh workspace and repeat a verification the
+same tree had passed: on one repository, about 20 GB and a live lane run again for a push
+that moved nothing. So a publication records the boundary its verification passed at,
+and `onevcs publish-branch <branch> --repo <checkout>` — the library's
+`publish_branch` — resumes from it. No flag, output or event shape changes.
+
+**When it is written.** Once a publication's verification has passed — its publishing
+push, and the `pre-push` hook git ran there, accepted — and its change request is open,
+opened or adopted. Every change policy writes one; `local-direct` opens no change request
+and writes none.
+
+**What it names.** One JSON document, declared in the crate as one type
+(`verified::Boundary`):
+
+```json
+{"identity": "github.com/acme/project", "branch": "feature/thing",
+ "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+ "base": "main", "base_commit": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+ "inputs": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+ "change": "42", "change_url": "https://github.com/acme/project/pull/42"}
+```
+
+- `identity` and `branch` — the identity key and the branch published.
+- `tip` — the commit verification passed and the push put on the origin, which is the
+  change request's head.
+- `base` and `base_commit` — the target base: the branch the change request targets, and
+  the commit of it verification ran against.
+- `inputs` — a SHA-256 over every other input verification read: the `onevcs` version
+  that handed it over; the comparison environment the hook was given (`remote` and
+  `base`); the provenance trailer keys the branch's preconditions were judged under; and
+  the hooks git ran — the `core.hooksPath` the publishing repository was given and, for an
+  absolute one, the content of every file directly in it. A relative hooks path is
+  resolved in the published tree, so `tip` already names its content.
+- `change` and `change_url` — the change request: the host's identifier and its URL.
+
+**When it is invalidated.** When the change request lands, closes or is retargeted, and
+when any component differs: the branch's tip in the checkout it is found in, the base's
+tip on the origin, the inputs as they would be handed over now, or the change request's
+head on the host. Any component the verb cannot read back counts as different, and so
+does a record that is missing, unreadable, or not of this shape. A boundary that does not
+hold is removed and the publication takes the complete path, exactly as a first
+publication would — which writes a new boundary once it has verified again. A change
+request that lands removes its boundary.
+
+**Resuming.** A boundary that holds is taken up where it stands. The publication opens no
+workspace, fetches nothing, and runs no local gate: it holds the branch's publication
+lease (naming the checkout the branch was found in), reads the open change request's
+hosted checks, and then applies the identity's resolved policy and draft rules as a first
+publication does once it has pushed — waits for and judges the required checks, lifts the
+draft where the policy lifts it, and enables or performs the merge the policy names
+(`change-auto`'s auto-merge among them). It ends in the outcomes and events a first
+publication would, without its `fetch` and `push`; a red required check still ends it as a
+red check does, and keeps the boundary for the next re-entry. A landing it reaches is
+recorded on the branch, by ref, in the checkout that keeps it. Stderr says which of the
+two it took, and why a boundary did not hold.
+
+**Where it is stored, and how that coexists.** `$ONEVCS_HOME/verified/`, one JSON file per
+identity and branch, named by a digest of the two — beside the registry and the other host
+state, and outside `workspaces/`, so it outlives the publication workspace that verified
+the branch and the sweep never reaps it. Each is written whole to a temporary file beside
+it and renamed into place; one that cannot be written costs only the resume, said on
+stderr. **Nothing else under the state root moves:** the registry, the session records and
+the publication leases keep their shapes and versions, and no stream event kind is added,
+so the release before this one shares the root without ever reading `verified/` and needs
+no migration.
+
+Event kinds added: none.
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

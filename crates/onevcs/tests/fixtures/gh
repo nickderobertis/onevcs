@@ -659,6 +659,13 @@ case "$subcommand" in
       { cat "$body_file"; printf '\n'; } >"$STATE/pr-$number.body"
     fi
     if [ "$titled" = "1" ]; then printf '%s\n' "$title" >"$STATE/pr-$number.title"; fi
+    # `--base` retargets the change request, as `gh pr edit --base` does: the record
+    # is rewritten whole with the new base, and everything else it held kept.
+    if [ -n "$base" ]; then
+      grep -v '^PR_BASE=' "$STATE/pr-$number.env" >"$STATE/pr-$number.env.next"
+      printf 'PR_BASE=%q\n' "$base" >>"$STATE/pr-$number.env.next"
+      mv "$STATE/pr-$number.env.next" "$STATE/pr-$number.env"
+    fi
     printf '%s\n' "$PR_URL"
     ;;
   ready)

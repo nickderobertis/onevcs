@@ -1389,15 +1389,8 @@ fn carry_base(cwd: &Path, base: &str) -> Result<BaseCarried> {
 /// exact meaning. Hooks which depend on installed development tooling remain the
 /// repository's responsibility: publication clones do not install dependencies.
 fn carry_hooks(source: &Path, dest: &Path) -> Result<()> {
-    let configured = run(&["config", "--get", "core.hooksPath"], Some(source))?.trimmed();
-    let hooks = if configured.is_empty() {
-        let repository_hooks = source.join(".githooks");
-        if !repository_hooks.is_dir() {
-            return Ok(());
-        }
-        PathBuf::from(".githooks")
-    } else {
-        PathBuf::from(configured)
+    let Some(hooks) = carried_hooks(source)? else {
+        return Ok(());
     };
     checked(
         &[
@@ -1408,6 +1401,27 @@ fn carry_hooks(source: &Path, dest: &Path) -> Result<()> {
         Some(dest),
     )
     .map(|_| ())
+}
+
+/// The `core.hooksPath` a publication clone cut from `source` is given, or none.
+///
+/// One answer for the clone that is cut and for a resumed publication that cuts none
+/// (`verified.rs`), so the two cannot come to disagree about which hooks verified a
+/// branch.
+pub fn carried_hooks(source: &Path) -> Result<Option<PathBuf>> {
+    if let Some(configured) = configured_hooks(source)? {
+        return Ok(Some(configured));
+    }
+    Ok(source
+        .join(".githooks")
+        .is_dir()
+        .then(|| PathBuf::from(".githooks")))
+}
+
+/// The `core.hooksPath` a checkout's git reads, exactly as it is configured.
+pub fn configured_hooks(cwd: &Path) -> Result<Option<PathBuf>> {
+    let configured = run(&["config", "--get", "core.hooksPath"], Some(cwd))?.trimmed();
+    Ok((!configured.is_empty()).then(|| PathBuf::from(configured)))
 }
 
 /// Stop a repository from deleting objects a borrowing clone still needs.
@@ -2084,6 +2098,28 @@ pub fn commit(cwd: &Path, message: &str) -> Result<String> {
 pub fn commit_empty(cwd: &Path, message: &str) -> Result<String> {
     checked(&["commit", "--allow-empty", "-m", message], Some(cwd))?;
     head_sha(cwd)
+}
+
+/// Commit an empty commit onto a branch by its ref, touching no worktree.
+///
+/// For a repository that keeps the branch without having it checked out for this
+/// process — an operator's own checkout, whose index and working tree are theirs.
+/// The commit carries the tip's own tree, so a worktree that does have the branch
+/// checked out still matches it afterwards, and the ref moves only from the tip this
+/// read: a branch that moved in between is refused rather than written over.
+pub fn commit_empty_on_branch(cwd: &Path, branch: &str, message: &str) -> Result<String> {
+    let reference = format!("refs/heads/{branch}");
+    let parent = tip(cwd, &reference).ok_or_else(|| {
+        crate::error::invalid(format!("{} has no branch {branch:?}", cwd.display()))
+    })?;
+    let tree = format!("{parent}^{{tree}}");
+    let commit = checked(
+        &["commit-tree", &tree, "-p", &parent, "-m", message],
+        Some(cwd),
+    )?
+    .trimmed();
+    checked(&["update-ref", &reference, &commit, &parent], Some(cwd))?;
+    Ok(commit)
 }
 
 /// One commit's full SHA and message.
