@@ -146,6 +146,7 @@ pub use retire::{
     BranchHolder, BranchHolderKind, BranchRef, Derivation, FailedHolder, KeepReason, RetireMode,
     RetireOutcome, RetirePass, RetireRequest, Retired, Retirement, RetirementClass,
     RetirementPassReport, RetirementProof, RetirementQuery, SupersededBy, Supersession,
+    UnknownCause,
 };
 pub use rules::MergePolicy;
 pub use session::{

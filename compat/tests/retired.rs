@@ -13,17 +13,6 @@
 //! this build from the path beside it — and both are asked through their libraries,
 //! which are the same code paths their commands render.
 
-// Unix only, as every retirement journey in `crates/onevcs/tests/e2e` is. On the Windows
-// leg this build's `retire` answered `keep` / `unknown` for the landed branch below —
-// PR #241, CI run 36269033008, job 108479352143 (`cross (windows-latest)`), with the
-// same holders and base Linux reports and no proof — so the retirement this journey's
-// premise needs never happens there. That is the fail-safe answer (nothing was
-// deleted), and retirement is not yet proven on Windows; until it is, the claim this
-// journey makes is held on Linux and macOS. `diagnosis` below is what the journey
-// prints when the retirement does not happen, so re-enabling it on Windows explains
-// itself.
-#![cfg(unix)]
-
 // llmlint: ignore-file[new_code_lands_in_a_project] `compat/` is run by the `onevcs` crate
 // project's test target (`just _crate-compat`, from `_crate-test`), and `nx.json` names
 // `compat/**/*` among that target's inputs; a project of its own would run the same cargo
@@ -171,12 +160,12 @@ fn children(directory: &Path) -> Vec<PathBuf> {
 /// What a classification that did not retire read, asked again with nothing
 /// swallowed.
 ///
-/// Every read the classifier makes that fails answers `unknown` and says no more, which
-/// is right for the verb and leaves a failing journey with nothing to go on. So this
-/// asks the same questions of the same places — the classification itself, the base on
-/// the origin, and in every checkout and clone the branch, its worktrees, its fork point
-/// with the base under the object store the classifier lends, and its first-parent tail
-/// — and adds every session record, for a failure on a platform nobody here can run.
+/// A classification that answers `unknown` names the read that failed in its `cause`,
+/// which is the first line here. The rest asks the same questions of the same places —
+/// the base on the origin, and in every checkout and clone the branch, its worktrees,
+/// its fork point with the base under the object store the classifier lends, and its
+/// first-parent tail — and adds every session record, for a failure on a platform
+/// nobody here can run.
 fn diagnosis(
     providers: &CurrentProviders<'_>,
     scratch: &Scratch,

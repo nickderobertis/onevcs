@@ -198,6 +198,62 @@ impl KeepReason {
     }
 }
 
+/// The read that failed, for a branch kept as [`KeepReason::Unknown`]: which read it
+/// was, what it read, and the error it got — so a kept branch says what to look at
+/// rather than only that something could not be read.
+// llmlint: ignore-block[invalid_states_unrepresentable,boundary_inputs_validated] the
+// unknown-cause amendment in `docs/contract.md` fixes this type field for field as three
+// `String`s — the manager's ruling for plan `accepted-followups-1002`, which
+// `onepipeline` links — so an enum of operations would change a shared interface this
+// crate may not change alone. What is held where a document is read is what makes a
+// cause one at all: `AnyRetirement` refuses a cause beside any reason but `unknown`, and
+// one with a blank operation, subject or error. The operation's words stay open there on
+// purpose: a build that names a new read writes a document an older build still reads,
+// rather than one it refuses over the field that is only ever diagnostic. A subject
+// is a path, the origin's URL or a change request's URL by its operation, as a holder's
+// location is, and is only ever read back as words a person reads.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct UnknownCause {
+    /// The read that failed: `census`, `copy`, `live-holder`, `worked-in`, `judge`,
+    /// `supersession`, `open-change` or `host-consult`.
+    pub operation: String,
+    /// What it read: a path, the origin, or a change request.
+    pub subject: String,
+    /// The error it got.
+    pub error: String,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable,boundary_inputs_validated]
+
+impl UnknownCause {
+    fn new(
+        operation: &str,
+        subject: impl std::fmt::Display,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        UnknownCause {
+            operation: operation.to_owned(),
+            subject: subject.to_string(),
+            error: error.to_string(),
+        }
+    }
+
+    /// `subject: error`, as the inputs a recorded verdict is keyed under spell a place
+    /// that could not be read.
+    fn unreadable(&self) -> String {
+        format!("{}: {}", self.subject, self.error)
+    }
+}
+
+impl std::fmt::Display for UnknownCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} failed for {}: {}",
+            self.operation, self.subject, self.error
+        )
+    }
+}
+
 /// What proves a branch holds no work beyond its base.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -345,6 +401,9 @@ pub struct Retirement {
     pub class: RetirementClass,
     /// Why it is kept, for [`RetirementClass::Keep`] alone.
     pub reason: Option<KeepReason>,
+    /// The read that failed, for [`KeepReason::Unknown`] alone. A document written
+    /// before this field existed reads as `None`.
+    pub cause: Option<UnknownCause>,
     /// The identity it belongs to.
     pub identity: String,
     /// The branch.
@@ -372,6 +431,8 @@ pub struct Retirement {
 struct AnyRetirement {
     class: RetirementClass,
     reason: Option<KeepReason>,
+    #[serde(default)]
+    cause: Option<UnknownCause>,
     identity: String,
     branch: String,
     tip: Sha,
@@ -397,12 +458,29 @@ impl TryFrom<AnyRetirement> for Retirement {
                 "a retirement carries a proof exactly when its class is retirable".to_owned(),
             );
         }
+        if let Some(cause) = &any.cause {
+            if any.reason != Some(KeepReason::Unknown) {
+                return Err(
+                    "a retirement carries a cause only when its reason is unknown".to_owned(),
+                );
+            }
+            if [&cause.operation, &cause.subject, &cause.error]
+                .iter()
+                .any(|field| field.trim().is_empty())
+            {
+                return Err(
+                    "a retirement's cause names its operation, its subject and its error"
+                        .to_owned(),
+                );
+            }
+        }
         if any.class == RetirementClass::SupersededWithChanges && any.superseded_by.is_none() {
             return Err("a superseded-with-changes retirement names what superseded it".to_owned());
         }
         Ok(Retirement {
             class: any.class,
             reason: any.reason,
+            cause: any.cause,
             identity: any.identity,
             branch: any.branch,
             tip: any.tip,
@@ -422,6 +500,7 @@ impl Retirement {
         Retirement {
             class: RetirementClass::Keep,
             reason: Some(reason),
+            cause: None,
             identity: census.resolution.key.clone(),
             branch: branch.to_owned(),
             tip: Sha(copies.first_tip()),
@@ -432,6 +511,19 @@ impl Retirement {
             differing_paths: Vec::new(),
             holders: census.holders_of(copies),
         }
+    }
+
+    /// A branch kept because the read `cause` names failed.
+    fn unknown(census: &Census, branch: &str, cause: UnknownCause, copies: &Copies) -> Self {
+        Retirement {
+            cause: Some(cause),
+            ..Retirement::kept(census, branch, KeepReason::Unknown, copies)
+        }
+    }
+
+    /// The read that failed, for a branch kept as [`KeepReason::Unknown`].
+    pub fn cause(&self) -> Option<&UnknownCause> {
+        self.cause.as_ref()
     }
 
     /// The evidence a refusal prints beside the class: the proof, what superseded it,
@@ -477,11 +569,15 @@ impl Retirement {
         lines
     }
 
-    /// `class` and, for a kept branch, `/ reason`, as a line says them.
+    /// `class` and, for a kept branch, `/ reason` — and, for one kept as `unknown`,
+    /// `: ` and the read that failed — as a line says them.
     pub fn verdict(&self) -> String {
-        match self.reason {
-            Some(reason) => format!("{} / {}", self.class.as_str(), reason.as_str()),
-            None => self.class.as_str().to_owned(),
+        match (self.reason, &self.cause) {
+            (Some(reason), Some(cause)) => {
+                format!("{} / {}: {cause}", self.class.as_str(), reason.as_str())
+            }
+            (Some(reason), None) => format!("{} / {}", self.class.as_str(), reason.as_str()),
+            (None, _) => self.class.as_str().to_owned(),
         }
     }
 }
@@ -943,7 +1039,7 @@ struct Copy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Copies {
     copies: Vec<Copy>,
-    unreadable: Vec<String>,
+    unreadable: Vec<UnknownCause>,
 }
 
 impl Copies {
@@ -966,7 +1062,9 @@ pub(crate) struct Census<'a> {
     places: Vec<Place>,
     /// Every directory a place could be in that could not be listed, so a copy there
     /// is one no read of this identity can rule out.
-    unlisted: Vec<String>,
+    unlisted: Vec<UnknownCause>,
+    /// Why the base or where the origin has it could not be read, where it could not.
+    unread_base: Option<UnknownCause>,
     /// Every place's local branches with their tips, listed once where a read may
     /// answer from a listing — which is every read but the one made immediately before
     /// deleting, where a tip is asked of git again.
@@ -1005,8 +1103,12 @@ impl<'a> Census<'a> {
         // A fetch that failed leaves the base where the checkout last saw it, which
         // is not where the origin has it now — and every proof is asked against the
         // origin's base. So the base is unknown rather than stale.
-        let fetched = reach != Reach::Fetch || git::fetch(&publication, "origin").is_ok();
-        let base = git::default_branch(&publication, "origin").ok();
+        let fetch_failure = match reach {
+            Reach::Fetch => git::fetch(&publication, "origin").err(),
+            Reach::Offline | Reach::Remote => None,
+        };
+        let fetched = fetch_failure.is_none();
+        let base = git::default_branch(&publication, "origin");
         let origin = git::remote_url(&publication, "origin").ok();
         // One listing of the origin's branches for the whole identity, which answers
         // where the origin has every branch and the base alike. A listing that failed
@@ -1023,14 +1125,32 @@ impl<'a> Census<'a> {
             }
         };
         let base_tip = match (reach, base.as_deref()) {
-            (_, None) => None,
-            (Reach::Remote | Reach::Fetch, Some(base)) => fetched
+            (_, Err(_)) => None,
+            (Reach::Remote | Reach::Fetch, Ok(base)) => fetched
                 .then(|| remote_base(&publication, base, origin_heads.as_ref()))
                 .flatten(),
-            (Reach::Offline, Some(base)) => {
+            (Reach::Offline, Ok(base)) => {
                 git::tip(&publication, &format!("refs/remotes/origin/{base}"))
             }
         };
+        let unread_base = match (&base, &base_tip) {
+            (Ok(_), Some(_)) => None,
+            (Err(failure), _) => Some(UnknownCause::new(
+                "census",
+                publication.display(),
+                format!("which branch the origin's HEAD names: {failure}"),
+            )),
+            (Ok(base), None) => Some(UnknownCause::new(
+                "census",
+                publication.display(),
+                match (&fetch_failure, &origin_heads) {
+                    (Some(failure), _) => format!("fetching the origin: {failure}"),
+                    (None, Some(Err(said))) => format!("listing the origin's branches: {said}"),
+                    (None, _) => format!("where the origin has {base} could not be read"),
+                },
+            )),
+        };
+        let base = base.ok();
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
             repo: publication.clone(),
@@ -1101,6 +1221,7 @@ impl<'a> Census<'a> {
             base_tip,
             places,
             unlisted,
+            unread_base,
             sessions,
             streams,
             trailers,
@@ -1171,14 +1292,16 @@ impl<'a> Census<'a> {
                     tip: tip.as_str().to_owned(),
                 }),
                 LocalTip::Absent => {}
-                LocalTip::Unreadable(said) => read
-                    .unreadable
-                    .push(format!("{}: {said}", place.repo.display())),
+                LocalTip::Unreadable(said) => {
+                    read.unreadable
+                        .push(UnknownCause::new("copy", place.repo.display(), said))
+                }
             }
         }
-        if self.origin.is_none() {
+        let Some(origin) = self.origin.as_deref() else {
             return read;
-        }
+        };
+        let unread = |error: String| UnknownCause::new("copy", origin, error);
         match (ask.remote, tips) {
             (true, Tips::Now) => match git::remote_tip(self.publication(), "origin", branch, &[]) {
                 Ok(RemoteTip::At(tip)) => read.copies.push(Copy {
@@ -1186,10 +1309,10 @@ impl<'a> Census<'a> {
                     tip: tip.as_str().to_owned(),
                 }),
                 Ok(RemoteTip::Absent) => {}
-                Ok(RemoteTip::Unknown) => read
-                    .unreadable
-                    .push("the origin could not be asked where the branch is".to_owned()),
-                Err(failure) => read.unreadable.push(format!("the origin: {failure}")),
+                Ok(RemoteTip::Unknown) => read.unreadable.push(unread(
+                    "the origin could not be asked where the branch is".to_owned(),
+                )),
+                Err(failure) => read.unreadable.push(unread(failure.to_string())),
             },
             (true, Tips::Listed) => match &self.origin_heads {
                 Some(Ok(tips)) => {
@@ -1200,10 +1323,10 @@ impl<'a> Census<'a> {
                         });
                     }
                 }
-                Some(Err(said)) => read.unreadable.push(format!("the origin: {said}")),
-                None => read
-                    .unreadable
-                    .push("the origin was not asked where the branch is".to_owned()),
+                Some(Err(said)) => read.unreadable.push(unread(said.clone())),
+                None => read.unreadable.push(unread(
+                    "the origin was not asked where the branch is".to_owned(),
+                )),
             },
             (false, _) => {
                 // A listing that failed says nothing about where the origin has the
@@ -1221,9 +1344,9 @@ impl<'a> Census<'a> {
                             });
                         }
                     }
-                    Err(said) => read
-                        .unreadable
-                        .push(format!("the origin's remote-tracking branches: {said}")),
+                    Err(said) => read.unreadable.push(unread(format!(
+                        "the origin's remote-tracking branches: {said}"
+                    ))),
                 }
             }
         }
@@ -1258,7 +1381,7 @@ impl<'a> Census<'a> {
 
     /// The open session holding the branch whose owner is running or whose run root
     /// something is working in, where one does.
-    fn live_holder(&self, branch: &str) -> Result<Option<String>> {
+    fn live_holder(&self, branch: &str) -> std::result::Result<Option<String>, UnknownCause> {
         for record in self.sessions {
             if record.identity != self.resolution.key
                 || record.state != Lifecycle::Open
@@ -1271,8 +1394,13 @@ impl<'a> Census<'a> {
             if !over {
                 continue;
             }
+            let occupied = || {
+                lock::is_occupied(&record.lease()).map_err(|failure| {
+                    UnknownCause::new("live-holder", record.run_root.display(), failure)
+                })
+            };
             if record.owner_is_running()
-                || lock::is_occupied(&record.lease())?
+                || occupied()?
                 || !processes::holding(&record.run_root).is_empty()
             {
                 return Ok(Some(record.token.to_string()));
@@ -1291,12 +1419,16 @@ impl<'a> Census<'a> {
     }
 
     /// A registered checkout with the branch checked out in one of its worktrees.
-    fn checked_out(&self, branch: &str, copies: &Copies) -> Result<Option<PathBuf>> {
+    fn checked_out(
+        &self,
+        branch: &str,
+        copies: &Copies,
+    ) -> std::result::Result<Option<PathBuf>, UnknownCause> {
         for place in self.holding(copies) {
             if place.kind != BranchHolderKind::Checkout {
                 continue;
             }
-            for (worktree, on) in git::worktree_heads(&place.repo)? {
+            for (worktree, on) in worktrees_of(&place.repo)? {
                 if on.as_deref() == Some(branch) {
                     return Ok(Some(worktree));
                 }
@@ -1332,18 +1464,26 @@ impl<'a> Census<'a> {
 
     /// A worktree over the branch — a session's, a slot's, a run's — holding changes
     /// nobody committed.
-    fn dirty(&self, branch: &str, copies: &Copies) -> Result<Option<PathBuf>> {
+    fn dirty(
+        &self,
+        branch: &str,
+        copies: &Copies,
+    ) -> std::result::Result<Option<PathBuf>, UnknownCause> {
         for place in self.holding(copies) {
             if place.kind == BranchHolderKind::Checkout {
                 continue;
             }
-            for (worktree, on) in git::worktree_heads(&place.repo)? {
+            for (worktree, on) in worktrees_of(&place.repo)? {
                 // A clone's own tree is cut `--no-checkout` and never populated, so its
                 // status is every file missing rather than anybody's work.
                 if on.as_deref() != Some(branch) || worktree == place.repo {
                     continue;
                 }
-                if worktree.is_dir() && git::is_dirty(&worktree)? {
+                let dirty = worktree.is_dir()
+                    && git::is_dirty(&worktree).map_err(|failure| {
+                        UnknownCause::new("worked-in", worktree.display(), failure)
+                    })?;
+                if dirty {
                     return Ok(Some(worktree));
                 }
             }
@@ -1371,8 +1511,20 @@ impl<'a> Census<'a> {
                 Derivation::Derived,
             )
         };
+        let unknown = |cause| {
+            classified(
+                Retirement::unknown(self, branch, cause, &copies),
+                Derivation::Derived,
+            )
+        };
         let (Some(base), Some(base_tip)) = (self.base.as_deref(), self.base_tip.as_deref()) else {
-            return Ok(keep(KeepReason::Unknown));
+            return Ok(unknown(self.unread_base.clone().unwrap_or_else(|| {
+                UnknownCause::new(
+                    "census",
+                    self.publication().display(),
+                    "the base could not be read",
+                )
+            })));
         };
         if branch == base {
             return Ok(keep(KeepReason::IsBase));
@@ -1380,7 +1532,7 @@ impl<'a> Census<'a> {
         match self.live_holder(branch) {
             Ok(Some(_)) => return Ok(keep(KeepReason::HeldByLiveSession)),
             Ok(None) => {}
-            Err(_) => return Ok(keep(KeepReason::Unknown)),
+            Err(cause) => return Ok(unknown(cause)),
         }
         if ask
             .exclude
@@ -1392,8 +1544,8 @@ impl<'a> Census<'a> {
         if ask.merges == LeftMerges::Abort {
             self.abort_merges(branch, &copies);
         }
-        if !copies.unreadable.is_empty() {
-            return Ok(keep(KeepReason::Unknown));
+        if let Some(cause) = copies.unreadable.first() {
+            return Ok(unknown(cause.clone()));
         }
         let (verdict, derivation) = self.verdict(branch, base, base_tip, &copies, ask);
         if verdict.reached == crate::verdict::Reached::Early {
@@ -1404,14 +1556,18 @@ impl<'a> Census<'a> {
         let retirement = match self.worked_in(branch, &copies) {
             Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
             Ok(None) => verdict.retirement,
-            Err(_) => Retirement::kept(self, branch, KeepReason::Unknown, &copies),
+            Err(cause) => Retirement::unknown(self, branch, cause, &copies),
         };
         Ok(classified(retirement, derivation))
     }
 
     /// Whether somebody is working on the branch where it is: a registered checkout
     /// has it checked out, or a worktree over it holds changes nobody committed.
-    fn worked_in(&self, branch: &str, copies: &Copies) -> Result<Option<KeepReason>> {
+    fn worked_in(
+        &self,
+        branch: &str,
+        copies: &Copies,
+    ) -> std::result::Result<Option<KeepReason>, UnknownCause> {
         if self.checked_out(branch, copies)?.is_some() {
             return Ok(Some(KeepReason::CheckedOut));
         }
@@ -1510,7 +1666,11 @@ impl<'a> Census<'a> {
                     }
                 })
                 .collect(),
-            unreadable: copies.unreadable.clone(),
+            unreadable: copies
+                .unreadable
+                .iter()
+                .map(UnknownCause::unreadable)
+                .collect(),
             records,
             session,
             landed_trailer: self.trailers.landed().to_owned(),
@@ -1556,6 +1716,7 @@ impl<'a> Census<'a> {
         replies: Option<&crate::verdict::HostAnswer>,
     ) -> crate::verdict::Verdict {
         let kept = |reason| Retirement::kept(self, branch, reason, copies);
+        let unknown = |cause| Retirement::unknown(self, branch, cause, copies);
         let mut verdict = crate::verdict::Verdict {
             retirement: kept(KeepReason::Unknown),
             reached: crate::verdict::Reached::Early,
@@ -1563,21 +1724,35 @@ impl<'a> Census<'a> {
             host: crate::verdict::HostAnswer::not_asked(),
         };
         let mut evidence = self.evidence(branch);
-        let Some(mut judged) = self.judged(branch, base_tip, copies, &evidence, ask) else {
-            return verdict;
+        let mut judged = match self.judged(branch, base_tip, copies, &evidence, ask) {
+            Ok(judged) => judged,
+            Err(cause) => {
+                verdict.retirement = unknown(cause);
+                return verdict;
+            }
         };
         if judged.iter().all(|(_, one)| one.at_base) {
             verdict.retirement = kept(KeepReason::IsBase);
             return verdict;
         }
         match self.open_change(branch, &mut evidence, &judged, ask, replies) {
-            Err(_) => return verdict,
+            Err(cause) => {
+                verdict.retirement = unknown(cause);
+                return verdict;
+            }
             Ok((open, history, heard)) => {
                 verdict.history = history;
                 verdict.host = heard;
-                if let Some(reason) = open {
-                    verdict.retirement = kept(reason);
-                    return verdict;
+                match open {
+                    Ok(None) => {}
+                    Ok(Some(reason)) => {
+                        verdict.retirement = kept(reason);
+                        return verdict;
+                    }
+                    Err(cause) => {
+                        verdict.retirement = unknown(cause);
+                        return verdict;
+                    }
                 }
             }
         }
@@ -1586,18 +1761,22 @@ impl<'a> Census<'a> {
         // so they are judged again under what is now known.
         if evidence.changed {
             match self.judged(branch, base_tip, copies, &evidence, ask) {
-                Some(again) => judged = again,
-                None => return verdict,
+                Ok(again) => judged = again,
+                Err(cause) => {
+                    verdict.retirement = unknown(cause);
+                    return verdict;
+                }
             }
         }
-        if let Ok(concluded) = self.conclude(branch, base_tip, copies, &judged, ask) {
-            verdict.retirement = concluded;
-        }
+        verdict.retirement = match self.conclude(branch, base_tip, copies, &judged, ask) {
+            Ok(concluded) => concluded,
+            Err(cause) => unknown(cause),
+        };
         verdict
     }
 
-    /// Every copy judged against the base's tip, or `None` where one of them could not
-    /// be read.
+    /// Every copy judged against the base's tip, or the read that failed where one of
+    /// them could not be judged.
     fn judged(
         &self,
         branch: &str,
@@ -1605,16 +1784,22 @@ impl<'a> Census<'a> {
         copies: &Copies,
         evidence: &Evidence,
         ask: &Ask<'_>,
-    ) -> Option<Vec<(Copy, Judged)>> {
+    ) -> std::result::Result<Vec<(Copy, Judged)>, UnknownCause> {
         let mut judged = Vec::new();
         for copy in &copies.copies {
-            let repo = self.readable(copy, branch, ask)?;
+            let Some(repo) = self.readable(copy, branch, ask) else {
+                return Err(UnknownCause::new(
+                    "judge",
+                    self.holder(copy.at).location,
+                    format!("no repository on this host has its commit {}", copy.tip),
+                ));
+            };
             let one = self
                 .judge_copy(self.asked(&repo), &copy.tip, base_tip, evidence)
-                .ok()?;
+                .map_err(|failure| UnknownCause::new("judge", repo.display(), failure))?;
             judged.push((copy.clone(), one));
         }
-        Some(judged)
+        Ok(judged)
     }
 
     /// The class the judged copies add up to.
@@ -1625,7 +1810,7 @@ impl<'a> Census<'a> {
         copies: &Copies,
         judged: &[(Copy, Judged)],
         ask: &Ask<'_>,
-    ) -> Result<Retirement> {
+    ) -> std::result::Result<Retirement, UnknownCause> {
         let kept = |reason| Retirement::kept(self, branch, reason, copies);
         let mut free: Vec<String> = Vec::new();
         let mut differing: BTreeSet<String> = BTreeSet::new();
@@ -1669,9 +1854,15 @@ impl<'a> Census<'a> {
             return Ok(retirement);
         };
         retirement.differing_paths = differing.into_iter().collect();
-        if let Some(by) =
-            self.superseded(self.asked(&repo), branch, base_tip, &tip, fork.as_deref())?
-        {
+        // llmlint: ignore[changed_behavior_has_e2e] uncovered: this read is of a repository
+        // whose history the judge has just read whole, against the same base tip, inside one
+        // invocation — nothing a host does to its files fails the second read and not the
+        // first. The cause it records is built as the six reads `retire::unknown_causes`
+        // and `tests/e2e/retire.rs` drive are.
+        let superseded = self
+            .superseded(self.asked(&repo), branch, base_tip, &tip, fork.as_deref())
+            .map_err(|failure| UnknownCause::new("supersession", repo.display(), failure))?;
+        if let Some(by) = superseded {
             retirement.class = RetirementClass::SupersededWithChanges;
             retirement.reason = None;
             retirement.superseded_by = Some(by);
@@ -1821,8 +2012,10 @@ impl<'a> Census<'a> {
     /// Whether a change request opened from the branch is still open, asked of the
     /// records first and of the host only where they do not decide it — and whether
     /// the host answered that it merged, which is then evidence of its own. Answers
-    /// the keep reason where there is one, whether the base's history names the change
-    /// request where that was asked, and what the host said.
+    /// the keep reason where there is one — or the host's read that failed — whether
+    /// the base's history names the change request where that was asked, and what the
+    /// host said; or the read of the base's history that failed.
+    #[allow(clippy::type_complexity)] // three answers of one question, each named where it is read
     fn open_change(
         &self,
         branch: &str,
@@ -1830,16 +2023,19 @@ impl<'a> Census<'a> {
         judged: &[(Copy, Judged)],
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
-    ) -> Result<(
-        Option<KeepReason>,
-        Option<crate::verdict::History>,
-        crate::verdict::HostAnswer,
-    )> {
+    ) -> std::result::Result<
+        (
+            std::result::Result<Option<KeepReason>, UnknownCause>,
+            Option<crate::verdict::History>,
+            crate::verdict::HostAnswer,
+        ),
+        UnknownCause,
+    > {
         let Some(change) = evidence.change.clone() else {
-            return Ok((None, None, crate::verdict::HostAnswer::not_asked()));
+            return Ok((Ok(None), None, crate::verdict::HostAnswer::not_asked()));
         };
         if evidence.landing.is_some() {
-            return Ok((None, None, crate::verdict::HostAnswer::not_asked()));
+            return Ok((Ok(None), None, crate::verdict::HostAnswer::not_asked()));
         }
         // Named on the base by the host's own squash commit is merged, whoever merged
         // it — the same tier the landing decision reads.
@@ -1849,11 +2045,16 @@ impl<'a> Census<'a> {
             let Some(repo) = self.readable(copy, branch, ask) else {
                 continue;
             };
+            // llmlint: ignore[changed_behavior_has_e2e] no journey fails this read alone,
+            // for the reason the supersession read in `conclude` gives: the judge read this
+            // same history of this same repository a moment before. The cause it records is
+            // driven directly by `retire::unknown_causes`, from a fork nobody has.
             let history = git::log_messages(
                 self.asked(&repo),
                 fork,
                 self.base_tip.as_deref().unwrap_or(""),
-            )?;
+            )
+            .map_err(|failure| UnknownCause::new("open-change", &change, failure))?;
             if landed::names_the_change(&history, change.as_str()).is_some() {
                 named = crate::verdict::History::NamesTheChange;
                 break;
@@ -1869,8 +2070,9 @@ impl<'a> Census<'a> {
 
     /// Put to the host what the derivation asks it about the branch's change request,
     /// given whether the base's history already names it — or take the answers from
-    /// `replies`, where this pass already asked. Answers what was heard, and the keep
-    /// reason it decides.
+    /// `replies`, where this pass already answered them. Answers what was heard, and the
+    /// keep reason it decides — or the read of the host that failed, which decides
+    /// `unknown`.
     ///
     /// A pass that may record takes a late merge up first, once, through the
     /// reconciliation a read that meets one makes — whatever else the base says — so
@@ -1885,12 +2087,19 @@ impl<'a> Census<'a> {
         history: crate::verdict::History,
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
-    ) -> (crate::verdict::HostAnswer, Option<KeepReason>) {
+    ) -> (
+        crate::verdict::HostAnswer,
+        std::result::Result<Option<KeepReason>, UnknownCause>,
+    ) {
         use crate::verdict::{ChangeState, HostAnswer, Reply};
         let mut heard = HostAnswer::not_asked();
-        // An answer this pass already heard, or the host asked now.
+        // What the host said where it could not be asked, for the cause it decides.
+        let failure = std::cell::RefCell::new(String::new());
+        let failed = |said: Error| *failure.borrow_mut() = said.to_string();
+        // An answer this pass already heard, or the host asked now — again, where it
+        // could not be asked before, so a failure is reported with what it said.
         let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<Sha>>| match replies {
-            Some(replied) if replied.merged.asked() => replied.merged.clone(),
+            Some(replied) if matches!(replied.merged, Reply::Answered(_)) => replied.merged.clone(),
             _ => ask_now(),
         };
         let session = self
@@ -1902,11 +2111,15 @@ impl<'a> Census<'a> {
             branch,
             session.as_deref(),
         );
-        let host = ask.host.and_then(|hosting| {
+        let host = ask.host.map(|hosting| {
             crate::publish::change_host(&self.resolution.key)
                 .and_then(|slug| hosting.for_repo(&slug))
-                .ok()
         });
+        let (host, unhosted) = match host {
+            Some(Ok(host)) => (Some(host), None),
+            Some(Err(said)) => (None, Some(said.to_string())),
+            None => (None, None),
+        };
         let merged_now = |sha: &Option<Sha>, evidence: &mut Evidence| match sha
             .as_ref()
             .and_then(|sha| ObjectId::parse(&sha.0))
@@ -1941,30 +2154,39 @@ impl<'a> Census<'a> {
                             .map(Sha),
                         ),
                         Ok(None) => Reply::Answered(None),
-                        Err(_) => Reply::Failed,
+                        Err(said) => {
+                            failed(said);
+                            Reply::Failed
+                        }
                     });
                     if let Reply::Answered(sha) = &heard.merged {
                         if merged_now(sha, evidence) {
-                            return (heard, None);
+                            return (heard, Ok(None));
                         }
                     }
                 }
             }
         }
         if history == crate::verdict::History::NamesTheChange {
-            return (heard, None);
+            return (heard, Ok(None));
         }
         if ask.host.is_none() {
-            return (heard, Some(KeepReason::OpenChangeRequest));
+            return (heard, Ok(Some(KeepReason::OpenChangeRequest)));
         }
         let Some(opened) = opened else {
-            return (heard, Some(KeepReason::OpenChangeRequest));
+            return (heard, Ok(Some(KeepReason::OpenChangeRequest)));
         };
+        let unanswered = |error: &str| UnknownCause::new("host-consult", &opened.url, error);
         let (Some(id), Some(target)) = (&opened.id, &opened.base) else {
-            return (heard, Some(KeepReason::Unknown));
+            return (
+                heard,
+                Err(unanswered(
+                    "its opening is recorded without the change request's id or base",
+                )),
+            );
         };
         let Some(host) = host else {
-            return (heard, Some(KeepReason::Unknown));
+            return (heard, Err(unanswered(&unhosted.unwrap_or_default())));
         };
         if !ask.reconcile {
             heard.merged = merged_heard(&|| match host
@@ -1972,20 +2194,26 @@ impl<'a> Census<'a> {
             {
                 Ok(Some(sha)) => Reply::Answered(Some(sha)),
                 Ok(None) => Reply::Answered(None),
-                Err(_) => Reply::Failed,
+                Err(said) => {
+                    failed(said);
+                    Reply::Failed
+                }
             });
             match &heard.merged {
                 Reply::Answered(sha) => {
                     if merged_now(sha, evidence) {
-                        return (heard, None);
+                        return (heard, Ok(None));
                     }
                 }
-                Reply::Failed => return (heard, Some(KeepReason::Unknown)),
+                Reply::Failed => {
+                    let cause = unanswered(&format!("whether it merged: {}", failure.borrow()));
+                    return (heard, Err(cause));
+                }
                 Reply::NotAsked => {}
             }
         }
         heard.open = match replies {
-            Some(replied) if replied.open.asked() => replied.open.clone(),
+            Some(replied) if matches!(replied.open, Reply::Answered(_)) => replied.open.clone(),
             _ => match host.find_changes(branch, target) {
                 Ok(open) => {
                     Reply::Answered(match open.iter().any(|found| found.url == opened.url) {
@@ -1993,14 +2221,21 @@ impl<'a> Census<'a> {
                         false => ChangeState::NotOpen,
                     })
                 }
-                Err(_) => Reply::Failed,
+                Err(said) => {
+                    failed(said);
+                    Reply::Failed
+                }
             },
         };
         let open = match heard.open {
-            Reply::Answered(ChangeState::Open) => Some(KeepReason::OpenChangeRequest),
+            Reply::Answered(ChangeState::Open) => Ok(Some(KeepReason::OpenChangeRequest)),
             // Neither merged nor open is closed without merging, which holds nothing.
-            Reply::Answered(ChangeState::NotOpen) => None,
-            Reply::Failed | Reply::NotAsked => Some(KeepReason::Unknown),
+            Reply::Answered(ChangeState::NotOpen) => Ok(None),
+            Reply::Failed => Err(unanswered(&format!(
+                "whether it is still open: {}",
+                failure.borrow()
+            ))),
+            Reply::NotAsked => Err(unanswered("whether it is still open was not asked")),
         };
         (heard, open)
     }
@@ -2059,6 +2294,13 @@ fn remote_base(
         git::fetch_objects_of(publication, "origin", base).ok()?;
     }
     git::has_commit(publication, &wanted).then(|| tip.as_str().to_owned())
+}
+
+/// The worktrees of one repository and the branch each has checked out, for the reads
+/// that ask whether somebody is working on a branch.
+fn worktrees_of(repo: &Path) -> std::result::Result<Vec<(PathBuf, Option<String>)>, UnknownCause> {
+    git::worktree_heads(repo)
+        .map_err(|failure| UnknownCause::new("worked-in", repo.display(), failure))
 }
 
 /// A classification, the copies it was made from, and whether its verdict was
@@ -2136,7 +2378,7 @@ fn change_request(
 }
 
 /// The numbered directories under one directory, in number order.
-fn numbered(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, u32)> {
+fn numbered(directory: &Path, unlisted: &mut Vec<UnknownCause>) -> Vec<(PathBuf, u32)> {
     let mut found: Vec<(PathBuf, u32)> = listed(directory, unlisted)
         .into_iter()
         .filter_map(|(path, name)| {
@@ -2153,12 +2395,12 @@ fn numbered(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, u32)>
 /// The directories under one directory, by name. A directory that is not there holds
 /// nothing; one that is there and cannot be listed, or an entry of it that cannot be
 /// read, is said in `unlisted`, because what it holds is unknown rather than nothing.
-fn listed(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, String)> {
+fn listed(directory: &Path, unlisted: &mut Vec<UnknownCause>) -> Vec<(PathBuf, String)> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(failure) => {
-            unlisted.push(format!("{}: {failure}", directory.display()));
+            unlisted.push(UnknownCause::new("census", directory.display(), failure));
             return Vec::new();
         }
     };
@@ -2170,7 +2412,9 @@ fn listed(directory: &Path, unlisted: &mut Vec<String>) -> Vec<(PathBuf, String)
                 entry.file_name().to_string_lossy().into_owned(),
             )),
             Ok(_) => {}
-            Err(failure) => unlisted.push(format!("{}: {failure}", directory.display())),
+            Err(failure) => {
+                unlisted.push(UnknownCause::new("census", directory.display(), failure))
+            }
         }
     }
     found.sort();
@@ -2415,6 +2659,7 @@ impl RetiredRecord {
         Retirement {
             class: self.payload.class,
             reason: self.payload.reason,
+            cause: None,
             identity: self.payload.identity.clone(),
             branch: self.payload.branch.clone(),
             tip: self.payload.tip.clone(),
@@ -2939,6 +3184,19 @@ fn act(
             let mut retirement = classified.retirement;
             retirement.class = RetirementClass::Keep;
             retirement.reason = Some(KeepReason::Unknown);
+            // llmlint: ignore[changed_behavior_has_e2e] uncovered: reaching it takes a copy
+            // that moves between each of three reads made back to back inside one
+            // invocation, a race no journey holds deterministically.
+            // `a_tip_that_moves_during_the_deletion_puts_back_what_was_deleted_and_keeps_the_branch`
+            // drives the one move a journey can.
+            retirement.cause = Some(UnknownCause::new(
+                "copy",
+                branch,
+                format!(
+                    "a copy of it moved on each of {RECLASSIFICATIONS} reads made immediately \
+                     before deleting it"
+                ),
+            ));
             retirement.proof = None;
             retirement.superseded_by = None;
             retirement.differing_paths = Vec::new();
@@ -3362,4 +3620,390 @@ pub(crate) fn supersede(record: &Supersession) -> Result<()> {
         })),
     );
     Ok(())
+}
+
+/// Each kind of read a classification makes, failing, and the cause it is kept for.
+///
+/// One of this crate's `#[cfg(test)]` modules, for the reason the others exist: the reads
+/// are the census's own private ones — its places, a live holder's lease, the worktrees
+/// over a branch, a copy's history, the host — and `tests/e2e/retire.rs`, which drives the
+/// same failures through the binary, can only see the one cause a whole classification
+/// answers. Here each read is asked by itself, so a cause that went missing from one read
+/// is not hidden behind another read that failed first.
+///
+/// Everything is real: a state root of its own, a bare origin, a registered `local-direct`
+/// checkout, a branch worked in a session and landed by the library's own
+/// `publish_branch`, and a second session over the landed branch whose opener has gone —
+/// the record is read with no owner start, which is what a record whose process exited
+/// reads as. The failures are what a host does to files: a mode that closes a directory,
+/// and a ref naming a commit nobody has. The state root is the process's, which is why
+/// the suite runs one test per process, as `cargo nextest` does.
+#[cfg(all(test, unix))]
+mod unknown_causes {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use serde_json::json;
+
+    use super::{Ask, Census, Copies, Host, Reach, UnknownCause};
+    use crate::event::EventKind;
+    use crate::ops::{publish_branch, register_checkout, BranchPublishRequest};
+    use crate::stream::Stream;
+    use crate::workspace::Record;
+    use crate::{lock, Lifecycle, Providers, SessionRequest};
+
+    const BRANCH: &str = "feature/done";
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {} failed in {}: {}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn commit(worktree: &Path, file: &str) {
+        std::fs::write(worktree.join(file), format!("{file}\n")).expect("a file to commit");
+        git(worktree, &["add", "-A"]);
+        git(
+            worktree,
+            &["commit", "-q", "-m", &format!("feat: write {file}")],
+        );
+    }
+
+    fn opened(providers: &Providers<'_>) -> crate::Session {
+        providers
+            .vcs
+            .open_session(SessionRequest {
+                repo: "project".to_owned(),
+                branch: Some(BRANCH.to_owned()),
+                branch_name: None,
+                branch_prefix: None,
+                base: None,
+                execution_checkout: None,
+                pool: None,
+                overflow: None,
+                labels: Default::default(),
+                refuse_conflicts: false,
+            })
+            .expect("a session over the branch")
+    }
+
+    /// A host on which `feature/done` landed and a session left open over it.
+    struct Landed {
+        /// Removed when the test ends.
+        _root: tempfile::TempDir,
+        /// The open session's record, as a census reads it once its opener has gone.
+        stale: Record,
+    }
+
+    impl Landed {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("a scratch host");
+            let at = root.path().canonicalize().expect("a canonical root");
+            // Auto-maintenance off: after a commit git detaches a maintenance child into
+            // the worktree, and a `close_session` that follows sees a process inside its
+            // run root and rightly refuses — a race no test here sets out to run.
+            std::fs::write(
+                at.join(".gitconfig"),
+                "[user]\n\tname = Unit\n\temail = unit@example.invalid\n[init]\n\t\
+                 defaultBranch = main\n[commit]\n\tgpgsign = false\n[maintenance]\n\t\
+                 auto = false\n",
+            )
+            .expect("a git configuration");
+            std::env::set_var("HOME", &at);
+            std::env::set_var(crate::home::HOME_ENV, at.join(".onevcs"));
+            let seed = at.join("seed");
+            std::fs::create_dir_all(&seed).expect("a seed");
+            git(&seed, &["init", "-q", "-b", "main"]);
+            commit(&seed, "README.md");
+            let origin = at.join("project.git");
+            git(&at, &["init", "-q", "--bare", &origin.to_string_lossy()]);
+            git(&seed, &["push", "-q", &origin.to_string_lossy(), "main"]);
+            let checkout = at.join("project");
+            git(
+                &at,
+                &[
+                    "clone",
+                    "-q",
+                    &origin.to_string_lossy(),
+                    &checkout.to_string_lossy(),
+                ],
+            );
+            register_checkout(&checkout, None).expect("the checkout registers");
+            std::fs::write(
+                at.join(".onevcs/rules.yml"),
+                "version: 1\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+            )
+            .expect("a rules file");
+            let providers = Providers::real();
+            let worked = opened(&providers);
+            commit(&worked.worktree, "done.txt");
+            crate::close_session(&providers, &worked.token).expect("the session closes");
+            publish_branch(
+                &providers,
+                &BranchPublishRequest {
+                    repo: checkout.clone(),
+                    branch: BRANCH.to_owned(),
+                    title: None,
+                    body: None,
+                    policy: None,
+                },
+            )
+            .expect("the branch lands");
+            let left = opened(&providers);
+            let mut stale = crate::workspace::all()
+                .expect("the session records")
+                .into_iter()
+                .find(|record| record.token.to_string() == left.token.0)
+                .expect("the open session's record");
+            assert_eq!(stale.state, Lifecycle::Open);
+            stale.owner_started = None;
+            Landed { _root: root, stale }
+        }
+
+        /// Every record this host has, with the open one read as its opener gone.
+        fn host(&self) -> Host {
+            let records = crate::workspace::all()
+                .expect("the session records")
+                .into_iter()
+                .map(|record| match record.token == self.stale.token {
+                    true => self.stale.clone(),
+                    false => record,
+                })
+                .collect();
+            Host::with(Some(records)).expect("the host reads")
+        }
+
+        fn identity(&self) -> String {
+            self.stale.identity.clone()
+        }
+    }
+
+    /// Close `path` to this user for as long as `read` runs.
+    fn closed<T>(path: &Path, read: impl FnOnce() -> T) -> T {
+        let original = std::fs::metadata(path).expect("a path").permissions();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+            .expect("the path is closed");
+        assert!(
+            std::fs::File::open(path).is_err(),
+            "the premise: this suite runs as a user the mode binds"
+        );
+        let answer = read();
+        std::fs::set_permissions(path, original).expect("the path is open again");
+        answer
+    }
+
+    fn census<'h>(host: &'h Host, identity: &str) -> Census<'h> {
+        host.census(identity, Reach::Offline)
+            .expect("the identity is read")
+    }
+
+    fn says(cause: &UnknownCause, operation: &str, subject: &Path) {
+        assert_eq!(cause.operation, operation, "{cause}");
+        assert_eq!(cause.subject, subject.display().to_string(), "{cause}");
+        assert!(
+            !cause.error.trim().is_empty(),
+            "a cause with no error: {cause}"
+        );
+    }
+
+    /// The classification a read like this one would decide, which names the same read.
+    fn classified(census: &Census<'_>, copies: Copies) -> UnknownCause {
+        let retirement = census
+            .classify(BRANCH, copies, &Ask::offline())
+            .expect("a classification")
+            .retirement;
+        retirement
+            .cause()
+            .cloned()
+            .unwrap_or_else(|| panic!("kept without a cause: {retirement:?}"))
+    }
+
+    #[test]
+    fn a_place_whose_branches_cannot_be_read_is_a_copy_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let clone = landed.stale.clone.clone();
+        let (copies, cause) = closed(&clone, || {
+            let census = census(&host, &identity);
+            let copies = census.copies(BRANCH, &Ask::offline());
+            let cause = classified(&census, copies.clone());
+            (copies, cause)
+        });
+        says(&copies.unreadable[0], "copy", &clone);
+        assert_eq!(cause, copies.unreadable[0]);
+    }
+
+    #[test]
+    fn a_directory_of_run_roots_that_cannot_be_listed_is_a_census_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let runs = landed
+            .stale
+            .run_root
+            .parent()
+            .expect("the run roots")
+            .to_path_buf();
+        let (unlisted, cause) = closed(&runs, || {
+            let census = census(&host, &identity);
+            let copies = census.copies(BRANCH, &Ask::offline());
+            (census.unlisted.clone(), classified(&census, copies))
+        });
+        says(&unlisted[0], "census", &runs);
+        assert_eq!(cause, unlisted[0]);
+    }
+
+    #[test]
+    fn a_lease_that_cannot_be_read_is_a_live_holder_cause_naming_the_run_root() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let lease = lock::path_for(&landed.stale.lease()).expect("the lease's path");
+        assert!(
+            lease.is_file(),
+            "the premise: opening the session took its lease"
+        );
+        let read = closed(&lease, || census(&host, &identity).live_holder(BRANCH));
+        says(
+            &read.expect_err("a lease nobody can open answers no holder"),
+            "live-holder",
+            &landed.stale.run_root,
+        );
+    }
+
+    #[test]
+    fn a_worktree_that_cannot_be_read_is_a_worked_in_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        assert!(copies.unreadable.is_empty(), "{copies:?}");
+        let worktree = landed.stale.worktree.clone();
+        let read = closed(&worktree, || census.worked_in(BRANCH, &copies));
+        says(
+            &read.expect_err("a worktree nobody can read answers no state"),
+            "worked-in",
+            &worktree,
+        );
+    }
+
+    #[test]
+    fn a_copy_whose_commit_is_missing_is_a_judge_cause_naming_where_it_is() {
+        let landed = Landed::new();
+        let clone = landed.stale.clone.clone();
+        let refs = PathBuf::from(git(&clone, &["rev-parse", "--absolute-git-dir"]))
+            .join("refs/heads")
+            .join(BRANCH);
+        std::fs::write(&refs, "1111111111111111111111111111111111111111\n")
+            .expect("the clone's copy names a commit nobody has");
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let base_tip = census.base_tip.clone().expect("the base is read");
+        let read = census.judged(
+            BRANCH,
+            &base_tip,
+            &copies,
+            &census.evidence(BRANCH),
+            &Ask::offline(),
+        );
+        let Err(cause) = read else {
+            panic!("a commit nobody has was judged");
+        };
+        says(&cause, "judge", &clone);
+        assert_eq!(classified(&census, copies).operation, "judge");
+    }
+
+    #[test]
+    fn a_base_history_that_cannot_be_read_is_an_open_change_cause_naming_the_change_request() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let base_tip = census.base_tip.clone().expect("the base is read");
+        let mut judged = census
+            .judged(
+                BRANCH,
+                &base_tip,
+                &copies,
+                &census.evidence(BRANCH),
+                &Ask::offline(),
+            )
+            .expect("every copy is judged");
+        // The judge's answer read back with a fork no repository has, which is what makes
+        // the base's history from it a read that fails.
+        judged[0].1.fork = Some("1111111111111111111111111111111111111111".to_owned());
+        // A change request recorded and no landing, so whether the base's history names
+        // it is the question the read answers.
+        let url = "https://github.com/acme/project/pull/7";
+        let mut evidence = super::Evidence {
+            change: Some(url::Url::parse(url).expect("a change request URL")),
+            landing: None,
+            heads: Vec::new(),
+            changed: false,
+        };
+        let read = census.open_change(BRANCH, &mut evidence, &judged, &Ask::offline(), None);
+        let Err(cause) = read else {
+            panic!("a base history from a fork nobody has was read");
+        };
+        assert_eq!(
+            (cause.operation.as_str(), cause.subject.as_str()),
+            ("open-change", url)
+        );
+        assert!(cause.error.contains("1111111"), "{cause}");
+    }
+
+    #[test]
+    fn a_change_request_the_host_cannot_be_asked_about_is_a_host_consult_cause_naming_it() {
+        let landed = Landed::new();
+        // The record `publish` writes when it opens a change request, on the open
+        // session's own stream: the identity is a local path, so no host serves it, and
+        // whether the change request merged or is still open is a question nobody can
+        // answer.
+        let url = "https://github.com/acme/project/pull/7";
+        let mut stream = Stream::open(&landed.stale.token.to_string()).expect("its stream");
+        stream.emit(
+            EventKind::ChangeOpened,
+            json!({"url": url, "host": "github", "id": "7", "base": "main"})
+                .as_object()
+                .expect("an object")
+                .clone(),
+        );
+        drop(stream);
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let providers = Providers::real();
+        let ask = Ask::acting(Some(providers.hosting), true, &[]);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let (_, decided) = census.consult(
+            BRANCH,
+            &mut census.evidence(BRANCH),
+            &copies.first_tip(),
+            crate::verdict::History::DoesNotName,
+            &ask,
+            None,
+        );
+        let cause = decided.expect_err("a host nobody can ask decides nothing");
+        assert_eq!(
+            (cause.operation.as_str(), cause.subject.as_str()),
+            ("host-consult", url)
+        );
+        assert!(!cause.error.trim().is_empty(), "{cause}");
+    }
 }

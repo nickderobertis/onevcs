@@ -7613,6 +7613,106 @@ fn the_retirement_json_the_amendment_spells_is_what_a_retirement_is_read_and_wri
 }
 
 #[test]
+fn the_unknown_cause_amendment_declares_its_surface_and_the_json_and_line_it_spells() {
+    // Built from outside with every field named, so a field added, removed or renamed
+    // stops this compiling, and the accessor is named as a value of its declared type.
+    let cause = onevcs::UnknownCause {
+        operation: "copy".to_owned(),
+        subject: "/home/me/src/project".to_owned(),
+        error: "it could not be listed".to_owned(),
+    };
+    let accessor: fn(&onevcs::Retirement) -> Option<&onevcs::UnknownCause> =
+        onevcs::Retirement::cause;
+    let declarations = amendment_declaring("pub struct UnknownCause");
+    for declared in [
+        "pub struct UnknownCause { pub operation: String, pub subject: String, pub error: String }",
+        "Retirement   pub cause: Option<UnknownCause>",
+        "impl Retirement { pub fn cause(&self) -> Option<&UnknownCause>; }",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the unknown-cause amendment no longer declares: {declared}"
+        );
+    }
+
+    // The kept branch the amendment spells is read into the type and written back byte
+    // for byte, with its cause where the accessor answers it.
+    let documented: Value = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"cause\": {\"operation\"",
+    ))
+    .expect("the unknown-cause amendment's fixture is JSON");
+    let read: onevcs::Retirement =
+        serde_json::from_value(documented.clone()).expect("the amendment's retirement reads");
+    assert_eq!(read.reason, Some(onevcs::KeepReason::Unknown));
+    let said = accessor(&read).expect("a branch kept as unknown names its cause");
+    assert_eq!(said.operation, "copy");
+    assert_eq!(
+        serde_json::to_value(&read).expect("a retirement serializes"),
+        documented
+    );
+
+    // The line every rendering says it in is the one the amendment spells.
+    let line = format!(
+        "keep / unknown: copy failed for {}: {}",
+        said.subject, said.error
+    );
+    assert_eq!(read.verdict(), line);
+    assert!(
+        regions()
+            .0
+            .contains(&format!("is {line}, which `onevcs retire`")),
+        "the amendment does not spell the refusal line: {line}"
+    );
+
+    // A cause beside any other reason is refused where it is read…
+    for (class, reason) in [
+        ("keep", json!("unmerged-unique-commits")),
+        ("keep", json!("held-by-live-session")),
+    ] {
+        let mut document = documented.clone();
+        document["class"] = json!(class);
+        document["reason"] = reason;
+        assert!(
+            serde_json::from_value::<onevcs::Retirement>(document.clone()).is_err(),
+            "a cause beside another reason read: {document}"
+        );
+    }
+    // …and so is a cause that names nothing.
+    for key in ["operation", "subject", "error"] {
+        let mut document = documented.clone();
+        document["cause"][key] = json!("  ");
+        assert!(
+            serde_json::from_value::<onevcs::Retirement>(document.clone()).is_err(),
+            "a cause with a blank {key} read: {document}"
+        );
+    }
+    // Every other reason writes `null`…
+    let kept = onevcs::Retirement {
+        reason: Some(onevcs::KeepReason::UnmergedUniqueCommits),
+        cause: None,
+        ..read.clone()
+    };
+    let written = serde_json::to_value(&kept).expect("a retirement serializes");
+    assert_eq!(written["cause"], Value::Null);
+    assert!(written
+        .as_object()
+        .expect("an object")
+        .contains_key("cause"));
+    // …and a document written before the field existed reads as one naming none.
+    let mut older = documented.clone();
+    older.as_object_mut().expect("an object").remove("cause");
+    let older: onevcs::Retirement =
+        serde_json::from_value(older).expect("a document without a cause reads");
+    assert_eq!(older.cause(), None);
+    assert_eq!(older.verdict(), "keep / unknown");
+    let _ = onevcs::Retirement {
+        cause: Some(cause),
+        ..older
+    };
+}
+
+#[test]
 fn the_retirement_amendment_spells_exactly_the_flags_its_verbs_take() {
     // The gate above asks whether a documented flag exists on *some* command, and
     // `--repo` exists on many. Each of the four verbs is held to its own line here, in

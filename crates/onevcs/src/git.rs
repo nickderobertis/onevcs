@@ -1064,7 +1064,7 @@ pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
 // state — the value comes out of git and goes straight back to it.
 pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
     run(
-        &["rev-list", "--count", commit, "--not", "--all"],
+        &["rev-list", "--count", commit, "--not", "--all", "--"],
         Some(cwd),
     )
     .ok()
@@ -1973,6 +1973,7 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
         "--remotes=origin",
     ];
     args.extend_from_slice(&held);
+    args.push("--");
     let counted = run(&args, Some(cwd))?;
     if !counted.ok() {
         // llmlint: ignore[changed_behavior_has_e2e] the reference going away between a
@@ -2107,6 +2108,7 @@ pub fn log_messages<'a>(
             "--reverse",
             "--format=%H%x00%B%x00%x1e",
             &format!("{base}..{branch}"),
+            "--",
         ],
     )?;
     Ok(output
@@ -2130,7 +2132,7 @@ pub fn log_messages<'a>(
 /// the base afterwards, and asking about ancestry would report finished work as
 /// still waiting forever.
 pub fn trees_differ<'a>(cwd: impl Into<Asked<'a>>, base: &str, branch: &str) -> Result<bool> {
-    let output = run_in(cwd.into(), &["diff", "--quiet", base, branch])?;
+    let output = run_in(cwd.into(), &["diff", "--quiet", base, branch, "--"])?;
     match output.status {
         0 => Ok(false),
         1 => Ok(true),
@@ -2159,7 +2161,10 @@ pub struct Lines {
 /// the reason every other comparison in this module declines them: a rename reported
 /// under its destination alone hides the lines the source took with it.
 pub fn line_change<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Result<Lines> {
-    let listed = checked_in(cwd.into(), &["diff", "--numstat", "--no-renames", from, to])?;
+    let listed = checked_in(
+        cwd.into(),
+        &["diff", "--numstat", "--no-renames", from, to, "--"],
+    )?;
     let mut counted = Lines::default();
     for line in listed.stdout.lines().filter(|line| !line.trim().is_empty()) {
         let unreadable = || Error::Invalid {
@@ -2217,7 +2222,13 @@ pub struct Shape {
 // git's arithmetic, and the values are compared against each other rather than parsed.
 pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
     let printed = checked(
-        &["log", "-1", "--format=%T%x00%P%x00%cI%x00%s", reference],
+        &[
+            "log",
+            "-1",
+            "--format=%T%x00%P%x00%cI%x00%s",
+            reference,
+            "--",
+        ],
         Some(cwd),
     )?;
     let mut fields = printed.stdout.trim_end_matches('\n').splitn(4, '\0');
@@ -2322,7 +2333,11 @@ pub fn merge_base<'a>(
 /// second copy of it. It counts what the listing lists, so it declines rename
 /// detection for the same reason the listing does.
 fn counted_files(cwd: Asked<'_>, from: &str, to: &str) -> Result<usize> {
-    let summary = checked_in(cwd, &["diff", "--shortstat", "--no-renames", from, to])?.trimmed();
+    let summary = checked_in(
+        cwd,
+        &["diff", "--shortstat", "--no-renames", from, to, "--"],
+    )?
+    .trimmed();
     // Nothing at all is what git prints when no file changed, and it is the only
     // summary that means zero: anything else this cannot read a count out of is an
     // answer to refuse rather than to round down, since rounding it down would say
@@ -2370,7 +2385,15 @@ pub fn known_to_carry_changes<'a>(
     // *not* landed. Without detection both paths are listed and both are compared.
     let listed = checked_in(
         cwd,
-        &["diff", "--name-only", "--no-renames", "-z", fork, commit],
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            fork,
+            commit,
+            "--",
+        ],
     )?;
     // Pathspecs, not names: a path is a repository's own content and one beginning
     // with `:` would otherwise be read as pathspec magic rather than as the file it
@@ -2587,7 +2610,7 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
 
 /// When a ref's commit was made, as whole seconds since the epoch.
 pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
-    run(&["log", "-1", "--format=%ct", reference], Some(cwd))
+    run(&["log", "-1", "--format=%ct", reference, "--"], Some(cwd))
         .ok()
         .filter(Output::ok)
         .and_then(|out| out.trimmed().parse().ok())
@@ -3494,6 +3517,7 @@ pub fn content_free_tail<'a>(
             &format!("-n{}", CONTENT_FREE_WALK + 1),
             "--format=%H%x00%T",
             commit,
+            "--",
         ],
     )?;
     let chain: Vec<(&str, &str)> = listed
@@ -3573,7 +3597,7 @@ pub fn commit_message<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<Opt
         return Ok(None);
     }
     Ok(Some(
-        checked_in(cwd, &["log", "-1", "--format=%B", commit])?
+        checked_in(cwd, &["log", "-1", "--format=%B", commit, "--"])?
             .stdout
             .trim_end()
             .to_owned(),
@@ -3592,6 +3616,7 @@ pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<St
             "--fixed-strings",
             &format!("--grep={needle}"),
             rev,
+            "--",
         ],
         Some(cwd),
     )
@@ -3603,12 +3628,14 @@ pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<St
 
 /// Every commit `range` names — `A..B` — oldest first.
 pub fn commits_in<'a>(cwd: impl Into<Asked<'a>>, range: &str) -> Result<Vec<String>> {
-    Ok(checked_in(cwd.into(), &["rev-list", "--reverse", range])?
-        .stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect())
+    Ok(
+        checked_in(cwd.into(), &["rev-list", "--reverse", range, "--"])?
+            .stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// Whether one commit changes no content: its tree is its first parent's.
@@ -3647,7 +3674,7 @@ pub fn changed_paths<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Res
     let cwd = cwd.into();
     let listed = checked_in(
         cwd,
-        &["diff", "--name-only", "--no-renames", "-z", from, to],
+        &["diff", "--name-only", "--no-renames", "-z", from, to, "--"],
     )?;
     let paths: Vec<String> = listed
         .stdout

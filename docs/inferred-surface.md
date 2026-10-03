@@ -827,6 +827,24 @@ drives every row.
 | the exit code | `75`, `EX_TEMPFAIL`, from `FailureKind::Cancelled::exit_code` alone | Beside `1`, `2`, `3` and `70` for a publication (and `4` for `session open` and the retirement verbs), and different from all of them, so `$?` alone never reads a cancellation as a verdict. The command line never produces it; only a library caller can cancel. |
 | the repository side's hook | `Vcs::publish_with_cancellation(&self, token, request, hosting, cancellation) -> Result<Publication>`, defaulted to `self.publish(..)`; `Git` overrides it | The contract allows a defaulted `Vcs` method behind the free function. Delegating keeps an outside implementor compiling and publishing; **a backend that does not override it cannot be cancelled mid-watch**, which is the honest answer of one that cannot stop. |
 
+## The cause of an `unknown` keep, and the shapes its amendment left to inference
+
+The amendment "A branch kept as `unknown` names the read that failed" in
+`docs/contract.md` fixed `UnknownCause`, `Retirement::cause`, the `cause` key and the
+`keep / unknown: …` line. The rows below are what it left to inference. The first was put
+to the manager and **approved** (plan `accepted-followups-1002`, correlation
+`c-f919384b0f4976d68be892d543bbc94a`). `the_unknown_cause_amendment_declares_its_surface_and_the_json_and_line_it_spells`
+in `tests/contract.rs` holds the amendment to the code, and `tests/e2e/retire.rs` drives
+each kind of read through the binary.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| where the cause lives | `pub cause: Option<UnknownCause>` on `Retirement`, beside the fixed accessor `Retirement::cause(&self) -> Option<&UnknownCause>` | Every other field of `Retirement` is public and it is built by struct literal outside the crate — `onevcs-testing`'s journeys and `tests/contract.rs` among them — so a private field would leave it constructible nowhere but here. |
+| which read a cause names where several failed | the first the classification met: the base, then a live holder, then the places in search order (a directory the census could not list first), then a worktree, then a copy's history, then the host | A classification stops at the first read it cannot make, so the first is the one that decided `unknown`; the rest were never asked. |
+| a document kept `unknown` with no cause | read, as one naming no cause, and its line is `keep / unknown` | That is what every document written before the field said, and refusing it would refuse a verdict an older build recorded or a consumer checked in. A cause beside any other reason is refused. |
+| a host answer that failed earlier in the same pass | asked again rather than reused | A pass that heard the host fail while checking a recorded verdict derives afresh, and reusing a bare failure would leave the cause no error to name; asking again names the one the host gives now. |
+| the cause when a branch's copies kept moving past every re-read before a deletion | `copy`, the branch, and how many reads saw it move | No one place failed to read; the copy moving under each read is what left the class undecided. |
+
 ## One public item the contract does not name, and why it is not an inference
 
 `provenance::SUBJECT_LIMIT` — the length a publication holds a commit subject to.

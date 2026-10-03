@@ -2378,7 +2378,7 @@ onevcs sweep [--dry-run] [--min-age-hours HOURS] [--format text|json]
  "session_records": [{"path": "/home/me/.onevcs/sessions/s-abc.json", "session": "s-abc",
                       "branch": "feature/z", "why": "forgotten"}],
  "finished_branches": {"dry_run": false, "examined": [
-   {"class": "retirable", "reason": null, "identity": "github.com/acme/project",
+   {"class": "retirable", "reason": null, "cause": null, "identity": "github.com/acme/project",
     "branch": "feature/done", "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main",
     "proof": {"kind": "content-identical", "base_commit": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"},
     "content_free_commits": [], "superseded_by": null, "differing_paths": [],
@@ -3281,7 +3281,7 @@ when the class is `superseded-with-changes` or `keep` with `unmerged-unique-comm
 a document whose fields contradict each other does not deserialize.
 
 ```json
-{"class": "superseded-with-changes", "reason": null,
+{"class": "superseded-with-changes", "reason": null, "cause": null,
  "identity": "github.com/acme/project", "branch": "feature/first-try",
  "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main", "proof": null,
  "content_free_commits": ["2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e"],
@@ -3413,6 +3413,7 @@ cannot drift apart.
          "records": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
          "session": "s-abc", "landed_trailer": "Onevcs-Landed-Commit:", "asking": "host"},
  "verdict": {"retirement": {"class": "keep", "reason": "unmerged-unique-commits",
+                            "cause": null,
                             "identity": "github.com/acme/project",
                             "branch": "feature/unfinished",
                             "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
@@ -3485,7 +3486,7 @@ impl Derivation { pub fn as_str(self) -> &'static str; }
 ```
 
 ```json
-{"class": "keep", "reason": "unmerged-unique-commits",
+{"class": "keep", "reason": "unmerged-unique-commits", "cause": null,
  "identity": "github.com/acme/project", "branch": "feature/unfinished",
  "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main", "proof": null,
  "content_free_commits": [], "superseded_by": null, "differing_paths": ["src/lib.rs"],
@@ -3964,6 +3965,84 @@ its `publish` returned. `Git` overrides it.
 repository side publishes without waiting, so there is nothing to cancel, and their host never
 reports a conflict. Its state document may now name the `cancelled` failure kind inside
 `VcsState::publications`.
+
+Event kinds added: none.
+
+### A branch kept as `unknown` names the read that failed
+
+**Recorded as the manager's ruling for plan `accepted-followups-1002`** (onevcs#250). A
+classification answers `keep` / `unknown` whenever a read it needed failed — the base,
+a place a copy could be in, a live holder's lease, a worktree, a copy's history, or the
+host — and that answer is the fail-safe one: nothing is deleted. But it said no more than
+that, so every branch kept that way had to be diagnosed by hand before it could be
+reclaimed. So a `Retirement` now carries the read that failed. Exported from the crate
+root, beside `KeepReason`:
+
+```rust
+pub struct UnknownCause { pub operation: String, pub subject: String, pub error: String }
+
+// `Retirement` gains one member and its accessor, and nothing else about it moves:
+//   Retirement   pub cause: Option<UnknownCause>   // `null` where a document omits it
+impl Retirement { pub fn cause(&self) -> Option<&UnknownCause>; }
+```
+
+**The JSON.** Every `Retirement` writes `cause`, as every key of it is written: `null`,
+or `{"operation": string, "subject": string, "error": string}`. It is non-null exactly
+when `reason` is `unknown`. A document carrying a cause beside any other reason, or one
+whose operation, subject or error is blank, does not deserialize; a document without the
+key reads as `null`, which is what one written
+before this field existed said. So it is in every `retire`, `reclaim` and
+`retire-finished` `--json` entry, in the `retirement` of every `recoverable --json` row,
+and in the retirement a recorded verdict holds — which is never `unknown`, so its cause
+is always `null`.
+
+- `operation` names the read that failed: `census` (the base, where the origin has it,
+  or a directory a copy could be in), `copy` (a place's branches, or the origin's),
+  `live-holder` (an open session's occupancy lease), `worked-in` (a checkout's
+  worktrees, or whether a worktree is dirty), `judge` (a copy's history against the
+  base), `supersession` (whether a recorded supersession landed), `open-change` (whether
+  the base's history names the change request) or `host-consult` (whether the host
+  says the change request merged or is still open).
+- `subject` is what it read: a path, the origin's URL, or the change request's URL.
+- `error` is the error it got, as the read reported it.
+
+```json
+{"class": "keep", "reason": "unknown",
+ "cause": {"operation": "copy", "subject": "/home/me/.onevcs/workspaces/project/runs/s-abc/clone",
+           "error": "fatal: not a git repository (or any of the parent directories): .git"},
+ "identity": "github.com/acme/project", "branch": "feature/done",
+ "tip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "base": "main", "proof": null,
+ "content_free_commits": [], "superseded_by": null, "differing_paths": [],
+ "holders": [{"kind": "checkout", "location": "/home/me/src/project"}]}
+```
+
+**The line.** `Retirement::verdict()` — the `keep / reason` every rendering says — reads
+`keep / unknown: <operation> failed for <subject>: <error>` for a branch kept as
+`unknown`, so a refusal of `retire` or `reclaim`, a `retire-finished` entry and a
+`recoverable` row's `Kept:` line each name the read:
+
+```
+refused: feature/done of github.com/acme/project is keep / unknown: copy failed for /home/me/.onevcs/workspaces/project/runs/s-abc/clone: fatal: not a git repository (or any of the parent directories): .git, which `onevcs retire` does not delete; nothing was deleted
+```
+
+Every other verdict reads as it did. Exit statuses do not move: a refused retirement
+still exits `4`.
+
+**What it found on Windows.** The cause named the read that had kept every landed branch
+a run clone held as `unknown` there: walking the commits after a recorded landing, `git
+rev-list --reverse <landed>..<tip>` in the run clone died with `fatal: failed to stat
+'<landed>..<tip>': Filename too long`. Given no `--`, git asks of each revision argument
+whether it is also a file by `stat`-ing it under the working tree, and treats any answer
+but "no such file" as fatal; under a run clone's path that passes Windows' 260-character
+limit, the answer is "too long". So every git read this crate makes that takes a
+revision — `log`, `rev-list` and `diff` — ends its revisions with `--`, which tells git
+no argument before it is a path and leaves nothing to `stat`. No flag, output or
+answer changes anywhere else, and `compat/tests/retired.rs` and `compat/tests/verdicts.rs`
+now run on every leg, Windows included.
+
+**The testing crate follows.** `onevcs-testing`'s state document carries `Recoverable`
+rows, and a row's `retirement` now writes `cause`, so the document is written at version
+17; a version 16 document reads, its retirements reading as ones whose cause is `null`.
 
 Event kinds added: none.
 
