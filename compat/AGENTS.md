@@ -52,12 +52,11 @@ claim is about:
   is the plain `onevcs` dependency. The version is a decision recorded here, not a
   mirror of any other repository's file: this project is offline and cannot read one,
   and the claim stays true of 0.32.2 whatever a consumer later pins. Moving it to a
-  newer release is a new claim someone decides on, never a sync. It is **Unix only**,
-  as every retirement journey in `crates/onevcs/tests/e2e` is: on Windows this build's
-  `retire` keeps the landed branch as `unknown` rather than retiring it, so the
-  journey's premise never holds there. The file's head says where that was observed,
-  and its `diagnosis` is what a failed retirement prints, so the day it is re-enabled
-  on Windows it names the read that failed.
+  newer release is a new claim someone decides on, never a sync. It runs on every
+  platform: `just test-quick`, which CI's `cross (windows-latest)` leg runs, reaches it
+  through `_crate-compat`, so a landed branch is held to retiring on Windows too. Its
+  `diagnosis` is what a failed retirement prints — the classification, whose `unknown`
+  names the read that failed, and every read it makes asked again.
 - `tests/verdicts.rs` holds both to a state root on which this build's
   finished-branches pass has recorded verdicts under `$ONEVCS_HOME/verdicts/`. The pass
   moves nothing an older build reads — the registry and every session record stay the
@@ -68,7 +67,7 @@ claim is about:
   that shape requires, so every verb of it that loads the registry fails on a host
   this build registered. That journey therefore holds it to something narrower and
   exact: every answer it gives — that refusal included — is byte-identical before and
-  after the records are written. Unix only, for the reason `retired.rs` is.
+  after the records are written. It runs on every platform, as `retired.rs` does.
 
 The 0.32.2 claims need this build to *write* what is read, so this build is linked
 too, from the path beside it, as `onevcs-current`: each journey writes with it and

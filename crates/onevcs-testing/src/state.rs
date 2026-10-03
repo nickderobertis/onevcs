@@ -72,7 +72,11 @@ use crate::store::Checked;
 /// widening by one kind, `cancelled`, the way `10` widened it — no field moved, but a
 /// document naming it is one a version 15 build cannot read. No provider here waits on
 /// anything, so a publication this crate runs is never cancelled; a scenario may seed
-/// one.
+/// one. `17` is the field a `Retirement` gained inside a row of
+/// [`VcsState::preserved`]: `cause`, the read that failed for a branch kept as
+/// `unknown`, which every retirement writes — `null` for every other reason. No
+/// provider here classifies a branch, so a row this crate writes carries none; a
+/// scenario may seed one.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -82,7 +86,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 16;
+pub const STATE_VERSION: u32 = 17;
 
 /// The oldest document version this build reads.
 ///
@@ -131,7 +135,9 @@ pub const STATE_VERSION: u32 = 16;
 /// document's sessions read as sessions that opened clean — which is what they were,
 /// since that build opened none over a merge. `15` to `16` changed no field and no
 /// meaning, as `9` to `10` did not: every failure kind a version 15 document can hold is
-/// spelled here as it was there, so it reads unchanged.
+/// spelled here as it was there, so it reads unchanged. `16` to `17` added the
+/// retirement's cause, which a version 16 retirement reads as `null` — which is what it
+/// said, since that build named no read that failed.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a

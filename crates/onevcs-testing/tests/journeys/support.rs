@@ -229,6 +229,7 @@ pub fn full_vcs_state() -> VcsState {
             retirement: Some(Retirement {
                 class: RetirementClass::SupersededWithChanges,
                 reason: None,
+                cause: None,
                 identity: identity().origin,
                 branch: "feature/seeded".to_owned(),
                 tip: Sha("0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c".to_owned()),

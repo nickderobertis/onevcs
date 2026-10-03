@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0](https://github.com/nickderobertis/onevcs/compare/v0.38.0...v0.39.0) - 2026-10-03
+
+### Fixed
+
+- *(retire)* retire landed branches on Windows and name an unknown read ([#290](https://github.com/nickderobertis/onevcs/pull/290))
+
+## [0.38.0](https://github.com/nickderobertis/onevcs/compare/v0.37.0...v0.38.0) - 2026-10-03
+
+### Added
+
+- *(publish)* [**breaking**] end the merge watch on a known conflict or a cancel ([#284](https://github.com/nickderobertis/onevcs/pull/284))
+
+### Fixed
+
+- *(workspace)* re-read a session record under a lock before writing it ([#289](https://github.com/nickderobertis/onevcs/pull/289))
+- *(publish)* keep a pushed worktree's git environment out of its hooks ([#283](https://github.com/nickderobertis/onevcs/pull/283))
+
 ## [0.37.0](https://github.com/nickderobertis/onevcs/compare/v0.36.0...v0.37.0) - 2026-10-01
 
 ### Added
