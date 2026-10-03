@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1](https://github.com/nickderobertis/onevcs/compare/v0.40.0...v0.40.1) - 2026-10-03
+
+### Fixed
+
+- *(publish)* release a finished publication's workspace and stop its processes ([#294](https://github.com/nickderobertis/onevcs/pull/294))
+
 ## [0.40.0](https://github.com/nickderobertis/onevcs/compare/v0.39.0...v0.40.0) - 2026-10-03
 
 ### Added
