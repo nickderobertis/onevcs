@@ -91,6 +91,30 @@ fn path(identity: &str, branch: &str) -> Result<PathBuf> {
 }
 
 impl Boundary {
+    /// The first field read back from disk that is not the kind of value its writer
+    /// put there. The base and the two commits are handed to git and to the host on a
+    /// resume, so a record anything else wrote is refused here rather than there.
+    fn malformed(&self) -> Option<&'static str> {
+        let object_id = |sha: &Sha| crate::git::ObjectId::parse(&sha.0).is_some();
+        let digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        };
+        if !object_id(&self.tip) {
+            Some("tip")
+        } else if !crate::git::is_valid_branch_name(&self.base) {
+            Some("base")
+        } else if !object_id(&self.base_commit) {
+            Some("base_commit")
+        } else if !digest(&self.inputs) {
+            Some("inputs")
+        } else {
+            None
+        }
+    }
+
     /// Record this boundary, replacing whatever was recorded for its branch.
     ///
     /// Said on stderr and never a failure: the publication it describes has already
@@ -125,7 +149,13 @@ pub(crate) fn read(identity: &str, branch: &str) -> Stored {
     };
     match serde_json::from_str::<Boundary>(&text) {
         Ok(boundary) if boundary.identity == identity && boundary.branch == branch => {
-            Stored::Found(Box::new(boundary))
+            match boundary.malformed() {
+                Some(field) => Stored::Unreadable(format!(
+                    "{} records a {field} that is not one",
+                    at.display()
+                )),
+                None => Stored::Found(Box::new(boundary)),
+            }
         }
         Ok(_) => Stored::Unreadable(format!(
             "{} records another branch's publication",

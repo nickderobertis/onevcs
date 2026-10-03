@@ -455,7 +455,7 @@ fn a_base_that_moved_while_it_was_verified_is_recorded_as_verified_and_not_resum
 
 #[test]
 fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_the_whole_path() {
-    let cases: [Between; 4] = [
+    let cases: [Between; 5] = [
         ("closed", |hosted| hosted.world.close_change_request(1)),
         ("retargeted", |hosted| {
             let elsewhere = hosted.world.clone_of(&hosted.origin, "release");
@@ -478,6 +478,15 @@ fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_t
         ("unreadable", |hosted| {
             let [record] = boundaries(hosted).try_into().expect("one boundary record");
             std::fs::write(record, "{\"identity\": ").expect("a torn record");
+        }),
+        ("malformed", |hosted| {
+            let [record] = boundaries(hosted).try_into().expect("one boundary record");
+            let mut written: Value =
+                serde_json::from_str(&std::fs::read_to_string(&record).expect("a record"))
+                    .expect("JSON");
+            written["base"] = Value::from("--upload-pack=touch pwned");
+            written["base_commit"] = Value::from("HEAD");
+            std::fs::write(record, written.to_string()).expect("a rewritten record");
         }),
         // llmlint: ignore-end[tests_mirror_real_usage]
     ];
@@ -503,6 +512,13 @@ fn a_change_that_closed_landed_or_was_retargeted_or_an_unreadable_record_takes_t
             !stderr.contains("resuming the verified"),
             "{case}: {stderr}"
         );
+        if case == "malformed" {
+            // Refused where it is read, before git or the host is handed either value.
+            assert!(
+                stderr.contains("records a base that is not one"),
+                "{case}: {stderr}"
+            );
+        }
         assert_eq!(publications(&hosted), 2, "{case}: a workspace was built");
     }
 }
