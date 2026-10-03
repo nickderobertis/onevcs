@@ -36,7 +36,7 @@ use crate::world::World;
 
 const USAGE_ERROR: i32 = 2;
 
-fn publications(world: &World) -> PathBuf {
+pub fn publications(world: &World) -> PathBuf {
     world.home().join("workspaces").join("publications")
 }
 
@@ -55,7 +55,7 @@ fn run_roots(family: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn only_run_root(family: &Path) -> PathBuf {
+pub fn only_run_root(family: &Path) -> PathBuf {
     let found = run_roots(family);
     let [only] = found.as_slice() else {
         panic!(
@@ -124,7 +124,7 @@ fn backdate_to(path: &Path, times: FileTimes) {
 
 /// A complete, unpublished branch of the local fixture, handed back by a session
 /// that closed without publishing.
-fn finished_branch(fixture: &Fixture, branch: &str) {
+pub fn finished_branch(fixture: &Fixture, branch: &str) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     let file = format!("{}.txt", branch.replace('/', "-"));
     fixture
@@ -172,7 +172,7 @@ fn interrupted_branch(fixture: &Fixture, branch: &str) {
 /// publication, after its run root is cut and before its verdict is recorded. It
 /// parks only while [`Gate::PARK`] is there, so every other landing passes straight
 /// through to `body`.
-fn gated(fixture: &Fixture, body: &str) {
+pub fn gated(fixture: &Fixture, body: &str) {
     let gate = Gate::of(fixture);
     fixture.verified_by(&format!(
         "if [ -e '{park}' ]; then\n  touch '{parked}'\n  while [ ! -e '{go}' ]; do sleep 0.02; \
@@ -276,7 +276,7 @@ fn joined(locks: &BTreeSet<PathBuf>) -> Vec<File> {
 // this journey, taking the leases in the shared mode a landing takes them in, found by
 // how they are held rather than by a digest recomputed here. The landing that meets it
 // is the real binary, deciding through its real release.
-fn left_behind(fixture: &Fixture, verb: &str, branch: &str, code: i32) -> String {
+pub fn left_behind(fixture: &Fixture, verb: &str, branch: &str, code: i32) -> String {
     let before = fixture.world.locks();
     let (gate, running) = Gate::parked(fixture, verb, branch);
     let new: BTreeSet<PathBuf> = fixture.world.locks().difference(&before).cloned().collect();
@@ -1558,7 +1558,7 @@ fn a_sweep_whose_rules_are_malformed_refuses_rather_than_judging_blind() {
 /// whether that one process is there. Asked through the same interface the tool
 /// signals through, because a directory that has gone says nothing about a process
 /// that outlived it.
-fn still_running(pid: i32) -> bool {
+pub fn still_running(pid: i32) -> bool {
     // SAFETY: `kill` with a positive pid and signal nought delivers nothing and
     // borrows nothing; it answers whether that one process exists.
     unsafe { libc::kill(pid, 0) == 0 }

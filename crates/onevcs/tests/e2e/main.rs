@@ -194,6 +194,12 @@ mod publication_watch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: a landing releasing what it built in, driven through real publications
+// whose POSIX-shell gates start real processes inside the workspace. One ending goes
+// through the same substituted `gh` as `host.rs`; its own header carries the reason.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod released;
 // Unix only: a git hook the step runs is what opens the retry inside it, and its hooks
 // are POSIX shell. Everything is local: real bare origin, real clones and slots, the
 // compiled binary on both sides of the race.
