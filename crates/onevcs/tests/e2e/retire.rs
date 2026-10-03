@@ -1144,6 +1144,82 @@ fn a_change_request_recorded_against_a_base_git_would_not_accept_keeps_the_branc
 }
 
 #[test]
+fn a_host_that_cannot_be_asked_keeps_the_branch_as_unknown_and_names_the_question() {
+    let hosted = Hosted::new(REVIEWED);
+    let token = hosted.change("feature/unasked", "feat: under review");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let url = hosted.world.events_of(&token, "change-opened")[0]["payload"]["url"]
+        .as_str()
+        .expect("the change request's URL")
+        .to_owned();
+    let before = hosted.branch_on_origin("feature/unasked");
+    // The host going away is the one thing here a verb cannot do: `gh` answers every
+    // question with the failure an outage gives, and the binary is what reads it.
+    std::fs::write(
+        hosted.world.path("bin/gh"),
+        "#!/usr/bin/env bash\necho 'error connecting to api.github.com' >&2\nexit 1\n",
+    )
+    .expect("a host that cannot be reached");
+    // A rehearsal asks whether the change request merged and stops there; a retirement
+    // that may record a merge asks that first, and then whether it is still open.
+    for (args, question) in [
+        (
+            &["retire", "feature/unasked", "--dry-run"][..],
+            "whether it merged: ",
+        ),
+        (&["retire", "feature/unasked"], "whether it is still open: "),
+    ] {
+        let (code, kept) = verb(&hosted.world, args);
+        assert_eq!(code, 4, "{kept}");
+        let (operation, subject, error) = cause_of(&kept);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("host-consult", url.as_str())
+        );
+        assert!(
+            error.starts_with(question) && error.contains("error connecting to api.github.com"),
+            "{kept}"
+        );
+    }
+    assert_eq!(hosted.branch_on_origin("feature/unasked"), before);
+}
+
+#[test]
+fn an_origin_that_cannot_be_reached_keeps_the_branch_as_unknown_and_names_the_base() {
+    let yard = Yard::new();
+    yard.landed("feature/stranded", "stranded.txt");
+    let origin = yard.fixture.origin.clone();
+    let away = origin.with_extension("away");
+    // An origin that is not where it was is an outage no verb of this crate makes; the
+    // bare repository is moved aside for the reads, and back for the assertion after.
+    std::fs::rename(&origin, &away).expect("the origin is out of reach");
+    let rehearsed = yard.verb(&["retire", "feature/stranded", "--dry-run"]);
+    let refused = yard.verb(&["retire", "feature/stranded"]);
+    std::fs::rename(&away, &origin).expect("the origin is back");
+    let checkout = yard.checkout().display().to_string();
+    // A rehearsal lists the origin's branches to find the base, and a retirement that
+    // acts fetches it first; each says which of the two it could not do.
+    for ((code, kept), read) in [
+        (rehearsed, "listing the origin's branches: "),
+        (refused, "fetching the origin: "),
+    ] {
+        assert_eq!(code, 4, "{kept}");
+        let (operation, subject, error) = cause_of(&kept);
+        assert_eq!(
+            (operation.as_str(), subject.as_str()),
+            ("census", checkout.as_str())
+        );
+        assert!(error.starts_with(read), "{kept}");
+    }
+    assert!(!yard.held("feature/stranded").is_empty());
+}
+
+#[test]
 fn an_excluded_branch_is_left_alone_by_the_pass() {
     let yard = Yard::new();
     yard.landed("feature/excluded", "excluded.txt");
