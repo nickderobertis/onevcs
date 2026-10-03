@@ -587,6 +587,21 @@ warning on stderr and never a refused landing: what it reclaims is the *previous
 runs' leftovers, and a publication lost to those is the failure the whole rule
 exists to prevent.
 
+**And a landing releases its own build output as it ends.** Enforcing the rule at the
+next landing still kept every finished workspace for a day: two publications in quick
+succession left about 15 GB and 20 GB, a host reached 378 MB free, and writes failed
+until somebody ran a sweep with no floor. So `branch::prepare` hands its landing a
+value whose drop is `sweep::release`, which runs however the landing ends, while the
+branch's publication lease is still held.
+
+| Item | Inferred shape | Why |
+| --- | --- | --- |
+| what a release removes | everything under the run root but the preserved logs, and the `released` mark it writes first | The clone, the worktree and each scratch tree a push was made from are build output. The logs are what every `push` event and every refusal names by a path under the run root, so moving them would leave those paths dangling; they stay, and the mark is what lets the sweep own a run root with no clone left in it and reap it past the floor. A record that has to outlive the build output belongs in `KEPT_ON_RELEASE`. |
+| which proofs it asks | the sweep's own, less the two that stand in for the landing having ended | Nobody else holds the occupancy lease, emptying it is this host's to do, the clone holds no work `unpublished_work` names, and nothing inside would not stop. A recorded verdict and the age floor are the sweep's ways of knowing a landing ended, which the landing knows first-hand — and the floor's purpose, keeping the evidence, is met by keeping the logs. |
+| work the clone holds | kept unless the checkout the branch was read out of reaches its tip | The same `refs_reach` test a returned slot and a closing session are held to. A refused landing hands its branch back to that checkout, so its workspace holds nothing that is not preserved somewhere else; a commit made only inside the workspace is not, and keeps it. |
+| a workspace kept | whole, with the reason on stderr in the words the sweep would retain it with, and never a failure of the landing | Whatever the publication answered has already happened. The sweep reaps it later by the rule above. |
+| when it runs | before the publication lease is released | The lease is the landing's last field and the release is the drop before it, so no inventory read finds the branch unheld while its workspace is being torn down. |
+
 | Item | Inferred shape | Why |
 | --- | --- | --- |
 | how long the evidence lasts | the age floor: 24 hours by default, from the last write anywhere under the run root | The preserved merge-path logs are what an operator reads *after* a publication failed, and they live under the run root — which outlives the worktree the publication was built in — so reclamation is the only thing that takes them. Both ways of asking answer to the same floor, so the evidence a landing left cannot be taken by the landing after it. |

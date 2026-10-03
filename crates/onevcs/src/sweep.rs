@@ -7,6 +7,12 @@
 //! is what makes it a *retention rule* rather than a verb somebody has to remember:
 //! nothing else runs between two landings on a host that publishes all day.
 //!
+//! **A landing also releases its own build output as it ends** ([`release`]), by the
+//! same proofs less the two that stand in for its having ended, and keeps the
+//! evidence. So what this verb meets is mostly a run root holding nothing but that
+//! evidence, which it reaps past the floor, and the whole run roots a landing kept or
+//! a dead publisher left.
+//!
 //! What makes a run root reclaimable is `onevcs` state and nothing a caller
 //! supplies: its gate has recorded a verdict under it, no live session holds its
 //! occupancy lease, and nothing under it was written inside the age floor. That is
