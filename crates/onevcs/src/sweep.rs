@@ -400,8 +400,8 @@ const KEPT_ON_RELEASE: [&str; 2] = [merge_path::PRESERVED_LOG_DIRNAME, RELEASED]
 pub(crate) enum Release {
     /// The build output is gone, after these processes working inside it let it go.
     Released { stopped: Vec<processes::Pid> },
-    /// Kept, and why, in the words `onevcs sweep` would retain it with.
-    Kept(String),
+    /// Kept, and why — the reason `onevcs sweep` would retain it for.
+    Kept(Kept),
 }
 
 /// Release the build workspace of a landing that has just ended, however it ended.
@@ -425,18 +425,25 @@ pub(crate) enum Release {
 pub(crate) fn release(run_root: &Path, preserved_in: &Path, lease: lock::Guard) -> Result<Release> {
     drop(lease);
     let Some(exclusive) = lock::try_exclusive(&workspace::occupancy_identity(run_root))? else {
-        return Ok(Release::Kept(Kept::Occupied.describe()));
+        return Ok(Release::Kept(Kept::Occupied));
     };
     if !shows_it_may_empty(run_root) {
-        return Ok(Release::Kept(Kept::Unproven.describe()));
+        return Ok(Release::Kept(Kept::Unproven));
     }
     let clone = run_root.join("clone");
     // A landing refused before it cloned anything has no clone, and nothing in it to ask
     // about.
     if git::is_repo(&clone) {
+        // llmlint: ignore-block[changed_behavior_has_e2e] uncovered for the reason the
+        // same answer in `judge` gives: a clone already read as a repository that `git`
+        // then declines to answer about, which no interface this crate exposes leaves —
+        // a gate that removes the clone's origin and detaches its checkout mid-landing
+        // still leaves one git answers from. It keeps the workspace, the answer every
+        // unknown here resolves to.
         let Ok(branches) = unpublished_work(&clone, &landings()?) else {
-            return Ok(Release::Kept(Kept::WorkUnknown.describe()));
+            return Ok(Release::Kept(Kept::WorkUnknown));
         };
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         let unpreserved: Vec<String> = branches
             .into_iter()
             .filter(|branch| {
@@ -445,13 +452,10 @@ pub(crate) fn release(run_root: &Path, preserved_in: &Path, lease: lock::Guard) 
             })
             .collect();
         if !unpreserved.is_empty() {
-            return Ok(Release::Kept(
-                Kept::Unpreserved {
-                    branches: unpreserved,
-                    checkout: preserved_in.to_path_buf(),
-                }
-                .describe(),
-            ));
+            return Ok(Release::Kept(Kept::Unpreserved {
+                branches: unpreserved,
+                checkout: preserved_in.to_path_buf(),
+            }));
         }
     }
     let mut stopped: Vec<processes::Pid> = Vec::new();
@@ -466,7 +470,7 @@ pub(crate) fn release(run_root: &Path, preserved_in: &Path, lease: lock::Guard) 
     // same branch of `reclaim` gives: what survives `SIGKILL` is a process this user may
     // not signal, and no journey can make one without a second account to run it as.
     if !left.is_empty() {
-        return Ok(Release::Kept(Kept::StillRunning { pids: left }.describe()));
+        return Ok(Release::Kept(Kept::StillRunning { pids: left }));
     }
     // llmlint: ignore-end[changed_behavior_has_e2e]
     home::atomic_write(
@@ -1384,7 +1388,7 @@ const WORK_UNKNOWN: &str =
 /// and the last is one it had already decided was dead and could not show it may
 /// empty. A caller has to be able to tell those apart, so nothing downstream reads it
 /// back out of prose.
-enum Kept {
+pub(crate) enum Kept {
     /// Nothing here can show this crate cut it.
     OwnerUnproven(&'static str),
     /// Somebody holds its occupancy lease right now.
@@ -1413,7 +1417,7 @@ enum Kept {
 
 impl Kept {
     /// The reason as the report states it.
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match self {
             Kept::OwnerUnproven(what) => format!("its owner cannot be proven: {what}"),
             Kept::Occupied => OCCUPIED.to_owned(),

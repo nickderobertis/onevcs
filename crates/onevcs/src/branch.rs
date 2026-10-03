@@ -192,7 +192,8 @@ impl Drop for Tenancy {
             Ok(sweep::Release::Released { .. }) => {}
             Ok(sweep::Release::Kept(why)) => eprintln!(
                 "onevcs: kept the workspace this {verb} built in, {run_root}: {why}. `onevcs \
-                 sweep` reclaims it once that no longer holds"
+                 sweep` reclaims it once that no longer holds",
+                why = why.describe(),
             ),
             Err(error) => eprintln!(
                 "onevcs: warning: the workspace this {verb} built in, {run_root}, could not be \

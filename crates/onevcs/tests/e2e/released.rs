@@ -26,7 +26,8 @@ use crate::host::{Hosted, OPEN};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::publish_branch::finished_hosted_branch;
 use crate::sweep::{
-    finished_branch, gated, left_behind, only_run_root, publications, still_running, swept,
+    finished_branch, gated, interrupted_branch, left_behind, only_run_root, publications,
+    recoveries, still_running, swept,
 };
 use crate::world::World;
 
@@ -72,14 +73,14 @@ fn holds(run_root: &Path) -> Vec<String> {
 
 /// Run `publish-branch` and answer its exit code and what it wrote to stderr.
 fn publish(world: &World, checkout: &Path, branch: &str) -> (Option<i32>, String) {
+    land(world, "publish-branch", checkout, branch)
+}
+
+/// Run a branch-keyed verb and answer its exit code and what it wrote to stderr.
+fn land(world: &World, verb: &str, checkout: &Path, branch: &str) -> (Option<i32>, String) {
     let output = world
         .onevcs()
-        .args([
-            "publish-branch",
-            branch,
-            "--repo",
-            &checkout.to_string_lossy(),
-        ])
+        .args([verb, branch, "--repo", &checkout.to_string_lossy()])
         .output()
         .expect("the binary runs");
     (
@@ -88,10 +89,15 @@ fn publish(world: &World, checkout: &Path, branch: &str) -> (Option<i32>, String
     )
 }
 
-/// Hold one ended landing to the release: its build output gone, its evidence kept, and
-/// the process its gate left running stopped — and said so.
+/// Hold one ended publication to the release: its build output gone, its evidence
+/// kept, and the process its gate left running stopped — and said so.
 fn released(world: &World, stderr: &str) -> PathBuf {
-    let run_root = only_run_root(&publications(world));
+    released_by(world, "publish-branch", &publications(world), stderr)
+}
+
+/// The same for whichever branch-keyed `verb` cut its run root under `family`.
+fn released_by(world: &World, verb: &str, family: &Path, stderr: &str) -> PathBuf {
+    let run_root = only_run_root(family);
     assert_eq!(
         holds(&run_root),
         ["gate-logs", "released"],
@@ -112,8 +118,7 @@ fn released(world: &World, stderr: &str) -> PathBuf {
     assert!(
         stopped.contains(&format!("pid {pid}"))
             && stopped.ends_with(&format!(
-                "still working in the workspace this publish-branch built in, {}, and \
-                 released it",
+                "still working in the workspace this {verb} built in, {}, and released it",
                 run_root.display()
             )),
         "the landing names the daemon it stopped and the workspace it released:\n{stderr}"
@@ -184,6 +189,69 @@ fn a_landing_that_fails_with_an_error_releases_its_workspace_too() {
     assert!(
         hosted.branch_on_origin("feature/unliftable").is_some(),
         "the premise: the origin carries the branch the workspace was released from"
+    );
+}
+
+#[test]
+fn a_recovery_releases_its_workspace_as_a_publication_does() {
+    // The same path lands both verbs, and the gate that starts the daemon is also what
+    // verifies the recovery's attestation.
+    let fixture = Fixture::local(&local_direct());
+    gated(&fixture, &a_daemon_then(0));
+    interrupted_branch(&fixture, "feature/interrupted");
+
+    let (code, stderr) = land(
+        &fixture.world,
+        "recover",
+        &fixture.checkout,
+        "feature/interrupted",
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    released_by(
+        &fixture.world,
+        "recover",
+        &recoveries(&fixture.world),
+        &stderr,
+    );
+    assert_eq!(
+        fixture.origin_log().len(),
+        2,
+        "and the work reached its base"
+    );
+}
+
+#[test]
+fn a_workspace_this_host_cannot_show_it_may_empty_is_kept_and_the_landing_says_why() {
+    // The gate leaves build output nobody may unlink from — a read-only directory, the
+    // way a Go module cache is written — in the workspace's own worktree, two levels
+    // above the tree the push is made from.
+    let fixture = Fixture::local(&local_direct());
+    gated(
+        &fixture,
+        "mkdir -p ../../worktree/cache/mod\necho cached > ../../worktree/cache/mod/pkg\n\
+         chmod 555 ../../worktree/cache/mod\nexit 0",
+    );
+    finished_branch(&fixture, "feature/read-only");
+
+    let (code, stderr) = publish(&fixture.world, &fixture.checkout, "feature/read-only");
+    assert_eq!(code, Some(0), "the landing itself landed:\n{stderr}");
+    let run_root = only_run_root(&publications(&fixture.world));
+    let cache = run_root.join("worktree/cache/mod");
+    let kept_whole = run_root.join("clone").is_dir() && cache.join("pkg").is_file();
+    // Writable again before anything can fail, so the world's scratch root goes with it.
+    std::fs::set_permissions(&cache, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the cache is writable again");
+    assert!(
+        kept_whole,
+        "decided before anything was removed, so nothing under it went:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "onevcs: kept the workspace this publish-branch built in, {}: this host cannot \
+             show it may remove it: ",
+            run_root.display()
+        )),
+        "and the landing says why it kept it:\n{stderr}"
     );
 }
 

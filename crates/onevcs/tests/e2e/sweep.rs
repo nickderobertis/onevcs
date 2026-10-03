@@ -40,7 +40,7 @@ pub fn publications(world: &World) -> PathBuf {
     world.home().join("workspaces").join("publications")
 }
 
-fn recoveries(world: &World) -> PathBuf {
+pub fn recoveries(world: &World) -> PathBuf {
     world.home().join("workspaces").join("recoveries")
 }
 
@@ -142,7 +142,7 @@ pub fn finished_branch(fixture: &Fixture, branch: &str) {
 ///
 /// Uncommitted work at adoption is what writes the marker, which is the only way
 /// one is ever written.
-fn interrupted_branch(fixture: &Fixture, branch: &str) {
+pub fn interrupted_branch(fixture: &Fixture, branch: &str) {
     let (token, worktree) = fixture.open(&["--branch", branch]);
     // Named after the branch, as the finished one's file is: two branches committing
     // the same content leave the second with nothing to commit once the first lands.
