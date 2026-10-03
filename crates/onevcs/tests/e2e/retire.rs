@@ -1953,6 +1953,28 @@ fn the_pass_says_what_it_retired_and_kept_and_rehearses_without_acting() {
     let (code, listed) = said(world, &["recoverable"]);
     assert_eq!(code, 0, "{listed}");
     says(&listed, "    Kept: keep / checked-out");
+
+    // Kept because a read failed, which its row names: the worker's copy now names a
+    // commit nobody has, so judging it is the read the row says failed.
+    world.git(&yard.worker, &["checkout", "-q", "main"]);
+    // llmlint: ignore-block[tests_mirror_real_usage] a ref naming a commit its repository
+    // does not have is what a pruned or half-copied object store leaves, and git refuses
+    // to write one through any command; the real binary is what reads it.
+    std::fs::write(
+        yard.worker.join(".git/refs/heads/feature/unfinished"),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .expect("the worker's copy names a commit nobody has");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let (code, listed) = said(world, &["recoverable"]);
+    assert_eq!(code, 0, "{listed}");
+    says(
+        &listed,
+        &format!(
+            "    Kept: keep / unknown: judge failed for {}: ",
+            yard.worker.display()
+        ),
+    );
 }
 
 #[test]
