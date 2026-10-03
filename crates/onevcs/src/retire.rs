@@ -1854,6 +1854,11 @@ impl<'a> Census<'a> {
             return Ok(retirement);
         };
         retirement.differing_paths = differing.into_iter().collect();
+        // llmlint: ignore[changed_behavior_has_e2e] uncovered: this read is of a repository
+        // whose history the judge has just read whole, against the same base tip, inside one
+        // invocation — nothing a host does to its files fails the second read and not the
+        // first. The cause it records is built as the six reads `retire::unknown_causes`
+        // and `tests/e2e/retire.rs` drive are.
         let superseded = self
             .superseded(self.asked(&repo), branch, base_tip, &tip, fork.as_deref())
             .map_err(|failure| UnknownCause::new("supersession", repo.display(), failure))?;
@@ -2040,6 +2045,9 @@ impl<'a> Census<'a> {
             let Some(repo) = self.readable(copy, branch, ask) else {
                 continue;
             };
+            // llmlint: ignore[changed_behavior_has_e2e] uncovered for the reason the
+            // supersession read in `conclude` gives: the judge read this same history of
+            // this same repository a moment before, so no fixture fails this read alone.
             let history = git::log_messages(
                 self.asked(&repo),
                 fork,
@@ -3175,6 +3183,11 @@ fn act(
             let mut retirement = classified.retirement;
             retirement.class = RetirementClass::Keep;
             retirement.reason = Some(KeepReason::Unknown);
+            // llmlint: ignore[changed_behavior_has_e2e] uncovered: reaching it takes a copy
+            // that moves between each of three reads made back to back inside one
+            // invocation, a race no journey holds deterministically.
+            // `a_tip_that_moves_during_the_deletion_puts_back_what_was_deleted_and_keeps_the_branch`
+            // drives the one move a journey can.
             retirement.cause = Some(UnknownCause::new(
                 "copy",
                 branch,
