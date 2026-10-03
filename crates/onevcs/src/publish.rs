@@ -668,6 +668,7 @@ pub fn run_for_session(
         provenance: provenance::from_rules(&file),
         hosting,
         cancellation,
+        built: Built::InWorkspace,
     };
     let branch = record.branch.to_string();
     let outcome = match run_resolving(&context, &mut stream) {
@@ -792,6 +793,21 @@ pub struct Context<'a> {
     /// Whether the caller has asked this publication to stop, asked by every phase
     /// that waits. A branch-keyed verb has no caller to ask and is never cancelled.
     pub cancellation: &'a dyn PublicationCancellation,
+    /// Where this publication was built, which decides how its landing is recorded.
+    pub built: Built,
+}
+
+/// Where a publication was built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Built {
+    /// In a workspace cut for it, whose [`worktree`](Context::worktree) has the branch
+    /// checked out: its landing is committed there and handed to the checkout that
+    /// keeps the branch.
+    InWorkspace,
+    /// Nowhere: it resumes a publication whose verification already passed, and
+    /// [`repo`](Context::repo) is the checkout that keeps the branch. Its landing is
+    /// recorded there by ref, because that checkout's worktree is somebody else's.
+    Resumed,
 }
 
 /// How a publication's branch reaches the host.
@@ -1020,6 +1036,7 @@ impl<'a> Context<'a> {
             provenance: self.provenance.clone(),
             hosting: self.hosting,
             cancellation: self.cancellation,
+            built: self.built,
         }
     }
 }
@@ -2026,6 +2043,102 @@ fn land_as_change(
             draft_awaiting_checks: lifecycle && context.draft.is_none(),
         })?,
     };
+    record_boundary(context, &change, pushed);
+    land_opened_change(
+        context,
+        stream,
+        host.as_ref(),
+        &author,
+        &change,
+        adopted,
+        pushed,
+    )
+}
+
+/// Resume a publication whose verification already passed, at its hosted checks.
+///
+/// What `publish-branch` hands a change request it found exactly at the boundary it
+/// recorded (`verified.rs`): nothing is fetched, synced, or pushed, and the change is
+/// taken from there by the same code a first publication runs once it has pushed and
+/// opened one — the same outcomes, the same events, and a red check ending it as one
+/// does there. It is an adopted change, because it is one: the host already held it.
+pub(crate) fn resume(
+    context: &Context<'_>,
+    change: &ChangeRequest,
+    pushed: &Sha,
+    stream: &mut Stream,
+) -> Result<PublishOutcome> {
+    gh::checks_timeout()?;
+    gh::checks_poll()?;
+    crate::host::check_source_names_a_source()?;
+    if !context.drafts.disabled {
+        gh::draft_grace()?;
+    }
+    (|| -> Result<PublishOutcome> {
+        let slug = change_host(&context.resolution.key)?;
+        let host = context.hosting.for_repo(&slug)?;
+        let author = host.authenticated_user()?;
+        land_opened_change(
+            context,
+            stream,
+            host.as_ref(),
+            &author,
+            change,
+            true,
+            pushed,
+        )
+    })()
+    .map_err(|unread| unverified(context, Some(&pushed.0), unread))
+}
+
+/// Record the boundary a publication's verification passed at, once its change
+/// request is open: the push that verified the branch has been accepted by the time
+/// anything here runs. Best effort, as every record of something that already
+/// happened is.
+fn record_boundary(context: &Context<'_>, change: &ChangeRequest, pushed: &Sha) {
+    let base = context.target.base();
+    let Some(base_commit) = git::tip(&context.repo, &vcs::base_ref(&context.repo, base)) else {
+        return;
+    };
+    let inputs = git::configured_hooks(&context.worktree)
+        .and_then(|hooks| crate::verified::inputs(hooks.as_deref(), base, &context.provenance));
+    let inputs = match inputs {
+        Ok(inputs) => inputs,
+        Err(failure) => {
+            eprintln!(
+                "onevcs: warning: what verified {branch:?} could not be read back, so publishing \
+                 it again verifies it again: {failure}",
+                branch = context.branch,
+            );
+            return;
+        }
+    };
+    crate::verified::Boundary {
+        identity: context.resolution.key.clone(),
+        branch: context.branch.to_string(),
+        tip: pushed.clone(),
+        base: base.to_string(),
+        base_commit: Sha(base_commit),
+        inputs,
+        change: change.id.clone(),
+        change_url: change.url.clone(),
+    }
+    .record();
+}
+
+/// Everything a change publication does once its change request is open on a pushed,
+/// verified branch: watch its checks, lift or keep its draft, and land it under the
+/// policy — one path for a first publication and for a resumed one.
+fn land_opened_change(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    host: &dyn RemoteHost,
+    author: &str,
+    change: &ChangeRequest,
+    adopted: bool,
+    pushed: &Sha,
+) -> Result<PublishOutcome> {
+    let lifecycle = !context.drafts.disabled;
     stream.emit(
         EventKind::ChangeOpened,
         object(json!({
@@ -2038,20 +2151,20 @@ fn land_as_change(
     );
 
     if let Some(reason) = &context.draft {
-        return hold_as_draft(context, host.as_ref(), &change, reason, stream);
+        return hold_as_draft(context, host, change, reason, stream);
     }
     let drafted = if lifecycle {
-        await_as_draft(host.as_ref(), &change, stream)?
+        await_as_draft(host, change, stream)?
     } else {
         if adopted {
-            lift_any_draft(host.as_ref(), &change, stream)?;
+            lift_any_draft(host, change, stream)?;
         }
         false
     };
 
     let mut watcher = Watcher::new(
-        host.as_ref(),
-        &change,
+        host,
+        change,
         pushed,
         context.drafts.warn_on_early_lift,
         context.cancellation,
@@ -2072,7 +2185,7 @@ fn land_as_change(
                 );
                 return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));
             }
-            lift_draft(host.as_ref(), &change, stream)?;
+            lift_draft(host, change, stream)?;
         }
         return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
     }
@@ -2104,7 +2217,7 @@ fn land_as_change(
         if (drafted || context.effective == MergePolicy::ChangeDirect)
             && settle(&mut watcher, stream, drafted)?
         {
-            lift_draft(host.as_ref(), &change, stream)?;
+            lift_draft(host, change, stream)?;
         }
         stream.emit(
             EventKind::MergeQueued,
@@ -2121,7 +2234,7 @@ fn land_as_change(
             // watch reports each transition exactly once.
             watch_the_merge(&mut watcher, stream)?
         } else {
-            match host.merge(&change, context.effective)? {
+            match host.merge(change, context.effective)? {
                 MergeOutcome::Merged(sha) => sha,
                 MergeOutcome::Queued => return Ok(PublishOutcome::Queued(change.url.clone())),
                 MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
@@ -2135,6 +2248,7 @@ fn land_as_change(
             EventKind::MergeCompleted,
             object(json!({"identity": identity, "sha": sha.0})),
         );
+        crate::verified::forget(&context.resolution.key, &context.branch);
         record_landing(context, &sha);
         record_baselines(context, &sha.0, stream);
         fast_forward_publication(&context.resolution.publication, context.target.base())?;
@@ -2385,15 +2499,19 @@ fn record_baselines(context: &Context<'_>, sha: &str, stream: &mut Stream) {
 }
 
 fn write_landing(context: &Context<'_>, sha: &Sha) -> Result<()> {
-    git::commit_empty(
-        &context.worktree,
-        &format!(
-            "chore: record the landing of {branch}\n\n{key} {merged}",
-            branch = context.branch,
-            key = context.provenance.landed(),
-            merged = sha.0,
-        ),
-    )?;
+    let message = format!(
+        "chore: record the landing of {branch}\n\n{key} {merged}",
+        branch = context.branch,
+        key = context.provenance.landed(),
+        merged = sha.0,
+    );
+    if context.built == Built::Resumed {
+        // Nothing was built for a resumed publication, so the branch's own checkout is
+        // the repository it works in, and the record goes onto the branch there.
+        git::commit_empty_on_branch(&context.repo, &context.branch, &message)?;
+        return Ok(());
+    }
+    git::commit_empty(&context.worktree, &message)?;
     // The repository this publication worked in goes with its run root, so the
     // record has to reach the checkout that keeps the branch. Fast-forward only,
     // like every other hand-back here: a checkout holding work this run does not

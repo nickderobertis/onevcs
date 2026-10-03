@@ -95,6 +95,7 @@ mod stream;
 mod sweep;
 mod vcs;
 mod verdict;
+mod verified;
 mod vocabulary;
 mod workspace;
 pub mod workspaces;

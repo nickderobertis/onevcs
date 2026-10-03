@@ -108,6 +108,17 @@ pub fn publishing_dir() -> Result<PathBuf> {
     Ok(root()?.join("publishing"))
 }
 
+/// The directory a publication records the boundary its verification passed at, per
+/// identity and branch.
+///
+/// Outside `workspaces/`, because what it records has to outlive the publication
+/// workspace that verified it; see `verified.rs`. Its own directory rather than a key
+/// in the registry, so recording one moves no schema and a build that predates it
+/// never looks here.
+pub fn verified_dir() -> Result<PathBuf> {
+    Ok(root()?.join("verified"))
+}
+
 /// Expand a leading `~` against this user's home directory.
 ///
 /// Only a leading `~/`, and only where a home directory is known — anything else
