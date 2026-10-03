@@ -3607,3 +3607,345 @@ pub(crate) fn supersede(record: &Supersession) -> Result<()> {
     );
     Ok(())
 }
+
+/// Each kind of read a classification makes, failing, and the cause it is kept for.
+///
+/// One of this crate's `#[cfg(test)]` modules, for the reason the others exist: the reads
+/// are the census's own private ones — its places, a live holder's lease, the worktrees
+/// over a branch, a copy's history, the host — and `tests/e2e/retire.rs`, which drives the
+/// same failures through the binary, can only see the one cause a whole classification
+/// answers. Here each read is asked by itself, so a cause that went missing from one read
+/// is not hidden behind another read that failed first.
+///
+/// Everything is real: a state root of its own, a bare origin, a registered `local-direct`
+/// checkout, a branch worked in a session and landed by the library's own
+/// `publish_branch`, and a second session over the landed branch whose opener has gone —
+/// the record is read with no owner start, which is what a record whose process exited
+/// reads as. The failures are what a host does to files: a mode that closes a directory,
+/// and a ref naming a commit nobody has. The state root is the process's, which is why
+/// the suite runs one test per process, as `cargo nextest` does.
+#[cfg(all(test, unix))]
+mod unknown_causes {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use serde_json::json;
+
+    use super::{Ask, Census, Copies, Host, Reach, UnknownCause};
+    use crate::event::EventKind;
+    use crate::ops::{publish_branch, register_checkout, BranchPublishRequest};
+    use crate::stream::Stream;
+    use crate::workspace::Record;
+    use crate::{lock, Lifecycle, Providers, SessionRequest};
+
+    const BRANCH: &str = "feature/done";
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {} failed in {}: {}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn commit(worktree: &Path, file: &str) {
+        std::fs::write(worktree.join(file), format!("{file}\n")).expect("a file to commit");
+        git(worktree, &["add", "-A"]);
+        git(
+            worktree,
+            &["commit", "-q", "-m", &format!("feat: write {file}")],
+        );
+    }
+
+    fn opened(providers: &Providers<'_>) -> crate::Session {
+        providers
+            .vcs
+            .open_session(SessionRequest {
+                repo: "project".to_owned(),
+                branch: Some(BRANCH.to_owned()),
+                branch_name: None,
+                branch_prefix: None,
+                base: None,
+                execution_checkout: None,
+                pool: None,
+                overflow: None,
+                labels: Default::default(),
+                refuse_conflicts: false,
+            })
+            .expect("a session over the branch")
+    }
+
+    /// A host on which `feature/done` landed and a session left open over it.
+    struct Landed {
+        /// Removed when the test ends.
+        _root: tempfile::TempDir,
+        /// The open session's record, as a census reads it once its opener has gone.
+        stale: Record,
+    }
+
+    impl Landed {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("a scratch host");
+            let at = root.path().canonicalize().expect("a canonical root");
+            std::fs::write(
+                at.join(".gitconfig"),
+                "[user]\n\tname = Unit\n\temail = unit@example.invalid\n[init]\n\t\
+                 defaultBranch = main\n[commit]\n\tgpgsign = false\n",
+            )
+            .expect("a git configuration");
+            std::env::set_var("HOME", &at);
+            std::env::set_var(crate::home::HOME_ENV, at.join(".onevcs"));
+            let seed = at.join("seed");
+            std::fs::create_dir_all(&seed).expect("a seed");
+            git(&seed, &["init", "-q", "-b", "main"]);
+            commit(&seed, "README.md");
+            let origin = at.join("project.git");
+            git(&at, &["init", "-q", "--bare", &origin.to_string_lossy()]);
+            git(&seed, &["push", "-q", &origin.to_string_lossy(), "main"]);
+            let checkout = at.join("project");
+            git(
+                &at,
+                &[
+                    "clone",
+                    "-q",
+                    &origin.to_string_lossy(),
+                    &checkout.to_string_lossy(),
+                ],
+            );
+            register_checkout(&checkout, None).expect("the checkout registers");
+            std::fs::write(
+                at.join(".onevcs/rules.yml"),
+                "version: 1\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+            )
+            .expect("a rules file");
+            let providers = Providers::real();
+            let worked = opened(&providers);
+            commit(&worked.worktree, "done.txt");
+            crate::close_session(&providers, &worked.token).expect("the session closes");
+            publish_branch(
+                &providers,
+                &BranchPublishRequest {
+                    repo: checkout.clone(),
+                    branch: BRANCH.to_owned(),
+                    title: None,
+                    body: None,
+                    policy: None,
+                },
+            )
+            .expect("the branch lands");
+            let left = opened(&providers);
+            let mut stale = crate::workspace::all()
+                .expect("the session records")
+                .into_iter()
+                .find(|record| record.token.to_string() == left.token.0)
+                .expect("the open session's record");
+            assert_eq!(stale.state, Lifecycle::Open);
+            stale.owner_started = None;
+            Landed { _root: root, stale }
+        }
+
+        /// Every record this host has, with the open one read as its opener gone.
+        fn host(&self) -> Host {
+            let records = crate::workspace::all()
+                .expect("the session records")
+                .into_iter()
+                .map(|record| match record.token == self.stale.token {
+                    true => self.stale.clone(),
+                    false => record,
+                })
+                .collect();
+            Host::with(Some(records)).expect("the host reads")
+        }
+
+        fn identity(&self) -> String {
+            self.stale.identity.clone()
+        }
+    }
+
+    /// Close `path` to this user for as long as `read` runs.
+    fn closed<T>(path: &Path, read: impl FnOnce() -> T) -> T {
+        let original = std::fs::metadata(path).expect("a path").permissions();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+            .expect("the path is closed");
+        assert!(
+            std::fs::File::open(path).is_err(),
+            "the premise: this suite runs as a user the mode binds"
+        );
+        let answer = read();
+        std::fs::set_permissions(path, original).expect("the path is open again");
+        answer
+    }
+
+    fn census<'h>(host: &'h Host, identity: &str) -> Census<'h> {
+        host.census(identity, Reach::Offline)
+            .expect("the identity is read")
+    }
+
+    fn says(cause: &UnknownCause, operation: &str, subject: &Path) {
+        assert_eq!(cause.operation, operation, "{cause}");
+        assert_eq!(cause.subject, subject.display().to_string(), "{cause}");
+        assert!(
+            !cause.error.trim().is_empty(),
+            "a cause with no error: {cause}"
+        );
+    }
+
+    /// The classification a read like this one would decide, which names the same read.
+    fn classified(census: &Census<'_>, copies: Copies) -> UnknownCause {
+        let retirement = census
+            .classify(BRANCH, copies, &Ask::offline())
+            .expect("a classification")
+            .retirement;
+        retirement
+            .cause()
+            .cloned()
+            .unwrap_or_else(|| panic!("kept without a cause: {retirement:?}"))
+    }
+
+    #[test]
+    fn a_place_whose_branches_cannot_be_read_is_a_copy_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let clone = landed.stale.clone.clone();
+        let (copies, cause) = closed(&clone, || {
+            let census = census(&host, &identity);
+            let copies = census.copies(BRANCH, &Ask::offline());
+            let cause = classified(&census, copies.clone());
+            (copies, cause)
+        });
+        says(&copies.unreadable[0], "copy", &clone);
+        assert_eq!(cause, copies.unreadable[0]);
+    }
+
+    #[test]
+    fn a_directory_of_run_roots_that_cannot_be_listed_is_a_census_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let runs = landed
+            .stale
+            .run_root
+            .parent()
+            .expect("the run roots")
+            .to_path_buf();
+        let (unlisted, cause) = closed(&runs, || {
+            let census = census(&host, &identity);
+            let copies = census.copies(BRANCH, &Ask::offline());
+            (census.unlisted.clone(), classified(&census, copies))
+        });
+        says(&unlisted[0], "census", &runs);
+        assert_eq!(cause, unlisted[0]);
+    }
+
+    #[test]
+    fn a_lease_that_cannot_be_read_is_a_live_holder_cause_naming_the_run_root() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let lease = lock::path_for(&landed.stale.lease()).expect("the lease's path");
+        assert!(
+            lease.is_file(),
+            "the premise: opening the session took its lease"
+        );
+        let read = closed(&lease, || census(&host, &identity).live_holder(BRANCH));
+        says(
+            &read.expect_err("a lease nobody can open answers no holder"),
+            "live-holder",
+            &landed.stale.run_root,
+        );
+    }
+
+    #[test]
+    fn a_worktree_that_cannot_be_read_is_a_worked_in_cause_naming_it() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        assert!(copies.unreadable.is_empty(), "{copies:?}");
+        let worktree = landed.stale.worktree.clone();
+        let read = closed(&worktree, || census.worked_in(BRANCH, &copies));
+        says(
+            &read.expect_err("a worktree nobody can read answers no state"),
+            "worked-in",
+            &worktree,
+        );
+    }
+
+    #[test]
+    fn a_copy_whose_commit_is_missing_is_a_judge_cause_naming_where_it_is() {
+        let landed = Landed::new();
+        let clone = landed.stale.clone.clone();
+        let refs = PathBuf::from(git(&clone, &["rev-parse", "--absolute-git-dir"]))
+            .join("refs/heads")
+            .join(BRANCH);
+        std::fs::write(&refs, "1111111111111111111111111111111111111111\n")
+            .expect("the clone's copy names a commit nobody has");
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let base_tip = census.base_tip.clone().expect("the base is read");
+        let read = census.judged(
+            BRANCH,
+            &base_tip,
+            &copies,
+            &census.evidence(BRANCH),
+            &Ask::offline(),
+        );
+        let Err(cause) = read else {
+            panic!("a commit nobody has was judged");
+        };
+        says(&cause, "judge", &clone);
+        assert_eq!(classified(&census, copies).operation, "judge");
+    }
+
+    #[test]
+    fn a_change_request_the_host_cannot_be_asked_about_is_a_host_consult_cause_naming_it() {
+        let landed = Landed::new();
+        // The record `publish` writes when it opens a change request, on the open
+        // session's own stream: the identity is a local path, so no host serves it, and
+        // whether the change request merged or is still open is a question nobody can
+        // answer.
+        let url = "https://github.com/acme/project/pull/7";
+        let mut stream = Stream::open(&landed.stale.token.to_string()).expect("its stream");
+        stream.emit(
+            EventKind::ChangeOpened,
+            json!({"url": url, "host": "github", "id": "7", "base": "main"})
+                .as_object()
+                .expect("an object")
+                .clone(),
+        );
+        drop(stream);
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let providers = Providers::real();
+        let ask = Ask::acting(Some(providers.hosting), true, &[]);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let (_, decided) = census.consult(
+            BRANCH,
+            &mut census.evidence(BRANCH),
+            &copies.first_tip(),
+            crate::verdict::History::DoesNotName,
+            &ask,
+            None,
+        );
+        let cause = decided.expect_err("a host nobody can ask decides nothing");
+        assert_eq!(
+            (cause.operation.as_str(), cause.subject.as_str()),
+            ("host-consult", url)
+        );
+        assert!(!cause.error.trim().is_empty(), "{cause}");
+    }
+}
