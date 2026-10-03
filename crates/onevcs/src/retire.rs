@@ -2045,9 +2045,10 @@ impl<'a> Census<'a> {
             let Some(repo) = self.readable(copy, branch, ask) else {
                 continue;
             };
-            // llmlint: ignore[changed_behavior_has_e2e] uncovered for the reason the
-            // supersession read in `conclude` gives: the judge read this same history of
-            // this same repository a moment before, so no fixture fails this read alone.
+            // llmlint: ignore[changed_behavior_has_e2e] no journey fails this read alone,
+            // for the reason the supersession read in `conclude` gives: the judge read this
+            // same history of this same repository a moment before. The cause it records is
+            // driven directly by `retire::unknown_causes`, from a fork nobody has.
             let history = git::log_messages(
                 self.asked(&repo),
                 fork,
@@ -3709,10 +3710,14 @@ mod unknown_causes {
         fn new() -> Self {
             let root = tempfile::tempdir().expect("a scratch host");
             let at = root.path().canonicalize().expect("a canonical root");
+            // Auto-maintenance off: after a commit git detaches a maintenance child into
+            // the worktree, and a `close_session` that follows sees a process inside its
+            // run root and rightly refuses — a race no test here sets out to run.
             std::fs::write(
                 at.join(".gitconfig"),
                 "[user]\n\tname = Unit\n\temail = unit@example.invalid\n[init]\n\t\
-                 defaultBranch = main\n[commit]\n\tgpgsign = false\n",
+                 defaultBranch = main\n[commit]\n\tgpgsign = false\n[maintenance]\n\t\
+                 auto = false\n",
             )
             .expect("a git configuration");
             std::env::set_var("HOME", &at);
@@ -3921,6 +3926,46 @@ mod unknown_causes {
         };
         says(&cause, "judge", &clone);
         assert_eq!(classified(&census, copies).operation, "judge");
+    }
+
+    #[test]
+    fn a_base_history_that_cannot_be_read_is_an_open_change_cause_naming_the_change_request() {
+        let landed = Landed::new();
+        let host = landed.host();
+        let identity = landed.identity();
+        let census = census(&host, &identity);
+        let copies = census.copies(BRANCH, &Ask::offline());
+        let base_tip = census.base_tip.clone().expect("the base is read");
+        let mut judged = census
+            .judged(
+                BRANCH,
+                &base_tip,
+                &copies,
+                &census.evidence(BRANCH),
+                &Ask::offline(),
+            )
+            .expect("every copy is judged");
+        // The judge's answer read back with a fork no repository has, which is what makes
+        // the base's history from it a read that fails.
+        judged[0].1.fork = Some("1111111111111111111111111111111111111111".to_owned());
+        // A change request recorded and no landing, so whether the base's history names
+        // it is the question the read answers.
+        let url = "https://github.com/acme/project/pull/7";
+        let mut evidence = super::Evidence {
+            change: Some(url::Url::parse(url).expect("a change request URL")),
+            landing: None,
+            heads: Vec::new(),
+            changed: false,
+        };
+        let read = census.open_change(BRANCH, &mut evidence, &judged, &Ask::offline(), None);
+        let Err(cause) = read else {
+            panic!("a base history from a fork nobody has was read");
+        };
+        assert_eq!(
+            (cause.operation.as_str(), cause.subject.as_str()),
+            ("open-change", url)
+        );
+        assert!(cause.error.contains("1111111"), "{cause}");
     }
 
     #[test]
