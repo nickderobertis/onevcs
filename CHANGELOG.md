@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.3](https://github.com/nickderobertis/onevcs/compare/v0.40.2...v0.40.3) - 2026-10-04
+
+### Fixed
+
+- *(release)* answer a squash-merged landing after its branch retires ([#301](https://github.com/nickderobertis/onevcs/pull/301))
+
 ## [0.40.2](https://github.com/nickderobertis/onevcs/compare/v0.40.1...v0.40.2) - 2026-10-03
 
 ### Added

@@ -4,7 +4,7 @@ name = "onevcs-testing"
 # crate beside it. Its own version, because it is its own deliverable: a consumer
 # pins it in `dev-dependencies` and nothing about a test provider belongs in a
 # release binary.
-version = "0.12.2"
+version = "0.12.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -27,7 +27,7 @@ path = "src/lib.rs"
 # nothing on crates.io — and release-plz keeps it in step with the sibling. It is
 # exact because each release of this crate mirrors one release of onevcs: a consumer
 # resolving a newer onevcs under it would drive providers that do not match it.
-onevcs = { version = "=0.40.2", path = "../onevcs" }
+onevcs = { version = "=0.40.3", path = "../onevcs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A change request's head commit and a preserved commit both need a hash-shaped
