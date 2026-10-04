@@ -1045,7 +1045,13 @@ rename. Seven things are easy to undo.
 - **A retired branch still answers `status`, `landing_status` and `release status`.**
   It resolves through its `branch-retired` record, reads as landed where it was retired
   `retirable`, and names the commit on the base its work reached — which is what a
-  release is compared against — found by `status::landed_on_base`.
+  release is compared against — found by `status::landed_on_base`. Its change request's
+  URL and its recorded landing (squash) commit resolve to it too, even where the stream
+  that opened it — a branch-keyed verb's — names no identity: the `retirable` record
+  written after the opening is what attributes it (`status::retired_landing`), and a
+  recorded landing commit is asked before the branches that merely carry it since
+  (`status::by_landing`). A change request that never landed and whose branch nothing
+  holds stays unresolvable.
 
 ## The disk is a resource, and one retention rule frees it
 
