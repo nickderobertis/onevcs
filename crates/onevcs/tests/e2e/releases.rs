@@ -844,6 +844,18 @@ fn a_change_the_host_merges_captures_its_baselines_like_a_local_landing_does() {
     assert_eq!(released["state"], "released");
     assert_eq!(released["version"], "1.1.0");
     assert_eq!(released["style"], "automated");
+
+    // The commit the host landed it as names the same landing: a session's stream
+    // records its identity beside the landing, and that record is what answers.
+    let landed = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    assert_eq!(
+        asking(&hosted.world, &["status", &landed, "--target", "crate"]),
+        released
+    );
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
@@ -2925,15 +2937,17 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
     );
 }
 
+/// The branch `squash_landing` publishes and lands.
+const LANDED_BRANCH: &str = "feature/retired-landing";
+
 /// A change request a branch-keyed verb opened and the host squash-merged, whose branch
-/// `onevcs`'s own retirement has since deleted from every checkout, run clone and the
-/// origin — with two release targets: `crate`, whose probe answered `1.0.0` at the
-/// landing, and `wheel`, whose probe could not answer then, so its baseline is
-/// unestablished.
+/// the publishing checkout still holds — with two release targets: `crate`, whose probe
+/// answered `1.0.0` at the landing, and `wheel`, whose probe could not answer then, so
+/// its baseline is unestablished.
 ///
 /// Answered as the hosted fixture, the change request's URL, and the squash commit the
 /// work landed as on the base.
-pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
+fn squash_landing() -> (crate::host::Hosted, String, String) {
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -2955,7 +2969,7 @@ pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
         ),
     )
     .expect("a release-targets file");
-    let branch = "feature/retired-landing";
+    let branch = LANDED_BRANCH;
     crate::publish_branch::finished_hosted_branch(&hosted, branch, "feat: land and retire");
     hosted
         .world
@@ -2992,7 +3006,20 @@ pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
     let merged = hosted.world.events_of(&stream, "change-merged");
     assert_eq!(merged.len(), 1, "{merged:?}");
     assert_eq!(merged[0]["payload"]["sha"], landed.as_str());
+    (hosted, url, landed)
+}
 
+/// `squash_landing`, after `onevcs`'s own retirement has deleted its branch from every
+/// checkout, run clone and the origin.
+pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
+    let (hosted, url, landed) = squash_landing();
+    retire_landed_branch(&hosted);
+    (hosted, url, landed)
+}
+
+/// Retire `squash_landing`'s branch the way `onevcs` does once its work is on the base.
+fn retire_landed_branch(hosted: &crate::host::Hosted) {
+    let branch = LANDED_BRANCH;
     let (code, report) =
         crate::retire::verb(&hosted.world, &["retire-finished", "--repo", "hosted"]);
     assert_eq!(code, 0, "{report}");
@@ -3017,7 +3044,6 @@ pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
         local.trim().is_empty(),
         "the retirement deleted the checkout's copy: {local}"
     );
-    (hosted, url, landed)
 }
 
 #[test]
@@ -3148,4 +3174,153 @@ fn a_squash_commit_resolves_to_its_landing_ahead_of_branches_that_merged_the_bas
             "the commit names the work that landed as it: {report}"
         );
     }
+}
+
+#[test]
+fn a_squash_commit_names_its_landing_while_its_branch_is_held_and_after_it_retires() {
+    // The landing record answers the squash commit whether the branch is still where
+    // it was published from or retirement has removed it everywhere: asked by the
+    // commit, the work is the one the URL names, before and after.
+    let (hosted, url, landed) = squash_landing();
+    let report = |reference: &str| -> Value {
+        let assert = hosted
+            .world
+            .onevcs()
+            .args(["status", reference, "--json"])
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("a status report")
+    };
+    let release = |reference: &str| -> Value {
+        let assert = hosted
+            .world
+            .onevcs()
+            .args([
+                "release", "status", reference, "--target", "crate", "--json",
+            ])
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document")
+    };
+    for retired in [false, true] {
+        if retired {
+            retire_landed_branch(&hosted);
+        }
+        let by_commit = report(&landed);
+        assert_eq!(by_commit["branch"]["name"], LANDED_BRANCH, "{by_commit}");
+        assert_eq!(by_commit["ref"]["kind"], "commit", "{by_commit}");
+        assert_eq!(
+            by_commit["identity"]["key"], "github.com/acme-corp/hosted",
+            "{by_commit}"
+        );
+        assert_eq!(release(&landed), release(&url), "retired: {retired}");
+    }
+}
+
+#[test]
+fn a_retired_landings_url_names_its_own_repository_where_two_identities_retired_the_name() {
+    // A second identity — another repository on this host — retires a branch of the
+    // same name, as landed, after the change request was opened. The URL's own path
+    // says which repository it was proposed to, so that is not an ambiguity to refuse.
+    let (hosted, url, landed) = retired_landing();
+    let mirror_origin = hosted.world.bare_origin("mirror");
+    let mirror = hosted.world.clone_of(&mirror_origin, "mirror");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "register",
+            &mirror.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/mirror.git",
+        ])
+        .assert()
+        .success();
+    let opened = hosted
+        .world
+        .onevcs()
+        .args(["session", "open", "mirror", "--branch", LANDED_BRANCH])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let worktree = worktree_of(&opened);
+    hosted
+        .world
+        .commit_file(&worktree, "mirror.txt", "mirror\n", "feat: mirrored work");
+    // Its work lands on the mirror's base as a squash does: the same content, as a
+    // commit the branch does not carry.
+    let squashed = hosted.world.clone_of(&mirror_origin, "mirror-squashed");
+    hosted.world.commit_file(
+        &squashed,
+        "mirror.txt",
+        "mirror\n",
+        "feat: mirrored work (#1)",
+    );
+    hosted
+        .world
+        .git(&squashed, &["push", "-q", "origin", "main"]);
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token_of(&opened)])
+        .assert()
+        .success();
+    // Closing the session retired the branch as landed, after the change request was
+    // opened — so the name alone is now two identities' retired work.
+    let retired: Vec<Value> = crate::retire::events(&hosted.world, "branch-retired")
+        .into_iter()
+        .filter(|event| event["payload"]["branch"] == LANDED_BRANCH)
+        .collect();
+    let mut identities: Vec<&str> = retired
+        .iter()
+        .filter_map(|event| event["payload"]["identity"].as_str())
+        .collect();
+    identities.sort_unstable();
+    assert_eq!(
+        identities,
+        ["github.com/acme-corp/hosted", "github.com/acme-corp/mirror"],
+        "the premise: {retired:?}"
+    );
+    assert!(
+        retired
+            .iter()
+            .all(|event| event["payload"]["class"] == "retirable"),
+        "the premise: {retired:?}"
+    );
+    let ambiguous = hosted
+        .world
+        .onevcs()
+        .args(["status", LANDED_BRANCH, "--json"])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        !ambiguous.status.success(),
+        "the premise: the name alone names two pieces of work: {ambiguous:?}"
+    );
+
+    for reference in [url.as_str(), landed.as_str()] {
+        let assert = hosted
+            .world
+            .onevcs()
+            .args(["status", reference, "--json"])
+            .assert()
+            .success();
+        let report: Value =
+            serde_json::from_slice(&assert.get_output().stdout).expect("a status report");
+        assert_eq!(
+            report["identity"]["key"], "github.com/acme-corp/hosted",
+            "{reference} names the repository its change request was proposed to: {report}"
+        );
+        assert_eq!(report["branch"]["name"], LANDED_BRANCH, "{report}");
+    }
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["release", "status", &url, "--target", "crate", "--json"])
+        .assert()
+        .success();
+    let answered: Value = serde_json::from_slice(&assert.get_output().stdout).expect("a document");
+    assert_eq!(answered["state"], "not-released", "{answered}");
 }
