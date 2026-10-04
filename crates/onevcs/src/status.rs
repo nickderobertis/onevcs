@@ -2709,6 +2709,139 @@ fn retired_under(streams: &[Recorded], branch: &Ref, within: Option<&str>) -> Ve
     found
 }
 
+/// Every identity whose streams record retiring this branch as landed since `since`,
+/// for resolving a landing whose own record names no identity and whose branch nothing
+/// holds any more.
+///
+/// Only a `retirable` retirement answers, because its proof is that the branch's work
+/// reached the base: a branch reclaimed with its differences discarded never landed,
+/// and a change request carried by it is still one nothing here can say became work.
+/// Only one written at or after `since` — the moment the change request was opened or
+/// the landing recorded — because a name is spent and re-cut, and the retirement of an
+/// earlier branch that wore it says nothing about work proposed afterwards. Where two
+/// identities each retired the name, the repository the change request's URL names is
+/// the one asked about, so a URL whose own path settles the ambiguity is not refused
+/// for it.
+fn retired_landing(
+    streams: &[Recorded],
+    branch: &Ref,
+    since: &Stamp,
+    change: Option<&str>,
+    within: Option<&str>,
+) -> Vec<Work> {
+    let mut found: Vec<Work> = Vec::new();
+    for record in streams {
+        let Some(retired) = &record.retired else {
+            continue;
+        };
+        let identity = retired.value.identity();
+        if retired.value.branch() != &**branch
+            || retired.value.class() != crate::retire::RetirementClass::Retirable
+            || retired.at < *since
+            || within.is_some_and(|key| key != identity)
+            || found.iter().any(|work| work.identity == identity)
+        {
+            continue;
+        }
+        found.push(Work {
+            identity: identity.to_owned(),
+            branch: branch.clone(),
+        });
+    }
+    if let (true, Some(url)) = (found.len() > 1, change) {
+        if found
+            .iter()
+            .any(|work| names_repository(url, &work.identity))
+        {
+            found.retain(|work| names_repository(url, &work.identity));
+        }
+    }
+    found
+}
+
+/// Whether a change request's URL is one of this identity's: the identity key is the
+/// host and path its origin normalizes to, and a change request's address is that
+/// repository's address with the host's own path for it beneath.
+fn names_repository(url: &str, identity: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| format!("{host}{path}", path = url.path()))
+        })
+        .is_some_and(|place| {
+            place
+                .strip_prefix(identity)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// The work a recorded landing at this commit landed.
+///
+/// A squash lands work as a commit no branch of that work carries, and every branch
+/// cut from the base afterwards carries it in its history — so asking the branches
+/// which of them holds the commit answers with work that merely followed it, never
+/// with the work that landed as it. The record this host wrote of the landing names
+/// that work, and is asked first. A record naming no identity — a branch-keyed verb's
+/// — is attributed the way a change request's is: to the identity whose checkouts
+/// still hold the branch, or, once it is retired from all of them, to the identity
+/// that recorded retiring it after the landing.
+fn by_landing(
+    registry: &Registry,
+    streams: &[Recorded],
+    commit: &str,
+    within: Option<&str>,
+) -> Result<Vec<Work>> {
+    let commit = commit.to_ascii_lowercase();
+    let mut found: Vec<Work> = Vec::new();
+    for record in streams {
+        let (Some(landing), Some(branch)) = (&record.landing, &record.branch) else {
+            continue;
+        };
+        if !landing.value.as_str().starts_with(&commit) {
+            continue;
+        }
+        let Ok(branch) = Ref::try_from(branch.clone()) else {
+            continue;
+        };
+        let attributed = match record
+            .identity
+            .as_ref()
+            .filter(|identity| registry.identities.contains_key(identity.as_str()))
+        {
+            Some(identity) => match within.is_none_or(|key| key == identity) {
+                true => vec![Work {
+                    identity: identity.clone(),
+                    branch,
+                }],
+                false => Vec::new(),
+            },
+            None => match by_branch(registry, &branch, within)? {
+                held if held.is_empty() => retired_landing(
+                    streams,
+                    &branch,
+                    &landing.at,
+                    record
+                        .opened
+                        .as_ref()
+                        .map(|opened| opened.value.url.as_str()),
+                    within,
+                ),
+                held => held,
+            },
+        };
+        for work in attributed {
+            if !found
+                .iter()
+                .any(|known| known.identity == work.identity && known.branch == work.branch)
+            {
+                found.push(work);
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// The change request this host's streams record opening for one branch, whole
 /// enough to address the host about it: its URL, the host's identifier, the branch it
 /// targets, and the stream that recorded it.
@@ -2847,6 +2980,10 @@ fn resolve(
         }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
+        let landed = by_landing(registry, streams, reference, within)?;
+        if !landed.is_empty() {
+            return one(landed, reference, "commit").map(|work| (work, RefKind::Commit));
+        }
         let found = by_commit(registry, reference, within, notes)?;
         if !found.is_empty() {
             return one(found, reference, "commit").map(|work| (work, RefKind::Commit));
@@ -2975,7 +3112,16 @@ fn change_url(
     // narrowed the same way. Searching every identity under an explicit repository
     // would refuse a name two of them hold as ambiguous, for an ambiguity the caller
     // has already resolved.
-    let found = by_branch(registry, &branch, within)?;
+    let mut found = by_branch(registry, &branch, within)?;
+    // A landed branch is retired from every place that held it, and a branch-keyed
+    // verb's stream still carries no identity — so where nothing holds the branch, the
+    // record of its landing is what answers: a retirement of it this host wrote after
+    // the change request was opened, on the proof that its work reached the base.
+    if found.is_empty() {
+        if let Some(opened) = &recorded.opened {
+            found = retired_landing(streams, &branch, &opened.at, Some(url), within);
+        }
+    }
     // Nothing found is not an ambiguity, and saying so is the whole of the difference:
     // the next move is to widen the question or to look for the branch, and "0 pieces
     // of work answer to it" tells a reader neither.

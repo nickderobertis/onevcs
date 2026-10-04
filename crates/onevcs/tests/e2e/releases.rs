@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, AUTOMATED_READY, DIRECT, REVIEWED};
+use crate::host::{Hosted, AUTOMATED, AUTOMATED_READY, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::support::{documented_actor_limit, documented_probe_environment};
-use crate::world::{Check, World};
+use crate::world::{token_of, worktree_of, Check, World};
 
 /// A registered repository with release targets, and the answers its probes give.
 ///
@@ -2923,4 +2923,229 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
         serde_json::json!({"crate": {landing.clone(): "1.0.1"}}),
         "the record holds exactly one observation for the landing"
     );
+}
+
+/// A change request a branch-keyed verb opened and the host squash-merged, whose branch
+/// `onevcs`'s own retirement has since deleted from every checkout, run clone and the
+/// origin — with two release targets: `crate`, whose probe answered `1.0.0` at the
+/// landing, and `wheel`, whose probe could not answer then, so its baseline is
+/// unestablished.
+///
+/// Answered as the hosted fixture, the change request's URL, and the squash commit the
+/// work landed as on the base.
+pub(crate) fn retired_landing() -> (crate::host::Hosted, String, String) {
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let answers = hosted.world.path("answers");
+    std::fs::create_dir_all(&answers).expect("an answers directory");
+    std::fs::write(answers.join("crate"), "1.0.0\n").expect("what is released now");
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: hosted}}\n    adoption: published\n    \
+             default_target: crate\n    targets:\n{}{}",
+            answering("crate"),
+            answering("wheel"),
+        ),
+    )
+    .expect("a release-targets file");
+    let branch = "feature/retired-landing";
+    crate::publish_branch::finished_hosted_branch(&hosted, branch, "feat: land and retire");
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let url = "https://github.com/acme-corp/hosted/pull/1".to_owned();
+    let stream = format!("publish-branch-{}", slug(branch));
+    let opened = hosted.world.events_of(&stream, "change-opened");
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0]["payload"]["url"], url.as_str());
+    assert!(
+        opened[0]["labels"].get("identity").is_none(),
+        "the premise: a branch-keyed verb's stream names no identity: {:?}",
+        opened[0]
+    );
+    let landed = hosted
+        .world
+        .git(&hosted.origin, &["rev-parse", "main"])
+        .trim()
+        .to_owned();
+    assert_eq!(
+        hosted.origin_log()[0],
+        "feat: land and retire (#1)",
+        "the premise: the host squash-merged it"
+    );
+    let merged = hosted.world.events_of(&stream, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:?}");
+    assert_eq!(merged[0]["payload"]["sha"], landed.as_str());
+
+    let (code, report) =
+        crate::retire::verb(&hosted.world, &["retire-finished", "--repo", "hosted"]);
+    assert_eq!(code, 0, "{report}");
+    let entry = report["examined"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|entry| entry["branch"] == branch)
+        .unwrap_or_else(|| panic!("the pass examined it: {report}"))
+        .clone();
+    assert_eq!(entry["outcome"], "retired", "{entry}");
+    assert_eq!(
+        hosted.branch_on_origin(branch),
+        None,
+        "the retirement deleted the origin's copy"
+    );
+    let local = hosted.world.git(
+        &hosted.checkout,
+        &["branch", "--list", "--all", &format!("*{branch}")],
+    );
+    assert!(
+        local.trim().is_empty(),
+        "the retirement deleted the checkout's copy: {local}"
+    );
+    (hosted, url, landed)
+}
+
+#[test]
+fn a_squash_landing_answers_its_release_by_url_after_its_branch_is_retired() {
+    let (hosted, url, landed) = retired_landing();
+    let release = |args: &[&str]| {
+        hosted
+            .world
+            .onevcs()
+            .arg("release")
+            .args(args)
+            .env("ONEVCS_ACTOR", "operator")
+            .assert()
+    };
+    let asking = |target: &str| -> Value {
+        let assert = release(&["status", &url, "--target", target, "--json"]).success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document")
+    };
+
+    // The landing's own release state against each target, answered from what this
+    // host recorded rather than from a branch somebody still holds.
+    let waiting = asking("crate");
+    assert_eq!(waiting["state"], "not-released", "{waiting}");
+    assert_eq!(
+        waiting["at_landing"],
+        serde_json::json!({"state": "at", "version": "1.0.0"}),
+        "{waiting}"
+    );
+    std::fs::write(hosted.world.path("answers").join("crate"), "1.1.0\n")
+        .expect("a release goes out");
+    let released = asking("crate");
+    assert_eq!(released["state"], "released", "{released}");
+    assert_eq!(released["version"], "1.1.0", "{released}");
+    let unestablished = asking("wheel");
+    assert_eq!(unestablished["state"], "not-answered", "{unestablished}");
+
+    // The manual answer the unestablished baseline's refusal names is recorded
+    // against the same retired landing…
+    let acknowledged = release(&[
+        "acknowledge",
+        &url,
+        "--target",
+        "wheel",
+        "--version",
+        "2.0.0",
+        "--json",
+    ])
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let acknowledged: Value = serde_json::from_slice(&acknowledged).expect("one document");
+    assert_eq!(
+        acknowledged["landing_commit"],
+        landed.as_str(),
+        "{acknowledged}"
+    );
+    // …and a later read takes it up.
+    let carried = asking("wheel");
+    assert_eq!(carried["state"], "released", "{carried}");
+    assert_eq!(carried["version"], "2.0.0", "{carried}");
+    assert_eq!(carried["source"], "acknowledged", "{carried}");
+    release(&["status", &url, "--target", "wheel"])
+        .success()
+        .stdout(predicate::str::contains("released: wheel 2.0.0"));
+}
+
+#[test]
+fn a_squash_commit_resolves_to_its_landing_ahead_of_branches_that_merged_the_base_since() {
+    let (hosted, url, landed) = retired_landing();
+    // Two later branches cut from the base after the landing, each carrying the squash
+    // commit in its history and each held by a registered checkout.
+    for later in ["feature/after-one", "feature/after-two"] {
+        let opened = hosted
+            .world
+            .onevcs()
+            .args(["session", "open", "hosted", "--branch", later])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        hosted.world.commit_file(
+            &worktree_of(&opened),
+            &format!("{}.txt", slug(later)),
+            "later\n",
+            "feat: later work",
+        );
+        hosted
+            .world
+            .onevcs()
+            .args(["session", "close", &token_of(&opened)])
+            .assert()
+            .success();
+        let carries = hosted.world.git(
+            &hosted.checkout,
+            &["merge-base", "--is-ancestor", &landed, later],
+        );
+        assert!(carries.trim().is_empty(), "the premise: {later} carries it");
+    }
+    let asking = |reference: &str| -> Value {
+        let assert = hosted
+            .world
+            .onevcs()
+            .args([
+                "release", "status", reference, "--target", "crate", "--json",
+            ])
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("one document")
+    };
+    assert_eq!(
+        asking(&landed),
+        asking(&url),
+        "the commit and the URL are one landing"
+    );
+    for reference in [landed.as_str(), &landed[..12]] {
+        let report = hosted
+            .world
+            .onevcs()
+            .args(["status", reference, "--json"])
+            .assert()
+            .success();
+        let report: Value =
+            serde_json::from_slice(&report.get_output().stdout).expect("a status report");
+        assert_eq!(
+            report["branch"]["name"], "feature/retired-landing",
+            "the commit names the work that landed as it: {report}"
+        );
+    }
 }

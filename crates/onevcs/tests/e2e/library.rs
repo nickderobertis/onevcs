@@ -6923,3 +6923,55 @@ fn the_gate_audit_answers_an_unhosted_identity_and_a_host_it_could_not_read() {
         "{printed}"
     );
 }
+
+#[test]
+fn the_release_read_the_engine_links_answers_a_retired_squash_landing_as_the_command_does() {
+    // The engine decides a `published` hold through `release_status`, so a landing the
+    // command line can answer after its branch retired is one this has to answer too —
+    // by the change request's URL, and by the squash commit it landed as.
+    let (hosted, url, landed) = crate::releases::retired_landing();
+    inhabit(&hosted.world);
+    let command = |reference: &str, target: &str| -> onevcs::ReleaseStatus {
+        let output = hosted
+            .world
+            .onevcs()
+            .args(["release", "status", reference, "--target", target, "--json"])
+            .output()
+            .expect("the binary runs");
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice(&output.stdout).expect("a release status")
+    };
+    let crate_target = TargetName::try_from("crate".to_owned()).expect("a target name");
+    let wheel = TargetName::try_from("wheel".to_owned()).expect("a target name");
+    for reference in [url.as_str(), landed.as_str()] {
+        let answered = onevcs::release_status(reference, Some(&crate_target))
+            .expect("the retired landing resolves");
+        assert!(
+            matches!(answered, onevcs::ReleaseStatus::NotReleased { .. }),
+            "{answered:?}"
+        );
+        assert_eq!(answered, command(reference, "crate"));
+        let answered =
+            onevcs::release_status(reference, Some(&wheel)).expect("the retired landing resolves");
+        assert!(
+            matches!(answered, onevcs::ReleaseStatus::NotAnswered { .. }),
+            "{answered:?}"
+        );
+        assert_eq!(answered, command(reference, "wheel"));
+    }
+
+    // The acknowledgement the library records is the one the command then reads.
+    std::env::set_var("ONEVCS_ACTOR", "operator");
+    let acknowledged = onevcs::acknowledge_release(&url, &wheel, "2.0.0", false)
+        .expect("the retired landing takes an acknowledgement");
+    assert_eq!(acknowledged.landing_commit, landed);
+    let answered = onevcs::release_status(&url, Some(&wheel)).expect("it resolves");
+    assert!(
+        matches!(
+            &answered,
+            onevcs::ReleaseStatus::Released { version, .. } if version == "2.0.0"
+        ),
+        "{answered:?}"
+    );
+    assert_eq!(answered, command(&url, "wheel"));
+}
