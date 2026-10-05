@@ -96,14 +96,16 @@ pub enum Command {
     Retire(RetireArgs),
     /// Delete a branch a retry superseded and landed, discarding what it still
     /// differs from the base in.
-    Reclaim(RetireArgs),
+    ///
+    /// With `--discard`, also a branch kept on purpose whose work nothing will land.
+    Reclaim(ReclaimArgs),
     /// Retire every branch in scope that provably holds no work beyond its base.
     RetireFinished(RetireFinishedArgs),
     /// Record that a branch was superseded by a retry that landed.
     Supersede(SupersedeArgs),
 }
 
-/// Arguments for `onevcs retire` and `onevcs reclaim`, which take the same ones.
+/// Arguments for `onevcs retire`, which `onevcs reclaim` takes too.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RetireArgs {
     /// The branch to retire.
@@ -124,6 +126,20 @@ pub struct RetireArgs {
     /// Report as JSON rather than as prose.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `onevcs reclaim`: `retire`'s, and whether to discard a branch whose
+/// work nothing landed.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReclaimArgs {
+    /// The arguments `onevcs retire` takes too.
+    #[command(flatten)]
+    pub retire: RetireArgs,
+    /// Also delete a branch kept only because it holds commits nothing landed and no
+    /// retry superseded, discarding that work. Every other reason to keep a branch
+    /// still refuses it.
+    #[arg(long)]
+    pub discard: bool,
 }
 
 /// Arguments for `onevcs retire-finished`.

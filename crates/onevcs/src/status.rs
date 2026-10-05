@@ -403,12 +403,12 @@ pub struct RetiredReport {
     /// Which class it was retired as.
     class: crate::retire::RetirementClass,
     /// What proved it held nothing beyond its base; absent for a branch reclaimed as
-    /// superseded, which is the one class retired without one.
+    /// superseded or discarded as kept, the two classes retired without one.
     #[serde(skip_serializing_if = "Option::is_none")]
     proof: Option<crate::retire::RetirementProof>,
     /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
     trigger: crate::retire::Trigger,
-    /// What it acted under: `retire`, `reclaim` or `automatic`.
+    /// What it acted under: `retire`, `reclaim`, `discard` or `automatic`.
     mode: crate::retire::Acting,
     /// When, as the event stream stamped it.
     at: Stamp,
@@ -435,7 +435,7 @@ impl TryFrom<AnyRetired> for RetiredReport {
 
     fn try_from(any: AnyRetired) -> std::result::Result<Self, Self::Error> {
         let retirable = any.class == crate::retire::RetirementClass::Retirable;
-        if !any.mode.permits(any.class) || retirable != any.proof.is_some() {
+        if !any.mode.permits_class(any.class) || retirable != any.proof.is_some() {
             return Err(format!(
                 "a retirement as {} under {} {} a proof, which no retirement is",
                 any.class.as_str(),
@@ -473,7 +473,7 @@ impl RetiredReport {
 
     /// The landing a retirement answers with: landed, on the evidence of its proof,
     /// for a branch retired as holding nothing beyond its base; nothing for one
-    /// reclaimed, whose differences were discarded rather than landed.
+    /// reclaimed or discarded, whose differences were thrown away rather than landed.
     ///
     /// The commit it names is the one on the base the work reached — what a release is
     /// compared against — found by [`landed_on_base`], and the proof's own commit only
@@ -3374,7 +3374,12 @@ impl Report {
                     .proof
                     .as_ref()
                     .map(crate::retire::RetirementProof::describe)
-                    .unwrap_or_else(|| "reclaimed, its differences discarded".to_owned()),
+                    .unwrap_or_else(|| match retired.class {
+                        crate::retire::RetirementClass::Keep => {
+                            "discarded, its work never landed".to_owned()
+                        }
+                        _ => "reclaimed, its differences discarded".to_owned(),
+                    }),
                 trigger = retired.trigger.as_str(),
                 mode = retired.mode.as_str(),
                 at = String::from(retired.at.clone()),
