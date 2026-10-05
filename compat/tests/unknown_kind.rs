@@ -19,8 +19,13 @@ use onevcs::{EventFilter, EventLines, EventStream, SessionToken};
 use onevcs_current::{Dimensions, Envelope, EventKind, Labels, Phase, PhaseOf, SOURCE_WORD};
 use serde_json::{json, Value};
 
-/// A kind this build writes and the pinned release does not know.
-const ADDED_LATER: EventKind = EventKind::BranchRetired;
+/// Kinds this build writes and the pinned release does not know, each at the phase
+/// this build stamps it with: one whose kind decides it, and the gate run, whose
+/// producer does.
+const KINDS_ADDED_LATER: [(EventKind, Phase); 2] = [
+    (EventKind::BranchRetired, Phase::Integrate),
+    (EventKind::GateRun, Phase::Review),
+];
 /// Two kinds both builds know, written either side of it.
 const BOOKENDS: [EventKind; 2] = [EventKind::SessionOpened, EventKind::SessionClosed];
 
@@ -53,6 +58,11 @@ impl Drop for Scratch {
 
 /// One envelope of `kind` on `stream`, as this build writes it.
 fn written(stream: &str, seq: u64, kind: EventKind) -> Envelope {
+    stamped(stream, seq, kind, Phase::of(kind))
+}
+
+/// The same, at a phase its producer stamped.
+fn stamped(stream: &str, seq: u64, kind: EventKind, phase: Option<Phase>) -> Envelope {
     Envelope {
         v: 1,
         ts: format!("2026-09-28T12:00:0{seq}.000Z"),
@@ -60,9 +70,7 @@ fn written(stream: &str, seq: u64, kind: EventKind) -> Envelope {
         seq,
         source: serde_json::from_value(json!(SOURCE_WORD)).expect("this build's own source"),
         kind: kind.into(),
-        dimensions: Dimensions {
-            phase: Phase::of(kind),
-        },
+        dimensions: Dimensions { phase },
         labels: Labels::default(),
         payload: serde_json::Map::new(),
         artifacts: Vec::new(),
@@ -83,16 +91,28 @@ fn a_released_build_reads_past_a_kind_added_after_it() {
         serde_json::from_value::<onevcs::EventKind>(spelled(kind))
             .unwrap_or_else(|e| panic!("the release knows {}: {e}", spelled(kind)));
     }
+    for (added, phase) in KINDS_ADDED_LATER {
+        reads_past(&scratch, added, phase);
+    }
+}
+
+/// The release reads a stream holding `added`, between two kinds it knows, on both
+/// of its readers.
+fn reads_past(scratch: &Scratch, added: EventKind, phase: Phase) {
     assert!(
-        serde_json::from_value::<onevcs::EventKind>(spelled(ADDED_LATER)).is_err(),
+        serde_json::from_value::<onevcs::EventKind>(spelled(added)).is_err(),
         "the premise: the pinned release has no word for {}, so a later kind is needed",
-        spelled(ADDED_LATER)
+        spelled(added)
     );
 
-    let token = "compat-unknown-kind";
+    let token = format!(
+        "compat-unknown-kind-{}",
+        spelled(added).as_str().expect("a kind is a word")
+    );
+    let token = token.as_str();
     let envelopes = [
         written(token, 1, BOOKENDS[0]),
-        written(token, 2, ADDED_LATER),
+        stamped(token, 2, added, Some(phase)),
         written(token, 3, BOOKENDS[1]),
     ];
     let lines: Vec<String> = envelopes

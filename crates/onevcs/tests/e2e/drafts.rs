@@ -79,6 +79,7 @@ fn check(name: &str, conclusion: Option<&str>, required: bool, at: u32) -> Check
         ))
         .ok(),
         started_at: Some(started(at)),
+        completed_at: None,
     }
 }
 

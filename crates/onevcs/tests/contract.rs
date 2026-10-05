@@ -346,6 +346,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ReleaseObserved,
         EventKind::BranchSuperseded,
         EventKind::BranchRetired,
+        EventKind::GateRun,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -375,7 +376,8 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ReleaseAcknowledged
             | EventKind::ReleaseObserved
             | EventKind::BranchSuperseded
-            | EventKind::BranchRetired => {}
+            | EventKind::BranchRetired
+            | EventKind::GateRun => {}
         }
     }
     kinds
@@ -592,18 +594,26 @@ fn every_event_kind_belongs_to_exactly_one_phase_and_the_contract_names_which() 
                     "the amendment and Phase::of disagree about {spelled}"
                 );
             }
-            // The one kind the table names twice, and the one `Phase::of` answers
+            // The two kinds the table names twice, and the two `Phase::of` answers
             // `None` for: both halves of that have to hold, or a producer would be
-            // told to stamp a phase the document does not offer for it.
+            // told to stamp a phase the document does not offer for it. A push's
+            // phase is its target's, and a gate run's is its gate's.
             None => assert_eq!(
                 rows.iter()
                     .map(|(phase, _, target)| (phase.as_str(), target.as_deref()))
                     .collect::<Vec<(&str, Option<&str>)>>(),
-                vec![
-                    (Phase::Development.as_str(), Some("own-branch")),
-                    (Phase::Integrate.as_str(), Some("any-other-branch")),
-                ],
-                "the amendment does not name both targets of {spelled}"
+                match kind {
+                    EventKind::Push => vec![
+                        (Phase::Development.as_str(), Some("own-branch")),
+                        (Phase::Integrate.as_str(), Some("any-other-branch")),
+                    ],
+                    EventKind::GateRun => vec![
+                        (Phase::Integrate.as_str(), Some("pre-push")),
+                        (Phase::Review.as_str(), Some("required-checks")),
+                    ],
+                    other => panic!("{other:?} has no phase of its own and no row says why"),
+                },
+                "the amendment does not name every phase of {spelled}"
             ),
         }
     }
@@ -2157,6 +2167,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         head: Some(Sha("0f1e2d3".to_owned())),
         url: Url::parse("https://github.com/nickderobertis/onevcs/runs/7").ok(),
         started_at: None,
+        completed_at: None,
     };
     let spec = ChangeSpec {
         head: "feature".to_owned(),
@@ -3324,6 +3335,7 @@ fn the_amendment_declares_what_a_hosts_checks_say_about_where_they_came_from() {
             head: None,
             url: None,
             started_at: None,
+            completed_at: None,
         }],
         sources: [CheckSource::Actions, CheckSource::BranchRules]
             .into_iter()
@@ -3393,6 +3405,7 @@ fn the_amendment_declares_the_commit_a_check_is_attached_to() {
         head: Some(Sha("0f1e2d3".to_owned())),
         url: Url::parse("https://github.com/nickderobertis/onevcs/actions/runs/1/job/2").ok(),
         started_at: None,
+        completed_at: None,
     };
     let unsaid = Check {
         head: None,
@@ -4577,6 +4590,7 @@ fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_st
         head: None,
         url: None,
         started_at: None,
+        completed_at: None,
     };
     for (status, conclusion, state) in [
         ("completed", Some("success"), CheckState::Passed),
@@ -4831,6 +4845,142 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
             Err(Error::NotImplemented { operation }) if operation.contains("merged_at")
         ),
         "a host that was never taught to answer must refuse rather than say `not yet`"
+    );
+}
+
+#[test]
+fn the_gate_run_amendment_fences_the_payload_and_declares_what_its_records_need() {
+    // The kind's payload, fenced: exactly these keys, of these types, and a fixture
+    // whose own `seconds` is its two stamps' difference — the rule every record is
+    // held to. `tests/e2e/gate_runs.rs` holds what this build actually writes to the
+    // same fence, key for key.
+    let fenced: Value = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"gate\": \"required-checks\"",
+    ))
+    .expect("the gate-run payload is JSON");
+    let keys = |value: &Value| -> Vec<String> {
+        value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect()
+    };
+    assert_eq!(
+        keys(&fenced),
+        [
+            "attempt",
+            "checks",
+            "ended_at",
+            "gate",
+            "seconds",
+            "started_at",
+            "verdict"
+        ]
+    );
+    assert_eq!(
+        keys(&fenced["checks"][0]),
+        [
+            "completed_at",
+            "conclusion",
+            "name",
+            "required",
+            "started_at"
+        ]
+    );
+    assert!(fenced["attempt"].is_u64() && fenced["seconds"].is_f64());
+    assert_eq!(fenced["started_at"], "2026-10-05T12:00:00.000Z");
+    assert_eq!(fenced["ended_at"], "2026-10-05T12:23:14.200Z");
+    assert_eq!(
+        fenced["seconds"], 1394.2,
+        "23m14.2s is ended_at - started_at"
+    );
+
+    // The words it may carry, stated beside it, are the ones this crate already uses
+    // for a settled watch — and the phase is the gate's, so the producer stamps it.
+    let amendments = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for stated in [
+        "`gate` — `pre-push` or `required-checks`.",
+        "`verdict` — `passed`, `failed`, `no-verdict`, or `passed-with-skipped`.",
+        "a local `pre-push` gate is `integrate` and a change request's required checks are `review`",
+        "**Every event that records a landing gains `landed_at` and `landing`**",
+        "**A late merge records the host's merge time, never the time it was reconciled**",
+    ] {
+        assert!(amendments.contains(stated), "the amendment no longer states {stated:?}");
+    }
+    assert_eq!(Phase::of(EventKind::GateRun), None);
+    assert_eq!(kind_name(EventKind::GateRun), "gate-run");
+
+    // A check's completion: declared, omitted when the host gave none, and read back
+    // from a check an earlier build wrote without it.
+    let declared = amendment_declaring("pub completed_at: Option<String>");
+    assert!(
+        declared.contains(
+            "pub completed_at: Option<String>,    // when the host says this run completed"
+        ),
+        "{declared}"
+    );
+    let earlier: Check = serde_json::from_value(json!({
+        "name": "gate", "status": "completed", "conclusion": "success", "required": true,
+        "started_at": "2026-10-05T12:00:00Z",
+    }))
+    .expect("a check an earlier build wrote reads");
+    assert_eq!(earlier.completed_at, None);
+    let unwritten = serde_json::to_value(&earlier).expect("a check serializes");
+    assert!(unwritten.get("completed_at").is_none(), "{unwritten}");
+    let completed = Check {
+        completed_at: Some("2026-10-05T12:23:02Z".to_owned()),
+        ..earlier
+    };
+    let written = serde_json::to_value(&completed).expect("a check serializes");
+    assert_eq!(written["completed_at"], "2026-10-05T12:23:02Z");
+    assert_eq!(
+        serde_json::from_value::<Check>(written).expect("it reads back"),
+        completed
+    );
+
+    // The host's merge time: declared, and defaulted to the refusal a seam with no
+    // body answers, so an implementation written before it still compiles.
+    assert!(
+        declared.contains("fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>>"),
+        "{declared}"
+    );
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(
+        matches!(
+            Earlier.merge_time(&change),
+            Err(Error::NotImplemented { operation }) if operation.contains("merge_time")
+        ),
+        "a host that was never taught to answer refuses rather than saying it has not merged"
     );
 }
 

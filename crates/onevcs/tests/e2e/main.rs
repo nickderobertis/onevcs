@@ -75,6 +75,15 @@ mod edges;
 // read that. Its own header carries the reason in full.
 #[cfg(target_os = "linux")]
 mod fetch_turns;
+// Linux only: the stamping `git` and the hooks it is measured against read the clock
+// with GNU `date +%s%3N`. The required-checks journeys are in-process for the reason
+// `drafts.rs` is, and its own header carries the rest. It lives in this one `e2e`
+// binary of the one crate project, as every journey here does, because
+// `crates/onevcs/AGENTS.md` fixes that: a second Nx project would run the same
+// `--workspace` commands twice.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
+mod gate_runs;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.
 #[cfg(unix)]

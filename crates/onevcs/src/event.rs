@@ -121,11 +121,13 @@ pub enum EventKind {
     /// A check moved; carries its name, whether it is required, the status
     /// transition, the conclusion, and its log as an artifact once complete.
     ChangeCheck,
-    /// The change request merged.
+    /// The change request merged; carries its URL, the commit it landed at as `sha`
+    /// and as `landing`, and `landed_at`, when the base received it.
     ChangeMerged,
     /// The change request entered the host's merge queue.
     MergeQueued,
-    /// The merge the host had queued completed.
+    /// The merge the host had queued completed; carries the commit it landed at as
+    /// `sha` and as `landing`, and `landed_at`, when the base received it.
     MergeCompleted,
     /// Preserved work that carried an incomplete-step marker was verified and
     /// attested.
@@ -161,6 +163,16 @@ pub enum EventKind {
     /// permitted it, which verb or moment acted, and what was deleted and what was
     /// not — so a partial retirement names the holder a re-run still has to reach.
     BranchRetired,
+    /// One completed gate run of a publication attempt; carries which gate it was —
+    /// `pre-push` or `required-checks` — the attempt it belongs to, when it started
+    /// and ended, how long that was, its verdict, and for required checks every
+    /// required check with the times and conclusion the host reported.
+    ///
+    /// Recorded from the run the publication makes anyway, never from a second one:
+    /// the push that executed the repository's `pre-push` hook, and the watch of a
+    /// change request's required checks. Its phase is the gate's, so the producer
+    /// stamps it — `integrate` for `pre-push`, `review` for `required-checks`.
+    GateRun,
 }
 
 impl EventKind {
@@ -199,6 +211,7 @@ impl EventKind {
             EventKind::ReleaseObserved => "release-observed",
             EventKind::BranchSuperseded => "branch-superseded",
             EventKind::BranchRetired => "branch-retired",
+            EventKind::GateRun => "gate-run",
         }
     }
 
@@ -232,13 +245,15 @@ impl From<EventKind> for Kind {
 pub trait PhaseOf {
     /// The phase an event of this kind belongs to, where the kind alone decides it.
     ///
-    /// `None` for exactly one kind, and it is not an omission: a
+    /// `None` for exactly two kinds, and neither is an omission: a
     /// [`Push`](EventKind::Push) of the session's own branch is
     /// [`Development`](Phase::Development) and a push of anything else — the base a
     /// `local-direct` squash lands on, the base a merge train advanced — is
     /// [`Integrate`](Phase::Integrate). Which of the two it was is a fact about the
     /// push rather than about the kind, so the producer stamps it and this answers
-    /// that it cannot.
+    /// that it cannot. A [`GateRun`](EventKind::GateRun) is the same: a `pre-push`
+    /// gate is [`Integrate`](Phase::Integrate) and a change request's required checks
+    /// are [`Review`](Phase::Review), which is a fact about the gate.
     fn of(kind: EventKind) -> Option<Phase>;
 }
 
@@ -278,18 +293,20 @@ impl PhaseOf for Phase {
             EventKind::ReleaseProbed
             | EventKind::ReleaseAcknowledged
             | EventKind::ReleaseObserved => Phase::Release,
-            EventKind::Push => return None,
+            EventKind::Push | EventKind::GateRun => return None,
         })
     }
 }
 
 /// The phase an event of this kind is stamped at when its producer names none.
 ///
-/// The one kind whose phase its producer decides is a push, and
-/// [`Stream::emit_push`](crate::stream::Stream::emit_push) is where every push in
-/// this crate decides it. A push reaching here instead — or a line an older build
-/// wrote before there was a phase — is read at the phase a session's own stream is
-/// in, which is what all but one producer of a push stamps.
+/// The kinds whose phase their producer decides are a push and a gate run, and
+/// [`Stream::emit_push`](crate::stream::Stream::emit_push) and
+/// [`Stream::emit_gate_run`](crate::stream::Stream::emit_gate_run) are where every
+/// one in this crate decides it. A push reaching here instead — or a line an older
+/// build wrote before there was a phase — is read at the phase a session's own
+/// stream is in, which is what all but one producer of a push stamps. A gate run
+/// never reaches here unstamped: no build wrote one before there was a phase.
 pub(crate) fn phase_of(kind: EventKind) -> Phase {
     Phase::of(kind).unwrap_or(Phase::Development)
 }

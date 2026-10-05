@@ -83,7 +83,7 @@ minijinja = { version = "2", default-features = false, features = ["builtins", "
 toml = { version = "1", default-features = false, features = ["std", "parse", "display", "serde"] }
 # The envelope's `ts` is RFC3339 with millisecond precision in UTC. Civil-calendar
 # arithmetic is not a thing to hand-roll into an event stream's ordering key.
-time = { version = "0.3", features = ["formatting", "macros"] }
+time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
 # Unicode's own general-category table, which is what decides whether a character
 # a repository's hook wrote renders as anything. Already in the graph behind
 # `url`'s IDNA tables, so asking it directly rather than keeping a copy of the

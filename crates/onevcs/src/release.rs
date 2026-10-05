@@ -623,7 +623,10 @@ pub fn status(
                 &located,
                 &landing.branch,
                 landing.change_stream.as_deref(),
-                &commit,
+                Landing {
+                    commit: &commit,
+                    at: None,
+                },
                 change_url,
                 &mut stream,
             );
@@ -933,6 +936,13 @@ fn capture_in(
     Ok(())
 }
 
+/// The commit a landing found after its publication ended reached the base at, and
+/// when the host says it did — `None` where nobody asked the host, or it could not say.
+pub(crate) struct Landing<'a> {
+    pub(crate) commit: &'a str,
+    pub(crate) at: Option<crate::gate_run::Moment>,
+}
+
 /// Give a landing this host learned of after the fact what the publication that
 /// made it would have given it, had it lived to see the merge.
 ///
@@ -966,10 +976,14 @@ pub(crate) fn reconcile_landing(
     located: &Located,
     branch: &str,
     change_stream: Option<&str>,
-    commit: &str,
+    landing: Landing<'_>,
     change: &Url,
     stream: &mut Stream,
 ) {
+    let Landing {
+        commit,
+        at: landed_at,
+    } = landing;
     let identity = &located.releases.identity;
     let warn = |what: &str, failure: &dyn std::fmt::Display| {
         eprintln!(
@@ -997,11 +1011,13 @@ pub(crate) fn reconcile_landing(
     let Some(token) = change_stream else {
         return;
     };
+    // When the base received it is the host's own answer, recorded as unknown where
+    // it gave none. Never the time of this read, which is only when somebody
+    // happened to ask.
+    let mut merged = json_object(json!({"url": change.to_string(), "sha": commit}));
+    crate::gate_run::landed(&mut merged, landed_at, commit);
     match Stream::open(token) {
-        Ok(mut recorded) => recorded.emit(
-            EventKind::ChangeMerged,
-            json_object(json!({"url": change.to_string(), "sha": commit})),
-        ),
+        Ok(mut recorded) => recorded.emit(EventKind::ChangeMerged, merged),
         Err(failure) => warn("the landing was not recorded", &failure),
     }
 }

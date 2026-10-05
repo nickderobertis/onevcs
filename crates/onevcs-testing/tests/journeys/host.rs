@@ -211,6 +211,7 @@ fn auto_merge_waits_for_the_required_checks_and_lands_once_they_are_green() {
                 head: None,
                 url: None,
                 started_at: None,
+                completed_at: None,
             },
             green_check("lint"),
         ],
@@ -313,6 +314,7 @@ fn a_seeded_log_is_what_the_host_hands_over() {
             head: None,
             url: None,
             started_at: None,
+            completed_at: None,
         }],
     );
     let factory = MemoryHost::seeded(HostState {

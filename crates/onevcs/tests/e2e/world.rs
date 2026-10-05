@@ -494,6 +494,17 @@ impl World {
         self.write_rows("gh-state/checks.rows", checks);
     }
 
+    /// What the substituted host's clock reads when it merges a change request: the
+    /// `mergedAt` it reports for every merge from now on, so a journey can tell the
+    /// time GitHub says a change landed from the moment anything observed it. Unset,
+    /// the host merges at the real time.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
+    pub fn host_merge_clock(&self, at: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/merge-clock"), at).expect("a merge clock");
+    }
+
     /// What the substituted host's **classic** branch protection requires on the
     /// base, which is the second of the two ways GitHub protects a branch and the one
     /// a credential may be refused. Unset, the branch has no classic protection —
@@ -752,6 +763,29 @@ impl World {
     pub fn accept_merges_without_performing_them(&self) {
         std::fs::write(self.path("gh-state/refuse-merge"), "")
             .expect("a host that says yes and does nothing");
+    }
+
+    /// Make the substituted host record no time for the merges it performs from now
+    /// on, so it answers `mergedAt` as null for a change it has merged.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
+    pub fn host_keeps_no_merge_time(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/no-merge-time"), "")
+            .expect("a host that records no merge time");
+    }
+
+    /// Make the substituted host refuse to say when a change request merged, as a
+    /// credential GitHub will not answer `mergedAt` for is refused; `allow` lifts it.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
+    pub fn refuse_merge_times(&self, refuse: bool) {
+        let path = self.path("gh-state/refuse-merge-time");
+        if refuse {
+            std::fs::write(path, "").expect("a host that will not say when it merged");
+        } else if path.exists() {
+            std::fs::remove_file(path).expect("a host that says when it merged again");
+        }
     }
 
     /// Make the substituted host unable to hand over a check's log.

@@ -323,7 +323,13 @@ fn train(
                 ),
             });
         }
+        // The train's push is a publication attempt of its own, and the hook it runs
+        // is that attempt's gate.
+        stream.begin_attempt();
+        let hooked = crate::gate_run::runs_pre_push(root);
+        let started = crate::gate_run::Moment::now();
         let result = git::push(root, base, "origin", &environment)?;
+        let ended = crate::gate_run::Moment::now();
         // Through the one recorder every publishing push uses: this push is where the
         // repository's `pre-push` hook rules on the whole train, so what it wrote is
         // the verdict and the only account of a refusal there will ever be. No run
@@ -339,6 +345,7 @@ fn train(
             crate::event::Phase::Integrate,
             None,
         )?;
+        publish::record_pre_push(stream, hooked, started, ended, &result);
         if !result.accepted() {
             // Through the one refusal builder every publishing push uses, for the
             // reason the recorder above is one producer: a train's push is where the

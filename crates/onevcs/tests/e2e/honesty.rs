@@ -87,7 +87,10 @@ fn green_gate() -> Check {
         required: true,
         head: None,
         url: None,
-        started_at: None,
+        // The run's times, which the substituted `gh` reports for every completed
+        // check: what a host said is compared, and when is a clock.
+        started_at: Some("2026-09-30T12:00:00Z".to_owned()),
+        completed_at: Some("2026-09-30T12:00:30Z".to_owned()),
     }
 }
 
@@ -219,6 +222,7 @@ fn publication_events_match_across_backends() {
         "push",
         "change-opened",
         "change-check",
+        "gate-run",
         "merge-queued",
         "change-merged",
         "merge-completed",

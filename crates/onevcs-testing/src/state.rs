@@ -76,7 +76,10 @@ use crate::store::Checked;
 /// [`VcsState::preserved`]: `cause`, the read that failed for a branch kept as
 /// `unknown`, which every retirement writes — `null` for every other reason. No
 /// provider here classifies a branch, so a row this crate writes carries none; a
-/// scenario may seed one.
+/// scenario may seed one. `18` is what the record of a gate run and of a landing needs
+/// from a host: the field a `Check` gained inside [`HostState::checks`] —
+/// `completed_at`, when the host says that run completed — and
+/// [`HostState::merge_times`], when each merge this host performed reached its base.
 ///
 /// **Every change to the document is versioned, an added field included.** A field
 /// that only ever appears when it holds something is *compatible* — that is what
@@ -86,7 +89,7 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 17;
+pub const STATE_VERSION: u32 = 18;
 
 /// The oldest document version this build reads.
 ///
@@ -137,7 +140,10 @@ pub const STATE_VERSION: u32 = 17;
 /// meaning, as `9` to `10` did not: every failure kind a version 15 document can hold is
 /// spelled here as it was there, so it reads unchanged. `16` to `17` added the
 /// retirement's cause, which a version 16 retirement reads as `null` — which is what it
-/// said, since that build named no read that failed.
+/// said, since that build named no read that failed. `17` to `18` added two fields that
+/// appear only when they hold something, so a version 17 document's checks read as
+/// checks whose completion that build never recorded, and its merges as merges whose
+/// time it never recorded — which is what they were.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -423,6 +429,21 @@ pub struct HostState {
     /// queues or refuses — and a merge the policy decided is written back here.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub merges: BTreeMap<ChangeId, MergeOutcome>,
+    /// When each merged change request reached its base, as this host spells the
+    /// moment — what `merge_time` answers.
+    ///
+    /// Written beside [`merges`](HostState::merges) whenever this host performs a
+    /// merge, at the moment it performs it, and seedable for a merge a journey
+    /// seeded: a host that merged on its own clock, earlier than anybody asked, is
+    /// exactly what a late merge's record must report the time of. A merged change
+    /// with no entry is one whose time this host cannot say.
+    // llmlint: ignore[invalid_states_unrepresentable] this mirrors the answer
+    // `RemoteHost::merge_time` gives, which the contract fixes as the host's own spelling
+    // in an `Option<String>`; a timestamp type here would disagree with the seam it
+    // answers. A value that is not an RFC3339 moment is refused in `check`, where the
+    // document is read, and every one this host writes is `events::timestamp`'s.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub merge_times: BTreeMap<ChangeId, String>,
 }
 
 /// One description a host was handed for a change request after it was opened.
@@ -500,6 +521,7 @@ impl Default for HostState {
             check_logs: BTreeMap::new(),
             check_sources: None,
             merges: BTreeMap::new(),
+            merge_times: BTreeMap::new(),
         }
     }
 }
@@ -878,6 +900,20 @@ impl Checked for HostState {
             // refused for the same reason — and a body is prose, refused for nothing.
             if let Some(title) = &described.title {
                 titled(title)?;
+            }
+        }
+        // A merge time is what `merge_time` answers and what a landing is recorded
+        // with, so a seeded one that is not a moment is refused here, where the
+        // document is read, rather than recorded as one.
+        for (id, at) in &self.merge_times {
+            if events::moment(at).is_none() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the merge time seeded for change request {:?} is {at:?}, which is \
+                         not an RFC3339 moment",
+                        id.0
+                    ),
+                });
             }
         }
         Ok(())
