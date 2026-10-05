@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0](https://github.com/nickderobertis/onevcs/compare/v0.40.3...v0.41.0) - 2026-10-05
+
+### Added
+
+- *(retire)* discard a deliberately kept branch that never landed with reclaim --discard ([#311](https://github.com/nickderobertis/onevcs/pull/311))
+
 ## [0.40.3](https://github.com/nickderobertis/onevcs/compare/v0.40.2...v0.40.3) - 2026-10-04
 
 ### Fixed
