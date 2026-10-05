@@ -921,12 +921,7 @@ fn merged_late(clock: HostClock) -> (Hosted, Value, i64, String) {
         conclusion: Some("success"),
         required: true,
     }]);
-    let asked = std::process::Command::new(world.path("bin/gh"))
-        .args(["pr", "view", "1", "--json", "state"])
-        .env("ONEVCS_FAKE_GH_STATE", world.path("gh-state"))
-        .output()
-        .expect("the substituted host answers");
-    assert!(asked.status.success(), "{asked:?}");
+    world.let_the_host_act();
     world.refuse_merge_times(clock == HostClock::Refuses);
     std::thread::sleep(Duration::from_millis(2100));
 

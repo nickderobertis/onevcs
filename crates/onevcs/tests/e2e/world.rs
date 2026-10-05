@@ -498,6 +498,8 @@ impl World {
     /// `mergedAt` it reports for every merge from now on, so a journey can tell the
     /// time GitHub says a change landed from the moment anything observed it. Unset,
     /// the host merges at the real time.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
     pub fn host_merge_clock(&self, at: &str) {
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/merge-clock"), at).expect("a merge clock");
@@ -765,6 +767,8 @@ impl World {
 
     /// Make the substituted host record no time for the merges it performs from now
     /// on, so it answers `mergedAt` as null for a change it has merged.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
     pub fn host_keeps_no_merge_time(&self) {
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/no-merge-time"), "")
@@ -773,6 +777,8 @@ impl World {
 
     /// Make the substituted host refuse to say when a change request merged, as a
     /// credential GitHub will not answer `mergedAt` for is refused; `allow` lifts it.
+    // Only the Linux-only `gate_runs` journeys read a merge time.
+    #[cfg(target_os = "linux")]
     pub fn refuse_merge_times(&self, refuse: bool) {
         let path = self.path("gh-state/refuse-merge-time");
         if refuse {
