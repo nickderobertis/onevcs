@@ -763,6 +763,14 @@ impl World {
             .expect("a host that says yes and does nothing");
     }
 
+    /// Make the substituted host record no time for the merges it performs from now
+    /// on, so it answers `mergedAt` as null for a change it has merged.
+    pub fn host_keeps_no_merge_time(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/no-merge-time"), "")
+            .expect("a host that records no merge time");
+    }
+
     /// Make the substituted host refuse to say when a change request merged, as a
     /// credential GitHub will not answer `mergedAt` for is refused; `allow` lifts it.
     pub fn refuse_merge_times(&self, refuse: bool) {

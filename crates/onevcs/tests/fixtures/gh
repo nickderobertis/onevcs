@@ -417,8 +417,11 @@ land_pr() {
     printf 'PR_MERGE_COMMIT=%s\n' "$oid"
     # When GitHub says the change merged, on GitHub's clock: the moment it landed,
     # which a read that reconciles the landing later must report rather than its own.
-    # A world may set that clock, so a journey can tell GitHub's time from its own.
-    if [ -f "$STATE/merge-clock" ]; then
+    # A world may set that clock, so a journey can tell GitHub's time from its own,
+    # or have the host record no time at all, which it then answers as null.
+    if [ -f "$STATE/no-merge-time" ]; then
+      :
+    elif [ -f "$STATE/merge-clock" ]; then
       printf 'PR_MERGED_AT=%s\n' "$(cat "$STATE/merge-clock")"
     else
       printf 'PR_MERGED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

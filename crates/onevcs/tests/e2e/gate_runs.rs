@@ -910,8 +910,10 @@ fn merged_late(clock: HostClock) -> (Hosted, Value, i64, String) {
 
     // The host lands it the next time anybody asks it anything — on its own clock,
     // which reads a moment nothing in this journey observed, where it can say at all.
-    if clock == HostClock::Says {
-        world.host_merge_clock(HOST_MERGED_AT);
+    match clock {
+        HostClock::Says => world.host_merge_clock(HOST_MERGED_AT),
+        HostClock::Silent => world.host_keeps_no_merge_time(),
+        HostClock::Refuses => {}
     }
     world.host_checks(&[world::Check {
         name: "gate",
@@ -925,16 +927,6 @@ fn merged_late(clock: HostClock) -> (Hosted, Value, i64, String) {
         .output()
         .expect("the substituted host answers");
     assert!(asked.status.success(), "{asked:?}");
-    if clock == HostClock::Silent {
-        let record = world.path("gh-state/pr-1.env");
-        let kept: String = std::fs::read_to_string(&record)
-            .expect("the host's record of the change")
-            .lines()
-            .filter(|line| !line.starts_with("PR_MERGED_AT="))
-            .map(|line| format!("{line}\n"))
-            .collect();
-        std::fs::write(&record, kept).expect("a host that cannot say when it merged");
-    }
     world.refuse_merge_times(clock == HostClock::Refuses);
     std::thread::sleep(Duration::from_millis(2100));
 
