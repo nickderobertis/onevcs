@@ -4195,8 +4195,10 @@ anyway and never off a second gate or check run:
   (`failed`), or the bound elapsing — with a check still running or one that ended
   with no verdict — (`no-verdict`). `checks` lists every required check with its own
   times and conclusion exactly as the host reported them, `null` where the host gave
-  none. A watch that ends any other way — cancelled, a conflict the host confirms, a
-  host that could not be read — completed no gate run and records none.
+  none. A watch that ends any other way before its checks settle — cancelled, a
+  conflict the host confirms, a host that could not be read — completed no gate run
+  and records none. Once the checks have settled, the run they completed is recorded,
+  and a conflict the host confirms afterwards ends only the wait for the merge.
 
 **Its phase is the gate's, so the producer stamps it**, as it stamps a push's: a local
 `pre-push` gate is `integrate` and a change request's required checks are `review`.
