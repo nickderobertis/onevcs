@@ -2838,6 +2838,12 @@ fn the_library_discards_only_under_the_discard_mode() {
         Some(onevcs::KeepReason::UnmergedUniqueCommits)
     );
     assert!(yard.held("spike/library").is_empty());
+    // Its work was thrown away rather than landed, and the landing read says so.
+    let landed = onevcs::landing_status("spike/library", None).expect("the landing read");
+    assert!(
+        !matches!(landed, onevcs::Landed::Yes { .. }),
+        "a discarded branch never reads as landed: {landed:?}"
+    );
 
     let again =
         onevcs::retire(&providers, &request(onevcs::RetireMode::Discard, false)).expect("a re-run");

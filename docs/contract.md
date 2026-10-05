@@ -3400,8 +3400,9 @@ classification, so a reader tells a discard from a reclaim by the mode. `status`
 it back as `retired` with `class: "keep"` and `mode: "discard"`, and a discarded branch
 is never answered as landed. `retire-finished`, `sweep`'s `finished-branches` family and
 a session close never discard: `RetirePass` has no mode, and discarding is always a
-request naming one branch. No registry, session-record or status report version
-changes; an older `onevcs` reading a `branch-retired` record whose `mode` it has no
+request naming one branch. `REPORT_VERSION` is `11`, with its goldens, for a `retired`
+that may now read `keep` under `discard`; no registry or session-record version changes,
+and an older `onevcs` reading a `branch-retired` record whose `mode` it has no
 word for reads no retirement there, as it reads any record it would not have written.
 
 ### A finished-branches pass reuses the verdict it recorded while nothing it read has changed

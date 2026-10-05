@@ -337,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `10`, and it is deliberately not a migration boundary
+The report's schema version is `11`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -385,6 +385,11 @@ and `conclusion` rather than as whatever a reader made of the conclusion, and th
 rendering prints the state as each row's second column. And `publication.draft` may be
 `{"kind": "awaiting-checks"}`: the draft a publication opened while its required checks
 run, which carries no reason because nobody asked for it.
+Version 11 is a `retired` whose `class` may be `keep` and whose `mode` may be `discard`:
+a branch `onevcs reclaim --discard` deleted while it still held work nothing landed. No
+key moved, and the version moves anyway, because a reader that took any `retired` for a
+landing would read a discarded branch as landed, which it never is — only `retirable`
+reads as landed, and the human `retired:` line says `discarded, its work never landed`.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -400,8 +405,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v10.json` and
-`status-report-v10-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v11.json` and
+`status-report-v11-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
