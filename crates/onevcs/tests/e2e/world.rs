@@ -494,6 +494,15 @@ impl World {
         self.write_rows("gh-state/checks.rows", checks);
     }
 
+    /// What the substituted host's clock reads when it merges a change request: the
+    /// `mergedAt` it reports for every merge from now on, so a journey can tell the
+    /// time GitHub says a change landed from the moment anything observed it. Unset,
+    /// the host merges at the real time.
+    pub fn host_merge_clock(&self, at: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/merge-clock"), at).expect("a merge clock");
+    }
+
     /// What the substituted host's **classic** branch protection requires on the
     /// base, which is the second of the two ways GitHub protects a branch and the one
     /// a credential may be refused. Unset, the branch has no classic protection —

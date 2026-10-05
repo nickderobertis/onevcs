@@ -2254,7 +2254,11 @@ fn land_opened_change(
                 MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
             }
         };
-        let landed_at = Some(merge_time(host, change).unwrap_or_else(Moment::now));
+        // When the base received it: the host's own merge time, and where the host
+        // cannot say, the time it wrote the commit the base received. Never the moment
+        // this watch saw the merge, which is only when somebody happened to ask.
+        let landed_at = merge_time(host, change)
+            .or_else(|| landing_commit_time(&context.resolution.publication, &sha.0));
         let mut merged = object(json!({"url": change.url.to_string(), "sha": sha.0}));
         gate_run::landed(&mut merged, landed_at, &sha.0);
         stream.emit(EventKind::ChangeMerged, merged);
@@ -3594,6 +3598,17 @@ fn merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> Option<Moment> {
         .ok()
         .flatten()
         .and_then(|spelled| Moment::reported(&spelled))
+}
+
+/// When the host wrote `commit`, the commit a merge it performed landed at, as the
+/// publication checkout records it — fetched first where the checkout does not hold
+/// it yet, which right after a host's merge it usually does not. `None` where neither
+/// read answers, which the record carries as a landing nobody can time.
+fn landing_commit_time(publication: &Path, commit: &str) -> Option<Moment> {
+    gate_run::committed(publication, commit).or_else(|| {
+        git::fetch(publication, "origin").ok()?;
+        gate_run::committed(publication, commit)
+    })
 }
 
 /// Record one publishing push, and what it wrote.

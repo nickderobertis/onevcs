@@ -4235,10 +4235,11 @@ anyway and never off a second gate or check run:
 reconciles it. `landing` is the commit the base received the change at (the value
 `sha` already carries), and `landed_at` is when the base received it, RFC3339 at
 millisecond precision: for a `local-direct` squash, the moment the push that put it
-there returned; for a merge the host performed, the time the host reports. **A late
-merge records the host's merge time, never the time it was reconciled** — and where the
-host cannot say, the landing commit's own committer time, which the host wrote when it
-merged. `null` only where neither can be read.
+there returned; for a merge the host performed, the time the host reports, whether the
+publication's watch saw it or a later read reconciled it. **A late merge records the
+host's merge time, never the time it was reconciled**, and a watched one never the time
+it was seen — where the host cannot say, the landing commit's own committer time, which
+the host wrote when it merged. `null` only where neither can be read.
 
 Two additive, defaulted fields carry what the records need from the host:
 

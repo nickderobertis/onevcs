@@ -208,6 +208,64 @@ fn a_host_that_leaves_an_automated_change_open_is_reported_as_leaving_it_open() 
 }
 
 #[test]
+fn a_landing_the_host_performed_is_timed_by_the_host_and_never_by_the_provider() {
+    // A merge this host performed long before anybody published against it, as a
+    // seeded scenario says: the record carries the host's time, which is nowhere near
+    // the moment this provider saw it. A host that cannot say when leaves the landing
+    // untimed — there is no landing commit in this world to read a time from — rather
+    // than timed at the moment it was seen.
+    for (merge_time, landed_at) in [
+        (
+            Some("2020-01-02T03:04:05Z"),
+            serde_json::json!("2020-01-02T03:04:05.000Z"),
+        ),
+        (None, serde_json::Value::Null),
+    ] {
+        let home = Home::new();
+        let mut state = one_repository();
+        state.policy = Some(MergePolicy::ChangeDirect);
+        let vcs = MemoryVcs::seeded(state);
+        let id = onevcs::ChangeId("1".to_owned());
+        let sha = onevcs::Sha("0123456789abcdef0123456789abcdef01234567".to_owned());
+        let host = MemoryHost::seeded(HostState {
+            merges: [(id.clone(), onevcs::MergeOutcome::Merged(sha.clone()))].into(),
+            merge_times: merge_time
+                .map(|at| [(id.clone(), at.to_owned())].into())
+                .unwrap_or_default(),
+            ..HostState::default()
+        });
+        let session = open(&vcs, "feature/merged-earlier");
+
+        let published = vcs
+            .publish(&session.token, &PublishRequest::default(), &host)
+            .expect("the publication runs");
+
+        assert!(
+            matches!(&published.outcome, PublishOutcome::Merged(merged) if *merged == sha),
+            "{published:?}"
+        );
+        let events = home.events(&session.token.0);
+        let landings: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event["kind"].as_str(),
+                    Some("change-merged" | "merge-completed")
+                )
+            })
+            .collect();
+        assert_eq!(landings.len(), 2, "{events:?}");
+        for landed in landings {
+            assert_eq!(landed["payload"]["landing"], sha.0, "{landed}");
+            assert_eq!(
+                landed["payload"]["landed_at"], landed_at,
+                "{merge_time:?}: {landed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_local_direct_publication_records_the_landing_and_reaches_no_host() {
     let home = Home::new();
     let mut state = one_repository();

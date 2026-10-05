@@ -831,13 +831,14 @@ fn publish_as_change(
     Ok(match host.merge(&change, policy)? {
         MergeOutcome::Merged(sha) => {
             // When the host says the base received it, as `onevcs`'s own record of a
-            // landing carries it — and now, where the host cannot say.
+            // landing carries it. Where the host cannot say there is no landing commit
+            // in this world to read a time from either, so the record says nobody can
+            // time it rather than claim the moment this provider saw the merge.
             let landed_at = host
                 .merge_time(&change)
                 .ok()
                 .flatten()
-                .and_then(|spelled| events::moment(&spelled))
-                .unwrap_or_else(events::timestamp);
+                .and_then(|spelled| events::moment(&spelled));
             emissions.push(publishing.emission(
                 EventKind::ChangeMerged,
                 json!({
