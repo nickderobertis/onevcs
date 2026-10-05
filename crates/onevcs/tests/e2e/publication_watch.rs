@@ -245,6 +245,40 @@ fn assert_cancelled_and_kept(
         Lifecycle::Open,
         "the session is left to publish again"
     );
+    // A watch a cancellation ended completed no gate run, so it records none.
+    assert!(
+        required_checks_runs(world, session).is_empty(),
+        "a cancelled watch is no gate run: {:?}",
+        world.events_of(&session.token.0, "gate-run")
+    );
+}
+
+/// The `required-checks` gate runs a session's stream holds, as `(attempt, verdict)`.
+fn required_checks_runs(world: &World, session: &Session) -> Vec<(u64, String)> {
+    world
+        .events_of(&session.token.0, "gate-run")
+        .iter()
+        .filter(|run| run["payload"]["gate"] == "required-checks")
+        .map(|run| {
+            (
+                run["payload"]["attempt"].as_u64().expect("an attempt"),
+                run["payload"]["verdict"]
+                    .as_str()
+                    .expect("a verdict")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The highest attempt any gate run on a session's stream carries, or `0`.
+fn highest_attempt(world: &World, session: &Session) -> u64 {
+    world
+        .events_of(&session.token.0, "gate-run")
+        .iter()
+        .filter_map(|run| run["payload"]["attempt"].as_u64())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Publish the session again, after one more commit, once the host's checks go green:
@@ -272,12 +306,19 @@ fn continues(world: &World, origin: &Path, session: &Session, change: u32) {
         world.host_checks_after_ready(&[green()]);
     }
 
+    let attempted = highest_attempt(world, session);
     let again = onevcs::publish(
         &Providers::real(),
         &session.token,
         &PublishRequest::default(),
     )
     .expect("the session publishes again");
+    // The continuation's watch is its own attempt: the next number after whatever the
+    // cancelled publication's gates recorded, which for a cancelled watch is nothing.
+    assert_eq!(
+        required_checks_runs(world, session),
+        vec![(attempted + 1, "passed".to_owned())]
+    );
     assert!(
         matches!(again.outcome, PublishOutcome::Merged(_)),
         "the continuation lands: {again:?}"
@@ -389,6 +430,12 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
             .expect("the record reads")
             .lifecycle,
         Lifecycle::Open
+    );
+    // The checks had settled green before the base moved, so that watch was one
+    // completed gate run; the conflict ended the wait for the merge, which is none.
+    assert_eq!(
+        required_checks_runs(&world, &session),
+        vec![(1, "passed".to_owned())]
     );
 }
 
@@ -750,12 +797,19 @@ fn a_publication_cancelled_before_its_push_pushes_nothing() {
     );
 
     // And the session publishes as it would have, onto the same branch.
+    let attempted = highest_attempt(&world, &session);
     let again = onevcs::publish(
         &Providers::real(),
         &session.token,
         &PublishRequest::default(),
     )
     .expect("the session publishes again");
+    // A publication cancelled before its push ran no gate, so it consumed no attempt:
+    // this one's watch is the session's first.
+    assert_eq!(
+        required_checks_runs(&world, &session),
+        vec![(attempted + 1, "passed".to_owned())]
+    );
     assert!(
         matches!(again.outcome, PublishOutcome::Merged(_)),
         "{again:?}"

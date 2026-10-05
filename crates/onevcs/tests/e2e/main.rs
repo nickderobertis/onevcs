@@ -80,6 +80,9 @@ mod fetch_turns;
 // `drafts.rs` is. Its own header carries the rest.
 #[cfg(target_os = "linux")]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
+// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice.
 mod gate_runs;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.

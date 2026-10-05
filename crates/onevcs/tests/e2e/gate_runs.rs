@@ -742,6 +742,34 @@ fn each_way_a_watch_ends_is_the_verdict_its_gate_run_records() {
 }
 
 #[test]
+fn a_watch_the_host_could_not_be_read_for_records_no_gate_run() {
+    // A host that cannot say what the checks are ends the watch as a refusal, never
+    // as a verdict: nothing completed, so nothing claims a gate ran.
+    let (world, session, path) = watching(
+        DIRECT_READY,
+        "20",
+        vec![check("gate", true, Some("success"), None, None)],
+    );
+    let mut state = FileHost::create(&path)
+        .and_then(|host| host.state())
+        .expect("the seeded host");
+    state.check_sources = Some(std::collections::BTreeSet::new());
+    let host = FileHost::seeded(&path, state).expect("a host no check source answers for");
+
+    let published = publish(&host, &session);
+
+    assert!(
+        matches!(
+            &published.outcome,
+            PublishOutcome::Failed { kind: FailureKind::PushedUnverified, reason, .. }
+                if reason.contains("no check source")
+        ),
+        "{published:?}"
+    );
+    assert!(world.events_of(&session.token.0, "gate-run").is_empty());
+}
+
+#[test]
 fn a_session_that_publishes_twice_numbers_each_watch_as_its_own_attempt() {
     let (world, session, path) = watching(
         DIRECT_READY,
