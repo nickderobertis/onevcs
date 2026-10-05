@@ -141,6 +141,22 @@ fn an_automated_publication_asks_the_host_to_land_it_and_reports_what_it_did() {
     );
     assert_eq!(events[5]["payload"]["sha"], sha.0);
     assert_eq!(events[6]["payload"]["identity"], identity().origin);
+    // Each record of the landing says at which commit, and when the host says the base
+    // received it — the time it recorded when it merged.
+    let merged_at = host
+        .state()
+        .merge_times
+        .get(&onevcs::ChangeId("1".to_owned()))
+        .cloned()
+        .expect("the host timed the merge it performed");
+    for landed in &events[5..=6] {
+        assert_eq!(landed["payload"]["landing"], sha.0, "{landed}");
+        assert_eq!(
+            landed["payload"]["landed_at"],
+            merged_at.as_str(),
+            "{landed}"
+        );
+    }
 
     // A host that holds the change instead of landing it says so, and the outcome
     // is the queue rather than a merge nobody performed. A ready change — the
@@ -223,6 +239,18 @@ fn a_local_direct_publication_records_the_landing_and_reaches_no_host() {
         "the completion is the decision it made; the squash and push are not claimed"
     );
     assert_eq!(events[1]["payload"]["base"], "main");
+    let PublishOutcome::Merged(sha) = &published.outcome else {
+        unreachable!("matched above")
+    };
+    assert_eq!(events[1]["payload"]["landing"], sha.0);
+    let landed_at = events[1]["payload"]["landed_at"]
+        .as_str()
+        .expect("the landing says when");
+    assert!(
+        landed_at.len() == "2026-10-05T12:00:00.000Z".len()
+            && landed_at <= events[1]["ts"].as_str().expect("a stamp"),
+        "{landed_at} is a moment no later than the record of it"
+    );
 }
 
 #[test]

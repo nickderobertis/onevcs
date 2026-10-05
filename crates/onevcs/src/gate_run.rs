@@ -79,7 +79,7 @@ impl Ruling {
 pub(crate) struct Moment(OffsetDateTime);
 
 impl Moment {
-    /// Now.
+    /// The present moment, already at the precision it will be spelled in.
     pub(crate) fn now() -> Self {
         Self::at(OffsetDateTime::now_utc())
     }

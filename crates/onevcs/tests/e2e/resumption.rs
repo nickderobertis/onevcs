@@ -266,6 +266,50 @@ fn a_verified_change_whose_red_check_turns_green_is_resumed_and_merged() {
 }
 
 #[test]
+fn a_resumed_publication_records_its_watch_as_the_next_attempt_and_no_local_gate() {
+    // The first publication made two gate runs of one attempt: the push that ran the
+    // hook, and the watch that went red. The resumed one runs no hook, so its watch is
+    // the only gate it records — as the next attempt, on the same branch's stream.
+    let hosted = verified_and_red();
+    hosted.world.host_checks(&[required("success")]);
+    publish(&hosted)
+        .success()
+        .stdout(predicate::str::contains("merged"));
+
+    let runs: Vec<(String, String, u64, String)> = hosted
+        .world
+        .events_of(STREAM, "gate-run")
+        .iter()
+        .map(|run| {
+            let payload = &run["payload"];
+            (
+                run["phase"].as_str().expect("a phase").to_owned(),
+                payload["gate"].as_str().expect("a gate").to_owned(),
+                payload["attempt"].as_u64().expect("an attempt"),
+                payload["verdict"].as_str().expect("a verdict").to_owned(),
+            )
+        })
+        .collect();
+    let owned = |phase: &str, gate: &str, attempt: u64, verdict: &str| {
+        (
+            phase.to_owned(),
+            gate.to_owned(),
+            attempt,
+            verdict.to_owned(),
+        )
+    };
+    assert_eq!(
+        runs,
+        vec![
+            owned("integrate", "pre-push", 1, "passed"),
+            owned("review", "required-checks", 1, "failed"),
+            owned("review", "required-checks", 2, "passed"),
+        ]
+    );
+    assert_eq!(hook_runs(&hosted), 1, "the resumed publication ran no hook");
+}
+
+#[test]
 fn a_red_check_on_resume_ends_the_publication_as_a_red_check_does() {
     let hosted = verified_and_red();
     hosted.world.host_checks(&[required("timed_out")]);

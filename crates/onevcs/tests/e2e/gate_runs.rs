@@ -26,6 +26,10 @@
 
 #![cfg(target_os = "linux")]
 
+// llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] every journey of this
+// suite lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
+// fixes: a second Nx project would run the same `--workspace` commands twice. The sleeps
+// here are the premise — a gate that spans seconds — and the whole module takes about six.
 // llmlint: ignore-file[e2e_not_mocked] three stand-ins, each at the one boundary its
 // journey cannot cross offline, and none in front of the code under test: a `git` on
 // `PATH` that stamps a push and then runs the real git with the same arguments; the host
@@ -177,8 +181,6 @@ fn only_gate_run(world: &World, token: &str) -> Value {
     assert_eq!(runs.len(), 1, "one gate run: {runs:?}");
     runs.into_iter().next().expect("checked above")
 }
-
-// --- The local gate: a `pre-push` hook, measured against the push that ran it. ---
 
 /// A `git` ahead of the real one on `PATH`, which stamps when a push starts and when
 /// it returns and passes every invocation to the real git unchanged.
@@ -431,8 +433,6 @@ fn a_local_publication_with_no_pre_push_hook_records_no_gate_run() {
     assert_eq!(completed.len(), 1);
     assert!(completed[0]["payload"]["landed_at"].is_string());
 }
-
-// --- A change request's required checks, watched until they settle. ---
 
 /// The change request a publication opens first: the testing host numbers from one.
 fn first() -> ChangeId {
@@ -836,10 +836,12 @@ fn a_session_that_publishes_twice_numbers_each_watch_as_its_own_attempt() {
     assert!(second_started <= settled_at - 1000 && second_ended >= settled_at);
 }
 
-// --- A merge the host performed after the publication stopped watching. ---
-
-#[test]
-fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
+/// A `change-auto` change whose watch ran out, which the substituted host then merges
+/// on its own clock and nobody asks about for two seconds — until a `status` read
+/// reconciles it. `host_says_when` is whether the host can say when it merged.
+/// Answers the reconciled `change-merged` payload, when the read began, and the
+/// landing commit.
+fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
     let hosted = Hosted::new(AUTOMATED_READY);
     let world = &hosted.world;
     world.host_checks(&[world::Check {
@@ -861,8 +863,7 @@ fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
     assert_eq!(unsettled["payload"]["verdict"], "no-verdict");
     assert!(world.events_of(&token, "change-merged").is_empty());
 
-    // The host lands it on its own clock — the next time anybody asks it anything —
-    // and nobody here asks again until well after.
+    // The host lands it the next time anybody asks it anything.
     world.host_checks(&[world::Check {
         name: "gate",
         status: "completed",
@@ -875,11 +876,16 @@ fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
         .output()
         .expect("the substituted host answers");
     assert!(asked.status.success(), "{asked:?}");
-    let merged_at = std::fs::read_to_string(world.path("gh-state/pr-1.env"))
-        .expect("the host's record of the change")
-        .lines()
-        .find_map(|line| line.strip_prefix("PR_MERGED_AT=").map(str::to_owned))
-        .expect("the host recorded when it merged");
+    if !host_says_when {
+        let record = world.path("gh-state/pr-1.env");
+        let kept: String = std::fs::read_to_string(&record)
+            .expect("the host's record of the change")
+            .lines()
+            .filter(|line| !line.starts_with("PR_MERGED_AT="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&record, kept).expect("a host that cannot say when it merged");
+    }
     std::thread::sleep(Duration::from_millis(2100));
 
     let reconciled = now_ms();
@@ -891,10 +897,21 @@ fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
 
     let merged = world.events_of(&token, "change-merged");
     assert_eq!(merged.len(), 1, "{merged:?}");
-    let payload = &merged[0]["payload"];
+    let payload = merged[0]["payload"].clone();
     let landing = world.git(&hosted.origin, &["rev-parse", "main"]);
     assert_eq!(payload["landing"], landing.as_str(), "{payload}");
     assert_eq!(payload["sha"], payload["landing"]);
+    (hosted, payload, reconciled, landing)
+}
+
+#[test]
+fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
+    let (hosted, payload, reconciled, _) = merged_late(true);
+    let merged_at = std::fs::read_to_string(hosted.world.path("gh-state/pr-1.env"))
+        .expect("the host's record of the change")
+        .lines()
+        .find_map(|line| line.strip_prefix("PR_MERGED_AT=").map(str::to_owned))
+        .expect("the host recorded when it merged");
     let landed_at = payload["landed_at"].as_str().expect("a landing time");
     assert_eq!(
         epoch_ms(landed_at),
@@ -905,4 +922,119 @@ fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
         epoch_ms(landed_at) <= reconciled - 1500,
         "{landed_at} is before the read that reconciled it"
     );
+}
+
+#[test]
+fn a_late_merge_whose_host_cannot_say_when_records_its_landing_commits_time() {
+    // The host merged it and will not say when: the commit it wrote into the base is
+    // the record of that moment, and the read that found it is still not.
+    let (hosted, payload, reconciled, landing) = merged_late(false);
+    let committed: i64 = hosted
+        .world
+        .git(&hosted.origin, &["show", "-s", "--format=%ct", &landing])
+        .trim()
+        .parse()
+        .expect("a committer time");
+    let landed_at = payload["landed_at"].as_str().expect("a landing time");
+    assert_eq!(epoch_ms(landed_at), committed * 1000, "{payload}");
+    assert!(
+        epoch_ms(landed_at) <= reconciled - 1500,
+        "{landed_at} is before the read that reconciled it"
+    );
+}
+
+#[test]
+fn a_watched_merge_whose_host_cannot_say_when_records_the_moment_it_was_seen() {
+    // A host that reports the merge and not its time: the publication that saw it land
+    // is the witness, so the landing is recorded at that moment.
+    let (world, session, path) = watching(
+        DIRECT_READY,
+        "20",
+        vec![check(
+            "gate",
+            true,
+            Some("success"),
+            Some("2026-10-05T12:00:00Z"),
+            Some("2026-10-05T12:00:30Z"),
+        )],
+    );
+    let mut state = FileHost::create(&path)
+        .and_then(|host| host.state())
+        .expect("the seeded host");
+    let sha = onevcs::Sha("0123456789abcdef0123456789abcdef01234567".to_owned());
+    state
+        .merges
+        .insert(first(), MergeOutcome::Merged(sha.clone()));
+    let host = FileHost::seeded(&path, state).expect("a host that merges without a time");
+
+    let before = now_ms();
+    let published = publish(&host, &session);
+    let after = now_ms();
+    assert!(
+        matches!(&published.outcome, PublishOutcome::Merged(merged) if *merged == sha),
+        "{published:?}"
+    );
+    for kind in ["change-merged", "merge-completed"] {
+        let landed = world.events_of(&session.token.0, kind);
+        assert_eq!(landed.len(), 1, "{kind}: {landed:?}");
+        assert_eq!(landed[0]["payload"]["landing"], sha.0.as_str(), "{kind}");
+        let at = epoch_ms(
+            landed[0]["payload"]["landed_at"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{kind} says when: {landed:?}")),
+        );
+        assert!(
+            before <= at && at <= after,
+            "{kind} landed while it was watched"
+        );
+    }
+}
+
+#[test]
+fn a_merge_train_records_the_hook_its_push_ran_as_one_attempt_per_train() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let checkout = fixture.checkout.clone();
+    world.install_pre_push(&checkout, "sleep 1");
+    let train = |branch: &str, subject: &str| {
+        world.git(&checkout, &["checkout", "-q", "-b", branch, "main"]);
+        world.commit_file(
+            &checkout,
+            &format!("{branch}.txt").replace('/', "-"),
+            "one\n",
+            subject,
+        );
+        world.git(&checkout, &["checkout", "-q", "main"]);
+        world
+            .onevcs()
+            .args(["integrate", branch, "--push"])
+            .current_dir(&checkout)
+            .output()
+            .expect("the binary runs")
+    };
+
+    let landed = train("claude/one", "feat: the first train");
+    assert!(landed.status.success(), "{landed:?}");
+    // The aggregate gate turns on the next train, which is refused.
+    world.install_pre_push(
+        &checkout,
+        "sleep 1; echo 'the aggregate gate says no' >&2; exit 1",
+    );
+    let refused = train("claude/two", "feat: the second train");
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+
+    let runs = world.events_of("integrate-project", "gate-run");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    for (run, (attempt, verdict)) in runs.iter().zip([(1, "passed"), (2, "failed")]) {
+        assert_eq!(run["phase"], "integrate", "{run}");
+        let payload = &run["payload"];
+        assert_as_contracted(payload);
+        assert_eq!(payload["gate"], "pre-push");
+        assert_eq!(payload["attempt"], attempt);
+        assert_eq!(payload["verdict"], verdict);
+        assert!(
+            payload["seconds"].as_f64().expect("a number") >= 1.0,
+            "{payload}"
+        );
+    }
 }
