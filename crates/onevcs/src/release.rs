@@ -1011,11 +1011,9 @@ pub(crate) fn reconcile_landing(
     let Some(token) = change_stream else {
         return;
     };
-    // When the base received it: the host's own answer where it gave one, and
-    // otherwise the time the landing commit was written — which the fast-forward
-    // above has just brought into the publication checkout. Never the time of this
-    // read, which is only when somebody happened to ask.
-    let landed_at = landed_at.or_else(|| crate::gate_run::committed(&publication, commit));
+    // When the base received it is the host's own answer, recorded as unknown where
+    // it gave none. Never the time of this read, which is only when somebody
+    // happened to ask.
     let mut merged = json_object(json!({"url": change.to_string(), "sha": commit}));
     crate::gate_run::landed(&mut merged, landed_at, commit);
     match Stream::open(token) {

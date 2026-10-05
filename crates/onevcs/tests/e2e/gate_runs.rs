@@ -870,12 +870,23 @@ fn a_session_that_publishes_twice_numbers_each_watch_as_its_own_attempt() {
     assert!(second_started <= settled_at - 1000 && second_ended >= settled_at);
 }
 
+/// What the host answers when asked when a change request merged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HostClock {
+    /// Its own merge time, reading [`HOST_MERGED_AT`].
+    Says,
+    /// No time at all, as a host that never recorded one answers.
+    Silent,
+    /// A refusal of the read itself.
+    Refuses,
+}
+
 /// A `change-auto` change whose watch ran out, which the substituted host then merges
 /// on its own clock and nobody asks about for two seconds — until a `status` read
-/// reconciles it. `host_says_when` is whether the host can say when it merged.
+/// reconciles it, while the host answers the question of when as `clock` says.
 /// Answers the reconciled `change-merged` payload, when the read began, and the
 /// landing commit.
-fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
+fn merged_late(clock: HostClock) -> (Hosted, Value, i64, String) {
     let hosted = Hosted::new(AUTOMATED_READY);
     let world = &hosted.world;
     world.host_checks(&[world::Check {
@@ -899,7 +910,7 @@ fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
 
     // The host lands it the next time anybody asks it anything — on its own clock,
     // which reads a moment nothing in this journey observed, where it can say at all.
-    if host_says_when {
+    if clock == HostClock::Says {
         world.host_merge_clock(HOST_MERGED_AT);
     }
     world.host_checks(&[world::Check {
@@ -914,7 +925,7 @@ fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
         .output()
         .expect("the substituted host answers");
     assert!(asked.status.success(), "{asked:?}");
-    if !host_says_when {
+    if clock == HostClock::Silent {
         let record = world.path("gh-state/pr-1.env");
         let kept: String = std::fs::read_to_string(&record)
             .expect("the host's record of the change")
@@ -924,6 +935,7 @@ fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
             .collect();
         std::fs::write(&record, kept).expect("a host that cannot say when it merged");
     }
+    world.refuse_merge_times(clock == HostClock::Refuses);
     std::thread::sleep(Duration::from_millis(2100));
 
     let reconciled = now_ms();
@@ -944,7 +956,7 @@ fn merged_late(host_says_when: bool) -> (Hosted, Value, i64, String) {
 
 #[test]
 fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
-    let (hosted, payload, reconciled, _) = merged_late(true);
+    let (hosted, payload, reconciled, _) = merged_late(HostClock::Says);
     let merged_at = std::fs::read_to_string(hosted.world.path("gh-state/pr-1.env"))
         .expect("the host's record of the change")
         .lines()
@@ -964,22 +976,15 @@ fn a_late_merge_reconciled_on_a_later_read_records_the_hosts_merge_time() {
 }
 
 #[test]
-fn a_late_merge_whose_host_cannot_say_when_records_its_landing_commits_time() {
-    // The host merged it and will not say when: the commit it wrote into the base is
-    // the record of that moment, and the read that found it is still not.
-    let (hosted, payload, reconciled, landing) = merged_late(false);
-    let committed: i64 = hosted
-        .world
-        .git(&hosted.origin, &["show", "-s", "--format=%ct", &landing])
-        .trim()
-        .parse()
-        .expect("a committer time");
-    let landed_at = payload["landed_at"].as_str().expect("a landing time");
-    assert_eq!(epoch_ms(landed_at), committed * 1000, "{payload}");
-    assert!(
-        epoch_ms(landed_at) <= reconciled - 1500,
-        "{landed_at} is before the read that reconciled it"
-    );
+fn a_late_merge_whose_host_cannot_say_when_records_no_landing_time() {
+    // The host merged it and will not say when — whether it has no answer or refuses
+    // the read. The landing is still recorded at its commit, and its time is unknown:
+    // neither the read that found it nor any other time stands in for the host's.
+    for clock in [HostClock::Silent, HostClock::Refuses] {
+        let (_hosted, payload, _, landing) = merged_late(clock);
+        assert_eq!(payload["landing"], landing.as_str(), "{clock:?}: {payload}");
+        assert_eq!(payload["landed_at"], Value::Null, "{clock:?}: {payload}");
+    }
 }
 
 #[test]
@@ -1020,10 +1025,89 @@ fn a_merge_the_host_performed_while_watched_records_the_hosts_merge_time() {
 }
 
 #[test]
-fn a_watched_merge_whose_host_cannot_say_when_records_its_landing_commits_time() {
-    // A host that reports the merge and not its time. The commit it wrote into the
-    // base is the record of that moment — written here years before the publication
-    // that sees it — and the moment the watch saw the merge is still not.
+fn a_watched_merge_whose_host_refuses_its_time_records_none_and_the_next_records_the_hosts() {
+    // Both ways a publication sees the host land its change, while the host refuses to
+    // say when it merged: the publication still lands and records the landing at the
+    // base's commit, with its time unknown rather than the moment it was seen. Once the
+    // host answers again, the next landing carries the host's time.
+    for (policy, branch) in [
+        (AUTOMATED_READY, "feature/armed"),
+        (crate::host::DIRECT, "feature/asked"),
+    ] {
+        let hosted = Hosted::new(policy);
+        let world = &hosted.world;
+        world.host_checks(&[world::Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        world.host_merge_clock(HOST_MERGED_AT);
+        world.refuse_merge_times(true);
+        let refused = hosted.change(branch, "feat: land while the host keeps its clock");
+
+        world
+            .onevcs()
+            .args(["publish", &refused])
+            .assert()
+            .success();
+
+        let landing = world.git(&hosted.origin, &["rev-parse", "main"]);
+        for kind in ["change-merged", "merge-completed"] {
+            let landed = world.events_of(&refused, kind);
+            assert_eq!(landed.len(), 1, "{policy} {kind}: {landed:?}");
+            let payload = &landed[0]["payload"];
+            assert_eq!(payload["landing"], landing.as_str(), "{policy} {kind}");
+            assert_eq!(
+                payload["landed_at"],
+                Value::Null,
+                "{policy} {kind}: no time stands in for the host's"
+            );
+        }
+
+        world.refuse_merge_times(false);
+        // A second change on the same host, carrying work the first did not land.
+        let opened = world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "hosted",
+                "--branch",
+                &format!("{branch}-again"),
+            ])
+            .assert()
+            .success();
+        let stdout = opened.get_output().stdout.clone();
+        world.commit_file(
+            &world::worktree_of(&stdout),
+            "two.txt",
+            "two\n",
+            "feat: land once the host answers",
+        );
+        let answered = world::token_of(&stdout);
+        world
+            .onevcs()
+            .args(["publish", &answered])
+            .assert()
+            .success();
+        let landed = world.events_of(&answered, "merge-completed");
+        assert_eq!(landed.len(), 1, "{policy}: {landed:?}");
+        assert_eq!(
+            landed[0]["payload"]["landing"],
+            world.git(&hosted.origin, &["rev-parse", "main"]).as_str()
+        );
+        assert_eq!(
+            landed[0]["payload"]["landed_at"], "2020-01-02T03:04:05.000Z",
+            "{policy}: the host's time once it answers"
+        );
+    }
+}
+
+#[test]
+fn a_watched_merge_whose_host_has_no_time_records_none() {
+    // A host that reports the merge and has no time for it: the landing is recorded,
+    // and its time is unknown rather than the moment the watch saw it.
     let (world, session, path) = watching(
         DIRECT_READY,
         "20",
@@ -1035,21 +1119,10 @@ fn a_watched_merge_whose_host_cannot_say_when_records_its_landing_commits_time()
             Some("2026-10-05T12:00:30Z"),
         )],
     );
-    let origin = world.path("hosted.git");
-    let merging = world.clone_of(&origin, "host-merge");
-    std::fs::write(merging.join("merged.txt"), "merged\n").expect("the merged work");
-    world.git(&merging, &["add", "-A"]);
-    world.git_env(
-        &merging,
-        &[("GIT_COMMITTER_DATE", HOST_MERGED_AT)],
-        &["commit", "-q", "-m", "feat: the work (#1)"],
-    );
-    world.git(&merging, &["push", "-q", "origin", "main"]);
-    let landing = world.git(&origin, &["rev-parse", "main"]);
     let mut state = FileHost::create(&path)
         .and_then(|host| host.state())
         .expect("the seeded host");
-    let sha = onevcs::Sha(landing.clone());
+    let sha = onevcs::Sha("0123456789abcdef0123456789abcdef01234567".to_owned());
     state
         .merges
         .insert(first(), MergeOutcome::Merged(sha.clone()));
@@ -1063,11 +1136,8 @@ fn a_watched_merge_whose_host_cannot_say_when_records_its_landing_commits_time()
     for kind in ["change-merged", "merge-completed"] {
         let landed = world.events_of(&session.token.0, kind);
         assert_eq!(landed.len(), 1, "{kind}: {landed:?}");
-        assert_eq!(landed[0]["payload"]["landing"], landing.as_str(), "{kind}");
-        assert_eq!(
-            landed[0]["payload"]["landed_at"], "2020-01-02T03:04:05.000Z",
-            "{kind}: the landing commit's own time, not the moment it was seen"
-        );
+        assert_eq!(landed[0]["payload"]["landing"], sha.0.as_str(), "{kind}");
+        assert_eq!(landed[0]["payload"]["landed_at"], Value::Null, "{kind}");
     }
 }
 

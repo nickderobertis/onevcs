@@ -763,6 +763,17 @@ impl World {
             .expect("a host that says yes and does nothing");
     }
 
+    /// Make the substituted host refuse to say when a change request merged, as a
+    /// credential GitHub will not answer `mergedAt` for is refused; `allow` lifts it.
+    pub fn refuse_merge_times(&self, refuse: bool) {
+        let path = self.path("gh-state/refuse-merge-time");
+        if refuse {
+            std::fs::write(path, "").expect("a host that will not say when it merged");
+        } else if path.exists() {
+            std::fs::remove_file(path).expect("a host that says when it merged again");
+        }
+    }
+
     /// Make the substituted host unable to hand over a check's log.
     pub fn refuse_check_logs(&self) {
         std::fs::write(self.path("gh-state/no-logs"), "").expect("a host that keeps its logs");

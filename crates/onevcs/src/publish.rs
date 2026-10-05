@@ -2254,11 +2254,10 @@ fn land_opened_change(
                 MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
             }
         };
-        // When the base received it: the host's own merge time, and where the host
-        // cannot say, the time it wrote the commit the base received. Never the moment
-        // this watch saw the merge, which is only when somebody happened to ask.
-        let landed_at = merge_time(host, change)
-            .or_else(|| landing_commit_time(&context.resolution.publication, &sha.0));
+        // When the base received it: the host's own merge time, and nothing where the
+        // host cannot say. Never the moment this watch saw the merge, which is only
+        // when somebody happened to ask, and never a time read from anywhere else.
+        let landed_at = merge_time(host, change);
         let mut merged = object(json!({"url": change.url.to_string(), "sha": sha.0}));
         gate_run::landed(&mut merged, landed_at, &sha.0);
         stream.emit(EventKind::ChangeMerged, merged);
@@ -3600,17 +3599,6 @@ fn merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> Option<Moment> {
         .and_then(|spelled| Moment::reported(&spelled))
 }
 
-/// When the host wrote `commit`, the commit a merge it performed landed at, as the
-/// publication checkout records it — fetched first where the checkout does not hold
-/// it yet, which right after a host's merge it usually does not. `None` where neither
-/// read answers, which the record carries as a landing nobody can time.
-fn landing_commit_time(publication: &Path, commit: &str) -> Option<Moment> {
-    gate_run::committed(publication, commit).or_else(|| {
-        git::fetch(publication, "origin").ok()?;
-        gate_run::committed(publication, commit)
-    })
-}
-
 /// Record one publishing push, and what it wrote.
 ///
 /// **Unconditionally**, which is the point of this function. The publishing push is
@@ -3951,9 +3939,8 @@ pub(crate) fn late_merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> 
 /// landing where it was recorded, and `None` where it could not be, for the reason
 /// [`warn_unreconciled`] gives.
 ///
-/// `landed_at` is when the host says it merged. Where the host could not say, the
-/// landing commit's own committer time is what the record carries — the moment the
-/// host wrote the commit the base received — and never the time of this read.
+/// `landed_at` is when the host says it merged, and `None` where the host could not
+/// say — never the time of this read, nor one read from anywhere but the host.
 pub(crate) fn record_late_merge(
     registry: &crate::registry::Registry,
     watched: &Watched<'_>,

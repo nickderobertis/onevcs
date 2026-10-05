@@ -186,7 +186,7 @@ pub trait RemoteHost {
     ///
     /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
     /// stays additive — and to the same refusal. A caller reads that refusal as a host
-    /// that cannot say, and falls back to what the base's own history records.
+    /// that cannot say, and records the landing's time as unknown.
     fn merge_time(&self, _cr: &ChangeRequest) -> Result<Option<String>> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::merge_time",

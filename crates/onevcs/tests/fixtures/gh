@@ -648,7 +648,12 @@ case "$subcommand" in
       printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
     fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
-    # Null until it merges, as GitHub answers it.
+    # Null until it merges, as GitHub answers it. A world may make the host refuse
+    # the read outright, which a caller cannot tell from a host that has no answer.
+    if wanted mergedAt && [ -f "$STATE/refuse-merge-time" ]; then
+      printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.mergedAt)\n' >&2
+      exit 1
+    fi
     if wanted mergedAt; then
       if [ -n "${PR_MERGED_AT:-}" ]; then
         printf '%s"mergedAt":"%s"' "$separator" "$PR_MERGED_AT"

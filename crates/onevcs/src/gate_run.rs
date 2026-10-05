@@ -195,9 +195,3 @@ pub(crate) fn landed(payload: &mut Map<String, Value>, at: Option<Moment>, landi
     );
     payload.insert("landing".to_owned(), Value::String(landing.to_owned()));
 }
-
-/// When a commit was committed, as git records it — the moment a host that merged a
-/// change on its own clock wrote the commit the base received it at.
-pub(crate) fn committed(cwd: &Path, commit: &str) -> Option<Moment> {
-    git::committer_date(cwd, commit).and_then(|date| Moment::reported(&date))
-}

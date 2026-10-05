@@ -4238,8 +4238,9 @@ millisecond precision: for a `local-direct` squash, the moment the push that put
 there returned; for a merge the host performed, the time the host reports, whether the
 publication's watch saw it or a later read reconciled it. **A late merge records the
 host's merge time, never the time it was reconciled**, and a watched one never the time
-it was seen — where the host cannot say, the landing commit's own committer time, which
-the host wrote when it merged. `null` only where neither can be read.
+it was seen. Where the host refuses the read or cannot say, `landed_at` is `null` — the
+landing's time is unknown, and no other time stands in for it — while `landing` is
+still set.
 
 Two additive, defaulted fields carry what the records need from the host:
 
