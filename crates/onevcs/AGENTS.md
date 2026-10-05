@@ -106,11 +106,13 @@ Every envelope carries the `phase` of a change's life its producer stamped it wi
 and the filter grammar matches it. Four things about that are easy to undo.
 
 - **The producer stamps it, and `push` is the reason there is a producer at all.**
-  `Phase::of` answers for sixteen kinds; a push's phase is a fact about the branch it
-  updated, so `record_push` takes one from its caller — `Phase::Development` for the
+  `Phase::of` answers for every kind but two; a push's phase is a fact about the branch
+  it updated, so `record_push` takes one from its caller — `Phase::Development` for the
   session's own branch, `Phase::Integrate` for the base a `local-direct` squash lands
   on and the base a merge train advanced. `Stream::emit_push` is the only way to emit
-  one.
+  one. A `gate-run`'s is its gate's (`gate_run::Gate::phase`: `pre-push` is integrate,
+  `required-checks` review), and `Stream::emit_gate_run` is the only way to emit one —
+  it also fixes the run's `attempt`, once per publication, off the stream itself.
 - **The field is additive inside `v: 1`, and stays additive.** An envelope written
   before it existed reads at the phase its kind decides (`Line::of` in `event.rs`,
   which every stream reader goes through), and a build that predates it reads one
