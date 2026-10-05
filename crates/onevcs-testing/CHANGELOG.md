@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.12.4...onevcs-testing-v0.13.0) - 2026-10-05
+
+### Added
+
+- *(events)* record each gate run and each landing time a publication makes ([#313](https://github.com/nickderobertis/onevcs/pull/313))
+
 ## [0.12.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.11.1...onevcs-testing-v0.12.0) - 2026-10-03
 
 ### Added
