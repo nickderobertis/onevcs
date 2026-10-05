@@ -283,7 +283,8 @@ pub fn full_host_state() -> HostState {
                 required: true,
                 head: Some(Sha("def456".to_owned())),
                 url: Url::parse("https://github.com/acme-corp/widgets/runs/7").ok(),
-                started_at: None,
+                started_at: Some("2026-10-05T11:58:00Z".to_owned()),
+                completed_at: Some("2026-10-05T11:59:30Z".to_owned()),
             },
             Check {
                 name: "coverage".to_owned(),
@@ -293,6 +294,7 @@ pub fn full_host_state() -> HostState {
                 head: None,
                 url: None,
                 started_at: None,
+                completed_at: None,
             },
         ],
     );
@@ -354,6 +356,7 @@ pub fn full_host_state() -> HostState {
                 head: None,
                 url: Url::parse("https://github.com/acme-corp/widgets/runs/8").ok(),
                 started_at: None,
+                completed_at: None,
             }],
         )]),
         // A host that could read its rulesets and not its classic protection.
@@ -382,6 +385,7 @@ pub fn full_host_state() -> HostState {
                 .collect(),
         ),
         merges,
+        merge_times: BTreeMap::from([(id, "2026-10-05T12:00:00.000Z".to_owned())]),
     }
 }
 
@@ -396,5 +400,6 @@ pub fn green_check(name: &str) -> Check {
         head: None,
         url: None,
         started_at: None,
+        completed_at: None,
     }
 }

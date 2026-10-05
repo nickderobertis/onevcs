@@ -138,6 +138,15 @@ fn reduce(value: &Value, root: &Path, token: &str) -> Value {
                 let scrubbed = match key.as_str() {
                     "ts" => Value::String("<ts>".to_owned()),
                     "elapsed" => Value::String("<elapsed>".to_owned()),
+                    // When a gate ran, how long it took, and when a base received a
+                    // change are clocks too — this run's, or the host's. That each is
+                    // there, and whether a host said one at all, is still compared.
+                    "started_at" | "ended_at" | "completed_at" | "landed_at"
+                        if field.is_string() =>
+                    {
+                        Value::String("<time>".to_owned())
+                    }
+                    "seconds" if field.is_number() => Value::String("<seconds>".to_owned()),
                     "artifacts" => anonymous(field),
                     _ => reduce(field, root, token),
                 };

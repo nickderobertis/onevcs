@@ -1213,10 +1213,10 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
-             branch-superseded branch-retired
+             branch-superseded branch-retired gate-run:pre-push
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
-             checks-settled
+             checks-settled gate-run:required-checks
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -4121,6 +4121,110 @@ the bytes they were, 0.40.1 answers every read as it does with the record moved 
 it publishes the same branch through to the merge without touching the record.
 
 Event kinds added: none.
+
+### Every gate run a publication makes is recorded, and every landing says when
+
+Part of upstream per-change telemetry (ai-orchestrator#1508). A change's cycle time is
+never one recorded number: a consumer aggregates it from recorded signals — dispatch,
+publication attempts, gate runs and their durations, waits, landing — and the gate runs
+and the landings are this crate's to record. The kind, its phase rule, its payload and
+the two landing fields below are read by `onepipeline`'s change telemetry, built
+against this shape; none of them is renamed here alone.
+
+**`gate-run` is emitted once per completed gate run of a publication attempt**, on the
+publishing session's own stream. It is measured off the run the publication makes
+anyway and never off a second gate or check run:
+
+- **`pre-push`** — the publishing push that executed the repository's own `pre-push`
+  hook. The run starts when that push starts and ends when it returns, so whatever git
+  and the remote spend around the hook is in it, and `checks` is `[]`. It is recorded
+  for every publishing push whose repository has an executable `pre-push` hook (git's
+  own hooks directory, `core.hooksPath` honoured): the `local-direct` squash onto the
+  base, the merge train's push of its advanced base, and a change-request
+  publication's push of its own branch. A push with no hook to run records none. An
+  accepted push is `passed` and a refused one `failed`, whoever refused it.
+- **`required-checks`** — a change request's required checks. The run starts when the
+  publication begins watching the change request's head and ends when the watch
+  settles: green (`passed`, or `passed-with-skipped` where a required check concluded
+  skipped — the words `checks-settled` already uses), a required check red
+  (`failed`), or the bound elapsing — with a check still running or one that ended
+  with no verdict — (`no-verdict`). `checks` lists every required check with its own
+  times and conclusion exactly as the host reported them, `null` where the host gave
+  none. A watch that ends any other way — cancelled, a conflict the host confirms, a
+  host that could not be read — completed no gate run and records none.
+
+**Its phase is the gate's, so the producer stamps it**, as it stamps a push's: a local
+`pre-push` gate is `integrate` and a change request's required checks are `review`.
+`Phase::of(EventKind::GateRun)` answers `None`, and the table above names both rows.
+
+```json
+{"gate": "required-checks",
+ "attempt": 2,
+ "started_at": "2026-10-05T12:00:00.000Z",
+ "ended_at": "2026-10-05T12:23:14.200Z",
+ "seconds": 1394.2,
+ "verdict": "passed",
+ "checks": [{"name": "ci / test", "required": true,
+             "started_at": "2026-10-05T12:00:41Z", "completed_at": "2026-10-05T12:23:02Z",
+             "conclusion": "success"}]}
+```
+
+- `gate` — `pre-push` or `required-checks`.
+- `attempt` — the 1-based publication attempt within the session, fixed once per
+  publication at its first gate run: one more than the highest `attempt` an earlier
+  `gate-run` on the same stream carries. A publication's `pre-push` run and its
+  required-checks run share one number, a resumed `publish-branch` watch is an attempt
+  of its own, and a publication that ended before any gate ran consumes none — what is
+  counted is gate runs per change, not invocations *(the manager's ruling on this
+  amendment)*.
+- `started_at` and `ended_at` — RFC3339, millisecond precision, UTC, the envelope's
+  own spelling of a moment.
+- `seconds` — `ended_at - started_at`, to the millisecond.
+- `verdict` — `passed`, `failed`, `no-verdict`, or `passed-with-skipped`.
+- `checks` — for `required-checks`, every required check as
+  `{name, required, started_at, completed_at, conclusion}`; the times and the
+  conclusion are the host's own words, unparsed. `[]` for `pre-push`.
+
+**Every event that records a landing gains `landed_at` and `landing`**: `merge-completed`,
+`change-merged`, and the `change-merged` a late merge is recorded as when a later read
+reconciles it. `landing` is the commit the base received the change at (the value
+`sha` already carries), and `landed_at` is when the base received it, RFC3339 at
+millisecond precision: for a `local-direct` squash, the moment the push that put it
+there returned; for a merge the host performed, the time the host reports. **A late
+merge records the host's merge time, never the time it was reconciled** — and where the
+host cannot say, the landing commit's own committer time, which the host wrote when it
+merged. `null` only where neither can be read.
+
+Two additive, defaulted fields carry what the records need from the host:
+
+```rust
+pub struct Check {                       // beside started_at:
+    pub completed_at: Option<String>,    // when the host says this run completed
+}
+pub trait RemoteHost {                   // beside the merge a watch asks about:
+    fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> { /* NotImplemented */ }
+}
+```
+
+`completed_at` is the host's own spelling — GitHub's rollup `completedAt`, an Actions
+job's `completed_at` — carried through verbatim and never compared or ordered, omitted
+when `None`, and a check an earlier build serialized still reads as one whose completion
+that build never recorded *(the manager's ruling on this amendment)*. `merge_time`
+answers GitHub's `mergedAt`, `None` while the change has not merged, and is defaulted to
+`NotImplemented` like every additive seam method; a caller reads that refusal as a host
+that cannot say.
+
+**The envelope keeps its shape and `v: 1`.** A reader that predates the kind skips the
+line as one of a kind it has no word for, and a reader that predates the two landing
+fields reads the payload it always read. The registry's schema version does not move.
+
+**The testing crate follows.** `onevcs-testing`'s host reports `completed_at` on a check
+it was seeded with one, and answers `merge_time` with the moment it recorded a merge
+(`HostState::merge_times`, which a journey may seed), so its state document is written
+at version 18; a version 17 document reads, its merges reading as ones whose time that
+build never recorded.
+
+Event kinds added: `gate-run`.
 
 ---
 

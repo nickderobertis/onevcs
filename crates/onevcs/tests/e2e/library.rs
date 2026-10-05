@@ -543,6 +543,7 @@ impl RemoteHost for Earlier {
                 head: None,
                 url: None,
                 started_at: None,
+                completed_at: None,
             }],
             sources: [CheckSource::StatusChecks].into_iter().collect(),
         })
@@ -603,6 +604,7 @@ fn a_host_that_queues_a_direct_merge_is_reported_as_queued_rather_than_as_landed
                 head: None,
                 url: None,
                 started_at: None,
+                completed_at: None,
             }],
         )]
         .into_iter()
@@ -2269,13 +2271,15 @@ fn a_reviewed_publication_stamps_its_own_branch_push_as_development_and_reads_by
             .map(|event| kind_of(&event))
             .collect();
     // Every kind the lifecycle adds is review too: the draft awaiting its checks,
-    // their verdict, and the draft kept for its user's review.
+    // their verdict, the gate run their watch was, and the draft kept for its user's
+    // review.
     assert_eq!(
         reviewed,
         vec![
             onevcs::EventKind::ChangeOpened,
             onevcs::EventKind::ChangeDrafted,
             onevcs::EventKind::ChecksSettled,
+            onevcs::EventKind::GateRun,
             onevcs::EventKind::DraftKeptForReview
         ]
     );
@@ -3220,6 +3224,7 @@ fn a_draft_is_merged_by_nothing_under_any_policy_this_crate_publishes_under() {
                     head: None,
                     url: None,
                     started_at: None,
+                    completed_at: None,
                 }],
             )]
             .into_iter()

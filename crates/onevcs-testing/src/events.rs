@@ -192,7 +192,7 @@ pub(crate) fn store_artifact(id: &str, contents: &str) -> Result<ArtifactId> {
 }
 
 /// Now, as the envelope spells it: RFC3339, millisecond precision, UTC.
-fn timestamp() -> String {
+pub(crate) fn timestamp() -> String {
     let description =
         format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
     OffsetDateTime::now_utc()

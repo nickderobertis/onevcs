@@ -2134,9 +2134,8 @@ impl<'a> Census<'a> {
         if ask.reconcile {
             if let (Some(host), Some(opened)) = (&host, &opened) {
                 if let (Some(id), Some(target)) = (&opened.id, &opened.base) {
-                    heard.merged = merged_heard(&|| match host
-                        .merged_at(&change_request(opened, id, target, head))
-                    {
+                    let change = change_request(opened, id, target, head);
+                    heard.merged = merged_heard(&|| match host.merged_at(&change) {
                         Ok(Some(sha)) => Reply::Answered(
                             crate::publish::record_late_merge(
                                 self.registry,
@@ -2150,6 +2149,7 @@ impl<'a> Census<'a> {
                                     stream: opened.stream.as_deref(),
                                 },
                                 &sha,
+                                crate::publish::late_merge_time(host.as_ref(), &change),
                             )
                             .map(Sha),
                         ),

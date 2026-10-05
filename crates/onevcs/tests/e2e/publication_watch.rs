@@ -931,6 +931,7 @@ fn implementations_written_before_this_change_still_compile_and_publish() {
                     head: None,
                     url: None,
                     started_at: None,
+                    completed_at: None,
                 }],
             )]),
             ..onevcs_testing::HostState::default()

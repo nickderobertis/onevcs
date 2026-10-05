@@ -17,6 +17,7 @@ use serde_json::json;
 
 use crate::error::{Error, Result};
 use crate::event::{EventKind, Phase};
+use crate::gate_run::{self, Gate, Moment};
 use url::Url;
 
 use std::collections::BTreeSet;
@@ -1087,6 +1088,8 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
     // merges on the host's clock, and a publication that met it again republished the
     // work the base already carried.
     take_up_a_late_merge(context);
+    // A publication attempt starts here: every gate it runs is numbered as one.
+    stream.begin_attempt();
     // Where this repository last saw the host's copy of the branch, read before the
     // fetch that is about to update it: a publication that replays its own commits
     // pushes over that copy, and what it may replace is what it had already seen —
@@ -1499,12 +1502,15 @@ fn publish_locally(
             let Some(sha) = git::merge_squash(&scratch, &context.branch, &message)? else {
                 return Ok(PublishOutcome::NothingToPublish);
             };
+            let hooked = gate_run::runs_pre_push(&scratch);
+            let started = Moment::now();
             let pushed = git::push(
                 &scratch,
                 &format!("HEAD:refs/heads/{}", context.target.base()),
                 "origin",
                 environment,
             )?;
+            let ended = Moment::now();
             // The squash goes onto the base rather than onto the branch it landed,
             // so this push is the work being integrated whatever branch the payload
             // names.
@@ -1516,6 +1522,7 @@ fn publish_locally(
                 Phase::Integrate,
                 None,
             )?;
+            record_pre_push(stream, hooked, started, ended, &pushed);
             if !pushed.accepted() {
                 // The tree this push was built in goes when this closure returns,
                 // so the refusal must not send anybody to a path inside it.
@@ -1527,10 +1534,11 @@ fn publish_locally(
                 ));
             }
             fast_forward_publication(publication, context.target.base())?;
-            stream.emit(
-                EventKind::MergeCompleted,
-                object(json!({"identity": identity, "sha": sha, "base": context.target.base()})),
-            );
+            // The base received the squash when the push that put it there returned.
+            let mut completed =
+                object(json!({"identity": identity, "sha": sha, "base": context.target.base()}));
+            gate_run::landed(&mut completed, Some(ended), &sha);
+            stream.emit(EventKind::MergeCompleted, completed);
             record_baselines(context, &sha, stream);
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
@@ -1841,6 +1849,8 @@ fn publish_as_change(
             context.branch
         )));
     }
+    let hooked = gate_run::runs_pre_push(&context.worktree);
+    let started = Moment::now();
     let pushed = git::push_replacing(
         &context.worktree,
         &context.branch,
@@ -1848,6 +1858,7 @@ fn publish_as_change(
         replacing,
         environment,
     )?;
+    let ended = Moment::now();
     // The session's own branch, on its way to being proposed: the work being made.
     let kept = record_push(
         stream,
@@ -1857,6 +1868,7 @@ fn publish_as_change(
         Phase::Development,
         git::tip(&context.worktree, &format!("refs/heads/{}", context.branch)).as_deref(),
     )?;
+    record_pre_push(stream, hooked, started, ended, &pushed);
     if !pushed.accepted() {
         // Which refusal this is depends on what git declined, and that is decided
         // from what git and the host *report* rather than from the sentence either
@@ -2074,6 +2086,8 @@ pub(crate) fn resume(
     if !context.drafts.disabled {
         gh::draft_grace()?;
     }
+    // A resumed publication is an attempt of its own, whose one gate is the watch.
+    stream.begin_attempt();
     (|| -> Result<PublishOutcome> {
         let slug = change_host(&context.resolution.key)?;
         let host = context.hosting.for_repo(&slug)?;
@@ -2240,14 +2254,13 @@ fn land_opened_change(
                 MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
             }
         };
-        stream.emit(
-            EventKind::ChangeMerged,
-            object(json!({"url": change.url.to_string(), "sha": sha.0})),
-        );
-        stream.emit(
-            EventKind::MergeCompleted,
-            object(json!({"identity": identity, "sha": sha.0})),
-        );
+        let landed_at = Some(merge_time(host, change).unwrap_or_else(Moment::now));
+        let mut merged = object(json!({"url": change.url.to_string(), "sha": sha.0}));
+        gate_run::landed(&mut merged, landed_at, &sha.0);
+        stream.emit(EventKind::ChangeMerged, merged);
+        let mut completed = object(json!({"identity": identity, "sha": sha.0}));
+        gate_run::landed(&mut completed, landed_at, &sha.0);
+        stream.emit(EventKind::MergeCompleted, completed);
         crate::verified::forget(&context.resolution.key, &context.branch);
         record_landing(context, &sha);
         record_baselines(context, &sha.0, stream);
@@ -2632,6 +2645,15 @@ struct Reading {
     complete: bool,
 }
 
+impl Reading {
+    /// Each required check's standing in this reading, read off the checks' own
+    /// `required` — what a ready change's watch reads them by.
+    fn standing(&self) -> Vec<Standing<'_>> {
+        let about: Vec<&Check> = self.reported.checks().iter().collect();
+        standings(&about, &Declared::Unknown)
+    }
+}
+
 /// Which checks a repository requires before a merge, as far as the host said.
 ///
 /// Three answers, never two: "none is required" is the one a draft may act on at once,
@@ -2793,6 +2815,12 @@ struct Watcher<'a> {
     bound: std::time::Duration,
     poll: std::time::Duration,
     started: std::time::Instant,
+    /// When the watch began on the pushed head, which is when its gate run started.
+    began: Moment,
+    /// Whether the watch's `gate-run` has been recorded, which it is once per watch:
+    /// when the required checks settle, or when the watch ends on a red check or its
+    /// bound — whichever comes first.
+    gate_recorded: bool,
     /// What each check was last reported as, so only a transition is reported. Keyed
     /// on the status, the conclusion *and* the run's start, because a run the host
     /// re-attaches after a lift can complete exactly as the skipped one had, and it is
@@ -2825,6 +2853,8 @@ impl<'a> Watcher<'a> {
             bound: std::time::Duration::from_secs_f64(gh::checks_timeout()?),
             poll: std::time::Duration::from_secs_f64(gh::checks_poll()?),
             started: std::time::Instant::now(),
+            began: Moment::now(),
+            gate_recorded: false,
             reported: Vec::new(),
             logs: Vec::new(),
             settled: false,
@@ -2898,9 +2928,34 @@ impl<'a> Watcher<'a> {
         Ok(Reading { reported, complete })
     }
 
-    /// The refusal for a required check that concluded red.
-    fn failed(&self, check: &Check) -> Error {
+    /// The refusal for a required check that concluded red, recording the watch's
+    /// gate run as `failed`.
+    fn failed(&mut self, stream: &mut Stream, standing: &[Standing<'_>], check: &Check) -> Error {
+        self.record_gate(stream, gate_run::Ruling::Failed, standing);
         checks_failed(check, &self.logs)
+    }
+
+    /// Record, once, the watch's gate run: from when the watch began on the pushed
+    /// head to now, with every required check as the host last reported it.
+    fn record_gate(
+        &mut self,
+        stream: &mut Stream,
+        verdict: gate_run::Ruling,
+        standing: &[Standing<'_>],
+    ) {
+        if std::mem::replace(&mut self.gate_recorded, true) {
+            return;
+        }
+        stream.emit_gate_run(&gate_run::Run {
+            gate: Gate::RequiredChecks,
+            started: self.began,
+            ended: Moment::now(),
+            verdict,
+            checks: standing
+                .iter()
+                .map(|standing| gate_run::listed(&standing.name, standing.check))
+                .collect(),
+        });
     }
 
     /// Whether the bound on the whole watch has elapsed.
@@ -2936,8 +2991,16 @@ impl<'a> Watcher<'a> {
         }
     }
 
-    /// The bound elapsed, naming what the host had not settled.
-    fn unsettled(&self, reading: &Reading, awaited: &str) -> Error {
+    /// The bound elapsed, naming what the host had not settled, and recording the
+    /// watch's gate run as one that reached no verdict.
+    fn unsettled(
+        &mut self,
+        stream: &mut Stream,
+        reading: &Reading,
+        standing: &[Standing<'_>],
+        awaited: &str,
+    ) -> Error {
+        self.record_gate(stream, gate_run::Ruling::NoVerdict, standing);
         unsettled(
             self.change,
             self.pushed,
@@ -2955,10 +3018,20 @@ impl<'a> Watcher<'a> {
     /// then the record says so, in the payload's `requirement` and on stderr, so the
     /// settlement never reads as the host's ordinary complete answer. Omitted
     /// otherwise, so every other settlement's payload is the five fields it always was.
-    fn record_settled(&mut self, stream: &mut Stream, skipped: Vec<String>, unread: Option<&str>) {
+    ///
+    /// The watch's gate run ends here too, with the same verdict, listing `standing` —
+    /// every required check as this reading left it.
+    fn record_settled(
+        &mut self,
+        stream: &mut Stream,
+        standing: &[Standing<'_>],
+        unread: Option<&str>,
+    ) {
         if std::mem::replace(&mut self.settled, true) {
             return;
         }
+        let skipped = skipped_in(standing);
+        let ruled = gate_run::passed(!skipped.is_empty());
         let verdict = if skipped.is_empty() {
             "passed"
         } else {
@@ -2984,6 +3057,7 @@ impl<'a> Watcher<'a> {
             );
         }
         stream.emit(EventKind::ChecksSettled, payload);
+        self.record_gate(stream, ruled, standing);
     }
 }
 
@@ -3024,7 +3098,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
             let about: Vec<&Check> = checks.iter().collect();
             let standing = standings(&about, &Declared::Unknown);
             if let Some(failed) = red(&standing) {
-                return Err(watcher.failed(failed));
+                return Err(watcher.failed(stream, &standing, failed));
             }
             if standing.iter().all(|standing| {
                 matches!(
@@ -3032,7 +3106,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
                     Some(CheckState::Passed | CheckState::Skipped)
                 )
             }) {
-                watcher.record_settled(stream, skipped_in(&standing), None);
+                watcher.record_settled(stream, &standing, None);
                 return Ok(());
             }
         }
@@ -3042,7 +3116,12 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
         // replaced — so the watch keeps waiting rather than merging on an emptiness
         // that is really somebody else's verdict having been filtered out.
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(&reading, "settled its required checks on"));
+            return Err(watcher.unsettled(
+                stream,
+                &reading,
+                &reading.standing(),
+                "settled its required checks on",
+            ));
         }
         watcher.pause()?;
     }
@@ -3079,7 +3158,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
         if declared == Declared::Nothing {
-            watcher.record_settled(stream, Vec::new(), None);
+            watcher.record_settled(stream, &[], None);
             return Ok(true);
         }
         // Whether what is required is being read off the host's marking because the
@@ -3090,14 +3169,14 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         let about: Vec<&Check> = reading.reported.checks().iter().collect();
         let standing = standings(&about, &declared);
         if let Some(failed) = red(&standing) {
-            return Err(watcher.failed(failed));
+            return Err(watcher.failed(stream, &standing, failed));
         }
         if !standing.is_empty()
             && standing
                 .iter()
                 .all(|standing| standing.state == Some(CheckState::Passed))
         {
-            watcher.record_settled(stream, Vec::new(), marked);
+            watcher.record_settled(stream, &standing, marked);
             return Ok(true);
         }
         let not_run: Vec<String> = standing
@@ -3128,7 +3207,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 .iter()
                 .all(|check| check.state() != CheckState::Skipped)
         {
-            watcher.record_settled(stream, Vec::new(), marked);
+            watcher.record_settled(stream, &standing, marked);
             return Ok(true);
         }
         if grace_elapsed && !running && (!not_run.is_empty() || unseen) {
@@ -3138,7 +3217,12 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 .map(|()| false);
         }
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(&reading, "settled its required checks on"));
+            return Err(watcher.unsettled(
+                stream,
+                &reading,
+                &standing,
+                "settled its required checks on",
+            ));
         }
         watcher.pause()?;
     }
@@ -3241,7 +3325,7 @@ fn settle_after_early_lift(
             .collect();
         let standing = standings(&counted, declared);
         if let Some(failed) = red(&standing) {
-            return Err(watcher.failed(failed));
+            return Err(watcher.failed(stream, &standing, failed));
         }
         let rerun = checks.iter().any(|check| {
             !from_the_draft(check)
@@ -3255,10 +3339,11 @@ fn settle_after_early_lift(
                 )
             })
         {
-            watcher.record_settled(stream, skipped_in(&standing), unread);
+            watcher.record_settled(stream, &standing, unread);
             return Ok(());
         }
         if !rerun && lifted.elapsed() >= grace {
+            watcher.record_gate(stream, gate_run::Ruling::NoVerdict, &standing);
             return Err(Error::ChecksUnsettled {
                 reason: format!(
                     "the required checks on {url} did not re-run after its draft was lifted: no \
@@ -3273,7 +3358,12 @@ fn settle_after_early_lift(
             });
         }
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(&reading, "settled its required checks on"));
+            return Err(watcher.unsettled(
+                stream,
+                &reading,
+                &standing,
+                "settled its required checks on",
+            ));
         }
         watcher.pause()?;
     }
@@ -3299,7 +3389,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
             let about: Vec<&Check> = checks.iter().collect();
             let standing = standings(&about, &Declared::Unknown);
             if let Some(failed) = red(&standing) {
-                return Err(watcher.failed(failed));
+                return Err(watcher.failed(stream, &standing, failed));
             }
             if standing.iter().all(|standing| {
                 matches!(
@@ -3307,7 +3397,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
                     Some(CheckState::Passed | CheckState::Skipped)
                 )
             }) {
-                watcher.record_settled(stream, skipped_in(&standing), None);
+                watcher.record_settled(stream, &standing, None);
             }
         }
         if !armed {
@@ -3332,7 +3422,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
             Err(unreadable) => return Err(unreadable),
         }
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(&reading, "merged"));
+            return Err(watcher.unsettled(stream, &reading, &reading.standing(), "merged"));
         }
         watcher.pause()?;
     }
@@ -3464,6 +3554,46 @@ fn unsettled(
             seconds = bound.as_secs_f64(),
         ),
     }
+}
+
+/// Record the push that executed the repository's `pre-push` hook as one gate run,
+/// where it did execute one.
+///
+/// The run is the push itself — it starts when the push starts and ends when it
+/// returns — so whatever git and the remote spend around the hook is in it too:
+/// that is how long the gate held the publication. Accepted is `passed`, and a
+/// refusal is `failed` whoever refused it, because the push is what was refused.
+/// A push with no hook to run records nothing: there was no local gate.
+pub(crate) fn record_pre_push(
+    stream: &mut Stream,
+    hooked: bool,
+    started: Moment,
+    ended: Moment,
+    pushed: &git::Pushed,
+) {
+    if !hooked {
+        return;
+    }
+    stream.emit_gate_run(&gate_run::Run {
+        gate: Gate::PrePush,
+        started,
+        ended,
+        verdict: if pushed.accepted() {
+            gate_run::Ruling::Passed
+        } else {
+            gate_run::Ruling::Failed
+        },
+        checks: Vec::new(),
+    });
+}
+
+/// When the host says a change request merged, where it says so in a form this
+/// crate can read.
+fn merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> Option<Moment> {
+    host.merge_time(change)
+        .ok()
+        .flatten()
+        .and_then(|spelled| Moment::reported(&spelled))
 }
 
 /// Record one publishing push, and what it wrote.
@@ -3778,15 +3908,26 @@ pub(crate) fn reconcile_late_merge(
     let host = hosting
         .for_repo(&change_host(watched.identity).ok()?)
         .ok()?;
-    let merged = host
-        .merged_at(&ChangeRequest {
-            id: crate::host::ChangeId(watched.id.to_owned()),
-            url: watched.url.clone(),
-            head_sha: Sha(watched.head.to_owned()),
-            base: watched.base.to_owned(),
-        })
-        .ok()??;
-    record_late_merge(registry, watched, &merged)
+    let change = ChangeRequest {
+        id: crate::host::ChangeId(watched.id.to_owned()),
+        url: watched.url.clone(),
+        head_sha: Sha(watched.head.to_owned()),
+        base: watched.base.to_owned(),
+    };
+    let merged = host.merged_at(&change).ok()??;
+    record_late_merge(
+        registry,
+        watched,
+        &merged,
+        merge_time(host.as_ref(), &change),
+    )
+}
+
+/// When the host says a change request this host stopped watching merged — the
+/// landing time a late merge is recorded with, which is the host's and never the
+/// moment a later read asked. For a caller that already holds the host.
+pub(crate) fn late_merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> Option<Moment> {
+    merge_time(host, change)
 }
 
 /// Record a merge the host reported for a change request this host stopped watching,
@@ -3794,10 +3935,15 @@ pub(crate) fn reconcile_late_merge(
 /// the host itself, because it has to tell a refusal from "not merged". Answers the
 /// landing where it was recorded, and `None` where it could not be, for the reason
 /// [`warn_unreconciled`] gives.
+///
+/// `landed_at` is when the host says it merged. Where the host could not say, the
+/// landing commit's own committer time is what the record carries — the moment the
+/// host wrote the commit the base received — and never the time of this read.
 pub(crate) fn record_late_merge(
     registry: &crate::registry::Registry,
     watched: &Watched<'_>,
     merged: &Sha,
+    landed_at: Option<Moment>,
 ) -> Option<String> {
     let located = match crate::release::for_repository(registry, watched.identity) {
         Ok(located) => located,
@@ -3815,7 +3961,10 @@ pub(crate) fn record_late_merge(
         &located,
         watched.branch,
         watched.stream,
-        &merged.0,
+        crate::release::Landing {
+            commit: &merged.0,
+            at: landed_at,
+        },
         watched.url,
         &mut stream,
     );

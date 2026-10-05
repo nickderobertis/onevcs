@@ -75,6 +75,12 @@ mod edges;
 // read that. Its own header carries the reason in full.
 #[cfg(target_os = "linux")]
 mod fetch_turns;
+// Linux only: the stamping `git` and the hooks it is measured against read the clock
+// with GNU `date +%s%3N`. The required-checks journeys are in-process for the reason
+// `drafts.rs` is. Its own header carries the rest.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod gate_runs;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.
 #[cfg(unix)]

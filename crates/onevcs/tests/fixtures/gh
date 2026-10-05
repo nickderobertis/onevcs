@@ -205,7 +205,9 @@ case "$command" in
           [ -n "$name" ] || continue
           row=$((row + 1))
           if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
-          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\",\"started_at\":\"$STARTED\"}"
+          # A job still running has no completion, which the Actions API says as null.
+          if [ "$status" = "completed" ]; then done_at="\"${STARTED%:00Z}:30Z\""; else done_at=null; fi
+          rows="$rows$separator{\"id\":$row,\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/1/job/$row\",\"started_at\":\"$STARTED\",\"completed_at\":$done_at}"
           separator=","
         done <"$CHECKS" 2>/dev/null || true
         total="$row"
@@ -335,7 +337,7 @@ done
 # `pr checks --required`, below.
 rollup() {
   printf '['
-  local separator="" name status conclusion required entry row=0
+  local separator="" name status conclusion required entry completed row=0
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     row=$((row + 1))
@@ -343,8 +345,11 @@ rollup() {
     # `detailsUrl` is where a check run says it is, and it is the same address
     # `pr checks` reports as that row's `link` — one check, one place on the host,
     # whichever call asked about it.
-    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s","startedAt":"%s"}' \
-      "$separator" "$name" "$status" "$entry" "$repo" "$row" "$STARTED"
+    # A run that has completed says when, as GitHub's rollup does; one still going
+    # carries the zero time, which is how GitHub spells "not yet".
+    if [ "$status" = "completed" ]; then completed="${STARTED%:00Z}:30Z"; else completed="0001-01-01T00:00:00Z"; fi
+    printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s","startedAt":"%s","completedAt":"%s"}' \
+      "$separator" "$name" "$status" "$entry" "$repo" "$row" "$STARTED" "$completed"
     separator=","
   done <"$CHECKS" 2>/dev/null || true
   printf ']'
@@ -410,6 +415,9 @@ land_pr() {
     printf 'PR_BASE=%q\n' "$PR_BASE"
     printf 'PR_HEAD_SHA=%s\n' "$PR_HEAD_SHA"
     printf 'PR_MERGE_COMMIT=%s\n' "$oid"
+    # When GitHub says the change merged, on GitHub's clock: the moment it landed,
+    # which a read that reconciles the landing later must report rather than its own.
+    printf 'PR_MERGED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$STATE/pr-$PR_NUMBER.env"
   rm -rf "$work"
 }
@@ -635,6 +643,15 @@ case "$subcommand" in
       printf '%s"isDraft":%s' "$separator" "$is_draft"; separator=","
     fi
     if wanted mergeCommit; then printf '%s"mergeCommit":%s' "$separator" "$merge_commit"; separator=","; fi
+    # Null until it merges, as GitHub answers it.
+    if wanted mergedAt; then
+      if [ -n "${PR_MERGED_AT:-}" ]; then
+        printf '%s"mergedAt":"%s"' "$separator" "$PR_MERGED_AT"
+      else
+        printf '%s"mergedAt":null' "$separator"
+      fi
+      separator=","
+    fi
     # The description, as `gh pr edit` last left it or `gh pr create` opened it.
     if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
     if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi

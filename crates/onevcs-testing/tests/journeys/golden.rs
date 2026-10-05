@@ -30,19 +30,23 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v17-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v17-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v18-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v18-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v17.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v17.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v18.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v18.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
 /// more — they are what a consumer already has checked in, and the whole point of
 /// keeping the bytes is that this build reads what that build wrote rather than
 /// what this one would have.
-const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v16.json");
-const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v16.json");
+const VCS_PREVIOUS: &str = include_str!("../golden/vcs-state-v17.json");
+const HOST_PREVIOUS: &str = include_str!("../golden/host-state-v17.json");
+/// The same, as the build before that wrote them: the documents whose retirements
+/// carry no cause, which version 17 is the adding of.
+const VCS_V16: &str = include_str!("../golden/vcs-state-v16.json");
+const HOST_V16: &str = include_str!("../golden/host-state-v16.json");
 /// The same, as the build before that wrote them: the documents whose publications
 /// name no `cancelled` failure, which version 16 is the widening of.
 const VCS_V15: &str = include_str!("../golden/vcs-state-v15.json");
@@ -105,6 +109,7 @@ const HOST_OPTIONAL: &[&str] = &[
     "check_logs",
     "check_sources",
     "merges",
+    "merge_times",
 ];
 
 #[test]
@@ -226,9 +231,83 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 #[test]
-fn a_document_at_the_previous_version_reads_its_retirements_with_no_cause_and_is_written_back_at_this_one(
+fn a_document_at_the_previous_version_reads_its_checks_and_merges_with_no_times_and_is_written_back_at_this_one(
 ) {
     // A consumer's checked-in scenario, written by the build before this one: the
+    // version went up because a check may now carry when the host says it completed,
+    // and a merge when it reached its base, and a version 17 document carries neither —
+    // which is what that build recorded. So every check reads with `completed_at: None`
+    // and the host answers no merge time, and the next write declares this version and
+    // still omits both, as nothing is spelled that holds nothing.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    let scenario: serde_json::Value =
+        serde_json::from_str(HOST_PREVIOUS).expect("the previous document is JSON");
+    assert_eq!(scenario["version"], 17);
+    assert!(
+        !HOST_PREVIOUS.contains("completed_at") && !HOST_PREVIOUS.contains("merge_times"),
+        "the previous document is the one with no completion and no merge time, or it proves \
+         nothing"
+    );
+    std::fs::write(home.path("vcs.json"), VCS_PREVIOUS).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_PREVIOUS).expect("a document a previous build wrote");
+
+    FileVcs::create(home.path("vcs.json")).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    let checks: Vec<_> = state.checks.values().flatten().collect();
+    assert!(
+        !checks.is_empty() && checks.iter().all(|check| check.completed_at.is_none()),
+        "a check a previous build recorded reads as one whose completion it never said: \
+         {checks:?}"
+    );
+    assert!(state.merge_times.is_empty());
+    // The previous document holds change request 1 merged, and its host cannot say when.
+    let repo = host.for_repo("acme-corp/widgets").expect("a host");
+    let change = state.changes[0].clone();
+    assert_eq!(repo.merge_time(&change).expect("the host answers"), None);
+
+    // Writing it back — a change request opened on this host is a write — declares this
+    // version and still spells neither field, since neither holds anything.
+    repo.open_change(ChangeSpec {
+        head: "feature/after-the-bump".to_owned(),
+        base: "main".to_owned(),
+        title: "feat: after the bump".to_owned(),
+        body: None,
+        draft: None,
+        draft_awaiting_checks: false,
+    })
+    .expect("a change request opens");
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && !written.contains("completed_at")
+            && !written.contains("merge_times"),
+        "carried forward at this version, spelling nothing it does not hold: {written}"
+    );
+
+    // …and the host this build writes says when a merge it performs reached its base.
+    let merged = repo
+        .merge(&state.changes[1], onevcs::MergePolicy::ChangeDirect)
+        .expect("the host merges");
+    assert!(
+        matches!(merged, onevcs::MergeOutcome::Merged(_)),
+        "{merged:?}"
+    );
+    let time = repo
+        .merge_time(&state.changes[1])
+        .expect("the host answers")
+        .expect("a merge this host performed has a time");
+    assert!(
+        time.len() == "2026-10-05T12:00:00.000Z".len() && time.ends_with('Z'),
+        "{time}"
+    );
+}
+
+#[test]
+fn a_version_16_document_reads_its_retirements_with_no_cause_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written two builds back: the
     // version went up because a row's retirement now writes `cause`, the read that
     // failed for a branch kept as `unknown`, and a version 16 document's retirements
     // carry none — which is what they said, since that build named no failed read. So
@@ -237,7 +316,7 @@ fn a_document_at_the_previous_version_reads_its_retirements_with_no_cause_and_is
     let home = Home::new();
     let vcs_path = home.path("vcs.json");
     let scenario: serde_json::Value =
-        serde_json::from_str(VCS_PREVIOUS).expect("the previous document is JSON");
+        serde_json::from_str(VCS_V16).expect("the version 16 document is JSON");
     assert_eq!(scenario["version"], 16);
     let retirements: Vec<&serde_json::Value> = scenario["preserved"]
         .as_array()
@@ -250,9 +329,8 @@ fn a_document_at_the_previous_version_reads_its_retirements_with_no_cause_and_is
         "the previous document is the one whose retirements carry no cause, or it proves \
          nothing"
     );
-    std::fs::write(&vcs_path, VCS_PREVIOUS).expect("a document a previous build wrote");
-    std::fs::write(home.path("host.json"), HOST_PREVIOUS)
-        .expect("a document a previous build wrote");
+    std::fs::write(&vcs_path, VCS_V16).expect("a document a previous build wrote");
+    std::fs::write(home.path("host.json"), HOST_V16).expect("a document a previous build wrote");
 
     let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
     FileHost::create(home.path("host.json")).expect("the previous version reads");
@@ -303,7 +381,7 @@ fn a_document_at_the_previous_version_reads_its_retirements_with_no_cause_and_is
 
 #[test]
 fn a_version_15_document_keeps_its_failures_and_is_written_back_at_this_one() {
-    // A consumer's checked-in scenario, written two builds back: the
+    // A consumer's checked-in scenario, written three builds back: the
     // version went up because a publication's failure may now name `cancelled`, and
     // nothing a version 15 document can hold changed spelling or meaning with it. So it
     // reads, every failure it recorded reads back as the kind it was, and the next
@@ -370,7 +448,7 @@ fn a_version_15_document_keeps_its_failures_and_is_written_back_at_this_one() {
 
 #[test]
 fn a_version_14_document_reads_its_sessions_as_opened_clean_and_is_written_back_at_this_one() {
-    // A consumer's checked-in scenario, written three builds back: the
+    // A consumer's checked-in scenario, written four builds back: the
     // version went up because a session may now carry the merge it opened over, and a
     // version 14 document's sessions carry none — which is what they were, since that
     // build opened no session over a merge. So every one reads with `conflict: None`,

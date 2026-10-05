@@ -379,6 +379,16 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         })
     }
 
+    fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
+        let state = self.store.snapshot()?;
+        // Only a change this host holds as merged has a merge time: a seeded time on
+        // a change still open is a scenario that says nothing has merged yet.
+        Ok(match state.merges.get(&cr.id) {
+            Some(MergeOutcome::Merged(_)) => state.merge_times.get(&cr.id).cloned(),
+            _ => None,
+        })
+    }
+
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
         self.store.with(|state| {
             // Native auto-merge, modelled rather than skipped: a change this host is
@@ -409,6 +419,7 @@ fn land(state: &mut HostState, cr: &ChangeRequest) -> Sha {
     state
         .merges
         .insert(cr.id.clone(), MergeOutcome::Merged(sha.clone()));
+    state.merge_times.insert(cr.id.clone(), events::timestamp());
     sha
 }
 

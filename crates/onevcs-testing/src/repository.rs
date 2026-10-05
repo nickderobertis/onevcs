@@ -606,7 +606,15 @@ fn record_local_landing(
         stream: token.0.clone(),
         identity: Some(identity.to_owned()),
         kind: EventKind::MergeCompleted,
-        payload: object(json!({"identity": identity, "sha": sha, "base": session.base})),
+        // Every record of a landing says when the base received it and at which
+        // commit, as `onevcs`'s own does: here, the moment this provider decided it.
+        payload: object(json!({
+            "identity": identity,
+            "sha": sha,
+            "base": session.base,
+            "landed_at": events::timestamp(),
+            "landing": sha,
+        })),
     };
     (PublishOutcome::Merged(Sha(sha)), vec![emission])
 }
@@ -822,13 +830,30 @@ fn publish_as_change(
     }
     Ok(match host.merge(&change, policy)? {
         MergeOutcome::Merged(sha) => {
+            // When the host says the base received it, as `onevcs`'s own record of a
+            // landing carries it — and now, where the host cannot say.
+            let landed_at = host
+                .merge_time(&change)
+                .ok()
+                .flatten()
+                .unwrap_or_else(events::timestamp);
             emissions.push(publishing.emission(
                 EventKind::ChangeMerged,
-                json!({"url": change.url.to_string(), "sha": sha.0}),
+                json!({
+                    "url": change.url.to_string(),
+                    "sha": sha.0,
+                    "landed_at": landed_at,
+                    "landing": sha.0,
+                }),
             ));
             emissions.push(publishing.emission(
                 EventKind::MergeCompleted,
-                json!({"identity": publishing.identity, "sha": sha.0}),
+                json!({
+                    "identity": publishing.identity,
+                    "sha": sha.0,
+                    "landed_at": landed_at,
+                    "landing": sha.0,
+                }),
             ));
             PublishOutcome::Merged(sha)
         }

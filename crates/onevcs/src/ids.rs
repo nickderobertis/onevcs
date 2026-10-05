@@ -74,9 +74,18 @@ pub fn digest(value: &str) -> String {
 /// fixed-width format description can only disagree if the clock leaves the range
 /// the calendar covers. Returning it beats refusing to emit an event.
 pub fn timestamp() -> String {
+    stamp(OffsetDateTime::now_utc())
+}
+
+/// One moment, as the envelope spells a moment: RFC3339, millisecond precision, UTC.
+///
+/// [`timestamp`] is this of now. A record that carries a moment of its own — when a
+/// gate run started, when a base received a change — spells it through here, so a
+/// reader compares it to the envelope's own `ts` as two strings of one shape.
+pub fn stamp(at: OffsetDateTime) -> String {
     let description =
         format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
-    OffsetDateTime::now_utc()
+    at.to_offset(time::UtcOffset::UTC)
         .format(description)
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_owned())
 }

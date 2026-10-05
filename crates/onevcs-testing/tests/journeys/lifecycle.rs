@@ -45,6 +45,7 @@ fn check(name: &str, conclusion: Option<&str>, run: u32) -> Check {
         head: None,
         url: onevcs::Url::parse(&format!("https://github.com/acme-corp/widgets/runs/{run}")).ok(),
         started_at: Some(started(run)),
+        completed_at: None,
     }
 }
 

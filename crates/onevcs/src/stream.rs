@@ -55,6 +55,9 @@ pub struct Stream {
     /// number any of them counted before the other wrote is the same number twice.
     /// Numbering from the file under its lock answers both.
     emitter: Emitter,
+    /// The publication attempt the gate runs recorded through this stream belong
+    /// to, once one has been recorded — see [`Stream::emit_gate_run`].
+    attempt: Option<u32>,
 }
 
 impl Stream {
@@ -76,6 +79,7 @@ impl Stream {
             id: token.to_owned(),
             labels,
             emitter,
+            attempt: None,
         })
     }
 
@@ -124,6 +128,61 @@ impl Stream {
         artifacts: Vec<ArtifactRef>,
     ) {
         self.append_stamped(EventKind::Push, phase, payload, artifacts);
+    }
+
+    /// Start a publication attempt: the next gate run recorded here is numbered
+    /// afresh, and every one after it in the same attempt shares that number.
+    pub fn begin_attempt(&mut self) {
+        self.attempt = None;
+    }
+
+    /// Append the record of one completed gate run, at the phase its gate decides.
+    ///
+    /// Its `attempt` is fixed once per publication attempt, at the first gate run the
+    /// attempt records: one more than the highest attempt any earlier `gate-run` on
+    /// this stream carries. So a publication's `pre-push` run and its required-checks
+    /// run share one number, the next publication of the same session takes the next
+    /// one, and a publication that ended before any gate ran consumes none — what a
+    /// consumer counts is gate runs per change, not invocations.
+    pub(crate) fn emit_gate_run(&mut self, run: &crate::gate_run::Run) {
+        let attempt = match self.attempt {
+            Some(attempt) => attempt,
+            None => {
+                let attempt = self.recorded_attempts() + 1;
+                self.attempt = Some(attempt);
+                attempt
+            }
+        };
+        self.append_stamped(
+            EventKind::GateRun,
+            run.gate.phase(),
+            run.payload(attempt),
+            Vec::new(),
+        );
+    }
+
+    /// The highest attempt a `gate-run` already on this stream carries, or `0`.
+    ///
+    /// Read off the file rather than counted in memory, because one session's stream
+    /// is written by one process after another. A line this build cannot read is
+    /// passed over: what it would have said is not a number to continue from, and a
+    /// stream nobody can read at all starts at the first attempt.
+    fn recorded_attempts(&self) -> u32 {
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return 0;
+        };
+        text.lines()
+            .filter_map(|line| match Line::read(line).ok()? {
+                Line::Known(known) if known.kind == EventKind::GateRun => known
+                    .envelope
+                    .payload
+                    .get("attempt")
+                    .and_then(Value::as_u64)
+                    .and_then(|attempt| u32::try_from(attempt).ok()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Append one event carrying artifact references.

@@ -176,6 +176,23 @@ pub trait RemoteHost {
         })
     }
 
+    /// When the host says a merged change request reached its base, as the host
+    /// spelled it, or `None` while it has not merged it.
+    ///
+    /// What the record of a landing carries as `landed_at`, and the one way to learn
+    /// it for a merge the host performed on its own clock — above all one this crate
+    /// reconciles on a later read, whose landing time is the host's and never the
+    /// moment somebody asked.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal. A caller reads that refusal as a host
+    /// that cannot say, and falls back to what the base's own history records.
+    fn merge_time(&self, _cr: &ChangeRequest) -> Result<Option<String>> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::merge_time",
+        })
+    }
+
     /// Whether a change request can still merge into its base, as the host has
     /// computed it.
     ///
@@ -577,6 +594,20 @@ pub struct Check {
     // not started rather than letting every queued run share one identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    /// When the host says this run of the check completed, spelled as the host
+    /// spelled it, or `None` where it did not say — which is every run still going.
+    ///
+    /// Carried for the record of a gate run and nothing else: a `required-checks`
+    /// run lists each required check with the times the host reported, so a reader
+    /// can tell a long check from a long wait for one. Never compared or ordered
+    /// here. Defaulted and omitted when empty, as `started_at` is, so a check an
+    /// earlier build serialized still reads.
+    // llmlint: ignore[invalid_states_unrepresentable] the host's own timestamp, carried
+    // through to the record verbatim for the reason `started_at` is: this crate decides
+    // nothing by it, and parsing it would add a failure mode to a field nothing reads.
+    // `reported_start` is where it enters, and drops GitHub's zero time as it does there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 impl Check {
@@ -965,6 +996,7 @@ impl GitHub {
                     head: job.head,
                     url: job.url,
                     started_at: job.started_at,
+                    completed_at: job.completed_at,
                 })
                 .collect(),
             sources: [CheckSource::Actions, CheckSource::BranchRules]
@@ -1284,6 +1316,8 @@ struct Job {
     url: Option<Url>,
     /// When the host says this job started.
     started_at: Option<String>,
+    /// When the host says this job completed.
+    completed_at: Option<String>,
 }
 
 /// One job of an Actions listing, required to say what it is.
@@ -1326,6 +1360,7 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Res
         head: head.cloned(),
         url: reported_url(entry, "html_url"),
         started_at: reported_start(entry, "started_at"),
+        completed_at: reported_start(entry, "completed_at"),
     })
 }
 
@@ -1729,6 +1764,18 @@ impl RemoteHost for GitHub {
         merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
 
+    /// One `gh pr view`, reading exactly the field GitHub records a merge's time in.
+    ///
+    /// `mergedAt` is null — or GitHub's zero time — on a change request that has not
+    /// merged, and both read as `None`.
+    fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
+        addressable(&cr.id.0, "change request id")?;
+        Ok(reported_start(
+            &self.view(&cr.id.0, MERGE_TIME_FIELDS)?,
+            "mergedAt",
+        ))
+    }
+
     /// One `gh pr view`, reading exactly the two fields GitHub decides a merge's
     /// mergeability by.
     ///
@@ -1872,14 +1919,16 @@ fn check(
         // branch nothing can drive, on a path that already cannot be taken.
         url: reported_url(entry, "detailsUrl"),
         started_at: reported_start(entry, "startedAt"),
+        completed_at: reported_start(entry, "completedAt"),
     })
 }
 
-/// When a host response says a run started, or `None` where it did not say.
+/// When a host response says a run started — or completed, or a change merged — or
+/// `None` where it did not say.
 ///
 /// GitHub answers a run that is queued and has not started with the zero time rather
 /// than with nothing, and that is read as nothing: a start every queued run shares is
-/// no run's identity.
+/// no run's identity, and a time every unfinished thing shares is no time at all.
 fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
     entry
         .get(field)
@@ -1890,6 +1939,9 @@ fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
 
 /// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.
 const MERGE_FIELDS: &str = "state,mergeCommit";
+
+/// What [`GitHub`]'s `merge_time` reads.
+const MERGE_TIME_FIELDS: &str = "mergedAt";
 
 /// What [`GitHub`]'s `mergeability` reads.
 const MERGEABILITY_FIELDS: &str = "mergeable,mergeStateStatus";

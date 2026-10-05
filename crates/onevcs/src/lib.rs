@@ -57,6 +57,7 @@ mod closing;
 pub mod declaration;
 mod error;
 mod event;
+mod gate_run;
 mod gh;
 mod git;
 mod guidance;
