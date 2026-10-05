@@ -82,8 +82,7 @@ mod fetch_turns;
 // `crates/onevcs/AGENTS.md` fixes that: a second Nx project would run the same
 // `--workspace` commands twice.
 #[cfg(target_os = "linux")]
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
 mod gate_runs;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.
