@@ -377,8 +377,9 @@ pub fn classify_retirement(
 
 /// Delete one branch everywhere this host holds it, where its class permits.
 ///
-/// The library form of `onevcs retire` ([`RetireMode::Lossless`]) and `onevcs
-/// reclaim` ([`RetireMode::Reclaim`]). A class the mode does not permit deletes
+/// The library form of `onevcs retire` ([`RetireMode::Lossless`]), `onevcs
+/// reclaim` ([`RetireMode::Reclaim`]) and `onevcs reclaim --discard`
+/// ([`RetireMode::Discard`]). A class the mode does not permit deletes
 /// nothing and answers [`RetireOutcome::Kept`]; a branch nothing holds and whose
 /// retirement is recorded answers [`RetireOutcome::AlreadyRetired`]; a copy that could
 /// not be deleted answers [`RetireOutcome::Incomplete`], naming it, and a re-run

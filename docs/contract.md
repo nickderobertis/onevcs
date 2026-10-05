@@ -3189,7 +3189,7 @@ and was not done, the verb exits non-zero, and a re-run finishes the job.
 ```rust
 pub struct BranchRef { pub identity: String, pub branch: String }
 pub struct RetirementQuery { pub repo: Option<String>, pub branch: String }
-pub enum RetireMode { Lossless, Reclaim }
+pub enum RetireMode { Lossless, Reclaim, Discard }
 pub struct RetireRequest { pub repo: Option<String>, pub branch: String, pub mode: RetireMode,
                            pub dry_run: bool }
 pub struct RetirePass { pub scope: Scope, pub exclude: Vec<BranchRef>, pub dry_run: bool }
@@ -3245,7 +3245,8 @@ They are free functions rather than methods on `Vcs`, for the reason `preserve` 
 a method there would break every outside implementor of the trait. With `repo: None` the
 branch is resolved across the registered identities, and refused, naming the
 candidates, where more than one holds it. `RetireMode::Lossless` permits `retirable`
-alone and `RetireMode::Reclaim` `superseded-with-changes` too. `retire_finished` is the
+alone, `RetireMode::Reclaim` `superseded-with-changes` too, and `RetireMode::Discard`
+also a `keep` whose one reason is `unmerged-unique-commits` (see below). `retire_finished` is the
 automatic pass: it first reconciles, once, a late merge for any branch whose change
 request was opened and whose landing is unrecorded — through the same
 `reconcile_late_merge` a `status` read makes — then retires every `retirable` branch in
@@ -3259,7 +3260,7 @@ landing are recorded once.
 
 ```
 onevcs retire BRANCH [--repo REPO] [--dry-run] [--json]
-onevcs reclaim BRANCH [--repo REPO] [--dry-run] [--json]
+onevcs reclaim BRANCH [--repo REPO] [--discard] [--dry-run] [--json]
 onevcs retire-finished [--repo REPO] [--exclude BRANCH]... [--dry-run] [--json]
 onevcs supersede BRANCH --repo REPO --by BRANCH --landing SHA-OR-URL [--label KEY=VALUE]...
 ```
@@ -3268,6 +3269,7 @@ onevcs supersede BRANCH --repo REPO --by BRANCH --landing SHA-OR-URL [--label KE
 |---|---|---|
 | `onevcs retire` | `RetireMode::Lossless` | `0` retired, would retire, or already retired; `4` refused because the class is not permitted, printing class, reason and evidence; `1` retired in part, naming what was not deleted; any other non-zero is an error |
 | `onevcs reclaim` | `RetireMode::Reclaim` | the same as `retire` |
+| `onevcs reclaim --discard` | `RetireMode::Discard` | the same as `retire` |
 | `onevcs retire-finished` | the pass | `0` unless the pass itself failed |
 | `onevcs supersede` | records a supersession | `0` recorded or already recorded |
 
@@ -3353,12 +3355,55 @@ Event kinds added: `branch-superseded`, `branch-retired`.
  "sessions_closed": ["s-abc"]}
 ```
 
-  `mode` is `retire`, `reclaim` or `automatic`, and `trigger` is `verb`,
+  `mode` is `retire`, `reclaim`, `discard` or `automatic`, and `trigger` is `verb`,
   `session-close`, `sweep` or `pass`. Both kinds are at `integrate`.
 
 One existing kind gains a field: a `push` of the branch's own name gains `head`, the
 commit it put on the origin — what a change request opened from the branch carries, and
 what `merged-change-request` asks the branch's content to be contained in.
+
+### A branch kept on purpose and never landed is discarded only by name
+
+A branch somebody preserved deliberately — a measurement spike's harness and results,
+kept for the work that follows it — holds commits nothing will ever land, and no retry
+superseded it. It classifies `keep` with `unmerged-unique-commits`, which neither
+`retire` nor `reclaim` deletes, and recording it as superseded by landed work would be a
+false statement about its history. **So retirement gains a third mode, `Discard`, spelled
+`discard` on the wire, which deletes such a branch when a person names it.**
+
+```rust
+pub enum RetireMode { Lossless, Reclaim, Discard }
+```
+
+```
+onevcs reclaim BRANCH [--repo REPO] --discard [--dry-run] [--json]
+```
+
+A `RetireRequest` with `mode: RetireMode::Discard` permits everything `Reclaim`
+permits, and also a `keep` classification whose **only** reason is
+`unmerged-unique-commits`. It still refuses every other reason to keep a branch —
+`held-by-live-session`, `excluded`, `open-change-request`, `checked-out`,
+`dirty-worktree`, `unknown` and `is-base` — so a discard never touches a base, never
+closes a change request, and never deletes under somebody working. The classification
+is unchanged; only what the mode permits moves. Without `--discard`, `reclaim` is
+`RetireMode::Reclaim` exactly as above.
+
+Its exit statuses are `retire`'s and `reclaim`'s: `0` retired, would retire, or already
+retired; `4` refused because the class is not permitted, printing the class, the reason
+and the evidence; `1` retired in part, naming what was not deleted. `--json` prints the
+`Retired` document, whose classification is written exactly as it is today: a discarded
+branch reads `"class": "keep"`, `"reason": "unmerged-unique-commits"`, `"proof": null`,
+its `differing_paths`, and `"outcome": "retired"`. Every holder is deleted as `reclaim`
+deletes it — registered checkouts, a slot (returned rather than removed), run clones,
+and the origin — and the `branch-retired` event records `"mode": "discard"` beside that
+classification, so a reader tells a discard from a reclaim by the mode. `status` reads
+it back as `retired` with `class: "keep"` and `mode: "discard"`, and a discarded branch
+is never answered as landed. `retire-finished`, `sweep`'s `finished-branches` family and
+a session close never discard: `RetirePass` has no mode, and discarding is always a
+request naming one branch. `REPORT_VERSION` is `11`, with its goldens, for a `retired`
+that may now read `keep` under `discard`; no registry or session-record version changes,
+and an older `onevcs` reading a `branch-retired` record whose `mode` it has no
+word for reads no retirement there, as it reads any record it would not have written.
 
 ### A finished-branches pass reuses the verdict it recorded while nothing it read has changed
 

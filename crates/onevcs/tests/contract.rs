@@ -7436,6 +7436,12 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
         mode: onevcs::RetireMode::Reclaim,
         dry_run: false,
     };
+    // Matched exhaustively, so a mode added or removed stops this compiling too.
+    let _ = |mode: onevcs::RetireMode| match mode {
+        onevcs::RetireMode::Lossless
+        | onevcs::RetireMode::Reclaim
+        | onevcs::RetireMode::Discard => (),
+    };
     let _ = onevcs::RetirementQuery {
         repo: Some("project".to_owned()),
         branch: "feature/x".to_owned(),
@@ -7454,7 +7460,7 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
     for declared in [
         "pub struct BranchRef { pub identity: String, pub branch: String }",
         "pub struct RetirementQuery { pub repo: Option<String>, pub branch: String }",
-        "pub enum RetireMode { Lossless, Reclaim }",
+        "pub enum RetireMode { Lossless, Reclaim, Discard }",
         "pub struct RetirePass { pub scope: Scope, pub exclude: Vec<BranchRef>, pub dry_run: bool }",
         "pub fn classify_retirement(providers: &Providers<'_>, query: &RetirementQuery) -> Result<Retirement>;",
         "pub fn retire(providers: &Providers<'_>, request: &RetireRequest) -> Result<Retired>;",
@@ -7789,6 +7795,47 @@ fn the_retirement_amendment_spells_exactly_the_flags_its_verbs_take() {
             .map(str::to_owned)
             .collect()
     );
+}
+
+#[test]
+fn the_discard_amendment_spells_its_mode_its_flag_and_their_words() {
+    // The discard amendment's own usage line is held to the parser in both directions,
+    // the mode's wire word to what the library writes, and its table row and event
+    // word to the text — a consumer routes on each of them.
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .find(|body| body.starts_with("onevcs reclaim ") && body.contains(" --discard "))
+        .expect("the discard amendment spells its usage on its own");
+    assert_eq!(
+        usage.trim(),
+        "onevcs reclaim BRANCH [--repo REPO] --discard [--dry-run] [--json]"
+    );
+    assert_eq!(spelled_flags(&usage), parser_flags(&["reclaim"]));
+    assert!(
+        !parser_flags(&["retire"]).contains("discard"),
+        "only `reclaim` discards"
+    );
+    let contract = repo_file("docs/contract.md");
+    for spelled in [
+        "pub enum RetireMode { Lossless, Reclaim, Discard }",
+        "| `onevcs reclaim --discard` | `RetireMode::Discard` | the same as `retire` |",
+        "`mode` is `retire`, `reclaim`, `discard` or `automatic`",
+    ] {
+        assert!(
+            contract.contains(spelled),
+            "the contract no longer spells: {spelled}"
+        );
+    }
+    for (mode, word) in [
+        (onevcs::RetireMode::Lossless, "lossless"),
+        (onevcs::RetireMode::Reclaim, "reclaim"),
+        (onevcs::RetireMode::Discard, "discard"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(mode).expect("a mode serializes"),
+            serde_json::Value::from(word)
+        );
+    }
 }
 
 #[test]

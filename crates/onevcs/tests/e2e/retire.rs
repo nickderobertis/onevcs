@@ -875,7 +875,7 @@ fn a_supersession_naming_no_landing_is_refused_by_name() {
 }
 
 #[test]
-fn unmerged_unique_work_is_never_retired_by_anything() {
+fn unmerged_unique_work_is_never_retired_by_anything_but_a_discard_naming_it() {
     let yard = Yard::new();
     let world = yard.world();
     yard.worked("feature/unique", &[("unique.txt", "only here\n")]);
@@ -891,7 +891,25 @@ fn unmerged_unique_work_is_never_retired_by_anything() {
             serde_json::json!(["unique.txt"])
         );
     }
-    yard.verb(&["retire-finished"]);
+    // The pass, which has no mode, never discards: a branch only `reclaim --discard`
+    // takes is one it keeps.
+    let (code, pass) = yard.verb(&["retire-finished"]);
+    assert_eq!(code, 0, "{pass}");
+    let entry = pass["examined"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|entry| entry["branch"] == "feature/unique")
+        .expect("examined")
+        .clone();
+    assert_eq!(
+        (&entry["outcome"], &entry["reason"]),
+        (
+            &Value::from("kept"),
+            &Value::from("unmerged-unique-commits")
+        ),
+        "{entry}"
+    );
     world
         .onevcs()
         .args(["sweep", "--min-age-hours", "0"])
@@ -1077,9 +1095,14 @@ fn a_branch_with_an_open_change_request_is_refused_and_nothing_is_deleted() {
     let (code, rehearsed) = verb(&hosted.world, &["retire", "feature/in-review", "--dry-run"]);
     assert_eq!(code, 4, "{rehearsed}");
     assert_eq!(rehearsed["reason"], "open-change-request");
-    let (code, refused) = verb(&hosted.world, &["retire", "feature/in-review"]);
-    assert_eq!(code, 4, "{refused}");
-    assert_eq!(refused["reason"], "open-change-request");
+    // A discard is refused too: the branch's commits are unlanded, and a change request
+    // is still open over them, which a discard never closes.
+    for asked in [&["retire"][..], &["reclaim", "--discard"]] {
+        let args: Vec<&str> = asked.iter().copied().chain(["feature/in-review"]).collect();
+        let (code, refused) = verb(&hosted.world, &args);
+        assert_eq!(code, 4, "{asked:?}: {refused}");
+        assert_eq!(refused["reason"], "open-change-request", "{asked:?}");
+    }
     assert_eq!(hosted.branch_on_origin("feature/in-review"), before);
 }
 
@@ -2516,4 +2539,322 @@ fn a_run_root_that_could_not_be_removed_is_removed_by_the_rerun() {
         status(world, "feature/rooted")["retired"]["class"],
         "retirable"
     );
+}
+
+/// Every kind of place a branch someone kept on purpose is held in: the publication
+/// checkout its session handed it back to, a second registered checkout, the run clone
+/// of a session a run left open, and the origin it was preserved on.
+fn kept_on_purpose(yard: &Yard, branch: &str) -> (String, PathBuf) {
+    yard.worked(branch, &[("bench.txt", "measured\n")]);
+    yard.run(&["import", branch, "--repo", &yard.worker.to_string_lossy()])
+        .success();
+    let (stale, stale_tree) = yard.stale_session(branch);
+    yard.preserve(branch);
+    (
+        stale,
+        stale_tree.parent().expect("a run root").to_path_buf(),
+    )
+}
+
+fn kinds(retired: &Value) -> Vec<String> {
+    let mut kinds: Vec<String> = retired["deleted"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list: {retired}"))
+        .iter()
+        .map(|holder| holder["kind"].as_str().expect("a kind").to_owned())
+        .collect();
+    kinds.sort_unstable();
+    kinds
+}
+
+#[test]
+fn a_branch_kept_on_purpose_is_discarded_only_by_name_from_every_place_that_holds_it() {
+    let yard = Yard::new();
+    let world = yard.world();
+    let (stale, run_root) = kept_on_purpose(&yard, "spike/measure");
+    let before = yard.held("spike/measure");
+    assert_eq!(before.len(), 4, "the premise, every holder: {before:?}");
+
+    // Without the flag, `reclaim` is what it always was: work nothing landed and no
+    // retry superseded is refused.
+    let (code, refused) = yard.verb(&["reclaim", "spike/measure"]);
+    assert_eq!(code, 4, "{refused}");
+    assert_eq!(
+        (&refused["class"], &refused["reason"], &refused["outcome"]),
+        (
+            &Value::from("keep"),
+            &Value::from("unmerged-unique-commits"),
+            &Value::from("kept")
+        ),
+        "{refused}"
+    );
+    let (code, text) = said(world, &["reclaim", "spike/measure"]);
+    assert_eq!(code, 4, "{text}");
+    says(
+        &text,
+        "is keep / unmerged-unique-commits, which `onevcs reclaim` does not delete; nothing \
+         was deleted",
+    );
+    assert_eq!(yard.held("spike/measure"), before);
+
+    // A rehearsal of the discard names every holder and changes nothing.
+    let mut repos = yard.places();
+    repos.push(yard.fixture.origin.clone());
+    let untouched = snapshot(world, &repos);
+    let (code, rehearsed) = yard.verb(&["reclaim", "spike/measure", "--discard", "--dry-run"]);
+    assert_eq!(
+        (code, &rehearsed["outcome"]),
+        (0, &Value::from("would-retire")),
+        "{rehearsed}"
+    );
+    assert_eq!(
+        kinds(&rehearsed),
+        ["checkout", "checkout", "origin", "run-clone"]
+    );
+    assert_eq!(
+        snapshot(world, &repos),
+        untouched,
+        "a rehearsal moved nothing"
+    );
+    assert!(events(world, "branch-retired").is_empty());
+
+    // The discard deletes it everywhere, and its document carries the classification
+    // exactly as a refusal does.
+    let (code, discarded) = yard.verb(&["reclaim", "spike/measure", "--discard"]);
+    assert_eq!(code, 0, "{discarded}");
+    assert_eq!(discarded["outcome"], "retired", "{discarded}");
+    assert_eq!(discarded["class"], "keep");
+    assert_eq!(discarded["reason"], "unmerged-unique-commits");
+    assert_eq!(discarded["proof"], Value::Null);
+    assert_eq!(discarded["differing_paths"], json!(["bench.txt"]));
+    assert_eq!(
+        kinds(&discarded),
+        ["checkout", "checkout", "origin", "run-clone"]
+    );
+    assert!(discarded["failed"].as_array().expect("a list").is_empty());
+    assert_eq!(discarded["sessions_closed"], json!([stale]));
+    assert!(
+        yard.held("spike/measure").is_empty(),
+        "{:?}",
+        yard.held("spike/measure")
+    );
+    assert!(
+        !run_root.exists(),
+        "the stale session's run root is removed"
+    );
+
+    // The record says a discard did it, so a reader tells it from a reclaim.
+    let recorded = events(world, "branch-retired");
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    let payload = &recorded[0]["payload"];
+    assert_eq!(payload["mode"], "discard", "{payload}");
+    assert_eq!(payload["trigger"], "verb");
+    assert_eq!(payload["class"], "keep");
+    assert_eq!(payload["reason"], "unmerged-unique-commits");
+
+    // `status` reads the retirement back, and never as a landing.
+    let report = status(world, "spike/measure");
+    assert_eq!(report["retired"]["class"], "keep", "{report}");
+    assert_eq!(report["retired"]["mode"], "discard", "{report}");
+    assert_ne!(report["publication"]["landed"]["state"], "yes", "{report}");
+    let (_, human) = said(world, &["status", "spike/measure"]);
+    says(
+        &human,
+        "retired: keep — discarded, its work never landed; by verb (discard)",
+    );
+
+    // A re-run has nothing left to do, says so, and writes nothing.
+    let (code, again) = yard.verb(&["reclaim", "spike/measure", "--discard"]);
+    assert_eq!(
+        (code, &again["outcome"]),
+        (0, &Value::from("already-retired")),
+        "{again}"
+    );
+    let (code, text) = said(world, &["reclaim", "spike/measure", "--discard"]);
+    assert_eq!(code, 0, "{text}");
+    says(
+        &text,
+        "already retired: nothing on this host holds spike/measure of ",
+    );
+    assert_eq!(
+        events(world, "branch-retired").len(),
+        1,
+        "a no-op writes nothing"
+    );
+}
+
+#[test]
+fn a_discard_says_what_it_deleted_in_words_a_person_reads() {
+    let yard = Yard::new();
+    let world = yard.world();
+    yard.worked("spike/said", &[("said.txt", "measured\n")]);
+    yard.preserve("spike/said");
+
+    let (code, rehearsed) = said(world, &["reclaim", "spike/said", "--discard", "--dry-run"]);
+    assert_eq!(code, 0, "{rehearsed}");
+    says(&rehearsed, "would retire: spike/said of ");
+    says(
+        &rehearsed,
+        "(keep / unmerged-unique-commits) would be deleted from checkout ",
+    );
+    says(&rehearsed, "Nothing was changed: this was a rehearsal");
+    assert_eq!(
+        yard.held("spike/said").len(),
+        2,
+        "a rehearsal deletes nothing"
+    );
+
+    let (code, discarded) = said(world, &["reclaim", "spike/said", "--discard"]);
+    assert_eq!(code, 0, "{discarded}");
+    says(
+        &discarded,
+        "(keep / unmerged-unique-commits) was deleted from checkout ",
+    );
+    says(&discarded, "; origin ");
+    assert!(yard.held("spike/said").is_empty());
+}
+
+#[test]
+fn a_discard_still_refuses_every_other_reason_to_keep_a_branch() {
+    let yard = Yard::new();
+    let world = yard.world();
+    let refused = |branch: &str, reason: &str| {
+        let before = yard.held(branch);
+        let (code, refused) = yard.verb(&["reclaim", branch, "--discard"]);
+        assert_eq!(code, 4, "{branch}: {refused}");
+        assert_eq!(
+            (&refused["reason"], &refused["outcome"]),
+            (&Value::from(reason), &Value::from("kept")),
+            "{branch}: {refused}"
+        );
+        assert!(refused["deleted"].as_array().expect("a list").is_empty());
+        assert_eq!(yard.held(branch), before, "{branch}: nothing was deleted");
+    };
+
+    // The base.
+    refused("main", "is-base");
+    assert!(tip(world, yard.checkout(), "main").is_some());
+
+    // A branch a live session is working in.
+    yard.worked("spike/live", &[("live.txt", "live\n")]);
+    let (_token, live_tree) = yard.stale_session("spike/live");
+    let working = orphan_working_in(&live_tree);
+    refused("spike/live", "held-by-live-session");
+    stop_orphan(working);
+
+    // A branch a registered checkout has checked out.
+    yard.worked("spike/out", &[("out.txt", "out\n")]);
+    yard.run(&[
+        "import",
+        "spike/out",
+        "--repo",
+        &yard.worker.to_string_lossy(),
+    ])
+    .success();
+    world.git(&yard.worker, &["checkout", "-q", "spike/out"]);
+    refused("spike/out", "checked-out");
+
+    // A branch a worktree holds uncommitted changes over.
+    yard.worked("spike/dirty", &[("dirty.txt", "dirty\n")]);
+    let (_token, dirty_tree) = yard.stale_session("spike/dirty");
+    std::fs::write(dirty_tree.join("uncommitted.txt"), "still being written\n")
+        .expect("work nobody committed");
+    refused("spike/dirty", "dirty-worktree");
+    assert!(dirty_tree.join("uncommitted.txt").is_file());
+
+    // A branch a read needed to decide could not be made over: last, because a clone
+    // nobody can read makes every branch's classification unknown.
+    yard.worked("spike/closed", &[("closed.txt", "closed\n")]);
+    let (_token, closed_tree) = yard.stale_session("spike/closed");
+    let clone = closed_tree.parent().expect("a run root").join("clone");
+    let original = std::fs::metadata(&clone).expect("a clone").permissions();
+    // llmlint: ignore-block[tests_mirror_real_usage] a clone this user cannot read is a
+    // fact about the host — an operator or a container closed it — reachable by no verb
+    // of this crate; what runs over it is the real binary.
+    std::fs::set_permissions(&clone, std::fs::Permissions::from_mode(0o000))
+        .expect("the clone is closed");
+    assert!(
+        std::fs::read_dir(&clone).is_err(),
+        "the premise: this suite runs as a user the mode binds"
+    );
+    let (code, unknown) = yard.verb(&["reclaim", "spike/closed", "--discard"]);
+    std::fs::set_permissions(&clone, original).expect("the clone is open again");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    assert_eq!(code, 4, "{unknown}");
+    assert_eq!(unknown["outcome"], "kept", "{unknown}");
+    let (operation, subject, _) = cause_of(&unknown);
+    assert_eq!(
+        (operation.as_str(), subject.as_str()),
+        ("copy", clone.display().to_string().as_str())
+    );
+    assert!(!yard.held("spike/closed").is_empty());
+
+    assert!(
+        events(world, "branch-retired").is_empty(),
+        "nothing was retired"
+    );
+}
+
+#[test]
+fn the_library_discards_only_under_the_discard_mode() {
+    let yard = Yard::new();
+    kept_on_purpose(&yard, "spike/library");
+    crate::honesty::inhabit(yard.world());
+    let providers = onevcs::Providers::real();
+    let request = |mode, dry_run| onevcs::RetireRequest {
+        repo: Some("project".to_owned()),
+        branch: "spike/library".to_owned(),
+        mode,
+        dry_run,
+    };
+
+    for mode in [onevcs::RetireMode::Lossless, onevcs::RetireMode::Reclaim] {
+        let kept = onevcs::retire(&providers, &request(mode, false)).expect("an answer");
+        assert_eq!(kept.outcome, onevcs::RetireOutcome::Kept, "{mode:?}");
+        assert_eq!(
+            kept.retirement.reason,
+            Some(onevcs::KeepReason::UnmergedUniqueCommits)
+        );
+    }
+    let rehearsed = onevcs::retire(&providers, &request(onevcs::RetireMode::Discard, true))
+        .expect("a rehearsal");
+    assert_eq!(rehearsed.outcome, onevcs::RetireOutcome::WouldRetire);
+    assert_eq!(
+        yard.held("spike/library").len(),
+        4,
+        "a rehearsal deletes nothing"
+    );
+
+    let discarded = onevcs::retire(&providers, &request(onevcs::RetireMode::Discard, false))
+        .expect("a discard");
+    assert_eq!(
+        discarded.outcome,
+        onevcs::RetireOutcome::Retired,
+        "{discarded:?}"
+    );
+    assert_eq!(discarded.retirement.class, onevcs::RetirementClass::Keep);
+    assert_eq!(
+        discarded.retirement.reason,
+        Some(onevcs::KeepReason::UnmergedUniqueCommits)
+    );
+    assert!(yard.held("spike/library").is_empty());
+    // Its work was thrown away rather than landed, and the landing read says so.
+    let landed = onevcs::landing_status("spike/library", None).expect("the landing read");
+    assert!(
+        !matches!(landed, onevcs::Landed::Yes { .. }),
+        "a discarded branch never reads as landed: {landed:?}"
+    );
+
+    let again =
+        onevcs::retire(&providers, &request(onevcs::RetireMode::Discard, false)).expect("a re-run");
+    assert_eq!(again.outcome, onevcs::RetireOutcome::AlreadyRetired);
+    let classified = onevcs::classify_retirement(
+        &providers,
+        &onevcs::RetirementQuery {
+            repo: Some("project".to_owned()),
+            branch: "spike/library".to_owned(),
+        },
+    )
+    .expect("a discarded branch still answers, from its record");
+    assert_eq!(classified.class, onevcs::RetirementClass::Keep);
 }

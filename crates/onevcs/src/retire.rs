@@ -10,7 +10,9 @@
 //! branch a retry superseded, whose retry landed, and which still differs from the
 //! base is [`RetirementClass::SupersededWithChanges`] — surfaced for a person, and
 //! removed only by `onevcs reclaim`. Everything else is [`RetirementClass::Keep`]
-//! with one [`KeepReason`], and a read that fails on the way is `unknown` rather than
+//! with one [`KeepReason`] — removed, where that reason is
+//! [`KeepReason::UnmergedUniqueCommits`] alone, only by `onevcs reclaim --discard`, a
+//! person discarding work they kept on purpose — and a read that fails on the way is `unknown` rather than
 //! a proof that did not need it: a false retirement destroys work, and a false keep
 //! costs a row.
 //!
@@ -93,6 +95,11 @@ pub enum RetireMode {
     /// differences are discarded, because a person decided the retry that landed
     /// replaces them.
     Reclaim,
+    /// [`RetirementClass::Keep`] too, where its one reason is
+    /// [`KeepReason::UnmergedUniqueCommits`]: a branch somebody kept on purpose and that
+    /// nothing will ever land, whose work is discarded because a person decided it is
+    /// not wanted. Every other reason to keep a branch still refuses it.
+    Discard,
 }
 
 /// One retirement asked for by name.
@@ -889,6 +896,7 @@ impl Trigger {
 pub(crate) enum Acting {
     Retire,
     Reclaim,
+    Discard,
     Automatic,
 }
 
@@ -898,18 +906,30 @@ impl Acting {
         match self {
             Acting::Retire => "retire",
             Acting::Reclaim => "reclaim",
+            Acting::Discard => "discard",
             Acting::Automatic => "automatic",
         }
     }
 
-    /// Whether a branch of this class may be deleted. Only a person, through
-    /// `reclaim`, ever discards a difference from the base.
-    pub(crate) fn permits(self, class: RetirementClass) -> bool {
+    /// Whether a branch of this class may be deleted, as far as the class alone
+    /// decides. Only a person, through `reclaim`, ever discards a difference from the
+    /// base, and only `reclaim --discard` one nothing superseded.
+    pub(crate) fn permits_class(self, class: RetirementClass) -> bool {
         match class {
             RetirementClass::Retirable => true,
-            RetirementClass::SupersededWithChanges => self == Acting::Reclaim,
-            RetirementClass::Keep => false,
+            RetirementClass::SupersededWithChanges => {
+                matches!(self, Acting::Reclaim | Acting::Discard)
+            }
+            RetirementClass::Keep => self == Acting::Discard,
         }
+    }
+
+    /// Whether a branch of this class, kept for this reason where it is kept, may be
+    /// deleted: a discard takes a kept branch whose one reason is work nothing landed,
+    /// and refuses every other reason to keep one.
+    pub(crate) fn permits(self, class: RetirementClass, reason: Option<KeepReason>) -> bool {
+        self.permits_class(class)
+            && (class != RetirementClass::Keep || reason == Some(KeepReason::UnmergedUniqueCommits))
     }
 }
 
@@ -2603,8 +2623,8 @@ impl RetiredRecord {
         // A retirement acts only on a class its mode permits, and the class decides
         // which of the reason, the proof and the supersession it carries — so a record
         // whose fields contradict each other is one nothing wrote, and is no record.
-        let consistent = payload.mode.permits(payload.class)
-            && payload.reason.is_none()
+        let consistent = payload.mode.permits(payload.class, payload.reason)
+            && (payload.class == RetirementClass::Keep) == payload.reason.is_some()
             && (payload.class == RetirementClass::Retirable) == payload.proof.is_some()
             && (payload.class == RetirementClass::SupersededWithChanges)
                 == payload.superseded_by.is_some();
@@ -2838,6 +2858,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
     let acting = match request.mode {
         RetireMode::Lossless => Acting::Retire,
         RetireMode::Reclaim => Acting::Reclaim,
+        RetireMode::Discard => Acting::Discard,
     };
     let copies = census.copies(&request.branch, &ask);
     if copies.copies.is_empty() && copies.unreadable.is_empty() {
@@ -3137,7 +3158,7 @@ fn act(
     loop {
         let classified = census.classify(branch, copies, ask)?;
         let derivation = classified.derivation;
-        if !acting.permits(classified.retirement.class) {
+        if !acting.permits(classified.retirement.class, classified.retirement.reason) {
             return Ok(Retired {
                 derivation,
                 ..Retired::nothing(classified.retirement, RetireOutcome::Kept)
@@ -4005,5 +4026,56 @@ mod unknown_causes {
             ("host-consult", url)
         );
         assert!(!cause.error.trim().is_empty(), "{cause}");
+    }
+}
+
+/// What each mode permits, over every class and every reason to keep a branch. The
+/// journeys in `tests/e2e/retire.rs` drive each reason a request by name can reach; this
+/// is where `excluded` is asked too, which only a pass can classify and a pass never
+/// discards.
+#[cfg(test)]
+mod permits {
+    use super::{Acting, KeepReason, RetirementClass};
+
+    const KEPT: [KeepReason; 8] = [
+        KeepReason::HeldByLiveSession,
+        KeepReason::Excluded,
+        KeepReason::OpenChangeRequest,
+        KeepReason::CheckedOut,
+        KeepReason::DirtyWorktree,
+        KeepReason::UnmergedUniqueCommits,
+        KeepReason::Unknown,
+        KeepReason::IsBase,
+    ];
+
+    #[test]
+    fn a_discard_takes_a_kept_branch_only_for_work_nothing_landed() {
+        for reason in KEPT {
+            assert_eq!(
+                Acting::Discard.permits(RetirementClass::Keep, Some(reason)),
+                reason == KeepReason::UnmergedUniqueCommits,
+                "{}",
+                reason.as_str()
+            );
+        }
+        assert!(Acting::Discard.permits(RetirementClass::Retirable, None));
+        assert!(Acting::Discard.permits(RetirementClass::SupersededWithChanges, None));
+    }
+
+    #[test]
+    fn no_other_mode_takes_a_kept_branch_for_any_reason() {
+        for acting in [Acting::Retire, Acting::Reclaim, Acting::Automatic] {
+            for reason in KEPT {
+                assert!(
+                    !acting.permits(RetirementClass::Keep, Some(reason)),
+                    "{} took {}",
+                    acting.as_str(),
+                    reason.as_str()
+                );
+            }
+        }
+        assert!(Acting::Reclaim.permits(RetirementClass::SupersededWithChanges, None));
+        assert!(!Acting::Retire.permits(RetirementClass::SupersededWithChanges, None));
+        assert!(!Acting::Automatic.permits(RetirementClass::SupersededWithChanges, None));
     }
 }
