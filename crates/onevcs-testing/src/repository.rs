@@ -836,6 +836,7 @@ fn publish_as_change(
                 .merge_time(&change)
                 .ok()
                 .flatten()
+                .and_then(|spelled| events::moment(&spelled))
                 .unwrap_or_else(events::timestamp);
             emissions.push(publishing.emission(
                 EventKind::ChangeMerged,

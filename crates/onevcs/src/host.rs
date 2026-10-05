@@ -589,7 +589,7 @@ pub struct Check {
     /// it always did.
     // llmlint: ignore[invalid_states_unrepresentable] the host's own timestamp, carried
     // as an opaque token: this crate only ever asks whether two runs report the same
-    // one, so parsing it would add a failure mode and decide nothing. `reported_start`
+    // one, so parsing it would add a failure mode and decide nothing. `reported_time`
     // is the one place it enters, and it drops GitHub's zero time for a run that has
     // not started rather than letting every queued run share one identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -605,7 +605,7 @@ pub struct Check {
     // llmlint: ignore[invalid_states_unrepresentable] the host's own timestamp, carried
     // through to the record verbatim for the reason `started_at` is: this crate decides
     // nothing by it, and parsing it would add a failure mode to a field nothing reads.
-    // `reported_start` is where it enters, and drops GitHub's zero time as it does there.
+    // `reported_time` is where it enters, and drops GitHub's zero time as it does there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
 }
@@ -1359,8 +1359,8 @@ fn job(entry: &serde_json::Value, cr: &ChangeRequest, head: Option<&Sha>) -> Res
             .map(str::to_ascii_lowercase),
         head: head.cloned(),
         url: reported_url(entry, "html_url"),
-        started_at: reported_start(entry, "started_at"),
-        completed_at: reported_start(entry, "completed_at"),
+        started_at: reported_time(entry, "started_at"),
+        completed_at: reported_time(entry, "completed_at"),
     })
 }
 
@@ -1770,7 +1770,7 @@ impl RemoteHost for GitHub {
     /// merged, and both read as `None`.
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
         addressable(&cr.id.0, "change request id")?;
-        Ok(reported_start(
+        Ok(reported_time(
             &self.view(&cr.id.0, MERGE_TIME_FIELDS)?,
             "mergedAt",
         ))
@@ -1918,8 +1918,8 @@ fn check(
         // before an address is looked for. Reading the second spelling would be a
         // branch nothing can drive, on a path that already cannot be taken.
         url: reported_url(entry, "detailsUrl"),
-        started_at: reported_start(entry, "startedAt"),
-        completed_at: reported_start(entry, "completedAt"),
+        started_at: reported_time(entry, "startedAt"),
+        completed_at: reported_time(entry, "completedAt"),
     })
 }
 
@@ -1929,7 +1929,7 @@ fn check(
 /// GitHub answers a run that is queued and has not started with the zero time rather
 /// than with nothing, and that is read as nothing: a start every queued run shares is
 /// no run's identity, and a time every unfinished thing shares is no time at all.
-fn reported_start(entry: &serde_json::Value, field: &str) -> Option<String> {
+fn reported_time(entry: &serde_json::Value, field: &str) -> Option<String> {
     entry
         .get(field)
         .and_then(|value| value.as_str())

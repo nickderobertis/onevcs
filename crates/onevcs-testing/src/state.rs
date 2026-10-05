@@ -437,6 +437,11 @@ pub struct HostState {
     /// seeded: a host that merged on its own clock, earlier than anybody asked, is
     /// exactly what a late merge's record must report the time of. A merged change
     /// with no entry is one whose time this host cannot say.
+    // llmlint: ignore[invalid_states_unrepresentable] this mirrors the answer
+    // `RemoteHost::merge_time` gives, which the contract fixes as the host's own spelling
+    // in an `Option<String>`; a timestamp type here would disagree with the seam it
+    // answers. A value that is not an RFC3339 moment is refused in `check`, where the
+    // document is read, and every one this host writes is `events::timestamp`'s.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub merge_times: BTreeMap<ChangeId, String>,
 }
@@ -895,6 +900,20 @@ impl Checked for HostState {
             // refused for the same reason — and a body is prose, refused for nothing.
             if let Some(title) = &described.title {
                 titled(title)?;
+            }
+        }
+        // A merge time is what `merge_time` answers and what a landing is recorded
+        // with, so a seeded one that is not a moment is refused here, where the
+        // document is read, rather than recorded as one.
+        for (id, at) in &self.merge_times {
+            if events::moment(at).is_none() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the merge time seeded for change request {:?} is {at:?}, which is \
+                         not an RFC3339 moment",
+                        id.0
+                    ),
+                });
             }
         }
         Ok(())

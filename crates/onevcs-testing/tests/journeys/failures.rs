@@ -288,6 +288,27 @@ fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
         .expect_err("a change naming no commit")
         .to_string()
         .contains("names no commit"));
+
+    // A merge time is what a landing is recorded with, so one that is not a moment is
+    // refused by name rather than answered — and one that is reads.
+    std::fs::write(
+        &host,
+        format!(r#"{{{opened}, "merge_times": {{"1": "yesterday afternoon"}}}}"#),
+    )
+    .expect("a written document");
+    let refused = FileHost::create(&host)
+        .expect_err("a merge time that is no moment")
+        .to_string();
+    assert!(
+        refused.contains("yesterday afternoon") && refused.contains("RFC3339"),
+        "{refused}"
+    );
+    std::fs::write(
+        &host,
+        format!(r#"{{{opened}, "merge_times": {{"1": "2026-10-05T12:00:00Z"}}}}"#),
+    )
+    .expect("a written document");
+    FileHost::create(&host).expect("a merge time that is a moment reads");
 }
 
 #[test]

@@ -24,6 +24,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use serde_json::{Map, Value};
+use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
 
@@ -193,9 +194,21 @@ pub(crate) fn store_artifact(id: &str, contents: &str) -> Result<ArtifactId> {
 
 /// Now, as the envelope spells it: RFC3339, millisecond precision, UTC.
 pub(crate) fn timestamp() -> String {
+    stamp(OffsetDateTime::now_utc())
+}
+
+/// A moment a host reported, as the envelope spells one, or `None` where it is not an
+/// RFC3339 moment — which is how `onevcs` itself reads a host's merge time.
+pub(crate) fn moment(spelled: &str) -> Option<String> {
+    OffsetDateTime::parse(spelled.trim(), &Rfc3339)
+        .ok()
+        .map(stamp)
+}
+
+fn stamp(at: OffsetDateTime) -> String {
     let description =
         format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
-    OffsetDateTime::now_utc()
+    at.to_offset(time::UtcOffset::UTC)
         .format(description)
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_owned())
 }

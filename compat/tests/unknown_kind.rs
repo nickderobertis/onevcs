@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 /// Kinds this build writes and the pinned release does not know, each at the phase
 /// this build stamps it with: one whose kind decides it, and the gate run, whose
 /// producer does.
-const ADDED_LATER: [(EventKind, Phase); 2] = [
+const KINDS_ADDED_LATER: [(EventKind, Phase); 2] = [
     (EventKind::BranchRetired, Phase::Integrate),
     (EventKind::GateRun, Phase::Review),
 ];
@@ -91,7 +91,7 @@ fn a_released_build_reads_past_a_kind_added_after_it() {
         serde_json::from_value::<onevcs::EventKind>(spelled(kind))
             .unwrap_or_else(|e| panic!("the release knows {}: {e}", spelled(kind)));
     }
-    for (added, phase) in ADDED_LATER {
+    for (added, phase) in KINDS_ADDED_LATER {
         reads_past(&scratch, added, phase);
     }
 }
