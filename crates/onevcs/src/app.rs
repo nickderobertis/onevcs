@@ -13,8 +13,8 @@ use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
     EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
-    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, RecoverArgs, RecoverableArgs,
-    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs,
+    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
     ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
     ResolveArgs, RetireArgs, RetireFinishedArgs, RulesCheckArgs, RulesCommand, SessionCommand,
     SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs,
@@ -146,10 +146,15 @@ fn retire_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
 }
 
 /// Render what `onevcs reclaim` did, which is [`crate::retire`]'s answer under
-/// [`crate::RetireMode::Reclaim`].
-fn reclaim_branch(args: &RetireArgs, providers: &Providers<'_>) -> Result<u8> {
-    let retired = crate::retire(providers, &retire_request(args, crate::RetireMode::Reclaim))?;
-    render_retired(args, &retired, "reclaim")
+/// [`crate::RetireMode::Reclaim`], or under [`crate::RetireMode::Discard`] with
+/// `--discard`.
+fn reclaim_branch(args: &ReclaimArgs, providers: &Providers<'_>) -> Result<u8> {
+    let (mode, verb) = match args.discard {
+        true => (crate::RetireMode::Discard, "reclaim --discard"),
+        false => (crate::RetireMode::Reclaim, "reclaim"),
+    };
+    let retired = crate::retire(providers, &retire_request(&args.retire, mode))?;
+    render_retired(&args.retire, &retired, verb)
 }
 
 fn retire_request(args: &RetireArgs, mode: crate::RetireMode) -> crate::RetireRequest {

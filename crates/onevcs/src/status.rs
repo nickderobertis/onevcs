@@ -121,10 +121,15 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// publication opened while its required checks run, which carries no reason because
 /// nobody asked for it.
 ///
+/// `11` is a `retired` that may read `class: "keep"` under `mode: "discard"`: a branch
+/// `onevcs reclaim --discard` deleted while it still held work nothing landed. Its
+/// shape is unchanged; the bump is for a reader that took any `retired` for a landing,
+/// which a discarded branch never is.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 10;
+pub const REPORT_VERSION: u32 = 11;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -403,12 +408,12 @@ pub struct RetiredReport {
     /// Which class it was retired as.
     class: crate::retire::RetirementClass,
     /// What proved it held nothing beyond its base; absent for a branch reclaimed as
-    /// superseded, which is the one class retired without one.
+    /// superseded or discarded as kept, the two classes retired without one.
     #[serde(skip_serializing_if = "Option::is_none")]
     proof: Option<crate::retire::RetirementProof>,
     /// Which verb or moment acted: `verb`, `session-close`, `sweep` or `pass`.
     trigger: crate::retire::Trigger,
-    /// What it acted under: `retire`, `reclaim` or `automatic`.
+    /// What it acted under: `retire`, `reclaim`, `discard` or `automatic`.
     mode: crate::retire::Acting,
     /// When, as the event stream stamped it.
     at: Stamp,
@@ -435,7 +440,7 @@ impl TryFrom<AnyRetired> for RetiredReport {
 
     fn try_from(any: AnyRetired) -> std::result::Result<Self, Self::Error> {
         let retirable = any.class == crate::retire::RetirementClass::Retirable;
-        if !any.mode.permits(any.class) || retirable != any.proof.is_some() {
+        if !any.mode.permits_class(any.class) || retirable != any.proof.is_some() {
             return Err(format!(
                 "a retirement as {} under {} {} a proof, which no retirement is",
                 any.class.as_str(),
@@ -473,7 +478,7 @@ impl RetiredReport {
 
     /// The landing a retirement answers with: landed, on the evidence of its proof,
     /// for a branch retired as holding nothing beyond its base; nothing for one
-    /// reclaimed, whose differences were discarded rather than landed.
+    /// reclaimed or discarded, whose differences were thrown away rather than landed.
     ///
     /// The commit it names is the one on the base the work reached — what a release is
     /// compared against — found by [`landed_on_base`], and the proof's own commit only
@@ -3374,7 +3379,12 @@ impl Report {
                     .proof
                     .as_ref()
                     .map(crate::retire::RetirementProof::describe)
-                    .unwrap_or_else(|| "reclaimed, its differences discarded".to_owned()),
+                    .unwrap_or_else(|| match retired.class {
+                        crate::retire::RetirementClass::Keep => {
+                            "discarded, its work never landed".to_owned()
+                        }
+                        _ => "reclaimed, its differences discarded".to_owned(),
+                    }),
                 trigger = retired.trigger.as_str(),
                 mode = retired.mode.as_str(),
                 at = String::from(retired.at.clone()),
@@ -3570,8 +3580,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v10.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v10-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v11.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v11-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {
@@ -3788,10 +3798,12 @@ mod round_trip {
             document
         };
 
-        // The two shapes a retirement is written in read back and write themselves again.
+        // The shapes a retirement is written in read back and write themselves again.
         for document in [
             retired("retirable", Some(&proof), "retire"),
             retired("superseded-with-changes", None, "reclaim"),
+            retired("superseded-with-changes", None, "discard"),
+            retired("keep", None, "discard"),
         ] {
             let report: Report =
                 serde_json::from_value(document.clone()).expect("an agreeing retirement reads");
@@ -3801,6 +3813,12 @@ mod round_trip {
             );
         }
 
+        // A discarded branch's work never landed, and its retirement never says it did.
+        let discarded: Report =
+            serde_json::from_value(retired("keep", None, "discard")).expect("a discard reads");
+        let discarded = discarded.retired.expect("the retirement");
+        assert_eq!(discarded.landed(Some(sha.to_owned())), None);
+
         // Every other combination is one no retirement is, and is refused where it is
         // read rather than handed on as a landing with no proof behind it.
         for document in [
@@ -3808,6 +3826,9 @@ mod round_trip {
             retired("superseded-with-changes", Some(&proof), "reclaim"),
             retired("superseded-with-changes", None, "retire"),
             retired("keep", None, "reclaim"),
+            retired("keep", None, "retire"),
+            retired("keep", None, "automatic"),
+            retired("keep", Some(&proof), "discard"),
         ] {
             let refusal = serde_json::from_value::<Report>(document)
                 .expect_err("a retirement whose fields disagree is refused")
