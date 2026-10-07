@@ -2351,6 +2351,7 @@ struct Classified {
 
 /// What one copy's tip turned out to be.
 #[derive(Serialize, Deserialize)]
+// llmlint: ignore[invalid_states_unrepresentable] This internal classification shape predates the spike in v0.42.0; the new disposable cache validates all correlated fields at its boundary through Judged::valid. Refactoring the existing classification to an enum belongs to vcs-fast-recoverable if it keeps the cache, rather than changing the measured baseline model here.
 struct Judged {
     at_base: bool,
     fork: Option<String>,
