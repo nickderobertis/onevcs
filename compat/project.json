@@ -1,4 +1,5 @@
 {
+  "//": "llmlint: ignore[crates_stay_in_one_cargo_workspace] this project runs compat/, which stays outside the workspace on purpose: joining it would put two packages named `onevcs` in one resolve graph (compat/Cargo.toml and compat/AGENTS.md say why). The project adds no crate; it gives that existing one its own Nx targets.",
   "name": "onevcs-compat",
   "$schema": "../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",

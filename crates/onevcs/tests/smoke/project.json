@@ -5,6 +5,6 @@
   "tags": ["scope:live", "lang:rust"],
   "implicitDependencies": ["onevcs"],
   "targets": {
-    "smoke-real": { "command": "just _smoke-real", "cache": false }
+    "smoke-real": { "//": "llmlint: ignore[new_projects_keep_the_graph_uniform] not `test`: `just test` and `just check` fan `test` across the graph and stay offline and credential-free, and this suite reaches the real GitHub with a token, so it is reached by `just smoke-real` from smoke.yml alone.", "command": "just _smoke-real", "cache": false }
   }
 }

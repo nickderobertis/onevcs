@@ -272,20 +272,20 @@ fn a_change_under_crates_reaches_the_crate_and_every_tier_that_reads_it() {
 #[test]
 fn any_rust_project_affected_runs_the_rust_artifact_jobs_and_none_affected_skips_them() {
     // CI's `cross`, `msrv`, `deny` and `install` jobs run when `just
-    // affected-crate` says `true`. A change confined to a test file of a split
+    // affected-rust` says `true`. A change confined to a test file of a split
     // tier — here the compatibility project's, which reaches no other project — is
     // still a Rust change those jobs exist to build.
     let checkout = Checkout::new();
     checkout.branch_changing("tests-only", &["compat/tests/verdicts.rs"]);
     checkout
-        .just(&["affected-crate"], &[("ONEVCS_NX_BASE_REF", "main")])
+        .just(&["affected-rust"], &[("ONEVCS_NX_BASE_REF", "main")])
         .succeeded()
         .answered("true");
 
     // And a change no Rust project reads leaves them off.
     checkout.branch_changing("prose-only", &["DESIGN.md"]);
     checkout
-        .just(&["affected-crate"], &[("ONEVCS_NX_BASE_REF", "main")])
+        .just(&["affected-rust"], &[("ONEVCS_NX_BASE_REF", "main")])
         .succeeded()
         .answered("false");
 }
@@ -360,16 +360,18 @@ fn runs(counter: &Path) -> usize {
 #[test]
 fn a_tier_runs_again_for_a_change_to_what_it_reads_and_is_replayed_otherwise() {
     let checkout = Checkout::new();
-    // llmlint: ignore-block[e2e_not_mocked] what is under test is Nx's cache keyed
-    // on each tier's declared inputs, and telling a replayed task from a re-run one
-    // means counting runs; the real tiers' bodies would spend minutes per run
-    // proving nothing more about the key. The target declarations, `nx.json`,
-    // `scripts/nx.sh`, Nx and its cache are all the real ones.
+    // llmlint: ignore-block[e2e_not_mocked,tests_mirror_real_usage] what is under
+    // test is Nx's cache keyed on each tier's declared inputs, and telling a
+    // replayed task from a re-run one means counting runs — no command a user runs
+    // reports that difference in a form a test can read, and the real tiers' bodies
+    // would spend minutes per run proving nothing more about the key. The target
+    // declarations, `nx.json`, `scripts/nx.sh`, Nx and its cache are all the real
+    // ones; only the two recipe bodies are counters, as in `llmlint_cache.rs`.
     let unit = checkout.outside.join("onevcs-runs");
     let contract = checkout.outside.join("onevcs-contract-runs");
     count_runs_of(&checkout, "_unit-test", &unit);
     count_runs_of(&checkout, "_contract-test", &contract);
-    // llmlint: ignore-end[e2e_not_mocked]
+    // llmlint: ignore-end[e2e_not_mocked,tests_mirror_real_usage]
     let run = || {
         checkout
             .command("bash")

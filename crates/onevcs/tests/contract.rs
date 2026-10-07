@@ -6016,6 +6016,95 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
 }
 
 #[test]
+fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_forks() {
+    // The comment itself is the notignored action's, posted from GitHub's runner
+    // through the pull request's API — nothing an offline gate can run. What this
+    // repository decides is the wiring, so the wiring is what is held: every pull
+    // request, the one write it needs and no other, and a fork's pull request (whose
+    // read-only token cannot upsert a comment) skipped rather than failed.
+    let file = ".github/workflows/notignored.yml";
+    let doc = workflow(file);
+    assert_eq!(
+        workflow_events(&doc),
+        BTreeSet::from(["pull_request".to_owned()]),
+        "{file} runs on something other than pull_request alone"
+    );
+    let permissions: BTreeMap<String, String> = doc
+        .get("permissions")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .expect("notignored.yml declares its permissions")
+        .iter()
+        .filter_map(|(scope, grant)| Some((scope.as_str()?.to_owned(), grant.as_str()?.to_owned())))
+        .collect();
+    assert_eq!(
+        permissions,
+        BTreeMap::from([
+            ("contents".to_owned(), "read".to_owned()),
+            ("pull-requests".to_owned(), "write".to_owned()),
+        ]),
+        "{file} grants more or less than reading the tree and writing its one comment"
+    );
+    let jobs = workflow_jobs(&doc);
+    let job = jobs
+        .get("suppressions")
+        .unwrap_or_else(|| panic!("{file} has no `suppressions` job"));
+    assert_eq!(
+        job.get("if").and_then(serde_yaml_ng::Value::as_str),
+        Some("github.event.pull_request.head.repo.full_name == github.repository"),
+        "{file} no longer skips a fork's pull request"
+    );
+    let steps = job
+        .get("steps")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("the suppressions job has steps");
+    assert!(
+        steps.iter().any(|step| {
+            step.get("uses").and_then(serde_yaml_ng::Value::as_str)
+                == Some("nickderobertis/notignored@v0")
+        }),
+        "{file} no longer runs nickderobertis/notignored@v0"
+    );
+}
+
+#[test]
+fn the_required_checks_agents_md_names_are_the_jobs_reporting_the_fixed_contexts() {
+    // AGENTS.md states the required checks by job, which is how a reader meets
+    // them; `FIXED_CONTEXTS` states them by the context each job reports. The two
+    // are one list in two spellings, so they are reconciled here rather than kept
+    // together by convention. The screenshot comparison is reported by a reusable
+    // workflow rather than by a job of ci.yml, and is held by the test above.
+    let agents = repo_file("AGENTS.md");
+    let opening = "**All gating checks are required**:";
+    let at = agents
+        .find(opening)
+        .expect("AGENTS.md no longer states the required checks");
+    let sentence = &agents[at + opening.len()..];
+    let sentence = &sentence[..sentence.find('.').expect("the list ends a sentence")];
+    let named: BTreeSet<String> = sentence
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+
+    let ci = workflow(".github/workflows/ci.yml");
+    let mut reporting = BTreeSet::new();
+    for (id, job) in workflow_jobs(&ci) {
+        if job_contexts(&id, &job)
+            .iter()
+            .any(|context| FIXED_CONTEXTS.contains(&context.as_str()))
+        {
+            reporting.insert(id);
+        }
+    }
+    assert_eq!(
+        named, reporting,
+        "AGENTS.md's required checks and the ci.yml jobs reporting a fixed context differ; \
+         change protection, AGENTS.md and FIXED_CONTEXTS together"
+    );
+}
+
+#[test]
 fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
     // The real-backend tier reaches GitHub with a credential, so it is not part of
     // the affected tier a pull request is gated on: it has a workflow of its own,

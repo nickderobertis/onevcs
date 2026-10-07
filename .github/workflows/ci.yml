@@ -30,14 +30,14 @@ jobs:
   # commit the push replaced. It also says which gate tier this commit owes, for
   # the `sweep` job.
   #
-  # `just affected-crate` fails closed: with no derivable merge base — a shallow
-  # clone, a missing base branch — it says the crate is affected and the matrices
+  # `just affected-rust` fails closed: with no derivable merge base — a shallow
+  # clone, a missing base branch — it says a Rust project is affected and the matrices
   # run. Affected selection is a speed optimisation, and one that can silently
   # skip a check is a correctness hole.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      crate: ${{ steps.affected.outputs.crate }}
+      rust: ${{ steps.affected.outputs.rust }}
       tier: ${{ steps.tier.outputs.tier }}
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +55,7 @@ jobs:
         id: affected
         env:
           ONEVCS_NX_BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
-        run: echo "crate=$(just affected-crate)" >> "$GITHUB_OUTPUT"
+        run: echo "rust=$(just affected-rust)" >> "$GITHUB_OUTPUT"
       - name: Which gate tier this commit owes
         id: tier
         run: echo "tier=$(just ci-tier select)" >> "$GITHUB_OUTPUT"
@@ -101,7 +101,7 @@ jobs:
   # coverage threshold, which is enforced on Linux).
   cross:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -122,17 +122,15 @@ jobs:
       - uses: ./.github/actions/setup-just
       - name: Bootstrap
         run: just bootstrap
-      - name: Format + lint
-        run: just fmt-check && just lint
-      - name: Tests (every offline tier)
-        run: just test-quick
+      - name: Quality gate (format, lint, every offline tier)
+        run: just check-quick
 
   # The declared MSRV is a promise to consumers, so prove it rather than document
   # it: a floor that only lives in Cargo.toml drifts the first time a dependency
   # raises its own.
   msrv:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -195,7 +193,7 @@ jobs:
   # it needs a network advisory DB and must not be duplicated across the matrix.
   deny:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -246,7 +244,7 @@ jobs:
   # release.
   install:
     needs: [changes, gate]
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:

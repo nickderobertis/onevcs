@@ -105,12 +105,20 @@ check-affected:
     @bash scripts/nx-affected.sh -t check
     @echo "check-affected: ok"
 
+# The gate as CI's `cross` legs run it, in one recipe so it cannot drift from the
+# stages `check` runs: coverage is measured on Linux only, so every offline tier
+# runs through its uninstrumented `test-quick` target instead of `test`.
+# Format, lint and every offline tier without coverage (the cross-platform gate).
+check-quick:
+    @bash scripts/nx.sh run-many -t format-check,lint,test-quick
+    @echo "check-quick: ok"
+
 # `true` when this branch's diff can reach any Rust project — the crate or one of
 # the test tiers split out of it (`tag:lang:rust`) — so CI can skip the
 # cross-platform and install matrices on a change that cannot touch one. Fails
 # closed.
 # Whether any Rust project is affected by this branch.
-affected-crate:
+affected-rust:
     @bash scripts/nx-affected.sh --affects tag:lang:rust
 
 # Releases batch behind release-plz's release PR, so that PR gets the full sweep and

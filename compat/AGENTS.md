@@ -53,7 +53,7 @@ claim is about:
   mirror of any other repository's file: this project is offline and cannot read one,
   and the claim stays true of 0.32.2 whatever a consumer later pins. Moving it to a
   newer release is a new claim someone decides on, never a sync. It runs on every
-  platform: `just test-quick`, which CI's `cross (windows-latest)` leg runs, reaches it
+  platform: `just check-quick`, which CI's `cross (windows-latest)` leg runs, reaches it
   through `onevcs-compat:test-quick`, so a landed branch is held to retiring on Windows too. Its
   `diagnosis` is what a failed retirement prints — the classification, whose `unknown`
   names the read that failed, and every read it makes asked again.

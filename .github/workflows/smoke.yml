@@ -32,12 +32,12 @@ env:
 jobs:
   # Whether this pull request's diff reaches a Rust project at all, as ci.yml's
   # `changes` job asks it: a change that cannot touch the crate has nothing for a
-  # live run to prove. `just affected-crate` fails closed, answering `true` when it
+  # live run to prove. `just affected-rust` fails closed, answering `true` when it
   # cannot derive a merge base.
   affected:
     runs-on: ubuntu-latest
     outputs:
-      crate: ${{ steps.affected.outputs.crate }}
+      rust: ${{ steps.affected.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +48,7 @@ jobs:
       - uses: ./.github/actions/setup-just
       - name: Which projects the diff reaches
         id: affected
-        run: echo "crate=$(just affected-crate)" >> "$GITHUB_OUTPUT"
+        run: echo "rust=$(just affected-rust)" >> "$GITHUB_OUTPUT"
 
   # Calls `just smoke-real`, the same entry point a person runs locally, so the
   # journeys are defined once in the test binary and never reimplemented as
@@ -57,7 +57,7 @@ jobs:
   # without talking to GitHub proves nothing.
   smoke:
     needs: affected
-    if: needs.affected.outputs.crate == 'true'
+    if: needs.affected.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       # The default GITHUB_TOKEN is scoped to the repository the workflow runs in,
