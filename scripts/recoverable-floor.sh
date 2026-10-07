@@ -44,13 +44,13 @@
 #       --profile prints a second line, `profile=` and the in-process profile of the
 #       last timed run (this branch's reads only): phase times, git time, cache hits.
 #
-# Environment: RECOVERABLE_FLOOR_DIR (default target/recoverable-floor) holds fixtures
+# Environment: RECOVERABLE_FLOOR_DIR (default dispatch scratch, else target/recoverable-floor) holds fixtures
 # and state; ONEVCS_BIN is this branch's binary (default target/release/onevcs, built by
 # `cargo build --release -p onevcs`).
 set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-state=${RECOVERABLE_FLOOR_DIR:-$repo_root/target/recoverable-floor}
+state=${RECOVERABLE_FLOOR_DIR:-${ONEPIPELINE_NODE_SCRATCH_DIR:-$repo_root/target}/recoverable-floor}
 onevcs_bin=${ONEVCS_BIN:-$repo_root/target/release/onevcs}
 real_git=$(command -v git) || {
     echo "recoverable-floor: no git on PATH; install git, then retry" >&2
@@ -206,8 +206,11 @@ build_identity() {
             close_session "${opened%% *}"
         fi
     done
-    fx sweep --min-age-hours 0 >/dev/null 2>&1 || true
+}
 
+build_kept() {
+    local k=$1 labelled=$2 kept=$3 checkout n made
+    checkout="$fixture/checkouts/r$k"
     # The kept records: the measured launcher's scenarios, then the other managers'.
     made=0
     if [ "$labelled" -gt 0 ]; then
@@ -245,20 +248,31 @@ build_fixture() {
         >"$fixture/home/rules.yml"
     printf 'version: 1\ndefault: {pool: 2, overflow: unlimited, delete: [".logs/"]}\n' \
         >"$fixture/home/workspaces.yml"
-    for k in $(seq 1 "$identities"); do
-        # Labelled identities are the first half, each with its own rotation of states.
-        local mine=0
-        [ "$k" -le "$labelled" ] && mine=$k
-        (build_identity "$k" "$mine" "$history" "$kept" >"$fixture/logs/r$k.log" 2>&1) &
-        jobs=$((jobs + 1))
-        if [ "$jobs" -ge "$parallel" ]; then
+    # Sweep only after every history writer has finished and before opening any kept
+    # session: a global sweep racing another identity can reclaim its active worktree.
+    for phase in history kept; do
+        for k in $(seq 1 "$identities"); do
+            local mine=0
+            [ "$k" -le "$labelled" ] && mine=$k
+            if [ "$phase" = history ]; then
+                (build_identity "$k" "$mine" "$history" "$kept" >"$fixture/logs/r$k.log" 2>&1) &
+            else
+                (build_kept "$k" "$mine" "$kept" >>"$fixture/logs/r$k.log" 2>&1) &
+            fi
+            jobs=$((jobs + 1))
+            if [ "$jobs" -ge "$parallel" ]; then
+                wait -n || die "an identity failed to build; see $fixture/logs/" 1
+                jobs=$((jobs - 1))
+            fi
+        done
+        while [ "$jobs" -gt 0 ]; do
             wait -n || die "an identity failed to build; see $fixture/logs/" 1
             jobs=$((jobs - 1))
+        done
+        if [ "$phase" = history ]; then
+            fx sweep --min-age-hours 0 >"$fixture/logs/sweep.log" 2>&1 ||
+                die "history sweep failed; see $fixture/logs/sweep.log" 1
         fi
-    done
-    while [ "$jobs" -gt 0 ]; do
-        wait -n || die "an identity failed to build; see $fixture/logs/" 1
-        jobs=$((jobs - 1))
     done
     {
         echo "shape=$shape"
@@ -302,7 +316,7 @@ cmd_fixture() {
     done
     [ "$labelled" -le "$identities" ] || die "fixture: --labelled $labelled exceeds --identities $identities"
     [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'cargo build --release -p onevcs', or set ONEVCS_BIN"
-    shape="identities=$identities,labelled=$labelled,kept=$kept,history=$history"
+    shape="v2,identities=$identities,labelled=$labelled,kept=$kept,history=$history"
     fixture=${dir:-$(fixture_dir "$scale")}
     if [ -f "$fixture/fixture.env" ] && grep -qx "shape=$shape" "$fixture/fixture.env"; then
         echo "fixture: reusing $fixture ($(tr '\n' ' ' <"$fixture/fixture.env"))"
@@ -387,7 +401,13 @@ read_env() {
 
 once() {
     local path=$1 out=$2
-    (cd / && env "${env_args[@]}" PATH="$path" "${argv[@]}" <<<"$feed" >"$out" 2>"$out.err") || true
+    local status=0
+    (cd / && env "${env_args[@]}" PATH="$path" "${argv[@]}" <<<"$feed" >"$out" 2>"$out.err") || status=$?
+    # The guard's block verdict exits 1; every other nonzero exit is a failed read.
+    if [ "$status" -ne 0 ] && ! { [ "$read" = stop-guard ] && [ "$status" -eq 1 ] && grep -q '"verdict"' "$out"; }; then
+        cat "$out.err" >&2
+        die "$read exited $status; repair the read before measuring it again" 1
+    fi
 }
 
 cmd_run() {
@@ -448,7 +468,8 @@ cmd_run() {
     read_env "$read"
     [ "$profile" -eq 1 ] && env_args+=("ONEVCS_SPIKE_PROFILE=1")
     local scratch counter shim_dir dispatch_count="" i started ended times=() counts=()
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/recoverable-floor.XXXXXX")
+    mkdir -p "$state"
+    scratch=$(mktemp -d "$state/measurement.XXXXXX")
     shim_dir="$scratch/shim"
     counter="$scratch/count"
     mkdir -p "$shim_dir"

@@ -605,6 +605,20 @@ fn the_harness_refuses_what_it_cannot_measure_by_name() {
     let (code, stderr) = said(&["fixture", "--identities", "2", "--labelled", "3"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("exceeds --identities"), "{stderr}");
+    // An executable that fails is not a measured answer, even if it exits quickly.
+    let (code, stderr) = said(&[
+        "run",
+        "onevcs-version",
+        "--real",
+        "--session",
+        MEASURED,
+        "--baseline",
+        "/bin/false",
+        "--runs",
+        "1",
+    ]);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("onevcs-version exited 1"), "{stderr}");
     let (code, stderr) = said(&["measure"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("unknown verb measure"), "{stderr}");
