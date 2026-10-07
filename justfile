@@ -7,7 +7,9 @@
 # The repo-wide verbs delegate to Nx, which fans the uniformly-named target out
 # across every project rather than looping over projects by hand. What a target
 # *does* stays with its project — the `_crate-*` recipes below are the Rust
-# crate's own tools, named by crates/onevcs/project.json.
+# crate's own tools, named by crates/onevcs/project.json, and the per-tier `_*-test`
+# and `_compat-*` recipes are the split test tiers' own, named by the project.json
+# files under crates/onevcs/tests/ and compat/.
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
@@ -43,7 +45,8 @@ default:
 bootstrap:
     @bash scripts/nx.sh run-many -t bootstrap --parallel=1
 
-# The Rust crate's own provisioning (the `onevcs:bootstrap` target).
+# The Rust crate's own provisioning (the `onevcs:bootstrap` target). It provisions
+# every tier the workspace's tests are split into, which share its toolchain.
 _crate-bootstrap:
     @rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install
     @rustup component add rustfmt clippy llvm-tools >/dev/null \
@@ -52,6 +55,9 @@ _crate-bootstrap:
     @just _ensure-tool cargo-llvm-cov
     @just _ensure-fuse
     @cargo fetch --locked --quiet
+
+# The compatibility project's own provisioning (the `onevcs-compat:bootstrap` target).
+_compat-bootstrap:
     @cargo fetch --locked --quiet --manifest-path compat/Cargo.toml
 
 # One sweep journey mounts a filesystem of its own through `fusermount3`; Linux is
@@ -81,7 +87,7 @@ _ensure-tool tool:
 # target `just check-affected` uses — which replays from the cache in a second and
 # is what stops the full sweep and the affected sweep from covering different tiers.
 # Deterministic quality gate, every project.
-check: fmt-check lint test doc
+check: fmt-check lint test coverage doc
     @bash scripts/nx.sh run-many -t check
     @echo "check: ok"
 
@@ -99,12 +105,20 @@ check-affected:
     @bash scripts/nx-affected.sh -t check
     @echo "check-affected: ok"
 
-# `true` when this branch's diff can reach the Rust crate project, so CI can skip
-# the cross-platform and install matrices on a change that cannot touch it. Fails
+# `true` when this branch's diff can reach any Rust project — the crate or one of
+# the test tiers split out of it (`tag:lang:rust`) — so CI can skip the
+# cross-platform and install matrices on a change that cannot touch one. Fails
 # closed.
-# Whether the Rust crate is affected by this branch.
+# Whether any Rust project is affected by this branch.
 affected-crate:
-    @bash scripts/nx-affected.sh --affects onevcs
+    @bash scripts/nx-affected.sh --affects tag:lang:rust
+
+# Releases batch behind release-plz's release PR, so that PR gets the full sweep and
+# every other build the affected tier; scripts/ci-tier.sh is the one place that
+# says which. CI's `changes` job reads it, and its `sweep` job runs the answer.
+# Which gate tier this CI build owes its commit (`select`), or run it (`run -t check`).
+ci-tier *args:
+    @bash scripts/ci-tier.sh {{args}}
 
 # Escape hatch for Nx itself, e.g. `just nx show projects` or `just nx graph`.
 # Run an arbitrary Nx command against this workspace.
@@ -123,9 +137,13 @@ format:
 lint:
     @bash scripts/nx.sh run-many -t lint
 
-# Every project's test suite; the crate's enforces its coverage floor.
+# Every project's test suite, each tier instrumented with its report deferred.
 test:
     @bash scripts/nx.sh run-many -t test
+
+# The coverage floor, enforced once over every instrumented tier's profile.
+coverage:
+    @bash scripts/nx.sh run-many -t coverage
 
 # Build every project's docs; warnings are errors.
 doc:
@@ -134,35 +152,80 @@ doc:
 # Verify the crate's formatting without modifying files.
 _crate-fmt-check:
     @cargo fmt --all -- --check || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
-    @cargo fmt --all --manifest-path compat/Cargo.toml -- --check \
-      || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
 
 # Format the crate in place.
 _crate-format:
     @cargo fmt --all
-    @cargo fmt --all --manifest-path compat/Cargo.toml
 
 # Lint the crate with clippy; any warning is an error.
-# The compatibility project is held to the same bar: it is a source file in this
-# tree, and one nothing formatted or linted is one nobody reads.
 _crate-lint:
     @cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+
+# The compatibility project is held to the crate's bar: it is a source file in this
+# tree, and one nothing formatted or linted is one nobody reads.
+# Verify the compatibility project's formatting without modifying files.
+_compat-fmt-check:
+    @cargo fmt --all --manifest-path compat/Cargo.toml -- --check \
+      || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
+
+# Format the compatibility project in place.
+_compat-format:
+    @cargo fmt --all --manifest-path compat/Cargo.toml
+
+# Lint the compatibility project with clippy; any warning is an error.
+_compat-lint:
     @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet -- -D warnings
 
-# The offline tier: every binary but `smoke`, which needs a GitHub credential and
-# a scratch repository and is run by `just smoke-real` alone, and `release_pr`,
-# which needs the pinned `release-plz` and is run by `just release-pr-journeys`.
-# Excluded by name rather than by `#[ignore]`, so no journey in either is ever a
-# skipped test.
-offline-tiers := "not binary(smoke) and not binary(release_pr)"
+# The offline suite, split into the Nx test tiers that run it. Each is a nextest
+# filterset over the workspace's test binaries, so the split moves no test: the
+# four below select every test but the `smoke` binary's, which needs a GitHub
+# credential and a scratch repository and is run by `just smoke-real` alone, and
+# the `release_pr` binary's, which needs the pinned `release-plz` and is run by
+# `just release-pr-journeys` — and no test twice. Excluded by name rather than by
+# `#[ignore]`, so no journey in either is ever a skipped test.
+#
+# `scripts-suites` are the `e2e` modules whose subject is this repository's own
+# scripts, packaging and workflows rather than the crate: they read `scripts/`,
+# `npm/` and `.github/`, so they are the tier a change there reaches.
+scripts-suites := "test(/^(scripts|packaging|llmlint_cache|smoke|state_root)::/)"
+# `onevcs:test` — both crates' unit tests and every test binary not named below
+# (`recorded`, `onevcs-testing`'s `journeys`).
+unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr))"
+# `onevcs-e2e:test` — the binary's journeys.
+e2e-tier := "binary(e2e) & not " + scripts-suites
+# `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
+scripts-tier := "binary(e2e) & " + scripts-suites
+# `onevcs-contract:test` — the contract tests over workflows, manifests and docs.
+contract-tier := "binary(contract)"
 
-# 95% line coverage is the gate; lower it only with a documented reason in
-# AGENTS.md.
-# The crate's offline test suite (contract + e2e) with coverage enforced.
-_crate-test: _crate-compat
-    @cargo llvm-cov nextest --workspace --locked --fail-under-lines 95 \
-      -E '{{offline-tiers}}' --status-level fail --final-status-level fail \
-      || { echo "tests failed, or coverage fell below 95% — cover the lines the table above counts as missed" >&2; exit 1; }
+# 95% line coverage is the gate, measured over all four tiers together by
+# `onevcs:coverage`; lower it only with a documented reason in AGENTS.md.
+coverage-floor := "95"
+
+# One tier's tests under coverage instrumentation with the report deferred: its
+# profile is kept for `_crate-coverage` (see scripts/coverage.sh). Each tier's
+# `test` target names its own recipe below.
+_cover tier filter:
+    @bash scripts/coverage.sh run {{quote(tier)}} {{quote(filter)}}
+
+# Coverage instrumentation is measured on Linux only, so the cross-platform CI
+# legs run each tier through this (its `test-quick` target) instead of `test`.
+# One tier's tests without coverage instrumentation.
+_quick filter:
+    @cargo nextest run --workspace --locked --status-level fail -E {{quote(filter)}}
+
+_unit-test: (_cover "onevcs" unit-tier)
+_unit-test-quick: (_quick unit-tier)
+_e2e-test: (_cover "onevcs-e2e" e2e-tier)
+_e2e-test-quick: (_quick e2e-tier)
+_scripts-e2e-test: (_cover "onevcs-scripts-e2e" scripts-tier)
+_scripts-e2e-test-quick: (_quick scripts-tier)
+_contract-test: (_cover "onevcs-contract" contract-tier)
+_contract-test-quick: (_quick contract-tier)
+
+# The coverage floor over every instrumented tier's profile, merged into one report.
+_crate-coverage:
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-scripts-e2e onevcs-contract
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named
@@ -171,15 +234,15 @@ _crate-test: _crate-compat
 # else — `.cargo/config.toml` reaches it there — and the released `onevcs` it pins
 # and the workspace's own carry different versions, so cargo keys the two apart.
 # The compatibility check: a released `onevcs` reading this build's envelopes.
-_crate-compat:
+_compat-test:
     @cargo nextest run --manifest-path compat/Cargo.toml --locked --status-level fail \
       || { echo "a released onevcs no longer reads what this build writes — see compat/tests" >&2; exit 1; }
 
 # Coverage instrumentation is measured on Linux only, so the cross-platform CI
-# legs run the same suite through this instead of `test`.
-# The offline suite without coverage instrumentation.
-test-quick: _crate-compat
-    @cargo nextest run --workspace --locked -E '{{offline-tiers}}' --status-level fail
+# legs run the same tiers through this instead of `test`.
+# The offline suite without coverage instrumentation, every tier.
+test-quick:
+    @bash scripts/nx.sh run-many -t test-quick
 
 # Outside `check` and `gate` on purpose: those stay offline and credential-free.
 # CI's `smoke` job calls this same recipe, so the journeys are defined once — in
@@ -193,8 +256,15 @@ test-quick: _crate-compat
 # value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
 # and a real credential: stopping at the first failure hides how the other journeys
 # fared under the same one, which is the question this tier is asked.
+#
+# It runs as the uncached `onevcs-smoke:smoke-real` target, streamed rather than
+# folded into a summary line, because what it printed is the evidence.
 # Drive both interfaces against real git, a real remote, and the real GitHub API.
 smoke-real:
+    @ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh run onevcs-smoke:smoke-real
+
+# The `onevcs-smoke:smoke-real` target's body.
+_smoke-real:
     @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
       --status-level all
 
@@ -207,9 +277,10 @@ test-one name:
     @name={{quote(name)}}; cargo nextest run --workspace --locked -E "test($name)" --no-fail-fast --status-level fail
 
 # Drives the compiled binary as a subprocess — never an in-process `main()`.
-# The end-to-end binary journeys in isolation (also run by `test`/`check`).
+# The end-to-end binary journeys in isolation, both e2e tiers (also run by
+# `test`/`check`), uninstrumented.
 test-e2e:
-    @cargo nextest run --workspace --locked -E 'binary(e2e)' --status-level fail
+    @bash scripts/nx.sh run-many -t test-quick -p onevcs-e2e onevcs-scripts-e2e
 
 # Build the docs with warnings denied (kept in the gate so doc links don't rot).
 _crate-doc:
@@ -225,9 +296,14 @@ upgrade:
     @npm update --silent --no-audit --no-fund
     @just check
 
-# Separate from `check`: `cargo deny` needs a network-fetched advisory DB.
+# Separate from `check`: `cargo deny` needs a network-fetched advisory DB. The
+# uncached `workspace:deps-check` target, because the audit is of the whole graph.
 # Advisory + license audit and unused-dependency check.
 deps-check:
+    @bash scripts/nx.sh run workspace:deps-check
+
+# The `workspace:deps-check` target's body.
+_deps-check:
     @command -v cargo-deny >/dev/null || { echo "cargo-deny not installed: cargo install cargo-deny --locked" >&2; exit 1; }
     @command -v cargo-machete >/dev/null || { echo "cargo-machete not installed: cargo install cargo-machete --locked" >&2; exit 1; }
     @cargo deny --log-level error check
@@ -253,14 +329,24 @@ release-pr-check ref="HEAD":
 # The journeys that hold release-pr-check to what it proves, run against the real
 # `release-plz` at the version `release-plz.yml` pins — they refuse any other — so
 # outside `check` and `gate`, which do not install it. CI's `release-pr` job runs
-# this after `release-pr-check`. See crates/onevcs/tests/release_pr/main.rs.
+# this after `release-pr-check`. See crates/onevcs/tests/release_pr/main.rs. It runs
+# as the uncached `onevcs-release-pr:release-pr-journeys` target.
 release-pr-journeys:
+    @bash scripts/nx.sh run onevcs-release-pr:release-pr-journeys
+
+# The `onevcs-release-pr:release-pr-journeys` target's body.
+_release-pr-journeys:
     @cargo nextest run --workspace --locked -E 'binary(release_pr)' --status-level fail
 
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
+# The uncached `workspace:msrv` target, outside `check`: it needs that toolchain.
 # Build under the declared MSRV.
 msrv:
+    @bash scripts/nx.sh run workspace:msrv
+
+# The `workspace:msrv` target's body.
+_msrv:
     @RUSTFLAGS="-D warnings" cargo +{{msrv-version}} check --workspace --locked --all-targets --quiet \
       || { echo "the {{msrv-version}} floor no longer builds — install that toolchain, or raise rust-version in Cargo.toml (and clippy.toml)" >&2; exit 1; }
 

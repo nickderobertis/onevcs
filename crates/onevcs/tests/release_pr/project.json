@@ -1,0 +1,10 @@
+{
+  "name": "onevcs-release-pr",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:release", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "release-pr-journeys": { "command": "just _release-pr-journeys", "cache": false }
+  }
+}

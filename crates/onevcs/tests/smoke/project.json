@@ -1,0 +1,10 @@
+{
+  "name": "onevcs-smoke",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:live", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "smoke-real": { "command": "just _smoke-real", "cache": false }
+  }
+}

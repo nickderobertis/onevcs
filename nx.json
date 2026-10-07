@@ -21,13 +21,42 @@
       "sharedGlobals"
     ],
     "wholeWorkspace": ["{workspaceRoot}/**/*"],
-    "crateAndSuiteInputs": [
-      "crateSource",
+    "contractDocs": [
       "{workspaceRoot}/docs/contract.md",
-      "{workspaceRoot}/compat/**/*",
+      "{workspaceRoot}/docs/inferred-surface.md"
+    ],
+    "e2eInputs": ["crateSource", "contractDocs", "{workspaceRoot}/release-targets.toml"],
+    "scriptsSuiteInputs": [
+      "crateSource",
+      "contractDocs",
       "{workspaceRoot}/scripts/**/*",
       "{workspaceRoot}/npm/**/*",
-      "{workspaceRoot}/.github/workflows/*"
+      "{workspaceRoot}/.github/**/*",
+      "{workspaceRoot}/release-targets.toml",
+      "{workspaceRoot}/release-plz.toml",
+      "{workspaceRoot}/project.json",
+      "{workspaceRoot}/llmlint.yml",
+      "{workspaceRoot}/oneharness.toml",
+      "{workspaceRoot}/shots/baseline/**/*",
+      "{workspaceRoot}/docs/screenshots/**/*"
+    ],
+    "contractInputs": [
+      "crateSource",
+      "contractDocs",
+      "{workspaceRoot}/scripts/**/*",
+      "{workspaceRoot}/npm/**/*",
+      "{workspaceRoot}/.github/**/*",
+      "{workspaceRoot}/release-targets.toml",
+      "{workspaceRoot}/README.md",
+      "{workspaceRoot}/LICENSE",
+      "{workspaceRoot}/CHANGELOG.md",
+      "{workspaceRoot}/pyproject.toml"
+    ],
+    "compatSource": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/crates/onevcs/**/*",
+      "{workspaceRoot}/Cargo.toml",
+      "sharedGlobals"
     ]
   },
   "targetDefaults": {
@@ -36,11 +65,10 @@
     "format-check": { "cache": true, "inputs": ["crateSource"] },
     "lint": { "cache": true, "inputs": ["crateSource"] },
     "doc": { "cache": true, "inputs": ["crateSource"] },
-    "test": { "cache": true, "inputs": ["crateAndSuiteInputs"] },
-    "check": {
-      "cache": false,
-      "dependsOn": ["format-check", "lint", "test", "doc"]
-    },
+    "test": { "cache": true, "parallelism": false, "inputs": ["crateSource"] },
+    "test-quick": { "cache": true, "parallelism": false, "inputs": ["crateSource"] },
+    "coverage": { "cache": true, "parallelism": false },
+    "check": { "cache": false, "dependsOn": ["format-check", "lint", "test", "doc"] },
     "lint-llm-diff": {
       "cache": true,
       "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],

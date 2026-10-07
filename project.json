@@ -11,6 +11,16 @@
     "lint-llm-diff": {
       "command": "./scripts/llmlint-judge.sh",
       "options": { "cwd": ".", "usePty": false }
+    },
+    "msrv": {
+      "command": "just _msrv",
+      "cache": false,
+      "options": { "cwd": "." }
+    },
+    "deps-check": {
+      "command": "just _deps-check",
+      "cache": false,
+      "options": { "cwd": "." }
     }
   }
 }

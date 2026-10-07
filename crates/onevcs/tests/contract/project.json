@@ -1,0 +1,16 @@
+{
+  "name": "onevcs-contract",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:contract", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "test": {
+      "command": "just _contract-test",
+      "inputs": ["contractInputs"],
+      "outputs": ["{workspaceRoot}/target/coverage/onevcs-contract.profdata"]
+    },
+    "test-quick": { "command": "just _contract-test-quick", "inputs": ["contractInputs"] },
+    "check": { "executor": "nx:noop", "dependsOn": ["test"] }
+  }
+}

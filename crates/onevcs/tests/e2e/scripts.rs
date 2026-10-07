@@ -62,9 +62,10 @@ use crate::support::workspace_root;
 /// One script run, with the environment a journey needs and nothing inherited
 /// that would change its answer.
 ///
-/// `CI` and both base-ref variables are cleared on every run: this suite is
-/// itself executed by CI, and an inherited `GITHUB_BASE_REF` would silently move
-/// `nx-affected.sh` off the path the journey means to exercise.
+/// `CI`, the base variables and the event variables are cleared on every run: this
+/// suite is itself executed by CI, and an inherited `GITHUB_BASE_REF` or
+/// `GITHUB_HEAD_REF` would silently move `nx-affected.sh` or `ci-tier.sh` off the
+/// path the journey means to exercise.
 struct Run {
     command: Command,
 }
@@ -81,7 +82,10 @@ impl Run {
             .current_dir(&root)
             .env_remove("CI")
             .env_remove("ONEVCS_NX_BASE_REF")
-            .env_remove("GITHUB_BASE_REF");
+            .env_remove("ONEVCS_NX_BASE_SHA")
+            .env_remove("GITHUB_BASE_REF")
+            .env_remove("GITHUB_HEAD_REF")
+            .env_remove("GITHUB_EVENT_NAME");
         Self { command }
     }
 
@@ -356,6 +360,106 @@ fn affected_selection_needs_something_to_select() {
         .output()
         .failed()
         .said("--affects needs a project name");
+}
+
+/// This checkout's `HEAD`, as the full commit id a push event names.
+fn head_commit() -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("git must be available to read HEAD");
+    assert!(output.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+#[test]
+fn a_push_build_scopes_to_the_commit_the_push_replaced() {
+    // A push to main is *on* the base branch, so CI names the commit the push
+    // replaced (`github.event.before`) instead. Named as `HEAD` itself, nothing
+    // lies between the two, so no project is affected — an answer only a scoped
+    // run can give, where the push build without a base answers "everything".
+    let before = head_commit();
+    Run::script("scripts/nx-affected.sh")
+        .args(["--affects", "tag:lang:rust"])
+        .env("CI", "1")
+        .env("ONEVCS_NX_BASE_SHA", &before)
+        .output()
+        .succeeded()
+        .answered("false");
+    // And the run mode dispatches `nx affected` against it rather than widening.
+    let run = Run::script("scripts/nx-affected.sh")
+        .args(["-t", "e2e-no-such-target"])
+        .env("CI", "1")
+        .env("ONEVCS_NX_BASE_SHA", &before)
+        .output();
+    run.succeeded().printed("nx: requested targets succeeded");
+    assert!(
+        !run.stderr.contains("every project runs"),
+        "a push build with a base widened anyway:\n{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn a_named_base_commit_takes_precedence_over_a_base_branch() {
+    // The branch here is not even a usable name; the commit decides alone, so the
+    // branch is never read, let alone refused.
+    let reported = Run::script("scripts/nx-affected.sh")
+        .args(["--affects", "tag:lang:rust"])
+        .env("ONEVCS_NX_BASE_SHA", head_commit())
+        .env("ONEVCS_NX_BASE_REF", "not a branch")
+        .output();
+    reported.succeeded().answered("false");
+    assert!(
+        !reported.stderr.contains("not a usable branch name"),
+        "the branch was read although a commit was named:\n{}",
+        reported.stderr
+    );
+}
+
+#[test]
+fn a_named_base_commit_that_does_not_resolve_fails_closed_naming_the_variable() {
+    // GitHub's `before` for the first push of a branch is all zeros, and a
+    // force-push can name a commit this checkout never fetched: neither is a base,
+    // so everything is affected — and the variable that carried it is named.
+    for unresolvable in ["0000000000000000000000000000000000000000", "HEAD; rm -rf /"] {
+        Run::script("scripts/nx-affected.sh")
+            .args(["--affects", "tag:lang:rust"])
+            .env("CI", "1")
+            .env("ONEVCS_NX_BASE_SHA", unresolvable)
+            .output()
+            .succeeded()
+            .answered("true")
+            .said(&format!(
+                "ONEVCS_NX_BASE_SHA '{unresolvable}' is not a commit"
+            ))
+            .said("counts as affected");
+        Run::script("scripts/nx-affected.sh")
+            .args(["-t", "e2e-no-such-target"])
+            .env("CI", "1")
+            .env("ONEVCS_NX_BASE_SHA", unresolvable)
+            .output()
+            .succeeded()
+            .said(&format!(
+                "ONEVCS_NX_BASE_SHA '{unresolvable}' is not a commit"
+            ))
+            .said("no merge base, so every project runs")
+            .printed("nx: requested targets succeeded");
+    }
+}
+
+#[test]
+fn a_push_build_with_no_named_base_runs_every_project() {
+    // Neither a commit nor a branch: a push build fails closed to the full sweep.
+    Run::script("scripts/nx-affected.sh")
+        .args(["-t", "e2e-no-such-target"])
+        .env("CI", "1")
+        .output()
+        .succeeded()
+        .said("not a pull-request build")
+        .said("no merge base, so every project runs")
+        .printed("nx: requested targets succeeded");
 }
 
 #[test]

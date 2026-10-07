@@ -1,0 +1,16 @@
+{
+  "name": "onevcs-compat",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:compat", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "bootstrap": { "command": "just _compat-bootstrap" },
+    "format": { "command": "just _compat-format" },
+    "format-check": { "command": "just _compat-fmt-check", "inputs": ["compatSource"] },
+    "lint": { "command": "just _compat-lint", "inputs": ["compatSource"] },
+    "test": { "command": "just _compat-test", "inputs": ["compatSource"] },
+    "test-quick": { "command": "just _compat-test", "inputs": ["compatSource"] },
+    "check": { "executor": "nx:noop", "dependsOn": ["format-check", "lint", "test"] }
+  }
+}

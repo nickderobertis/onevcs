@@ -9,11 +9,28 @@
     "format": { "command": "just _crate-format" },
     "format-check": { "command": "just _crate-fmt-check" },
     "lint": { "command": "just _crate-lint" },
-    "test": { "command": "just _crate-test" },
+    "test": {
+      "command": "just _unit-test",
+      "outputs": ["{workspaceRoot}/target/coverage/onevcs.profdata"]
+    },
+    "test-quick": { "command": "just _unit-test-quick" },
     "doc": { "command": "just _crate-doc" },
+    "coverage": {
+      "command": "just _crate-coverage",
+      "dependsOn": [
+        {
+          "target": "test",
+          "projects": ["onevcs", "onevcs-e2e", "onevcs-scripts-e2e", "onevcs-contract"]
+        }
+      ],
+      "inputs": [
+        "crateSource",
+        { "dependentTasksOutputFiles": "**/*.profdata", "transitive": false }
+      ]
+    },
     "check": {
       "executor": "nx:noop",
-      "dependsOn": ["format-check", "lint", "test", "doc"]
+      "dependsOn": ["format-check", "lint", "test", "doc", "coverage"]
     }
   }
 }

@@ -2,8 +2,15 @@
 # Affected-only selection, keyed off an explicitly derived merge base.
 #
 # Two modes:
-#   scripts/nx-affected.sh -t check        run a target over the affected projects
-#   scripts/nx-affected.sh --affects NAME  print `true`/`false` for one project
+#   scripts/nx-affected.sh -t check            run a target over the affected projects
+#   scripts/nx-affected.sh --affects SELECTOR  print `true`/`false`: whether any
+#                                              project SELECTOR names is affected —
+#                                              a project name or an Nx pattern such
+#                                              as `tag:lang:rust`
+#
+# The base is, in order: `ONEVCS_NX_BASE_SHA`, a commit a caller names outright
+# (a push build passes the commit the push replaced); the merge base with
+# `ONEVCS_NX_BASE_REF` or `GITHUB_BASE_REF`, a branch; and locally, `main`.
 #
 # Both **fail closed**: when the merge base cannot be derived — a shallow clone,
 # a missing base branch, a detached build — this runs everything and says so on
@@ -53,8 +60,25 @@ base_branch() {
 }
 
 # The merge base this branch forked from, or nothing when it cannot be derived.
+#
+# A push to the base branch has no fork to derive one from, so its caller names
+# the commit the push replaced (`ONEVCS_NX_BASE_SHA`, GitHub's
+# `github.event.before`), and that takes precedence over any branch. It is a
+# workflow expression's value rather than something typed, so its shape is checked
+# at the boundary like the branch's is; one that is not a commit in this checkout —
+# a first push to a branch, a force-push that dropped it — fails closed and names
+# the variable, rather than falling back to a branch nobody asked for.
 resolve_base() {
-  local branch
+  local branch sha
+  sha="${ONEVCS_NX_BASE_SHA:-}"
+  if [ -n "$sha" ]; then
+    if printf '%s' "$sha" | grep -Eq '^[0-9a-f]{7,64}$' && git cat-file -e "$sha^{commit}" 2>/dev/null; then
+      printf '%s' "$sha"
+      return 0
+    fi
+    echo "nx-affected: ONEVCS_NX_BASE_SHA '$sha' is not a commit in this checkout, so nothing is scoped (fetch it, or unset ONEVCS_NX_BASE_SHA to scope by branch)" >&2
+    return 1
+  fi
   branch="$(base_branch)" || return 1
   # A PR runner's checkout has the base branch only as a remote-tracking ref if
   # it was fetched; fetch it before asking for the merge base so detection does
@@ -70,7 +94,7 @@ case "${1:-}" in
 --affects)
   project="${2:-}"
   [ -n "$project" ] || {
-    echo "nx-affected: --affects needs a project name" >&2
+    echo "nx-affected: --affects needs a project name or pattern, e.g. 'onevcs' or 'tag:lang:rust'" >&2
     exit 2
   }
   if ! base="$(resolve_base)"; then
@@ -79,15 +103,22 @@ case "${1:-}" in
     exit 0
   fi
   # Read for Nx's answer, so the wrapper must not fold it into a summary line.
-  if ! projects="$(ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh show projects --affected --base="$base" --head=HEAD --json)"; then
-    echo "nx-affected: Nx could not list the affected projects, so '$project' counts as affected (reproduce with 'just nx show projects --affected --base=$base --head=HEAD')" >&2
+  # `--projects` narrows the affected set to what the selector names, so a name
+  # and a tag pattern are asked the same way and Nx alone decides what matches.
+  if ! projects="$(ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh show projects --affected --base="$base" --head=HEAD --projects="$project" --json)"; then
+    echo "nx-affected: Nx could not list the affected projects, so '$project' counts as affected (reproduce with 'just nx show projects --affected --base=$base --head=HEAD --projects=$project')" >&2
     printf 'true\n'
     exit 0
   fi
-  # Matched as a parsed JSON array element rather than by grepping the text: a
-  # project whose name is a substring of another's would otherwise answer for it.
-  if printf '%s' "$projects" |
-    node -e 'const fs=require("node:fs");process.exit(JSON.parse(fs.readFileSync(0,"utf8")).includes(process.argv[1])?0:1)' "$project"; then
+  # Parsed as a JSON array rather than matched as text: an empty answer and one
+  # that is not an answer at all must not read alike, and the second fails closed.
+  count="$(printf '%s' "$projects" |
+    node -e 'const fs=require("node:fs");try{const p=JSON.parse(fs.readFileSync(0,"utf8"));if(!Array.isArray(p))process.exit(1);process.stdout.write(String(p.length))}catch{process.exit(1)}')" || {
+    echo "nx-affected: Nx's project list was not a JSON array, so '$project' counts as affected (reproduce with 'just nx show projects --affected --base=$base --head=HEAD --projects=$project --json')" >&2
+    printf 'true\n'
+    exit 0
+  }
+  if [ "$count" -gt 0 ]; then
     printf 'true\n'
   else
     printf 'false\n'
