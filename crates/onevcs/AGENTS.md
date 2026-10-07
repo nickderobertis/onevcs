@@ -743,6 +743,27 @@ unportable and not the behaviour, so those two carry `#[cfg_attr(target_vendor =
 without having built its premise. `just gate` runs on Linux only, so this is a class of
 defect only the `cross` job sees.
 
+## The test binaries are run by tier projects that own no source
+
+The `project.json` files under `tests/` — `onevcs-e2e`, `onevcs-scripts-e2e`,
+`onevcs-contract`, `onevcs-release-pr`, `onevcs-smoke` — are Nx projects with no
+crate of their own: each runs a nextest filterset (the `*-tier` variables in the
+`justfile`) over this crate's existing test binaries, so a test belongs to a tier by
+which binary and module it is in, never by where its project file sits. Three rules
+follow:
+
+- **A new `e2e` module whose subject is `scripts/`, `npm/` or `.github/` goes in
+  `scripts-suites`**, or a change there will not rerun it — `onevcs-e2e`'s inputs do
+  not name those paths. One that reads a new file outside `crates/` adds that path
+  to its tier's inputs in `nx.json`.
+- **A new test binary needs a tier.** `unit-tier` takes every binary the others do
+  not name, so a new one lands in `onevcs:test` until it is placed; one that needs a
+  credential or a pinned tool is excluded by name there and given an uncached target
+  of its own, like `smoke` and `release_pr`.
+- **Coverage is the union, never a tier's own.** A tier's `test` defers its report
+  and declares its profile as an output; only `onevcs:coverage` enforces the floor,
+  so never add `--fail-under-lines` to one tier.
+
 ## The tier that talks to GitHub
 
 Every other journey here is offline, and the cost of that was measured rather than
