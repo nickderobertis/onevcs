@@ -61,7 +61,9 @@ run)
   exec bash scripts/nx-affected.sh "$@"
   ;;
 *)
+  echo "ci-tier: '${1:-}' is not a command; it takes 'select' or 'run'" >&2
   echo "ci-tier: usage: scripts/ci-tier.sh select | run NX_ARGS..." >&2
+  echo "ACTION: e.g. 'scripts/ci-tier.sh select', or 'scripts/ci-tier.sh run -t check'" >&2
   exit 2
   ;;
 esac

@@ -330,6 +330,28 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
     );
 }
 
+#[test]
+fn an_unknown_tier_command_is_refused_naming_it_and_a_valid_one() {
+    let refused = Reported::from(
+        Command::new("bash")
+            .args(["scripts/ci-tier.sh", "sweep"])
+            .current_dir(crate::support::workspace_root())
+            .output()
+            .expect("bash must be on PATH"),
+    );
+    assert_eq!(refused.status.code(), Some(2), "{}", refused.stderr);
+    for needle in [
+        "'sweep' is not a command; it takes 'select' or 'run'",
+        "ACTION: e.g. 'scripts/ci-tier.sh select'",
+    ] {
+        assert!(
+            refused.stderr.contains(needle),
+            "expected {needle:?}:\n{}",
+            refused.stderr
+        );
+    }
+}
+
 /// Replace the body of one test recipe in the copy's justfile with a counter.
 fn count_runs_of(checkout: &Checkout, recipe: &str, counter: &Path) {
     let justfile = checkout.root.join("justfile");

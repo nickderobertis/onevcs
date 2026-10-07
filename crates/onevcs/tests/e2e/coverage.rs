@@ -270,5 +270,6 @@ fn malformed_arguments_are_refused_naming_a_valid_form() {
     scratch
         .coverage(&["measure"])
         .failed_with(2)
+        .says_on_stderr("cannot run 'scripts/coverage.sh measure'")
         .says_on_stderr("usage: scripts/coverage.sh run TIER FILTERSET");
 }

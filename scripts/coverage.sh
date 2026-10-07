@@ -37,8 +37,12 @@ cd "$ROOT" || {
 
 PROFILES="$ROOT/target/coverage"
 
+# Every refusal of an invocation's shape names what it was given, so a caller
+# reading only stderr sees which argument to change.
 usage() {
+  echo "coverage: cannot run 'scripts/coverage.sh $*': wrong command or argument count" >&2
   echo "coverage: usage: scripts/coverage.sh run TIER FILTERSET | report FLOOR TIER..." >&2
+  echo "ACTION: e.g. 'scripts/coverage.sh run onevcs-e2e \"binary(e2e)\"', then 'scripts/coverage.sh report 95 onevcs-e2e'" >&2
   exit 2
 }
 
@@ -109,7 +113,7 @@ run_tier() {
 report() {
   local floor="$1"
   shift
-  [ "$#" -gt 0 ] || usage
+  [ "$#" -gt 0 ] || usage report "$floor"
   printf '%s' "$floor" | grep -Eq '^[0-9]+(\.[0-9]+)?$' || {
     echo "coverage: '$floor' is not a percentage" >&2
     echo "ACTION: pass the floor as a number, e.g. 'scripts/coverage.sh report 95 onevcs'" >&2
@@ -146,15 +150,15 @@ report() {
 
 case "${1:-}" in
 run)
-  [ "$#" -eq 3 ] || usage
+  [ "$#" -eq 3 ] || usage "$@"
   run_tier "$2" "$3"
   ;;
 report)
-  [ "$#" -ge 3 ] || usage
+  [ "$#" -ge 3 ] || usage "$@"
   shift
   report "$@"
   ;;
 *)
-  usage
+  usage "$@"
   ;;
 esac
