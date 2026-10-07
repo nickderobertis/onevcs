@@ -365,7 +365,9 @@ impl OnDisk {
             }
             let full = RefName::parse(&full)?;
             let text = std::fs::read_to_string(&path).ok()?;
-            let text = text.trim();
+            // Git rejects whitespace before an object ID; normalize only the
+            // trailing newline, or a malformed ref could become a proof input.
+            let text = text.trim_end();
             if let Some(target) = text.strip_prefix("ref: ") {
                 self.symbolic.insert(full, RefName::parse(target)?);
             } else {
@@ -2152,24 +2154,28 @@ pub fn unpublished_branches_among(
         }
         // Spike: how many commits a tip holds that no origin tip reaches is a fact
         // about those commits, so the prototype proves it once per tip and origin.
-        let ahead = crate::spike::cached(
-            "ahead",
-            &(&tip, &origin_tips),
-            |_: &u64| true,
-            || {
-                if !crate::spike::prototype() {
-                    return unpublished_ahead(cwd, &branch, &[]);
-                }
-                let mut args = vec!["rev-list", "--count", tip.as_str(), "--not"];
-                args.extend(origin_tips.iter().map(String::as_str));
-                args.push("--");
-                let counted = checked(&args, Some(cwd))?;
-                counted
-                    .trimmed()
-                    .parse()
-                    .map_err(|_| error::invalid("git did not answer a numeric ahead count"))
-            },
-        )?;
+        let ahead = if disk.is_none() {
+            // for-each-ref can omit broken refs which --remotes refuses. A partial
+            // listing must not normalize that refusal away, or reuse a proof whose
+            // key cannot name the omitted evidence.
+            unpublished_ahead(cwd, &branch, &[])?
+        } else {
+            crate::spike::cached(
+                "ahead",
+                &(&tip, &origin_tips),
+                |_: &u64| true,
+                || {
+                    let mut args = vec!["rev-list", "--count", tip.as_str(), "--not"];
+                    args.extend(origin_tips.iter().map(String::as_str));
+                    args.push("--");
+                    let counted = checked(&args, Some(cwd))?;
+                    counted
+                        .trimmed()
+                        .parse()
+                        .map_err(|_| error::invalid("git did not answer a numeric ahead count"))
+                },
+            )?
+        };
         if ahead > 0 {
             unpublished.push((branch, tip));
         }

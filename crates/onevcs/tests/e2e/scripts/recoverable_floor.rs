@@ -533,6 +533,39 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
         "valid unrelated names keep selected refs on the batch path"
     );
 
+    // A malformed loose value must delegate to Git, not normalize a value that
+    // Git itself refuses into an apparently valid proof input.
+    let malformed_ref = checkout.join(".git/refs/remotes/origin/malformed-value");
+    std::fs::create_dir_all(malformed_ref.parent().expect("ref parent")).expect("ref directory");
+    std::fs::write(&malformed_ref, format!(" {tip}\n")).expect("malformed loose ref");
+    for mode in ["legacy", "prototype", "decision"] {
+        let failed = Command::cargo_bin("onevcs")
+            .expect("binary")
+            .args([
+                "recoverable",
+                "--json",
+                "--label",
+                &format!("launcher={MEASURED}"),
+            ])
+            .current_dir("/")
+            .env("HOME", &fixture)
+            .env("ONEVCS_HOME", fixture.join("home"))
+            .env("ONEVCS_SPIKE_RECOVERABLE", mode)
+            .output()
+            .expect("real recovery read");
+        assert!(
+            !failed.status.success(),
+            "{mode} accepted a loose value Git rejects"
+        );
+        assert!(
+            String::from_utf8_lossy(&failed.stderr).contains("malformed-value"),
+            "{mode}: {}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+    }
+    std::fs::remove_file(&malformed_ref).expect("remove malformed ref");
+    agree(&fixture, "malformed loose value removed", Cache::Warm);
+
     // Packed refs must answer exactly as loose refs did, and a later loose update
     // must override the older packed tip rather than reuse its cached proof.
     let mut checkouts = std::collections::BTreeSet::new();
