@@ -93,7 +93,11 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Preserve(args) => preserve_branch(args),
         Command::Recover(args) => recover_branch(args, providers),
-        Command::Recoverable(args) => recoverable(args, providers),
+        Command::Recoverable(args) => {
+            let answered = recoverable(args, providers);
+            crate::spike::report();
+            answered
+        }
         Command::Status(args) => report_status(args, providers),
         Command::Import(args) => import_branch(args),
         Command::Integrate(args) => integrate_branches(args),
@@ -1209,7 +1213,11 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
         if !args.all {
             eprintln!("onevcs: {withheld}");
         }
-        println!("{}", serde_json::to_string(&rows).map_err(serialization)?);
+        let document = match crate::spike::decision_only() {
+            true => crate::spike::with_tips(&rows),
+            false => serde_json::to_string(&rows),
+        };
+        println!("{}", document.map_err(serialization)?);
         return Ok(0);
     }
     let what = match args.all {

@@ -174,8 +174,9 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
-    let mut command = Command::new("git");
+    let mut command = Command::new(crate::spike::git_program());
     command.args(args);
+    let spawned = Instant::now();
     let ran = bounded(
         command,
         cwd,
@@ -192,6 +193,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         |e| unstarted(&e, args, cwd),
     );
     drop(shims);
+    crate::spike::git_ran(spawned.elapsed());
     let ran = ran?;
     let output = Output {
         status: ran.status,
@@ -313,6 +315,10 @@ mod reads {
             Some("symbolic-ref") => {
                 args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1
             }
+            // Spike: `remote get-url` reads one configuration value and writes nothing,
+            // so the prototype remembers it rather than letting it empty the memo every
+            // census builds on.
+            Some("remote") => crate::spike::prototype() && args.get(1) == Some(&"get-url"),
             _ => false,
         }
     }
@@ -1893,7 +1899,12 @@ pub fn unpublished_branches_among(
         if origin_tips.contains(&tip) {
             continue;
         }
-        if unpublished_ahead(cwd, &branch, &[])? > 0 {
+        // Spike: how many commits a tip holds that no origin tip reaches is a fact
+        // about those commits, so the prototype proves it once per tip and origin.
+        let ahead = crate::spike::cached("ahead", &(&tip, &origin_tips), || {
+            unpublished_ahead(cwd, &branch, &[])
+        })?;
+        if ahead > 0 {
             unpublished.push((branch, tip));
         }
     }
@@ -2446,7 +2457,16 @@ pub fn known_to_carry_changes<'a>(
     // git's output as text, so how much of a listing survived that is a question to
     // settle rather than to assume — a comparison scoped by *some* of the paths a
     // commit touched would answer that the base carries it when the base does not.
-    if touched.len() != counted_files(cwd, fork, commit)? {
+    // Spike: the count above exists because the listing is read as text, and `text`
+    // decodes all of it or none of it. So a listing that arrived with paths in it
+    // arrived whole, and only an empty one can be hiding paths — which `diff --quiet`
+    // answers without the line count `--shortstat` computes over every changed file,
+    // fifteen seconds on one branch of this host.
+    let lost = match crate::spike::prototype() {
+        true => touched.is_empty() && trees_differ(cwd, fork, commit)?,
+        false => touched.len() != counted_files(cwd, fork, commit)?,
+    };
+    if lost {
         // Which leaves the same question asked without paths: a base carrying this
         // commit's whole tree carries its changes too, and that is the one answer
         // that cannot be wrong about a path nobody here could name.

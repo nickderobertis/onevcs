@@ -90,6 +90,7 @@ mod remainder;
 mod retire;
 pub mod rules;
 mod session;
+mod spike;
 mod status;
 mod store;
 mod stream;
@@ -171,6 +172,7 @@ pub use url::Url;
 /// The binary is a thin shell over this, so a journey that drives `onevcs` and a
 /// caller that embeds it take the same path and cannot disagree about an exit code.
 pub fn run(cli: &cli::Cli) -> u8 {
+    spike::entered();
     run_with(cli, Providers::real())
 }
 

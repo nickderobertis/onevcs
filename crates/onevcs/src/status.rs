@@ -2270,6 +2270,119 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
 /// asked what became of a piece of work, so a line it could not read becomes a note
 /// in the report rather than the whole answer. Nothing safety-critical rests on it
 /// — whether the work *landed* is read off the base's content, never off a stream.
+/// Spike: the streams a read narrowed to `identities` can consult, without parsing the
+/// rest.
+///
+/// Which identity a stream records is in its content, so v0.42.0 parses every stream
+/// on the host — 1,627 of them, 21 MB, on the host this was measured on — to keep the
+/// few that answer for the identities asked about. The prototype keeps an index of
+/// each stream's identity under the spike's cache directory, keyed on the file's
+/// length, modification time and inode: a stream is only ever appended to, so a file
+/// whose three are unchanged records what it recorded when it was indexed, and one
+/// whose three moved is parsed again. A stream that names no identity is always read,
+/// because `relevant_streams` matches some of those by name rather than by content.
+/// The index is never authoritative: an entry that is missing, unreadable or stale is
+/// a stream parsed again. `None` asks about every identity and reads everything.
+pub(crate) fn recorded_streams_about(
+    identities: Option<&BTreeSet<String>>,
+) -> Result<Vec<Recorded>> {
+    let Some(identities) = identities else {
+        return recorded_streams(&mut Vec::new());
+    };
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
+    struct Indexed {
+        len: u64,
+        modified: i128,
+        inode: u64,
+        identity: Option<String>,
+    }
+    use std::os::unix::fs::MetadataExt;
+    let directory = home::streams_dir()?;
+    let index_path = crate::spike::cache_dir().map(|dir| dir.join("streams-index.json"));
+    let index: std::collections::BTreeMap<String, Indexed> = index_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return recorded_streams(&mut Vec::new()),
+    };
+    let mut fresh: std::collections::BTreeMap<String, Indexed> = std::collections::BTreeMap::new();
+    let mut kept: Vec<Recorded> = Vec::new();
+    let mut notes = Vec::new();
+    let mut tokens: Vec<(String, std::fs::Metadata)> = Vec::new();
+    for entry in entries.flatten() {
+        let Some(token) = entry
+            .file_name()
+            .to_string_lossy()
+            .strip_suffix(".ndjson")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else {
+            // Unstattable: read it the way v0.42.0 would, gap and all.
+            kept.push(read_stream(&directory, &token, &mut notes));
+            continue;
+        };
+        tokens.push((token, meta));
+    }
+    tokens.sort_by(|left, right| left.0.cmp(&right.0));
+    for (token, meta) in tokens {
+        let stamp = Indexed {
+            len: meta.len(),
+            modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            inode: meta.ino(),
+            identity: None,
+        };
+        let known = index.get(&token).filter(|entry| {
+            entry.len == stamp.len && entry.modified == stamp.modified && entry.inode == stamp.inode
+        });
+        if let Some(entry) = known {
+            fresh.insert(token.clone(), entry.clone());
+            if entry
+                .identity
+                .as_ref()
+                .is_some_and(|identity| !identities.contains(identity))
+            {
+                continue;
+            }
+        }
+        let before = notes.len();
+        let mut record = read_stream(&directory, &token, &mut notes);
+        record.gaps = notes.len() > before;
+        if known.is_none() && !record.gaps {
+            fresh.insert(
+                token.clone(),
+                Indexed {
+                    identity: record.identity.clone(),
+                    ..stamp
+                },
+            );
+        }
+        if record
+            .identity
+            .as_ref()
+            .is_none_or(|identity| identities.contains(identity))
+        {
+            kept.push(record);
+        }
+    }
+    if fresh != index {
+        if let Some(path) = index_path {
+            if let (Some(parent), Ok(bytes)) = (path.parent(), serde_json::to_vec(&fresh)) {
+                let staged = parent.join(format!(".streams-index.{}.tmp", std::process::id()));
+                let _ = std::fs::create_dir_all(parent)
+                    .and_then(|()| std::fs::write(&staged, bytes))
+                    .and_then(|()| std::fs::rename(&staged, &path));
+            }
+        }
+    }
+    Ok(kept)
+}
+
 fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Recorded {
     let mut record = Recorded {
         token: token.to_owned(),

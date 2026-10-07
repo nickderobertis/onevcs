@@ -1814,9 +1814,26 @@ impl<'a> Census<'a> {
                     format!("no repository on this host has its commit {}", copy.tip),
                 ));
             };
-            let one = self
-                .judge_copy(self.asked(&repo), &copy.tip, base_tip, evidence)
-                .map_err(|failure| UnknownCause::new("judge", repo.display(), failure))?;
+            // Spike: a copy's judgement reads its tip, the base tip, the recorded
+            // evidence and the landing trailer, and of git only those commits' ancestry,
+            // content and messages — so the prototype makes it once per such key.
+            let key = (
+                &self.resolution.key,
+                &copy.tip,
+                base_tip,
+                evidence.change.as_ref().map(Url::as_str),
+                evidence.landing.as_ref().map(ObjectId::as_str),
+                evidence
+                    .heads
+                    .iter()
+                    .map(ObjectId::as_str)
+                    .collect::<Vec<_>>(),
+                self.trailers.landed(),
+            );
+            let one = crate::spike::cached("judged", &key, || {
+                self.judge_copy(self.asked(&repo), &copy.tip, base_tip, evidence)
+            })
+            .map_err(|failure| UnknownCause::new("judge", repo.display(), failure))?;
             judged.push((copy.clone(), one));
         }
         Ok(judged)
@@ -2332,6 +2349,7 @@ struct Classified {
 }
 
 /// What one copy's tip turned out to be.
+#[derive(Serialize, Deserialize)]
 struct Judged {
     at_base: bool,
     fork: Option<String>,
