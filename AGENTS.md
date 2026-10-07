@@ -107,29 +107,15 @@ not tell you:
   `crateSource` in `nx.json` names `crates/**/*` rather than only that project's
   own root. A second Nx project for the wheel or the npm package would run the same
   `--workspace` commands twice.
-- **The tests are split into Nx projects by what they read, not by crate.** Each
-  tier is a nextest filterset over the workspace's existing test binaries (the
-  `*-tier` variables in the `justfile`), so the split moved no test and no test runs
-  in two tiers: `onevcs` (both crates' unit tests, `recorded`, `journeys`),
-  `onevcs-e2e` (the binary's journeys), `onevcs-scripts-e2e` (the `e2e` modules
-  about `scripts/`, `npm/`, the workflows and the graph), and `onevcs-contract`
-  (`tests/contract.rs`), plus `onevcs-compat` for `compat/`. Each `test` target's
-  inputs in `nx.json` name what its tests read, so a script or workflow change
-  reaches the scripts and contract tiers and not the crate's unit tier; a change
-  under `crates/` reaches them all. Add a module that reads `scripts/`, `npm/` or
-  `.github/` to `scripts-suites`, or a change there will not rerun it. `onevcs-release-pr`
-  and `onevcs-smoke` are uncached targets outside `check`, reached by `just
-  release-pr-journeys` and `just smoke-real`; `workspace` (the repository root's
-  `project.json`) holds the judged tier below and the uncached `msrv` and
-  `deps-check`, outside `check` too.
-- **Coverage is measured per tier and enforced once.** Each instrumented tier runs
-  `cargo llvm-cov --no-report` and keeps its profile at
-  `target/coverage/<tier>.profdata` (its declared output, so a replayed tier
-  restores it); `onevcs:coverage` depends on all four and reports over their union
-  at 95% (`scripts/coverage.sh`) — the same code and the same tests the one
-  `--workspace` run measured before the split, to the line. The test targets set
-  `parallelism: false`, because two tiers' raw profiles land in one directory and
-  could not be told apart.
+- **The tests are split into Nx projects by what they read, not by crate**:
+  `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract` and
+  `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-smoke` outside
+  `check`. A script or workflow change reaches the scripts and contract tiers, not
+  the crate's unit tier. Their rules live in `crates/onevcs/AGENTS.md` and
+  `compat/AGENTS.md`. `workspace` (the root `project.json`) holds the judged tier
+  below and the uncached `msrv` and `deps-check`, outside `check` too.
+- **Coverage is enforced once, at 95%, over the union of the instrumented tiers**
+  (`onevcs:coverage`); `crates/onevcs/AGENTS.md` says how it is measured.
 - **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
   judge is non-deterministic and judges every file in the base-to-head diff rather
   than the hunk that changed, so an uncached tier is an independent roll per gate

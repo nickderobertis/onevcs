@@ -760,9 +760,21 @@ follow:
   not name, so a new one lands in `onevcs:test` until it is placed; one that needs a
   credential or a pinned tool is excluded by name there and given an uncached target
   of its own, like `smoke` and `release_pr`.
-- **Coverage is the union, never a tier's own.** A tier's `test` defers its report
-  and declares its profile as an output; only `onevcs:coverage` enforces the floor,
-  so never add `--fail-under-lines` to one tier.
+- **Coverage is the union, never a tier's own.** Each instrumented tier's `test`
+  runs `cargo llvm-cov --no-report` and keeps its profile at
+  `target/coverage/<tier>.profdata`, its declared output, so a replayed tier restores
+  it; `onevcs:coverage` depends on all four and reports over their union at 95%
+  (`scripts/coverage.sh`) — the same code and the same tests the one `--workspace`
+  run measured before the split. So never add `--fail-under-lines` to one tier. The
+  test targets set `parallelism: false`, because two tiers' raw profiles land in one
+  directory and could not be told apart.
+
+The split moved no test, and no test runs in two tiers: `unit-tier` holds both
+crates' unit tests, `recorded` and `onevcs-testing`'s `journeys`; `onevcs-e2e` the
+binary's journeys; `onevcs-scripts-e2e` the `e2e` modules about `scripts/`, `npm/`,
+the workflows and the graph; `onevcs-contract` `tests/contract.rs`. Each `test`
+target's inputs in `nx.json` name what its tests read, so a change under `crates/`
+reaches every tier.
 
 ## The tier that talks to GitHub
 
