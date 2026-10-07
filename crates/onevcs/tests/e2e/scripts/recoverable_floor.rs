@@ -445,6 +445,26 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
     assert!(profile["cache_misses"].as_u64().expect("miss count") > 0);
     agree(&fixture, "corrupt cache recovered", Cache::Warm);
 
+    // An OS filename that cannot be represented as a stream token is refused;
+    // removing it restores the read without changing any branch or proof.
+    use std::os::unix::ffi::OsStringExt;
+    let malformed = fixture
+        .join("home/streams")
+        .join(std::ffi::OsString::from_vec(
+            b"invalid-\xff.ndjson".to_vec(),
+        ));
+    std::fs::write(&malformed, b"not an event\n").expect("external malformed filename");
+    let refused = harness(state.path())
+        .args(["run", "decision", "--dir"])
+        .arg(&fixture)
+        .args(["--runs", "1", "--count-runs", "0"])
+        .output()
+        .expect("bash runs the harness");
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("not UTF-8"));
+    std::fs::remove_file(&malformed).expect("remove malformed scratch input");
+    agree(&fixture, "malformed filename removed", Cache::Warm);
+
     // Git's symbolic branch still names a preserved branch. Batch reads must not
     // drop it or choose another checkout because its ref file contains a target.
     let symbolic = all

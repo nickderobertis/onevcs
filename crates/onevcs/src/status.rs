@@ -2361,15 +2361,28 @@ pub(crate) fn recorded_streams_about(
     let mut kept: Vec<Recorded> = Vec::new();
     let mut notes = Vec::new();
     let mut tokens: Vec<(String, std::fs::Metadata)> = Vec::new();
-    for entry in entries.flatten() {
-        let Some(token) = entry
-            .file_name()
-            .to_string_lossy()
-            .strip_suffix(".ndjson")
-            .map(str::to_owned)
-        else {
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return recorded_streams(&mut Vec::new());
+        };
+        let filename = entry.file_name();
+        if !filename.as_encoded_bytes().ends_with(b".ndjson") {
+            continue;
+        }
+        let name = filename.into_string().map_err(|name| {
+            crate::error::invalid(format!(
+                "event stream filename {name:?} in {} is not UTF-8",
+                directory.display()
+            ))
+        })?;
+        let Some(token) = name.strip_suffix(".ndjson").map(str::to_owned) else {
             continue;
         };
+        if !crate::ids::is_safe_name(&token) {
+            return Err(crate::error::invalid(format!(
+                "event stream filename {name:?} does not name a valid stream token"
+            )));
+        }
         let Ok(meta) = entry.metadata() else {
             // Unstattable: read it the way v0.42.0 would, gap and all.
             kept.push(read_stream(&directory, &token, &mut notes));
