@@ -53,20 +53,18 @@ mod comparison;
 // carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice.
 mod cost;
+// Linux only: coverage is measured on Linux alone, so `cargo llvm-cov` is installed
+// there and nowhere else; it drives `scripts/coverage.sh` over a scratch crate.
+#[cfg(target_os = "linux")]
+mod coverage;
 // Unix only: the draft lifecycle, row by row, through real git against a real bare
 // origin and the host from `onevcs-testing` — a supplied host is the seam the rows are
 // driven through, and the crate a consumer drives them with. Its `rules check` journeys
 // and one publication through the real `GitHub` implementation drive the binary. Its
-// own header carries the reason in full. It lives in this one `e2e` binary of the one
-// crate project, as every journey here does, because `crates/onevcs/AGENTS.md` fixes
-// that: a second Nx project would run the same `--workspace` commands twice.
+// own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
 mod drafts;
 #[cfg(unix)]
 mod edges;
@@ -77,18 +75,20 @@ mod edges;
 mod fetch_turns;
 // Linux only: the stamping `git` and the hooks it is measured against read the clock
 // with GNU `date +%s%3N`. The required-checks journeys are in-process for the reason
-// `drafts.rs` is, and its own header carries the rest. It lives in this one `e2e`
-// binary of the one crate project, as every journey here does, because
-// `crates/onevcs/AGENTS.md` fixes that: a second Nx project would run the same
-// `--workspace` commands twice.
+// `drafts.rs` is, and its own header carries the rest.
 #[cfg(target_os = "linux")]
-// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod gate_runs;
 // Unix only: `filter` publishes through the same substituted `gh` as `host.rs`. Its
 // own header carries the reason in full.
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod filter;
+// Unix only: it copies this checkout the way `llmlint_cache` does and drives the real
+// Nx over it, through POSIX scripts. Its own header carries the reason the caching
+// journey counts runs of two recipes it replaces.
+#[cfg(unix)]
+mod graph;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
 // shell. See `world.rs`.
 // `honesty` compares the real backend against the test one, so one of its two runs
@@ -145,34 +145,18 @@ mod llmlint_cache;
 // then published, preserved, adopted, closed, swept and retired through the binary, on
 // `world.rs`'s POSIX fixture and in real slots. Its own header carries the reason.
 #[cfg(unix)]
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice, and the
-// affected selection already fails closed to everything on a base it cannot derive. What
-// these journeys exercise is `session open`, `close` and publication, which every crate
-// change can reach — and all of them run offline in under a second.
 mod open_conflict;
 mod packaging;
 // Unix only: real slots under a real state root, cut and returned through the binary,
 // with the typed surface's in-process journeys at its end; its own header carries the
 // reason.
 #[cfg(unix)]
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice, and the
-// affected selection already fails closed to everything on a base it cannot derive.
 mod pool;
 // Unix only: it drives real bare origins, real clones, real `git push`es and real
 // `pre-push` hooks, and one of its journeys uses the same substituted `gh` as `host.rs`
 // to assert that a preserving push reaches no host at all. Its own header carries the
 // reason in full.
 #[cfg(unix)]
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] every journey of this suite
-// lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice, and the
-// affected selection already fails closed to everything on a base it cannot derive. Real
-// git is this whole binary's premise rather than this module's expense — the twenty-two
-// journeys here run offline, credential-free and in about two seconds.
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod preserve;
 // Unix only: its hosted journeys publish through the same substituted `gh` as
@@ -188,13 +172,7 @@ mod publish_branch;
 // llmlint: ignore-block[e2e_not_mocked] see the note above this module's declaration: a
 // cancellation is handed over only in-process, and the one stand-in is the substituted
 // `gh` every hosted journey here uses, over real git and a real bare origin.
-// llmlint: ignore-block[expensive_tests_stay_behind_their_own_edge] every journey of this
-// suite lives in the one `e2e` binary of the one crate project, which
-// `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
-// commands twice. These journeys run offline and credential-free, the whole module in
-// about five seconds.
 mod publication_watch;
-// llmlint: ignore-end[expensive_tests_stay_behind_their_own_edge]
 // llmlint: ignore-end[e2e_not_mocked]
 // Linux only: it mounts a filesystem of its own, and an unprivileged mount there
 // needs nothing outside the distribution's own `fuse3`. Its head carries the reason
@@ -205,25 +183,14 @@ mod refusing_fs;
 mod registry;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`, over
 // real git and a real bare origin. Its own header carries the reason in full.
-// It lives in the one `e2e` binary of the one crate project, as every journey here does,
-// because `crates/onevcs/AGENTS.md` fixes that: a second Nx project would run the same
-// `--workspace` commands twice. What it exercises is `publish-branch`, which every crate
-// change can reach, and it reaches no external service, running offline in about two
-// seconds.
 #[cfg(unix)]
-// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod resumption;
 // Unix only: a landing releasing what it built in, driven through real publications
 // whose POSIX-shell gates start real processes inside the workspace. One ending goes
 // through the same substituted `gh` as `host.rs`; its own header carries the reason.
 #[cfg(unix)]
-// Every journey of this suite lives in the one `e2e` binary of the one crate project,
-// which `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same
-// `--workspace` commands twice, and the affected selection already fails closed to
-// everything on a base it cannot derive. What these journeys exercise is the end of
-// every branch-keyed landing, which any crate change can reach, and the ten of them run
-// offline, credential-free and in under a second.
-// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod released;
 // Unix only: a git hook the step runs is what opens the retry inside it, and its hooks
 // are POSIX shell. Everything is local: real bare origin, real clones and slots, the
@@ -239,13 +206,7 @@ mod retries;
 // POSIX fixture, and the ones about a change request publish through the same
 // substituted `gh` as `host.rs`. Its own header carries the reason in full.
 #[cfg(unix)]
-// Every journey of this suite lives in the one `e2e` binary of the one crate project,
-// which `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same
-// `--workspace` commands twice, and the affected selection already fails closed to
-// everything on a base it cannot derive. The twenty-three journeys here run offline,
-// credential-free and in about six seconds, and the host decisioning they substitute is
-// the note above this module's.
-// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod retire;
 // Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
 // and its landings are real local-direct publications. Its own header carries the
@@ -282,12 +243,7 @@ mod sweep;
 // Unix only: it installs `cost.rs`'s counting `git` and `world.rs`'s `gh`, both POSIX
 // shell, over real origins and real sessions. Its own header carries the reason in full.
 #[cfg(unix)]
-// Every journey of this suite lives in the one `e2e` binary of the one crate project, which
-// `crates/onevcs/AGENTS.md` fixes: a second Nx project would run the same `--workspace`
-// commands twice, and the affected selection already fails closed to everything on a base
-// it cannot derive. The twenty-three journeys here run offline, credential-free and in about
-// eight seconds, and the two programs they substitute are the note above this module's.
-// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] both reasons are the note directly above.
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod verdicts;
 #[cfg(unix)]
 mod world;

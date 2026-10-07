@@ -1,0 +1,16 @@
+{
+  "name": "onevcs-scripts-e2e",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:e2e", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "test": {
+      "command": "just _scripts-e2e-test",
+      "inputs": ["scriptsSuiteInputs"],
+      "outputs": ["{workspaceRoot}/target/coverage/onevcs-scripts-e2e.profdata"]
+    },
+    "test-quick": { "command": "just _scripts-e2e-test-quick", "inputs": ["scriptsSuiteInputs"] },
+    "check": { "executor": "nx:noop", "dependsOn": ["test"] }
+  }
+}

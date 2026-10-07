@@ -1,0 +1,97 @@
+name: Smoke
+
+# The one tier that is not offline: real git against a real GitHub remote, and the
+# real GitHub API opening, checking, and merging real pull requests on a scratch
+# repository. Every offline tier would pass against a `gh` that agreed with
+# whatever this crate asked it for — and two of them did, which is why this tier
+# exists.
+#
+# Its own workflow rather than a job in ci.yml: it reaches a live service with a
+# credential, so it stays out of the affected tier a pull request is gated on, and
+# a flaky provider fails here in isolation. Not a required context — nothing
+# required `needs` it — because its token cannot yet read the scratch repository's
+# checks (AGENTS.md, "Commits, releases, and merging").
+#
+# `pull_request` only: it mutates a repository, so a push to main must not run it a
+# second time for a change that has already been proved.
+on:
+  pull_request:
+
+# Least privilege: the checkout reads this repository; what the tier writes, it
+# writes to the scratch repository with its own token.
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Whether this pull request's diff reaches a Rust project at all, as ci.yml's
+  # `changes` job asks it: a change that cannot touch the crate has nothing for a
+  # live run to prove. `just affected-rust` fails closed, answering `true` when it
+  # cannot derive a merge base.
+  affected:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.affected.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: ./.github/actions/setup-just
+      - name: Which projects the diff reaches
+        id: affected
+        run: echo "rust=$(just affected-rust)" >> "$GITHUB_OUTPUT"
+
+  # Calls `just smoke-real`, the same entry point a person runs locally, so the
+  # journeys are defined once in the test binary and never reimplemented as
+  # workflow steps. The credential is named rather than embedded, and the job
+  # refuses loudly rather than skipping when it is absent — a smoke that can pass
+  # without talking to GitHub proves nothing.
+  smoke:
+    needs: affected
+    if: needs.affected.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # The default GITHUB_TOKEN is scoped to the repository the workflow runs in,
+      # and this job publishes to another one — so it needs a token of its own.
+      # RELEASE_PLZ_TOKEN is the one provisioned here; it must be able to read,
+      # push to, open a pull request on, and merge in the scratch repository.
+      # Absent or too narrowly scoped, this job fails naming what it could not do,
+      # which is the intended behaviour: the alternative is a smoke that passes
+      # without talking to GitHub.
+      # llmlint: ignore[least_privilege_grants] the credential this job should hold is a fine-grained PAT on nickderobertis/onevcs-smoke alone with contents and pull-requests write and nothing else; provisioning one is a secret-store change only the operator can make, and RELEASE_PLZ_TOKEN is the token that exists on this repository today and the one named for this job. Swap the reference here once the narrower secret exists.
+      GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      # No ONEVCS_SMOKE_REPO: the tier's own default is the scratch repository, and
+      # naming it here again would be a second place for it to be wrong. Set it only
+      # to point a run somewhere else, and only at a name ending `-smoke` — the tier
+      # refuses anything else.
+    steps:
+      # Before anything is built: a run without the credential is a red X that
+      # names it, in seconds, rather than a build that fails at its first journey.
+      - name: Require the scratch repository's credential
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::the smoke tier needs RELEASE_PLZ_TOKEN, a token that can push to and merge in nickderobertis/onevcs-smoke — provision it in this repository's secrets" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # `just smoke-real` runs through the Nx graph, whose wrapper installs the
+      # pinned Nx.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: ./.github/actions/setup-just
+      - name: Real git, a real remote, and the real GitHub API
+        run: just smoke-real

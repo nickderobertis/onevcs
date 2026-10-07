@@ -1,5 +1,11 @@
 name: CI
 
+# Releases batch: release-plz accumulates every merge to main behind one release
+# pull request, so the commit that ships is that PR's, and no merge job swept it.
+# So every build here — a pull request, a push to main — runs the affected tier
+# against an explicitly derived base, and the release PR alone gets the full
+# `run-many` sweep, once, in the `sweep` job. scripts/ci-tier.sh is the one place
+# that tells the two apart. The live tier is not here at all: smoke.yml.
 on:
   push:
     branches: [main]
@@ -17,19 +23,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Which projects this pull request's diff can reach, derived once so every
-  # Rust-artifact job below can skip on a change that cannot touch the crate
-  # instead of paying the full matrix. On a push to main it answers `true` for
-  # everything.
+  # Which projects this build's diff can reach, derived once so every
+  # Rust-artifact job below can skip on a change that cannot touch a Rust project
+  # (the crate or any test tier split out of it) instead of paying the full
+  # matrix. A pull request's base is its merge base; a push to main's is the
+  # commit the push replaced. It also says which gate tier this commit owes, for
+  # the `sweep` job.
   #
-  # `just affected-crate` fails closed: with no derivable merge base — a shallow
-  # clone, a missing base branch — it says the crate is affected and the matrices
+  # `just affected-rust` fails closed: with no derivable merge base — a shallow
+  # clone, a missing base branch — it says a Rust project is affected and the matrices
   # run. Affected selection is a speed optimisation, and one that can silently
   # skip a check is a correctness hole.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      crate: ${{ steps.affected.outputs.crate }}
+      rust: ${{ steps.affected.outputs.rust }}
+      tier: ${{ steps.tier.outputs.tier }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,13 +53,18 @@ jobs:
       - uses: ./.github/actions/setup-just
       - name: Which projects the diff reaches
         id: affected
-        run: echo "crate=$(just affected-crate)" >> "$GITHUB_OUTPUT"
+        env:
+          ONEVCS_NX_BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: echo "rust=$(just affected-rust)" >> "$GITHUB_OUTPUT"
+      - name: Which gate tier this commit owes
+        id: tier
+        run: echo "tier=$(just ci-tier select)" >> "$GITHUB_OUTPUT"
 
-  # The full gate on a clean checkout: bootstrap from scratch, then the
-  # deterministic gate (format, clippy, tests incl. e2e with the coverage
-  # threshold, docs) over every project. A pull request runs it over the affected
-  # projects only; main runs the whole graph, so nothing affected-detection or a
-  # stale cache could miss survives past the merge.
+  # The gate on a clean checkout: bootstrap from scratch, then the deterministic
+  # gate (format, clippy, every test tier, the coverage threshold over their
+  # union, docs) over the projects this build's diff reaches — keyed to the merge
+  # base on a pull request and to the commit the push replaced on main. With no
+  # base it can derive, `just check-affected` runs every project instead.
   #
   # Linux-only because coverage is measured here; macOS/Windows prove the artifact
   # via the `cross` job below.
@@ -75,11 +89,9 @@ jobs:
       - name: Bootstrap
         run: just bootstrap
       - name: Quality gate (affected projects)
-        if: github.event_name == 'pull_request'
+        env:
+          ONEVCS_NX_BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: just check-affected
-      - name: Quality gate (every project)
-        if: github.event_name != 'pull_request'
-        run: just check
       # A committed lockfile that `just bootstrap`/`just check` had to change is a
       # stale generated file; fail rather than let it drift.
       - name: Committed generated files are up to date
@@ -89,7 +101,7 @@ jobs:
   # coverage threshold, which is enforced on Linux).
   cross:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -110,17 +122,15 @@ jobs:
       - uses: ./.github/actions/setup-just
       - name: Bootstrap
         run: just bootstrap
-      - name: Format + lint
-        run: just fmt-check && just lint
-      - name: Tests (contract + e2e)
-        run: just test-quick
+      - name: Quality gate (format, lint, every offline tier)
+        run: just check-quick
 
   # The declared MSRV is a promise to consumers, so prove it rather than document
   # it: a floor that only lives in Cargo.toml drifts the first time a dependency
   # raises its own.
   msrv:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,52 +144,14 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
+      # `just msrv` runs through the Nx graph, whose wrapper installs the pinned Nx.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: ./.github/actions/setup-just
       # `just msrv` reads the same `rust-version` field, so the recipe and the job
       # can never disagree about which floor was proven.
       - run: just msrv
-
-  # The one tier that is not offline: real git against a real GitHub remote, and
-  # the real GitHub API opening, checking, and merging real pull requests on a
-  # scratch repository. Every other job here would pass against a `gh` that agreed
-  # with whatever this crate asked it for — and two of them did, which is why this
-  # job exists.
-  #
-  # `pull_request` only: it mutates a repository, so a push to main must not run it
-  # a second time for a change that has already been proved.
-  #
-  # It calls `just smoke-real`, the same entry point a person runs locally, so the
-  # journeys are defined once in the test binary and never reimplemented as
-  # workflow steps. The credential is named rather than embedded, and the tier
-  # refuses loudly rather than skipping when it is absent — a smoke that can pass
-  # without talking to GitHub proves nothing.
-  smoke:
-    needs: changes
-    if: needs.changes.outputs.crate == 'true' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-      - uses: ./.github/actions/setup-just
-      - name: Real git, a real remote, and the real GitHub API
-        run: just smoke-real
-        env:
-          # The default GITHUB_TOKEN is scoped to the repository the workflow runs
-          # in, and this job publishes to another one — so it needs a token of its
-          # own. RELEASE_PLZ_TOKEN is the one provisioned here; it must be able to
-          # read, push to, open a pull request on, and merge in the scratch
-          # repository. Absent or too narrowly scoped, this job fails naming what it
-          # could not do, which is the intended behaviour: the alternative is a
-          # smoke that passes without talking to GitHub.
-          # llmlint: ignore[least_privilege_grants] the credential this job should hold is a fine-grained PAT on nickderobertis/onevcs-smoke alone with contents and pull-requests write and nothing else; provisioning one is a secret-store change only the operator can make, and RELEASE_PLZ_TOKEN is the token that exists on this repository today and the one named for this job. Swap the reference here once the narrower secret exists.
-          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          # No ONEVCS_SMOKE_REPO: the tier's own default is the scratch repository,
-          # and naming it here again would be a second place for it to be wrong. Set
-          # it only to point a run somewhere else, and only at a name ending
-          # `-smoke` — the tier refuses anything else.
 
   # The tree a release PR carries is made on a push to main, by release-plz.yml,
   # after every check here has passed on the pull request — so a change that leaves
@@ -195,6 +167,10 @@ jobs:
           # The release baseline is the latest `v*` tag, as release-plz.yml reads it.
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
+      # `just release-pr-journeys` runs through the Nx graph.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       # The version the release job runs, read from where it is pinned rather than
       # pinned a second time here.
       - name: Read the release-plz pin
@@ -217,15 +193,48 @@ jobs:
   # it needs a network advisory DB and must not be duplicated across the matrix.
   deny:
     needs: changes
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-machete
+      # `just deps-check` runs through the Nx graph.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: ./.github/actions/setup-just
       - run: just deps-check
+
+  # The broader tier: one `run-many` sweep of every project's `check`, on
+  # release-plz's release pull request alone. Releases batch behind that PR, so its
+  # commit is the one that ships and no merge job swept it; every other build runs
+  # the affected tier in `gate`. `changes` asks scripts/ci-tier.sh which tier this
+  # commit owes, and this job runs the answer through the same script.
+  #
+  # Not a required context: nothing required `needs` it, and an ordinary pull
+  # request never schedules it.
+  sweep:
+    needs: changes
+    if: needs.changes.outputs.tier == 'sweep'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest,cargo-llvm-cov
+      - uses: ./.github/actions/setup-just
+      - name: Bootstrap
+        run: just bootstrap
+      - name: Quality gate (every project)
+        run: just ci-tier run -t check
 
   # Prove the end-user install path on every platform: install the binary the
   # documented way and smoke-test the real artifact with the same script the
@@ -235,7 +244,7 @@ jobs:
   # release.
   install:
     needs: [changes, gate]
-    if: needs.changes.outputs.crate == 'true'
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:

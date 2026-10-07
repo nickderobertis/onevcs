@@ -321,7 +321,6 @@ const REPEAT_SWEEP_MAX_FRACTION: f64 = 0.25;
 /// seconds is over five times the slowest of those.
 const REPEAT_SWEEP_CEILING_SECONDS: f64 = 30.0;
 
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] two sweeps of a few seconds in the one `e2e` binary `crates/onevcs/AGENTS.md` fixes; the note at this module's declaration in `main.rs` gives the reason in full.
 #[test]
 fn a_repeat_sweep_over_a_host_shaped_estate_that_nothing_changed_is_fast_again() {
     let estate = Estate::new(

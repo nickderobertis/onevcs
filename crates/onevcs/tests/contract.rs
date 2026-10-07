@@ -5757,12 +5757,13 @@ fn every_file_the_npm_launcher_names_is_in_its_package() {
 #[test]
 fn every_nextest_binary_filter_names_a_test_target_that_exists() {
     // The justfile decides which tiers run by *naming* Cargo test binaries in
-    // nextest filters — `not binary(smoke)` for the offline tiers, `binary(smoke)`
-    // for `just smoke-real`, `binary(e2e)` for `just test-e2e`. A `[[test]]`
-    // renamed or removed in Cargo.toml leaves both filters matching nothing, and
-    // both failures are silent in the worst way: `just test` would quietly start
-    // needing a GitHub credential, and `just smoke-real` would quietly pass having
-    // run no journey at all. Nothing else reconciles the two files.
+    // nextest filters — `binary(smoke)` excluded from the offline tiers and run by
+    // `just smoke-real`, `binary(e2e)` split between the two e2e tiers,
+    // `binary(contract)` for the contract tier. A test target renamed or removed
+    // leaves a filter matching nothing, and the failures are silent in the worst
+    // way: `just test` would quietly start needing a GitHub credential, and `just
+    // smoke-real` would quietly pass having run no journey at all. Nothing else
+    // reconciles the two files.
     let justfile = repo_file("justfile");
     let manifest = repo_file("crates/onevcs/Cargo.toml");
 
@@ -5791,6 +5792,21 @@ fn every_nextest_binary_filter_names_a_test_target_that_exists() {
         declared.contains("e2e") && declared.contains("smoke"),
         "the crate's [[test]] targets did not parse: {declared:?}"
     );
+    // And the targets cargo discovers without a `[[test]]` entry: one per
+    // `tests/<name>.rs`, named for the file.
+    let tests = repo_root().join("crates/onevcs/tests");
+    for entry in std::fs::read_dir(&tests).expect("the crate's tests directory is readable") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                declared.insert(stem.to_owned());
+            }
+        }
+    }
+    assert!(
+        declared.contains("contract"),
+        "tests/contract.rs was not discovered as a test target: {declared:?}"
+    );
 
     let named: BTreeSet<String> = justfile
         .match_indices("binary(")
@@ -5804,8 +5820,8 @@ fn every_nextest_binary_filter_names_a_test_target_that_exists() {
     for name in &named {
         assert!(
             declared.contains(name),
-            "the justfile selects the test binary {name:?}, which crates/onevcs/Cargo.toml does \
-             not declare as a [[test]] target: {declared:?}"
+            "the justfile selects the test binary {name:?}, which crates/onevcs has no test \
+             target for: {declared:?}"
         );
     }
     assert!(
@@ -5813,17 +5829,362 @@ fn every_nextest_binary_filter_names_a_test_target_that_exists() {
         "the tier that needs a GitHub credential is no longer named in any filter, so `just \
          test` would run it: {named:?}"
     );
+}
 
-    // And CI calls the recipe rather than restating the filter, so the journeys a
-    // person runs and the ones the pull request runs cannot diverge.
+/// One workflow file, parsed.
+fn workflow(relative: &str) -> serde_yaml_ng::Value {
+    serde_yaml_ng::from_str(&repo_file(relative))
+        .unwrap_or_else(|e| panic!("{relative} is not YAML: {e}"))
+}
+
+/// The events a parsed workflow runs on, whichever of the three shapes of `on:` it
+/// uses.
+fn workflow_events(doc: &serde_yaml_ng::Value) -> BTreeSet<String> {
+    let on = doc.get("on").cloned().unwrap_or_default();
+    match on {
+        serde_yaml_ng::Value::String(event) => BTreeSet::from([event]),
+        serde_yaml_ng::Value::Sequence(events) => events
+            .iter()
+            .filter_map(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        serde_yaml_ng::Value::Mapping(events) => events
+            .keys()
+            .filter_map(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// A workflow's jobs, by id.
+fn workflow_jobs(doc: &serde_yaml_ng::Value) -> BTreeMap<String, serde_yaml_ng::Value> {
+    doc.get("jobs")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .expect("a workflow has jobs")
+        .iter()
+        .filter_map(|(id, job)| Some((id.as_str()?.to_owned(), job.clone())))
+        .collect()
+}
+
+/// The job ids one job `needs`.
+fn job_needs(job: &serde_yaml_ng::Value) -> BTreeSet<String> {
+    match job.get("needs") {
+        Some(serde_yaml_ng::Value::String(need)) => BTreeSet::from([need.clone()]),
+        Some(serde_yaml_ng::Value::Sequence(needs)) => needs
+            .iter()
+            .filter_map(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// The status-check contexts one job reports: its name, or for a matrix over
+/// `os`, its name with each leg's value — the way GitHub names them.
+fn job_contexts(id: &str, job: &serde_yaml_ng::Value) -> Vec<String> {
+    let name = job
+        .get("name")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .unwrap_or(id);
+    let legs: Vec<String> = job
+        .get("strategy")
+        .and_then(|strategy| strategy.get("matrix"))
+        .and_then(|matrix| matrix.get("os"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .map(|legs| {
+            legs.iter()
+                .filter_map(|leg| leg.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if legs.is_empty() {
+        vec![name.to_owned()]
+    } else {
+        legs.iter().map(|leg| format!("{name} ({leg})")).collect()
+    }
+}
+
+/// The status-check contexts branch protection requires of a pull request to
+/// `main`, as this repository fixed them: renaming one is a change to protection
+/// and to AGENTS.md together, never a side effect of a workflow edit.
+const FIXED_CONTEXTS: [&str; 10] = [
+    "gate",
+    "deny",
+    "pr-title",
+    "llmlint",
+    "msrv",
+    "cross (macos-latest)",
+    "cross (windows-latest)",
+    "install (ubuntu-latest)",
+    "install (macos-latest)",
+    "install (windows-latest)",
+];
+
+#[test]
+fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
+    // A required context no pull request reports blocks every merge, and one that
+    // waits on an optional job is only as required as that job is. So each fixed
+    // context is a job of ci.yml — which runs on every pull request with no path
+    // filter — and none of them `needs` a job that is not itself one of them or
+    // `changes`, the affected-selection job every one of them is scoped by.
+    let ci = workflow(".github/workflows/ci.yml");
+    assert!(
+        workflow_events(&ci).contains("pull_request"),
+        "ci.yml no longer runs on pull_request"
+    );
+    let filtered = ci
+        .get("on")
+        .and_then(|on| on.get("pull_request"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .is_some_and(|trigger| {
+            trigger.contains_key("paths") || trigger.contains_key("paths-ignore")
+        });
+    assert!(
+        !filtered,
+        "ci.yml's pull_request trigger filters paths, so a change outside them reports no context"
+    );
+    let jobs = workflow_jobs(&ci);
+    let mut reported = BTreeMap::new();
+    for (id, job) in &jobs {
+        for context in job_contexts(id, job) {
+            reported.insert(context, id.clone());
+        }
+    }
+    let mut gating: BTreeSet<String> = BTreeSet::from(["changes".to_owned()]);
+    for context in FIXED_CONTEXTS {
+        let id = reported
+            .get(context)
+            .unwrap_or_else(|| panic!("no job in ci.yml reports the required context {context:?}"));
+        gating.insert(id.clone());
+    }
+    for context in FIXED_CONTEXTS {
+        let id = &reported[context];
+        let job = &jobs[id];
+        let condition = job
+            .get("if")
+            .and_then(serde_yaml_ng::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            !condition.contains("tier"),
+            "{context} is conditioned on the gate tier ({condition}), so a pull request the \
+             sweep runs on would not report it"
+        );
+        for need in job_needs(job) {
+            assert!(
+                gating.contains(&need),
+                "{context} needs {need:?}, which is no required context — it can leave {context} \
+                 unreported"
+            );
+        }
+    }
+
+    // The screenshot comparison is the eleventh, reported by the reusable workflow
+    // visual-docs.yml calls; what this tree decides is that it is called on every
+    // pull request.
+    let visual = workflow(".github/workflows/visual-docs.yml");
+    assert!(workflow_events(&visual).contains("pull_request"));
+    let visual_jobs = workflow_jobs(&visual);
+    let docs = visual_jobs
+        .get("visual-docs")
+        .expect("visual-docs.yml no longer calls the comparison as `visual-docs`");
+    assert!(
+        docs.get("if").is_none() && job_needs(docs).is_empty(),
+        "visual-docs.yml's comparison is conditioned, so `visual-docs / report (...)` can go \
+         unreported"
+    );
+
+    // And none of the jobs that are deliberately not required reports a fixed
+    // context's name: the release-PR sweep, the live tier, the suppressions comment.
+    for (file, job) in [
+        (".github/workflows/ci.yml", "sweep"),
+        (".github/workflows/smoke.yml", "smoke"),
+        (".github/workflows/notignored.yml", "suppressions"),
+    ] {
+        let doc = workflow(file);
+        let jobs = workflow_jobs(&doc);
+        let found = jobs
+            .get(job)
+            .unwrap_or_else(|| panic!("{file} has no `{job}` job"));
+        for context in job_contexts(job, found) {
+            assert!(
+                !FIXED_CONTEXTS.contains(&context.as_str()),
+                "{file}'s {job} reports {context:?}, a required context's name"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_forks() {
+    // The comment itself is the notignored action's, posted from GitHub's runner
+    // through the pull request's API — nothing an offline gate can run. What this
+    // repository decides is the wiring, so the wiring is what is held: every pull
+    // request, the one write it needs and no other, and a fork's pull request (whose
+    // read-only token cannot upsert a comment) skipped rather than failed.
+    let file = ".github/workflows/notignored.yml";
+    let doc = workflow(file);
+    assert_eq!(
+        workflow_events(&doc),
+        BTreeSet::from(["pull_request".to_owned()]),
+        "{file} runs on something other than pull_request alone"
+    );
+    let permissions: BTreeMap<String, String> = doc
+        .get("permissions")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .expect("notignored.yml declares its permissions")
+        .iter()
+        .filter_map(|(scope, grant)| Some((scope.as_str()?.to_owned(), grant.as_str()?.to_owned())))
+        .collect();
+    assert_eq!(
+        permissions,
+        BTreeMap::from([
+            ("contents".to_owned(), "read".to_owned()),
+            ("pull-requests".to_owned(), "write".to_owned()),
+        ]),
+        "{file} grants more or less than reading the tree and writing its one comment"
+    );
+    let jobs = workflow_jobs(&doc);
+    let job = jobs
+        .get("suppressions")
+        .unwrap_or_else(|| panic!("{file} has no `suppressions` job"));
+    assert_eq!(
+        job.get("if").and_then(serde_yaml_ng::Value::as_str),
+        Some("github.event.pull_request.head.repo.full_name == github.repository"),
+        "{file} no longer skips a fork's pull request"
+    );
+    let steps = job
+        .get("steps")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("the suppressions job has steps");
+    assert!(
+        steps.iter().any(|step| {
+            step.get("uses").and_then(serde_yaml_ng::Value::as_str)
+                == Some("nickderobertis/notignored@v0")
+        }),
+        "{file} no longer runs nickderobertis/notignored@v0"
+    );
+    // The action diffs against the base branch, which a shallow checkout omits.
+    assert!(
+        steps.iter().any(|step| {
+            step.get("uses")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|action| action.starts_with("actions/checkout@"))
+                && step
+                    .get("with")
+                    .and_then(|with| with.get("fetch-depth"))
+                    .and_then(serde_yaml_ng::Value::as_i64)
+                    == Some(0)
+        }),
+        "{file} checks out shallow, so the scan has no base branch to diff against"
+    );
+}
+
+#[test]
+fn the_required_checks_agents_md_names_are_the_jobs_reporting_the_fixed_contexts() {
+    // AGENTS.md states the required checks by job, which is how a reader meets
+    // them; `FIXED_CONTEXTS` states them by the context each job reports. The two
+    // are one list in two spellings, so they are reconciled here rather than kept
+    // together by convention. The screenshot comparison is reported by a reusable
+    // workflow rather than by a job of ci.yml, and is held by the test above.
+    let agents = repo_file("AGENTS.md");
+    let opening = "**All gating checks are required**:";
+    let at = agents
+        .find(opening)
+        .expect("AGENTS.md no longer states the required checks");
+    let sentence = &agents[at + opening.len()..];
+    let sentence = &sentence[..sentence.find('.').expect("the list ends a sentence")];
+    let named: BTreeSet<String> = sentence
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+
+    let ci = workflow(".github/workflows/ci.yml");
+    let mut reporting = BTreeSet::new();
+    for (id, job) in workflow_jobs(&ci) {
+        if job_contexts(&id, &job)
+            .iter()
+            .any(|context| FIXED_CONTEXTS.contains(&context.as_str()))
+        {
+            reporting.insert(id);
+        }
+    }
+    assert_eq!(
+        named, reporting,
+        "AGENTS.md's required checks and the ci.yml jobs reporting a fixed context differ; \
+         change protection, AGENTS.md and FIXED_CONTEXTS together"
+    );
+}
+
+#[test]
+fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
+    // The real-backend tier reaches GitHub with a credential, so it is not part of
+    // the affected tier a pull request is gated on: it has a workflow of its own,
+    // on pull_request, and ci.yml no longer runs it.
+    let smoke_file = ".github/workflows/smoke.yml";
+    let smoke = workflow(smoke_file);
+    assert!(
+        workflow_events(&smoke).contains("pull_request"),
+        "{smoke_file} no longer runs on pull_request"
+    );
     let ci = repo_file(".github/workflows/ci.yml");
     assert!(
-        ci.contains("just smoke-real"),
-        "ci.yml no longer runs the real-backend tier through its one entry point"
+        !ci.contains("smoke-real") && !ci.contains("binary(smoke)"),
+        "ci.yml runs the live tier again; it belongs to {smoke_file} alone"
     );
+
+    // The workflow calls the recipe rather than restating the filter, so the
+    // journeys a person runs and the ones the pull request runs cannot diverge.
+    let text = repo_file(smoke_file);
     assert!(
-        !ci.contains("binary(smoke)"),
-        "ci.yml restates the nextest filter instead of calling `just smoke-real`"
+        !text.contains("binary(smoke)"),
+        "{smoke_file} restates the nextest filter instead of calling `just smoke-real`"
+    );
+    let jobs = workflow_jobs(&smoke);
+    let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
+    let runs: Vec<String> = job
+        .get("steps")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("the smoke job has steps")
+        .iter()
+        .map(|step| {
+            step.get("run")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    let entry = runs
+        .iter()
+        .position(|run| run.trim() == "just smoke-real")
+        .expect("the smoke job no longer runs `just smoke-real`");
+
+    // And it fails fast naming the credential: a step before the journeys that
+    // refuses an empty token and says which secret it needs. A tier that ran with
+    // no credential would fail at its first journey at best, or pass having talked
+    // to nothing at worst.
+    let token = job
+        .get("env")
+        .and_then(|env| env.get("GH_TOKEN"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .expect("the smoke job takes its credential as GH_TOKEN");
+    assert!(
+        token.contains("secrets.RELEASE_PLZ_TOKEN"),
+        "the smoke job's GH_TOKEN is {token:?}, not the secret its refusal names"
+    );
+    let guard = runs
+        .iter()
+        .position(|run| {
+            run.contains("-z \"${GH_TOKEN:-}\"")
+                && run.contains("RELEASE_PLZ_TOKEN")
+                && run.contains("exit 1")
+        })
+        .expect("the smoke job no longer refuses a missing credential by name");
+    assert!(
+        guard < entry,
+        "the smoke job checks its credential only after running the journeys"
     );
 }
 

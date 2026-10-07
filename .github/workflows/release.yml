@@ -107,7 +107,12 @@ jobs:
           fi
 
   # Re-gate the release on the same checks CI enforces, so a release can never
-  # publish an artifact that would not pass the gate.
+  # publish an artifact that would not pass the gate. A Release release-plz cuts
+  # tags the release PR's merge commit, whose tree CI's `sweep` job already swept;
+  # but a Release cut by hand is the supported fallback (see the header), it can tag
+  # any commit, and this job is the only gate such a tag passes before publishing
+  # to registries that cannot take a version back.
+  # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] A Release is not tied to a commit ci.yml swept: the header names a Release cut by hand in the GitHub UI as the supported fallback, and it can tag any commit. This job is the only gate such a tag passes before publishing to crates.io, PyPI and npm, which cannot be taken back.
   test:
     runs-on: ubuntu-latest
     permissions:

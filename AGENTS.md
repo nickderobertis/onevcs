@@ -71,9 +71,12 @@ rationale; the mechanics live in the files named. -->
 - **Product shape:** cli (a Rust library with a thin binary on top).
 - **Language(s):** rust, plus bash for the wrappers and Node for the npm assembler.
 - **References composed:** `base`, `shapes/cli`, `languages/rust`,
-  `intersections/rust-cli`, `ci`, `llmlint`, `releasing`, `monorepo`.
+  `intersections/rust-cli`, `ci`, `llmlint`, `releasing`, `project-graph`.
 - **Excluded, and why:** **asdf / direnv** — `rust-toolchain.toml` and the
-  committed lockfiles already pin everything. **A curl-pipe installer and a
+  committed lockfiles already pin everything. **`languages/bash`** — the shell
+  under `scripts/` is CI and release wiring, not a deliverable, and its decisions
+  are gated by the Rust journeys that drive each script the way its caller does
+  (the `onevcs-scripts-e2e` tier) rather than by bats and kcov. **A curl-pipe installer and a
   composite action** — all three documented install surfaces are registries, so
   nothing constructs a release asset's name and no asset-naming contract can
   drift. **Separate Nx projects for the wheel and the npm package** — both carry
@@ -84,7 +87,7 @@ rationale; the mechanics live in the files named. -->
 
 ## Command surface
 
-`just --list` is the index; do not hand-roll equivalents. Five things it does
+`just --list` is the index; do not hand-roll equivalents. What it does
 not tell you:
 
 - **`just gate` is the bar, not `just check`.** `check` is the deterministic tier
@@ -93,16 +96,25 @@ not tell you:
 - **`just smoke-real` is the one tier neither of them runs.** It is real `git`
   against a real GitHub remote and the real API through the real `gh`, over the
   scratch repository `nickderobertis/onevcs-smoke`, and it lives in its own test
-  binary (`crates/onevcs/tests/smoke/`) so `offline-tiers` can exclude it by name.
-  It needs `gh` and a credential and refuses loudly without one; it never skips.
+  binary (`crates/onevcs/tests/smoke/`) so the offline tiers' filters exclude it by
+  name. It runs as the uncached `onevcs-smoke:smoke-real` target, from a workflow of
+  its own (`smoke.yml`). It needs `gh` and a credential and refuses loudly without
+  one; it never skips.
 - **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
   target names across the graph. A target's *body* belongs to its project, never
-  to a for-each loop here. The `onevcs` project's targets run `--workspace`, so
-  they cover `onevcs-testing` too — which is why `crateSource` in `nx.json` names
-  `crates/**/*` rather than only that project's own root. A second Nx project for
-  the wheel or the npm package would run the same `--workspace` commands twice. The
-  repository root is the one other project (`project.json`, `workspace`), and it
-  carries a single target nothing else could hold — see the judged tier below.
+  to a for-each loop here. The `onevcs` project's `format-check`, `lint` and `doc`
+  run `--workspace`, so they cover `onevcs-testing` too — which is why
+  `crateSource` in `nx.json` names `crates/**/*` rather than only that project's
+  own root. A second Nx project for the wheel or the npm package would run the same
+  `--workspace` commands twice.
+- **The tests are split into Nx projects by what they read, not by crate**:
+  `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract` and
+  `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-smoke` outside
+  `check`. A script or workflow change reaches the scripts and contract tiers, not
+  the crate's unit tier. `workspace` (the root `project.json`) holds the judged
+  tier below and the uncached `msrv` and `deps-check`, outside `check` too.
+- **Coverage is enforced once, at 95%, over the union of the instrumented tiers**
+  (`onevcs:coverage`), never by one tier alone.
 - **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
   judge is non-deterministic and judges every file in the base-to-head diff rather
   than the hunk that changed, so an uncached tier is an independent roll per gate
@@ -139,8 +151,11 @@ not tell you:
   screencomp pre-push guard and nothing else. `just gate` stays unhooked and is still
   the bar you run before pushing.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
-  derivable merge base it runs everything, because a speed optimisation that can
-  silently skip a check is a correctness hole.
+  derivable base it runs everything, because a speed optimisation that can
+  silently skip a check is a correctness hole. The base is `ONEVCS_NX_BASE_SHA`
+  when a caller names one (a push build passes the commit the push replaced), else
+  the merge base with `ONEVCS_NX_BASE_REF`/`GITHUB_BASE_REF`; a named commit this
+  checkout does not have fails closed rather than falling back to a branch.
 
 ## Commits, releases, and merging
 
@@ -155,11 +170,14 @@ not tell you:
   `report` job is what a failure of it announces itself through, since no PR turns
   red for it: `scripts/report-workflow-failure.sh` opens one issue here and
   comments on that same issue at each further failure. `smoke` is deliberately not on that list: it
-  runs on `pull_request` only and takes `secrets.RELEASE_PLZ_TOKEN` as `GH_TOKEN`,
-  and that token is not allowed to read the scratch repository's checks — so one
-  of its journeys cannot pass, and requiring it would block every pull request on
-  a permission only the operator can grant. Make it required once that permission
-  exists and a run is green.
+  runs from its own workflow, `smoke.yml`, on `pull_request` only, and takes
+  `secrets.RELEASE_PLZ_TOKEN` as `GH_TOKEN`, failing in its first step naming that
+  secret when it is absent — and that token is not allowed to read the scratch
+  repository's checks, so one of its journeys cannot pass, and requiring it would
+  block every pull request on a permission only the operator can grant. Make it
+  required once that permission exists and a run is green. Nor are `sweep` (below)
+  and `notignored.yml`'s suppressions comment, and no required job `needs` any of
+  them.
 - **PRs follow `.github/pull_request_template.md`** — terse **What** and **Why**;
   it becomes the squash body. `.github/CODEOWNERS` routes the review by subtree,
   so a packaging or workflow change is not reviewed as if it were a crate change.
@@ -171,6 +189,20 @@ not tell you:
   policy: `feat` → minor, `fix`/`perf`/`refactor`/`build` → patch, `!` or
   `BREAKING CHANGE` → minor; `chore`/`docs`/`ci`/`test`/`style` do not release.
   At 1.0 the usual semver regime takes over (`!` → major).
+- **Releases batch, so the full sweep runs on the release PR and nowhere else.**
+  release-plz accumulates every merge to `main` behind one release PR, so the
+  commit that ships is that PR's and no merge job swept it. Every pull request and
+  every push to `main` therefore runs the affected tier in `gate` — a pull request
+  against its merge base, a push against the commit it replaced
+  (`github.event.before`) — and only release-plz's release PR (a `release-plz-*`
+  head branch) also gets one `run-many` sweep of every project's `check`, in CI's
+  `sweep` job. `scripts/ci-tier.sh` is the one place that decides which;
+  `tests/e2e/graph.rs` drives it over both kinds of pull request.
+- **`release.yml`'s `test` job re-gates what a Release tags, on purpose.** A
+  release-plz Release tags the merge of a release PR the sweep already covered, but
+  a Release cut by hand is the supported fallback, it can tag any commit, and this
+  job is the only gate that commit passes before publishing to registries that
+  cannot take a version back. Keep it.
 - **The commit type is not the only thing that decides a bump.** `semver_check` is
   on, so release-plz runs cargo-semver-checks against the last released version and
   a surface break bumps whatever the type said. Keep cargo-semver-checks installed

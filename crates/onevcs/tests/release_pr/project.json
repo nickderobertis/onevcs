@@ -1,0 +1,10 @@
+{
+  "name": "onevcs-release-pr",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:release", "lang:rust"],
+  "implicitDependencies": ["onevcs"],
+  "targets": {
+    "release-pr-journeys": { "//": "llmlint: ignore[new_projects_keep_the_graph_uniform] not `test`: `just test` and `just check` fan `test` across the graph and stay offline without the pinned release-plz these journeys refuse to run without, so this suite is reached by `just release-pr-journeys` alone.", "command": "just _release-pr-journeys", "cache": false }
+  }
+}
