@@ -12,12 +12,6 @@
 //! All three builds are linked into this one process and asked through their libraries,
 //! which are the same code paths their commands render.
 
-// llmlint: ignore-file[new_code_lands_in_a_project] `compat/` is run by the `onevcs` crate
-// project's test target (`just _crate-compat`, from `_crate-test`), and `nx.json` names
-// `compat/**/*` among that target's inputs; a project of its own would run the same cargo
-// commands a second time, which `AGENTS.md` rules out for the wheel and the npm package
-// for the same reason.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;

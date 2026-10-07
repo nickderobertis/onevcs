@@ -17,11 +17,6 @@
 //!
 //! Unix only: the substituted host is POSIX shell, as it is for every hosted e2e journey.
 
-// llmlint: ignore-file[new_code_lands_in_a_project] `compat/` is run by the `onevcs` crate
-// project's test target (`just _crate-compat`, from `_crate-test`), and `nx.json` names
-// `compat/**/*` among that target's inputs; a project of its own would run the same cargo
-// commands a second time, which `AGENTS.md` rules out for the wheel and the npm package
-// for the same reason.
 // llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which change
 // requests exist, what their checks say, whether a merge is allowed — is the one boundary
 // an offline, credential-free check cannot drive. The program that answers it as `gh` is

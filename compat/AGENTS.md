@@ -54,7 +54,7 @@ claim is about:
   and the claim stays true of 0.32.2 whatever a consumer later pins. Moving it to a
   newer release is a new claim someone decides on, never a sync. It runs on every
   platform: `just test-quick`, which CI's `cross (windows-latest)` leg runs, reaches it
-  through `_crate-compat`, so a landed branch is held to retiring on Windows too. Its
+  through `onevcs-compat:test-quick`, so a landed branch is held to retiring on Windows too. Its
   `diagnosis` is what a failed retirement prints — the classification, whose `unknown`
   names the read that failed, and every read it makes asked again.
 - `tests/verdicts.rs` holds both to a state root on which this build's
@@ -111,14 +111,16 @@ and is one more reason it stays out of the workspace next door.
 
 ## How it is run
 
-`just _crate-compat`, which `_crate-test` and `test-quick` call, so it is inside
-`just check` and `just gate` like everything else. `_crate-fmt-check` and
-`_crate-lint` hold it to the same bar, `just bootstrap` fetches its committed
-lockfile, and its build lands in the clone's own `target` — `.cargo/config.toml`
-reaches every crate under the clone — so there is no second directory to clean.
-Because it links this crate by path, its lockfile records this crate's version, and
-a release bump that release-plz makes leaves it stale; the release job carries it
-along with `scripts/release-pr-carry.sh`, and `just release-pr-check` proves a
-release PR's tree still bootstraps.
-`nx.json` names `compat/**/*` among the crate test target's inputs, so a change
-here re-runs it rather than replaying a cached pass.
+It is the Nx project `onevcs-compat` (`compat/project.json`): its `test` and
+`test-quick` run `just _compat-test`, and its `format-check` and `lint` hold it to the
+crate's bar, so it is inside `just check` and `just gate` like everything else, and
+`just bootstrap` fetches its committed lockfile. A project of its own because it is a
+cargo project of its own, outside the workspace — not a second run of the workspace's
+commands. Its inputs (`compatSource` in `nx.json`) are this directory and
+`crates/onevcs/`, which it links by path, so a change to either re-runs it rather than
+replaying a cached pass. Its build lands in the clone's own `target` —
+`.cargo/config.toml` reaches every crate under the clone — so there is no second
+directory to clean. Because it links this crate by path, its lockfile records this
+crate's version, and a release bump that release-plz makes leaves it stale; the
+release job carries it along with `scripts/release-pr-carry.sh`, and `just
+release-pr-check` proves a release PR's tree still bootstraps.

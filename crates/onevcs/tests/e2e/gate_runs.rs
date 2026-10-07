@@ -28,10 +28,6 @@
 
 #![cfg(target_os = "linux")]
 
-// llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] every journey of this
-// suite lives in the one `e2e` binary of the one crate project, which `crates/onevcs/AGENTS.md`
-// fixes: a second Nx project would run the same `--workspace` commands twice. The sleeps
-// here are the premise — a gate that spans seconds — and the whole module takes about six.
 // llmlint: ignore-file[e2e_not_mocked] three stand-ins, each at the one boundary its
 // journey cannot cross offline, and none in front of the code under test: a `git` on
 // `PATH` that stamps a push and then runs the real git with the same arguments; the host
