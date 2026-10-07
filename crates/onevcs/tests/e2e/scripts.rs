@@ -59,6 +59,9 @@ use std::process::{Command, Output};
 
 use crate::support::workspace_root;
 
+/// Spike `spike-recoverable-floor`'s harness, and the prototype read it measures.
+mod recoverable_floor;
+
 /// One script run, with the environment a journey needs and nothing inherited
 /// that would change its answer.
 ///

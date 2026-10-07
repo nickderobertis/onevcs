@@ -51,6 +51,20 @@ const HELPERS: &[(&str, &str)] = &[
     // A process a publication's gate leaves running, which reads the inventory from
     // inside that publication's release.
     ("crates/onevcs/tests/e2e/released.rs", "onevcs_for_a_gate"),
+    // Spike `spike-recoverable-floor`: the harness is pointed at this build's binary
+    // and its own state directory, and the reads it compares at the fixture it built.
+    (
+        "crates/onevcs/tests/e2e/scripts/recoverable_floor.rs",
+        "harness",
+    ),
+    (
+        "crates/onevcs/tests/e2e/scripts/recoverable_floor.rs",
+        "recoverable",
+    ),
+    (
+        "crates/onevcs/tests/e2e/scripts/recoverable_floor.rs",
+        "act",
+    ),
     // The recorded-stream tier is its own binary, and reads a stream an earlier
     // build wrote out of a state root it makes for itself.
     ("crates/onevcs/tests/recorded.rs", "onevcs"),
