@@ -41,6 +41,8 @@
 #       generated dispatch-like workers (gzip and `git log -p` loops) for the whole set,
 #       after a 60 s warm-up so load1 reflects them, and stops them after.
 #       --dispatches counts the live dispatches `onepipeline host` lists (slow: ~30 s).
+#       --profile prints a second line, `profile=` and the in-process profile of the
+#       last timed run (this branch's reads only): phase times, git time, cache hits.
 #
 # Environment: RECOVERABLE_FLOOR_DIR (default target/recoverable-floor) holds fixtures
 # and state; ONEVCS_BIN is this branch's binary (default target/release/onevcs, built by
@@ -389,7 +391,7 @@ once() {
 }
 
 cmd_run() {
-    local read="" scale=1 real=0 runs=10 cold=0 workers=0 count_runs=1 dispatches=0 given=""
+    local read="" scale=1 real=0 runs=10 cold=0 workers=0 count_runs=1 dispatches=0 given="" profile=0
     session="" baseline=$(command -v onevcs || true) aio=${AIO_CHECKOUT:-$HOME/ai-orchestrator}
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -402,6 +404,7 @@ cmd_run() {
             --load) workers=$2; shift 2 ;;
             --count-runs) count_runs=$2; shift 2 ;;
             --dispatches) dispatches=1; shift ;;
+            --profile) profile=1; shift ;;
             --baseline) baseline=$2; shift 2 ;;
             --aio) aio=$2; shift 2 ;;
             -h | --help) usage; exit 0 ;;
@@ -443,6 +446,7 @@ cmd_run() {
     [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'cargo build --release -p onevcs'"
     read_command "$read"
     read_env "$read"
+    [ "$profile" -eq 1 ] && env_args+=("ONEVCS_SPIKE_PROFILE=1")
     local scratch counter shim_dir dispatch_count="" i started ended times=() counts=()
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/recoverable-floor.XXXXXX")
     shim_dir="$scratch/shim"
@@ -496,6 +500,9 @@ cmd_run() {
         "$runs" "$stats" "$spawns" "$load_start" "$load_end" \
         "$([ "$workers" -gt 0 ] && echo "generated:$workers" || echo ambient)" \
         "${dispatch_count:-not-counted}" "$(rows_of "$scratch/out")" "$commit"
+    if [ "$profile" -eq 1 ]; then
+        echo "profile=$(sed -n 's/^onevcs-spike-profile //p' "$scratch/out.err" | tail -1)"
+    fi
     rm -rf "$scratch"
 }
 

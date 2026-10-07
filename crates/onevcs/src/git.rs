@@ -3941,7 +3941,14 @@ pub fn changed_paths<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Res
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect();
-    let counted = counted_files(cwd, from, to)?;
+    // Spike: the listing decodes whole or not at all, so only an empty one can be
+    // short — the same reasoning, and the same cheaper question, as in
+    // `known_to_carry_changes`.
+    let counted = match crate::spike::prototype() {
+        true if paths.is_empty() && trees_differ(cwd, from, to)? => 1,
+        true => paths.len(),
+        false => counted_files(cwd, from, to)?,
+    };
     if paths.len() != counted {
         return Err(Error::Invalid {
             reason: format!(

@@ -1549,7 +1549,7 @@ impl<'a> Census<'a> {
         if branch == base {
             return Ok(keep(KeepReason::IsBase));
         }
-        match self.live_holder(branch) {
+        match crate::spike::phase("classify_live_holder", || self.live_holder(branch)) {
             Ok(Some(_)) => return Ok(keep(KeepReason::HeldByLiveSession)),
             Ok(None) => {}
             Err(cause) => return Ok(unknown(cause)),
@@ -1573,11 +1573,12 @@ impl<'a> Census<'a> {
         }
         // Every read below that fails is a proof that did not hold, and the answer to
         // that is `unknown` — never a class a read that was not made decided.
-        let retirement = match self.worked_in(branch, &copies) {
-            Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
-            Ok(None) => verdict.retirement,
-            Err(cause) => Retirement::unknown(self, branch, cause, &copies),
-        };
+        let retirement =
+            match crate::spike::phase("classify_worked_in", || self.worked_in(branch, &copies)) {
+                Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
+                Ok(None) => verdict.retirement,
+                Err(cause) => Retirement::unknown(self, branch, cause, &copies),
+            };
         Ok(classified(retirement, derivation))
     }
 

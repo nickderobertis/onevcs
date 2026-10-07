@@ -767,7 +767,16 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             true => git::Asked::borrowing(&repo, None),
             false => git::Asked::borrowing(&repo, lent.as_deref()),
         };
-        let compared = judged_against(asked, &base, current.as_ref());
+        // Spike: the publication's base tip is a commit of the publication's own store,
+        // and every checkout asked here reads that store — its own, or lent — so asking
+        // whether it holds that commit is asking a question whose answer is yes.
+        let compared = match (
+            &current,
+            crate::spike::prototype() && (repo == publication || lent.is_some()),
+        ) {
+            (Some(sha), true) => sha.0.clone(),
+            _ => judged_against(asked, &base, current.as_ref()),
+        };
         // Only the names asked about are counted against their remote-tracking
         // refs, which is a process per branch per checkout that a filtered read
         // has no reason to spend — and the ones `onevcs preserve` put on the
@@ -815,7 +824,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             let recorded = landed::Recorded {
                 change: recorded
                     .change
-                    .or_else(|| change_url_of(asked, &compared, &branch, trailers)),
+                    .or_else(|| change_url_remembered(asked, &compared, &branch, &tip, trailers)),
                 ..recorded
             };
             let change_url = recorded.change.clone();
@@ -1163,6 +1172,32 @@ fn preserved_row(
 /// preference is applied to all of them rather than answering nobody: the row still
 /// names a session somebody can look up, and its landing is already `unknown`.
 /// Ties are broken by token, so two reads answer the same record.
+/// Spike: [`change_url_of`], once per base commit, branch tip and trailer key: it reads
+/// the messages of the commits between the two, which no ref moving changes.
+fn change_url_remembered(
+    repo: git::Asked<'_>,
+    compared: &str,
+    branch: &str,
+    tip: &str,
+    trailers: &provenance::Trailers,
+) -> Option<Url> {
+    let read = || change_url_of(repo, compared, branch, trailers);
+    let base = match git::ObjectId::parse(compared) {
+        Some(id) => Some(id.as_str().to_owned()),
+        None => git::tip(repo.path(), compared),
+    };
+    match base {
+        Some(base) if crate::spike::prototype() && !repo.path().join(".git/shallow").exists() => {
+            crate::spike::cached("change-url", &(base, tip, trailers.change_url()), || {
+                Ok(read())
+            })
+            .ok()
+            .flatten()
+        }
+        _ => read(),
+    }
+}
+
 /// Spike: [`workspace::checkouts_of`]'s search order, over the records this read
 /// already holds rather than over every record read again from disk.
 fn checkouts_among(
