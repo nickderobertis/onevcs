@@ -361,7 +361,7 @@ impl std::fmt::Display for Reported {
 /// is a symlink out to this workspace's install; every gate run provisions it
 /// through `scripts/nx.sh`, and a journey that arrived without one says so rather
 /// than spending a network install per copy.
-fn copy_checkout(destination: &Path) {
+pub(crate) fn copy_checkout(destination: &Path) {
     let source = workspace_root();
     let listing = Command::new("git")
         .args([

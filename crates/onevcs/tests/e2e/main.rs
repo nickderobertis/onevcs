@@ -89,6 +89,11 @@ mod gate_runs;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod filter;
+// Unix only: it copies this checkout the way `llmlint_cache` does and drives the real
+// Nx over it, through POSIX scripts. Its own header carries the reason the caching
+// journey counts runs of two recipes it replaces.
+#[cfg(unix)]
+mod graph;
 // Unix only: these drive a substituted `gh` and real `pre-push` hooks, both POSIX
 // shell. See `world.rs`.
 // `honesty` compares the real backend against the test one, so one of its two runs
