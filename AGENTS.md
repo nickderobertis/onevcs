@@ -111,11 +111,10 @@ not tell you:
   `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract` and
   `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-smoke` outside
   `check`. A script or workflow change reaches the scripts and contract tiers, not
-  the crate's unit tier. Their rules live in `crates/onevcs/AGENTS.md` and
-  `compat/AGENTS.md`. `workspace` (the root `project.json`) holds the judged tier
-  below and the uncached `msrv` and `deps-check`, outside `check` too.
+  the crate's unit tier. `workspace` (the root `project.json`) holds the judged
+  tier below and the uncached `msrv` and `deps-check`, outside `check` too.
 - **Coverage is enforced once, at 95%, over the union of the instrumented tiers**
-  (`onevcs:coverage`); `crates/onevcs/AGENTS.md` says how it is measured.
+  (`onevcs:coverage`), never by one tier alone.
 - **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
   judge is non-deterministic and judges every file in the base-to-head diff rather
   than the hunk that changed, so an uncached tier is an independent roll per gate

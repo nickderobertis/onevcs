@@ -6064,6 +6064,20 @@ fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_for
         }),
         "{file} no longer runs nickderobertis/notignored@v0"
     );
+    // The action diffs against the base branch, which a shallow checkout omits.
+    assert!(
+        steps.iter().any(|step| {
+            step.get("uses")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|action| action.starts_with("actions/checkout@"))
+                && step
+                    .get("with")
+                    .and_then(|with| with.get("fetch-depth"))
+                    .and_then(serde_yaml_ng::Value::as_i64)
+                    == Some(0)
+        }),
+        "{file} checks out shallow, so the scan has no base branch to diff against"
+    );
 }
 
 #[test]
