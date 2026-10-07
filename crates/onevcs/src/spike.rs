@@ -14,6 +14,7 @@
 //! - `ONEVCS_SPIKE_PROFILE` set: one JSON line on standard error at exit naming where
 //!   the read spent its time and how many git processes it started.
 
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,6 +116,44 @@ static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static PHASES: Mutex<Vec<(&'static str, Duration)>> = Mutex::new(Vec::new());
 
+thread_local! {
+    static THREAD_GIT_NANOS: Cell<u64> = const { Cell::new(0) };
+    static THREAD_SESSION_NANOS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[derive(Clone, Copy)]
+struct Worker {
+    wall: Duration,
+    git: Duration,
+    ended: Duration,
+    session_files: Duration,
+}
+
+static WORKERS: Mutex<Vec<Worker>> = Mutex::new(Vec::new());
+
+/// Measure the last-finishing scan worker separately: summed subprocess time across
+/// concurrent workers is not a wall-time share. Session rescans are separated from
+/// git and charged only on that same worker's path.
+pub(crate) fn worker<T>(work: impl FnOnce() -> T) -> T {
+    if !profiling() {
+        return work();
+    }
+    let started = Instant::now();
+    let git_before = THREAD_GIT_NANOS.with(Cell::get);
+    let sessions_before = THREAD_SESSION_NANOS.with(Cell::get);
+    let answered = work();
+    let measured = Worker {
+        wall: started.elapsed(),
+        git: Duration::from_nanos(THREAD_GIT_NANOS.with(Cell::get) - git_before),
+        ended: entered().elapsed(),
+        session_files: Duration::from_nanos(THREAD_SESSION_NANOS.with(Cell::get) - sessions_before),
+    };
+    if let Ok(mut workers) = WORKERS.lock() {
+        workers.push(measured);
+    }
+    answered
+}
+
 fn profiling() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("ONEVCS_SPIKE_PROFILE").is_some())
@@ -128,6 +167,13 @@ pub(crate) fn entered() -> Instant {
 
 /// Count one git process and the time it took.
 pub(crate) fn git_ran(took: Duration) {
+    THREAD_GIT_NANOS.with(|nanos| {
+        nanos.set(
+            nanos
+                .get()
+                .saturating_add(u64::try_from(took.as_nanos()).unwrap_or(u64::MAX)),
+        );
+    });
     GIT_SPAWNS.fetch_add(1, Ordering::Relaxed);
     GIT_NANOS.fetch_add(
         u64::try_from(took.as_nanos()).unwrap_or(u64::MAX),
@@ -146,8 +192,15 @@ pub(crate) fn cache_answered(hit: bool) {
 /// Run `work`, recording how long it took under `name`.
 pub(crate) fn phase<T>(name: &'static str, work: impl FnOnce() -> T) -> T {
     let started = Instant::now();
+    let git_before = THREAD_GIT_NANOS.with(Cell::get);
     let answered = work();
     if profiling() {
+        if name == "session_records_rescan" {
+            let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let git = THREAD_GIT_NANOS.with(Cell::get) - git_before;
+            THREAD_SESSION_NANOS
+                .with(|nanos| nanos.set(nanos.get().saturating_add(elapsed.saturating_sub(git))));
+        }
         if let Ok(mut phases) = PHASES.lock() {
             phases.push((name, started.elapsed()));
         }
@@ -188,6 +241,21 @@ pub(crate) fn report() {
                 .unwrap_or(0.0)
                 + millis(*took);
             phases.insert((*name).to_owned(), summed.into());
+        }
+    }
+    if let Ok(workers) = WORKERS.lock() {
+        if let Some(critical) = workers.iter().max_by_key(|worker| worker.ended) {
+            let parallel_git: Duration = workers.iter().map(|worker| worker.git).sum();
+            let serial_git = Duration::from_nanos(GIT_NANOS.load(Ordering::Relaxed))
+                .saturating_sub(parallel_git);
+            document.insert("scan_workers".into(), workers.len().into());
+            document.insert("critical_worker_ms".into(), millis(critical.wall).into());
+            document.insert("critical_worker_git_ms".into(), millis(critical.git).into());
+            document.insert(
+                "critical_worker_session_files_ms".into(),
+                millis(critical.session_files).into(),
+            );
+            document.insert("serial_git_ms".into(), millis(serial_git).into());
         }
     }
     document.insert("phases_ms".into(), phases.into());

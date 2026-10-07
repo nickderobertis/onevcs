@@ -951,21 +951,23 @@ fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) ->
         .map_or(1, std::num::NonZeroUsize::get)
         .min(items.len());
     if workers <= 1 {
-        return items.iter().map(&work).collect();
+        return crate::spike::worker(|| items.iter().map(&work).collect());
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut answered: Vec<(usize, R)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut mine = Vec::new();
-                    loop {
-                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(at) else {
-                            return mine;
-                        };
-                        mine.push((at, work(item)));
-                    }
+                    crate::spike::worker(|| {
+                        let mut mine = Vec::new();
+                        loop {
+                            let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(item) = items.get(at) else {
+                                return mine;
+                            };
+                            mine.push((at, work(item)));
+                        }
+                    })
                 })
             })
             .collect();

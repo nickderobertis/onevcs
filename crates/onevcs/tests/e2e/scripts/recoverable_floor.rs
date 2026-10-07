@@ -596,6 +596,26 @@ fn the_harness_builds_its_fixture_once_and_reports_one_read_as_one_line() {
     );
     let (rows, _) = recoverable(&fixture, "decision", &[]);
     assert_eq!(field(&warm, "rows"), rows.len().to_string(), "{warm}");
+    let profiled = measured(&["--profile"]);
+    let profile: Value = serde_json::from_str(
+        profiled
+            .lines()
+            .nth(1)
+            .expect("profile line")
+            .strip_prefix("profile=")
+            .expect("profile prefix"),
+    )
+    .expect("profile JSON");
+    assert!(profile["scan_workers"].as_u64().expect("worker count") > 0);
+    assert!(
+        profile["critical_worker_git_ms"]
+            .as_f64()
+            .expect("git duration")
+            <= profile["critical_worker_ms"]
+                .as_f64()
+                .expect("worker duration")
+    );
+    assert_eq!(profile["git_spawns"].as_u64(), Some(spawns(&profiled)));
 }
 
 #[test]
