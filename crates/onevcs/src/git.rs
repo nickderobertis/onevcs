@@ -258,6 +258,18 @@ pub(crate) struct OnDisk {
 
 impl OnDisk {
     fn read(cwd: &Path) -> Option<Self> {
+        if [
+            "GIT_DIR",
+            "GIT_COMMON_DIR",
+            "GIT_WORK_TREE",
+            "GIT_NAMESPACE",
+            "GIT_OBJECT_DIRECTORY",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+        {
+            return None;
+        }
         let git_dir = cwd.join(".git");
         if !git_dir.is_dir() || git_dir.join("commondir").exists() {
             return None;
@@ -289,6 +301,13 @@ impl OnDisk {
         }
         for family in ["refs/heads", "refs/remotes", "refs/tags"] {
             found.loose(&git_dir.join(family), family)?;
+        }
+        if found
+            .symbolic
+            .values()
+            .any(|target| !found.refs.contains_key(target))
+        {
+            return None;
         }
         Some(found)
     }
@@ -338,11 +357,13 @@ impl OnDisk {
         }
     }
 
-    /// Every ref under `prefix` that is not symbolic, by full name.
-    fn under<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (&'a String, &'a String)> + 'a {
+    /// Every ref under `prefix`, including supported symbolic refs, by full name.
+    fn under<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (String, String)> + 'a {
         self.refs
-            .range(prefix.to_owned()..)
-            .take_while(move |(name, _)| name.starts_with(prefix))
+            .keys()
+            .chain(self.symbolic.keys())
+            .filter(move |name| name.starts_with(prefix))
+            .filter_map(|name| self.resolve(name).map(|tip| (name.clone(), tip.clone())))
     }
 
     /// What `rev-parse --verify NAME^{commit}` answers for a branch or remote-tracking
@@ -2100,9 +2121,24 @@ pub fn unpublished_branches_among(
         }
         // Spike: how many commits a tip holds that no origin tip reaches is a fact
         // about those commits, so the prototype proves it once per tip and origin.
-        let ahead = crate::spike::cached("ahead", &(&tip, &origin_tips), || {
-            unpublished_ahead(cwd, &branch, &[])
-        })?;
+        let ahead = crate::spike::cached(
+            "ahead",
+            &(&tip, &origin_tips),
+            |_: &u64| true,
+            || {
+                if !crate::spike::prototype() {
+                    return unpublished_ahead(cwd, &branch, &[]);
+                }
+                let mut args = vec!["rev-list", "--count", tip.as_str(), "--not"];
+                args.extend(origin_tips.iter().map(String::as_str));
+                args.push("--");
+                let counted = checked(&args, Some(cwd))?;
+                counted
+                    .trimmed()
+                    .parse()
+                    .map_err(|_| error::invalid("git did not answer a numeric ahead count"))
+            },
+        )?;
         if ahead > 0 {
             unpublished.push((branch, tip));
         }

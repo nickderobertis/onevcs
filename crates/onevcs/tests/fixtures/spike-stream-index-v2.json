@@ -1,0 +1,12 @@
+{
+  "example": {
+    "len": 0,
+    "modified": 0,
+    "changed": 0,
+    "device": 1,
+    "inode": 1,
+    "identity": null,
+    "branch": null,
+    "checksum": "b59f5ffa51c9f7372cd0a4366bf622f03035704f5b86b424c082f6cf3a2b6a69"
+  }
+}

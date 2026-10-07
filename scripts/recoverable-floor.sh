@@ -470,7 +470,7 @@ cmd_run() {
     fixture=""
     if [ "$real" -eq 1 ]; then
         [ -n "$session" ] || die "run --real: name the manager session with --session"
-        cache="$state/real-cache"
+        cache="$state/real-cache/v2"
         target="real"
     else
         if [ -n "$given" ]; then
@@ -482,7 +482,7 @@ cmd_run() {
             fixture=$(fixture_dir "$scale")
             target="fixture-${scale}x"
         fi
-        cache="$fixture/home/cache/recoverable/v1"
+        cache="$fixture/home/cache/recoverable/v2"
         [ -n "$session" ] || session=$(sed -n 's/^launcher=//p' "$fixture/fixture.env")
         hold_live_leases
     fi

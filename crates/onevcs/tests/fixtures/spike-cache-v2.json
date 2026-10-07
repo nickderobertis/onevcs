@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "key": [
+    "example",
+    "landed",
+    null
+  ],
+  "value": {
+    "state": "unknown"
+  },
+  "checksum": "601cb4ef959bff3d6d372a161174c6047c7528df44bb0e2499132a23e3a9b0f1"
+}

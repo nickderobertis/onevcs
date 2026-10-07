@@ -7,12 +7,15 @@
 //! the variable unset every line of the read is v0.42.0's.
 //!
 //! - `ONEVCS_SPIKE_RECOVERABLE` unset or `legacy`: v0.42.0's read, unchanged.
-//! - `prototype`: the same rows, computed with the redundant work removed and proofs
-//!   cached under `$ONEVCS_HOME/cache/recoverable/v1/`.
+//! - `prototype`: the same rows on the measured ordinary full-history repositories,
+//!   with redundant work removed and proofs cached under `$ONEVCS_HOME/cache/recoverable/v2/`.
 //! - `decision`: `prototype`, computing only what a verdict reads, with each row's
 //!   branch tip added as `"tip"`.
 //! - `ONEVCS_SPIKE_PROFILE` set: one JSON line on standard error at exit naming where
 //!   the read spent its time and how many git processes it started.
+//!
+//! This spike holds Git configuration and replacement/shallow graph state fixed;
+//! the report identifies the context guards a production proof cache still needs.
 
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -107,7 +110,7 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
     }
     crate::home::root()
         .ok()
-        .map(|root| root.join("cache").join("recoverable").join("v1"))
+        .map(|root| root.join("cache").join("recoverable").join("v2"))
 }
 
 static GIT_SPAWNS: AtomicU64 = AtomicU64::new(0);
@@ -269,18 +272,35 @@ fn millis(took: Duration) -> f64 {
     (took.as_secs_f64() * 1000.0 * 1000.0).round() / 1000.0
 }
 
+/// The versioned cache envelope binds a typed proof to its input and checks corruption.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProofEntry {
+    version: u64,
+    key: serde_json::Value,
+    value: serde_json::Value,
+    checksum: String,
+}
+
+fn proof_checksum(key: &serde_json::Value, value: &serde_json::Value) -> Option<String> {
+    serde_json::to_string(&(2_u64, key, value))
+        .ok()
+        .map(|value| crate::ids::digest(&value))
+}
+
 /// A proof the prototype answers once per key and remembers under [`cache_dir`].
 ///
 /// Only a proof whose every input is in `key` belongs here, and every key names
 /// commits by object id rather than refs by name: a commit's ancestry, content and
 /// messages never change, so an answer keyed on the commits it was asked about is the
-/// answer for as long as those commits exist. The build that wrote an entry is part of
-/// the key, because another build may decide differently from the same commits. An
+/// answer for as long as those commits exist. The package version is part of the key,
+/// and a changed proof algorithm moves the cache generation. An
 /// error is never remembered, and an entry that cannot be read or parsed is a proof
 /// made again — the cache is never what decides.
 pub(crate) fn cached<T, K>(
     kind: &str,
     key: &K,
+    valid: impl Fn(&T) -> bool,
     prove: impl FnOnce() -> crate::error::Result<T>,
 ) -> crate::error::Result<T>
 where
@@ -293,16 +313,43 @@ where
     let Some(path) = entry_path(kind, key) else {
         return prove();
     };
+    let Ok(expected_key) = serde_json::to_value((env!("CARGO_PKG_VERSION"), kind, key)) else {
+        return prove();
+    };
     if let Some(found) = std::fs::read(&path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<T>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<ProofEntry>(&bytes).ok())
+        .filter(|entry| {
+            entry.version == 2
+                && entry.key == expected_key
+                && proof_checksum(&entry.key, &entry.value).as_ref() == Some(&entry.checksum)
+        })
+        .and_then(|entry| {
+            let found = serde_json::from_value::<T>(entry.value.clone()).ok()?;
+            (serde_json::to_value(&found).ok()? == entry.value).then_some(found)
+        })
+        .filter(&valid)
     {
         cache_answered(true);
         return Ok(found);
     }
     cache_answered(false);
     let proved = prove()?;
-    remember(&path, &proved);
+    if valid(&proved) {
+        if let Ok(value) = serde_json::to_value(&proved) {
+            if let Some(checksum) = proof_checksum(&expected_key, &value) {
+                remember(
+                    &path,
+                    &ProofEntry {
+                        version: 2,
+                        key: expected_key,
+                        value,
+                        checksum,
+                    },
+                );
+            }
+        }
+    }
     Ok(proved)
 }
 

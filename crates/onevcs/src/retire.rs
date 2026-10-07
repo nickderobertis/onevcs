@@ -1831,7 +1831,7 @@ impl<'a> Census<'a> {
                     .collect::<Vec<_>>(),
                 self.trailers.landed(),
             );
-            let one = crate::spike::cached("judged", &key, || {
+            let one = crate::spike::cached("judged", &key, Judged::valid, || {
                 self.judge_copy(self.asked(&repo), &copy.tip, base_tip, evidence)
             })
             .map_err(|failure| UnknownCause::new("judge", repo.display(), failure))?;
@@ -2360,6 +2360,32 @@ struct Judged {
 }
 
 impl Judged {
+    fn valid(&self) -> bool {
+        (!self.at_base
+            || (self.fork.is_none()
+                && self.content_free.is_empty()
+                && self.differing.is_empty()
+                && self.proof.is_none()))
+            && (self.proof.is_none() || self.differing.is_empty())
+            && (self.at_base || self.proof.is_some() || !self.differing.is_empty())
+            && self
+                .fork
+                .as_ref()
+                .is_none_or(|tip| ObjectId::parse(tip).is_some())
+            && self
+                .content_free
+                .iter()
+                .all(|tip| ObjectId::parse(tip).is_some())
+            && self
+                .differing
+                .iter()
+                .all(|path| !path.is_empty() && !path.contains('\0'))
+            && self
+                .proof
+                .as_ref()
+                .is_none_or(|proof| ObjectId::parse(proof.commit()).is_some())
+    }
+
     fn at_base() -> Self {
         Judged {
             at_base: true,

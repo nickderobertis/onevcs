@@ -2267,9 +2267,9 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
 /// on the host — 1,627 of them, 21 MB, on the host this was measured on — to keep the
 /// few that answer for the identities asked about. The prototype keeps an index of
 /// each stream's identity under the spike's cache directory, keyed on the file's
-/// length, modification time and inode: a stream is only ever appended to, so a file
-/// whose three are unchanged records what it recorded when it was indexed, and one
-/// whose three moved is parsed again. A stream that names no identity is always read,
+/// length, modification and change times, device and inode. An unchanged entry is
+/// bound to its directory and token, checksum-checked and validated before it can
+/// narrow the read; changed, corrupt or invalid entries are parsed again. A stream that names no identity is always read,
 /// because `relevant_streams` matches some of those by name rather than by content.
 /// The index is never authoritative: an entry that is missing, unreadable or stale is
 /// a stream parsed again. `None` asks about every identity and reads everything.
@@ -2300,12 +2300,49 @@ pub(crate) fn recorded_streams_about(
                 if wanted.contains(&(identity.clone(), branch.clone())))
     };
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
+    #[serde(deny_unknown_fields)]
     struct Indexed {
         len: u64,
         modified: i128,
+        changed: i128,
+        device: u64,
         inode: u64,
         identity: Option<String>,
         branch: Option<String>,
+        checksum: String,
+    }
+    impl Indexed {
+        fn digest(&self, directory: &Path, token: &str) -> Option<String> {
+            serde_json::to_string(&(
+                2_u64,
+                directory,
+                token,
+                self.len,
+                self.modified,
+                self.changed,
+                self.device,
+                self.inode,
+                &self.identity,
+                &self.branch,
+            ))
+            .ok()
+            .map(|body| crate::ids::digest(&body))
+        }
+        fn valid(&self, directory: &Path, token: &str) -> bool {
+            let identity = self.identity.as_ref().is_none_or(|identity| {
+                !identity.is_empty()
+                    && identity.trim() == identity
+                    && !identity.chars().any(char::is_control)
+                    && (Path::new(identity).is_absolute()
+                        || crate::store::normalize(identity).key == *identity)
+            });
+            identity
+                && self
+                    .branch
+                    .as_ref()
+                    .is_none_or(|branch| git::is_valid_branch_name(branch))
+                && self.digest(directory, token).as_ref() == Some(&self.checksum)
+        }
     }
     use std::os::unix::fs::MetadataExt;
     let directory = home::streams_dir()?;
@@ -2345,12 +2382,20 @@ pub(crate) fn recorded_streams_about(
         let stamp = Indexed {
             len: meta.len(),
             modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+            device: meta.dev(),
             inode: meta.ino(),
             identity: None,
             branch: None,
+            checksum: String::new(),
         };
         let known = index.get(&token).filter(|entry| {
-            entry.len == stamp.len && entry.modified == stamp.modified && entry.inode == stamp.inode
+            entry.len == stamp.len
+                && entry.modified == stamp.modified
+                && entry.inode == stamp.inode
+                && entry.changed == stamp.changed
+                && entry.device == stamp.device
+                && entry.valid(&directory, &token)
         });
         if let Some(entry) = known {
             fresh.insert(token.clone(), entry.clone());
@@ -2362,14 +2407,15 @@ pub(crate) fn recorded_streams_about(
         let mut record = read_stream(&directory, &token, &mut notes);
         record.gaps = notes.len() > before;
         if known.is_none() && !record.gaps {
-            fresh.insert(
-                token.clone(),
-                Indexed {
-                    identity: record.identity.clone(),
-                    branch: record.branch.clone(),
-                    ..stamp
-                },
-            );
+            let mut indexed = Indexed {
+                identity: record.identity.clone(),
+                branch: record.branch.clone(),
+                ..stamp
+            };
+            if let Some(checksum) = indexed.digest(&directory, &token) {
+                indexed.checksum = checksum;
+                fresh.insert(token.clone(), indexed);
+            }
         }
         if about(record.identity.as_ref(), record.branch.as_ref(), &token) {
             kept.push(record);

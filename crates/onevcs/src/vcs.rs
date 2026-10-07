@@ -778,6 +778,13 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             (Some(sha), true) => sha.0.clone(),
             _ => judged_against(asked, &base, current.as_ref()),
         };
+        // Cached comparisons consume the captured object id, never a ref that can
+        // move between its key being built and the proof being computed.
+        let compared = if crate::spike::prototype() && git::ObjectId::parse(&compared).is_none() {
+            git::tip(&repo, &compared).unwrap_or(compared)
+        } else {
+            compared
+        };
         // Only the names asked about are counted against their remote-tracking
         // refs, which is a process per branch per checkout that a filtered read
         // has no reason to spend — and the ones `onevcs preserve` put on the
@@ -846,7 +853,11 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                             asked,
                             &compared,
                             current.as_ref(),
-                            &branch,
+                            if crate::spike::prototype() {
+                                &tip
+                            } else {
+                                &branch
+                            },
                             &recorded,
                             trailers,
                         )
@@ -859,7 +870,9 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                         &recorded,
                         trailers,
                     ) {
-                        Some(key) => crate::spike::cached("landed", &(identity, key), decide),
+                        Some(key) => {
+                            crate::spike::cached("landed", &(identity, key), valid_landing, decide)
+                        }
                         None => decide(),
                     }
                 })?
@@ -1175,21 +1188,37 @@ fn change_url_remembered(
     tip: &str,
     trailers: &provenance::Trailers,
 ) -> Option<Url> {
-    let read = || change_url_of(repo, compared, branch, trailers);
     let base = match git::ObjectId::parse(compared) {
         Some(id) => Some(id.as_str().to_owned()),
         None => git::tip(repo.path(), compared),
     };
     match base {
         Some(base) if crate::spike::prototype() && !repo.path().join(".git/shallow").exists() => {
-            crate::spike::cached("change-url", &(base, tip, trailers.change_url()), || {
-                Ok(read())
-            })
+            crate::spike::cached(
+                "change-url",
+                &(&base, tip, trailers.change_url()),
+                |_: &Option<Url>| true,
+                || change_url_read(repo, &base, tip, trailers),
+            )
             .ok()
             .flatten()
         }
-        _ => read(),
+        _ => change_url_of(repo, compared, branch, trailers),
     }
+}
+
+fn valid_landing(landed: &Landed) -> bool {
+    let evidence = match landed {
+        Landed::Yes { evidence } | Landed::InPart { evidence, .. } => evidence,
+        Landed::No | Landed::Unknown => return true,
+    };
+    git::ObjectId::parse(evidence.commit()).is_some()
+        && match evidence {
+            landed::LandingEvidence::Retired { proof, .. } => {
+                git::ObjectId::parse(proof.commit()).is_some()
+            }
+            _ => true,
+        }
 }
 
 /// Spike: [`workspace::checkouts_of`]'s search order, over the records this read
@@ -1232,10 +1261,7 @@ fn decision_key(
     if repo.path().join(".git").join("shallow").exists() {
         return None;
     }
-    let compared = match git::ObjectId::parse(compared) {
-        Some(id) => id.as_str().to_owned(),
-        None => git::tip(repo.path(), compared)?,
-    };
+    let compared = git::ObjectId::parse(compared)?.as_str().to_owned();
     Some(serde_json::json!({
         "compared": compared,
         "tip": tip,
@@ -1419,9 +1445,12 @@ fn net_negative<'a>(
     // it once per pair.
     let counted = match git::tip(repo.path(), branch) {
         Some(tip) if crate::spike::prototype() => {
-            let (added, removed) = crate::spike::cached("line-change", &(&fork, &tip), || {
-                git::line_change(repo, &fork, &tip).map(|lines| (lines.added, lines.removed))
-            })?;
+            let (added, removed) = crate::spike::cached(
+                "line-change",
+                &(&fork, &tip),
+                |_: &(u64, u64)| true,
+                || git::line_change(repo, &fork, &tip).map(|lines| (lines.added, lines.removed)),
+            )?;
             git::Lines { added, removed }
         }
         _ => git::line_change(repo, &fork, branch)?,
@@ -1442,11 +1471,22 @@ pub fn change_url_of<'a>(
     branch: &str,
     trailers: &provenance::Trailers,
 ) -> Option<Url> {
-    let commits = git::log_messages(repo, base, branch).ok()?;
-    commits
+    change_url_read(repo.into(), base, branch, trailers)
+        .ok()
+        .flatten()
+}
+
+fn change_url_read(
+    repo: git::Asked<'_>,
+    base: &str,
+    branch: &str,
+    trailers: &provenance::Trailers,
+) -> Result<Option<Url>> {
+    let commits = git::log_messages(repo, base, branch)?;
+    Ok(commits
         .iter()
         .rev()
         .flat_map(|commit| commit.message.lines())
         .filter_map(|line| line.trim().strip_prefix(trailers.change_url()))
-        .find_map(|value| Url::parse(value.trim()).ok())
+        .find_map(|value| Url::parse(value.trim()).ok()))
 }

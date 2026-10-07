@@ -257,7 +257,7 @@ fn row<'a>(rows: &'a [Value], branch: &str) -> &'a Value {
 fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_after_tips_move() {
     let state = tempfile::tempdir().expect("a scratch directory");
     let (fixture, _leases) = built(state.path());
-    let cache = fixture.join("home/cache/recoverable/v1");
+    let cache = fixture.join("home/cache/recoverable/v2");
 
     // Cold: nothing cached, and the prototype proves what it is asked.
     assert!(!cache.exists(), "a fresh fixture holds no proof cache");
@@ -341,6 +341,143 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
     assert!(
         warm["git_spawns"].as_u64() < cold["git_spawns"].as_u64(),
         "a warm read started as many git processes as a cold one: {warm} against {cold}"
+    );
+
+    // Cache IO is advisory: valid JSON for another key, an invalid object id,
+    // and corrupted index metadata must neither hide owed rows nor change verdicts.
+    fn proof_files(path: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(path).expect("cache directory") {
+            let entry = entry.expect("cache entry");
+            if entry.file_type().expect("cache type").is_dir() {
+                proof_files(&entry.path(), out);
+            } else if entry.path().extension().is_some_and(|ext| ext == "json")
+                && entry.file_name() != "streams-index.json"
+            {
+                out.push(entry.path());
+            }
+        }
+    }
+    let golden: Value = serde_json::from_str(include_str!("../../fixtures/spike-cache-v2.json"))
+        .expect("cache envelope golden");
+    let mut files = Vec::new();
+    proof_files(&cache, &mut files);
+    let entries: Vec<(PathBuf, Value)> = files
+        .into_iter()
+        .map(|path| {
+            let value: Value = serde_json::from_slice(&std::fs::read(&path).expect("cache bytes"))
+                .expect("cache JSON");
+            assert_eq!(value["version"], golden["version"]);
+            assert_eq!(
+                value
+                    .as_object()
+                    .expect("envelope")
+                    .keys()
+                    .collect::<Vec<_>>(),
+                golden
+                    .as_object()
+                    .expect("golden envelope")
+                    .keys()
+                    .collect::<Vec<_>>()
+            );
+            (path, value)
+        })
+        .collect();
+    let yes = entries
+        .iter()
+        .find_map(|(_, value)| (value["value"]["state"] == "yes").then(|| value["value"].clone()))
+        .expect("a cached real landing proof");
+    let mut poisoned = 0;
+    for (path, mut entry) in entries {
+        if entry["value"]["state"] == "no" || entry["value"]["state"] == "unknown" {
+            entry["value"] = yes.clone();
+            if poisoned == 0 {
+                entry["key"] = serde_json::json!(["another proof key"]);
+            } else {
+                entry["value"]["evidence"]["commit"] = "not-an-object-id".into();
+            }
+            let body = serde_json::to_vec(&serde_json::json!([2, entry["key"], entry["value"]]))
+                .expect("checksum input");
+            let digest: String = Sha256::digest(&body)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            entry["checksum"] = digest.into();
+            std::fs::write(path, serde_json::to_vec(&entry).expect("poisoned envelope"))
+                .expect("replace scratch cache");
+            poisoned += 1;
+        }
+    }
+    assert!(poisoned >= 2, "both cache-boundary failures are exercised");
+    let index_path = cache.join("streams-index.json");
+    let mut index: Value =
+        serde_json::from_slice(&std::fs::read(&index_path).expect("index")).expect("index JSON");
+    let index_golden: Value =
+        serde_json::from_str(include_str!("../../fixtures/spike-stream-index-v2.json"))
+            .expect("index generation golden");
+    for entry in index.as_object_mut().expect("indexed streams").values_mut() {
+        assert_eq!(
+            entry
+                .as_object()
+                .expect("indexed entry")
+                .keys()
+                .collect::<Vec<_>>(),
+            index_golden["example"]
+                .as_object()
+                .expect("golden entry")
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        entry["identity"] = "github.com/other/identity".into();
+        entry["branch"] = "other/branch".into();
+    }
+    std::fs::write(
+        &index_path,
+        serde_json::to_vec(&index).expect("changed index"),
+    )
+    .expect("replace scratch index");
+    let (legacy, _) = recoverable(&fixture, "legacy", &[]);
+    let (reproved, profile) = recoverable(&fixture, "decision", &[]);
+    assert_eq!(
+        decisions(&reproved),
+        decisions(&legacy),
+        "corrupt caches cannot hide owed rows"
+    );
+    assert!(profile["cache_misses"].as_u64().expect("miss count") > 0);
+    agree(&fixture, "corrupt cache recovered", Cache::Warm);
+
+    // Git's symbolic branch still names a preserved branch. Batch reads must not
+    // drop it or choose another checkout because its ref file contains a target.
+    let symbolic = all
+        .iter()
+        .find(|row| row["landed"]["state"] == "no" && row.get("held_by").is_none())
+        .expect("an unheld unlanded branch");
+    let checkout = PathBuf::from(symbolic["checkout"].as_str().expect("a checkout"));
+    let reference = format!(
+        "refs/heads/{}",
+        symbolic["branch"]["branch"].as_str().expect("a branch")
+    );
+    let tip = git(&checkout, &fixture, &["rev-parse", &reference]);
+    git(
+        &checkout,
+        &fixture,
+        &["update-ref", "refs/heads/symbolic-target", &tip],
+    );
+    git(
+        &checkout,
+        &fixture,
+        &["symbolic-ref", &reference, "refs/heads/symbolic-target"],
+    );
+    agree(&fixture, "symbolic branch, cold", Cache::Cold);
+    agree(&fixture, "symbolic branch, warm", Cache::Warm);
+    git(
+        &checkout,
+        &fixture,
+        &["update-ref", "--no-deref", &reference, &tip],
+    );
+    git(
+        &checkout,
+        &fixture,
+        &["update-ref", "-d", "refs/heads/symbolic-target"],
     );
 
     // Packed refs must answer exactly as loose refs did, and a later loose update
