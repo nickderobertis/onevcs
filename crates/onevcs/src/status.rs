@@ -2284,10 +2284,30 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
 /// The index is never authoritative: an entry that is missing, unreadable or stale is
 /// a stream parsed again. `None` asks about every identity and reads everything.
 pub(crate) fn recorded_streams_about(
-    identities: Option<&BTreeSet<String>>,
+    wanted: Option<&BTreeSet<(String, String)>>,
+    sessions: &[crate::workspace::Record],
 ) -> Result<Vec<Recorded>> {
-    let Some(identities) = identities else {
+    let Some(wanted) = wanted else {
         return recorded_streams(&mut Vec::new());
+    };
+    // Every token `relevant_streams` matches by name for a wanted branch, whatever the
+    // stream's content says: its sessions', and the branch-keyed verbs' spellings.
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    for (identity, branch) in wanted {
+        let slug = policy::branch_slug(branch);
+        named.insert(format!("publish-branch-{slug}"));
+        named.insert(format!("recover-{slug}"));
+        named.insert(crate::preserve::preserve_token(branch));
+        for record in sessions {
+            if record.identity == *identity && *record.branch == **branch {
+                named.insert(record.token.to_string());
+            }
+        }
+    }
+    let about = |identity: Option<&String>, branch: Option<&String>, token: &str| {
+        named.contains(token)
+            || matches!((identity, branch), (Some(identity), Some(branch))
+                if wanted.contains(&(identity.clone(), branch.clone())))
     };
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
     struct Indexed {
@@ -2295,6 +2315,7 @@ pub(crate) fn recorded_streams_about(
         modified: i128,
         inode: u64,
         identity: Option<String>,
+        branch: Option<String>,
     }
     use std::os::unix::fs::MetadataExt;
     let directory = home::streams_dir()?;
@@ -2336,17 +2357,14 @@ pub(crate) fn recorded_streams_about(
             modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
             inode: meta.ino(),
             identity: None,
+            branch: None,
         };
         let known = index.get(&token).filter(|entry| {
             entry.len == stamp.len && entry.modified == stamp.modified && entry.inode == stamp.inode
         });
         if let Some(entry) = known {
             fresh.insert(token.clone(), entry.clone());
-            if entry
-                .identity
-                .as_ref()
-                .is_some_and(|identity| !identities.contains(identity))
-            {
+            if !about(entry.identity.as_ref(), entry.branch.as_ref(), &token) {
                 continue;
             }
         }
@@ -2358,15 +2376,12 @@ pub(crate) fn recorded_streams_about(
                 token.clone(),
                 Indexed {
                     identity: record.identity.clone(),
+                    branch: record.branch.clone(),
                     ..stamp
                 },
             );
         }
-        if record
-            .identity
-            .as_ref()
-            .is_none_or(|identity| identities.contains(identity))
-        {
+        if about(record.identity.as_ref(), record.branch.as_ref(), &token) {
             kept.push(record);
         }
     }

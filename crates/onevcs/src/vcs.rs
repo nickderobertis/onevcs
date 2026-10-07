@@ -576,9 +576,10 @@ fn collected(
     // record could not be read falls to a lower tier and is judged from the base's own
     // history instead.
     let streams = crate::spike::phase("streams", || match crate::spike::prototype() {
-        true => {
-            crate::status::recorded_streams_about(narrowed.as_ref().map(|only| &only.identities))
-        }
+        true => crate::status::recorded_streams_about(
+            narrowed.as_ref().map(|only| &only.branches),
+            &sessions,
+        ),
         false => crate::status::recorded_streams(&mut Vec::new()),
     })?;
     let wanted = match scope {

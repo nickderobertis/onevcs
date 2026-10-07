@@ -242,6 +242,130 @@ pub(crate) fn unremembered<T>(read: impl FnOnce() -> T) -> T {
     reads::bypass(read)
 }
 
+/// Spike: one repository's branches and remote-tracking branches as its ref files hold
+/// them — `packed-refs`, overridden by each loose ref, which is how git itself resolves
+/// one under the files backend.
+///
+/// Read only for a checkout whose `.git` is a directory with no `commondir` (so its refs
+/// are its own) and whose configuration names no other ref storage. Anything else, and
+/// any file that cannot be read, is `None`, and the caller asks git as v0.42.0 does.
+#[derive(Debug, Default)]
+pub(crate) struct OnDisk {
+    git_dir: PathBuf,
+    refs: BTreeMap<String, String>,
+    symbolic: BTreeMap<String, String>,
+}
+
+impl OnDisk {
+    fn read(cwd: &Path) -> Option<Self> {
+        let git_dir = cwd.join(".git");
+        if !git_dir.is_dir() || git_dir.join("commondir").exists() {
+            return None;
+        }
+        let config = std::fs::read_to_string(git_dir.join("config")).ok()?;
+        if config.to_ascii_lowercase().contains("refstorage") {
+            return None;
+        }
+        let mut found = OnDisk {
+            git_dir: git_dir.clone(),
+            ..OnDisk::default()
+        };
+        match std::fs::read_to_string(git_dir.join("packed-refs")) {
+            Ok(packed) => {
+                for line in packed.lines() {
+                    if line.starts_with('#') || line.starts_with('^') {
+                        continue;
+                    }
+                    let (sha, name) = line.split_once(' ')?;
+                    ObjectId::parse(sha)?;
+                    found.refs.insert(name.to_owned(), sha.to_owned());
+                }
+            }
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+        for family in ["refs/heads", "refs/remotes", "refs/tags"] {
+            found.loose(&git_dir.join(family), family)?;
+        }
+        Some(found)
+    }
+
+    fn loose(&mut self, directory: &Path, name: &str) -> Option<()> {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Some(()),
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let entry = entry.ok()?;
+            let file_name = entry.file_name().into_string().ok()?;
+            let path = entry.path();
+            let full = format!("{name}/{file_name}");
+            if entry.file_type().ok()?.is_dir() {
+                self.loose(&path, &full)?;
+                continue;
+            }
+            // A lock beside a ref is a write in flight, and git reads the ref itself.
+            if file_name.ends_with(".lock") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).ok()?;
+            let text = text.trim();
+            if let Some(target) = text.strip_prefix("ref: ") {
+                self.symbolic.insert(full, target.to_owned());
+            } else {
+                ObjectId::parse(text)?;
+                self.refs.insert(full, text.to_owned());
+            }
+        }
+        Some(())
+    }
+
+    /// The commit a full ref name stands at, following one symbolic ref.
+    fn resolve(&self, full: &str) -> Option<&String> {
+        match self.symbolic.get(full) {
+            Some(target) => self.refs.get(target),
+            None => self.refs.get(full),
+        }
+    }
+
+    /// Every ref under `prefix` that is not symbolic, by full name.
+    fn under<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (&'a String, &'a String)> + 'a {
+        self.refs
+            .range(prefix.to_owned()..)
+            .take_while(move |(name, _)| name.starts_with(prefix))
+    }
+
+    /// What `rev-parse --verify NAME^{commit}` answers for a branch or remote-tracking
+    /// branch, by git's own search order; `None` for anything this cannot settle (a
+    /// tag, which may need peeling, or a name it does not hold), which goes to git.
+    fn commit_of(&self, name: &str) -> Option<String> {
+        if ObjectId::parse(name).is_some() {
+            return None;
+        }
+        let candidates = [
+            name.to_owned(),
+            format!("refs/{name}"),
+            format!("refs/tags/{name}"),
+            format!("refs/heads/{name}"),
+            format!("refs/remotes/{name}"),
+            format!("refs/remotes/{name}/HEAD"),
+        ];
+        for candidate in candidates {
+            if !candidate.starts_with("refs/") {
+                continue;
+            }
+            if self.refs.contains_key(&candidate) || self.symbolic.contains_key(&candidate) {
+                if candidate.starts_with("refs/tags/") {
+                    return None;
+                }
+                return self.resolve(&candidate).cloned();
+            }
+        }
+        None
+    }
+}
+
 /// The per-invocation memo of git reads, and what may go in it.
 mod reads {
     use super::*;
@@ -254,6 +378,28 @@ mod reads {
         /// The answers no write inside the scope can move, kept past every write.
         static SETTLED: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
         static BYPASSED: Cell<bool> = const { Cell::new(false) };
+        /// Spike: each repository's refs as its files held them, read once per scope
+        /// and dropped whenever the memo is — so never across a write.
+        static DISK: RefCell<HashMap<PathBuf, Option<std::rc::Rc<super::OnDisk>>>> =
+            RefCell::new(HashMap::new());
+    }
+
+    /// Spike: the refs of `cwd` read from its files, inside a remembering scope of a
+    /// prototype read and nowhere else; `None` sends the caller to git.
+    pub(super) fn on_disk(cwd: &Path) -> Option<std::rc::Rc<super::OnDisk>> {
+        if !crate::spike::prototype() || !active() {
+            return None;
+        }
+        DISK.with(|disk| {
+            disk.borrow_mut()
+                .entry(cwd.to_path_buf())
+                .or_insert_with(|| super::OnDisk::read(cwd).map(std::rc::Rc::new))
+                .clone()
+        })
+    }
+
+    fn forget_disk() {
+        DISK.with(|disk| disk.borrow_mut().clear());
     }
 
     pub(super) fn enter() {
@@ -266,6 +412,7 @@ mod reads {
             if depth.get() == 0 {
                 MEMO.with(|memo| memo.borrow_mut().clear());
                 SETTLED.with(|settled| settled.borrow_mut().clear());
+                forget_disk();
             }
         });
     }
@@ -347,6 +494,7 @@ mod reads {
         }
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
+            forget_disk();
         }
         None
     }
@@ -1080,6 +1228,9 @@ pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
 
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
+    if let Some(found) = reads::on_disk(cwd).and_then(|disk| disk.commit_of(reference)) {
+        return Some(found);
+    }
     run(
         &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
         Some(cwd),
@@ -1183,6 +1334,9 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
+    if reads::on_disk(path).is_some() {
+        return true;
+    }
     run(&["rev-parse", "--is-inside-work-tree"], Some(path))
         .map(|out| out.ok() && out.trimmed() == "true")
         .unwrap_or(false)
@@ -1445,6 +1599,9 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 /// The object store a checkout keeps its own history in, which is what another
 /// repository is given to read when it is asked about a commit it never fetched.
 pub fn objects_dir(cwd: &Path) -> Result<PathBuf> {
+    if let Some(disk) = reads::on_disk(cwd) {
+        return Ok(disk.git_dir.join("objects"));
+    }
     git_owned_path(cwd, "objects")
 }
 
@@ -1676,6 +1833,18 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
 
 /// The branch `<remote>/HEAD` names, when it names one that is still there.
 fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    if let Some(disk) = reads::on_disk(cwd) {
+        let named = disk
+            .symbolic
+            .get(&format!("refs/remotes/{remote}/HEAD"))
+            .and_then(|target| target.strip_prefix("refs/remotes/"))
+            .unwrap_or_default()
+            .to_owned();
+        let Some(branch) = named.strip_prefix(&format!("{remote}/")) else {
+            return Ok(None);
+        };
+        return Ok(ref_exists(cwd, &format!("refs/remotes/{named}")).then(|| branch.to_owned()));
+    }
     let named = run(
         &[
             "symbolic-ref",
@@ -1713,6 +1882,11 @@ fn advertised_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
 
 /// Whether a fully spelled ref exists.
 pub fn ref_exists(cwd: &Path, reference: &str) -> bool {
+    if reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/") {
+        if let Some(disk) = reads::on_disk(cwd) {
+            return disk.resolve(reference).is_some();
+        }
+    }
     run(&["show-ref", "--verify", "--quiet", reference], Some(cwd))
         .map(|out| out.ok())
         .unwrap_or(false)
@@ -1864,18 +2038,34 @@ pub fn unpublished_branches_among(
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
 ) -> Result<Vec<(String, String)>> {
-    let listing = checked(
-        &[
-            "for-each-ref",
-            "--format=%(refname)%00%(refname:short)%00%(objectname)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ],
-        Some(cwd),
-    )?;
+    let disk = reads::on_disk(cwd);
+    let listing = match &disk {
+        // Spike: the same three fields for-each-ref prints, out of the ref files.
+        Some(disk) => {
+            disk.under("refs/heads/")
+                .map(|(name, tip)| format!("{name}\0{}\0{tip}", &name["refs/heads/".len()..]))
+                .chain(disk.under("refs/remotes/origin/").map(|(name, tip)| {
+                    format!("{name}\0{}\0{tip}", &name["refs/remotes/".len()..])
+                }))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        None => {
+            checked(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)",
+                    "refs/heads",
+                    "refs/remotes/origin",
+                ],
+                Some(cwd),
+            )?
+            .stdout
+        }
+    };
     let mut heads: Vec<(String, String)> = Vec::new();
     let mut origin_tips: BTreeSet<String> = BTreeSet::new();
-    for line in listing.stdout.lines() {
+    for line in listing.lines() {
         let mut fields = line.split('\0');
         let (Some(full), Some(short), Some(tip)) = (fields.next(), fields.next(), fields.next())
         else {
@@ -3488,6 +3678,12 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
 /// Every local branch of a repository with the commit it stands at, in git's ref
 /// order.
 pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
+    if let Some(disk) = reads::on_disk(cwd) {
+        return Ok(disk
+            .under("refs/heads/")
+            .map(|(name, tip)| (name["refs/heads/".len()..].to_owned(), tip.clone()))
+            .collect());
+    }
     Ok(checked(
         &[
             "for-each-ref",
@@ -3507,6 +3703,13 @@ pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
 /// name the remote gives it; `HEAD` is not a branch and is left out.
 pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>> {
     let prefix = format!("refs/remotes/{remote}/");
+    if let Some(disk) = reads::on_disk(cwd) {
+        return Ok(disk
+            .under(&prefix)
+            .map(|(name, tip)| (name[prefix.len()..].to_owned(), tip.clone()))
+            .filter(|(name, _)| name != "HEAD")
+            .collect());
+    }
     Ok(checked(
         &[
             "for-each-ref",
