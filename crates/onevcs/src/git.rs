@@ -247,7 +247,23 @@ struct RefName(String);
 
 impl RefName {
     fn parse(name: &str) -> Option<Self> {
-        (name.starts_with("refs/") && plainly_a_ref_name(name)).then(|| Self(name.to_owned()))
+        // Git check-ref-format's full-ref grammar (not its stricter --branch
+        // shorthand). A valid unrelated remote ref must not disable the snapshot.
+        let valid = name.starts_with("refs/")
+            && !name.ends_with('.')
+            && !name.contains("..")
+            && !name.contains("@{")
+            && !name.bytes().any(|byte| {
+                byte <= b' '
+                    || byte == 0x7f
+                    || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+            })
+            && name.split('/').all(|component| {
+                !component.is_empty()
+                    && !component.starts_with('.')
+                    && !component.ends_with(".lock")
+            });
+        valid.then(|| Self(name.to_owned()))
     }
     fn as_str(&self) -> &str {
         &self.0
@@ -4208,6 +4224,43 @@ mod ref_name_tests {
             assert!(
                 plainly_a_ref_name(ordinary),
                 "{ordinary:?} is the ordinary shape and must be decided in process"
+            );
+        }
+    }
+
+    /// The snapshot accepts the full grammar, including punctuation and Unicode,
+    /// rather than making valid unrelated refs disable every selected batch read.
+    #[test]
+    fn snapshot_ref_names_match_the_real_git_grammar() {
+        let mut names: Vec<String> = NAMES
+            .iter()
+            .map(|name| format!("refs/heads/{name}"))
+            .collect();
+        names.extend(
+            [
+                "jordan/evals/fe+be/add-tool-scope",
+                "dot./middle",
+                "a.LOCK",
+                "punctuation!@#$%&()+,;<=>]",
+                "unicode/日本語",
+                "unicode/\u{85}",
+                "-leading",
+            ]
+            .into_iter()
+            .map(|name| format!("refs/heads/{name}")),
+        );
+        for byte in 1..=127u8 {
+            names.push(format!("refs/heads/a{}b", char::from(byte)));
+        }
+        assert!(RefName::parse("refs/heads/nul\0byte").is_none());
+        for reference in names {
+            let expected = run(&["check-ref-format", &reference], None)
+                .expect("real git")
+                .ok();
+            assert_eq!(
+                RefName::parse(&reference).is_some(),
+                expected,
+                "{reference:?}: snapshot grammar differs from git check-ref-format"
             );
         }
     }

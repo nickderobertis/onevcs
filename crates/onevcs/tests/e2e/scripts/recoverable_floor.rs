@@ -500,6 +500,39 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
         &["update-ref", "-d", "refs/heads/symbolic-target"],
     );
 
+    // Unrelated remote refs can use every character Git accepts; one must not
+    // invalidate the whole batch and force each selected branch back through Git.
+    let (_, before_names) = recoverable(&fixture, "decision", &[]);
+    let mut repositories = std::collections::BTreeSet::new();
+    for item in &all {
+        repositories.insert(PathBuf::from(
+            item["checkout"].as_str().expect("a checkout"),
+        ));
+    }
+    let valid_names = [
+        "jordan/evals/fe+be/add-tool-scope",
+        "covetrus-connect-docs-+-initial-guide",
+        "équipe/日本語",
+        "dot./middle",
+        "punctuation!@#$%&()+,;<=>]",
+        "-component/ok",
+    ];
+    for repository in &repositories {
+        let at = git(repository, &fixture, &["rev-parse", "HEAD"]);
+        for name in valid_names {
+            let reference = format!("refs/remotes/origin/{name}");
+            git(repository, &fixture, &["check-ref-format", &reference]);
+            git(repository, &fixture, &["update-ref", &reference, &at]);
+        }
+    }
+    agree(&fixture, "Git-valid remote names, cold", Cache::Cold);
+    agree(&fixture, "Git-valid remote names, warm", Cache::Warm);
+    let (_, after_names) = recoverable(&fixture, "decision", &[]);
+    assert_eq!(
+        after_names["git_spawns"], before_names["git_spawns"],
+        "valid unrelated names keep selected refs on the batch path"
+    );
+
     // Packed refs must answer exactly as loose refs did, and a later loose update
     // must override the older packed tip rather than reuse its cached proof.
     let mut checkouts = std::collections::BTreeSet::new();
