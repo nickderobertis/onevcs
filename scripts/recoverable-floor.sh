@@ -45,8 +45,8 @@
 #       last timed run (this branch's reads only): phase times, git time, cache hits.
 #
 # Environment: RECOVERABLE_FLOOR_DIR (default dispatch scratch, else target/recoverable-floor) holds fixtures
-# and state; ONEVCS_BIN is this branch's binary (default target/release/onevcs, built by
-# `cargo build --release -p onevcs`).
+# and state; ONEVCS_BIN is this branch's binary (default target/release/onevcs, built by the release tooling;
+# for a development run, use `just run --version` and ONEVCS_BIN=target/debug/onevcs).
 set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -65,8 +65,6 @@ die() {
 usage() {
     sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
 }
-
-# --- fixture ---------------------------------------------------------------------------
 
 # The measured launcher, and the other managers whose sessions fill the host around it.
 measured_launcher=fixture-launcher-measured
@@ -87,7 +85,7 @@ fx_git() {
 open_session() {
     local checkout=$1 branch=$2 launcher=$3 node=$4 opened token worktree
     opened=$(fx session open "$checkout" --branch "$branch" --label "launcher=$launcher" \
-        --label "run=fixture-run" --label "node=$node" 2>/dev/null) ||
+        --label "run=fixture-run" --label "node=$node") ||
         die "session open $branch in $checkout failed" 1
     token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' <<<"$opened")
     worktree=$(sed -n 's/.*"worktree":"\([^"]*\)".*/\1/p' <<<"$opened")
@@ -104,11 +102,11 @@ commit_in() {
 }
 
 close_session() {
-    fx session close "$1" >/dev/null 2>&1 || die "session close $1 failed" 1
+    fx session close "$1" >/dev/null || die "session close $1 failed" 1
 }
 
 land() {
-    fx publish-branch "$2" --repo "$1" >/dev/null 2>&1 || die "publish-branch $2 failed" 1
+    fx publish-branch "$2" --repo "$1" >/dev/null || die "publish-branch $2 failed" 1
 }
 
 # open, commit one file, close: a session that left its work preserved.
@@ -145,7 +143,7 @@ scenario() {
             land "$checkout" "$b-retry"
             fx supersede "$b" --repo "$checkout" --by "$b-retry" \
                 --landing "$(fx_git -C "$checkout" rev-parse origin/main)" \
-                --label "node=n$n" >/dev/null 2>&1 || die "supersede $b failed" 1
+                --label "node=n$n" >/dev/null || die "supersede $b failed" 1
             ;;
         live)
             # Left open: the harness holds its run root's lease while it measures, which
@@ -194,7 +192,7 @@ build_identity() {
     fx_git -C "$seed" push -q "$origin" main
     rm -rf "$seed"
     fx_git clone -q "$origin" "$checkout"
-    fx register "$checkout" >/dev/null 2>&1 || die "register $checkout failed" 1
+    fx register "$checkout" >/dev/null || die "register $checkout failed" 1
 
     # The swept history: sessions whose records `sweep` forgets and whose streams stay.
     for n in $(seq 1 "$history"); do
@@ -239,8 +237,15 @@ build_kept() {
 build_fixture() {
     local k jobs=0 parallel
     parallel=${RECOVERABLE_FLOOR_JOBS:-16}
+    [[ "$parallel" =~ ^[1-9][0-9]*$ ]] || die "RECOVERABLE_FLOOR_JOBS must be a positive integer"
+    if [ -e "$fixture" ] && [ ! -f "$fixture/fixture.env" ] &&
+        [ ! -f "$fixture/.recoverable-floor-fixture" ] &&
+        [ -n "$(find "$fixture" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        die "$fixture is not an owned fixture; choose an empty scratch directory" 1
+    fi
     rm -rf "$fixture"
     mkdir -p "$fixture/home" "$fixture/origins" "$fixture/seeds" "$fixture/checkouts" "$fixture/logs"
+    : >"$fixture/.recoverable-floor-fixture"
     : >"$fixture/live.txt"
     printf '[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[advice]\n\tdetachedHead = false\n[maintenance]\n\tauto = false\n' \
         >"$fixture/.gitconfig"
@@ -255,9 +260,9 @@ build_fixture() {
             local mine=0
             [ "$k" -le "$labelled" ] && mine=$k
             if [ "$phase" = history ]; then
-                (build_identity "$k" "$mine" "$history" "$kept" >"$fixture/logs/r$k.log" 2>&1) &
+                (build_identity "$k" "$mine" "$history" "$kept" >"$fixture/logs/r$k.log" 2>&1 || { cat "$fixture/logs/r$k.log" >&2; exit 1; }) &
             else
-                (build_kept "$k" "$mine" "$kept" >>"$fixture/logs/r$k.log" 2>&1) &
+                (build_kept "$k" "$mine" "$kept" >>"$fixture/logs/r$k.log" 2>&1 || { cat "$fixture/logs/r$k.log" >&2; exit 1; }) &
             fi
             jobs=$((jobs + 1))
             if [ "$jobs" -ge "$parallel" ]; then
@@ -270,8 +275,22 @@ build_fixture() {
             jobs=$((jobs - 1))
         done
         if [ "$phase" = history ]; then
-            fx sweep --min-age-hours 0 >"$fixture/logs/sweep.log" 2>&1 ||
+            fx sweep --min-age-hours 0 >"$fixture/logs/sweep.log" 2>&1 || {
+                cat "$fixture/logs/sweep.log" >&2
                 die "history sweep failed; see $fixture/logs/sweep.log" 1
+            }
+        fi
+    done
+    finish_fixture
+}
+
+# Historical records are disposable fixture setup output; keep their real event
+# streams, as on the host after reclamation, but do not count them as kept sessions.
+finish_fixture() {
+    local record
+    for record in "$fixture"/home/sessions/*.json; do
+        if grep -q '"launcher": *"fixture-launcher-gone"' "$record"; then
+            rm "$record"
         fi
     done
     {
@@ -314,11 +333,16 @@ cmd_fixture() {
     for value in "$identities" "$labelled" "$kept" "$history"; do
         [[ "$value" =~ ^[0-9]+$ ]] || die "fixture: a shape value must be a count, got $value"
     done
+    [ "$identities" -gt 0 ] || die "fixture: --identities must be positive"
     [ "$labelled" -le "$identities" ] || die "fixture: --labelled $labelled exceeds --identities $identities"
-    [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'cargo build --release -p onevcs', or set ONEVCS_BIN"
-    shape="v2,identities=$identities,labelled=$labelled,kept=$kept,history=$history"
+    [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'just run --version' and set ONEVCS_BIN=target/debug/onevcs"
+    shape="v3,identities=$identities,labelled=$labelled,kept=$kept,history=$history"
     fixture=${dir:-$(fixture_dir "$scale")}
-    if [ -f "$fixture/fixture.env" ] && grep -qx "shape=$shape" "$fixture/fixture.env"; then
+    if [ -f "$fixture/fixture.env" ] && {
+        grep -qx "shape=$shape" "$fixture/fixture.env" ||
+        grep -qx "shape=${shape/v3,/v2,}" "$fixture/fixture.env";
+    }; then
+        finish_fixture
         echo "fixture: reusing $fixture ($(tr '\n' ' ' <"$fixture/fixture.env"))"
         return
     fi
@@ -326,8 +350,6 @@ cmd_fixture() {
     build_fixture
     echo "fixture: built $fixture in $((SECONDS - started))s ($(tr '\n' ' ' <"$fixture/fixture.env"))"
 }
-
-# --- measurement -----------------------------------------------------------------------
 
 held=()
 loaders=()
@@ -358,13 +380,14 @@ hold_live_leases() {
 }
 
 start_load() {
-    local workers=$1 i
+    local workers=$1 i warmup=${RECOVERABLE_FLOOR_LOAD_WARMUP:-60}
+    [[ "$warmup" =~ ^[0-9]+$ ]] || die "RECOVERABLE_FLOOR_LOAD_WARMUP must be whole seconds"
     for i in $(seq 1 "$workers"); do
         setsid bash -c 'while :; do head -c 20000000 /dev/urandom | gzip -1 >/dev/null; '"$real_git"' -C "$0" log -p --all >/dev/null 2>&1; done' \
             "$repo_root" >/dev/null 2>&1 &
         loaders+=("$!")
     done
-    sleep "${RECOVERABLE_FLOOR_LOAD_WARMUP:-60}"
+    sleep "$warmup"
 }
 
 load1() { cut -d' ' -f1 /proc/loadavg; }
@@ -396,6 +419,9 @@ read_env() {
     esac
     if [ -n "$fixture" ]; then
         env_args+=("HOME=$fixture" "ONEVCS_HOME=$fixture/home")
+    else
+        # A read must not let git status refresh an index inside the real registry.
+        env_args+=("GIT_OPTIONAL_LOCKS=0")
     fi
 }
 
@@ -414,6 +440,11 @@ cmd_run() {
     local read="" scale=1 real=0 runs=10 cold=0 workers=0 count_runs=1 dispatches=0 given="" profile=0
     session="" baseline=$(command -v onevcs || true) aio=${AIO_CHECKOUT:-$HOME/ai-orchestrator}
     while [ $# -gt 0 ]; do
+        case "$1" in
+            --scale | --dir | --runs | --session | --load | --count-runs | --baseline | --aio)
+                [ $# -ge 2 ] || die "run: $1 takes a value"
+                ;;
+        esac
         case "$1" in
             --scale) scale=$2; shift 2 ;;
             --dir) given=$2; shift 2 ;;
@@ -463,7 +494,7 @@ cmd_run() {
             [ -f "$aio/scripts/unpublished.sh" ] || die "run: no ai-orchestrator checkout at $aio; pass --aio PATH"
             ;;
     esac
-    [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'cargo build --release -p onevcs'"
+    [ -x "$onevcs_bin" ] || die "no onevcs binary at $onevcs_bin; run 'just run --version' and set ONEVCS_BIN=target/debug/onevcs"
     read_command "$read"
     read_env "$read"
     [ "$profile" -eq 1 ] && env_args+=("ONEVCS_SPIKE_PROFILE=1")

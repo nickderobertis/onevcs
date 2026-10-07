@@ -278,6 +278,9 @@ impl OnDisk {
                     }
                     let (sha, name) = line.split_once(' ')?;
                     ObjectId::parse(sha)?;
+                    if !name.starts_with("refs/") || !plainly_a_ref_name(name) {
+                        return None;
+                    }
                     found.refs.insert(name.to_owned(), sha.to_owned());
                 }
             }
@@ -309,9 +312,15 @@ impl OnDisk {
             if file_name.ends_with(".lock") {
                 continue;
             }
+            if !plainly_a_ref_name(&full) {
+                return None;
+            }
             let text = std::fs::read_to_string(&path).ok()?;
             let text = text.trim();
             if let Some(target) = text.strip_prefix("ref: ") {
+                if !target.starts_with("refs/") || !plainly_a_ref_name(target) {
+                    return None;
+                }
                 self.symbolic.insert(full, target.to_owned());
             } else {
                 ObjectId::parse(text)?;

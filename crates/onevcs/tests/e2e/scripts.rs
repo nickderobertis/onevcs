@@ -60,6 +60,7 @@ use std::process::{Command, Output};
 use crate::support::workspace_root;
 
 /// Spike `spike-recoverable-floor`'s harness, and the prototype read it measures.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] justfile's scripts-tier selects test(/^scripts::/) and e2e-tier excludes it; this module belongs to onevcs-scripts-e2e despite sharing the e2e binary.
 mod recoverable_floor;
 
 /// One script run, with the environment a journey needs and nothing inherited

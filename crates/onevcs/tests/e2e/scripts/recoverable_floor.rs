@@ -343,6 +343,19 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
         "a warm read started as many git processes as a cold one: {warm} against {cold}"
     );
 
+    // Packed refs must answer exactly as loose refs did, and a later loose update
+    // must override the older packed tip rather than reuse its cached proof.
+    let mut checkouts = std::collections::BTreeSet::new();
+    for row in &all {
+        checkouts.insert(PathBuf::from(row["checkout"].as_str().expect("a checkout")));
+    }
+    for checkout in &checkouts {
+        git(checkout, &fixture, &["pack-refs", "--all"]);
+        assert!(checkout.join(".git/packed-refs").is_file());
+    }
+    agree(&fixture, "packed refs, cold", Cache::Cold);
+    agree(&fixture, "packed refs, warm", Cache::Warm);
+
     // A branch's tip moves: work continued on the unlanded branch, and the read
     // answers for the new tip rather than the one it cached.
     let unlanded = all
@@ -397,6 +410,13 @@ fn the_prototype_answers_every_recovery_state_as_v0_42_0_does_cold_warm_and_afte
         &["rev-parse", &format!("refs/heads/{branch}")],
     );
     assert_ne!(before, after, "the premise: the branch moved");
+    assert!(checkout.join(".git/refs/heads").join(&branch).is_file());
+    assert!(
+        std::fs::read_to_string(checkout.join(".git/packed-refs"))
+            .expect("packed refs remain")
+            .contains(&format!("{before} refs/heads/{branch}")),
+        "the premise: the loose tip overrides the older packed tip"
+    );
     assert_eq!(row(&moved, &branch)["landed"]["state"], "no");
 
     // Its base's tip moves under the cache and nothing recorded about the branch does:
@@ -510,6 +530,13 @@ fn the_harness_builds_its_fixture_once_and_reports_one_read_as_one_line() {
     let env = std::fs::read_to_string(fixture.join("fixture.env"))
         .expect("the fixture records its shape");
     assert!(env.contains(&format!("launcher={MEASURED}")), "{env}");
+    for record in std::fs::read_dir(fixture.join("home/sessions")).expect("sessions") {
+        let record: Value = serde_json::from_slice(
+            &std::fs::read(record.expect("a record").path()).expect("session bytes"),
+        )
+        .expect("real session JSON");
+        assert_ne!(record["labels"]["launcher"], "fixture-launcher-gone");
+    }
 
     let again = harness(state.path())
         .args(["fixture", "--dir"])
@@ -619,6 +646,70 @@ fn the_harness_refuses_what_it_cannot_measure_by_name() {
     ]);
     assert_eq!(code, Some(1));
     assert!(stderr.contains("onevcs-version exited 1"), "{stderr}");
+    let (code, stderr) = said(&["run", "decision", "--runs"]);
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains("--runs takes a value"), "{stderr}");
+
+    let configured = harness(state.path());
+    let baseline = configured
+        .get_envs()
+        .find(|(key, _)| *key == "ONEVCS_BIN")
+        .and_then(|(_, value)| value)
+        .expect("the harness names the built binary")
+        .to_owned();
+    let invalid = harness(state.path())
+        .env("ONEVCS_SPIKE_RECOVERABLE", "protoype")
+        .args([
+            "run",
+            "v0.42.0",
+            "--real",
+            "--session",
+            MEASURED,
+            "--baseline",
+        ])
+        .arg(baseline)
+        .output()
+        .expect("bash runs the harness");
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr).contains("ONEVCS_SPIKE_RECOVERABLE must be"),
+        "{}",
+        String::from_utf8_lossy(&invalid.stderr)
+    );
+
+    for (name, args) in [
+        ("RECOVERABLE_FLOOR_JOBS", vec!["fixture", "--dir"]),
+        (
+            "RECOVERABLE_FLOOR_LOAD_WARMUP",
+            vec![
+                "run",
+                "onevcs-version",
+                "--real",
+                "--session",
+                MEASURED,
+                "--load",
+                "1",
+            ],
+        ),
+    ] {
+        let mut command = harness(state.path());
+        command.env(name, "invalid").args(&args);
+        if name == "RECOVERABLE_FLOOR_JOBS" {
+            command.arg(state.path().join("invalid-jobs"));
+        }
+        let output = command.output().expect("bash runs the harness");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+    }
+    std::fs::write(state.path().join("keep-me"), "existing work").expect("existing file");
+    let (code, stderr) = said(&["fixture", "--dir", &state.path().to_string_lossy()]);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("not an owned fixture"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("keep-me")).expect("preserved file"),
+        "existing work"
+    );
+
     let (code, stderr) = said(&["measure"]);
     assert_eq!(code, Some(2));
     assert!(stderr.contains("unknown verb measure"), "{stderr}");

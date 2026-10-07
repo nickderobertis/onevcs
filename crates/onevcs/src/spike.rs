@@ -43,6 +43,17 @@ pub(crate) fn mode() -> Mode {
     )
 }
 
+/// Refuse a misspelled spike selector before any read or subprocess starts.
+pub(crate) fn check_mode() -> crate::error::Result<()> {
+    match std::env::var("ONEVCS_SPIKE_RECOVERABLE") {
+        Ok(value) if matches!(value.as_str(), "legacy" | "prototype" | "decision") => Ok(()),
+        Err(std::env::VarError::NotPresent) => Ok(()),
+        value => Err(crate::error::invalid(format!(
+            "ONEVCS_SPIKE_RECOVERABLE must be legacy, prototype or decision, got {value:?}"
+        ))),
+    }
+}
+
 /// Whether this process runs either form of the prototype.
 pub(crate) fn prototype() -> bool {
     mode() != Mode::Legacy

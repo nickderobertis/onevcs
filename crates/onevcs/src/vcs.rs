@@ -561,6 +561,7 @@ fn collected(
     reporting: Reporting,
     selection: &Selection,
 ) -> Result<Vec<Recoverable>> {
+    crate::spike::check_mode()?;
     let registry = crate::spike::phase("registry_and_rules", store::load)?;
     let (rules, _source) =
         crate::spike::phase("registry_and_rules", || crate::policy::load(&registry))?;
@@ -1163,15 +1164,6 @@ fn preserved_row(
     ))
 }
 
-/// The session that answers for a branch: the newest record naming it.
-///
-/// The end of its chain of retries — a record nothing superseded — and an open one
-/// over a closed one where two chains end apart, which is the preference `status`
-/// makes when it picks whose evidence is the branch's. Where every record of the
-/// branch has been superseded, which is a chain this host cannot follow, the same
-/// preference is applied to all of them rather than answering nobody: the row still
-/// names a session somebody can look up, and its landing is already `unknown`.
-/// Ties are broken by token, so two reads answer the same record.
 /// Spike: [`change_url_of`], once per base commit, branch tip and trailer key: it reads
 /// the messages of the commits between the two, which no ref moving changes.
 fn change_url_remembered(
@@ -1252,6 +1244,15 @@ fn decision_key(
     }))
 }
 
+/// The session that answers for a branch: the newest record naming it.
+///
+/// The end of its chain of retries — a record nothing superseded — and an open one
+/// over a closed one where two chains end apart, which is the preference `status`
+/// makes when it picks whose evidence is the branch's. Where every record of the
+/// branch has been superseded, which is a chain this host cannot follow, the same
+/// preference is applied to all of them rather than answering nobody: the row still
+/// names a session somebody can look up, and its landing is already `unknown`.
+/// Ties are broken by token, so two reads answer the same record.
 pub(crate) fn latest_session<'a>(
     sessions: &'a [workspace::Record],
     identity: &str,

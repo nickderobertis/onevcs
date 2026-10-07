@@ -72,6 +72,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
     // A misconfigured bound is refused here rather than wherever it first happens
     // to be read: silently reverting to unbounded is the failure both of them exist
     // to prevent, and a command that got halfway first has already done work.
+    crate::spike::check_mode()?;
     git::check_bounds()?;
     lock::timeout_seconds()?;
     match command {

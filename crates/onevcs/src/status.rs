@@ -2260,16 +2260,6 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
     Ok((streams, listing))
 }
 
-/// One stream, read as the values it holds and said so where it could not be.
-///
-/// Every line goes through [`crate::stream::attributed`], which is the seam
-/// `EventStream` reads through — so a line this build cannot parse, and one
-/// carrying another stream's event, are refused here for the same two reasons they
-/// are refused there rather than being interpreted as an envelope this happens to
-/// be able to index into. What differs is what a refusal does: this command is
-/// asked what became of a piece of work, so a line it could not read becomes a note
-/// in the report rather than the whole answer. Nothing safety-critical rests on it
-/// — whether the work *landed* is read off the base's content, never off a stream.
 /// Spike: the streams a read narrowed to `identities` can consult, without parsing the
 /// rest.
 ///
@@ -2398,6 +2388,16 @@ pub(crate) fn recorded_streams_about(
     Ok(kept)
 }
 
+/// One stream, read as the values it holds and said so where it could not be.
+///
+/// Every line goes through [`crate::stream::attributed`], which is the seam
+/// `EventStream` reads through — so a line this build cannot parse, and one
+/// carrying another stream's event, are refused here for the same two reasons they
+/// are refused there rather than being interpreted as an envelope this happens to
+/// be able to index into. What differs is what a refusal does: this command is
+/// asked what became of a piece of work, so a line it could not read becomes a note
+/// in the report rather than the whole answer. Nothing safety-critical rests on it
+/// — whether the work *landed* is read off the base's content, never off a stream.
 fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Recorded {
     let mut record = Recorded {
         token: token.to_owned(),
