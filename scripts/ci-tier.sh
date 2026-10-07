@@ -43,6 +43,7 @@ case "${1:-}" in
 select)
   [ "$#" -eq 1 ] || {
     echo "ci-tier: 'select' takes no arguments" >&2
+    echo "ACTION: run 'scripts/ci-tier.sh select' alone; the tier is read from GITHUB_EVENT_NAME and GITHUB_HEAD_REF" >&2
     exit 2
   }
   printf '%s\n' "$(tier)"

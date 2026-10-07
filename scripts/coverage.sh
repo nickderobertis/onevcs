@@ -46,6 +46,7 @@ usage() {
 valid_tier() {
   printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || {
     echo "coverage: '$1' is not a tier name (lowercase letters, digits and '-')" >&2
+    echo "ACTION: name the tier as its Nx project is named, e.g. 'onevcs-e2e'" >&2
     exit 2
   }
 }
@@ -111,6 +112,7 @@ report() {
   [ "$#" -gt 0 ] || usage
   printf '%s' "$floor" | grep -Eq '^[0-9]+(\.[0-9]+)?$' || {
     echo "coverage: '$floor' is not a percentage" >&2
+    echo "ACTION: pass the floor as a number, e.g. 'scripts/coverage.sh report 95 onevcs'" >&2
     exit 2
   }
   local tier missing=()

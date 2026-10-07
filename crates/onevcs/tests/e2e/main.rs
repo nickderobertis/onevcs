@@ -54,6 +54,10 @@ mod comparison;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod cost;
+// Linux only: coverage is measured on Linux alone, so `cargo llvm-cov` is installed
+// there and nowhere else; it drives `scripts/coverage.sh` over a scratch crate.
+#[cfg(target_os = "linux")]
+mod coverage;
 // Unix only: the draft lifecycle, row by row, through real git against a real bare
 // origin and the host from `onevcs-testing` — a supplied host is the seam the rows are
 // driven through, and the crate a consumer drives them with. Its `rules check` journeys
