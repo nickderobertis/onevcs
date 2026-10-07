@@ -776,6 +776,7 @@ fn the_harness_builds_its_fixture_once_and_reports_one_read_as_one_line() {
 
     let reader = state.path().join("reader");
     std::fs::create_dir_all(reader.join("scripts")).expect("reader scripts");
+    // llmlint: ignore[e2e_not_mocked,tests_mirror_real_usage] The harness is the layer under test; this real subprocess records its serialized stdin at the external --aio boundary. It asserts JSON transport, not ai-orchestrator behavior, which is measured separately against the installed checkout and is unavailable in a clean onevcs clone.
     std::fs::write(reader.join("scripts/unpublished.sh"),
         "#!/usr/bin/env bash\nset -eu\ncat >\"$(dirname \"$0\")/../request.json\"\nprintf '{\"verdict\":\"none\"}\\n'\n")
         .expect("real subprocess input recorder");
@@ -833,6 +834,67 @@ fn the_harness_builds_its_fixture_once_and_reports_one_read_as_one_line() {
         .collect();
     let source = std::fs::read_to_string(workspace_root().join("scripts/recoverable-floor.sh"))
         .expect("harness source");
+    let rust = std::fs::read_to_string(workspace_root().join("crates/onevcs/src/spike.rs"))
+        .expect("mode source");
+    let modes: std::collections::BTreeSet<String> = rust
+        .split("const MODES:")
+        .nth(1)
+        .expect("mode declaration")
+        .lines()
+        .take_while(|line| !line.starts_with("];"))
+        .filter_map(|line| line.trim().strip_prefix("(\""))
+        .map(|line| line.split('"').next().expect("mode name").to_owned())
+        .collect();
+    let mapped: std::collections::BTreeSet<String> = source
+        .split("read_env() {")
+        .nth(1)
+        .expect("environment dispatch")
+        .split("esac")
+        .next()
+        .expect("mode mapping")
+        .lines()
+        .filter_map(|line| line.trim().split_once(')'))
+        .filter(|(names, _)| {
+            names
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '|' | ' '))
+        })
+        .flat_map(|(names, _)| names.split('|').map(|name| name.trim().to_owned()))
+        .collect();
+    assert_eq!(
+        modes, mapped,
+        "harness accepts exactly the Rust mode vocabulary"
+    );
+    for mode in &modes {
+        assert!(
+            documented.contains(mode),
+            "Rust mode {mode} has a harness read"
+        );
+        let got = harness(state.path())
+            .args(["run", mode, "--dir"])
+            .arg(&fixture)
+            .args(["--runs", "1", "--count-runs", "0", "--profile"])
+            .output()
+            .expect("real mode read");
+        assert!(
+            got.status.success(),
+            "{}",
+            String::from_utf8_lossy(&got.stderr)
+        );
+        let output = String::from_utf8_lossy(&got.stdout);
+        let profile: Value = serde_json::from_str(
+            output
+                .lines()
+                .find_map(|line| line.strip_prefix("profile="))
+                .expect("mode profile"),
+        )
+        .expect("profile JSON");
+        assert_eq!(
+            profile["mode"].as_str(),
+            Some(mode.as_str()),
+            "harness maps each Rust mode to its own selector"
+        );
+    }
     let command = source
         .split("read_command() {")
         .nth(1)

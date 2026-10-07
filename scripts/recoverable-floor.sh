@@ -87,7 +87,7 @@ open_session() {
     local checkout=$1 branch=$2 launcher=$3 node=$4 opened token worktree
     opened=$(fx session open "$checkout" --branch "$branch" --label "launcher=$launcher" \
         --label "run=fixture-run" --label "node=$node") ||
-        die "session open $branch in $checkout failed" 1
+        die "session open $branch in $checkout failed; inspect $fixture/logs/ and the preceding error, repair the fixture input, then retry" 1
     token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' <<<"$opened")
     worktree=$(sed -n 's/.*"worktree":"\([^"]*\)".*/\1/p' <<<"$opened")
     [ -n "$token" ] && [ -d "$worktree" ] || die "session open printed no token: $opened" 1
@@ -103,11 +103,11 @@ commit_in() {
 }
 
 close_session() {
-    fx session close "$1" >/dev/null || die "session close $1 failed" 1
+    fx session close "$1" >/dev/null || die "session close $1 failed; inspect the preceding error and $fixture/logs/, repair the session input, then retry" 1
 }
 
 land() {
-    fx publish-branch "$2" --repo "$1" >/dev/null || die "publish-branch $2 failed" 1
+    fx publish-branch "$2" --repo "$1" >/dev/null || die "publish-branch $2 failed; inspect the preceding git error and $fixture/logs/, repair the repository, then retry" 1
 }
 
 # open, commit one file, close: a session that left its work preserved.
@@ -168,7 +168,7 @@ scenario() {
             land "$checkout" "$b"
             worked "$checkout" "$b" "$launcher" "n$n-more" "src/$b-more.txt" "two" "feat: $b more"
             ;;
-        *) die "no scenario named $state_name" ;;
+        *) die "no scenario named $state_name; choose landed, retirable, superseded, live, no, unknown or in-part" ;;
     esac
     expect "$k" "$b" "$state_name" "$launcher"
 }
@@ -193,7 +193,7 @@ build_identity() {
     fx_git -C "$seed" push -q "$origin" main
     rm -rf "$seed"
     fx_git clone -q "$origin" "$checkout"
-    fx register "$checkout" >/dev/null || die "register $checkout failed" 1
+    fx register "$checkout" >/dev/null || die "register $checkout failed; inspect the preceding error and $fixture/logs/, repair the checkout, then retry" 1
 
     # The swept history: sessions whose records `sweep` forgets and whose streams stay.
     for n in $(seq 1 "$history"); do
@@ -325,7 +325,7 @@ cmd_fixture() {
                 shift 2
                 ;;
             -h | --help) usage; exit 0 ;;
-            *) die "fixture: unknown argument $1" ;;
+            *) die "fixture: unknown argument $1; run --help for supported arguments" ;;
         esac
     done
     [[ "$scale" =~ ^[1-9][0-9]*$ ]] || die "fixture: --scale takes a positive integer, got $scale"
@@ -421,7 +421,7 @@ read_command() {
         stop-guard) argv=(onepipeline stop-guard --session "$session" --format neutral) ;;
         onevcs-version) argv=("$baseline" --version) ;;
         onepipeline-version) argv=(onepipeline --version) ;;
-        *) die "run: no read named $read" ;;
+        *) die "run: no read named $read; run --help for supported reads" ;;
     esac
 }
 
@@ -474,7 +474,7 @@ cmd_run() {
             --baseline) baseline=$2; shift 2 ;;
             --aio) aio=$2; shift 2 ;;
             -h | --help) usage; exit 0 ;;
-            -*) die "run: unknown argument $1" ;;
+            -*) die "run: unknown argument $1; run --help for supported arguments" ;;
             *) read=$1; shift ;;
         esac
     done
