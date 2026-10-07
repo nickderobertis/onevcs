@@ -44,9 +44,9 @@
 #       --profile prints a second line, `profile=` and the in-process profile of the
 #       last timed run (this branch's reads only): phase times, git time, cache hits.
 #
-# Environment: RECOVERABLE_FLOOR_DIR (default dispatch scratch, else target/recoverable-floor) holds fixtures
-# and state; ONEVCS_BIN is this branch's binary (default target/release/onevcs, built by the release tooling;
-# for a development run, use `just run --version` and ONEVCS_BIN=target/debug/onevcs).
+# Environment: RECOVERABLE_FLOOR_DIR selects fixture/state storage; ONEVCS_BIN
+# selects the prototype artifact. --help prints both resolved paths. For a
+# development artifact, use `just run --version` and set ONEVCS_BIN to its binary.
 set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -64,6 +64,7 @@ die() {
 
 usage() {
     sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+    printf '\nResolved paths: RECOVERABLE_FLOOR_DIR=%s ONEVCS_BIN=%s\n' "$state" "$onevcs_bin"
 }
 
 # The measured launcher, and the other managers whose sessions fill the host around it.
@@ -393,6 +394,20 @@ start_load() {
 load1() { cut -d' ' -f1 /proc/loadavg; }
 
 # The command line for one read, as an array assigned to `argv`, and its stdin in `feed`.
+# Encode every character representable in a shell argument as a JSON string.
+json_string() {
+    local text=$1 number octal char escaped
+    text=${text//\\/\\\\}
+    text=${text//\"/\\\"}
+    for ((number = 1; number < 32; number++)); do
+        printf -v octal '\\%03o' "$number"
+        printf -v char '%b' "$octal"
+        printf -v escaped '\\u%04x' "$number"
+        text=${text//"$char"/"$escaped"}
+    done
+    printf '"%s"' "$text"
+}
+
 read_command() {
     local read=$1
     feed=""
@@ -401,7 +416,7 @@ read_command() {
         legacy | prototype | decision) argv=("$onevcs_bin" recoverable --json --label "launcher=$session") ;;
         stop-verdict)
             argv=(bash "$aio/scripts/unpublished.sh" --stop-verdict)
-            feed="{\"session\":\"$session\",\"continuation\":false}"
+            feed="{\"session\":$(json_string "$session"),\"continuation\":false}"
             ;;
         stop-guard) argv=(onepipeline stop-guard --session "$session" --format neutral) ;;
         onevcs-version) argv=("$baseline" --version) ;;

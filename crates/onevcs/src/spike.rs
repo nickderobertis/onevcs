@@ -35,27 +35,44 @@ pub(crate) enum Mode {
     Decision,
 }
 
-/// The mode this process was started in, read once.
-pub(crate) fn mode() -> Mode {
-    static MODE: OnceLock<Mode> = OnceLock::new();
-    *MODE.get_or_init(
-        || match std::env::var("ONEVCS_SPIKE_RECOVERABLE").as_deref() {
-            Ok("prototype") => Mode::Prototype,
-            Ok("decision") => Mode::Decision,
-            _ => Mode::Legacy,
-        },
-    )
-}
+const MODES: &[(&str, Mode)] = &[
+    ("legacy", Mode::Legacy),
+    ("prototype", Mode::Prototype),
+    ("decision", Mode::Decision),
+];
 
-/// Refuse a misspelled spike selector before any read or subprocess starts.
-pub(crate) fn check_mode() -> crate::error::Result<()> {
+fn parsed_mode() -> crate::error::Result<Mode> {
     match std::env::var("ONEVCS_SPIKE_RECOVERABLE") {
-        Ok(value) if matches!(value.as_str(), "legacy" | "prototype" | "decision") => Ok(()),
-        Err(std::env::VarError::NotPresent) => Ok(()),
-        value => Err(crate::error::invalid(format!(
-            "ONEVCS_SPIKE_RECOVERABLE must be legacy, prototype or decision, got {value:?}"
+        Err(std::env::VarError::NotPresent) => Ok(Mode::Legacy),
+        Ok(value) => MODES
+            .iter()
+            .find(|(name, _)| *name == value)
+            .map(|(_, mode)| *mode)
+            .ok_or_else(|| {
+                crate::error::invalid(format!(
+                    "ONEVCS_SPIKE_RECOVERABLE must be {}, got {value:?}",
+                    MODES
+                        .iter()
+                        .map(|(name, _)| *name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }),
+        Err(error) => Err(crate::error::invalid(format!(
+            "ONEVCS_SPIKE_RECOVERABLE is not UTF-8: {error}"
         ))),
     }
+}
+
+/// The selector is checked at the CLI and library recovery entrypoints; other git
+/// helpers retain legacy behavior when called outside those entrypoints.
+pub(crate) fn mode() -> Mode {
+    static MODE: OnceLock<Mode> = OnceLock::new();
+    *MODE.get_or_init(|| parsed_mode().unwrap_or(Mode::Legacy))
+}
+
+pub(crate) fn check_mode() -> crate::error::Result<()> {
+    parsed_mode().map(|_| ())
 }
 
 /// Whether this process runs either form of the prototype.
@@ -275,12 +292,15 @@ fn millis(took: Duration) -> f64 {
 /// The versioned cache envelope binds a typed proof to its input and checks corruption.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProofEntry {
+// llmlint: ignore-block[invalid_states_unrepresentable] This is untrusted wire data, not a proof model: arbitrary JSON must deserialize before version/key/checksum and the caller's typed-domain validator can reject it. Only the validated T is returned, never this envelope.
+struct WireProofEntry {
     version: u64,
     key: serde_json::Value,
     value: serde_json::Value,
     checksum: String,
 }
+
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 fn proof_checksum(key: &serde_json::Value, value: &serde_json::Value) -> Option<String> {
     serde_json::to_string(&(2_u64, key, value))
@@ -318,7 +338,7 @@ where
     };
     if let Some(found) = std::fs::read(&path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<ProofEntry>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<WireProofEntry>(&bytes).ok())
         .filter(|entry| {
             entry.version == 2
                 && entry.key == expected_key
@@ -340,7 +360,7 @@ where
             if let Some(checksum) = proof_checksum(&expected_key, &value) {
                 remember(
                     &path,
-                    &ProofEntry {
+                    &WireProofEntry {
                         version: 2,
                         key: expected_key,
                         value,

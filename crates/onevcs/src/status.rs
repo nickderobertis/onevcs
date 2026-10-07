@@ -2301,6 +2301,7 @@ pub(crate) fn recorded_streams_about(
     };
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
     #[serde(deny_unknown_fields)]
+    // llmlint: ignore-block[invalid_states_unrepresentable] This cache wire DTO intentionally admits malformed input for validation. No entry narrows the read until its live file stamp, directory/token binding, checksum, identity and ref grammar all pass valid(); rejected entries are re-read from the event stream.
     struct Indexed {
         len: u64,
         modified: i128,
@@ -2311,6 +2312,7 @@ pub(crate) fn recorded_streams_about(
         branch: Option<String>,
         checksum: String,
     }
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     impl Indexed {
         fn digest(&self, directory: &Path, token: &str) -> Option<String> {
             serde_json::to_string(&(

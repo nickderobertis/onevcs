@@ -242,6 +242,24 @@ pub(crate) fn unremembered<T>(read: impl FnOnce() -> T) -> T {
     reads::bypass(read)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RefName(String);
+
+impl RefName {
+    fn parse(name: &str) -> Option<Self> {
+        (name.starts_with("refs/") && plainly_a_ref_name(name)).then(|| Self(name.to_owned()))
+    }
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for RefName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Spike: one repository's branches and remote-tracking branches as its ref files hold
 /// them — `packed-refs`, overridden by each loose ref, which is how git itself resolves
 /// one under the files backend.
@@ -252,8 +270,8 @@ pub(crate) fn unremembered<T>(read: impl FnOnce() -> T) -> T {
 #[derive(Debug, Default)]
 pub(crate) struct OnDisk {
     git_dir: PathBuf,
-    refs: BTreeMap<String, String>,
-    symbolic: BTreeMap<String, String>,
+    refs: BTreeMap<RefName, ObjectId>,
+    symbolic: BTreeMap<RefName, RefName>,
 }
 
 impl OnDisk {
@@ -289,11 +307,9 @@ impl OnDisk {
                         continue;
                     }
                     let (sha, name) = line.split_once(' ')?;
-                    ObjectId::parse(sha)?;
-                    if !name.starts_with("refs/") || !plainly_a_ref_name(name) {
-                        return None;
-                    }
-                    found.refs.insert(name.to_owned(), sha.to_owned());
+                    found
+                        .refs
+                        .insert(RefName::parse(name)?, ObjectId::parse(sha)?);
                 }
             }
             Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {}
@@ -305,7 +321,7 @@ impl OnDisk {
         if found
             .symbolic
             .values()
-            .any(|target| !found.refs.contains_key(target))
+            .any(|target| !found.refs.contains_key(target.as_str()))
         {
             return None;
         }
@@ -331,28 +347,22 @@ impl OnDisk {
             if file_name.ends_with(".lock") {
                 continue;
             }
-            if !plainly_a_ref_name(&full) {
-                return None;
-            }
+            let full = RefName::parse(&full)?;
             let text = std::fs::read_to_string(&path).ok()?;
             let text = text.trim();
             if let Some(target) = text.strip_prefix("ref: ") {
-                if !target.starts_with("refs/") || !plainly_a_ref_name(target) {
-                    return None;
-                }
-                self.symbolic.insert(full, target.to_owned());
+                self.symbolic.insert(full, RefName::parse(target)?);
             } else {
-                ObjectId::parse(text)?;
-                self.refs.insert(full, text.to_owned());
+                self.refs.insert(full, ObjectId::parse(text)?);
             }
         }
         Some(())
     }
 
     /// The commit a full ref name stands at, following one symbolic ref.
-    fn resolve(&self, full: &str) -> Option<&String> {
+    fn resolve(&self, full: &str) -> Option<&ObjectId> {
         match self.symbolic.get(full) {
-            Some(target) => self.refs.get(target),
+            Some(target) => self.refs.get(target.as_str()),
             None => self.refs.get(full),
         }
     }
@@ -362,8 +372,11 @@ impl OnDisk {
         self.refs
             .keys()
             .chain(self.symbolic.keys())
-            .filter(move |name| name.starts_with(prefix))
-            .filter_map(|name| self.resolve(name).map(|tip| (name.clone(), tip.clone())))
+            .filter(move |name| name.as_str().starts_with(prefix))
+            .filter_map(|name| {
+                self.resolve(name.as_str())
+                    .map(|tip| (name.0.clone(), tip.as_str().to_owned()))
+            })
     }
 
     /// What `rev-parse --verify NAME^{commit}` answers for a branch or remote-tracking
@@ -385,11 +398,13 @@ impl OnDisk {
             if !candidate.starts_with("refs/") {
                 continue;
             }
-            if self.refs.contains_key(&candidate) || self.symbolic.contains_key(&candidate) {
+            if self.refs.contains_key(candidate.as_str())
+                || self.symbolic.contains_key(candidate.as_str())
+            {
                 if candidate.starts_with("refs/tags/") {
                     return None;
                 }
-                return self.resolve(&candidate).cloned();
+                return self.resolve(&candidate).map(|tip| tip.as_str().to_owned());
             }
         }
         None
@@ -1866,8 +1881,8 @@ fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
     if let Some(disk) = reads::on_disk(cwd) {
         let named = disk
             .symbolic
-            .get(&format!("refs/remotes/{remote}/HEAD"))
-            .and_then(|target| target.strip_prefix("refs/remotes/"))
+            .get(format!("refs/remotes/{remote}/HEAD").as_str())
+            .and_then(|target| target.as_str().strip_prefix("refs/remotes/"))
             .unwrap_or_default()
             .to_owned();
         let Some(branch) = named.strip_prefix(&format!("{remote}/")) else {

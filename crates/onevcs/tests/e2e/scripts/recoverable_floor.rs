@@ -773,6 +773,87 @@ fn the_harness_builds_its_fixture_once_and_reports_one_read_as_one_line() {
                 .expect("worker duration")
     );
     assert_eq!(profile["git_spawns"].as_u64(), Some(spawns(&profiled)));
+
+    let reader = state.path().join("reader");
+    std::fs::create_dir_all(reader.join("scripts")).expect("reader scripts");
+    std::fs::write(reader.join("scripts/unpublished.sh"),
+        "#!/usr/bin/env bash\nset -eu\ncat >\"$(dirname \"$0\")/../request.json\"\nprintf '{\"verdict\":\"none\"}\\n'\n")
+        .expect("real subprocess input recorder");
+    let session = "quote \" slash \\ newline\ncontrol \u{0001}";
+    let got = harness(state.path())
+        .args(["run", "stop-verdict", "--dir"])
+        .arg(&fixture)
+        .args([
+            "--session",
+            session,
+            "--runs",
+            "1",
+            "--count-runs",
+            "0",
+            "--aio",
+        ])
+        .arg(&reader)
+        .output()
+        .expect("bash runs the harness");
+    assert!(
+        got.status.success(),
+        "{}",
+        String::from_utf8_lossy(&got.stderr)
+    );
+    let request: Value =
+        serde_json::from_slice(&std::fs::read(reader.join("request.json")).expect("source stdin"))
+            .expect("the source receives valid JSON, even for quotes and control characters");
+    assert_eq!(
+        request,
+        serde_json::json!({"session":session,"continuation":false})
+    );
+
+    let help = harness(state.path())
+        .arg("--help")
+        .output()
+        .expect("harness help");
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains(&format!("RECOVERABLE_FLOOR_DIR={}", state.path().display())));
+    let documented: std::collections::BTreeSet<String> = help
+        .lines()
+        .filter_map(|line| line.strip_prefix("        "))
+        .filter(|line| !line.starts_with(' '))
+        .flat_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let mut names = Vec::new();
+            if let Some(first) = words.first() {
+                names.push(first.trim_end_matches(',').to_owned());
+                if first.ends_with(',') {
+                    names.push(words[1].to_owned());
+                }
+            }
+            names
+        })
+        .collect();
+    let source = std::fs::read_to_string(workspace_root().join("scripts/recoverable-floor.sh"))
+        .expect("harness source");
+    let command = source
+        .split("read_command() {")
+        .nth(1)
+        .expect("read dispatch")
+        .split("read_env() {")
+        .next()
+        .expect("command body");
+    let implemented: std::collections::BTreeSet<String> = command
+        .lines()
+        .filter_map(|line| line.trim().split_once(')'))
+        .filter(|(names, _)| {
+            names
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '|' | ' '))
+        })
+        .flat_map(|(names, _)| names.split('|').map(|name| name.trim().to_owned()))
+        .collect();
+    assert_eq!(
+        documented, implemented,
+        "help names every supported read, and only those reads"
+    );
 }
 
 #[test]
