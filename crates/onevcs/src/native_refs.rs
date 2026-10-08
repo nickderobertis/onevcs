@@ -55,14 +55,14 @@ pub(crate) fn configuration(repo: &Path) -> Option<String> {
         let mut output = String::new();
         while let Some(entry) = entries.next() {
             let entry = entry.ok()?;
-            let name = entry.name()?;
+            let name = entry.name().ok()?;
             if name.starts_with("include.") || name.starts_with("includeif.") {
                 return None;
             }
             output.push_str(&format!(
                 "native:{:?}\0{name}\n{}\0",
                 entry.level(),
-                entry.value()?
+                entry.value().ok()?
             ));
         }
         Some(output)
@@ -76,7 +76,7 @@ pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
         let mut url = None;
         while let Some(entry) = entries.next() {
             let entry = entry.ok()?;
-            let name = entry.name()?;
+            let name = entry.name().ok()?;
             if name.starts_with("include.")
                 || name.starts_with("includeif.")
                 || name.starts_with("url.")
@@ -87,7 +87,7 @@ pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
                 if url.is_some() {
                     return None;
                 }
-                url = Some(entry.value()?.trim().to_owned());
+                url = Some(entry.value().ok()?.trim().to_owned());
             }
         }
         url
@@ -391,11 +391,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     let mut symbolic = BTreeMap::new();
     for reference in repo.references().ok()? {
         let reference = reference.ok()?;
-        let name = reference.name()?.to_owned();
+        let name = reference.name().ok()?.to_owned();
         if !crate::git::plainly_a_ref_name(&name) {
             return None;
         }
-        if let Some(target) = reference.symbolic_target() {
+        if let Some(target) = reference.symbolic_target().ok()? {
             symbolic.insert(name.clone(), target.to_owned());
         }
         let oid = reference.resolve().ok()?.target()?;
@@ -405,7 +405,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         return None;
     }
     let head = repo.find_reference("HEAD").ok()?;
-    if let Some(target) = head.symbolic_target() {
+    if let Some(target) = head.symbolic_target().ok()? {
         symbolic.insert("HEAD".into(), target.to_owned());
     }
     if let Ok(resolved) = head.resolve() {
@@ -422,7 +422,8 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         .strip_prefix("ref: refs/heads/")
         .map(str::to_owned);
     let mut worktrees = vec![(primary, branch)];
-    for name in repo.worktrees().ok()?.iter().flatten() {
+    for name in repo.worktrees().ok()?.iter() {
+        let name = name.ok()??;
         let worktree = repo.find_worktree(name).ok()?;
         let path = worktree.path();
         path.to_str()?;
@@ -432,6 +433,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         let head = linked.find_reference("HEAD").ok()?;
         let branch = head
             .symbolic_target()
+            .ok()?
             .and_then(|target| target.strip_prefix("refs/heads/"))
             .map(str::to_owned);
         worktrees.push((path.to_owned(), branch));

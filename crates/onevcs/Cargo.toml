@@ -36,7 +36,7 @@ testing = []
 clap = { workspace = true }
 filetime = { workspace = true }
 fs4 = { workspace = true }
-git2 = { version = "0.20.3", default-features = false, features = ["vendored-libgit2"] }
+git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 icu_properties = { workspace = true }
 minijinja = { workspace = true }
 onemessagebus = { workspace = true }
