@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.2](https://github.com/nickderobertis/onevcs/compare/v0.42.1...v0.42.2) - 2026-10-08
+
+### Fixed
+
+- *(workspace)* never reclaim a run root whose session is open or opening ([#333](https://github.com/nickderobertis/onevcs/pull/333))
+
 ## [0.42.0](https://github.com/nickderobertis/onevcs/compare/v0.41.0...v0.42.0) - 2026-10-05
 
 ### Added
