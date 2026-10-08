@@ -89,7 +89,8 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-pub const STATE_VERSION: u32 = 18;
+/// `19` adds the recovery branch tip; older rows default it to `None`.
+pub const STATE_VERSION: u32 = 19;
 
 /// The oldest document version this build reads.
 ///

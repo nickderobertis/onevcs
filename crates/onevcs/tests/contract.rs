@@ -2290,6 +2290,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             change_base: None,
         },
         checkout: PathBuf::from("/home/agent/projects/onevcs"),
+        tip: None,
         landed: Landed::No,
         stopped_because: "the run's driver died".to_owned(),
         recover_command: vec![
@@ -2822,6 +2823,7 @@ fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_field
             change_base: None,
         },
         checkout: PathBuf::from("/tmp/project"),
+        tip: None,
         landed: Landed::No,
         stopped_because: "session s-1 closed without publishing".to_owned(),
         recover_command: Vec::new(),
@@ -2841,11 +2843,12 @@ fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_field
     assert!(Selection::default().is_empty());
     assert_eq!(
         serde_json::to_value(Selection {
+            detail: onevcs::Detail::Full,
             sessions: vec![SessionToken("s-1".to_owned())],
             labels: BTreeMap::from([("run".to_owned(), "r-1".to_owned())]),
         })
         .expect("a selection serializes"),
-        json!({"sessions": ["s-1"], "labels": {"run": "r-1"}})
+        json!({"detail": "full", "sessions": ["s-1"], "labels": {"run": "r-1"}})
     );
 }
 
@@ -8403,5 +8406,44 @@ fn the_release_job_and_ci_are_wired_to_the_scripts_that_carry_and_check_the_comp
             .iter()
             .any(|line| line == "just release-pr-check"),
         "ci.yml no longer cuts a release PR's tree and bootstraps it"
+    );
+}
+
+#[test]
+fn recovery_detail_and_tip_match_the_declared_wire_surface() {
+    use onevcs::Detail;
+    let contract = repo_file("docs/contract.md");
+    for declaration in [
+        "pub enum Detail { Full, Decision }",
+        "pub detail: Detail",
+        "pub tip: Option<String>",
+    ] {
+        assert!(contract.contains(declaration), "missing {declaration}");
+    }
+    assert_eq!(Selection::default().detail, Detail::Full);
+    assert_eq!(
+        serde_json::from_value::<Selection>(json!({}))
+            .unwrap()
+            .detail,
+        Detail::Full
+    );
+    for (detail, wire) in [(Detail::Full, "full"), (Detail::Decision, "decision")] {
+        assert_eq!(serde_json::to_value(detail).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<Detail>(json!(wire)).unwrap(),
+            detail
+        );
+    }
+    assert!(serde_json::from_value::<Detail>(json!("unknown")).is_err());
+    let old = json!({
+        "identity": "github.com/acme/project",
+        "branch": {"branch":"feature/work", "base":"main", "provenance":"complete", "change_url":null, "change_base":null},
+        "checkout":"/project", "stopped_because":"closed", "recover_command":[]
+    });
+    let row: Recoverable = serde_json::from_value(old).expect("old rows still read");
+    assert_eq!(row.tip, None);
+    assert_eq!(
+        serde_json::to_value(row).unwrap().get("tip"),
+        Some(&Value::Null)
     );
 }

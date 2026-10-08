@@ -266,6 +266,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 identity: identity.clone(),
                 branch: branch.clone(),
                 checkout: s.worktree.clone(),
+                tip: None,
                 stopped_because: format!("session {} was left open", s.token.0),
                 recover_command: recover_command(&s.branch, &s.worktree, provenance),
                 // Preserved work this provider was handed is work nobody published:

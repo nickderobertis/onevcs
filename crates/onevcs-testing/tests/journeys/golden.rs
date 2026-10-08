@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v18-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v18-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v19-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v19-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v18.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v18.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v19.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v19.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any

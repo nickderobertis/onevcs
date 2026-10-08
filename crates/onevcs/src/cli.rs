@@ -563,6 +563,9 @@ pub struct RecoverArgs {
 /// Arguments for `onevcs recoverable`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct RecoverableArgs {
+    /// Detail to compute; decision retains every classification and recovery command.
+    #[arg(long, value_enum, default_value = "full")]
+    pub detail: crate::Detail,
     // llmlint: ignore-block[invalid_states_unrepresentable,names_match_behavior] this is
     // `PublishBranchArgs::repo`'s type and spelling on purpose, so the two verbs read one
     // value one way. Which of the four forms a value is cannot be decided by a parser —

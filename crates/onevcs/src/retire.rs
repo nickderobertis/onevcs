@@ -2849,6 +2849,36 @@ pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Reti
         .map(|classified| classified.retirement)
 }
 
+/// Sweep asks the same offline proof as recovery. No readable copy anywhere is
+/// also a confident absence; an unreadable copy cannot establish that absence.
+pub(crate) fn record_has_work(
+    registry: &Registry,
+    record: &Record,
+    sessions: &[Record],
+    streams: &[status::Recorded],
+    trailers: &Trailers,
+) -> Result<bool> {
+    let census = Census::read(
+        registry,
+        &record.identity,
+        sessions,
+        streams,
+        trailers,
+        Reach::Offline,
+        None,
+    )?;
+    let ask = Ask::offline();
+    let copies = census.copies(&record.branch, &ask);
+    if copies.copies.is_empty() && copies.unreadable.is_empty() {
+        return Ok(false);
+    }
+    Ok(census
+        .classify(&record.branch, copies, &ask)?
+        .retirement
+        .class
+        != RetirementClass::Retirable)
+}
+
 /// Retire one branch by name.
 pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Result<Retired> {
     let host = Host::read()?;

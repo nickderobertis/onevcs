@@ -2260,6 +2260,194 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
     Ok((streams, listing))
 }
 
+/// Read only selected provenance after validating changed source streams. The
+/// disposable hint index is bound to each source file's identity and change stamp;
+/// missing, corrupt and unreadable entries are parsed through the baseline reader.
+#[cfg(unix)]
+pub(crate) fn recorded_streams_about(
+    wanted: Option<&BTreeSet<(String, String)>>,
+    sessions: &[crate::workspace::Record],
+) -> Result<Vec<Recorded>> {
+    let Some(wanted) = wanted else {
+        return recorded_streams(&mut Vec::new());
+    };
+    // Every token `relevant_streams` matches by name for a wanted branch, whatever the
+    // stream's content says: its sessions', and the branch-keyed verbs' spellings.
+    let mut named: BTreeSet<String> = BTreeSet::new();
+    for (identity, branch) in wanted {
+        let slug = policy::branch_slug(branch);
+        named.insert(format!("publish-branch-{slug}"));
+        named.insert(format!("recover-{slug}"));
+        named.insert(crate::preserve::preserve_token(branch));
+        for record in sessions {
+            if record.identity == *identity && *record.branch == **branch {
+                named.insert(record.token.to_string());
+            }
+        }
+    }
+    let about = |identity: Option<&String>, branch: Option<&String>, token: &str| {
+        named.contains(token)
+            || matches!((identity, branch), (Some(identity), Some(branch))
+                if wanted.contains(&(identity.clone(), branch.clone())))
+    };
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
+    #[serde(deny_unknown_fields)]
+    struct Indexed {
+        len: u64,
+        modified: i128,
+        changed: i128,
+        device: u64,
+        inode: u64,
+        identity: Option<String>,
+        branch: Option<String>,
+        checksum: String,
+    }
+    impl Indexed {
+        fn digest(&self, directory: &Path, token: &str) -> Option<String> {
+            serde_json::to_string(&(
+                1_u64,
+                directory,
+                token,
+                self.len,
+                self.modified,
+                self.changed,
+                self.device,
+                self.inode,
+                &self.identity,
+                &self.branch,
+            ))
+            .ok()
+            .map(|body| crate::ids::digest(&body))
+        }
+        fn valid(&self, directory: &Path, token: &str) -> bool {
+            let identity = self.identity.as_ref().is_none_or(|identity| {
+                !identity.is_empty()
+                    && identity.trim() == identity
+                    && !identity.chars().any(char::is_control)
+                    && (Path::new(identity).is_absolute()
+                        || crate::store::normalize(identity).key == *identity)
+            });
+            identity
+                && self
+                    .branch
+                    .as_ref()
+                    .is_none_or(|branch| git::is_valid_branch_name(branch))
+                && self.digest(directory, token).as_ref() == Some(&self.checksum)
+        }
+    }
+    use std::os::unix::fs::MetadataExt;
+    let directory = home::streams_dir()?;
+    let index_path = crate::home::root()
+        .ok()
+        .map(|root| root.join("cache/recoverable/v1/streams-index.json"));
+    let index: std::collections::BTreeMap<String, Indexed> = index_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return recorded_streams(&mut Vec::new()),
+    };
+    let mut fresh: std::collections::BTreeMap<String, Indexed> = std::collections::BTreeMap::new();
+    let mut kept: Vec<Recorded> = Vec::new();
+    let mut notes = Vec::new();
+    let mut tokens: Vec<(String, std::fs::Metadata)> = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return recorded_streams(&mut Vec::new());
+        };
+        let filename = entry.file_name();
+        if !filename.as_encoded_bytes().ends_with(b".ndjson") {
+            continue;
+        }
+        let name = filename.into_string().map_err(|name| {
+            crate::error::invalid(format!(
+                "event stream filename {name:?} in {} is not UTF-8",
+                directory.display()
+            ))
+        })?;
+        let Some(token) = name.strip_suffix(".ndjson").map(str::to_owned) else {
+            continue;
+        };
+        if !crate::ids::is_safe_name(&token) {
+            return Err(crate::error::invalid(format!(
+                "event stream filename {name:?} does not name a valid stream token"
+            )));
+        }
+        let Ok(meta) = entry.metadata() else {
+            // Unstattable: read it the way v0.42.0 would, gap and all.
+            kept.push(read_stream(&directory, &token, &mut notes));
+            continue;
+        };
+        tokens.push((token, meta));
+    }
+    tokens.sort_by(|left, right| left.0.cmp(&right.0));
+    for (token, meta) in tokens {
+        let stamp = Indexed {
+            len: meta.len(),
+            modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+            device: meta.dev(),
+            inode: meta.ino(),
+            identity: None,
+            branch: None,
+            checksum: String::new(),
+        };
+        let known = index.get(&token).filter(|entry| {
+            entry.len == stamp.len
+                && entry.modified == stamp.modified
+                && entry.inode == stamp.inode
+                && entry.changed == stamp.changed
+                && entry.device == stamp.device
+                && entry.valid(&directory, &token)
+        });
+        if let Some(entry) = known {
+            fresh.insert(token.clone(), entry.clone());
+            if !about(entry.identity.as_ref(), entry.branch.as_ref(), &token) {
+                continue;
+            }
+        }
+        let before = notes.len();
+        let mut record = read_stream(&directory, &token, &mut notes);
+        record.gaps = notes.len() > before;
+        if known.is_none() && !record.gaps {
+            let mut indexed = Indexed {
+                identity: record.identity.clone(),
+                branch: record.branch.clone(),
+                ..stamp
+            };
+            if let Some(checksum) = indexed.digest(&directory, &token) {
+                indexed.checksum = checksum;
+                fresh.insert(token.clone(), indexed);
+            }
+        }
+        if about(record.identity.as_ref(), record.branch.as_ref(), &token) {
+            kept.push(record);
+        }
+    }
+    if fresh != index {
+        if let Some(path) = index_path {
+            if let (Some(parent), Ok(bytes)) = (path.parent(), serde_json::to_vec(&fresh)) {
+                let staged = parent.join(format!(".streams-index.{}.tmp", std::process::id()));
+                let _ = std::fs::create_dir_all(parent)
+                    .and_then(|()| std::fs::write(&staged, bytes))
+                    .and_then(|()| std::fs::rename(&staged, &path));
+            }
+        }
+    }
+    Ok(kept)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn recorded_streams_about(
+    _wanted: Option<&BTreeSet<(String, String)>>,
+    _sessions: &[crate::workspace::Record],
+) -> Result<Vec<Recorded>> {
+    recorded_streams(&mut Vec::new())
+}
+
 /// One stream, read as the values it holds and said so where it could not be.
 ///
 /// Every line goes through [`crate::stream::attributed`], which is the seam

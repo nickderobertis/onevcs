@@ -316,6 +316,20 @@ pub enum Scope {
     Repo(String),
 }
 
+/// The detail a recovery read computes. Both modes answer the same branches and
+/// decisions, including the command that recovers them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum Detail {
+    /// The complete recovery report.
+    #[default]
+    Full,
+    /// Omit costly presentation: stopped text, change metadata and line statistics.
+    /// Identity, branch/base, checkout/tip, landing evidence, holds, retirement,
+    /// session, labels and recovery command remain identical to `Full`.
+    Decision,
+}
+
 /// Which of the preserved work in scope a report is asked to answer with.
 ///
 /// Both halves are `and`ed with each other and with the [`Scope`]: a row is answered
@@ -330,6 +344,9 @@ pub enum Scope {
 /// carries is the first of those, and answers empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
+    /// Detail to compute; default is the complete report.
+    #[serde(default)]
+    pub detail: Detail,
     /// The sessions whose branches are asked about, by token.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionToken>,
@@ -368,6 +385,11 @@ pub struct Recoverable {
     pub branch: PreservedBranch,
     /// The checkout the branch can be reached from.
     pub checkout: PathBuf,
+    /// Full commit object name of the branch in this checkout, or `None` only
+    /// when its ref cannot be read. Always serialized, including `null`; older
+    /// documents default to `None`.
+    #[serde(default)]
+    pub tip: Option<String>,
     /// Why the workstream stopped.
     pub stopped_because: String,
     /// Whether the work reached the base, and what says so.
@@ -451,6 +473,8 @@ pub struct Recoverable {
 /// checked here is one field against another.
 #[derive(Deserialize)]
 struct AnyRecoverable {
+    #[serde(default)]
+    tip: Option<String>,
     identity: String,
     branch: PreservedBranch,
     checkout: PathBuf,
@@ -505,6 +529,7 @@ impl TryFrom<AnyRecoverable> for Recoverable {
             identity: value.identity,
             branch: value.branch,
             checkout: value.checkout,
+            tip: value.tip,
             landed: value.landed,
             stopped_because: value.stopped_because,
             recover_command: value.recover_command,

@@ -859,10 +859,11 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     // per record re-read every record on the host once per record on the host.
     let records = all()?;
     let open = OpenRoots::of(&records);
+    let work = RecordWork::read(&records)?;
     let mut holders = Vec::new();
-    for record in records {
-        if record.identity == resolution.key && !spent(&record, &open)? {
-            holders.push(SessionHolder::from(record));
+    for record in &records {
+        if record.identity == resolution.key && !spent(record, &open, &work)? {
+            holders.push(SessionHolder::from(record.clone()));
         }
     }
     Ok(holders)
@@ -886,9 +887,10 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// branches, so it lists the directory once for both.
 pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
     let open = OpenRoots::of(listed);
+    let work = RecordWork::read(listed)?;
     let mut records = Vec::new();
     for record in listed {
-        if spent(record, &open)? {
+        if git::memoized(|| spent(record, &open, &work))? {
             records.push(record.clone());
         }
     }
@@ -934,53 +936,50 @@ pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
 /// question walks every process on the host, and the branch question runs git in the
 /// clone — so the cheapest answer that retains is the one that runs on every record,
 /// and the dearest runs only on the records the other two have already given up on.
-fn spent(record: &Record, open: &OpenRoots) -> Result<bool> {
+fn spent(record: &Record, open: &OpenRoots, work: &RecordWork<'_>) -> Result<bool> {
     Ok(!record.owner_is_running()
         && (!record.tree_is_its_own_of(open) || processes::holding(&record.run_root).is_empty())
-        && !holds_unpublished_work(record, open)?)
+        && !holds_unpublished_work(record, open, work)?)
 }
 
-/// Whether this session still holds work nobody has published — on its branch, or
-/// uncommitted in the worktree it was handed.
-///
-/// The commits first, and asked the way [`reclaim`] keeps a dead run root and
-/// [`close`] lets a clone go: how much this session's branch holds that no `origin`
-/// ref does. One measure of "there is work here", so a run root and the record that
-/// indexes it cannot come to disagree about whether anything is behind this session.
-///
-/// **Two repositories, because a session's branch lives in two places.** The run
-/// clone is where the work is made, and [`hand_back`] copies it into the execution
-/// checkout as the session closes — so a record whose clone has since been reclaimed
-/// still has a branch, and forgetting it would be forgetting the session that made
-/// the work an operator is about to go looking for. Either copy holding something is
-/// this session holding something.
-///
-/// **Then the worktree**, because a run that stopped before it committed left its
-/// work nowhere else. `close` is what preserves such a tree onto a branch, and a
-/// session whose record is gone can no longer be closed — so an uncommitted tree with
-/// no record is work nothing can reach, which is the same loss by a longer route.
-///
-/// Anything that is not a confident answer of *none* retains: a count nobody got is
-/// not a count of none, and what this decides is whether to destroy the only route
-/// back to somebody's work. A repository that is not there holds nothing, which is
-/// the one negative answer that is a fact rather than a failure.
-fn holds_unpublished_work(record: &Record, open: &OpenRoots) -> Result<bool> {
-    // By its full ref name, for the reason `branch::locate` reads a copy of a branch
-    // that way: a tag or a remote-tracking ref wearing the same name is not this
-    // session's branch.
-    let reference = format!("refs/heads/{}", record.branch);
-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: git declining a
-    // question it can answer, in a repository this crate has read as one on the line
-    // before. No interface this crate exposes produces that — a journey for it would
-    // be a fixture standing in for `git` rather than a journey — and what it would
-    // prove is that the record is *retained*, which is the answer every other unknown
-    // in this module already resolves to and the one the whole predicate exists to
-    // reach: a count nobody got is not a count of none.
-    let carried = [&record.clone, &record.execution_checkout]
-        .into_iter()
-        .any(|repo| {
-            git::is_repo(repo) && !matches!(git::unpublished_ahead(repo, &reference, &[]), Ok(0))
-        });
+/// Inputs shared with recovery's semantic retirement proof, read once for a pass.
+struct RecordWork<'a> {
+    registry: Registry,
+    records: &'a [Record],
+    streams: Vec<crate::status::Recorded>,
+    trailers: crate::provenance::Trailers,
+}
+
+impl<'a> RecordWork<'a> {
+    fn read(records: &'a [Record]) -> Result<Self> {
+        let registry = store::load()?;
+        let (rules, _) = crate::policy::load(&registry)?;
+        Ok(Self {
+            registry,
+            records,
+            streams: crate::status::recorded_streams(&mut Vec::new())?,
+            trailers: crate::provenance::from_rules(&rules),
+        })
+    }
+}
+
+/// Keep the record until the semantic proof recovery uses confidently says no
+/// work remains. Pushing a preserved tip to origin does not prove it landed.
+/// Missing disposable clones are allowed; unreadable evidence always retains.
+/// Dirtiness is checked only in a worktree still owned by this record.
+fn holds_unpublished_work(
+    record: &Record,
+    open: &OpenRoots,
+    work: &RecordWork<'_>,
+) -> Result<bool> {
+    let carried = crate::retire::record_has_work(
+        &work.registry,
+        record,
+        work.records,
+        &work.streams,
+        &work.trailers,
+    )
+    .unwrap_or(true);
     // The worktree only while it is this session's: a record that closed on a slot a
     // later session works in would otherwise read that session's uncommitted work as
     // its own, and retain itself over a tree it has no claim to.
@@ -988,7 +987,6 @@ fn holds_unpublished_work(record: &Record, open: &OpenRoots) -> Result<bool> {
         || (record.tree_is_its_own_of(open)
             && record.worktree.is_dir()
             && git::is_dirty(&record.worktree).unwrap_or(true)))
-    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 /// Drop one spent record, answering the reason it is still there rather than failing
@@ -1021,18 +1019,27 @@ pub(crate) fn forget(record: &Path) -> std::result::Result<(), String> {
 /// refuse to reuse a name cannot come to disagree about where this identity keeps
 /// its work.
 pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<PathBuf>> {
+    Ok(checkouts_among(registry, resolution, &all()?))
+}
+
+/// The same search order over records a caller already validated and read.
+pub(crate) fn checkouts_among(
+    registry: &Registry,
+    resolution: &Resolution,
+    sessions: &[Record],
+) -> Vec<PathBuf> {
     let mut searched: Vec<PathBuf> = vec![resolution.publication.clone()];
     for checkout in registry.checkouts.values() {
         if checkout.identity == resolution.key && !searched.contains(&checkout.path) {
             searched.push(checkout.path.clone());
         }
     }
-    for record in all()? {
+    for record in sessions {
         if record.identity == resolution.key && !searched.contains(&record.clone) {
             searched.push(record.clone.clone());
         }
     }
-    Ok(searched)
+    searched
 }
 
 /// The directory one identity's run roots and pool slots live under.

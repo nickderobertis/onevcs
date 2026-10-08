@@ -193,6 +193,7 @@ pub fn full_vcs_state() -> VcsState {
                 change_base: Some("feature/below".to_owned()),
             },
             checkout: PathBuf::from("/scratch/widgets"),
+            tip: None,
             landed: Landed::No,
             stopped_because: "the run was interrupted".to_owned(),
             recover_command: vec![

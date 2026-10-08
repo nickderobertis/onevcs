@@ -31,6 +31,49 @@ use crate::error::{self, Error, Result};
 use crate::host::Sha;
 use crate::{ids, lock};
 
+/// Resolve Git once, preserving the first executable on PATH (including caller
+/// shims). On failure keep the original command so `unstarted` reports the same
+/// missing-Git error as before.
+pub(crate) fn git_program() -> &'static std::ffi::OsStr {
+    static PROGRAM: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            std::env::var_os("PATH")
+                .and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .flat_map(|directory| {
+                            #[cfg(windows)]
+                            let names = ["git.exe", "git.cmd", "git.bat", "git"];
+                            #[cfg(not(windows))]
+                            let names = ["git"];
+                            names.into_iter().map(move |name| directory.join(name))
+                        })
+                        .find(|path| executable(path))
+                        .and_then(|path| std::path::absolute(path).ok())
+                })
+                .map_or_else(|| "git".into(), PathBuf::into_os_string)
+        })
+        .as_os_str()
+}
+
+fn executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
 /// Bound, in seconds, on a command that runs the repository's own hooks.
@@ -165,6 +208,21 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
+    let reusable = crate::recovery_cache::query(args, cwd, env);
+    if let Some(stdout) = reusable
+        .as_ref()
+        .and_then(crate::recovery_cache::Query::read)
+    {
+        let output = Output {
+            status: 0,
+            ended: Ended::Code(0),
+            stdout,
+            stderr: String::new(),
+            read_failures: Vec::new(),
+        };
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
     // hand each hook the environment of the tree it starts in — see [`HookShims`].
@@ -174,7 +232,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
-    let mut command = Command::new("git");
+    let mut command = Command::new(git_program());
     command.args(args);
     let ran = bounded(
         command,
@@ -200,6 +258,11 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
+    if output.ok() && output.stderr.is_empty() && output.read_failures.is_empty() {
+        if let Some(reusable) = reusable {
+            reusable.write(&output.stdout);
+        }
+    }
     reads::remember(args, cwd, env, &output);
     Ok(output)
 }
@@ -304,6 +367,8 @@ mod reads {
     /// worth remembering, or a write, and the second empties the memo.
     fn remembered(args: &[&str]) -> bool {
         match args.first().copied() {
+            Some("config") => args == ["config", "--null", "--list", "--show-origin"],
+            Some("remote") => args.get(1) == Some(&"get-url"),
             Some("cat-file") => args.get(1) == Some(&"-e"),
             Some(
                 "rev-parse" | "show-ref" | "for-each-ref" | "rev-list" | "merge-base" | "log"
@@ -2015,37 +2080,22 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     })
 }
 
-/// Whether a name is one git accepts that this crate can recognise without asking.
-///
-/// Deliberately **narrower** than git's own grammar, and that asymmetry is the whole
-/// safety of it: it accepts only names made of ASCII letters, digits, `_`, `-`, `.`
-/// and `/`, with none of the component shapes git refuses — no empty component, none
-/// beginning with `.`, none ending in `.` or `.lock`, and no `..` anywhere. Every
-/// name it accepts is therefore one `git check-ref-format refs/heads/<name>` accepts,
-/// and a name it does not recognise is not refused here: it falls through to git,
-/// which remains the thing that decides. So a git whose grammar moves can only make
-/// this *slower*, never wrong — and `the_fast_path_accepts_only_names_git_accepts`
-/// beside it holds the subset against the git this suite runs on.
-///
-/// It exists because a listing reads the session records, every record validates the
-/// two names it carries, and a host with a few hundred records has a few hundred
-/// distinct ones — so "once per distinct name" is still a few hundred processes per
-/// read, and a filtered read that opens two checkouts would spend them all before
-/// looking at either.
+/// Git's full-ref grammar applied to a branch suffix. Unicode and punctuation
+/// are valid names too; only Git's forbidden bytes and component shapes reject.
+/// This validates names, never raw ref values or repository layout.
 fn plainly_a_ref_name(branch: &str) -> bool {
-    if branch.is_empty() || branch.starts_with('/') || branch.ends_with('/') {
-        return false;
-    }
-    branch.split('/').all(|component| {
-        !component.is_empty()
-            && !component.starts_with('.')
-            && !component.ends_with('.')
-            && !component.ends_with(".lock")
-            && !component.contains("..")
-            && component
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    })
+    !branch.is_empty()
+        && !branch.ends_with('.')
+        && !branch.contains("..")
+        && !branch.contains("@{")
+        && !branch.bytes().any(|byte| {
+            byte <= b' '
+                || byte == 0x7f
+                || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+        })
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// Whether a branch name is one git will accept.

@@ -422,3 +422,243 @@ fn the_two_filters_narrow_recoverable_and_a_token_no_record_names_is_refused() {
         .success()
         .stdout(predicate::str::contains("--label run=r-9"));
 }
+
+#[test]
+fn recovery_detail_keeps_the_decision_and_reports_the_actual_checkout_tip() {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) =
+        fixture.open(&["--branch", "feature/detail", "--label", "launcher=manager"]);
+    fixture
+        .world
+        .commit_file(&worktree, "detail.txt", "work\n", "feat: retained work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    for selection in [
+        vec!["--label", "launcher=manager"],
+        vec!["--session", &token],
+    ] {
+        for all in [false, true] {
+            let mut args = selection.clone();
+            if all {
+                args.push("--all");
+            }
+            let full = recoverable(&fixture, &[args.as_slice(), &["--detail", "full"]].concat());
+            let decision = recoverable(
+                &fixture,
+                &[args.as_slice(), &["--detail", "decision"]].concat(),
+            );
+            assert_eq!(full.len(), 1, "the work must not disappear");
+            assert_eq!(decision.len(), full.len());
+            for (full, decision) in full.iter().zip(&decision) {
+                for key in [
+                    "identity",
+                    "checkout",
+                    "tip",
+                    "landed",
+                    "held_by",
+                    "retirement",
+                    "session",
+                    "labels",
+                    "recover_command",
+                ] {
+                    assert_eq!(full.get(key), decision.get(key), "detail changed {key}");
+                }
+                for key in ["branch", "base"] {
+                    assert_eq!(full["branch"][key], decision["branch"][key]);
+                }
+                let checkout = std::path::Path::new(full["checkout"].as_str().expect("checkout"));
+                let branch = full["branch"]["branch"].as_str().expect("branch");
+                let output = std::process::Command::new("git")
+                    .current_dir(checkout)
+                    .args(["rev-parse", &format!("refs/heads/{branch}")])
+                    .output()
+                    .expect("real git");
+                assert!(output.status.success());
+                assert_eq!(
+                    full["tip"],
+                    String::from_utf8(output.stdout)
+                        .expect("object name")
+                        .trim()
+                );
+                assert_eq!(decision["session"], token);
+            }
+        }
+    }
+    fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--detail", "invalid"])
+        .assert()
+        .failure()
+        .code(2);
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recoverable",
+            "--detail",
+            "decision",
+            "--session",
+            "missing",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn sweep_retains_labels_for_preserved_unlanded_work_after_the_clone_is_gone() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/preserved-labels";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=manager"]);
+    fixture
+        .world
+        .commit_file(&worktree, "owed.txt", "owed\n", "feat: work still owed");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args(["preserve", branch, "--repo"])
+        .arg(&fixture.checkout)
+        .assert()
+        .success();
+    let stored = record(&fixture, &token);
+    let clone = std::path::Path::new(stored["clone"].as_str().expect("clone path"));
+    if clone.exists() {
+        std::fs::remove_dir_all(clone).expect("remove disposable clone");
+    }
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 3600);
+    filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old)).expect("age record");
+    fixture
+        .world
+        .onevcs()
+        .args(["sweep", "--min-age-hours", "4"])
+        .assert()
+        .success();
+    assert!(
+        path.is_file(),
+        "pushed work still owes a landing, so its record must survive"
+    );
+    assert_eq!(
+        record(&fixture, &token)["labels"],
+        serde_json::json!({"launcher":"manager"})
+    );
+    let rows = recoverable(
+        &fixture,
+        &["--label", "launcher=manager", "--detail", "decision"],
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session"], token);
+    assert_eq!(rows[0]["branch"]["branch"], branch);
+    assert_eq!(
+        rows[0]["tip"],
+        fixture
+            .world
+            .git(
+                &fixture.checkout,
+                &["rev-parse", &format!("refs/heads/{branch}")]
+            )
+            .trim()
+    );
+}
+
+#[test]
+fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/cache-context";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=cache"]);
+    fixture
+        .world
+        .commit_file(&worktree, "cache.txt", "work\n", "feat: cache work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let args = ["--detail", "decision", "--session", &token, "--all"];
+    let compare = || {
+        let cached = recoverable(&fixture, &args);
+        let assert = fixture
+            .world
+            .onevcs()
+            .args(["recoverable", "--json"])
+            .args(args)
+            .env("GIT_NAMESPACE", "")
+            .assert()
+            .success();
+        let native: Vec<Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("native rows");
+        assert_eq!(cached, native, "cache must agree with native Git");
+        assert_eq!(cached.len(), 1, "the selected branch must stay visible");
+        cached
+    };
+    let original = compare();
+    let cache = fixture.world.home().join("cache/recoverable/v1/git");
+    let entries: Vec<_> = std::fs::read_dir(&cache)
+        .expect("immutable proofs were cached")
+        .map(|entry| entry.expect("entry").path())
+        .collect();
+    assert!(!entries.is_empty(), "the test must exercise reuse");
+    for path in &entries {
+        std::fs::write(path, "{broken").expect("corrupt cache");
+    }
+    assert_eq!(compare(), original);
+    std::fs::remove_dir_all(&cache).expect("remove cache");
+    assert_eq!(compare(), original);
+    fixture
+        .world
+        .git(&fixture.checkout, &["config", "core.abbrev", "12"]);
+    compare();
+    fixture
+        .world
+        .git(&fixture.checkout, &["config", "--unset", "core.abbrev"]);
+    std::fs::write(fixture.checkout.join(".gitattributes"), "*.txt -diff\n").expect("attributes");
+    compare();
+    std::fs::remove_file(fixture.checkout.join(".gitattributes")).expect("remove attributes");
+    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", branch]);
+    let base = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "origin/main"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", tip.trim(), base.trim()]);
+    compare();
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", "-d", tip.trim()]);
+    std::fs::write(
+        fixture.checkout.join(".git/shallow"),
+        format!("{}\n", base.trim()),
+    )
+    .expect("shallow boundary");
+    compare();
+    std::fs::remove_file(fixture.checkout.join(".git/shallow")).expect("remove shallow boundary");
+    fixture
+        .world
+        .git(&fixture.checkout, &["pack-refs", "--all"]);
+    compare();
+    fixture.world.git(&fixture.checkout, &["checkout", branch]);
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "cache.txt",
+        "work\nand more\n",
+        "feat: move tip",
+    );
+    let moved = compare();
+    assert_ne!(moved[0]["tip"], original[0]["tip"]);
+}

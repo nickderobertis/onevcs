@@ -83,6 +83,7 @@ mod publish_branch;
 mod publishing;
 mod queue;
 mod recover;
+mod recovery_cache;
 pub mod registry;
 mod release;
 pub mod releases;
@@ -153,7 +154,7 @@ pub use retire::{
 };
 pub use rules::MergePolicy;
 pub use session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
+    Detail, HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
     PreservedBranch, Provenance, Recoverable, Scope, Selection, Session, SessionHolder,
     SessionRecord, SessionRequest, SessionToken,
 };

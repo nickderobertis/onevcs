@@ -503,7 +503,7 @@ away from re-publishing work `main` already carried.
 | `Vcs::recoverable_matching` / `preserved_matching` | defaulted, and the default is the meaning | The narrowing is a property of the host's session records, which every implementation shares, so the default body decides it and no implementor has to. What an override buys is not a different answer but a cheaper one — an implementation that knows where it looks can decline to look — which is what `Git` does with it. Defaulted rather than required for the reason `preserved` is required and not defaulted, read the other way: there is one right answer here and it can be written once, where there were two questions there and only the implementation knew the second. |
 
 ```
-onevcs recoverable [--repo <PATH>] [--all] [--label <KEY=VALUE>] [--session <TOKEN>] [--json]
+onevcs recoverable [--repo <PATH>] [--all] [--label <KEY=VALUE>] [--session <TOKEN>] [--detail <full|decision>] [--json]
 ```
 
 ## One more: the disk this tool fills, and the verb that empties it
@@ -1034,3 +1034,15 @@ question was:
    (`onevcs-testing` does, and moved in the same change), and a reader that required a
    token string meets `null` on this one hold. Confirming it means one amendment naming
    the nullable token and the third value, not a new answer to approve.
+
+
+### Recovery detail
+
+The recovery detail amendment in `docs/contract.md` is authoritative. `Recoverable`
+adds `tip: Option<String>` (always serialized, null only for an unreadable branch
+ref, defaulted on read). `Selection` adds `detail: Detail`, defaulted to `Full`.
+`Detail::{Full, Decision}` serializes in kebab-case. The CLI adds
+`recoverable --detail <full|decision>` with default `full`. Decision preserves all
+semantic fields and the recovery command; only the presentation omissions named
+in the contract are permitted. Sweep uses recovery's semantic proof to retain
+session labels for preserved but unlanded work.
