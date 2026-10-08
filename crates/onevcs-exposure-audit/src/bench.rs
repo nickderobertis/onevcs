@@ -133,44 +133,63 @@ fn git(dir: &Path) -> Command {
     command
 }
 
+/// A bench step that failed, named in a fixed sentence: there is nothing private
+/// here to keep out of it, but nothing from git's stderr is passed on either.
+pub type Step<T> = Result<T, &'static str>;
+
+fn succeeded(command: &mut Command, what: &'static str) -> Step<()> {
+    let ok = command.status().map(|s| s.success()).unwrap_or(false);
+    ok.then_some(()).ok_or(what)
+}
+
 /// One commit on `branch` holding `files`, written through fast-import.
-fn fast_import(dir: &Path, branch: &str, files: impl Iterator<Item = (String, Vec<u8>)>) {
+fn fast_import(
+    dir: &Path,
+    branch: &str,
+    files: impl Iterator<Item = (String, Vec<u8>)>,
+) -> Step<()> {
+    let failed = "git fast-import did not write the generated commit";
     let mut child = git(dir)
         .args(["fast-import", "--quiet"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
-        .expect("git fast-import starts");
-    {
-        let stdin = child.stdin.as_mut().expect("stdin is piped");
+        .map_err(|_| failed)?;
+    if let Some(stdin) = child.stdin.as_mut() {
         let message = "Add generated examples\n";
-        let _ = write!(
+        let mut written = write!(
             stdin,
             "commit refs/heads/{branch}\nauthor Export <export@example.invalid> 0 +0000\ncommitter Export <export@example.invalid> 0 +0000\ndata {}\n{message}",
             message.len()
         );
         for (path, content) in files {
-            let _ = write!(stdin, "M 100644 inline {path}\ndata {}\n", content.len());
-            let _ = stdin.write_all(&content);
-            let _ = stdin.write_all(b"\n");
+            written = written
+                .and_then(|()| write!(stdin, "M 100644 inline {path}\ndata {}\n", content.len()))
+                .and_then(|()| stdin.write_all(&content))
+                .and_then(|()| stdin.write_all(b"\n"));
         }
+        written.map_err(|_| failed)?;
     }
-    assert!(
-        child.wait().map(|s| s.success()).unwrap_or(false),
-        "git fast-import succeeds"
-    );
+    drop(child.stdin.take());
+    child
+        .wait()
+        .ok()
+        .filter(|s| s.success())
+        .map(|_| ())
+        .ok_or(failed)
 }
 
 fn ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
+pub fn run(workload: &Workload, work_dir: &Path) -> Step<serde_json::Value> {
     let build_started = Instant::now();
     let terms = terms(workload);
     let term_count = terms.len();
     let planted: Vec<String> = terms.iter().step_by(97).map(|t| t.text.clone()).collect();
-    let matcher = Matcher::new(terms);
+    let matcher =
+        Matcher::new(terms).map_err(|_| "the term automaton could not be built at this scale")?;
     let build_ms = ms(build_started);
 
     let files = files(workload, &planted);
@@ -199,29 +218,30 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
     let private = work_dir.join("private");
     let public = work_dir.join("public");
     for dir in [&private, &public] {
-        std::fs::create_dir_all(dir).expect("the bench work directory takes a repository");
-        assert!(git(dir)
-            .args(["init", "-q", "-b", "main"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false));
+        std::fs::create_dir_all(dir)
+            .map_err(|_| "the bench work directory did not take a repository")?;
+        succeeded(
+            git(dir).args(["init", "-q", "-b", "main"]),
+            "git init failed in the bench work directory",
+        )?;
     }
     fast_import(
         &private,
         "generalize",
         files.iter().map(|f| (f.path.clone(), f.content.clone())),
-    );
+    )?;
     drop(files);
-    assert!(git(&public)
-        .args(["commit", "-q", "--allow-empty", "-m", "base"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false));
+    succeeded(
+        git(&public).args(["commit", "-q", "--allow-empty", "-m", "base"]),
+        "git commit failed in the bench work directory",
+    )?;
     let export_started = Instant::now();
     let listing = git(&private)
         .args(["ls-tree", "-r", "-z", "generalize", "--", "export/"])
         .output()
-        .expect("git ls-tree runs");
+        .ok()
+        .filter(|o| o.status.success())
+        .ok_or("git ls-tree could not list the export directory")?;
     let entries: Vec<(String, String)> = listing
         .stdout
         .split(|b| *b == 0)
@@ -233,49 +253,66 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
             Some((oid, path.trim_start_matches("export/").to_owned()))
         })
         .collect();
+    let unreadable = "git cat-file could not read the exported files";
     let mut reader = git(&private)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("git cat-file starts");
-    let mut stdin = reader.stdin.take().expect("stdin is piped");
+        .map_err(|_| unreadable)?;
+    let (Some(mut stdin), Some(stdout)) = (reader.stdin.take(), reader.stdout.take()) else {
+        return Err(unreadable);
+    };
     let oids: Vec<String> = entries.iter().map(|(o, _)| o.clone()).collect();
     let feeder = std::thread::spawn(move || {
         for oid in oids {
-            let _ = writeln!(stdin, "{oid}");
+            if writeln!(stdin, "{oid}").is_err() {
+                break;
+            }
         }
     });
-    let mut out = BufReader::new(reader.stdout.take().expect("stdout is piped"));
-    let exported = entries.iter().map(move |(_, path)| {
+    let mut out = BufReader::new(stdout);
+    let mut short = false;
+    let exported = entries.iter().map(|(_, path)| {
         let mut header = String::new();
-        let _ = out.read_line(&mut header);
-        let size: usize = header
-            .trim_end()
-            .rsplit(' ')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        let size: usize = match out.read_line(&mut header) {
+            Ok(n) if n > 0 => header
+                .trim_end()
+                .rsplit(' ')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            _ => {
+                short = true;
+                0
+            }
+        };
         let mut content = vec![0u8; size + 1];
-        let _ = out.read_exact(&mut content);
+        if size > 0 && out.read_exact(&mut content).is_err() {
+            short = true;
+        }
         content.truncate(size);
         (format!("vendor/examples/{path}"), content)
     });
-    fast_import(&public, "export", exported);
+    let imported = fast_import(&public, "export", exported);
     let _ = feeder.join();
     let _ = reader.wait();
+    imported?;
+    if short {
+        return Err(unreadable);
+    }
     let export_ms = ms(export_started);
 
     // The publication check end to end: the diff as git produces it, its paths, and
     // the publication's fields, through the same matcher.
+    let undiffed = "git diff could not produce the publication's diff";
     let publish_started = Instant::now();
     let mut diff = git(&public)
         .args(["diff", "--no-color", "--no-ext-diff", "main", "export"])
         .stdout(Stdio::piped())
         .spawn()
-        .expect("git diff starts");
-    let mut diff_out =
-        BufReader::with_capacity(1 << 20, diff.stdout.take().expect("stdout is piped"));
+        .map_err(|_| undiffed)?;
+    let mut diff_out = BufReader::with_capacity(1 << 20, diff.stdout.take().ok_or(undiffed)?);
     let mut chunk = Vec::new();
     let mut diff_bytes = 0u64;
     let mut publish_hits = 0usize;
@@ -284,7 +321,9 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
         // Whole lines, so no term is split across two reads.
         let mut read = 0;
         while chunk.len() < (1 << 20) {
-            let n = diff_out.read_until(b'\n', &mut chunk).unwrap_or(0);
+            let n = diff_out
+                .read_until(b'\n', &mut chunk)
+                .map_err(|_| undiffed)?;
             if n == 0 {
                 break;
             }
@@ -296,11 +335,13 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
         diff_bytes += read as u64;
         publish_hits += matcher.find(&chunk).len();
     }
-    let _ = diff.wait();
+    diff.wait().ok().filter(|s| s.success()).ok_or(undiffed)?;
     let names = git(&public)
         .args(["diff", "--name-only", "-z", "main", "export"])
         .output()
-        .expect("git diff runs");
+        .ok()
+        .filter(|o| o.status.success())
+        .ok_or(undiffed)?;
     publish_hits += matcher.find(&names.stdout).len();
     for text in [message, branch, title, body] {
         publish_hits += matcher.find(text.as_bytes()).len();
@@ -309,7 +350,7 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
 
     let identities = workload.identities * workload.scale;
     let tasks = workload.tasks * workload.scale;
-    json!({
+    Ok(json!({
         "scale": workload.scale,
         "workload": {
             "identities": identities,
@@ -333,8 +374,10 @@ pub fn run(workload: &Workload, work_dir: &Path) -> serde_json::Value {
             "per_run_writes_uncached": tasks * 2,
             "per_run_cached_by_identity": identities,
         },
-        "peak_rss_kib": { "self": measure::peak_rss_kib(), "largest_child": measure::children_peak_rss_kib() },
-    })
+        // This process's own peak only: a child's `getrusage` peak includes what it
+        // inherited at fork, which here is this process's own memory again.
+        "peak_rss_kib": { "self": measure::peak_rss_kib() },
+    }))
 }
 
 #[cfg(test)]

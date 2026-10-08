@@ -98,9 +98,14 @@ impl Vault {
 }
 
 /// A JSON-lines stream of findings in the vault, written as they are found.
+///
+/// A row the vault refuses is not dropped silently: the stream remembers the
+/// failure, stops writing, and [`Findings::finish`] reports it, so a run whose report
+/// lost a row ends as a failed run rather than as a clean one.
 pub struct Findings {
     out: BufWriter<File>,
-    pub rows: u64,
+    rows: u64,
+    failed: bool,
 }
 
 impl Findings {
@@ -108,20 +113,30 @@ impl Findings {
         Ok(Findings {
             out: vault.file(name)?,
             rows: 0,
+            failed: false,
         })
     }
 
     pub fn push(&mut self, row: &impl Serialize) {
-        // A finding that cannot be written is lost from the report, which is not a
-        // thing to continue past silently: the run is not complete without it.
-        let line = serde_json::to_string(row).expect("a finding row serializes");
-        writeln!(self.out, "{line}").expect("the vault accepts a finding row");
-        self.rows += 1;
+        if self.failed {
+            return;
+        }
+        let written = serde_json::to_string(row)
+            .map_err(io::Error::other)
+            .and_then(|line| writeln!(self.out, "{line}"));
+        match written {
+            Ok(()) => self.rows += 1,
+            Err(_) => self.failed = true,
+        }
     }
 
-    pub fn finish(mut self) -> u64 {
-        self.out.flush().expect("the vault accepts the findings");
-        self.rows
+    /// The rows written, or the failure that stopped them.
+    pub fn finish(mut self) -> io::Result<u64> {
+        if self.failed {
+            return Err(io::Error::other("a finding row was refused"));
+        }
+        self.out.flush()?;
+        Ok(self.rows)
     }
 }
 

@@ -538,7 +538,6 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         manifest
     );
 
-    // Current files.
     let files = rows(&run, "findings-current-files.jsonl");
     assert!(has(
         &files,
@@ -554,7 +553,6 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         "a deleted file is history, not current"
     );
 
-    // History by repository, commit and term.
     let history = rows(&run, "findings-history.jsonl");
     let alpha = |args: &[&str]| sandbox.git(&remotes[0], args).trim().to_owned();
     let start = alpha(&["rev-list", "--max-parents=0", "main"]);
@@ -609,7 +607,6 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         "a generic name is surveyed, not reported"
     );
 
-    // Issues, change requests and board items, with what an edit would leave behind.
     let items = rows(&run, "findings-items.jsonl");
     assert!(has(
         &items,
@@ -653,7 +650,6 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         ]
     ));
 
-    // The report states the three splits and the gaps.
     let report = std::fs::read_to_string(run.join("report.md")).expect("the report");
     for heading in [
         "## Current files",
@@ -692,8 +688,8 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         "a repository made private since the listing is"
     );
 
-    // Read-only: no remote, no registry, nothing in the checkout changed; every
-    // request a read.
+    // Read-only: nothing the run reads is changed, so the remotes, the registry and
+    // the checkout are byte-for-byte what they were, and every request is a read.
     let after: Vec<String> = remotes.iter().map(|r| sandbox.refs(r)).collect();
     assert_eq!(before, after, "no remote ref moved");
     assert_eq!(
@@ -730,7 +726,6 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
         "a later page was followed"
     );
 
-    // The measurements are numbers, and private-free.
     let measurements =
         std::fs::read_to_string(run.join("measurements.json")).expect("measurements");
     assert_no_private("the measurements", &measurements);
@@ -917,6 +912,77 @@ fn a_run_that_cannot_keep_its_findings_private_or_has_no_credential_refuses() {
 }
 
 #[test]
+fn private_sources_and_declared_exceptions_decide_the_terms() {
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    let host = Host::start(world);
+    sandbox.write(
+        &sandbox.path("work"),
+        "exceptions.json",
+        r#"[{"term": "quietharbor", "rule": "drop"}, {"term": "Lanternfish-Internal", "rule": "case-sensitive"}]"#,
+    );
+    let exceptions = sandbox.path("work/exceptions.json");
+    let out = sandbox.run(
+        &host,
+        &[
+            "--private-from",
+            "account",
+            "--exceptions",
+            &exceptions.display().to_string(),
+            "--allow",
+            "sample-owner/alpha",
+        ],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let run = sandbox.run_dir();
+    let terms: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(run.join("terms.json")).expect("terms"))
+            .expect("JSON");
+    let term = |t: &str| terms.iter().find(|v| v["text"] == t).cloned();
+    assert!(
+        term("hiddenco/localmoth").is_none(),
+        "the registry was not a source"
+    );
+    assert!(
+        term("hiddenco/quietharbor").is_some(),
+        "the account's private repositories were"
+    );
+    assert_eq!(
+        term("quietharbor").expect("a dropped term is kept for the survey")["narrowed"],
+        "declared"
+    );
+    assert_eq!(
+        term("Lanternfish-Internal").expect("the declared spelling")["rule"],
+        "case-sensitive"
+    );
+
+    let history = rows(&run, "findings-history.jsonl");
+    assert!(
+        has(
+            &history,
+            &[
+                ("term", "quietharbor"),
+                ("location", "message"),
+                ("narrowed", "declared")
+            ]
+        ),
+        "a dropped term's hits are surveyed, not reported"
+    );
+    assert!(
+        !history.iter().any(|r| r["term"] == "Lanternfish-Internal"),
+        "a case-sensitive term no longer matches the lower-case spelling in the pull ref"
+    );
+    let report = std::fs::read_to_string(run.join("report.md")).expect("the report");
+    let narrowed_section = report
+        .split("## Narrowed terms")
+        .nth(1)
+        .expect("the survey section");
+    assert!(narrowed_section.contains("| declared | `quietharbor` |"));
+}
+
+#[test]
 fn the_bench_measures_matcher_export_and_publication_envelopes() {
     let out = Command::new(env!("CARGO_BIN_EXE_onevcs-exposure-audit"))
         .args([
@@ -953,4 +1019,11 @@ fn the_bench_measures_matcher_export_and_publication_envelopes() {
     );
     assert!(result["publication_diff_bytes"].as_u64().expect("bytes") >= 2 * 1024 * 1024);
     assert_eq!(result["visibility_reads"]["per_run_writes_uncached"], 12);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_onevcs-exposure-audit"))
+        .args(["bench", "--scale", "0"])
+        .output()
+        .expect("the bench runs");
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(text(&out).contains("--scale and --paths must be positive"));
 }

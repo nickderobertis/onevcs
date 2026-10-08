@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use url::Url;
+
+use crate::ids::Token;
 use crate::status::Status;
 
 /// What the run spent against the host.
@@ -50,14 +53,14 @@ pub struct Page {
 
 pub struct Api {
     base: String,
-    token: String,
+    token: Token,
     agent: ureq::Agent,
     stats: RefCell<ApiStats>,
     tripped: Cell<bool>,
 }
 
 impl Api {
-    pub fn new(base: &str, token: String) -> Api {
+    pub fn new(base: &Url, token: Token) -> Api {
         let mut tls = ureq::tls::TlsConfig::builder()
             .provider(ureq::tls::TlsProvider::Rustls)
             .unversioned_rustls_crypto_provider(std::sync::Arc::new(
@@ -79,7 +82,7 @@ impl Api {
             .build()
             .into();
         Api {
-            base: base.trim_end_matches('/').to_owned(),
+            base: base.as_str().trim_end_matches('/').to_owned(),
             token,
             agent,
             stats: RefCell::new(ApiStats::default()),
@@ -105,7 +108,7 @@ impl Api {
         let mut response = self
             .agent
             .get(&self.url("/rate_limit"))
-            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Authorization", &format!("Bearer {}", self.token.expose()))
             .header("Accept", "application/vnd.github+json")
             .call()
             .ok()?;
@@ -134,7 +137,7 @@ impl Api {
         let result = self
             .agent
             .get(&self.url(path_or_url))
-            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Authorization", &format!("Bearer {}", self.token.expose()))
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .call();
@@ -175,20 +178,18 @@ impl Api {
     /// One GraphQL query under another credential (a board's).
     pub fn graphql_with(
         &self,
-        token: &str,
+        token: &Token,
         query: &str,
         variables: Value,
     ) -> Result<Value, Status> {
-        assert!(
-            query.trim_start().starts_with("query"),
-            "the audit issues GraphQL queries only"
-        );
+        // The client never mutates: a document that is not a query is refused here,
+        // before anything is sent.
+        if !query.trim_start().starts_with("query") {
+            return Err(Status::OtherError);
+        }
         if self.tripped.get() {
             self.stats.borrow_mut().short_circuited += 1;
             return Err(Status::RateLimited);
-        }
-        if token.is_empty() {
-            return Err(Status::PermissionDenied);
         }
         self.stats.borrow_mut().graphql_requests += 1;
         let started = Instant::now();
@@ -196,7 +197,7 @@ impl Api {
         let result = self
             .agent
             .post(&self.url("/graphql"))
-            .header("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", &format!("Bearer {}", token.expose()))
             .header("Content-Type", "application/json")
             .send(payload.as_str());
         self.stats.borrow_mut().wait_ms += elapsed_ms(started);

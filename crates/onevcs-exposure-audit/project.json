@@ -1,0 +1,16 @@
+{
+  "//": "llmlint: ignore[new_projects_keep_the_graph_uniform] no `check`: the `onevcs` project's `format-check`, `lint`, `doc` and unit tier run `--workspace` and already gate this crate, so a `check` here would sweep the same work twice. This project exists so affected selection can run this command's own targets when only it changed.",
+  "name": "onevcs-exposure-audit",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "crates/onevcs-exposure-audit/src",
+  "tags": ["scope:spike", "lang:rust"],
+  "targets": {
+    "bootstrap": { "command": "just _audit-bootstrap" },
+    "format": { "command": "just _audit-format" },
+    "format-check": { "command": "just _audit-fmt-check", "inputs": ["auditSource"] },
+    "lint": { "command": "just _audit-lint", "inputs": ["auditSource"] },
+    "test": { "command": "just _audit-test", "inputs": ["auditSource"] },
+    "test-quick": { "command": "just _audit-test", "inputs": ["auditSource"] }
+  }
+}

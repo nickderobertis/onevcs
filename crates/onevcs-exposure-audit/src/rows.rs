@@ -12,13 +12,70 @@ use serde::Serialize;
 
 use crate::terms::{Hit, Matcher, Narrowing, TermClass};
 
+/// Where in a file at the tip a term was found.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileLocation {
+    Content,
+    Path,
+}
+
+/// Where in reachable history a term was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HistoryLocation {
+    /// A file's content in some commit.
+    Blob,
+    /// A path some tree held.
+    Path,
+    /// A commit message.
+    Message,
+    /// A commit's author or committer identity.
+    Author,
+    /// A ref's name.
+    Ref,
+    /// An annotated tag's message.
+    Tag,
+}
+
+/// What kind of host item a term was found in.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ItemKind {
+    Issue,
+    IssueComment,
+    ChangeRequest,
+    ChangeRequestComment,
+    Review,
+    ReviewComment,
+    Board,
+    BoardField,
+    DraftItem,
+    BoardIssue,
+    BoardIssueComment,
+    BoardChangeRequest,
+    BoardChangeRequestComment,
+}
+
+/// Whether an item's text reads that way now, or survives only where the host
+/// shows earlier revisions — which an edit does not undo.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Persistence {
+    /// The text as it reads now.
+    Current,
+    /// An earlier revision the host still shows.
+    EditHistory,
+    /// A title the item was renamed from, kept in its timeline.
+    TitleHistory,
+}
+
 /// A term in a file at the default branch's tip.
 #[derive(Serialize)]
 pub struct FileRow<'a> {
     pub repository: &'a str,
     pub path: &'a str,
-    /// `content` or `path`.
-    pub location: &'static str,
+    pub location: FileLocation,
     pub term: &'a str,
     pub class: &'static str,
     pub narrowed: Option<&'static str>,
@@ -34,8 +91,7 @@ pub struct HistoryRow<'a> {
     pub term: &'a str,
     pub class: &'static str,
     pub narrowed: Option<&'static str>,
-    /// `blob`, `path`, `message`, `author`, `ref` or `tag`.
-    pub location: &'static str,
+    pub location: HistoryLocation,
     pub path: Option<&'a str>,
     pub snippet: String,
 }
@@ -45,16 +101,14 @@ pub struct HistoryRow<'a> {
 pub struct ItemRow<'a> {
     /// `owner/name`, or `board:OWNER/NUMBER`.
     pub container: &'a str,
-    pub kind: &'static str,
+    pub kind: ItemKind,
     pub number: Option<u64>,
     pub url: Option<&'a str>,
     pub state: Option<&'a str>,
     pub term: &'a str,
     pub class: &'static str,
     pub narrowed: Option<&'static str>,
-    /// `current` (the text as it reads now), `edit-history` (an earlier revision the
-    /// host still shows), or `title-history` (a title it was renamed from).
-    pub persistence: &'static str,
+    pub persistence: Persistence,
     pub edit_deleted: bool,
     pub snippet: String,
 }
@@ -176,7 +230,8 @@ mod tests {
             name: "quietharbor".into(),
             packages: BTreeSet::new(),
         };
-        let matcher = Matcher::new(derive(&[identity], &BTreeSet::new(), &BTreeSet::new(), &[]));
+        let matcher = Matcher::new(derive(&[identity], &BTreeSet::new(), &BTreeSet::new(), &[]))
+            .expect("a small automaton builds");
         let mut survey = Survey::default();
         for text in ["quietharbor alone", "hiddenco/quietharbor"] {
             survey.tally(&matcher, &matcher.find(text.as_bytes()), "sample/one");

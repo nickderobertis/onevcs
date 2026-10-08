@@ -109,6 +109,17 @@ onemessagebus = "0.9.0"
 # rather than in whatever order a hash map yielded.
 schemars = { version = "1", features = ["preserve_order"] }
 
+# The exposure audit's one-pass multi-term matcher, already in the graph behind
+# `regex`: every term is matched in a single pass, which keeps a history of hundreds
+# of thousands of blobs against thousands of terms linear in its bytes.
+aho-corasick = "1"
+# The exposure audit's GitHub client, built the way `onemessagebus` builds its own —
+# rustls over ring with the platform's root certificates — so it adds no crate and
+# no license to the graph.
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"

@@ -23,6 +23,12 @@ to drive a real `onevcs` without a real GitHub. A separate crate rather than a
 feature, because Cargo features are additive across a dependency graph and a
 feature could switch test implementations on inside somebody's release binary.
 
+`crates/onevcs-exposure-audit` exists only on a measurement spike's preserved
+branch: an unpublished command (`publish = false`) that audits what public
+repositories expose about private ones and measures a boundary check's costs. It
+is its own Nx project, gated by the `onevcs` project's `--workspace` targets like
+every workspace crate; its README says what it is for.
+
 ## The contract comes first, and it is not negotiable in passing
 
 [`docs/contract.md`](docs/contract.md) is the approved contract, committed

@@ -17,7 +17,9 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::rows::{line_of, narrowed, snippet, FileRow, HistoryRow, Survey};
+use crate::rows::{
+    line_of, narrowed, snippet, FileLocation, FileRow, HistoryLocation, HistoryRow, Survey,
+};
 use crate::status::Status;
 use crate::terms::Matcher;
 use crate::vault::Findings;
@@ -260,7 +262,7 @@ impl Scan<'_, '_> {
                     term: &term.text,
                     class: term.class.as_str(),
                     narrowed: narrowed(term.narrowed),
-                    location: "ref",
+                    location: HistoryLocation::Ref,
                     path: Some(name),
                     snippet: snippet(name.as_bytes(), hit.offset),
                 });
@@ -339,9 +341,9 @@ impl Scan<'_, '_> {
                     Some(self.stats.newest_commit_unix.map_or(at, |n| n.max(at)));
             }
             for (location, body) in [
-                ("author", fields[2]),
-                ("author", fields[3]),
-                ("message", fields[4]),
+                (HistoryLocation::Author, fields[2]),
+                (HistoryLocation::Author, fields[3]),
+                (HistoryLocation::Message, fields[4]),
             ] {
                 let hits = self.matcher.find(body.as_bytes());
                 self.sinks
@@ -391,7 +393,7 @@ impl Scan<'_, '_> {
                     term: &term.text,
                     class: term.class.as_str(),
                     narrowed: narrowed(term.narrowed),
-                    location: "tag",
+                    location: HistoryLocation::Tag,
                     path: None,
                     snippet: snippet(fields[2].as_bytes(), hit.offset),
                 });
@@ -432,7 +434,7 @@ impl Scan<'_, '_> {
                     self.sinks.files.push(&FileRow {
                         repository: self.repository,
                         path: &path,
-                        location: "path",
+                        location: FileLocation::Path,
                         term: &term.text,
                         class: term.class.as_str(),
                         narrowed: narrowed(term.narrowed),
@@ -536,7 +538,7 @@ impl Scan<'_, '_> {
                     self.sinks.files.push(&FileRow {
                         repository: self.repository,
                         path,
-                        location: "content",
+                        location: FileLocation::Content,
                         term: &term.text,
                         class: term.class.as_str(),
                         narrowed: narrowed(term.narrowed),
@@ -621,11 +623,11 @@ impl Scan<'_, '_> {
         }
         let exited = child.wait().map(|s| s.success()).unwrap_or(false);
         for (location, found, commits) in [
-            ("blob", &pending.blobs, &blob_commits),
-            ("path", &pending.paths, &path_commits),
+            (HistoryLocation::Blob, &pending.blobs, &blob_commits),
+            (HistoryLocation::Path, &pending.paths, &path_commits),
         ] {
             for (key, hits) in found {
-                let path = (location == "path").then_some(key.as_str());
+                let path = (location == HistoryLocation::Path).then_some(key.as_str());
                 for (term_index, text) in hits {
                     let term = &self.matcher.terms()[*term_index];
                     for commit in commits.get(key.as_str()).into_iter().flatten() {

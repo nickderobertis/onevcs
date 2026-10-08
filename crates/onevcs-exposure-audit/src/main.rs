@@ -9,6 +9,7 @@ mod audit;
 mod bench;
 mod github;
 mod gitscan;
+mod ids;
 mod items;
 mod manifest;
 mod measure;
@@ -22,6 +23,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use url::Url;
+
+use crate::ids::{BoardId, Login, RepoId, Token};
+use crate::manifest::Mode;
 
 #[derive(Parser)]
 #[command(name = "onevcs-exposure-audit", version, about)]
@@ -118,75 +123,98 @@ fn refuse(message: &str, action: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn is_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 100
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-}
-
-/// `OWNER/NAME`, validated; the error names the flag and position, never the value.
-fn pairs(flag: &str, values: &[String]) -> Result<Vec<(String, String)>, ExitCode> {
+/// Each value parsed by `parse`; a refusal names the flag and the position, never
+/// the value, which may be a private name.
+fn each<T>(
+    flag: &str,
+    shape: &str,
+    values: &[String],
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Vec<T>, ExitCode> {
     values
         .iter()
         .enumerate()
-        .map(|(i, v)| match v.split_once('/') {
-            Some((o, n)) if is_name(o) && is_name(n) => Ok((o.to_owned(), n.to_owned())),
-            _ => Err(refuse(
-                &format!("{flag} entry {} is not OWNER/NAME", i + 1),
-                &format!("pass each {flag} as OWNER/NAME"),
-            )),
+        .map(|(i, v)| {
+            parse(v).ok_or_else(|| {
+                refuse(
+                    &format!("{flag} entry {} is not {shape}", i + 1),
+                    &format!("pass each {flag} as {shape}"),
+                )
+            })
         })
         .collect()
 }
 
-fn token(env: &str) -> Option<String> {
-    if let Some(value) = std::env::var(env).ok().filter(|v| !v.trim().is_empty()) {
-        return Some(value.trim().to_owned());
+/// A root URL the audit may read from: `http` or `https` with a host, or, for git
+/// only, a `file` URL (which is how the journeys serve their seeded remotes).
+fn root_url(flag: &str, value: &str, allow_file: bool) -> Result<Url, ExitCode> {
+    let parsed = Url::parse(value).ok().filter(|u| match u.scheme() {
+        "http" | "https" => u.host_str().is_some(),
+        "file" => allow_file,
+        _ => false,
+    });
+    parsed.ok_or_else(|| {
+        let schemes = if allow_file {
+            "http, https or file"
+        } else {
+            "http or https"
+        };
+        refuse(
+            &format!("{flag} is not an {schemes} URL"),
+            &format!("pass {flag} as a root URL, e.g. https://example.test"),
+        )
+    })
+}
+
+fn token(env: &str) -> Option<Token> {
+    if let Some(value) = std::env::var(env).ok().and_then(|v| Token::new(&v)) {
+        return Some(value);
     }
     let out = std::process::Command::new("gh")
         .args(["auth", "token"])
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    let value = String::from_utf8(out.stdout).ok()?.trim().to_owned();
-    (out.status.success() && !value.is_empty()).then_some(value)
+    if !out.status.success() {
+        return None;
+    }
+    Token::new(&String::from_utf8(out.stdout).ok()?)
 }
 
 fn run(args: RunArgs) -> ExitCode {
-    if !is_name(&args.owner) {
+    let Some(owner) = Login::parse(&args.owner) else {
         return refuse(
             "--owner is not an account name",
             "pass the account login, e.g. --owner sample-owner",
         );
-    }
+    };
     let date = time::macros::format_description!("[year]-[month]-[day]");
-    if time::Date::parse(&args.pushed_since, &date).is_err() {
+    let Ok(pushed_since) = time::Date::parse(&args.pushed_since, &date) else {
         return refuse(
             "--pushed-since is not a YYYY-MM-DD date",
             "pass the cutoff as e.g. 2026-01-01",
         );
-    }
-    let allow = match pairs("--allow", &args.allow) {
-        Ok(p) => p,
-        Err(code) => return code,
     };
-    let board_issues = match pairs("--board-issues", &args.board_issues) {
-        Ok(p) => p,
-        Err(code) => return code,
+    let parsed = (
+        each("--allow", "OWNER/NAME", &args.allow, RepoId::parse),
+        each(
+            "--board-issues",
+            "OWNER/NAME",
+            &args.board_issues,
+            RepoId::parse,
+        ),
+        each("--board", "OWNER/NUMBER", &args.board, BoardId::parse),
+        root_url("--api-url", &args.api_url, false),
+        root_url("--git-url", &args.git_url, true),
+    );
+    let (allow, board_issues, boards, api_url, git_url) = match parsed {
+        (Ok(a), Ok(b), Ok(c), Ok(d), Ok(e)) => (a, b, c, d, e),
+        (Err(code), ..)
+        | (_, Err(code), ..)
+        | (_, _, Err(code), ..)
+        | (_, _, _, Err(code), _)
+        | (.., Err(code)) => return code,
     };
-    let mut boards = Vec::new();
-    for (i, board) in args.board.iter().enumerate() {
-        match board.split_once('/').map(|(o, n)| (o, n.parse::<u64>())) {
-            Some((owner, Ok(number))) if is_name(owner) => boards.push((owner.to_owned(), number)),
-            _ => {
-                return refuse(
-                    &format!("--board entry {} is not OWNER/NUMBER", i + 1),
-                    "pass each --board as OWNER/NUMBER, e.g. sample-owner/2",
-                )
-            }
-        }
-    }
     let exceptions = match &args.exceptions {
         None => Vec::new(),
         Some(path) => match std::fs::read_to_string(path)
@@ -211,7 +239,8 @@ fn run(args: RunArgs) -> ExitCode {
     let projects_token = args
         .projects_token_env
         .as_deref()
-        .map(|name| std::env::var(name).unwrap_or_default().trim().to_owned());
+        .and_then(|name| std::env::var(name).ok())
+        .and_then(|value| Token::new(&value));
     let Some(vault_root) = args.vault_root.or_else(audit::default_vault_root) else {
         return refuse(
             "no vault root: HOME and XDG_STATE_HOME are both unset",
@@ -227,10 +256,14 @@ fn run(args: RunArgs) -> ExitCode {
         args.private_from
     };
     ExitCode::from(audit::run(audit::Options {
-        owner: args.owner,
-        pushed_since: args.pushed_since,
+        owner,
+        pushed_since,
         allow,
-        registered_only: args.registered_only,
+        mode: if args.registered_only {
+            Mode::RegisteredOnly
+        } else {
+            Mode::OwnerListing
+        },
         registry: args.registry,
         private_from,
         exceptions,
@@ -239,11 +272,15 @@ fn run(args: RunArgs) -> ExitCode {
         expected_count: args.expected_count,
         token,
         projects_token,
-        api_url: args.api_url,
-        git_url: args.git_url,
+        api_url,
+        git_url,
         vault_root,
         manifest_out: args.manifest_out,
-        keep_clones: args.keep_clones,
+        clones: if args.keep_clones {
+            audit::Clones::Keep
+        } else {
+            audit::Clones::Delete
+        },
     }))
 }
 
@@ -273,8 +310,17 @@ fn bench(args: BenchArgs) -> ExitCode {
         &work,
     );
     let _ = std::fs::remove_dir_all(&work);
-    println!("{result}");
-    ExitCode::SUCCESS
+    match result {
+        Ok(result) => {
+            println!("{result}");
+            ExitCode::SUCCESS
+        }
+        Err(step) => {
+            eprintln!("exposure-audit: the bench failed: {step}");
+            eprintln!("exposure-audit: ACTION: check that git runs and the temporary directory has room, then re-run");
+            ExitCode::from(3)
+        }
+    }
 }
 
 /// A fresh directory under the system temporary directory, refused if that is

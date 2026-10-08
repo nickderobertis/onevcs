@@ -17,24 +17,17 @@ name = "onevcs-exposure-audit"
 path = "src/main.rs"
 
 [dependencies]
-# Every term is matched in one pass over a text, which is what keeps a history of
-# hundreds of thousands of blobs against thousands of terms linear in the bytes.
-# Already in the graph behind `regex`.
-aho-corasick = "1"
+aho-corasick = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 time = { workspace = true }
 toml = { workspace = true }
-# The GitHub API client, already in the graph behind `onemessagebus`, built the way
-# it builds one — rustls over ring with the platform's root certificates — so this
-# adds no crate and no license to the graph. A status is read from the response
-# rather than raised, because a refusal is a coverage status here and never an
-# error to print.
-ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-native-certs = "0.8"
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

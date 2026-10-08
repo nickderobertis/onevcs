@@ -25,6 +25,32 @@ pub enum Status {
 }
 
 impl Status {
+    /// Every word, in the order the manifest explains them.
+    pub const ALL: [Status; 5] = [
+        Status::Scanned,
+        Status::NotFound,
+        Status::PermissionDenied,
+        Status::RateLimited,
+        Status::OtherError,
+    ];
+
+    /// What the word means, as the manifest states it.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Status::Scanned => "every read the surface needs succeeded.",
+            Status::NotFound => "the surface does not exist for the row (an empty repository, issues turned off, a board's git history, a repository that backs no board).",
+            Status::OtherError => "any other failed read.",
+            Status::PermissionDenied => "the credential was refused or absent.",
+            Status::RateLimited => "the host refused for quota.",
+        }
+    }
+
+    /// The word a manifest cell spells.
+    #[cfg(test)]
+    pub fn parse(word: &str) -> Option<Status> {
+        Status::ALL.into_iter().find(|s| s.as_str() == word)
+    }
+
     /// The manifest's spelling.
     pub fn as_str(self) -> &'static str {
         match self {

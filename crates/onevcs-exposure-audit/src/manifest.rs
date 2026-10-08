@@ -34,11 +34,29 @@ impl Row {
     }
 }
 
+/// What the audit set was drawn from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// The owner's public repositories, as listed.
+    OwnerListing,
+    /// The identities registered on this host that are public, for comparison.
+    RegisteredOnly,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::OwnerListing => "owner listing",
+            Mode::RegisteredOnly => "registered-only",
+        }
+    }
+}
+
 /// The scope a run derived, in numbers.
 pub struct Scope {
     pub owner: String,
     pub pushed_since: String,
-    pub mode: &'static str,
+    pub mode: Mode,
     pub listed: u64,
     pub listing_total: u64,
     pub listing_pages: u64,
@@ -114,19 +132,12 @@ pub fn render(scope: &Scope, repos: &[Row], boards: &[Row]) -> String {
     let _ = writeln!(
         out,
         "- Mode: {}. Registered identities confirmed public: {}, of which in the listing: {}.",
-        scope.mode, scope.registered_public, scope.registered_public_in_listing
+        scope.mode.as_str(),
+        scope.registered_public,
+        scope.registered_public_in_listing
     );
     let _ = writeln!(out, "- Repositories audited: {}.\n", scope.audited);
-    let _ = writeln!(out, "## Status vocabulary\n");
-    let _ = writeln!(
-        out,
-        "- `scanned`: every read the surface needs succeeded.\n\
-         - `not-found`: the surface does not exist for the row (an empty repository, issues \
-         turned off, a board's git history, a repository that backs no board).\n\
-         - `permission-denied`: the credential was refused or absent.\n\
-         - `rate-limited`: the host refused for quota.\n\
-         - `other-error`: any other failed read.\n"
-    );
+    let _ = writeln!(out, "{}", vocabulary());
     let header = "| {} | Current files | Git history | Refs read | Issues | Change requests | Board items | Edit history |\n|---|---|---|---|---|---|---|---|";
     for (title, rows, first) in [
         ("Repositories", repos, "Repository"),
@@ -151,4 +162,54 @@ pub fn render(scope: &Scope, repos: &[Row], boards: &[Row]) -> String {
         let _ = writeln!(out);
     }
     out
+}
+
+/// The status vocabulary section, from [`Status::ALL`]: the one place it is spelled.
+pub fn vocabulary() -> String {
+    let mut out = String::from("## Status vocabulary\n\n");
+    for status in Status::ALL {
+        let _ = writeln!(out, "- `{}`: {}", status.as_str(), status.meaning());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The manifest committed beside this crate is this renderer's output: its
+    /// vocabulary section is the one [`vocabulary`] spells, and every cell of its
+    /// tables is a word of [`Status`] or a refs summary. A renderer change that
+    /// leaves it stale fails here until the audit is re-run.
+    #[test]
+    fn the_committed_manifest_is_this_renderers_output() {
+        let committed = include_str!("../coverage-manifest.md");
+        assert!(
+            committed.contains(&vocabulary()),
+            "the committed vocabulary drifted from Status"
+        );
+        let mut rows = 0;
+        for line in committed.lines().filter(|l| {
+            l.starts_with("| ") && !l.starts_with("| Repository") && !l.starts_with("| Board")
+        }) {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            assert_eq!(
+                cells.len(),
+                8,
+                "a row has its label and every surface: {line}"
+            );
+            for (i, cell) in cells.iter().enumerate().skip(1) {
+                if i == 3 {
+                    assert!(
+                        cell.starts_with("heads ") || cell.starts_with("none"),
+                        "a refs summary: {cell}"
+                    );
+                } else {
+                    assert!(Status::parse(cell).is_some(), "a status word: {cell}");
+                }
+            }
+            rows += 1;
+        }
+        assert!(rows > 0, "the committed manifest has rows");
+    }
 }

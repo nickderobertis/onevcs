@@ -299,7 +299,9 @@ pub struct Matcher {
 }
 
 impl Matcher {
-    pub fn new(terms: Vec<Term>) -> Matcher {
+    /// The matcher over `terms`, or why the automaton could not be built (a pattern
+    /// set past its size limits).
+    pub fn new(terms: Vec<Term>) -> Result<Matcher, String> {
         let mut patterns: Vec<String> = Vec::new();
         let mut index: BTreeMap<String, usize> = BTreeMap::new();
         let mut pattern_terms: Vec<Vec<usize>> = Vec::new();
@@ -312,18 +314,21 @@ impl Matcher {
             });
             pattern_terms[id].push(i);
         }
-        let automaton = (!patterns.is_empty()).then(|| {
-            AhoCorasickBuilder::new()
+        let automaton = if patterns.is_empty() {
+            None
+        } else {
+            let built = AhoCorasickBuilder::new()
                 .ascii_case_insensitive(true)
                 .match_kind(MatchKind::Standard)
                 .build(&patterns)
-                .expect("the term automaton builds from plain strings")
-        });
-        Matcher {
+                .map_err(|e| e.to_string())?;
+            Some(built)
+        };
+        Ok(Matcher {
             terms,
             automaton,
             pattern_terms,
-        }
+        })
     }
 
     pub fn terms(&self) -> &[Term] {
@@ -414,6 +419,7 @@ mod tests {
         let owners = BTreeSet::from(["sampleowner".to_owned()]);
         let names = BTreeSet::from(["openwidget".to_owned()]);
         Matcher::new(derive(identities, &owners, &names, exceptions))
+            .expect("a small automaton builds")
     }
 
     fn found(m: &Matcher, text: &str) -> Vec<(String, Option<Narrowing>)> {

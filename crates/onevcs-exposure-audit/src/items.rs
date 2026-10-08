@@ -13,7 +13,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::github::Api;
-use crate::rows::{narrowed, snippet, ItemRow, Survey};
+use crate::ids::{BoardId, RepoId, Token};
+use crate::rows::{narrowed, snippet, ItemKind, ItemRow, Persistence, Survey};
 use crate::status::Status;
 use crate::terms::Matcher;
 use crate::vault::Findings;
@@ -59,7 +60,7 @@ impl ItemStats {
 /// Where a text sits, for its finding rows.
 #[derive(Clone)]
 struct Place {
-    kind: &'static str,
+    kind: ItemKind,
     number: Option<u64>,
     url: Option<String>,
     state: Option<String>,
@@ -78,14 +79,23 @@ pub struct Walker<'a> {
 const COMMENT: &str = "id url body lastEditedAt";
 const RENAMES: &str = "renames: timelineItems(first: 50, itemTypes: [RENAMED_TITLE_EVENT]) { pageInfo { hasNextPage endCursor } nodes { ... on RenamedTitleEvent { previousTitle } } }";
 
+/// Whether a board is public, as far as the host answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BoardVisibility {
+    Public,
+    NotPublic,
+    /// The board could not be read, so nothing is known.
+    Unknown,
+}
+
 /// The outcome for one board.
 pub struct BoardItems {
     pub issues: Status,
     pub change_requests: Status,
     pub items: Status,
     pub edits: Status,
-    /// `Some(false)` when the board answered and is not public.
-    pub public: Option<bool>,
+    pub visibility: BoardVisibility,
 }
 
 impl<'a> Walker<'a> {
@@ -107,7 +117,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn scan(&mut self, text: &str, place: &Place, persistence: &'static str, deleted: bool) {
+    fn scan(&mut self, text: &str, place: &Place, persistence: Persistence, deleted: bool) {
         self.stats.text_bytes += text.len() as u64;
         let hits = self.matcher.find(text.as_bytes());
         if hits.is_empty() {
@@ -133,7 +143,7 @@ impl<'a> Walker<'a> {
     }
 
     /// One commentable text: scanned now, and queued for its edits if it has any.
-    fn text(&mut self, node: &Value, kind: &'static str, parent: &Place, extra: &[&str]) {
+    fn text(&mut self, node: &Value, kind: ItemKind, parent: &Place, extra: &[&str]) {
         let place = Place {
             kind,
             number: parent.number,
@@ -151,7 +161,7 @@ impl<'a> Walker<'a> {
                 text.push('\n');
             }
         }
-        self.scan(&text, &place, "current", false);
+        self.scan(&text, &place, Persistence::Current, false);
         if !node.get("lastEditedAt").unwrap_or(&Value::Null).is_null() {
             if let Some(id) = node.get("id").and_then(Value::as_str) {
                 self.stats.edited_texts += 1;
@@ -233,7 +243,7 @@ impl<'a> Walker<'a> {
         let each = |walker: &mut Self, rename: &Value| {
             if let Some(previous) = rename.get("previousTitle").and_then(Value::as_str) {
                 walker.stats.renamed_titles += 1;
-                walker.scan(previous, place, "title-history", false);
+                walker.scan(previous, place, Persistence::TitleHistory, false);
             }
         };
         for rename in page
@@ -259,13 +269,7 @@ impl<'a> Walker<'a> {
         )
     }
 
-    fn comments(
-        &mut self,
-        node: &Value,
-        place: &Place,
-        on_type: &str,
-        kind: &'static str,
-    ) -> Status {
+    fn comments(&mut self, node: &Value, place: &Place, on_type: &str, kind: ItemKind) -> Status {
         let Some(page) = node.get("comments") else {
             return Status::Scanned;
         };
@@ -289,7 +293,7 @@ impl<'a> Walker<'a> {
         self.rest_of(&id, on_type, "comments", COMMENT, page, each)
     }
 
-    fn place(node: &Value, kind: &'static str) -> Place {
+    fn place(node: &Value, kind: ItemKind) -> Place {
         Place {
             kind,
             number: node.get("number").and_then(Value::as_u64),
@@ -299,7 +303,7 @@ impl<'a> Walker<'a> {
     }
 
     /// Every issue of a repository, open and closed, with its comments and old titles.
-    pub fn issues(&mut self, owner: &str, name: &str) -> Status {
+    pub fn issues(&mut self, repo: &RepoId) -> Status {
         let query = format!(
             "query Issues($owner: String!, $name: String!, $cursor: String) {{ rateLimit {{ cost }} repository(owner: $owner, name: $name) {{ hasIssuesEnabled issues(first: 50, after: $cursor) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ id number url state title body lastEditedAt {RENAMES} comments(first: 50) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {COMMENT} }} }} }} }} }} }}"
         );
@@ -308,7 +312,7 @@ impl<'a> Walker<'a> {
         loop {
             let data = match self.api.graphql(
                 &query,
-                json!({ "owner": owner, "name": name, "cursor": cursor }),
+                json!({ "owner": repo.owner().as_str(), "name": repo.name(), "cursor": cursor }),
             ) {
                 Ok(data) => data,
                 Err(refused) => return refused,
@@ -333,11 +337,11 @@ impl<'a> Walker<'a> {
             }
             for issue in &nodes {
                 self.stats.issues += 1;
-                let place = Self::place(issue, "issue");
-                self.text(issue, "issue", &place, &[]);
+                let place = Self::place(issue, ItemKind::Issue);
+                self.text(issue, ItemKind::Issue, &place, &[]);
                 status = status
                     .combine(self.renames(issue, &place, "Issue"))
-                    .combine(self.comments(issue, &place, "Issue", "issue-comment"));
+                    .combine(self.comments(issue, &place, "Issue", ItemKind::IssueComment));
             }
             match page
                 .pointer("/pageInfo/hasNextPage")
@@ -356,7 +360,7 @@ impl<'a> Walker<'a> {
 
     /// Every change request of a repository, with its branch name, comments, reviews,
     /// review comments and old titles.
-    pub fn change_requests(&mut self, owner: &str, name: &str) -> Status {
+    pub fn change_requests(&mut self, repo: &RepoId) -> Status {
         let query = format!(
             "query Pulls($owner: String!, $name: String!, $cursor: String) {{ rateLimit {{ cost }} repository(owner: $owner, name: $name) {{ pullRequests(first: 25, after: $cursor) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ id number url state title body headRefName lastEditedAt {RENAMES} comments(first: 50) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {COMMENT} }} }} reviews(first: 30) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {COMMENT} comments(first: 50) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {COMMENT} path }} }} }} }} }} }} }} }}"
         );
@@ -365,7 +369,7 @@ impl<'a> Walker<'a> {
         loop {
             let data = match self.api.graphql(
                 &query,
-                json!({ "owner": owner, "name": name, "cursor": cursor }),
+                json!({ "owner": repo.owner().as_str(), "name": repo.name(), "cursor": cursor }),
             ) {
                 Ok(data) => data,
                 Err(refused) => return refused,
@@ -380,11 +384,16 @@ impl<'a> Walker<'a> {
                 .flatten()
             {
                 self.stats.change_requests += 1;
-                let place = Self::place(pull, "change-request");
-                self.text(pull, "change-request", &place, &["headRefName"]);
+                let place = Self::place(pull, ItemKind::ChangeRequest);
+                self.text(pull, ItemKind::ChangeRequest, &place, &["headRefName"]);
                 status = status
                     .combine(self.renames(pull, &place, "PullRequest"))
-                    .combine(self.comments(pull, &place, "PullRequest", "change-request-comment"))
+                    .combine(self.comments(
+                        pull,
+                        &place,
+                        "PullRequest",
+                        ItemKind::ChangeRequestComment,
+                    ))
                     .combine(self.reviews(pull, &place));
             }
             match page
@@ -409,15 +418,15 @@ impl<'a> Walker<'a> {
         let mut status = Status::Scanned;
         let mut each = |walker: &mut Self, review: &Value| {
             walker.stats.reviews += 1;
-            walker.text(review, "review", place, &[]);
+            walker.text(review, ItemKind::Review, place, &[]);
             let review_place = Place {
-                kind: "review-comment",
+                kind: ItemKind::ReviewComment,
                 ..place.clone()
             };
             let page = review.get("comments").cloned().unwrap_or(Value::Null);
             let on_comment = |walker: &mut Self, comment: &Value| {
                 walker.stats.review_comments += 1;
-                walker.text(comment, "review-comment", &review_place, &["path"]);
+                walker.text(comment, ItemKind::ReviewComment, &review_place, &["path"]);
             };
             for comment in page
                 .get("nodes")
@@ -491,7 +500,7 @@ impl<'a> Walker<'a> {
                         walker.stats.edits_deleted += 1;
                     }
                     if let Some(diff) = edit.get("diff").and_then(Value::as_str) {
-                        walker.scan(diff, place, "edit-history", deleted);
+                        walker.scan(diff, place, Persistence::EditHistory, deleted);
                     }
                 };
                 for edit in page
@@ -525,9 +534,8 @@ impl<'a> Walker<'a> {
     /// of the `audited` ones, whose issues are all read in full anyway.
     pub fn board(
         &mut self,
-        token: &str,
-        owner: &str,
-        number: u64,
+        token: &Token,
+        board: &BoardId,
         audited: &BTreeSet<String>,
     ) -> BoardItems {
         let query = "query Board($owner: String!, $number: Int!, $cursor: String) { rateLimit { cost } repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) { public title shortDescription readme items(first: 50, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id isArchived type content { __typename ... on Issue { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on PullRequest { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on DraftIssue { id title body } } fieldValues(first: 50) { nodes { ... on ProjectV2ItemFieldTextValue { text } } } } } } } } }";
@@ -536,14 +544,15 @@ impl<'a> Walker<'a> {
             change_requests: status,
             items: status,
             edits: status,
-            public: None,
+            visibility: BoardVisibility::Unknown,
         };
         let mut cursor = Value::Null;
         let mut issues = Status::Scanned;
         let mut change_requests = Status::Scanned;
         let mut first = true;
         loop {
-            let variables = json!({ "owner": owner, "number": number, "cursor": cursor });
+            let variables =
+                json!({ "owner": board.owner.as_str(), "number": board.number, "cursor": cursor });
             let data = match self.api.graphql_with(token, query, variables) {
                 Ok(data) => data,
                 Err(refused) => return failed(refused),
@@ -556,19 +565,24 @@ impl<'a> Walker<'a> {
             };
             if project.get("public").and_then(Value::as_bool) != Some(true) {
                 return BoardItems {
-                    public: Some(false),
+                    visibility: BoardVisibility::NotPublic,
                     ..failed(Status::NotFound)
                 };
             }
             if first {
                 first = false;
                 let place = Place {
-                    kind: "board",
-                    number: Some(number),
+                    kind: ItemKind::Board,
+                    number: Some(board.number),
                     url: None,
                     state: None,
                 };
-                self.text(project, "board", &place, &["shortDescription", "readme"]);
+                self.text(
+                    project,
+                    ItemKind::Board,
+                    &place,
+                    &["shortDescription", "readme"],
+                );
             }
             let Some(page) = project.get("items") else {
                 return failed(Status::OtherError);
@@ -600,7 +614,7 @@ impl<'a> Walker<'a> {
             change_requests,
             items: Status::Scanned,
             edits: edits.combine(issues).combine(change_requests),
-            public: Some(true),
+            visibility: BoardVisibility::Public,
         }
     }
 
@@ -616,7 +630,7 @@ impl<'a> Walker<'a> {
             self.stats.board_items_archived += 1;
         }
         let item_place = Place {
-            kind: "board-field",
+            kind: ItemKind::BoardField,
             number: None,
             url: None,
             state: None,
@@ -628,7 +642,7 @@ impl<'a> Walker<'a> {
             .flatten()
         {
             if let Some(text) = value.get("text").and_then(Value::as_str) {
-                self.scan(text, &item_place, "current", false);
+                self.scan(text, &item_place, Persistence::Current, false);
             }
         }
         let Some(content) = item.get("content").filter(|c| !c.is_null()) else {
@@ -638,7 +652,7 @@ impl<'a> Walker<'a> {
             Some("DraftIssue") => {
                 self.stats.draft_items += 1;
                 let place = Place {
-                    kind: "draft-item",
+                    kind: ItemKind::DraftItem,
                     number: None,
                     url: None,
                     state: None,
@@ -654,7 +668,7 @@ impl<'a> Walker<'a> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                 );
-                self.scan(&text, &place, "current", false);
+                self.scan(&text, &place, Persistence::Current, false);
             }
             Some(kind @ ("Issue" | "PullRequest")) => {
                 if content
@@ -667,11 +681,15 @@ impl<'a> Walker<'a> {
                     return;
                 }
                 let (label, comment_kind, status) = if kind == "Issue" {
-                    ("board-issue", "board-issue-comment", &mut *issues)
+                    (
+                        ItemKind::BoardIssue,
+                        ItemKind::BoardIssueComment,
+                        &mut *issues,
+                    )
                 } else {
                     (
-                        "board-change-request",
-                        "board-change-request-comment",
+                        ItemKind::BoardChangeRequest,
+                        ItemKind::BoardChangeRequestComment,
                         &mut *change_requests,
                     )
                 };
