@@ -1191,13 +1191,14 @@ pub fn open(
     let created = cut.created();
     let clone = run_root.join("clone");
     let worktree = run_root.join("worktree");
-    home::ensure_dir(&run_root)?;
 
     // A run root is held shared for the length of the open, which keeps reclamation
-    // off it until its record exists. A slot is already held exclusively by the
-    // placement above, which keeps every other placement, prune and shed off it for
-    // the same span — and an exclusive take and a shared one on one file cannot be
-    // held together, so a slot takes no second lease here.
+    // off it until its record exists — and from *before* it exists, so no instant
+    // passes at which another open's walk over `runs/` meets it unleased and
+    // unrecorded. A slot is already held exclusively by the placement above, which
+    // keeps every other placement, prune and shed off it for the same span — and an
+    // exclusive take and a shared one on one file cannot be held together, so a slot
+    // takes no second lease here.
     let lease = match placement {
         pool::Placement::RunRoot { .. } => Some(
             lock::try_shared(&occupancy_identity(&run_root))?.ok_or_else(|| Error::Invalid {
@@ -1206,6 +1207,7 @@ pub fn open(
         ),
         pool::Placement::Slot { .. } => None,
     };
+    home::ensure_dir(&run_root)?;
 
     let origin = git::remote_url(&execution, "origin")
         .unwrap_or_else(|_| execution.to_string_lossy().into_owned());
@@ -2978,14 +2980,23 @@ fn reclaim(runs: &Path) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return Ok(());
     };
-    // Read once, before the walk: the answer is a fact about this host's session
-    // records rather than about any one directory, and asking it per entry would
-    // re-read every record on the host once per run root.
+    // Read once, before the walk, and only to pass over the run roots it names
+    // without contending for their leases: the answer is a fact about this host's
+    // session records rather than about any one directory, and asking it per entry
+    // would re-read every record on the host once per run root. It is **not** what
+    // permits a removal. It is stale by the time the walk reaches an entry — another
+    // open may have written its record and dropped its lease since — so whatever is
+    // removed is decided again by [`abandoned`], under a lease held through the
+    // removal itself.
     let open = run_roots_of_open_sessions()?;
+    #[cfg(test)]
+    reclaim_race::after_snapshot();
     // Newest first, by when the directory was last written: a session token is a
     // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
-    // three rather than the three somebody is most likely to reach for.
-    let mut holding_work: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    // three rather than the three somebody is most likely to reach for. Each is kept
+    // with its exclusive lease, held until it is removed or the walk is done with it,
+    // so what [`abandoned`] decided is still true when the retention bound acts on it.
+    let mut holding_work: Vec<(std::time::SystemTime, PathBuf, lock::Guard)> = Vec::new();
     for entry in entries.flatten() {
         let run_root = entry.path();
         if !run_root.is_dir() {
@@ -3011,12 +3022,9 @@ fn reclaim(runs: &Path) -> Result<()> {
         if open.iter().any(|held| held == &run_root) {
             continue;
         }
-        // An exclusive take succeeds only while no shared occupancy lease is held,
-        // which is what says no command is working in here *now*.
-        let Some(exclusive) = lock::try_exclusive(&occupancy_identity(&run_root))? else {
+        let Some(exclusive) = abandoned(&run_root)? else {
             continue;
         };
-        drop(exclusive);
         let clone = run_root.join("clone");
         let unpublished = if git::is_repo(&clone) {
             git::unpublished_branches(&clone).unwrap_or_default()
@@ -3025,23 +3033,206 @@ fn reclaim(runs: &Path) -> Result<()> {
         };
         if unpublished.is_empty() {
             let _ = std::fs::remove_dir_all(&run_root);
+            drop(exclusive);
         } else {
             let written = std::fs::metadata(&run_root)
                 .and_then(|meta| meta.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            holding_work.push((written, run_root));
+            holding_work.push((written, run_root, exclusive));
         }
     }
-    holding_work.sort_by_key(|(written, _)| std::cmp::Reverse(*written));
-    for (_, reclaimed) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
+    holding_work.sort_by_key(|(written, _, _)| std::cmp::Reverse(*written));
+    for (_, reclaimed, exclusive) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
         let _ = std::fs::remove_dir_all(&reclaimed);
+        drop(exclusive);
     }
     Ok(())
+}
+
+/// The exclusive occupancy lease on a run root no open session names, held for the
+/// caller to remove it under; `None` while anybody occupies it or a record names it.
+///
+/// The order is what makes the answer hold until the removal, across threads and
+/// processes alike. An exclusive take succeeds only while no shared occupancy lease
+/// is held, which says no command is working in here *now* — and every open takes its
+/// shared lease before its run root exists and writes its record before releasing
+/// it. So once the exclusive one is held, any open that ever reached this run root
+/// has either finished, and its record is on disk, or cannot take the lease until the
+/// caller drops this one. The records are therefore read *after* the take: read
+/// before it, they can predate a record written in between, and that stale read is
+/// what let one open reap the live run root of another opening beside it.
+fn abandoned(run_root: &Path) -> Result<Option<lock::Guard>> {
+    let Some(exclusive) = lock::try_exclusive(&occupancy_identity(run_root))? else {
+        return Ok(None);
+    };
+    match run_roots_of_open_sessions()?
+        .iter()
+        .any(|held| held == run_root)
+    {
+        true => Ok(None),
+        false => Ok(Some(exclusive)),
+    }
 }
 
 /// A `serde_json` object literal, as a payload map.
 pub fn object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
+}
+
+/// Two sessions opening at once, with the one interleaving that let an open reap the
+/// other's live run root forced rather than waited for.
+///
+/// One of this crate's `#[cfg(test)]` modules, for the reason the others exist: the
+/// window is between two reads inside [`reclaim`] — which sessions are open, and then
+/// the walk over `runs/` — and no interface this crate exposes can hold one open
+/// there while another runs to completion. [`after_snapshot`] is that hold, and it is
+/// the only thing here that is not the real open path: a state root of its own, a bare
+/// origin, a registered `local-direct` checkout, and two sessions opened through the
+/// library on two threads. The state root is the process's, which is why the suite
+/// runs one test per process, as `cargo nextest` does.
+#[cfg(test)]
+mod reclaim_race {
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::mpsc;
+
+    use crate::ops::register_checkout;
+    use crate::{Providers, SessionRequest};
+
+    thread_local! {
+        /// What [`after_snapshot`] runs, once, on the thread that set it.
+        static HOLD: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    /// Called by [`super::reclaim`] once it has read which sessions are open and
+    /// before it walks `runs/`: runs the hold this thread set, if it set one.
+    pub(super) fn after_snapshot() {
+        if let Some(hold) = HOLD.with(|hold| hold.borrow_mut().take()) {
+            hold();
+        }
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {} failed in {}: {}",
+            args.join(" "),
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A session on a generated branch, which stands exactly at its base: published,
+    /// so nothing but its record and its lease says anybody is working in it.
+    fn opened() -> crate::Session {
+        Providers::real()
+            .vcs
+            .open_session(SessionRequest {
+                repo: "project".to_owned(),
+                branch: None,
+                branch_name: None,
+                branch_prefix: None,
+                base: None,
+                execution_checkout: None,
+                pool: None,
+                overflow: None,
+                labels: Default::default(),
+                refuse_conflicts: false,
+            })
+            .expect("a session opens")
+    }
+
+    /// A host with one registered checkout of a bare origin, and nothing opened yet.
+    fn host() -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("a scratch host");
+        let at = root.path().canonicalize().expect("a canonical root");
+        // On Windows `canonicalize` is the verbatim `\\?\` spelling, and Git for Windows
+        // cannot read a global configuration named that way.
+        #[cfg(windows)]
+        let at = dunce::simplified(&at).to_path_buf();
+        let config = at.join(".gitconfig");
+        std::fs::write(
+            &config,
+            "[user]\n\tname = Unit\n\temail = unit@example.invalid\n[init]\n\t\
+             defaultBranch = main\n[commit]\n\tgpgsign = false\n[maintenance]\n\t\
+             auto = false\n",
+        )
+        .expect("a git configuration");
+        std::env::set_var("HOME", &at);
+        std::env::set_var("GIT_CONFIG_GLOBAL", &config);
+        std::env::set_var(crate::home::HOME_ENV, at.join(".onevcs"));
+        let seed = at.join("seed");
+        std::fs::create_dir_all(&seed).expect("a seed");
+        git(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("README.md"), "seed\n").expect("a file to commit");
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "feat: seed"]);
+        let origin = at.join("project.git");
+        git(&at, &["init", "-q", "--bare", &origin.to_string_lossy()]);
+        git(&seed, &["push", "-q", &origin.to_string_lossy(), "main"]);
+        let checkout = at.join("project");
+        git(
+            &at,
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &checkout.to_string_lossy(),
+            ],
+        );
+        register_checkout(&checkout, None).expect("the checkout registers");
+        std::fs::write(
+            at.join(".onevcs/rules.yml"),
+            "version: 1\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+        )
+        .expect("a rules file");
+        root
+    }
+
+    /// B reads which sessions are open before A's record exists, and walks `runs/`
+    /// only after A has written that record and dropped its lease — the order a
+    /// Windows host's slow spawns made common. A's run root is then one B's stale
+    /// read does not name, B can take exclusively, and whose branch is published,
+    /// and reclaiming it took the worktree A had just been handed.
+    #[test]
+    fn an_open_never_reclaims_the_run_root_of_a_session_that_opened_beside_it() {
+        let _host = host();
+        let (read, snapshot_taken) = mpsc::channel::<()>();
+        let (release, a_opened) = mpsc::channel::<()>();
+        let b = std::thread::spawn(move || {
+            HOLD.with(|hold| {
+                *hold.borrow_mut() = Some(Box::new(move || {
+                    read.send(()).expect("the test is waiting for the read");
+                    a_opened.recv().expect("the test releases the walk");
+                }));
+            });
+            opened()
+        });
+        snapshot_taken
+            .recv()
+            .expect("B reads which sessions are open, then holds");
+
+        let a = opened();
+        let handed = a.worktree.join("H.md");
+        std::fs::write(&handed, "the work A was handed\n").expect("A works in its tree");
+
+        release.send(()).expect("B is holding");
+        let b = b.join().expect("B's open does not panic");
+
+        assert_ne!(a.token, b.token);
+        assert!(
+            handed.is_file(),
+            "B's open reclaimed the run root of A, a session open beside it: {} is gone",
+            handed.display()
+        );
+        assert!(b.worktree.is_dir(), "B opened into its own worktree");
+    }
 }
 
 #[cfg(test)]
