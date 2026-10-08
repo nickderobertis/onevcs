@@ -7,8 +7,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone)]
 struct Snapshot {
+    repository: git2::Repository,
     tips: BTreeMap<String, git2::Oid>,
     symbolic: BTreeMap<String, String>,
     worktrees: Vec<(PathBuf, Option<String>)>,
@@ -49,9 +49,8 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
     })
 }
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
-    read(repo, |_| {
-        let repository = git2::Repository::open(repo).ok()?;
-        let config = repository.config().ok()?;
+    read(repo, |snapshot| {
+        let config = snapshot.repository.config().ok()?;
         let mut entries = config.entries(None).ok()?;
         let mut output = String::new();
         while let Some(entry) = entries.next() {
@@ -70,9 +69,8 @@ pub(crate) fn configuration(repo: &Path) -> Option<String> {
     })
 }
 pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
-    read(repo, |_| {
-        let repository = git2::Repository::open(repo).ok()?;
-        let config = repository.config().ok()?;
+    read(repo, |snapshot| {
+        let config = snapshot.repository.config().ok()?;
         let mut entries = config.entries(None).ok()?;
         let key = format!("remote.{remote}.url");
         let mut url = None;
@@ -99,6 +97,21 @@ pub(crate) fn symbolic(repo: &Path, name: &str) -> Option<Option<String>> {
     read(repo, |snapshot| Some(snapshot.symbolic.get(name).cloned()))
 }
 pub(crate) fn tip(repo: &Path, name: &str) -> Option<Option<String>> {
+    tip_with_objects(repo, name, None)
+}
+pub(crate) fn tip_with_objects(
+    repo: &Path,
+    name: &str,
+    borrowing: Option<&Path>,
+) -> Option<Option<String>> {
+    if borrowing.is_some_and(|path| {
+        !path.is_absolute()
+            || path
+                .to_str()
+                .is_none_or(|path| path.contains([':', '"', '\n']))
+    }) {
+        return None;
+    }
     if crate::git::ObjectId::parse(name).is_some() || !crate::git::plainly_a_ref_name(name) {
         return None;
     }
@@ -113,7 +126,7 @@ pub(crate) fn tip(repo: &Path, name: &str) -> Option<Option<String>> {
             _ => return None,
         }
     }
-    read(repo, |snapshot| {
+    let oid = read(repo, |snapshot| {
         Some(
             [
                 name.to_owned(),
@@ -124,21 +137,21 @@ pub(crate) fn tip(repo: &Path, name: &str) -> Option<Option<String>> {
                 format!("refs/remotes/{name}/HEAD"),
             ]
             .iter()
-            .find_map(|candidate| {
-                snapshot.tips.get(candidate).map(|oid| {
-                    git2::Repository::open(repo)
-                        .ok()?
-                        .find_object(*oid, None)
-                        .ok()?
-                        .peel_to_commit()
-                        .ok()
-                        .map(|commit| commit.id().to_string())
-                })
-            })
-            .flatten(),
+            .find_map(|candidate| snapshot.tips.get(candidate).copied()),
         )
-    })
+    })?;
+    Some(oid.and_then(|oid| {
+        with_objects(repo, borrowing, |repository| {
+            repository
+                .find_object(oid, None)
+                .ok()?
+                .peel_to_commit()
+                .ok()
+                .map(|commit| commit.id().to_string())
+        })
+    }))
 }
+
 pub(crate) fn raw_tip(repo: &Path, name: &str) -> Option<Option<String>> {
     read(repo, |snapshot| {
         Some(snapshot.tips.get(name).map(git2::Oid::to_string))
@@ -208,6 +221,13 @@ pub(crate) fn with_objects<T>(
     borrowing: Option<&Path>,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let mut choose = Some(choose);
+    if borrowing.is_none() {
+        if let Some(answer) = read(at, |snapshot| Some(choose.take()?(&snapshot.repository))) {
+            return answer;
+        }
+    }
+    let choose = choose?;
     OBJECT_REPOSITORIES.with(|repositories| {
         let mut repositories = repositories.borrow_mut();
         let key = (at.to_owned(), borrowing.map(Path::to_owned));
@@ -394,12 +414,14 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         let oid = resolved.target()?;
         tips.insert("HEAD".into(), oid);
     }
+    drop(head);
     let primary = common.parent()?.to_owned();
-    let primary_repo = git2::Repository::open(&primary).ok()?;
-    let primary_head = primary_repo.find_reference("HEAD").ok()?;
-    let branch = primary_head
-        .symbolic_target()
-        .and_then(|target| target.strip_prefix("refs/heads/"))
+    let primary_head = std::fs::read(common.join("HEAD")).ok()?;
+    canonical_value(&primary_head)?;
+    let branch = std::str::from_utf8(&primary_head)
+        .ok()?
+        .strip_suffix('\n')?
+        .strip_prefix("ref: refs/heads/")
         .map(str::to_owned);
     let mut worktrees = vec![(primary, branch)];
     for name in repo.worktrees().ok()?.iter().flatten() {
@@ -418,6 +440,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
     Some(Snapshot {
+        repository: repo,
         tips,
         symbolic,
         worktrees,

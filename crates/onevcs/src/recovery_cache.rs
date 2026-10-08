@@ -229,7 +229,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             "-n",
             "1",
         ],
-        "rev-list" => &["--count", "--first-parent", "--not", "--"],
+        "rev-list" => &["--count", "--first-parent", "--reverse", "--not", "--"],
         "cat-file" => &["-e"],
         "merge-tree" => &["--write-tree"],
         "rev-parse" => &["--verify"],
@@ -249,6 +249,10 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             continue;
         }
         if git::ObjectId::parse(arg).is_some()
+            || (args.first() == Some(&"rev-parse")
+                && arg
+                    .strip_suffix("^1^{commit}")
+                    .is_some_and(|sha| git::ObjectId::parse(sha).is_some()))
             || arg
                 .strip_suffix("^{commit}")
                 .is_some_and(|sha| git::ObjectId::parse(sha).is_some())

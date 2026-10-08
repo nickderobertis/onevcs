@@ -2245,8 +2245,13 @@ pub fn log_messages<'a>(
     base: &str,
     branch: &str,
 ) -> Result<Vec<CommitMessage>> {
+    let cwd = cwd.into();
+    let base_tip = crate::native_refs::tip_with_objects(cwd.at, base, cwd.borrowing).flatten();
+    let branch_tip = crate::native_refs::tip_with_objects(cwd.at, branch, cwd.borrowing).flatten();
+    let base = base_tip.as_deref().unwrap_or(base);
+    let branch = branch_tip.as_deref().unwrap_or(branch);
     let output = checked_in(
-        cwd.into(),
+        cwd,
         &[
             "log",
             "--reverse",

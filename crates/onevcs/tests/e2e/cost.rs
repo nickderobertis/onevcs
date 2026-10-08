@@ -705,6 +705,43 @@ fn a_second_identity(world: &World, branch: &str, labels: &[&str]) -> (PathBuf, 
 }
 
 #[test]
+fn warm_recovery_reuses_provenance_ranges_parent_reads_and_reverse_history() {
+    let fixture = Fixture::local(&local_direct());
+    tiered(&fixture);
+    let counting = Counting::installed(&fixture.world);
+    let (cold, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert!(!cold.is_empty());
+    assert!(calls.iter().any(|call| call
+        .args
+        .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")));
+    assert!(calls
+        .iter()
+        .any(|call| call.args.starts_with("rev-list --reverse ")));
+    assert!(calls
+        .iter()
+        .any(|call| call.args.starts_with("rev-parse --verify ")
+            && call.args.ends_with("^1^{commit}")));
+    let (prime, _, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert_eq!(prime, cold);
+    let (warm, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert_eq!(warm, cold);
+    let repeated = calls
+        .iter()
+        .filter(|call| {
+            call.args
+                .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")
+                || call.args.starts_with("rev-list --reverse ")
+                || (call.args.starts_with("rev-parse --verify ")
+                    && call.args.ends_with("^1^{commit}"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        repeated.is_empty(),
+        "unchanged immutable reads must be reused: {repeated:?}"
+    );
+}
+
+#[test]
 fn a_ref_name_is_validated_by_subprocess_at_most_once_per_distinct_name() {
     // `git check-ref-format` answers a question about a *name*, so the answer cannot
     // go stale — and every session record read validates two of them. On the measured
