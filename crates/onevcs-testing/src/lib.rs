@@ -71,3 +71,6 @@ pub use state::{
     STATE_VERSION,
 };
 pub use store::{Checked, FileStore, MemoryStore, Store};
+
+/// Shared full-size fixtures over real Git and production persistence.
+pub mod recovery;

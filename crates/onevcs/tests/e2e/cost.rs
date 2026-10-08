@@ -63,6 +63,46 @@ pub(crate) struct Call {
     pub(crate) args: String,
 }
 
+#[test]
+fn git_is_resolved_once_and_missing_git_keeps_its_refusal() {
+    let fixture = Fixture::local(&local_direct());
+    let counting = Counting::installed(&fixture.world);
+    let shim = counting.directory.join("git");
+    let original = std::fs::read_to_string(&shim).expect("forwarding git shim");
+    let removing = original.replacen(
+        "exec '",
+        &format!("/bin/rm '{}'\nexec '", shim.display()),
+        1,
+    );
+    std::fs::write(&shim, removing).expect("shim removes itself after its first real Git call");
+    counting
+        .onevcs(&fixture.world)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .failure();
+    assert_eq!(
+        counting.calls().len(),
+        1,
+        "the next spawn uses the resolved path, rather than finding a different Git on PATH"
+    );
+    std::fs::write(&shim, original).expect("restore Git for a new process");
+    counting
+        .onevcs(&fixture.world)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let empty = fixture.world.path("empty-path");
+    std::fs::create_dir(&empty).expect("PATH without Git");
+    fixture
+        .world
+        .onevcs()
+        .env("PATH", empty)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a git checkout"));
+}
+
 impl Counting {
     pub(crate) fn installed(world: &World) -> Self {
         let directory = world.path("counting");

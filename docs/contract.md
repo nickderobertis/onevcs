@@ -4309,6 +4309,11 @@ Disposable recovery proof caches may live only under `cache/recoverable/v1/`.
 Deleting, corrupting or making that cache unreadable changes no answer. Entries
 are derived only from immutable inputs, with complete Git-context guards; mutable
 holders, leases, publication, landing and supersession records remain fresh.
+Raw Git output over full immutable object ids may be shared across identities and
+branches: its key binds the repository path and context fingerprint, complete
+argument vector and every object id, cache format version, Git executable, and
+config, attributes, layout and object-availability guards. Such entries store no
+semantic landing or retirement verdict and no mutable state.
 
 Sweep keeps a closed session's record and labels while its branch holds unlanded
 work, even when preserve pushed its tip to origin and its disposable checkout is

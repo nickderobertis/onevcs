@@ -1046,3 +1046,10 @@ ref, defaulted on read). `Selection` adds `detail: Detail`, defaulted to `Full`.
 semantic fields and the recovery command; only the presentation omissions named
 in the contract are permitted. Sweep uses recovery's semantic proof to retain
 session labels for preserved but unlanded work.
+
+The non-default `onevcs/testing` feature is test-support persistence wiring for
+`onevcs-testing`'s real-Git recovery fixture generator. Its hidden module writes
+the production registry, record and envelope types; it selects no alternate VCS
+implementation and changes no default-build interface. Manager ruling
+`c-8c93437fae9b6ae18b6a1387e3f29280` approved this bridge so the producer and
+onepipeline can generate the same complete workloads in process.

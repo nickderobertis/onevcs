@@ -95,6 +95,9 @@ mod status;
 mod store;
 mod stream;
 mod sweep;
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing;
 mod vcs;
 mod verdict;
 mod verified;

@@ -608,6 +608,22 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
         cached
     };
     let original = compare();
+    let index = fixture
+        .world
+        .home()
+        .join("cache/recoverable/v1/streams-index.json");
+    assert!(
+        index.is_file(),
+        "the selected read must populate the stream index"
+    );
+    std::fs::write(&index, "{broken").expect("corrupt stream index");
+    assert_eq!(compare(), original);
+    std::fs::remove_file(&index).expect("remove index file");
+    std::fs::create_dir(&index).expect("index path cannot be read as a file");
+    assert_eq!(compare(), original);
+    std::fs::remove_dir(&index).expect("restore cache path");
+    assert_eq!(compare(), original);
+
     let cache = fixture.world.home().join("cache/recoverable/v1/git");
     let entries: Vec<_> = std::fs::read_dir(&cache)
         .expect("immutable proofs were cached")

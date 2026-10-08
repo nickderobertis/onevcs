@@ -3929,6 +3929,10 @@ mod ref_name_tests {
         "trailing/",
         "/leading",
         "unicode/ünïcøde",
+        "标点/分支.v1",
+        "punct/one!two#three$four%five&six(seven)+eight=nine;ten,eleven",
+        "unicode/space\u{a0}inside",
+        "dots/interior.part/last",
         "control\u{1}char",
     ];
 
@@ -3964,6 +3968,10 @@ mod ref_name_tests {
             "feature/x",
             "onevcs/s-9fa99cfb80da",
             "worktree-agent-7",
+            "unicode/ünïcøde",
+            "标点/分支.v1",
+            "punct/one!two#three$four%five&six(seven)+eight=nine;ten,eleven",
+            "dots/interior.part/last",
         ] {
             assert!(
                 plainly_a_ref_name(ordinary),

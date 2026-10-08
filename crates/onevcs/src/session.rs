@@ -388,6 +388,10 @@ pub struct Recoverable {
     /// Full commit object name of the branch in this checkout, or `None` only
     /// when its ref cannot be read. Always serialized, including `null`; older
     /// documents default to `None`.
+    // llmlint: ignore[invalid_states_unrepresentable] The approved recovery-detail
+    // amendment fixes this public field as Option<String>; a commit-id newtype
+    // would change the agreed surface. AnyRecoverable's conversion validates a
+    // present full object name before a serialized row reaches this field.
     #[serde(default)]
     pub tip: Option<String>,
     /// Why the workstream stopped.
@@ -499,6 +503,16 @@ impl TryFrom<AnyRecoverable> for Recoverable {
     type Error = String;
 
     fn try_from(value: AnyRecoverable) -> std::result::Result<Self, Self::Error> {
+        if value
+            .tip
+            .as_ref()
+            .is_some_and(|tip| crate::git::ObjectId::parse(tip).is_none())
+        {
+            return Err(format!(
+                "the row for branch {:?} carries tip {:?}, which is not a full commit object name",
+                value.branch.branch, value.tip
+            ));
+        }
         if value.landed.is_landed() && !value.recover_command.is_empty() {
             return Err(format!(
                 "the row for branch {branch:?} says its work reached {base} and carries \

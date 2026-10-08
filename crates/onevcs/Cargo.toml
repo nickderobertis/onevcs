@@ -28,6 +28,10 @@ path = "src/lib.rs"
 name = "onevcs"
 path = "src/main.rs"
 
+[features]
+# Persistence writers used only by the sibling test-support crate.
+testing = []
+
 [dependencies]
 clap = { workspace = true }
 filetime = { workspace = true }

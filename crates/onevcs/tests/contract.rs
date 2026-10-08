@@ -8440,6 +8440,23 @@ fn recovery_detail_and_tip_match_the_declared_wire_surface() {
         "branch": {"branch":"feature/work", "base":"main", "provenance":"complete", "change_url":null, "change_base":null},
         "checkout":"/project", "stopped_because":"closed", "recover_command":[]
     });
+    for tip in [
+        "main",
+        "",
+        "abc",
+        " 1111111111111111111111111111111111111111",
+    ] {
+        let mut bad = old.clone();
+        bad["tip"] = json!(tip);
+        let error = serde_json::from_value::<Recoverable>(bad).expect_err("malformed tips refuse");
+        assert!(error.to_string().contains("full commit object name"));
+    }
+    for tip in ["a".repeat(40), "F".repeat(64)] {
+        let mut valid = old.clone();
+        valid["tip"] = json!(tip);
+        let row: Recoverable = serde_json::from_value(valid).expect("full object names read");
+        assert_eq!(row.tip.as_deref(), Some(tip.as_str()));
+    }
     let row: Recoverable = serde_json::from_value(old).expect("old rows still read");
     assert_eq!(row.tip, None);
     assert_eq!(
