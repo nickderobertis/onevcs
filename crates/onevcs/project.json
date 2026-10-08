@@ -3,34 +3,94 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
   "sourceRoot": "crates/onevcs/src",
-  "tags": ["scope:cli", "lang:rust"],
+  "tags": [
+    "scope:cli",
+    "lang:rust"
+  ],
   "targets": {
-    "bootstrap": { "command": "just _crate-bootstrap" },
-    "format": { "command": "just _crate-format" },
-    "format-check": { "command": "just _crate-fmt-check" },
-    "lint": { "command": "just _crate-lint" },
+    "bootstrap": {
+      "command": "just _crate-bootstrap"
+    },
+    "format": {
+      "command": "just _crate-format"
+    },
+    "format-check": {
+      "command": "just _crate-fmt-check"
+    },
+    "lint": {
+      "command": "just _crate-lint"
+    },
     "test": {
       "command": "just _unit-test",
-      "outputs": ["{workspaceRoot}/target/coverage/onevcs.profdata"]
+      "outputs": [
+        "{workspaceRoot}/target/coverage/onevcs.profdata"
+      ]
     },
-    "test-quick": { "command": "just _unit-test-quick" },
-    "doc": { "command": "just _crate-doc" },
+    "test-quick": {
+      "command": "just _unit-test-quick"
+    },
+    "doc": {
+      "command": "just _crate-doc"
+    },
     "coverage": {
       "command": "just _crate-coverage",
       "dependsOn": [
         {
           "target": "test",
-          "projects": ["onevcs", "onevcs-e2e", "onevcs-scripts-e2e", "onevcs-contract"]
+          "projects": [
+            "onevcs",
+            "onevcs-e2e",
+            "onevcs-scripts-e2e",
+            "onevcs-contract",
+            "onevcs-recovery"
+          ]
         }
       ],
       "inputs": [
         "crateSource",
-        { "dependentTasksOutputFiles": "**/*.profdata", "transitive": false }
+        {
+          "dependentTasksOutputFiles": "**/*.profdata",
+          "transitive": false
+        }
       ]
     },
     "check": {
       "executor": "nx:noop",
-      "dependsOn": ["format-check", "lint", "test", "doc", "coverage"]
+      "dependsOn": [
+        "format-check",
+        "lint",
+        "test",
+        "doc",
+        "coverage",
+        "budgets"
+      ]
+    },
+    "budgets": {
+      "command": "just budgets",
+      "dependsOn": [
+        {
+          "target": "test",
+          "projects": [
+            "onevcs-recovery"
+          ]
+        }
+      ],
+      "inputs": [
+        "{workspaceRoot}/budgets.yaml",
+        "{workspaceRoot}/scripts/recoverable*.mjs",
+        "{workspaceRoot}/scripts/recoverable-budget.schema.json",
+        "sharedGlobals",
+        {
+          "dependentTasksOutputFiles": "target/budget-records/**/*",
+          "transitive": false
+        },
+        "{workspaceRoot}/scripts/recoverable-build-inputs.json",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/.cargo/config.toml"
+      ]
     }
   }
 }

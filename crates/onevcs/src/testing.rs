@@ -13,26 +13,29 @@ use crate::event::{phase_of, Dimensions, EventKind, Labels, Source, SOURCE_WORD}
 use crate::registry::Registry;
 use crate::session::Lifecycle;
 use crate::vocabulary::Emitter;
-use crate::workspace::{self, Record, Ref, Token};
+use crate::workspace::{self, Record};
+
+/// Validated production branch and session names for persisted fixtures.
+pub use crate::workspace::{Ref, Token};
 
 /// Inputs to a real persisted fixture session.
 pub struct SessionSeed {
     /// Valid session token.
-    pub token: String,
+    pub token: Token,
     /// Normalized repository identity.
     pub identity: String,
     /// Registered checkout alias.
     pub alias: String,
     /// Real branch name.
-    pub branch: String,
+    pub branch: Ref,
     /// The registered checkout carrying the branch.
     pub checkout: PathBuf,
     /// Real disposable clone.
     pub clone: PathBuf,
     /// Real worktree for a live session; absent directory for a closed session.
     pub worktree: PathBuf,
-    /// Whether the fixture process holds this session live.
-    pub live: bool,
+    /// Production lifecycle; an open session is held by the fixture process.
+    pub state: Lifecycle,
     /// Labels stamped on the session.
     pub labels: BTreeMap<String, String>,
 }
@@ -40,14 +43,13 @@ pub struct SessionSeed {
 /// Write a seed through the production session record's serializer.
 pub fn write_session(home: &Path, seed: &SessionSeed) -> Result<()> {
     crate::label::validate(&seed.labels)?;
-    let token = Token::try_from(seed.token.clone()).map_err(error::invalid)?;
-    let branch = Ref::try_from(seed.branch.clone()).map_err(error::invalid)?;
+
     let record = Record {
         version: workspace::RECORD_VERSION,
-        token,
+        token: seed.token.clone(),
         identity: seed.identity.clone(),
         alias: seed.alias.clone(),
-        branch,
+        branch: seed.branch.clone(),
         base: Ref::try_from("main".to_owned()).map_err(error::invalid)?,
         change_base: None,
         stack_tip: None,
@@ -61,14 +63,13 @@ pub fn write_session(home: &Path, seed: &SessionSeed) -> Result<()> {
         slot: None,
         execution_checkout: seed.checkout.clone(),
         publication_checkout: seed.checkout.clone(),
-        state: if seed.live {
-            Lifecycle::Open
+        state: seed.state,
+        owner_pid: if seed.state == Lifecycle::Open {
+            std::process::id()
         } else {
-            Lifecycle::Closed
+            0
         },
-        owner_pid: if seed.live { std::process::id() } else { 0 },
-        owner_started: seed
-            .live
+        owner_started: (seed.state == Lifecycle::Open)
             .then(|| workspace::process_started(std::process::id()))
             .flatten(),
         retried_by: None,

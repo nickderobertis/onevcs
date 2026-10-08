@@ -137,3 +137,8 @@ path = "tests/smoke/main.rs"
 [[test]]
 name = "release_pr"
 path = "tests/release_pr/main.rs"
+
+# Host-sized recovery measurement has its own affected project and producer edge.
+[[test]]
+name = "recovery-workload"
+path = "tests/recovery-workload/main.rs"

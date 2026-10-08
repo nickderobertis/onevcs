@@ -1,0 +1,37 @@
+schema_version: 1
+budgets:
+  - id: recoverable-git-executions-cold
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '1', --cold]
+    unit: executions
+    direction: max
+    threshold: 726
+    description: Measured cold launcher Decision Git executable budget; separate counting calls from the full-workload journey.
+  - id: recoverable-git-executions-warm
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '1', --warm]
+    unit: executions
+    direction: max
+    threshold: 19
+    description: Measured unchanged warm launcher Decision Git executable budget; separate counting calls after priming.
+  - id: recoverable-git-executions-cold-10x
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '10', --cold]
+    unit: executions
+    direction: max
+    threshold: 7295
+    description: Measured cold launcher Decision Git executable budget at the larger unchanged workload.
+  - id: recoverable-git-executions-warm-10x
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '10', --warm]
+    unit: executions
+    direction: max
+    threshold: 187
+    description: Measured unchanged warm launcher Decision Git executable budget at the larger workload.
+  - id: recoverable-journey-time
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --journey-time]
+    unit: seconds
+    direction: max
+    threshold: 180
+    description: Estimated full journey budget from empty fixture roots through both preparations, correctness validation, timed and counting calls, priming, cache clears and cleanup.

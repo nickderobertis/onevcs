@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "justfile",
+    "package.json",
+    "package-lock.json",
+    "nx.json",
+    "crates/onevcs/Cargo.toml",
+    "crates/onevcs-testing/Cargo.toml",
+    "crates/onevcs-testing/src/recovery.rs",
+    "crates/onevcs-testing/src/lib.rs",
+    ".cargo/config.toml"
+  ],
+  "directories": [
+    "crates/onevcs/src",
+    "crates/onevcs/tests/recovery-workload"
+  ],
+  "prefixes": [
+    {
+      "directory": "scripts",
+      "prefix": "recoverable"
+    }
+  ]
+}

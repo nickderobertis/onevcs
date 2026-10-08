@@ -53,6 +53,7 @@ _crate-bootstrap:
       || { echo "cannot add toolchain components — install rustup (https://rustup.rs/) and re-run" >&2; exit 1; }
     @just _ensure-tool cargo-nextest
     @just _ensure-tool cargo-llvm-cov
+    @just _ensure-onebudgetspec
     @just _ensure-fuse
     @cargo fetch --locked --quiet
 
@@ -198,7 +199,7 @@ _compat-lint:
 scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
-unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr))"
+unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload))"
 # `onevcs-e2e:test` — the binary's journeys.
 e2e-tier := "binary(e2e) & not " + scripts-suites
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
@@ -226,6 +227,39 @@ _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
+
+# Full-size recovery measurement owns one fixture build per scale and invocation.
+_recovery-test:
+    @node scripts/recoverable-invocation.mjs just _recovery-covered
+
+_recovery-covered:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" just _cover onevcs-recovery 'binary(recovery-workload)'
+    @node --test scripts/recoverable-budget.test.mjs
+
+# Regenerate validated current-build telemetry without running unrelated journeys.
+recoverable-journeys:
+    @node scripts/recoverable-invocation.mjs just _recovery-quick
+
+_recovery-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail
+    @node --test scripts/recoverable-budget.test.mjs
+
+onebudgetspec-version := "0.1.1"
+onebudgetspec-root := justfile_directory() / "target" / "tools" / ("onebudgetspec-" + onebudgetspec-version)
+
+# Provision the released checker; no implicit installation in a budget read.
+_ensure-onebudgetspec:
+    @[ -x "{{onebudgetspec-root}}/bin/onebudgetspec" ] || [ -x "{{onebudgetspec-root}}/bin/onebudgetspec.exe" ] \
+      || cargo install onebudgetspec --locked --quiet --version {{onebudgetspec-version}} --root "{{onebudgetspec-root}}" \
+      || { echo "onebudgetspec {{onebudgetspec-version}} could not be installed; run 'just bootstrap', then retry" >&2; exit 1; }
+
+# Read the producing tier's completed telemetry through the released checker.
+budgets:
+    @[ -x "{{onebudgetspec-root}}/bin/onebudgetspec" ] || [ -x "{{onebudgetspec-root}}/bin/onebudgetspec.exe" ] \
+      || { echo "onebudgetspec {{onebudgetspec-version}} is missing; run 'just bootstrap', then retry" >&2; exit 1; }
+    @"{{onebudgetspec-root}}/bin/onebudgetspec" check budgets.yaml
 _scripts-e2e-test: (_cover "onevcs-scripts-e2e" scripts-tier)
 _scripts-e2e-test-quick: (_quick scripts-tier)
 _contract-test: (_cover "onevcs-contract" contract-tier)
@@ -233,7 +267,7 @@ _contract-test-quick: (_quick contract-tier)
 
 # The coverage floor over every instrumented tier's profile, merged into one report.
 _crate-coverage:
-    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-scripts-e2e onevcs-contract
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-scripts-e2e onevcs-contract onevcs-recovery
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named

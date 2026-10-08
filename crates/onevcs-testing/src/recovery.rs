@@ -1,3 +1,6 @@
+// llmlint: ignore[new_code_lands_in_a_project] AGENTS.md assigns onevcs-testing
+// to onevcs's workspace targets through crateSource (crates/**/*), as its existing
+// sources are owned; a second crate project would duplicate those workspace checks.
 //! Full-size real-Git recovery fixtures shared by the producer and its consumers.
 //!
 //! Git imports create real trees, commits and refs in batches. Persistence is written
@@ -389,8 +392,8 @@ fn build_identity(
             add_work(&mut import, &mut work, &branch, launcher, class, true, seed);
         }
     }
-    // The spike accounts each of the two rotating scenarios as two slots,
-    // plus one landed slot; twins and continuations supply the actual records.
+    // Twins and continuations count as retained sessions too; leave fourteen
+    // unrelated sessions beside each selected identity's five scenario slots.
     let remaining = if selected { 14 } else { 19 };
     for n in 10..10 + remaining {
         let class = if n % 3 == 0 { Class::No } else { Class::Landed };
@@ -480,14 +483,18 @@ fn build_identity(
         testing::write_session(
             home,
             &SessionSeed {
-                token: entry.token.clone(),
+                token: entry.token.clone().try_into().map_err(invalid)?,
                 identity: key.clone(),
                 alias: alias.clone(),
-                branch: entry.branch.clone(),
+                branch: entry.branch.clone().try_into().map_err(invalid)?,
                 checkout: repo.clone(),
                 clone,
                 worktree,
-                live: entry.class == Class::Live,
+                state: if entry.class == Class::Live {
+                    onevcs::Lifecycle::Open
+                } else {
+                    onevcs::Lifecycle::Closed
+                },
                 labels,
             },
         )?;
@@ -562,8 +569,8 @@ fn build_identity(
             stream_count += 1;
         }
     }
-    // History records were swept before kept sessions in the spike: their
-    // streams survive, with twelve published/retired pairs per identity.
+    // Swept sessions leave streams but no records or branch refs. Twelve
+    // publication/retirement pairs per identity preserve that source evidence.
     for n in 1..=60 {
         let token = format!("history-{identity}-{n}");
         let branch = format!("old/r{identity}-{n}");

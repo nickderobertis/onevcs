@@ -1,0 +1,1814 @@
+[
+  {
+    "identity": "<fixture>/origins/r1.git",
+    "branch": "work/r1-0-superseded",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r1",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r1-0-superseded",
+      "--repo",
+      "<fixture>/checkouts/r1"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "superseded-with-changes",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r1.git",
+      "branch": "work/r1-0-superseded",
+      "tip": "884c62d0562edaf4a64a09b1714d163e7adb4336",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": {
+        "branch": "work/r1-0-superseded-retry",
+        "landing": "5af8002eb74f34e968799ed31b1be7555e985fd3",
+        "labels": {}
+      },
+      "differing_paths": [
+        "src/work/r1-0-superseded.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r1"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r1-0-superseded-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r1-0-superseded-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r1.git",
+    "branch": "work/r1-0-superseded-retry",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r1",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "5af8002eb74f34e968799ed31b1be7555e985fd3"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r1.git",
+      "branch": "work/r1-0-superseded-retry",
+      "tip": "722a75f73583d39091d9ec1983306c42e16147bc",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "722a75f73583d39091d9ec1983306c42e16147bc"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r1"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r1-0-superseded-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r1-0-superseded-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r1.git",
+    "branch": "work/r1-1-live",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r1",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r1-1-live",
+      "--repo",
+      "<fixture>/checkouts/r1"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": {
+      "token": "s-fixture-work-r1-1-live-71",
+      "worktree": "<fixture>/sessions/s-fixture-work-r1-1-live-71/worktree",
+      "holding": "owner-running"
+    },
+    "retirement": {
+      "class": "keep",
+      "reason": "held-by-live-session",
+      "cause": null,
+      "identity": "<fixture>/origins/r1.git",
+      "branch": "work/r1-1-live",
+      "tip": "31d9ecee7ee515f9b4c4af2d8be7488f38c95434",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r1"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r1-1-live-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r1-1-live-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r1.git",
+    "branch": "work/r1-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r1",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "96e24c5696fe9cd6c9aec5b211483a68f713e6db"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r1.git",
+      "branch": "work/r1-2-landed",
+      "tip": "758bc64da86a257325edf218921175a68be682c7",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "758bc64da86a257325edf218921175a68be682c7"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r1"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r1-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r1-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r10.git",
+    "branch": "work/r10-0-in-part",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r10",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r10-0-in-part",
+      "--repo",
+      "<fixture>/checkouts/r10"
+    ],
+    "landed": {
+      "state": "in-part",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "61ac839a177ab072e1eca06f1cd9d1b139967ced"
+      },
+      "unlanded": 1
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r10.git",
+      "branch": "work/r10-0-in-part",
+      "tip": "b7b37927c3ad86f8688b6e88e14d2ab2bb3903e0",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r10-0-in-part-more.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r10"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r10-0-in-part-67/clone"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r10-0-in-part-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r10-0-in-part-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r10.git",
+    "branch": "work/r10-1-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r10",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "aff2cc1e8d9a31582505123d7bd2a0bd754f7b29"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r10.git",
+      "branch": "work/r10-1-landed",
+      "tip": "0b721a55752eeac9ad45de25255bdd0ff3836299",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "0b721a55752eeac9ad45de25255bdd0ff3836299"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r10"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r10-1-landed-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r10-1-landed-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r10.git",
+    "branch": "work/r10-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r10",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "17fffd1f420818be7e028edeea291b8f8db087a8"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r10.git",
+      "branch": "work/r10-2-landed",
+      "tip": "7b3164c9b713255644d7cfaca45b12a8287664bf",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "7b3164c9b713255644d7cfaca45b12a8287664bf"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r10"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r10-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r10-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r2.git",
+    "branch": "work/r2-0-no",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r2",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r2-0-no",
+      "--repo",
+      "<fixture>/checkouts/r2"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r2.git",
+      "branch": "work/r2-0-no",
+      "tip": "8dabb459cdc63e38beec80e19fd5290ebe556b8d",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r2-0-no.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r2"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r2-0-no-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r2-0-no-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r2.git",
+    "branch": "work/r2-1-unknown",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r2",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r2-1-unknown",
+      "--repo",
+      "<fixture>/checkouts/r2"
+    ],
+    "landed": {
+      "state": "unknown"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r2.git",
+      "branch": "work/r2-1-unknown",
+      "tip": "72f8adcb0e244a3de3a6cd2c48cbf6d43a23f8c3",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r2-1-unknown.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r2"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r2-1-unknown-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r2-1-unknown-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r2.git",
+    "branch": "work/r2-1-unknown-other",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r2",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "9bdc6235ef6e6128b973b6fcfc4ce6315efb3955"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r2.git",
+      "branch": "work/r2-1-unknown-other",
+      "tip": "fb4d6e525a3dc075a447e409b75a5caceb335415",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "fb4d6e525a3dc075a447e409b75a5caceb335415"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r2"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r2-1-unknown-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r2-1-unknown-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r2.git",
+    "branch": "work/r2-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r2",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "50c1df0574a87d5ae7afe414738d9df3e52a75f5"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r2.git",
+      "branch": "work/r2-2-landed",
+      "tip": "2eb22c4cdd2309a552403cf79725a3e5f6ec6e4a",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "2eb22c4cdd2309a552403cf79725a3e5f6ec6e4a"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r2"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r2-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r2-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r3.git",
+    "branch": "work/r3-0-in-part",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r3",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r3-0-in-part",
+      "--repo",
+      "<fixture>/checkouts/r3"
+    ],
+    "landed": {
+      "state": "in-part",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "a1156dbe6cc89443f667aaaa0cb0409bf0dc43dd"
+      },
+      "unlanded": 1
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r3.git",
+      "branch": "work/r3-0-in-part",
+      "tip": "d78f89102c6b03a578f8efb0651eaade3ca93b09",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r3-0-in-part-more.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r3"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r3-0-in-part-67/clone"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r3-0-in-part-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r3-0-in-part-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r3.git",
+    "branch": "work/r3-1-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r3",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "be5f73aebaa8d3565c58d966f0b8feae4708fe5a"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r3.git",
+      "branch": "work/r3-1-landed",
+      "tip": "86e33c4047d8c699de2ed45147fb4c0617015653",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "86e33c4047d8c699de2ed45147fb4c0617015653"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r3"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r3-1-landed-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r3-1-landed-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r3.git",
+    "branch": "work/r3-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r3",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "877d8b9a163761713946e9c1de1c130d69f1f9eb"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r3.git",
+      "branch": "work/r3-2-landed",
+      "tip": "8b61d9ed0527ffbd2fcc3d4d2ac14bfc6775ab39",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "8b61d9ed0527ffbd2fcc3d4d2ac14bfc6775ab39"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r3"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r3-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r3-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r4.git",
+    "branch": "work/r4-0-retirable",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r4",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r4-0-retirable",
+      "--repo",
+      "<fixture>/checkouts/r4"
+    ],
+    "landed": {
+      "state": "unknown"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r4.git",
+      "branch": "work/r4-0-retirable",
+      "tip": "d40aa148a88d9268839ab69936834ef3effa6674",
+      "base": "main",
+      "proof": {
+        "kind": "content-identical",
+        "base_commit": "0d61b6a34d7e90210a69a369c7bc39eab61dc3ad"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r4"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r4-0-retirable-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r4-0-retirable-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r4.git",
+    "branch": "work/r4-0-retirable-twin",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r4",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "99172127dafd4d6c4e2cfe9f18ed1a02023e1c6f"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r4.git",
+      "branch": "work/r4-0-retirable-twin",
+      "tip": "6f848ee85f313f47e427e3cf4c9e75797dfb1d5b",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "6f848ee85f313f47e427e3cf4c9e75797dfb1d5b"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r4"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r4-0-retirable-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r4-0-retirable-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r4.git",
+    "branch": "work/r4-1-superseded",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r4",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r4-1-superseded",
+      "--repo",
+      "<fixture>/checkouts/r4"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "superseded-with-changes",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r4.git",
+      "branch": "work/r4-1-superseded",
+      "tip": "021bd25b7e147ea5cc9d13016cc9a72382808bbe",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": {
+        "branch": "work/r4-1-superseded-retry",
+        "landing": "c601f6a64a6472e32ce40ae3383ab68dcbd53a1b",
+        "labels": {}
+      },
+      "differing_paths": [
+        "src/work/r4-1-superseded.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r4"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r4-1-superseded-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r4-1-superseded-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r4.git",
+    "branch": "work/r4-1-superseded-retry",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r4",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "c601f6a64a6472e32ce40ae3383ab68dcbd53a1b"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r4.git",
+      "branch": "work/r4-1-superseded-retry",
+      "tip": "0792860b2833e2f5b6c4e2ba66c12cbd7d1c30ba",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "0792860b2833e2f5b6c4e2ba66c12cbd7d1c30ba"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r4"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r4-1-superseded-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r4-1-superseded-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r4.git",
+    "branch": "work/r4-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r4",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "f09d77e9f34f3aa3518993c6259aa2615a7b018d"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r4.git",
+      "branch": "work/r4-2-landed",
+      "tip": "5ce8f790cc0d25196517ec22c938cafb8abf9419",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "5ce8f790cc0d25196517ec22c938cafb8abf9419"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r4"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r4-2-landed-75/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r4-2-landed-75",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r5.git",
+    "branch": "work/r5-0-live",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r5",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r5-0-live",
+      "--repo",
+      "<fixture>/checkouts/r5"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": {
+      "token": "s-fixture-work-r5-0-live-67",
+      "worktree": "<fixture>/sessions/s-fixture-work-r5-0-live-67/worktree",
+      "holding": "owner-running"
+    },
+    "retirement": {
+      "class": "keep",
+      "reason": "held-by-live-session",
+      "cause": null,
+      "identity": "<fixture>/origins/r5.git",
+      "branch": "work/r5-0-live",
+      "tip": "6d98114f9f79e8e9627e14cfffa7671d3e98c1ca",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r5"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r5-0-live-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r5-0-live-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r5.git",
+    "branch": "work/r5-1-no",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r5",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r5-1-no",
+      "--repo",
+      "<fixture>/checkouts/r5"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r5.git",
+      "branch": "work/r5-1-no",
+      "tip": "f509b7e3e692ff22961dc59dc5844006cc4b03ee",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r5-1-no.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r5"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r5-1-no-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r5-1-no-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r5.git",
+    "branch": "work/r5-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r5",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "3ccecaef97c2eb1b08ef7ceee75f4e433eda3cc1"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r5.git",
+      "branch": "work/r5-2-landed",
+      "tip": "09c9833fc75b0649696cb83415e07be91572f0be",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "09c9833fc75b0649696cb83415e07be91572f0be"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r5"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r5-2-landed-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r5-2-landed-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r6.git",
+    "branch": "work/r6-0-unknown",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r6",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r6-0-unknown",
+      "--repo",
+      "<fixture>/checkouts/r6"
+    ],
+    "landed": {
+      "state": "unknown"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r6.git",
+      "branch": "work/r6-0-unknown",
+      "tip": "99d025f5362614c2ab4aee5df86d15fd2a6ae359",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r6-0-unknown.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r6"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r6-0-unknown-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r6-0-unknown-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r6.git",
+    "branch": "work/r6-0-unknown-other",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r6",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "569cc42f95360047be2864e0cd5bea75dc53ffa0"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r6.git",
+      "branch": "work/r6-0-unknown-other",
+      "tip": "b268e5d5d410052a8e784c94feb3c9d6f386f49f",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "b268e5d5d410052a8e784c94feb3c9d6f386f49f"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r6"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r6-0-unknown-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r6-0-unknown-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r6.git",
+    "branch": "work/r6-1-in-part",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r6",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r6-1-in-part",
+      "--repo",
+      "<fixture>/checkouts/r6"
+    ],
+    "landed": {
+      "state": "in-part",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "1e0da184c41f03aea6f8a5c686216c0b62e03dc4"
+      },
+      "unlanded": 1
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r6.git",
+      "branch": "work/r6-1-in-part",
+      "tip": "36301a0dfec9994590f6aaa96779a333d336b391",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r6-1-in-part-more.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r6"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r6-1-in-part-71/clone"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r6-1-in-part-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r6-1-in-part-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r6.git",
+    "branch": "work/r6-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r6",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "abd6ae70e0407e9024115f81cc9a02f1db8b1d34"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r6.git",
+      "branch": "work/r6-2-landed",
+      "tip": "26f9ff4d8e5a9d63f894faf6db5f3937711990c8",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "26f9ff4d8e5a9d63f894faf6db5f3937711990c8"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r6"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r6-2-landed-75/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r6-2-landed-75",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r7.git",
+    "branch": "work/r7-0-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r7",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "6f21da1ea39398efb525955be726c13d1d203fc8"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r7.git",
+      "branch": "work/r7-0-landed",
+      "tip": "9bc6a3ea2cbd15e5632ec19714cb3770e1687ecb",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "9bc6a3ea2cbd15e5632ec19714cb3770e1687ecb"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r7"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r7-0-landed-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r7-0-landed-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r7.git",
+    "branch": "work/r7-1-retirable",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r7",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r7-1-retirable",
+      "--repo",
+      "<fixture>/checkouts/r7"
+    ],
+    "landed": {
+      "state": "unknown"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r7.git",
+      "branch": "work/r7-1-retirable",
+      "tip": "0e6407416de496831cfb0b10e9afe26b1ec52fd4",
+      "base": "main",
+      "proof": {
+        "kind": "content-identical",
+        "base_commit": "9de9bf4a1837eb0152a819eeec9c199cc57c7a1f"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r7"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r7-1-retirable-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r7-1-retirable-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r7.git",
+    "branch": "work/r7-1-retirable-twin",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r7",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "c30d8a615aa107f5167838a5acfac3770740b0a8"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r7.git",
+      "branch": "work/r7-1-retirable-twin",
+      "tip": "a98b91b77f1084513fa3bbe65c968f3ce7cfa1d2",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "a98b91b77f1084513fa3bbe65c968f3ce7cfa1d2"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r7"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r7-1-retirable-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r7-1-retirable-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r7.git",
+    "branch": "work/r7-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r7",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "4cbd7b5a1891ed3965f2b8704afee41b2d7a9368"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r7.git",
+      "branch": "work/r7-2-landed",
+      "tip": "4f77899db380e5d68c4528fad76fbac9dacf28de",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "4f77899db380e5d68c4528fad76fbac9dacf28de"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r7"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r7-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r7-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r8.git",
+    "branch": "work/r8-0-superseded",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r8",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r8-0-superseded",
+      "--repo",
+      "<fixture>/checkouts/r8"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "superseded-with-changes",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r8.git",
+      "branch": "work/r8-0-superseded",
+      "tip": "8b6fee53ff28c1d31125f382b5e7fba18e62e851",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": {
+        "branch": "work/r8-0-superseded-retry",
+        "landing": "e05849ad0f859b8a590904fe8e81785ac4fc6865",
+        "labels": {}
+      },
+      "differing_paths": [
+        "src/work/r8-0-superseded.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r8"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r8-0-superseded-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r8-0-superseded-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r8.git",
+    "branch": "work/r8-0-superseded-retry",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r8",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "e05849ad0f859b8a590904fe8e81785ac4fc6865"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r8.git",
+      "branch": "work/r8-0-superseded-retry",
+      "tip": "b2a98ac22aff52006aa9496b327df4c3f7a3e750",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "b2a98ac22aff52006aa9496b327df4c3f7a3e750"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r8"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r8-0-superseded-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r8-0-superseded-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r8.git",
+    "branch": "work/r8-1-live",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r8",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r8-1-live",
+      "--repo",
+      "<fixture>/checkouts/r8"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": {
+      "token": "s-fixture-work-r8-1-live-71",
+      "worktree": "<fixture>/sessions/s-fixture-work-r8-1-live-71/worktree",
+      "holding": "owner-running"
+    },
+    "retirement": {
+      "class": "keep",
+      "reason": "held-by-live-session",
+      "cause": null,
+      "identity": "<fixture>/origins/r8.git",
+      "branch": "work/r8-1-live",
+      "tip": "a6e838b769606f86b6409fb581abcd4fea7a4726",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r8"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r8-1-live-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r8-1-live-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r8.git",
+    "branch": "work/r8-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r8",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "24653eb42535721dd1c67878a0d270f6965bc00d"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r8.git",
+      "branch": "work/r8-2-landed",
+      "tip": "5fe2a5accf4b1ce3ff630263e15cb392c77be0a9",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "5fe2a5accf4b1ce3ff630263e15cb392c77be0a9"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r8"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r8-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r8-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r9.git",
+    "branch": "work/r9-0-no",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r9",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r9-0-no",
+      "--repo",
+      "<fixture>/checkouts/r9"
+    ],
+    "landed": {
+      "state": "no"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r9.git",
+      "branch": "work/r9-0-no",
+      "tip": "ecf032d513463d20187771414e82077ff8d20fe5",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r9-0-no.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r9"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r9-0-no-67/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r9-0-no-67",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r9.git",
+    "branch": "work/r9-1-unknown",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r9",
+    "recover_command": [
+      "onevcs",
+      "publish-branch",
+      "work/r9-1-unknown",
+      "--repo",
+      "<fixture>/checkouts/r9"
+    ],
+    "landed": {
+      "state": "unknown"
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "keep",
+      "reason": "unmerged-unique-commits",
+      "cause": null,
+      "identity": "<fixture>/origins/r9.git",
+      "branch": "work/r9-1-unknown",
+      "tip": "3320c6850b82ba8ab0d32ba28d10d1c6adb690d2",
+      "base": "main",
+      "proof": null,
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [
+        "src/work/r9-1-unknown.txt"
+      ],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r9"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r9-1-unknown-69/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r9-1-unknown-69",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r9.git",
+    "branch": "work/r9-1-unknown-other",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r9",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "c45c10ef36d923aa93ea99a02522b5dfb92cff0b"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r9.git",
+      "branch": "work/r9-1-unknown-other",
+      "tip": "207fceeea7562a6bad6a8c70c399e705c045f807",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "207fceeea7562a6bad6a8c70c399e705c045f807"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r9"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r9-1-unknown-71/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r9-1-unknown-71",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  },
+  {
+    "identity": "<fixture>/origins/r9.git",
+    "branch": "work/r9-2-landed",
+    "base": "main",
+    "checkout": "<fixture>/checkouts/r9",
+    "recover_command": [],
+    "landed": {
+      "state": "yes",
+      "evidence": {
+        "tier": "recorded-landing",
+        "commit": "8ef01f2235a7cacc8be1e630f430ebd7e9aea69b"
+      }
+    },
+    "held_by": null,
+    "retirement": {
+      "class": "retirable",
+      "reason": null,
+      "cause": null,
+      "identity": "<fixture>/origins/r9.git",
+      "branch": "work/r9-2-landed",
+      "tip": "fc317b120e2c571bf8f4b2e1db3d74235cc251a2",
+      "base": "main",
+      "proof": {
+        "kind": "recorded-landing",
+        "commit": "fc317b120e2c571bf8f4b2e1db3d74235cc251a2"
+      },
+      "content_free_commits": [],
+      "superseded_by": null,
+      "differing_paths": [],
+      "holders": [
+        {
+          "kind": "checkout",
+          "location": "<fixture>/checkouts/r9"
+        },
+        {
+          "kind": "run-clone",
+          "location": "<fixture>/sessions/s-fixture-work-r9-2-landed-73/clone"
+        }
+      ]
+    },
+    "session": "s-fixture-work-r9-2-landed-73",
+    "labels": {
+      "launcher": "fixture-launcher-measured",
+      "run": "fixture-run"
+    }
+  }
+]

@@ -54,8 +54,6 @@ mod comparison;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod cost;
-#[cfg(unix)]
-mod recovery_workload;
 // Linux only: coverage is measured on Linux alone, so `cargo llvm-cov` is installed
 // there and nowhere else; it drives `scripts/coverage.sh` over a scratch crate.
 #[cfg(target_os = "linux")]
