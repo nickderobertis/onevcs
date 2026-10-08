@@ -830,6 +830,177 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     assert_ne!(moved[0]["tip"], original[0]["tip"]);
 }
 
+/// Every loose copy of `object` in any object store under this host's scratch root.
+fn loose_copies(root: &std::path::Path, object: &str) -> Vec<std::path::PathBuf> {
+    let (fan, rest) = object.split_at(2);
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            } else if path.ends_with(std::path::Path::new("objects").join(fan).join(rest)) {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// A fetch adds objects to a store, and a proof about objects that were already
+/// there cannot move with it — so a store that only grew keeps its proofs, which is
+/// what lets a repeat sweep after the deriving sweep fetched reuse what it proved.
+/// An object taken away can move one, and then the answer is git's again.
+#[test]
+fn a_store_that_only_grew_keeps_its_proofs_and_one_that_lost_an_object_asks_git() {
+    let fixture = Fixture::local(&local_direct());
+    // A base history deeper than the merge base reaches, so its root commit is read by
+    // the walk a proof caches and by nothing this report asks git afresh.
+    for step in 0..6 {
+        fixture.world.commit_file(
+            &fixture.checkout,
+            &format!("history-{step}.txt"),
+            "history\n",
+            &format!("chore: history {step}"),
+        );
+    }
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "origin", "main"]);
+    let branch = "feature/store-growth";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=growth"]);
+    fixture
+        .world
+        .commit_file(&worktree, "growth.txt", "work\n", "feat: growth work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    // Decision detail, because the full row's line statistics ask git afresh about
+    // the same history, and would see a missing object whatever the cache did.
+    let args = ["--detail", "decision", "--session", &token, "--all"];
+    let answered = |native: bool| {
+        let mut command = fixture.world.onevcs();
+        command.args(["recoverable", "--json"]).args(args);
+        if native {
+            // Any `GIT_*` override is a context the proof cache delegates to git.
+            command.env("GIT_NAMESPACE", "");
+        }
+        let output = command.output().expect("recoverable runs");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    };
+    let original = answered(false);
+    assert_eq!(original.0, Some(0), "{original:?}");
+    assert_eq!(original, answered(true), "cache must agree with native Git");
+
+    // The cached side of every comparison below runs under the counting shim, so it
+    // reads the proofs the counted runs before it wrote: the shim is another `git`
+    // program, and proofs are never shared across two.
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    let cached = || {
+        counting.clear();
+        let output = counting
+            .onevcs(&fixture.world)
+            .args(["recoverable", "--json"])
+            .args(args)
+            .output()
+            .expect("recoverable runs");
+        (
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            ),
+            counting.calls().len(),
+        )
+    };
+    let counted = || {
+        let (answer, calls) = cached();
+        assert_eq!(answer, original);
+        calls
+    };
+    let cold = {
+        let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+        counted()
+    };
+    let warm = counted();
+    assert!(
+        warm < cold,
+        "the premise: proofs are reused, cold {cold}, warm {warm}"
+    );
+
+    // Grow every store a proof was read from by an object nothing names.
+    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", branch]);
+    let tip = tip.trim();
+    let stores: Vec<std::path::PathBuf> = loose_copies(&fixture.world.path(""), tip)
+        .into_iter()
+        .map(|object| object.parent().unwrap().parent().unwrap().to_path_buf())
+        .collect();
+    assert!(!stores.is_empty(), "the premise: the tip is a loose object");
+    let unnamed = fixture.world.path("unnamed.txt");
+    std::fs::write(&unnamed, "an object no proof names\n").expect("new content");
+    for store in &stores {
+        // `objects/` of a `.git` directory: write through the repository it serves.
+        let repository = store.parent().unwrap();
+        fixture.world.git(
+            repository,
+            &["hash-object", "-w", &unnamed.to_string_lossy()],
+        );
+    }
+    let grown = counted();
+    assert!(
+        grown <= warm,
+        "a store that only grew must keep its proofs: warm {warm}, after growth {grown}"
+    );
+
+    // Take away an object the proofs read but none of them names: the history's
+    // root commit, which a walk from the tip reaches.
+    let root = fixture
+        .world
+        .git(&fixture.checkout, &["rev-list", "--max-parents=0", branch]);
+    let copies = loose_copies(&fixture.world.path(""), root.trim());
+    assert!(!copies.is_empty(), "the premise: the root commit is loose");
+    let aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = copies
+        .into_iter()
+        .map(|copy| {
+            let moved = copy.with_extension("aside");
+            std::fs::rename(&copy, &moved).expect("set the root aside");
+            (copy, moved)
+        })
+        .collect();
+    let native = answered(true);
+    assert_ne!(
+        native, original,
+        "the premise: git's answer moves without the root commit"
+    );
+    let (lost, asked) = cached();
+    assert_eq!(
+        lost, native,
+        "a store that lost an object must answer what git answers"
+    );
+    assert!(
+        asked > warm,
+        "the proofs that read the lost object were asked of git again: warm {warm}, now {asked}"
+    );
+    for (copy, moved) in &aside {
+        std::fs::rename(moved, copy).expect("put the root back");
+    }
+    assert_eq!(cached().0, original, "repair restores the report");
+    assert_eq!(
+        answered(false),
+        original,
+        "and so does a run without the shim"
+    );
+}
+
 #[test]
 fn a_rewriting_filter_driver_leaves_reused_proofs_equal_to_git() {
     // git-lfs installs a clean/smudge filter system-wide, so the proof cache admits
@@ -944,7 +1115,9 @@ fn a_rewriting_filter_driver_leaves_reused_proofs_equal_to_git() {
     .expect("renormalize");
     let proofs = fixture.world.home().join("cache/recoverable/v1/git");
     let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
-    let args = ["--detail", "full", "--session", &token, "--all"];
+    // Decision detail, because the full row's line statistics ask git afresh about
+    // the same history, and would see a missing object whatever the cache did.
+    let args = ["--detail", "decision", "--session", &token, "--all"];
     let renormalized = recoverable(&fixture, &args);
     let uncached = fixture
         .world

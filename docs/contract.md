@@ -4316,7 +4316,13 @@ config, attributes, layout and object-availability guards. Such entries store no
 semantic landing or retirement verdict and no mutable state.
 The object guard verifies each directly named tip/base/object argument by its
 content hash on every hit, plus object-store layout, availability and access
-metadata. It neither walks reachability nor hashes entire packs. Corruption
+metadata. A store's loose objects and packs may only grow: an entry records the
+generation of every store it was read from, and a hit requires each loose object
+and pack that generation listed to be present still with the same file identity,
+so a fetch that adds objects keeps reuse while a prune, repack, removal or
+in-place rewrite recomputes. Everything else in a store — its directory and
+`info/` (alternates, commit graphs) — must be unchanged. It neither walks
+reachability nor hashes entire packs. Corruption
 deeper in history that those directly named objects do not expose is outside
 that guard; an uncached Git read only detects it when it reads the affected
 object. Unsupported configurations or layouts delegate to Git.

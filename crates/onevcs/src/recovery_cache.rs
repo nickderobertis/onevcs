@@ -4,8 +4,9 @@
 //! session records are read on every query. Unsupported Git contexts use Git.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -20,10 +21,43 @@ struct ContextKey {
     borrowing: Option<PathBuf>,
 }
 
+/// The shape of an entry and of the key it is stored under. An entry of any other
+/// is recomputed.
+const VERSION: u32 = 4;
+
+/// What a repository's reads were answered from, beyond its configuration and
+/// layout: every object store it reads, by path, as this process found it.
+#[derive(Clone)]
+struct Context {
+    digest: String,
+    stores: Vec<(PathBuf, Store)>,
+}
+
+/// One object store, in the two parts a reused answer holds it to.
+///
+/// **What must not move** — the store directory, its `info/` (alternates, commit
+/// graphs) and anything else under it that is neither a loose object nor a pack — is
+/// part of the key. **What may only grow** — the loose objects and the packs — is a
+/// generation: adding an object cannot change what a query naming full object ids
+/// answers, since every object it reads is reachable from objects that were already
+/// there. Taking one away (a prune, a repack, a deleted or rewritten file) can, so an
+/// entry is reused only while every loose object and pack its generation listed is
+/// still there with the same identity.
+#[derive(Clone)]
+struct Store {
+    fixed: String,
+    held: Rc<BTreeSet<String>>,
+    generation: String,
+}
+
 thread_local! {
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static CONTEXTS: RefCell<HashMap<ContextKey, Option<String>>> = RefCell::new(HashMap::new());
-    static STORES: RefCell<HashMap<PathBuf, Option<String>>> = RefCell::new(HashMap::new());
+    static CONTEXTS: RefCell<HashMap<ContextKey, Option<Context>>> = RefCell::new(HashMap::new());
+    static STORES: RefCell<HashMap<PathBuf, Option<Store>>> = RefCell::new(HashMap::new());
+    /// Older generations this process has already held its stores to, and the answer.
+    static COVERED: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
+    /// Generations this process has already recorded a listing for.
+    static LISTED: RefCell<HashSet<(PathBuf, String)>> = RefCell::new(HashSet::new());
 }
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
@@ -58,6 +92,8 @@ pub(crate) fn clear() {
     crate::native_refs::clear();
     CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     STORES.with(|stores| stores.borrow_mut().clear());
+    COVERED.with(|covered| covered.borrow_mut().clear());
+    LISTED.with(|listed| listed.borrow_mut().clear());
 }
 
 /// An immutable Git query's successful bytes, bound to its full context and argv.
@@ -68,7 +104,29 @@ struct Entry {
     version: u32,
     key: String,
     answer: Answer,
+    /// The generation of every object store the answer was read from, in key order.
+    stores: Vec<Generation>,
     checksum: String,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Generation {
+    store: PathBuf,
+    generation: String,
+}
+
+/// The loose objects and packs one store held at one generation, so a later
+/// process can tell that its store has only grown since. One file per store,
+/// replaced by the newest generation an entry was written under; an entry of an
+/// older one then recomputes.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Listing {
+    version: u32,
+    store: PathBuf,
+    generation: String,
+    held: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,16 +152,26 @@ pub(crate) struct Query {
     repo: PathBuf,
     borrowing: Option<PathBuf>,
     objects: Vec<String>,
+    stores: Vec<(PathBuf, Store)>,
 }
 
 impl Query {
     pub(crate) fn read(&self) -> Option<git::Output> {
         let entry: Entry = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
-        if entry.version != 3
+        if entry.version != VERSION
             || entry.key != self.key
-            || entry.checksum != checksum(&entry.key, &entry.answer)
+            || entry.checksum != checksum(&entry.key, &entry.answer, &entry.stores)
+            || entry.stores.len() != self.stores.len()
         {
             return None;
+        }
+        for (recorded, (path, store)) in entry.stores.iter().zip(&self.stores) {
+            if recorded.store != *path
+                || (recorded.generation != store.generation
+                    && !self.covers(path, store, &recorded.generation))
+            {
+                return None;
+            }
         }
         crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
             let odb = repo.odb().ok()?;
@@ -139,6 +207,67 @@ impl Query {
             tree.len() == self.object_length && git::ObjectId::parse(tree).is_some()
         })
     }
+    /// Whether `store` still holds everything it held at `generation`.
+    fn covers(&self, path: &Path, store: &Store, generation: &str) -> bool {
+        let asked = (path.to_owned(), generation.to_owned());
+        if let Some(known) = COVERED.with(|covered| covered.borrow().get(&asked).copied()) {
+            return known;
+        }
+        let covered = self
+            .listing(path)
+            .filter(|listing| listing.generation == generation)
+            .is_some_and(|listing| listing.held.iter().all(|line| store.held.contains(line)));
+        COVERED.with(|known| known.borrow_mut().insert(asked, covered));
+        covered
+    }
+
+    /// The listing recorded for one store, where it is this format's, names this
+    /// store and is the generation its own lines digest to.
+    fn listing(&self, store: &Path) -> Option<Listing> {
+        let listing: Listing =
+            serde_json::from_slice(&std::fs::read(self.listing_path(store)?).ok()?).ok()?;
+        (listing.version == VERSION
+            && listing.store == store
+            && generation_of(listing.held.iter()) == listing.generation)
+            .then_some(listing)
+    }
+
+    fn listing_path(&self, store: &Path) -> Option<PathBuf> {
+        Some(self.path.parent()?.parent()?.join("stores").join(format!(
+            "{}.json",
+            crate::ids::digest(&store.to_string_lossy())
+        )))
+    }
+
+    /// Record each store's current generation, once per process, where the listing
+    /// there is of another.
+    fn list_stores(&self) {
+        for (path, store) in &self.stores {
+            let asked = (path.clone(), store.generation.clone());
+            if LISTED.with(|listed| listed.borrow().contains(&asked)) {
+                continue;
+            }
+            LISTED.with(|listed| listed.borrow_mut().insert(asked));
+            if self
+                .listing(path)
+                .is_some_and(|listing| listing.generation == store.generation)
+            {
+                continue;
+            }
+            let listing = Listing {
+                version: VERSION,
+                store: path.clone(),
+                generation: store.generation.clone(),
+                held: store.held.iter().cloned().collect(),
+            };
+            if let (Some(target), Ok(bytes)) =
+                (self.listing_path(path), serde_json::to_vec(&listing))
+            {
+                replace(&target, &store.generation, &bytes);
+            }
+        }
+    }
+
     pub(crate) fn write(&self, output: &git::Output) {
         if !output.stderr.is_empty() || !output.read_failures.is_empty() {
             return;
@@ -165,32 +294,57 @@ impl Query {
         } else {
             return;
         };
+        let stores: Vec<Generation> = self
+            .stores
+            .iter()
+            .map(|(path, store)| Generation {
+                store: path.clone(),
+                generation: store.generation.clone(),
+            })
+            .collect();
         let entry = Entry {
-            version: 3,
+            version: VERSION,
             key: self.key.clone(),
-            checksum: checksum(&self.key, &answer),
+            checksum: checksum(&self.key, &answer, &stores),
             answer,
-        };
-        let Some(parent) = self.path.parent() else {
-            return;
+            stores,
         };
         let Ok(bytes) = serde_json::to_vec(&entry) else {
             return;
         };
-        // Atomic replacement, with one temporary path per key/process/thread.
-        let staged = parent.join(format!(".{}.{}.tmp", self.key, crate::ids::unique()));
-        let _ = std::fs::create_dir_all(parent)
-            .and_then(|()| std::fs::write(&staged, bytes))
-            .and_then(|()| std::fs::rename(&staged, &self.path));
-        let _ = std::fs::remove_file(staged);
+        self.list_stores();
+        replace(&self.path, &self.key, &bytes);
     }
 }
 
-fn checksum(key: &str, answer: &Answer) -> String {
+/// Atomic replacement, with one temporary path per name/process/thread.
+fn replace(target: &Path, name: &str, bytes: &[u8]) {
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let staged = parent.join(format!(".{name}.{}.tmp", crate::ids::unique()));
+    let _ = std::fs::create_dir_all(parent)
+        .and_then(|()| std::fs::write(&staged, bytes))
+        .and_then(|()| std::fs::rename(&staged, target));
+    let _ = std::fs::remove_file(staged);
+}
+
+fn checksum(key: &str, answer: &Answer, stores: &[Generation]) -> String {
     crate::ids::digest(&format!(
-        "3\0{key}\0{}",
-        serde_json::to_string(answer).expect("cache answer")
+        "{VERSION}\0{key}\0{}\0{}",
+        serde_json::to_string(answer).expect("cache answer"),
+        serde_json::to_string(stores).expect("cache generations")
     ))
+}
+
+/// A generation is the digest of the sorted lines that list it.
+fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
+    let mut joined = String::new();
+    for line in held {
+        joined.push_str(line);
+        joined.push('\n');
+    }
+    crate::ids::digest(&joined)
 }
 
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
@@ -313,7 +467,9 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             })
             .clone()
     })?;
-    let key = crate::ids::digest(&serde_json::to_string(&(3, context, cwd, args, env)).ok()?);
+    let key = crate::ids::digest(
+        &serde_json::to_string(&(VERSION, &context.digest, cwd, args, env)).ok()?,
+    );
     Some(Query {
         path: crate::home::root()
             .ok()?
@@ -333,16 +489,19 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         repo: cwd.to_owned(),
         borrowing,
         objects,
+        stores: context.stores,
     })
 }
 
 /// Conservative guard for ordinary files-backend repositories and linked
 /// worktrees with local alternates. Graph overlays and external attributes
 /// delegate. Object-store layout and access metadata are captured once per
-/// query/store; each hit verifies its directly named objects by content hash.
-/// Unreadable inputs prevent reuse rather than hide work.
+/// query/store — the fixed part in the key, the loose objects and packs as a
+/// [`Store`] generation an entry may outgrow but not lose; each hit verifies its
+/// directly named objects by content hash. Unreadable inputs prevent reuse rather
+/// than hide work.
 #[cfg(unix)]
-fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<String> {
+fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
     let (directory, common) = crate::native_refs::layout(repo).or_else(|| {
         let directory = repo.join(".git");
         directory.is_dir().then(|| (directory.clone(), directory))
@@ -437,11 +596,11 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
         optional_file(&repo.join(".git"), &mut digest)?;
         snapshot(&directory, &mut digest, false)?;
     }
-    let mut visited = std::collections::BTreeSet::new();
-    object_stores(&common.join("objects"), &mut digest, &mut visited)?;
+    let mut stores = Vec::new();
+    object_stores(&common.join("objects"), &mut digest, &mut stores)?;
     if let Some(borrowing) = borrowing {
-        if !visited.contains(borrowing) {
-            object_stores(borrowing, &mut digest, &mut visited)?;
+        if !stores.iter().any(|(path, _)| path == borrowing) {
+            object_stores(borrowing, &mut digest, &mut stores)?;
         }
     }
     if content {
@@ -456,7 +615,10 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
     ] {
         optional_file(&path, &mut digest)?;
     }
-    Some(format!("{:x}", digest.finalize()))
+    Some(Context {
+        digest: format!("{:x}", digest.finalize()),
+        stores,
+    })
 }
 
 #[cfg(unix)]
@@ -528,24 +690,21 @@ fn semantics() -> Option<String> {
 fn object_stores(
     path: &Path,
     digest: &mut Sha256,
-    visited: &mut std::collections::BTreeSet<PathBuf>,
+    visited: &mut Vec<(PathBuf, Store)>,
 ) -> Option<()> {
     let canonical = std::fs::canonicalize(path).ok()?;
-    if canonical != path || !visited.insert(canonical.clone()) {
+    if canonical != path || visited.iter().any(|(seen, _)| *seen == canonical) {
         return None;
     }
     let store = STORES.with(|stores| {
         stores
             .borrow_mut()
             .entry(canonical.clone())
-            .or_insert_with(|| {
-                let mut digest = Sha256::new();
-                snapshot(&canonical, &mut digest, true)?;
-                Some(format!("{:x}", digest.finalize()))
-            })
+            .or_insert_with(|| read_store(&canonical))
             .clone()
     })?;
-    digest.update(store.as_bytes());
+    digest.update(store.fixed.as_bytes());
+    visited.push((canonical.clone(), store));
     if canonical.join("info/http-alternates").exists() {
         return None;
     }
@@ -568,8 +727,74 @@ fn object_stores(
     Some(())
 }
 
+/// One store's fixed part and its generation: every loose-object fan-out
+/// directory and `pack/` is listed as what may grow, everything else is fixed.
+#[cfg(unix)]
+fn read_store(root: &Path) -> Option<Store> {
+    let mut fixed = Sha256::new();
+    fixed.update(root.as_os_str().as_encoded_bytes());
+    directory_identity(root, &mut fixed)?;
+    let mut entries = std::fs::read_dir(root)
+        .ok()?
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let mut held = BTreeSet::new();
+    for entry in entries {
+        let name = entry.file_name();
+        let grows = name.to_str().is_some_and(|name| {
+            name == "pack"
+                || (name.len() == 2
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        });
+        if grows {
+            growable(root, &entry.path(), &mut held)?;
+        } else {
+            snapshot(&entry.path(), &mut fixed, true)?;
+        }
+    }
+    Some(Store {
+        fixed: format!("{:x}", fixed.finalize()),
+        generation: generation_of(held.iter()),
+        held: Rc::new(held),
+    })
+}
+
+/// List one loose-object directory or `pack/`, each path with its identity, so a
+/// file replaced or rewritten in place is a file that is gone.
+#[cfg(unix)]
+fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() {
+        return None;
+    }
+    let relative = path.strip_prefix(root).ok()?.to_str()?;
+    if relative.contains(['\0', '\n']) {
+        return None;
+    }
+    held.insert(format!(
+        "{relative}{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        if meta.is_dir() { "/" } else { "" },
+        meta.dev(),
+        meta.ino(),
+        meta.uid(),
+        meta.gid(),
+        if meta.is_dir() { 0 } else { meta.len() },
+        meta.mode(),
+    ));
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path).ok()? {
+            growable(root, &entry.ok()?.path(), held)?;
+        }
+    }
+    Some(())
+}
+
 #[cfg(not(unix))]
-fn context(_repo: &Path, _content: bool, _borrowing: Option<&Path>) -> Option<String> {
+fn context(_repo: &Path, _content: bool, _borrowing: Option<&Path>) -> Option<Context> {
     None
 }
 
@@ -627,6 +852,8 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
                             | "COMMIT_EDITMSG"
                             | "FETCH_HEAD"
                             | "ORIG_HEAD"
+                            // This crate's own lock beside a fetch, never read by git.
+                            | git::FETCH_LOCK
                     )
                 )
             {

@@ -860,9 +860,10 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let records = all()?;
     let open = OpenRoots::of(&records);
     let work = RecordWork::read(&records)?;
+    let proofs = RecordProofs::of(&work);
     let mut holders = Vec::new();
     for record in &records {
-        if record.identity == resolution.key && !spent(record, &open, &work)? {
+        if record.identity == resolution.key && !spent(record, &open, &proofs)? {
             holders.push(SessionHolder::from(record.clone()));
         }
     }
@@ -888,16 +889,21 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
     let open = OpenRoots::of(listed);
     let work = RecordWork::read(listed)?;
+    let proofs = RecordProofs::of(&work);
     let mut records = Vec::new();
     // The proof is recovery's, so it reuses recovery's immutable answers: a repeat
     // sweep over unchanged branches asks git no ancestry or history question again.
-    crate::recovery_cache::scope(|| -> Result<()> {
-        for record in listed {
-            if git::memoized(|| spent(record, &open, &work))? {
-                records.push(record.clone());
+    // One memo for the whole pass, since nothing in it writes: every record of an
+    // identity reads the same base and the same places.
+    crate::recovery_cache::scope(|| {
+        git::memoized(|| -> Result<()> {
+            for record in listed {
+                if spent(record, &open, &proofs)? {
+                    records.push(record.clone());
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     })?;
     Ok(records)
 }
@@ -941,10 +947,10 @@ pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
 /// question walks every process on the host, and the branch question runs git in the
 /// clone — so the cheapest answer that retains is the one that runs on every record,
 /// and the dearest runs only on the records the other two have already given up on.
-fn spent(record: &Record, open: &OpenRoots, work: &RecordWork<'_>) -> Result<bool> {
+fn spent(record: &Record, open: &OpenRoots, proofs: &RecordProofs<'_>) -> Result<bool> {
     Ok(!record.owner_is_running()
         && (!record.tree_is_its_own_of(open) || processes::holding(&record.run_root).is_empty())
-        && !holds_unpublished_work(record, open, work)?)
+        && !holds_unpublished_work(record, open, proofs)?)
 }
 
 /// Inputs shared with recovery's semantic retirement proof, read once for a pass.
@@ -968,6 +974,44 @@ impl<'a> RecordWork<'a> {
     }
 }
 
+/// One offline census per identity for a pass, read the first time a record of that
+/// identity reaches the branch question and shared by every record after it: the
+/// base, the origin and the places a copy can be are the identity's, not the
+/// record's. A census that could not be read is remembered as unreadable, which
+/// retains every record that asks it.
+struct RecordProofs<'w> {
+    work: &'w RecordWork<'w>,
+    censuses: std::cell::RefCell<BTreeMap<String, Option<crate::retire::Census<'w>>>>,
+}
+
+impl<'w> RecordProofs<'w> {
+    fn of(work: &'w RecordWork<'w>) -> Self {
+        Self {
+            work,
+            censuses: std::cell::RefCell::default(),
+        }
+    }
+
+    /// Whether the semantic proof leaves work behind this record; anything short of
+    /// a confident *none* is work.
+    fn has_work(&self, record: &Record) -> bool {
+        let mut censuses = self.censuses.borrow_mut();
+        let census = censuses.entry(record.identity.clone()).or_insert_with(|| {
+            crate::retire::offline_census(
+                &self.work.registry,
+                &record.identity,
+                self.work.records,
+                &self.work.streams,
+                &self.work.trailers,
+            )
+            .ok()
+        });
+        census
+            .as_ref()
+            .is_none_or(|census| crate::retire::record_has_work(census, record).unwrap_or(true))
+    }
+}
+
 /// Keep the record until the semantic proof recovery uses confidently says no
 /// work remains. Pushing a preserved tip to origin does not prove it landed.
 /// Missing disposable clones are allowed; unreadable evidence always retains.
@@ -975,16 +1019,9 @@ impl<'a> RecordWork<'a> {
 fn holds_unpublished_work(
     record: &Record,
     open: &OpenRoots,
-    work: &RecordWork<'_>,
+    proofs: &RecordProofs<'_>,
 ) -> Result<bool> {
-    let carried = crate::retire::record_has_work(
-        &work.registry,
-        record,
-        work.records,
-        &work.streams,
-        &work.trailers,
-    )
-    .unwrap_or(true);
+    let carried = proofs.has_work(record);
     // The worktree only while it is this session's: a record that closed on a slot a
     // later session works in would otherwise read that session's uncommitted work as
     // its own, and retain itself over a tree it has no claim to.

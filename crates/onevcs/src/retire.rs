@@ -2849,24 +2849,30 @@ pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Reti
         .map(|classified| classified.retirement)
 }
 
-/// Sweep asks the same offline proof as recovery. A recorded preservation is
-/// still work to judge when its local refs are gone; absence is not a landing.
-pub(crate) fn record_has_work(
-    registry: &Registry,
-    record: &Record,
-    sessions: &[Record],
-    streams: &[status::Recorded],
-    trailers: &Trailers,
-) -> Result<bool> {
-    let census = Census::read(
+/// The offline census sweep judges one identity's records against: the same read
+/// recovery makes, made once per identity for a whole pass rather than once per record.
+pub(crate) fn offline_census<'a>(
+    registry: &'a Registry,
+    identity: &str,
+    sessions: &'a [Record],
+    streams: &'a [status::Recorded],
+    trailers: &'a Trailers,
+) -> Result<Census<'a>> {
+    Census::read(
         registry,
-        &record.identity,
+        identity,
         sessions,
         streams,
         trailers,
         Reach::Offline,
         None,
-    )?;
+    )
+}
+
+/// Sweep asks the same offline proof as recovery. A recorded preservation is
+/// still work to judge when its local refs are gone; absence is not a landing.
+pub(crate) fn record_has_work(census: &Census<'_>, record: &Record) -> Result<bool> {
+    let streams = census.streams;
     let ask = Ask::offline();
     let mut copies = census.copies(&record.branch, &ask);
     if copies.copies.is_empty() && copies.unreadable.is_empty() {
