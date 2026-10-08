@@ -4323,7 +4323,10 @@ object. Unsupported configurations or layouts delegate to Git.
 
 Sweep keeps a closed session's record and labels while its branch holds unlanded
 work, even when preserve pushed its tip to origin and its disposable checkout is
-gone. The semantic landing/retirement proof recovery uses is the authority:
+gone, including when only the preserved origin copy remains. Sweep judges the
+recorded preserved tip through that same proof; missing local refs are not a
+landing and do not expand recovery's rows. The semantic landing/retirement proof
+recovery uses is the authority:
 no, unknown, in-part, superseded-with-changes and unreadable evidence retain.
 Deletion requires confident proof no work remains plus existing age, owner,
 occupancy and dirtiness protections. Pool-slot ownership rules remain intact.

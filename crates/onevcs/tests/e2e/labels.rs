@@ -577,6 +577,88 @@ fn sweep_retains_labels_for_preserved_unlanded_work_after_the_clone_is_gone() {
 }
 
 #[test]
+fn sweep_retains_preserved_origin_only_work_without_expanding_recovery_rows() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/origin-only";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=origin-only"]);
+    fixture
+        .world
+        .commit_file(&worktree, "owed.txt", "owed\n", "feat: origin work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    fixture
+        .world
+        .onevcs()
+        .args(["preserve", branch, "--repo"])
+        .arg(&fixture.checkout)
+        .assert()
+        .success();
+    let stored = record(&fixture, &token);
+    let clone = std::path::Path::new(stored["clone"].as_str().expect("clone path"));
+    if clone.exists() {
+        std::fs::remove_dir_all(clone).expect("remove disposable clone");
+    }
+    let root = std::path::Path::new(stored["run_root"].as_str().expect("run root"));
+    if root.exists() {
+        std::fs::remove_dir_all(root).expect("remove disposable worktree root");
+    }
+    fixture.world.git(&fixture.checkout, &["worktree", "prune"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["branch", "-D", branch]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
+    );
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{token}.json"));
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 3600);
+    filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old)).expect("age record");
+    let config = fixture.checkout.join(".git/config");
+    let original = std::fs::read(&config).expect("original Git configuration");
+    std::fs::write(&config, "[malformed\n").expect("make evidence unreadable");
+    fixture
+        .world
+        .onevcs()
+        .args(["sweep", "--min-age-hours", "4"])
+        .assert()
+        .success();
+    assert!(path.is_file(), "unreadable evidence must retain the record");
+    std::fs::write(&config, original).expect("repair Git evidence");
+    assert!(recoverable(
+        &fixture,
+        &["--label", "launcher=origin-only", "--detail", "decision"]
+    )
+    .is_empty());
+    fixture
+        .world
+        .onevcs()
+        .args(["sweep", "--min-age-hours", "4"])
+        .assert()
+        .success();
+    assert!(
+        path.is_file(),
+        "origin-only unlanded work must retain its session"
+    );
+    assert_eq!(
+        record(&fixture, &token)["labels"],
+        serde_json::json!({"launcher":"origin-only"})
+    );
+    assert!(recoverable(
+        &fixture,
+        &["--label", "launcher=origin-only", "--detail", "decision"]
+    )
+    .is_empty());
+}
+
+#[test]
 fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     let fixture = Fixture::local(&local_direct());
     let branch = "feature/cache-context";

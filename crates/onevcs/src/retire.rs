@@ -2849,8 +2849,8 @@ pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Reti
         .map(|classified| classified.retirement)
 }
 
-/// Sweep asks the same offline proof as recovery. No readable copy anywhere is
-/// also a confident absence; an unreadable copy cannot establish that absence.
+/// Sweep asks the same offline proof as recovery. A recorded preservation is
+/// still work to judge when its local refs are gone; absence is not a landing.
 pub(crate) fn record_has_work(
     registry: &Registry,
     record: &Record,
@@ -2868,9 +2868,20 @@ pub(crate) fn record_has_work(
         None,
     )?;
     let ask = Ask::offline();
-    let copies = census.copies(&record.branch, &ask);
+    let mut copies = census.copies(&record.branch, &ask);
     if copies.copies.is_empty() && copies.unreadable.is_empty() {
-        return Ok(false);
+        let Some(preserved) = status::preserved_for(
+            streams,
+            &record.identity,
+            &record.branch,
+            Some(&record.token),
+        ) else {
+            return Ok(false);
+        };
+        copies.copies.push(Copy {
+            at: Holding::Origin,
+            tip: preserved.commit,
+        });
     }
     Ok(census
         .classify(&record.branch, copies, &ask)?

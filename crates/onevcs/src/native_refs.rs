@@ -17,10 +17,12 @@ struct Snapshot {
     common: PathBuf,
 }
 thread_local! {
+    static OBJECT_REPOSITORIES: RefCell<HashMap<(PathBuf, Option<PathBuf>), git2::Repository>> = RefCell::new(HashMap::new());
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
     SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().clear());
+    OBJECT_REPOSITORIES.with(|repositories| repositories.borrow_mut().clear());
 }
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
@@ -199,31 +201,59 @@ pub(crate) fn remote_tips(repo: &Path, remote: &str) -> Option<BTreeSet<String>>
         )
     })
 }
-fn object_repository(at: &Path, env: &[(String, String)]) -> Option<git2::Repository> {
+/// Open each object context once within a read, keeping borrowed stores separate.
+/// Every cached proof still hashes its directly named objects on every hit.
+pub(crate) fn with_objects<T>(
+    at: &Path,
+    borrowing: Option<&Path>,
+    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+) -> Option<T> {
+    OBJECT_REPOSITORIES.with(|repositories| {
+        let mut repositories = repositories.borrow_mut();
+        let key = (at.to_owned(), borrowing.map(Path::to_owned));
+        if !repositories.contains_key(&key) {
+            let repository = git2::Repository::open(at).ok()?;
+            if let Some(path) = borrowing {
+                repository
+                    .odb()
+                    .ok()?
+                    .add_disk_alternate(path.to_str()?)
+                    .ok()?;
+            }
+            repositories.insert(key.clone(), repository);
+        }
+        choose(repositories.get(&key)?)
+    })
+}
+fn with_object_repository<T>(
+    at: &Path,
+    env: &[(String, String)],
+    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+) -> Option<T> {
     read(at, |_| Some(()))?;
-    let repository = git2::Repository::open(at).ok()?;
-    match env {
-        [] => (),
+    let borrowing = match env {
+        [] => None,
         [(name, path)]
             if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
                 && Path::new(path).is_absolute()
                 && !path.contains([':', '"', '\n']) =>
         {
-            repository.odb().ok()?.add_disk_alternate(path).ok()?;
+            Some(Path::new(path))
         }
         _ => return None,
-    }
-    Some(repository)
+    };
+    with_objects(at, borrowing, choose)
 }
 pub(crate) fn has_commit(at: &Path, env: &[(String, String)], name: &str) -> Option<bool> {
     crate::git::ObjectId::parse(name)?;
-    let repository = object_repository(at, env)?;
-    let oid = git2::Oid::from_str(name).ok()?;
-    let present = repository
-        .find_object(oid, None)
-        .and_then(|object| object.peel_to_commit())
-        .is_ok();
-    Some(present)
+    with_object_repository(at, env, |repository| {
+        let oid = git2::Oid::from_str(name).ok()?;
+        let present = repository
+            .find_object(oid, None)
+            .and_then(|object| object.peel_to_commit())
+            .is_ok();
+        Some(present)
+    })
 }
 pub(crate) fn is_ancestor(
     at: &Path,
@@ -233,24 +263,25 @@ pub(crate) fn is_ancestor(
 ) -> Option<bool> {
     crate::git::ObjectId::parse(ancestor)?;
     crate::git::ObjectId::parse(descendant)?;
-    let repository = object_repository(at, env)?;
-    let ancestor = repository
-        .find_object(git2::Oid::from_str(ancestor).ok()?, None)
-        .ok()?
-        .peel_to_commit()
-        .ok()?
-        .id();
-    let descendant = repository
-        .find_object(git2::Oid::from_str(descendant).ok()?, None)
-        .ok()?
-        .peel_to_commit()
-        .ok()?
-        .id();
-    if ancestor == descendant {
-        Some(true)
-    } else {
-        repository.graph_descendant_of(descendant, ancestor).ok()
-    }
+    with_object_repository(at, env, |repository| {
+        let ancestor = repository
+            .find_object(git2::Oid::from_str(ancestor).ok()?, None)
+            .ok()?
+            .peel_to_commit()
+            .ok()?
+            .id();
+        let descendant = repository
+            .find_object(git2::Oid::from_str(descendant).ok()?, None)
+            .ok()?
+            .peel_to_commit()
+            .ok()?
+            .id();
+        if ancestor == descendant {
+            Some(true)
+        } else {
+            repository.graph_descendant_of(descendant, ancestor).ok()
+        }
+    })
 }
 
 fn snapshot(at: &Path) -> Option<Snapshot> {
@@ -481,6 +512,43 @@ mod tests {
             .trim()
             .to_owned()
     }
+    #[test]
+    fn borrowed_object_contexts_do_not_leak_and_clear_observes_removal() {
+        if isolate("borrowed_object_contexts_do_not_leak_and_clear_observes_removal") {
+            return;
+        }
+        let source = fixture("sha1");
+        let destination = fixture("sha1");
+        let oid = git(source.path(), &["hash-object", "-w", "--stdin"]);
+        let store = source.path().join(".git/objects");
+        let read = |borrowed: Option<&Path>| {
+            with_objects(destination.path(), borrowed, |repo| {
+                let odb = repo.odb().ok()?;
+                Some(odb.exists(git2::Oid::from_str(&oid).ok()?))
+            })
+        };
+        clear();
+        assert_eq!(read(Some(&store)), Some(true));
+        assert_eq!(read(None), Some(false));
+        let raw = std::process::Command::new(crate::git::git_program())
+            .current_dir(destination.path())
+            .args(["cat-file", "-e", &oid])
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &store)
+            .output()
+            .unwrap();
+        assert!(raw.status.success());
+        std::fs::remove_file(store.join(&oid[..2]).join(&oid[2..])).unwrap();
+        clear();
+        assert_eq!(read(Some(&store)), Some(false));
+        let raw = std::process::Command::new(crate::git::git_program())
+            .current_dir(destination.path())
+            .args(["cat-file", "-e", &oid])
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &store)
+            .output()
+            .unwrap();
+        assert!(!raw.status.success());
+    }
+
     fn fixture(format: &str) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         git(

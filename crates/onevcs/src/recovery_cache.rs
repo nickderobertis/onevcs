@@ -92,18 +92,17 @@ impl Query {
         {
             return None;
         }
-        let repo = git2::Repository::open(&self.repo).ok()?;
-        let odb = repo.odb().ok()?;
-        if let Some(borrowing) = &self.borrowing {
-            odb.add_disk_alternate(borrowing.to_str()?).ok()?;
-        }
-        for name in &self.objects {
-            let oid = git2::Oid::from_str(name).ok()?;
-            let object = odb.read(oid).ok()?;
-            if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
-                return None;
+        crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
+            let odb = repo.odb().ok()?;
+            for name in &self.objects {
+                let oid = git2::Oid::from_str(name).ok()?;
+                let object = odb.read(oid).ok()?;
+                if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
+                    return None;
+                }
             }
-        }
+            Some(())
+        })?;
         let (status, stdout) = match entry.answer {
             Answer::Success { stdout } => (0, stdout),
             Answer::Different if self.kind == QueryKind::Difference => (1, String::new()),
