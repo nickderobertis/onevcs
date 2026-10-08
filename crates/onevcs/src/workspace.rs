@@ -2993,8 +2993,10 @@ fn reclaim(runs: &Path) -> Result<()> {
     reclaim_race::after_snapshot();
     // Newest first, by when the directory was last written: a session token is a
     // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
-    // three rather than the three somebody is most likely to reach for.
-    let mut holding_work: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    // three rather than the three somebody is most likely to reach for. Each is kept
+    // with its exclusive lease, held until it is removed or the walk is done with it,
+    // so what [`abandoned`] decided is still true when the retention bound acts on it.
+    let mut holding_work: Vec<(std::time::SystemTime, PathBuf, lock::Guard)> = Vec::new();
     for entry in entries.flatten() {
         let run_root = entry.path();
         if !run_root.is_dir() {
@@ -3036,17 +3038,13 @@ fn reclaim(runs: &Path) -> Result<()> {
             let written = std::fs::metadata(&run_root)
                 .and_then(|meta| meta.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            holding_work.push((written, run_root));
+            holding_work.push((written, run_root, exclusive));
         }
     }
-    holding_work.sort_by_key(|(written, _)| std::cmp::Reverse(*written));
-    for (_, reclaimed) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
-        // Asked again rather than carried from the walk: the lease taken there was
-        // released, and what was abandoned then may have been adopted since.
-        if let Some(exclusive) = abandoned(&reclaimed)? {
-            let _ = std::fs::remove_dir_all(&reclaimed);
-            drop(exclusive);
-        }
+    holding_work.sort_by_key(|(written, _, _)| std::cmp::Reverse(*written));
+    for (_, reclaimed, exclusive) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
+        let _ = std::fs::remove_dir_all(&reclaimed);
+        drop(exclusive);
     }
     Ok(())
 }
@@ -3217,17 +3215,17 @@ mod reclaim_race {
             .expect("B reads which sessions are open, then holds");
 
         let a = opened();
-        let dependency = a.worktree.join("H.md");
-        std::fs::write(&dependency, "the work A was handed\n").expect("A works in its tree");
+        let handed = a.worktree.join("H.md");
+        std::fs::write(&handed, "the work A was handed\n").expect("A works in its tree");
 
         release.send(()).expect("B is holding");
         let b = b.join().expect("B's open does not panic");
 
         assert_ne!(a.token, b.token);
         assert!(
-            dependency.is_file(),
+            handed.is_file(),
             "B's open reclaimed the run root of A, a session open beside it: {} is gone",
-            dependency.display()
+            handed.display()
         );
         assert!(b.worktree.is_dir(), "B opened into its own worktree");
     }
