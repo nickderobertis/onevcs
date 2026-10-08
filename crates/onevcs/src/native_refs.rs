@@ -13,7 +13,9 @@ struct Snapshot {
     symbolic: BTreeMap<String, String>,
     worktrees: Vec<(PathBuf, Option<String>)>,
     objects: PathBuf,
+    #[cfg(unix)]
     directory: PathBuf,
+    #[cfg(unix)]
     common: PathBuf,
 }
 thread_local! {
@@ -43,11 +45,13 @@ pub(crate) fn is_repo(repo: &Path) -> Option<bool> {
 pub(crate) fn objects_dir(repo: &Path) -> Option<PathBuf> {
     read(repo, |snapshot| Some(snapshot.objects.clone()))
 }
+#[cfg(unix)]
 pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
     read(repo, |snapshot| {
         Some((snapshot.directory.clone(), snapshot.common.clone()))
     })
 }
+#[cfg(unix)]
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
         let config = snapshot.repository.config().ok()?;
@@ -445,7 +449,9 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         symbolic,
         worktrees,
         objects: common.join("objects"),
+        #[cfg(unix)]
         directory,
+        #[cfg(unix)]
         common,
     })
 }

@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
-use assert_cmd::cargo::CommandCargoExt;
 use onevcs_testing::recovery::{build, Class, Fixture, Scale};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -31,12 +30,8 @@ fn milliseconds(start: Instant) -> u64 {
         .max(1)
 }
 fn binary() -> std::ffi::OsString {
-    std::env::var_os("ONEVCS_RECOVERY_BINARY").unwrap_or_else(|| {
-        std::process::Command::cargo_bin("onevcs")
-            .expect("real binary")
-            .get_program()
-            .to_owned()
-    })
+    std::env::var_os("ONEVCS_RECOVERY_BINARY")
+        .unwrap_or_else(|| assert_cmd::cargo::cargo_bin("onevcs").into_os_string())
 }
 fn query(
     fixture: &Fixture,
