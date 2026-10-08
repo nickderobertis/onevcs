@@ -245,6 +245,23 @@ impl Api {
     }
 }
 
+/// The cursor of a connection's next page: `Ok(None)` on its last page. A page
+/// that says another follows but names no cursor for it is refused rather than
+/// followed from the start again.
+pub fn next_page(page: &Value) -> Result<Option<Value>, Status> {
+    match page
+        .pointer("/pageInfo/hasNextPage")
+        .and_then(Value::as_bool)
+    {
+        Some(false) => Ok(None),
+        Some(true) => match page.pointer("/pageInfo/endCursor").and_then(Value::as_str) {
+            Some(cursor) if !cursor.is_empty() => Ok(Some(Value::String(cursor.to_owned()))),
+            _ => Err(Status::OtherError),
+        },
+        None => Err(Status::OtherError),
+    }
+}
+
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -278,6 +295,21 @@ fn classify_graphql(errors: &[Value]) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_next_page_without_a_cursor_is_refused() {
+        let page = |info: Value| json!({ "pageInfo": info });
+        assert_eq!(next_page(&page(json!({ "hasNextPage": false }))), Ok(None));
+        assert_eq!(
+            next_page(&page(json!({ "hasNextPage": true, "endCursor": "c2" }))),
+            Ok(Some(json!("c2")))
+        );
+        assert_eq!(
+            next_page(&page(json!({ "hasNextPage": true, "endCursor": null }))),
+            Err(Status::OtherError)
+        );
+        assert_eq!(next_page(&json!({})), Err(Status::OtherError));
+    }
 
     #[test]
     fn refusals_map_onto_the_vocabulary() {

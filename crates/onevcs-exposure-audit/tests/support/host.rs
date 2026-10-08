@@ -70,6 +70,8 @@ pub struct Repo {
     pub forbid_issues: bool,
     /// Answer this repository's change-request reads with a quota refusal.
     pub rate_limit_pulls: bool,
+    /// Answer this repository's issue pages claiming a next page with no cursor.
+    pub broken_cursor: bool,
     /// Root manifests, by file name, for a private repository.
     pub manifests: BTreeMap<String, String>,
 }
@@ -87,6 +89,7 @@ impl Repo {
             pulls: Vec::new(),
             forbid_issues: false,
             rate_limit_pulls: false,
+            broken_cursor: false,
             manifests: BTreeMap::new(),
         }
     }
@@ -377,6 +380,9 @@ fn respond(
             let key = if pull { "pullRequests" } else { "issues" };
             let mut repository = json!({ "hasIssuesEnabled": repo.issues_enabled });
             repository[key] = page_of(all, &vars["cursor"]);
+            if repo.broken_cursor && !pull {
+                repository[key]["pageInfo"] = json!({ "hasNextPage": true, "endCursor": null });
+            }
             data(json!({ "rateLimit": { "cost": 1 }, "repository": repository }))
         }
         "More" => {

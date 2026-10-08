@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::github::{Api, Quota};
+use crate::github::{next_page, Api, Quota};
 use crate::gitscan::{self, GitStats, Sinks};
 use crate::ids::{BoardId, Login, RepoId, Token};
 use crate::items::{BoardVisibility, ItemStats, Walker};
@@ -201,23 +201,11 @@ fn list_public(api: &Api, owner: &Login, cutoff: time::Date) -> Result<Listing, 
             }
             listing.repos.push(pushed(node, cutoff));
         }
-        match next_cursor(page) {
+        match next_page(page)? {
             Some(next) => cursor = next,
             None => return Ok(listing),
         }
     }
-}
-
-fn next_cursor(page: &Value) -> Option<Value> {
-    (page
-        .pointer("/pageInfo/hasNextPage")
-        .and_then(Value::as_bool)
-        == Some(true))
-    .then(|| {
-        page.pointer("/pageInfo/endCursor")
-            .cloned()
-            .unwrap_or(Value::Null)
-    })
 }
 
 /// Every private repository the credential can list.
@@ -238,7 +226,7 @@ fn list_private(api: &Api) -> Result<Vec<RepoId>, Status> {
                 .filter_map(|node| node.get("nameWithOwner").and_then(Value::as_str))
                 .filter_map(RepoId::parse),
         );
-        match next_cursor(page) {
+        match next_page(page)? {
             Some(next) => cursor = next,
             None => return Ok(out),
         }

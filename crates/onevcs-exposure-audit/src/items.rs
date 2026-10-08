@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::github::Api;
+use crate::github::{next_page, Api};
 use crate::ids::{BoardId, RepoId, Token};
 use crate::rows::{narrowed, snippet, ItemKind, ItemRow, Persistence, Survey};
 use crate::status::Status;
@@ -179,18 +179,26 @@ impl<'a> Walker<'a> {
         connection: &str,
         fields: &str,
         page: &Value,
+        each: impl FnMut(&mut Self, &Value),
+    ) -> Status {
+        match next_page(page) {
+            Ok(Some(cursor)) => self.follow(owner_id, on_type, connection, fields, cursor, each),
+            Ok(None) => Status::Scanned,
+            Err(refused) => refused,
+        }
+    }
+
+    /// Read a connection of the node `owner_id` from `cursor` (`null` for its
+    /// start) to its last page, handing each node to `each`.
+    fn follow(
+        &mut self,
+        owner_id: &str,
+        on_type: &str,
+        connection: &str,
+        fields: &str,
+        mut cursor: Value,
         mut each: impl FnMut(&mut Self, &Value),
     ) -> Status {
-        let mut cursor = match page
-            .pointer("/pageInfo/hasNextPage")
-            .and_then(Value::as_bool)
-        {
-            Some(true) => page
-                .pointer("/pageInfo/endCursor")
-                .cloned()
-                .unwrap_or(Value::Null),
-            _ => return Status::Scanned,
-        };
         let (name, args) = connection
             .split_once('(')
             .map_or((connection, ""), |(n, a)| (n, a.trim_end_matches(')')));
@@ -221,17 +229,10 @@ impl<'a> Walker<'a> {
             {
                 each(self, node);
             }
-            match conn
-                .pointer("/pageInfo/hasNextPage")
-                .and_then(Value::as_bool)
-            {
-                Some(true) => {
-                    cursor = conn
-                        .pointer("/pageInfo/endCursor")
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                }
-                _ => return Status::Scanned,
+            match next_page(conn) {
+                Ok(Some(next)) => cursor = next,
+                Ok(None) => return Status::Scanned,
+                Err(refused) => return refused,
             }
         }
     }
@@ -343,17 +344,10 @@ impl<'a> Walker<'a> {
                     .combine(self.renames(issue, &place, "Issue"))
                     .combine(self.comments(issue, &place, "Issue", ItemKind::IssueComment));
             }
-            match page
-                .pointer("/pageInfo/hasNextPage")
-                .and_then(Value::as_bool)
-            {
-                Some(true) => {
-                    cursor = page
-                        .pointer("/pageInfo/endCursor")
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                }
-                _ => return status,
+            match next_page(page) {
+                Ok(Some(next)) => cursor = next,
+                Ok(None) => return status,
+                Err(refused) => return status.combine(refused),
             }
         }
     }
@@ -396,17 +390,10 @@ impl<'a> Walker<'a> {
                     ))
                     .combine(self.reviews(pull, &place));
             }
-            match page
-                .pointer("/pageInfo/hasNextPage")
-                .and_then(Value::as_bool)
-            {
-                Some(true) => {
-                    cursor = page
-                        .pointer("/pageInfo/endCursor")
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                }
-                _ => return status,
+            match next_page(page) {
+                Ok(Some(next)) => cursor = next,
+                Ok(None) => return status,
+                Err(refused) => return status.combine(refused),
             }
         }
     }
@@ -595,17 +582,15 @@ impl<'a> Walker<'a> {
             {
                 self.board_item(item, audited, &mut issues, &mut change_requests);
             }
-            match page
-                .pointer("/pageInfo/hasNextPage")
-                .and_then(Value::as_bool)
-            {
-                Some(true) => {
-                    cursor = page
-                        .pointer("/pageInfo/endCursor")
-                        .cloned()
-                        .unwrap_or(Value::Null)
+            match next_page(page) {
+                Ok(Some(next)) => cursor = next,
+                Ok(None) => break,
+                Err(refused) => {
+                    return BoardItems {
+                        visibility: BoardVisibility::Public,
+                        ..failed(refused)
+                    }
                 }
-                _ => break,
             }
         }
         let edits = self.edits();
@@ -703,7 +688,7 @@ impl<'a> Walker<'a> {
                     // Its comments are read with the rest of that repository's.
                     return;
                 }
-                let more = self.rest_of(
+                let more = self.follow(
                     content
                         .get("id")
                         .and_then(Value::as_str)
@@ -711,7 +696,7 @@ impl<'a> Walker<'a> {
                     kind,
                     "comments",
                     COMMENT,
-                    &json!({ "pageInfo": { "hasNextPage": true, "endCursor": null } }),
+                    Value::Null,
                     |walker, comment| {
                         walker.stats.comments += 1;
                         walker.text(comment, comment_kind, &place, &[]);

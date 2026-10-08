@@ -745,11 +745,17 @@ fn gaps_and_refusals_are_coverage_statuses_never_clean_and_never_raw() {
     let sandbox = Sandbox::new();
     let (mut world, _) = world(&sandbox);
     world.repos[1].rate_limit_pulls = true;
-    // Listed and public, but its remote cannot be cloned.
-    world.repos.insert(
-        1,
-        Repo::new(OWNER, "golf", "public", "2026-03-02T00:00:00Z"),
-    );
+    // Listed and public, but its remote cannot be cloned, and its issue pages claim
+    // a next page without naming a cursor for it.
+    let mut golf = Repo::new(OWNER, "golf", "public", "2026-03-02T00:00:00Z");
+    golf.broken_cursor = true;
+    golf.issues = vec![Item {
+        number: 1,
+        title: "One".into(),
+        ..Item::default()
+    }];
+    world.repos.insert(1, golf);
+
     let host = Host::start(world);
     // No projects token: the boards are refused for scope.
     let out = sandbox.run(&host, &full_args(), &[("GH_TOKEN", TOKEN)]);
@@ -764,7 +770,7 @@ fn gaps_and_refusals_are_coverage_statuses_never_clean_and_never_raw() {
     // file issues in; then beta's change requests and edits, and foxtrot's three API
     // surfaces after the quota ran out.
     assert!(
-        printed.contains("gaps: permission-denied 9, rate-limited 5, other-error 0"),
+        printed.contains("gaps: permission-denied 9, rate-limited 5, other-error 2"),
         "{printed}"
     );
     let manifest =
@@ -784,6 +790,12 @@ fn gaps_and_refusals_are_coverage_statuses_never_clean_and_never_raw() {
         row("sample-owner/golf")[..3],
         ["not-found", "not-found", "none read"]
     );
+    assert_eq!(
+        row("sample-owner/golf")[3],
+        "other-error",
+        "a page with no cursor is not followed from the start"
+    );
+    assert_eq!(row("sample-owner/golf")[6], "other-error");
     assert_eq!(
         row("sample-owner/beta")[3],
         "scanned",
@@ -858,6 +870,32 @@ fn the_set_narrows_to_an_allowlist_or_to_registered_identities() {
     let labels: Vec<String> = table(&manifest).into_keys().collect();
     assert_eq!(labels, ["sample-owner/beta"]);
     assert!(manifest.contains("Mode: registered-only. Registered identities confirmed public: 1, of which in the listing: 1."));
+
+    // Kept clones stay inside the vault, never in the checkout the run started from.
+    let out = sandbox.run(
+        &host,
+        &["--allow", "sample-owner/alpha", "--keep-clones"],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let kept: Vec<PathBuf> = std::fs::read_dir(sandbox.vault_root())
+        .expect("the vault root")
+        .map(|e| e.expect("an entry").path().join("clones"))
+        .filter(|clones| clones.is_dir())
+        .collect();
+    assert_eq!(kept.len(), 1, "only the run asked to keep its clones did");
+    assert_eq!(mode(&kept[0]), 0o700);
+    assert!(
+        kept[0].join("0.git/HEAD").is_file(),
+        "the mirror clone is kept whole"
+    );
+    assert_eq!(
+        sandbox.git(
+            &sandbox.path("checkout"),
+            &["status", "--porcelain", "--untracked-files=all"]
+        ),
+        "?? allow.md\n?? registered.md\n"
+    );
     assert_no_private("the registered-only manifest", &manifest);
 }
 
