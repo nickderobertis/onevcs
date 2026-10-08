@@ -1,6 +1,6 @@
 # Exposure audit coverage manifest
 
-Written by `onevcs-exposure-audit run` at 2026-10-08T15:30:30.249306208Z. It states what the audit read, not what it matched: that is kept only in the host-local vault.
+Written by `onevcs-exposure-audit run` at 2026-10-08T16:36:20.269090263Z. It states what the audit read, not what it matched: that is kept only in the host-local vault.
 
 ## Scope
 
@@ -26,12 +26,13 @@ Written by `onevcs-exposure-audit run` at 2026-10-08T15:30:30.249306208Z. It sta
 
 | Repository | Current files | Git history | Refs read | Issues | Change requests | Board items | Edit history |
 |---|---|---|---|---|---|---|---|
-| nickderobertis/oneharness | scanned | scanned | heads 114, tags 173, pull 1330, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/oneharness | scanned | scanned | heads 114, tags 173, pull 1331, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/onevcs | scanned | scanned | heads 10, tags 188, pull 207, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/crozier | scanned | scanned | heads 11, tags 109, pull 335, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/ai-orchestrator | scanned | scanned | heads 214, tags 0, pull 15, other 0 | scanned | scanned | permission-denied | scanned |
 | nickderobertis/onebudgetspec | scanned | scanned | heads 1, tags 5, pull 15, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/onepipeline | scanned | scanned | heads 45, tags 161, pull 447, other 0 | scanned | scanned | not-found | scanned |
-| nickderobertis/ai-orchestrator | scanned | scanned | heads 215, tags 0, pull 15, other 0 | scanned | scanned | permission-denied | scanned |
 | nickderobertis/onetaskgraph | scanned | scanned | heads 5, tags 524, pull 203, other 0 | scanned | scanned | not-found | scanned |
-| nickderobertis/crozier | scanned | scanned | heads 10, tags 109, pull 333, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/onepipeline-ui | scanned | scanned | heads 15, tags 56, pull 155, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/allowlister-terminal-approval-plugin | scanned | scanned | heads 1, tags 0, pull 6, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/github-graphql-node-count | scanned | scanned | heads 1, tags 2, pull 6, other 0 | scanned | scanned | not-found | scanned |
@@ -41,7 +42,6 @@ Written by `onevcs-exposure-audit run` at 2026-10-08T15:30:30.249306208Z. It sta
 | nickderobertis/printobserver | scanned | scanned | heads 10, tags 3, pull 70, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/screencomp | scanned | scanned | heads 13, tags 33, pull 98, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/allowlister | scanned | scanned | heads 9, tags 39, pull 130, other 0 | scanned | scanned | not-found | scanned |
-| nickderobertis/onevcs | scanned | scanned | heads 9, tags 188, pull 207, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/notignored | scanned | scanned | heads 20, tags 19, pull 62, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/oneharness-ui | scanned | scanned | heads 27, tags 28, pull 94, other 27 | scanned | scanned | not-found | scanned |
 | nickderobertis/onetaskgraph-live-scratch | not-found | not-found | heads 0, tags 0, pull 0, other 0 | scanned | scanned | not-found | scanned |
