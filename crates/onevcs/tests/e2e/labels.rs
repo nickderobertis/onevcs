@@ -933,6 +933,35 @@ fn a_rewriting_filter_driver_leaves_reused_proofs_equal_to_git() {
             "{detail}: the content comparisons are reused"
         );
     }
+
+    // Renormalizing runs the clean filter during a merge, so it refuses reuse: no
+    // proof is stored, and the answer is still git's.
+    let filtered = std::fs::read_to_string(&config).expect("filtered configuration");
+    std::fs::write(
+        &config,
+        format!("{filtered}\n[merge]\n renormalize = true\n"),
+    )
+    .expect("renormalize");
+    let proofs = fixture.world.home().join("cache/recoverable/v1/git");
+    let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+    let args = ["--detail", "full", "--session", &token, "--all"];
+    let renormalized = recoverable(&fixture, &args);
+    let uncached = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .args(args)
+        .env("GIT_NAMESPACE", "")
+        .assert()
+        .success();
+    let uncached: Vec<Value> =
+        serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+    assert_eq!(
+        renormalized, uncached,
+        "a renormalizing read agrees with git"
+    );
+    let stored = std::fs::read_dir(&proofs).map_or(0, |entries| entries.count());
+    assert_eq!(stored, 0, "merge.renormalize refuses proof reuse");
 }
 
 #[test]
