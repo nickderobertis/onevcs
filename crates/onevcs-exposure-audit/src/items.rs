@@ -525,7 +525,7 @@ impl<'a> Walker<'a> {
         board: &BoardId,
         audited: &BTreeSet<String>,
     ) -> BoardItems {
-        let query = "query Board($owner: String!, $number: Int!, $cursor: String) { rateLimit { cost } repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) { public title shortDescription readme items(first: 50, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id isArchived type content { __typename ... on Issue { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on PullRequest { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on DraftIssue { id title body } } fieldValues(first: 50) { nodes { ... on ProjectV2ItemFieldTextValue { text } } } } } } } } }";
+        let query = "query Board($owner: String!, $number: Int!, $cursor: String) { rateLimit { cost } repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) { public title shortDescription readme items(first: 50, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id isArchived type content { __typename ... on Issue { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on PullRequest { id number url state title body lastEditedAt repository { nameWithOwner visibility } } ... on DraftIssue { id title body } } fieldValues(first: 50) { pageInfo { hasNextPage endCursor } nodes { ... on ProjectV2ItemFieldTextValue { text } } } } } } } } }";
         let failed = |status: Status| BoardItems {
             issues: status,
             change_requests: status,
@@ -536,6 +536,7 @@ impl<'a> Walker<'a> {
         let mut cursor = Value::Null;
         let mut issues = Status::Scanned;
         let mut change_requests = Status::Scanned;
+        let mut items = Status::Scanned;
         let mut first = true;
         loop {
             let variables =
@@ -580,7 +581,8 @@ impl<'a> Walker<'a> {
                 .into_iter()
                 .flatten()
             {
-                self.board_item(item, audited, &mut issues, &mut change_requests);
+                let fields = self.board_item(item, audited, &mut issues, &mut change_requests);
+                items = items.combine(fields);
             }
             match next_page(page) {
                 Ok(Some(next)) => cursor = next,
@@ -597,19 +599,22 @@ impl<'a> Walker<'a> {
         BoardItems {
             issues,
             change_requests,
-            items: Status::Scanned,
+            items,
             edits: edits.combine(issues).combine(change_requests),
             visibility: BoardVisibility::Public,
         }
     }
 
+    /// One board item: its text field values, every page of them, and its content.
+    /// Returns the status of the field values, which are the item's own text; its
+    /// content's status goes to `issues` or `change_requests`.
     fn board_item(
         &mut self,
         item: &Value,
         audited: &BTreeSet<String>,
         issues: &mut Status,
         change_requests: &mut Status,
-    ) {
+    ) -> Status {
         self.stats.board_items += 1;
         if item.get("isArchived").and_then(Value::as_bool) == Some(true) {
             self.stats.board_items_archived += 1;
@@ -620,18 +625,35 @@ impl<'a> Walker<'a> {
             url: None,
             state: None,
         };
-        for value in item
-            .pointer("/fieldValues/nodes")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        let on_field = |walker: &mut Self, value: &Value| {
             if let Some(text) = value.get("text").and_then(Value::as_str) {
-                self.scan(text, &item_place, Persistence::Current, false);
+                walker.scan(text, &item_place, Persistence::Current, false);
             }
-        }
+        };
+        let fields = match item.get("fieldValues") {
+            Some(page) => {
+                for value in page
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    on_field(self, value);
+                }
+                let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                self.rest_of(
+                    id,
+                    "ProjectV2Item",
+                    "fieldValues",
+                    "... on ProjectV2ItemFieldTextValue { text }",
+                    page,
+                    on_field,
+                )
+            }
+            None => Status::OtherError,
+        };
         let Some(content) = item.get("content").filter(|c| !c.is_null()) else {
-            return;
+            return fields;
         };
         match content.get("__typename").and_then(Value::as_str) {
             Some("DraftIssue") => {
@@ -663,7 +685,7 @@ impl<'a> Walker<'a> {
                 {
                     // A private repository's item on a public board: not read further.
                     self.stats.backing_items_not_public += 1;
-                    return;
+                    return fields;
                 }
                 let (label, comment_kind, status) = if kind == "Issue" {
                     (
@@ -686,7 +708,7 @@ impl<'a> Walker<'a> {
                     .unwrap_or_default();
                 if audited.contains(&home.to_ascii_lowercase()) {
                     // Its comments are read with the rest of that repository's.
-                    return;
+                    return fields;
                 }
                 let more = self.follow(
                     content
@@ -706,5 +728,6 @@ impl<'a> Walker<'a> {
             }
             _ => {}
         }
+        fields
     }
 }

@@ -109,7 +109,23 @@ pub enum Content {
 pub struct BoardItem {
     pub content: Content,
     pub field_text: Option<String>,
+    /// Text field values past the first, served on later pages of the item's
+    /// `fieldValues` connection.
+    pub more_fields: Vec<String>,
+    /// Answer every later `fieldValues` page of this item with an error.
+    pub broken_fields: bool,
     pub archived: bool,
+}
+
+impl BoardItem {
+    fn fields(&self) -> Vec<Value> {
+        self.field_text
+            .iter()
+            .map(|t| json!({ "text": t }))
+            .chain([json!({})])
+            .chain(self.more_fields.iter().map(|t| json!({ "text": t })))
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -392,6 +408,14 @@ fn respond(
                 .nth(1)
                 .and_then(|r| r.split('(').next())
                 .unwrap_or_default();
+            if let Some(item) = board_item(world, id) {
+                if conn != "fieldValues" || item.broken_fields {
+                    return error("INTERNAL");
+                }
+                return data(
+                    json!({ "rateLimit": { "cost": 1 }, "node": { "conn": page_of(item.fields(), &vars["cursor"]) } }),
+                );
+            }
             let all: Vec<Value> = match (nodes.get(id), conn) {
                 (Some(Node::Item { repo, pull, index }), "comments") => {
                     let item = item_of(world, *repo, *pull, *index);
@@ -484,8 +508,7 @@ fn respond(
                             value
                         }
                     };
-                    let fields: Vec<Value> = item.field_text.iter().map(|t| json!({ "text": t })).chain([json!({})]).collect();
-                    json!({ "id": format!("PI{i}"), "isArchived": item.archived, "type": "ISSUE", "content": content, "fieldValues": { "nodes": fields } })
+                    json!({ "id": format!("PI{}x{i}", board.number), "isArchived": item.archived, "type": "ISSUE", "content": content, "fieldValues": first_page(item.fields()) })
                 })
                 .collect();
             data(
@@ -497,6 +520,19 @@ fn respond(
         }
         _ => error("UNKNOWN_OPERATION"),
     }
+}
+
+/// A board item by its id, `PI<board number>x<index>`.
+fn board_item<'a>(world: &'a World, id: &str) -> Option<&'a BoardItem> {
+    let (number, index) = id.strip_prefix("PI")?.split_once('x')?;
+    let number: u64 = number.parse().ok()?;
+    let index: usize = index.parse().ok()?;
+    world
+        .boards
+        .iter()
+        .find(|b| b.number == number)?
+        .items
+        .get(index)
 }
 
 fn item_of(world: &World, repo: usize, pull: bool, index: usize) -> &Item {

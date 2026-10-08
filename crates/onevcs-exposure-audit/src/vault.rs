@@ -7,7 +7,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -20,6 +20,9 @@ pub struct Vault {
 #[derive(Debug)]
 pub enum VaultRefusal {
     InsideCheckout,
+    /// The part of the path that exists could not be resolved, so where it leads is
+    /// unknown.
+    Unresolvable,
     Unwritable,
 }
 
@@ -32,29 +35,46 @@ pub fn default_root() -> Option<PathBuf> {
     Some(state.join("ai-orchestrator").join("private-boundary-audit"))
 }
 
-/// Whether `path`, or the nearest ancestor of it that exists, is inside a git
-/// checkout (a work tree or a repository directory).
-pub fn inside_checkout(path: &Path) -> bool {
+/// `path` as the filesystem resolves it: absolute, with every symlink in the part
+/// of it that exists followed, and the part that does not yet exist appended
+/// lexically. `None` when the existing part cannot be resolved.
+pub fn resolve(path: &Path) -> Option<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|d| d.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
+        std::env::current_dir().ok()?.join(path)
     };
-    let mut probe = Some(absolute.as_path());
-    while let Some(dir) = probe {
-        if dir.join(".git").exists() || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
-        {
-            return true;
-        }
-        probe = dir.parent();
+    let mut existing = absolute.as_path();
+    let mut missing: Vec<Component<'_>> = Vec::new();
+    while fs::symlink_metadata(existing).is_err() {
+        missing.extend(existing.components().next_back());
+        existing = existing.parent()?;
     }
-    false
+    let mut resolved = fs::canonicalize(existing).ok()?;
+    for component in missing.into_iter().rev() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => {}
+        }
+    }
+    Some(resolved)
+}
+
+/// Whether a resolved path, or any ancestor of it, is a git checkout (a work tree or
+/// a repository directory). Resolve first: a path spelled outside a checkout can
+/// reach into one through a symlink.
+pub fn inside_checkout(resolved: &Path) -> bool {
+    resolved.ancestors().any(|dir| {
+        dir.join(".git").exists() || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
+    })
 }
 
 impl Vault {
     pub fn create(root: &Path) -> Result<Vault, VaultRefusal> {
+        let root = &resolve(root).ok_or(VaultRefusal::Unresolvable)?;
         if inside_checkout(root) {
             return Err(VaultRefusal::InsideCheckout);
         }

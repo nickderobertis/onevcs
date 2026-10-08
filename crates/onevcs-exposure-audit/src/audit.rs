@@ -545,6 +545,13 @@ pub fn run(options: Options) -> u8 {
             "pass --vault-root outside any repository, or leave it unset for the state directory",
             exit::REFUSED,
         ),
+        Err(VaultRefusal::Unresolvable) => {
+            return refuse(
+                "the vault root cannot be resolved, so whether it is inside a checkout is unknown",
+                "pass --vault-root as a path whose existing part this user can read",
+                exit::REFUSED,
+            )
+        }
         Err(VaultRefusal::Unwritable) => {
             return refuse(
                 "the vault root cannot be created with mode 0700",

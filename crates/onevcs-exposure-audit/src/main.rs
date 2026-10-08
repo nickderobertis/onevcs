@@ -39,7 +39,7 @@ pub mod exit {
 /// What each exit status means, shown by `--help`.
 const EXIT_STATUS: &str = "Exit status:
   0  completed; a surface that could not be read is a coverage status in the output, not a failure
-  2  an input was refused: a flag, the registry document, the exceptions file, or a vault root inside a git checkout
+  2  an input was refused: a flag, the registry document, the exceptions file, or a vault root inside a git checkout (symlinks followed) or one that cannot be resolved
   3  the run could not proceed: no credential, an unreadable owner listing, a vault that refused its files, or a failed bench step";
 
 #[derive(Parser)]
@@ -342,7 +342,7 @@ fn bench(args: BenchArgs) -> ExitCode {
 /// A fresh directory under the system temporary directory, refused if that is
 /// inside a checkout.
 fn tempfile_dir() -> Result<PathBuf, ()> {
-    let base = std::env::temp_dir();
+    let base = vault::resolve(&std::env::temp_dir()).ok_or(())?;
     if vault::inside_checkout(&base) {
         return Err(());
     }

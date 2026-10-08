@@ -363,6 +363,8 @@ fn world(sandbox: &Sandbox) -> (World, Vec<PathBuf>) {
                     BoardItem {
                         content: Content::Issue(format!("{OWNER}/beta"), 1),
                         field_text: Some("owner: hiddenco".into()),
+                        more_fields: Vec::new(),
+                        broken_fields: false,
                         archived: false,
                     },
                     BoardItem {
@@ -371,11 +373,15 @@ fn world(sandbox: &Sandbox) -> (World, Vec<PathBuf>) {
                             "check lanternfish-internal usage".into(),
                         ),
                         field_text: None,
+                        more_fields: Vec::new(),
+                        broken_fields: false,
                         archived: false,
                     },
                     BoardItem {
                         content: Content::Draft("Old".into(), "nothing".into()),
                         field_text: None,
+                        more_fields: Vec::new(),
+                        broken_fields: false,
                         archived: true,
                     },
                 ],
@@ -388,6 +394,8 @@ fn world(sandbox: &Sandbox) -> (World, Vec<PathBuf>) {
                 items: vec![BoardItem {
                     content: Content::Draft("Tidy".into(), "tidy up".into()),
                     field_text: None,
+                    more_fields: Vec::new(),
+                    broken_fields: false,
                     archived: false,
                 }],
             },
@@ -827,6 +835,102 @@ fn gaps_and_refusals_are_coverage_statuses_never_clean_and_never_raw() {
     assert_no_private(
         "the vault's coverage",
         &std::fs::read_to_string(sandbox.run_dir().join("measurements.json")).expect("m"),
+    );
+}
+
+#[test]
+fn a_vault_root_reached_through_a_symlink_into_a_checkout_is_refused() {
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    let host = Host::start(world);
+    let checkout = sandbox.path("checkout");
+    sandbox.write(&checkout, "sub/keep.txt", "kept\n");
+    sandbox.git(&checkout, &["add", "-A"]);
+    sandbox.git(&checkout, &["commit", "-q", "-m", "a subdirectory"]);
+    // Outside every checkout by its spelling, inside one by what it resolves to: no
+    // ancestor of the spelled path holds a `.git`.
+    let link = sandbox.path("hiddenco-vault-link");
+    std::os::unix::fs::symlink(checkout.join("sub"), &link).expect("a symlink");
+    let root = link.join("vault");
+
+    let out = sandbox.run(
+        &host,
+        &["--vault-root", &root.display().to_string()],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    let printed = text(&out);
+    assert!(
+        printed.contains("the vault root is inside a git checkout"),
+        "{printed}"
+    );
+    assert_no_private("a refused vault root", &printed);
+    for path in [&link, &checkout] {
+        assert!(
+            !printed.contains(&path.display().to_string()),
+            "the refusal names no path: {printed}"
+        );
+    }
+    assert!(
+        !checkout.join("sub/vault").exists(),
+        "nothing was written through the link"
+    );
+    assert_eq!(
+        sandbox.git(
+            &checkout,
+            &["status", "--porcelain", "--untracked-files=all"]
+        ),
+        ""
+    );
+    assert!(host.requests().is_empty(), "nothing was read either");
+}
+
+#[test]
+fn every_page_of_a_board_items_field_values_is_read_and_a_failed_page_is_a_gap() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    // Two values fill the first page of board 2's first item; the exposure is on the second.
+    world.boards[0].items[0].more_fields = vec!["mirrors hiddenco/quietharbor".into()];
+    // Board 3's only item has a second page the host fails to serve.
+    world.boards[1].items[0].more_fields = vec!["first".into(), "second".into()];
+    world.boards[1].items[0].broken_fields = true;
+    let host = Host::start(world);
+    let mut args = full_args();
+    args.extend(["--projects-token-env", "BOARD_TOKEN"]);
+    let out = sandbox.run(
+        &host,
+        &args,
+        &[("GH_TOKEN", TOKEN), ("BOARD_TOKEN", PROJECTS_TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let printed = text(&out);
+    assert_no_private("stdout and stderr", &printed);
+    let items = rows(&sandbox.run_dir(), "findings-items.jsonl");
+    assert!(
+        has(
+            &items,
+            &[
+                ("container", "board:sample-owner/2"),
+                ("kind", "board-field"),
+                ("term", "hiddenco/quietharbor")
+            ]
+        ),
+        "an exposure past the first page of field values is found"
+    );
+    // Board 3's items, and the board column of the repository both boards file issues in.
+    assert!(printed.contains("other-error 2"), "{printed}");
+    let manifest =
+        std::fs::read_to_string(sandbox.path("checkout/coverage.md")).expect("the manifest");
+    assert_no_private("the manifest", &manifest);
+    let rows_by_label = table(&manifest);
+    assert_eq!(rows_by_label["sample-owner project 2"][5], "scanned");
+    assert_eq!(
+        rows_by_label["sample-owner project 3"][5], "other-error",
+        "a failed later page is a gap, not scanned"
+    );
+    assert_eq!(
+        rows_by_label["sample-owner/beta"][5], "other-error",
+        "the issue repository's board column carries it"
     );
 }
 
