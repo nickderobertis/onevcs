@@ -1,7 +1,7 @@
 //! Real git, and the bound every call to it carries.
 //!
-//! Every operation shells out to the `git` binary, so the lifecycle is exercised
-//! against genuine git rather than against a library's idea of it. Two things are
+//! Mutations and unsupported reads use the `git` binary. Recovery can read ordinary
+//! refs in process and reuse immutable reads under complete context guards. Two things are
 //! non-negotiable here and are the reason this is one module rather than a call at
 //! each site:
 //!
@@ -209,17 +209,10 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         return Ok(recalled);
     }
     let reusable = crate::recovery_cache::query(args, cwd, env);
-    if let Some(stdout) = reusable
+    if let Some(output) = reusable
         .as_ref()
         .and_then(crate::recovery_cache::Query::read)
     {
-        let output = Output {
-            status: 0,
-            ended: Ended::Code(0),
-            stdout,
-            stderr: String::new(),
-            read_failures: Vec::new(),
-        };
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
@@ -258,10 +251,8 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
-    if output.ok() && output.stderr.is_empty() && output.read_failures.is_empty() {
-        if let Some(reusable) = reusable {
-            reusable.write(&output.stdout);
-        }
+    if let Some(reusable) = reusable {
+        reusable.write(&output);
     }
     reads::remember(args, cwd, env, &output);
     Ok(output)
@@ -326,6 +317,7 @@ mod reads {
             depth.set(depth.get() - 1);
             if depth.get() == 0 {
                 MEMO.with(|memo| memo.borrow_mut().clear());
+                crate::native_refs::clear();
                 SETTLED.with(|settled| settled.borrow_mut().clear());
             }
         });
@@ -367,6 +359,7 @@ mod reads {
     /// worth remembering, or a write, and the second empties the memo.
     fn remembered(args: &[&str]) -> bool {
         match args.first().copied() {
+            Some("--exec-path") => args.len() == 1,
             Some("config") => args == ["config", "--null", "--list", "--show-origin"],
             Some("remote") => args.get(1) == Some(&"get-url"),
             Some("cat-file") => args.get(1) == Some(&"-e"),
@@ -406,6 +399,9 @@ mod reads {
         }
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
+            if args.first() != Some(&"status") {
+                crate::native_refs::clear();
+            }
         }
         None
     }
@@ -1139,6 +1135,9 @@ pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
 
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
+    if let Some(tip) = crate::native_refs::tip(cwd, reference) {
+        return tip;
+    }
     run(
         &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
         Some(cwd),
@@ -1242,6 +1241,9 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
+    if let Some(found) = crate::native_refs::is_repo(path) {
+        return found;
+    }
     run(&["rev-parse", "--is-inside-work-tree"], Some(path))
         .map(|out| out.ok() && out.trimmed() == "true")
         .unwrap_or(false)
@@ -1504,6 +1506,9 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 /// The object store a checkout keeps its own history in, which is what another
 /// repository is given to read when it is asked about a commit it never fetched.
 pub fn objects_dir(cwd: &Path) -> Result<PathBuf> {
+    if let Some(objects) = crate::native_refs::objects_dir(cwd) {
+        return Ok(objects);
+    }
     git_owned_path(cwd, "objects")
 }
 
@@ -1735,6 +1740,16 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
 
 /// The branch `<remote>/HEAD` names, when it names one that is still there.
 fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    let reference = format!("refs/remotes/{remote}/HEAD");
+    if let Some(target) = crate::native_refs::symbolic(cwd, &reference) {
+        return Ok(target
+            .and_then(|target| {
+                target
+                    .strip_prefix(&format!("refs/remotes/{remote}/"))
+                    .map(str::to_owned)
+            })
+            .filter(|branch| ref_exists(cwd, &format!("refs/remotes/{remote}/{branch}"))));
+    }
     let named = run(
         &[
             "symbolic-ref",
@@ -1772,6 +1787,9 @@ fn advertised_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
 
 /// Whether a fully spelled ref exists.
 pub fn ref_exists(cwd: &Path, reference: &str) -> bool {
+    if let Some(tip) = crate::native_refs::tip(cwd, reference) {
+        return tip.is_some();
+    }
     run(&["show-ref", "--verify", "--quiet", reference], Some(cwd))
         .map(|out| out.ok())
         .unwrap_or(false)
@@ -2083,7 +2101,7 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
 /// Git's full-ref grammar applied to a branch suffix. Unicode and punctuation
 /// are valid names too; only Git's forbidden bytes and component shapes reject.
 /// This validates names, never raw ref values or repository layout.
-fn plainly_a_ref_name(branch: &str) -> bool {
+pub(crate) fn plainly_a_ref_name(branch: &str) -> bool {
     !branch.is_empty()
         && !branch.ends_with('.')
         && !branch.contains("..")
@@ -2696,6 +2714,8 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
 
 /// When a ref's commit was made, as whole seconds since the epoch.
 pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
+    let immutable = crate::native_refs::tip(cwd, reference).flatten();
+    let reference = immutable.as_deref().unwrap_or(reference);
     run(&["log", "-1", "--format=%ct", reference, "--"], Some(cwd))
         .ok()
         .filter(Output::ok)
@@ -3494,6 +3514,12 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
         return LocalTip::Absent;
     }
     let reference = format!("refs/heads/{branch}");
+    if let Some(tip) = crate::native_refs::tip(cwd, &reference) {
+        return match tip.and_then(|tip| ObjectId::parse(&tip)) {
+            Some(tip) => LocalTip::At(tip),
+            None => LocalTip::Absent,
+        };
+    }
     match run(
         &["for-each-ref", "--format=%(objectname)", &reference],
         Some(cwd),
@@ -3518,6 +3544,9 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
 /// Every local branch of a repository with the commit it stands at, in git's ref
 /// order.
 pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
+    if let Some(heads) = crate::native_refs::heads(cwd) {
+        return Ok(heads);
+    }
     Ok(checked(
         &[
             "for-each-ref",
@@ -3536,6 +3565,9 @@ pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
 /// Every remote-tracking branch of one remote with the commit it stands at, by the
 /// name the remote gives it; `HEAD` is not a branch and is left out.
 pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>> {
+    if let Some(heads) = crate::native_refs::remote_heads(cwd, remote) {
+        return Ok(heads);
+    }
     let prefix = format!("refs/remotes/{remote}/");
     Ok(checked(
         &[
@@ -3556,6 +3588,9 @@ pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>
 /// Every worktree of a repository — its own and every linked one — with the branch
 /// each has checked out, or `None` for one that is detached or bare.
 pub fn worktrees(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    if let Some(worktrees) = crate::native_refs::worktrees(cwd) {
+        return Ok(worktrees);
+    }
     let listing = checked(&["worktree", "list", "--porcelain", "-z"], Some(cwd))?;
     let mut found = Vec::new();
     let mut path: Option<PathBuf> = None;

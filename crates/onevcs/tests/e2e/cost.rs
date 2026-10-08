@@ -728,38 +728,67 @@ fn a_ref_name_is_validated_by_subprocess_at_most_once_per_distinct_name() {
 }
 
 #[test]
-fn a_branch_a_record_decides_is_never_content_compared() {
-    // The comparison of content is the last tier and the expensive one — a diff of
-    // every path the branch touched, against a base that has moved. A branch a
-    // recorded landing, a change request's number, or a landing trailer already
-    // decided has no need of it, and reaching it anyway is work spent to be told what
-    // three cheaper tiers already said.
+fn complete_recorded_landings_skip_content_but_squash_guards_compare() {
+    // Complete recorded/trailer landings prove the whole tip. A squash landing
+    // and work continued after a landing still require the semantic content guard.
     let fixture = Fixture::local(&local_direct());
     tiered(&fixture);
     let counting = Counting::installed(&fixture.world);
 
-    let (_, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
+    let (rows, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
     let compared = content_comparisons(&calls);
-    for decided in [
-        "feature/recorded",
-        "preserved/by-trailer",
-        "feature/by-change-request",
-        "feature/continued",
-    ] {
+    let tip_of = |branch: &str| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == branch)
+            .and_then(|row| row["tip"].as_str())
+            .expect("reported branch tip")
+    };
+    for decided in ["feature/recorded", "preserved/by-trailer"] {
         assert!(
-            !compared.iter().any(|branch| branch == decided),
+            !compared.iter().any(|branch| branch == tip_of(decided)),
             "{decided} was decided by a record and content-compared anyway: {compared:?}"
         );
     }
-    // …and the tier is still reached for the branches nothing records, which is what
-    // makes the assertion above about the tiers rather than about the tier being gone.
+    // The fallback and guards remain observable through their immutable operands.
+    // An optional pinned-release run proves these guards were already baseline work.
+    if let Some(baseline) = std::env::var_os("ONEVCS_BASELINE_BINARY") {
+        counting.clear();
+        let template = fixture.world.onevcs_std();
+        let environment = template.get_envs().collect::<Vec<_>>();
+        let mut command = assert_cmd::Command::new(baseline);
+        command.env_clear().current_dir(fixture.world.path(""));
+        for (name, value) in environment {
+            if let Some(value) = value {
+                command.env(name, value);
+            }
+        }
+        let mut paths = std::ffi::OsString::from(&counting.directory);
+        paths.push(":");
+        paths.push(std::env::var_os("PATH").unwrap_or_default());
+        command.env("PATH", paths);
+        command
+            .args(["recoverable", "--json", "--all"])
+            .assert()
+            .success();
+        let baseline_compared = content_comparisons(&counting.calls());
+        for guarded in ["feature/by-change-request", "feature/continued"] {
+            assert!(
+                baseline_compared
+                    .iter()
+                    .any(|operand| operand == tip_of(guarded)),
+                "pinned baseline must already compare {guarded}: {baseline_compared:?}"
+            );
+        }
+    }
     for undecided in [
         "feature/unpublished",
         "feature/undecidable",
         "worktree-agent-9",
+        "feature/by-change-request",
+        "feature/continued",
     ] {
         assert!(
-            compared.iter().any(|branch| branch == undecided),
+            compared.iter().any(|branch| branch == tip_of(undecided)),
             "{undecided} has no record, so the comparison is the only tier left: {compared:?}"
         );
     }

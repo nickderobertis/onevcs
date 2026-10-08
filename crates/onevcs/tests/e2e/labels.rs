@@ -608,6 +608,39 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
         cached
     };
     let original = compare();
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    let counted = || {
+        counting.clear();
+        let assertion = counting
+            .onevcs(&fixture.world)
+            .args(["recoverable", "--json"])
+            .args(args)
+            .assert()
+            .success();
+        let rows: Vec<Value> =
+            serde_json::from_slice(&assertion.get_output().stdout).expect("counted rows");
+        assert_eq!(rows, original);
+        counting.calls().len()
+    };
+    let cache = fixture.world.home().join("cache/recoverable/v1/git");
+    let names = || {
+        std::fs::read_dir(&cache)
+            .expect("proof entries")
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let cold = counted();
+    let before = names();
+    let warm = counted();
+    assert_eq!(
+        names(),
+        before,
+        "unchanged Git inputs must have stable proof keys after index refreshes"
+    );
+    assert!(
+        warm < cold,
+        "warm proofs must avoid real Git executions: cold {cold}, warm {warm}"
+    );
     let index = fixture
         .world
         .home()

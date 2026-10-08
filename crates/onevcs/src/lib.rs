@@ -70,6 +70,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod native_refs;
 mod ops;
 mod policy;
 mod pool;

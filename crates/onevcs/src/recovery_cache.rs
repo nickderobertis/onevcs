@@ -12,9 +12,16 @@ use sha2::{Digest, Sha256};
 
 use crate::git;
 
+#[derive(PartialEq, Eq, Hash)]
+struct ContextKey {
+    repo: PathBuf,
+    content: bool,
+    borrowing: Option<PathBuf>,
+}
+
 thread_local! {
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static CONTEXTS: RefCell<HashMap<(PathBuf, bool), Option<String>>> = RefCell::new(HashMap::new());
+    static CONTEXTS: RefCell<HashMap<ContextKey, Option<String>>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
@@ -29,7 +36,12 @@ pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
     read()
 }
 
+pub(crate) fn enabled() -> bool {
+    ENABLED.with(std::cell::Cell::get)
+}
+
 pub(crate) fn clear() {
+    crate::native_refs::clear();
     CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
 }
 
@@ -40,30 +52,64 @@ pub(crate) fn clear() {
 struct Entry {
     version: u32,
     key: String,
-    stdout: String,
+    answer: Answer,
     checksum: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "kebab-case")]
+enum Answer {
+    Success { stdout: String },
+    Different,
 }
 
 pub(crate) struct Query {
     path: PathBuf,
     key: String,
+    difference_is_answer: bool,
 }
 
 impl Query {
-    pub(crate) fn read(&self) -> Option<String> {
+    pub(crate) fn read(&self) -> Option<git::Output> {
         let entry: Entry = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
-        (entry.version == 1
-            && entry.key == self.key
-            && entry.checksum == checksum(&entry.key, &entry.stdout))
-        .then_some(entry.stdout)
+        if entry.version != 1
+            || entry.key != self.key
+            || entry.checksum != checksum(&entry.key, &entry.answer)
+        {
+            return None;
+        }
+        let (status, stdout) = match entry.answer {
+            Answer::Success { stdout } => (0, stdout),
+            Answer::Different if self.difference_is_answer => (1, String::new()),
+            Answer::Different => return None,
+        };
+        Some(git::Output {
+            status,
+            ended: crate::git::Ended::Code(status),
+            stdout,
+            stderr: String::new(),
+            read_failures: Vec::new(),
+        })
     }
 
-    pub(crate) fn write(&self, stdout: &str) {
+    pub(crate) fn write(&self, output: &git::Output) {
+        if !output.stderr.is_empty() || !output.read_failures.is_empty() {
+            return;
+        }
+        let answer = if output.ok() {
+            Answer::Success {
+                stdout: output.stdout.clone(),
+            }
+        } else if self.difference_is_answer && output.status == 1 && output.stdout.is_empty() {
+            Answer::Different
+        } else {
+            return;
+        };
         let entry = Entry {
             version: 1,
             key: self.key.clone(),
-            stdout: stdout.to_owned(),
-            checksum: checksum(&self.key, stdout),
+            checksum: checksum(&self.key, &answer),
+            answer,
         };
         let Some(parent) = self.path.parent() else {
             return;
@@ -80,16 +126,30 @@ impl Query {
     }
 }
 
-fn checksum(key: &str, stdout: &str) -> String {
-    crate::ids::digest(&format!("1\0{key}\0{stdout}"))
+fn checksum(key: &str, answer: &Answer) -> String {
+    crate::ids::digest(&format!(
+        "1\0{key}\0{}",
+        serde_json::to_string(answer).expect("cache answer")
+    ))
 }
 
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
 pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Query> {
-    if !ENABLED.with(std::cell::Cell::get) || !env.is_empty() {
+    if !ENABLED.with(std::cell::Cell::get) {
         return None;
     }
+    let borrowing = match env {
+        [] => None,
+        [(name, path)]
+            if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+                && Path::new(path).is_absolute()
+                && !path.contains([':', '"', '\n']) =>
+        {
+            Some(PathBuf::from(path))
+        }
+        _ => return None,
+    };
     let cwd = cwd?;
     let options: &[&str] = match *args.first()? {
         "merge-base" => &["--is-ancestor"],
@@ -99,6 +159,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             "-z",
             "--name-only",
             "--numstat",
+            "--shortstat",
             "--quiet",
             "--no-ext-diff",
             "--no-textconv",
@@ -110,8 +171,14 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             "--format=%H%x00%B",
             "--format=%H",
             "--reverse",
+            "--first-parent",
+            "-n65",
+            "--format=%H%x00%T",
+            "-1",
+            "--format=%ct",
         ],
         "rev-list" => &["--count", "--first-parent"],
+        "cat-file" => &["-e"],
         _ => return None,
     };
     let mut revisions = 0;
@@ -119,7 +186,14 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         if options.contains(arg) {
             continue;
         }
-        if git::ObjectId::parse(arg).is_some() {
+        if args.first() == Some(&"diff") && arg.starts_with(":(literal)") && args.contains(&"--") {
+            continue;
+        }
+        if git::ObjectId::parse(arg).is_some()
+            || arg
+                .strip_suffix("^{commit}")
+                .is_some_and(|sha| git::ObjectId::parse(sha).is_some())
+        {
             revisions += 1;
         } else if let Some((left, right)) = arg.split_once("..") {
             if git::ObjectId::parse(left).is_none() || git::ObjectId::parse(right).is_none() {
@@ -130,14 +204,24 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             return None;
         }
     }
-    if revisions < 2 {
+    if revisions
+        < if matches!(args.first(), Some(&"log" | &"cat-file")) {
+            1
+        } else {
+            2
+        }
+    {
         return None;
     }
     let context = CONTEXTS.with(|contexts| {
         contexts
             .borrow_mut()
-            .entry((cwd.to_owned(), args.first() == Some(&"diff")))
-            .or_insert_with(|| context(cwd, args.first() == Some(&"diff")))
+            .entry(ContextKey {
+                repo: cwd.to_owned(),
+                content: args.first() == Some(&"diff"),
+                borrowing: borrowing.clone(),
+            })
+            .or_insert_with(|| context(cwd, args.first() == Some(&"diff"), borrowing.as_deref()))
             .clone()
     })?;
     let key = crate::ids::digest(&serde_json::to_string(&(1, context, cwd, args, env)).ok()?);
@@ -147,6 +231,8 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             .join("cache/recoverable/v1/git")
             .join(format!("{key}.json")),
         key,
+        difference_is_answer: (args.first() == Some(&"merge-base"))
+            || (args.first() == Some(&"diff") && args.contains(&"--quiet")),
     })
 }
 
@@ -155,7 +241,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// Object metadata includes ctime so replacement/corruption cannot hide behind an
 /// unchanged length/mtime. Unreadable inputs prevent reuse rather than hide work.
 #[cfg(unix)]
-fn context(repo: &Path, content: bool) -> Option<String> {
+fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<String> {
     let directory = repo.join(".git");
     if !directory.is_dir() {
         return None;
@@ -163,7 +249,6 @@ fn context(repo: &Path, content: bool) -> Option<String> {
     for unsupported in [
         "shallow",
         "info/grafts",
-        "objects/info/alternates",
         "objects/info/http-alternates",
         "refs/replace",
         "reftable",
@@ -226,21 +311,19 @@ fn context(repo: &Path, content: bool) -> Option<String> {
         return None;
     }
     digest.update(configuration.stdout.as_bytes());
-    static SEMANTICS: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
-    let semantics = SEMANTICS
-        .get_or_init(|| {
-            let executable = git::run(&["--exec-path"], None).ok()?;
-            if !executable.ok() {
-                return None;
-            }
-            let actual = Path::new(executable.stdout.trim()).join("git");
-            let mut bytes = std::fs::read(actual).ok()?;
-            bytes.extend(std::fs::read(git::git_program()).ok()?);
-            Some(bytes)
-        })
-        .as_ref()?;
-    digest.update(semantics);
+    digest.update(semantics()?.as_bytes());
+    // Git's ownership checks concern the checkout too. Directory timestamps
+    // change when a status read refreshes its index, without changing any
+    // immutable input; the recursively read children detect source changes.
+    directory_identity(repo, &mut digest)?;
     snapshot(&directory, &mut digest, false)?;
+    let mut visited = std::collections::BTreeSet::new();
+    object_stores(&directory.join("objects"), &mut digest, &mut visited)?;
+    if let Some(borrowing) = borrowing {
+        if !visited.contains(borrowing) {
+            object_stores(borrowing, &mut digest, &mut visited)?;
+        }
+    }
     if content {
         attributes(repo, &mut digest)?;
     }
@@ -256,8 +339,99 @@ fn context(repo: &Path, content: bool) -> Option<String> {
     Some(format!("{:x}", digest.finalize()))
 }
 
+#[cfg(unix)]
+fn semantics() -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    type Stamp = (u64, u64, u64, u32, i64, i64, i64, i64);
+    struct Semantics {
+        files: Vec<(PathBuf, Stamp)>,
+        digest: String,
+    }
+    fn stamp(path: &Path) -> Option<Stamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some((
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mode(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ))
+    }
+    static SEMANTICS: std::sync::Mutex<Option<Semantics>> = std::sync::Mutex::new(None);
+    let mut saved = SEMANTICS.lock().ok()?;
+    if let Some(saved) = saved.as_ref() {
+        if saved
+            .files
+            .iter()
+            .all(|(path, expected)| stamp(path).as_ref() == Some(expected))
+        {
+            return Some(saved.digest.clone());
+        }
+    }
+    let executable = git::run(&["--exec-path"], None).ok()?;
+    if !executable.ok() {
+        return None;
+    }
+    let paths = [
+        Path::new(executable.stdout.trim()).join("git"),
+        PathBuf::from(git::git_program()),
+    ];
+    let mut digest = Sha256::new();
+    let mut files = Vec::new();
+    for path in paths {
+        let before = stamp(&path)?;
+        digest.update(std::fs::read(&path).ok()?);
+        if stamp(&path)? != before {
+            return None;
+        }
+        files.push((path, before));
+    }
+    let digest = format!("{:x}", digest.finalize());
+    *saved = Some(Semantics {
+        files,
+        digest: digest.clone(),
+    });
+    Some(digest)
+}
+
+#[cfg(unix)]
+fn object_stores(
+    path: &Path,
+    digest: &mut Sha256,
+    visited: &mut std::collections::BTreeSet<PathBuf>,
+) -> Option<()> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    if canonical != path || !visited.insert(canonical.clone()) {
+        return None;
+    }
+    snapshot(&canonical, digest, true)?;
+    if canonical.join("info/http-alternates").exists() {
+        return None;
+    }
+    match std::fs::read_to_string(canonical.join("info/alternates")) {
+        Ok(raw) => {
+            digest.update(raw.as_bytes());
+            for alternate in raw.lines() {
+                let alternate = Path::new(alternate);
+                if !alternate.is_absolute()
+                    || alternate.as_os_str().as_encoded_bytes().contains(&b'"')
+                {
+                    return None;
+                }
+                object_stores(alternate, digest, visited)?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return None,
+    }
+    Some(())
+}
+
 #[cfg(not(unix))]
-fn context(_repo: &Path, _content: bool) -> Option<String> {
+fn context(_repo: &Path, _content: bool, _borrowing: Option<&Path>) -> Option<String> {
     None
 }
 
@@ -269,19 +443,25 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         return None;
     }
     digest.update(path.as_os_str().as_encoded_bytes());
-    digest.update(
-        serde_json::to_vec(&(
-            meta.dev(),
-            meta.ino(),
-            meta.len(),
-            meta.mode(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-            meta.ctime(),
-            meta.ctime_nsec(),
-        ))
-        .ok()?,
-    );
+    if meta.is_dir() {
+        directory_identity(path, digest)?;
+    } else {
+        digest.update(
+            serde_json::to_vec(&(
+                meta.dev(),
+                meta.ino(),
+                meta.uid(),
+                meta.gid(),
+                meta.len(),
+                meta.mode(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec(),
+            ))
+            .ok()?,
+        );
+    }
     if meta.is_dir() {
         let mut entries = std::fs::read_dir(path)
             .ok()?
@@ -313,6 +493,19 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         }
         digest.update(raw);
     }
+    Some(())
+}
+
+#[cfg(unix)]
+fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    digest.update(
+        serde_json::to_vec(&(meta.dev(), meta.ino(), meta.mode(), meta.uid(), meta.gid())).ok()?,
+    );
     Some(())
 }
 
