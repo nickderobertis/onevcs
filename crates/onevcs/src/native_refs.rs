@@ -10,10 +10,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 struct Snapshot {
     tips: BTreeMap<String, git2::Oid>,
-    commits: BTreeMap<String, Option<git2::Oid>>,
     symbolic: BTreeMap<String, String>,
     worktrees: Vec<(PathBuf, Option<String>)>,
     objects: PathBuf,
+    directory: PathBuf,
+    common: PathBuf,
 }
 thread_local! {
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
@@ -39,6 +40,11 @@ pub(crate) fn is_repo(repo: &Path) -> Option<bool> {
 }
 pub(crate) fn objects_dir(repo: &Path) -> Option<PathBuf> {
     read(repo, |snapshot| Some(snapshot.objects.clone()))
+}
+pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
+    read(repo, |snapshot| {
+        Some((snapshot.directory.clone(), snapshot.common.clone()))
+    })
 }
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |_| {
@@ -117,13 +123,23 @@ pub(crate) fn tip(repo: &Path, name: &str) -> Option<Option<String>> {
             ]
             .iter()
             .find_map(|candidate| {
-                snapshot
-                    .commits
-                    .get(candidate)
-                    .map(|oid| oid.map(|oid| oid.to_string()))
+                snapshot.tips.get(candidate).map(|oid| {
+                    git2::Repository::open(repo)
+                        .ok()?
+                        .find_object(*oid, None)
+                        .ok()?
+                        .peel_to_commit()
+                        .ok()
+                        .map(|commit| commit.id().to_string())
+                })
             })
             .flatten(),
         )
+    })
+}
+pub(crate) fn raw_tip(repo: &Path, name: &str) -> Option<Option<String>> {
+    read(repo, |snapshot| {
+        Some(snapshot.tips.get(name).map(git2::Oid::to_string))
     })
 }
 pub(crate) fn heads(repo: &Path) -> Option<Vec<(String, String)>> {
@@ -238,26 +254,51 @@ pub(crate) fn is_ancestor(
 }
 
 fn snapshot(at: &Path) -> Option<Snapshot> {
-    if !at.join(".git").is_dir()
-        || !Path::new(crate::git::git_program()).is_absolute()
+    if !Path::new(crate::git::git_program()).is_absolute()
         || std::env::vars_os().any(|(name, _)| {
             name.to_string_lossy().starts_with("GIT_") && name != "GIT_OPTIONAL_LOCKS"
         })
     {
         return None;
     }
-    let directory = at.join(".git");
+    let repo = git2::Repository::open(at).ok()?;
+    if repo.is_bare() || repo.workdir()? != at {
+        return None;
+    }
+    let directory = std::fs::canonicalize(repo.path()).ok()?;
+    let common = std::fs::canonicalize(repo.commondir()).ok()?;
+    if common.file_name()?.to_str() != Some(".git") {
+        return None;
+    }
+    if at.join(".git").is_file() {
+        let raw = std::fs::read_to_string(at.join(".git")).ok()?;
+        let target = raw.strip_prefix("gitdir: ")?.strip_suffix('\n')?;
+        let target = Path::new(target);
+        let target = if target.is_absolute() {
+            target.to_owned()
+        } else {
+            at.join(target)
+        };
+        if std::fs::canonicalize(target).ok()? != directory {
+            return None;
+        }
+    } else if std::fs::canonicalize(at.join(".git")).ok()? != directory {
+        return None;
+    }
     if ["reftable", "refs/replace", "info/grafts", "shallow"]
         .iter()
-        .any(|path| directory.join(path).exists())
+        .any(|path| common.join(path).exists())
     {
         return None;
     }
     let mut names = BTreeSet::new();
-    canonical_loose(&directory.join("refs"), &directory, &mut names)?;
+    canonical_loose(&common.join("refs"), &common, &mut names)?;
+    if common != directory {
+        canonical_loose(&directory.join("refs"), &directory, &mut names)?;
+    }
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
-    if directory.join("packed-refs").exists() {
-        let packed = std::fs::read_to_string(directory.join("packed-refs")).ok()?;
+    if common.join("packed-refs").exists() {
+        let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
         let mut previous = false;
         let mut packed_names = BTreeSet::new();
         for line in packed.lines() {
@@ -285,10 +326,6 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     if names.iter().any(|name| name.starts_with("refs/replace/")) {
         return None;
     }
-    let repo = git2::Repository::open(at).ok()?;
-    if repo.is_bare() || repo.workdir()? != at {
-        return None;
-    }
     let configuration = repo.config().ok()?;
     for key in [
         "core.worktree",
@@ -302,9 +339,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         }
     }
     let mut tips = BTreeMap::new();
-    let mut commits = BTreeMap::new();
     let mut symbolic = BTreeMap::new();
-    let mut verified = BTreeSet::new();
     for reference in repo.references().ok()? {
         let reference = reference.ok()?;
         let name = reference.name()?.to_owned();
@@ -315,16 +350,6 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
             symbolic.insert(name.clone(), target.to_owned());
         }
         let oid = reference.resolve().ok()?.target()?;
-        if verified.insert(oid) {
-            repo.find_object(oid, None).ok()?;
-        }
-        let commit = repo
-            .find_object(oid, None)
-            .ok()?
-            .peel(git2::ObjectType::Commit)
-            .ok()
-            .map(|object| object.id());
-        commits.insert(name.clone(), commit);
         tips.insert(name, oid);
     }
     if tips.keys().cloned().collect::<BTreeSet<_>>() != names {
@@ -336,27 +361,21 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     if let Ok(resolved) = head.resolve() {
         let oid = resolved.target()?;
-        repo.find_object(oid, None).ok()?;
-        commits.insert(
-            "HEAD".into(),
-            repo.find_object(oid, None)
-                .ok()?
-                .peel(git2::ObjectType::Commit)
-                .ok()
-                .map(|object| object.id()),
-        );
         tips.insert("HEAD".into(), oid);
     }
-    let branch = head
+    let primary = common.parent()?.to_owned();
+    let primary_repo = git2::Repository::open(&primary).ok()?;
+    let primary_head = primary_repo.find_reference("HEAD").ok()?;
+    let branch = primary_head
         .symbolic_target()
         .and_then(|target| target.strip_prefix("refs/heads/"))
         .map(str::to_owned);
-    let mut worktrees = vec![(at.to_owned(), branch)];
+    let mut worktrees = vec![(primary, branch)];
     for name in repo.worktrees().ok()?.iter().flatten() {
         let worktree = repo.find_worktree(name).ok()?;
         let path = worktree.path();
         path.to_str()?;
-        let gitdir = directory.join("worktrees").join(name);
+        let gitdir = common.join("worktrees").join(name);
         canonical_value(&std::fs::read(gitdir.join("HEAD")).ok()?)?;
         let linked = git2::Repository::open(path).ok()?;
         let head = linked.find_reference("HEAD").ok()?;
@@ -369,10 +388,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
     Some(Snapshot {
         tips,
-        commits,
         symbolic,
         worktrees,
-        objects: directory.join("objects"),
+        objects: common.join("objects"),
+        directory,
+        common,
     })
 }
 fn canonical_oid(value: &str) -> bool {
@@ -488,6 +508,10 @@ mod tests {
             .iter()
             .map(|name| crate::git::tip(repo, name))
             .collect::<Vec<_>>();
+        let locals = names
+            .iter()
+            .map(|name| crate::git::local_tip(repo, name))
+            .collect::<Vec<_>>();
         let unpublished = crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new())
             .map_err(|error| error.to_string());
         let present = tips.iter().flatten().cloned().collect::<Vec<_>>();
@@ -517,7 +541,12 @@ mod tests {
                     *expected
                 );
             }
-            for (name, expected) in names.iter().zip(tips) {
+            for ((name, expected), local) in names.iter().zip(tips).zip(locals) {
+                assert_eq!(
+                    crate::git::local_tip(repo, name),
+                    local,
+                    "raw local object for {name}"
+                );
                 assert_eq!(
                     crate::git::tip(repo, name),
                     expected,
@@ -526,6 +555,50 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn linked_worktrees_read_their_head_and_shared_refs_like_git() {
+        if isolate("linked_worktrees_read_their_head_and_shared_refs_like_git") {
+            return;
+        }
+        let root = fixture("sha1");
+        let repo = root.path();
+        let linked = repo.join("linked");
+        git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "topic/a.b/版本",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let names = ["HEAD", "main", "topic/a.b/版本"];
+        differential(&linked, &names);
+        let baseline = crate::git::worktrees(&linked).unwrap();
+        crate::recovery_cache::scope(|| {
+            assert!(
+                heads(&linked).is_some(),
+                "ordinary linked layouts retain the native path"
+            );
+            assert_eq!(crate::git::worktrees(&linked).unwrap(), baseline);
+            assert_eq!(
+                crate::git::objects_dir(&linked).unwrap(),
+                repo.join(".git/objects")
+            );
+        });
+        git(repo, &["pack-refs", "--all"]);
+        differential(&linked, &names);
+        std::fs::write(
+            repo.join(".git/shallow"),
+            format!("{}\n", git(repo, &["rev-parse", "main"])),
+        )
+        .unwrap();
+        differential(&linked, &names);
+        std::fs::remove_file(repo.join(".git/shallow")).unwrap();
+        differential(&linked, &names);
+    }
+
     #[test]
     fn complete_ref_values_and_names_match_git_including_fallbacks() {
         if isolate("complete_ref_values_and_names_match_git_including_fallbacks") {

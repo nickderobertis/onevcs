@@ -3578,7 +3578,7 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
         return LocalTip::Absent;
     }
     let reference = format!("refs/heads/{branch}");
-    if let Some(tip) = crate::native_refs::tip(cwd, &reference) {
+    if let Some(tip) = crate::native_refs::raw_tip(cwd, &reference) {
         return match tip.and_then(|tip| ObjectId::parse(&tip)) {
             Some(tip) => LocalTip::At(tip),
             None => LocalTip::Absent,

@@ -1,4 +1,4 @@
-//! Disposable reuse of successful Git reads whose revisions are full object ids.
+//! Disposable reuse of Git reads whose revisions are full object ids.
 //!
 //! Mutable recovery policy never enters this cache. Holders, leases, streams and
 //! session records are read on every query. Unsupported Git contexts use Git.
@@ -22,6 +22,7 @@ struct ContextKey {
 thread_local! {
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static CONTEXTS: RefCell<HashMap<ContextKey, Option<String>>> = RefCell::new(HashMap::new());
+    static STORES: RefCell<HashMap<PathBuf, Option<String>>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
@@ -43,6 +44,7 @@ pub(crate) fn enabled() -> bool {
 pub(crate) fn clear() {
     crate::native_refs::clear();
     CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
+    STORES.with(|stores| stores.borrow_mut().clear());
 }
 
 /// An immutable Git query's successful bytes, bound to its full context and argv.
@@ -318,16 +320,17 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     })
 }
 
-/// Conservative context guard. Ordinary files-backend repositories are supported;
-/// worktrees, alternates, graph overlays and configured external attributes delegate.
-/// Object bytes and permissions detect replacement/corruption even when a read
-/// freshens an unchanged object's timestamps. Unreadable inputs prevent reuse rather than hide work.
+/// Conservative guard for ordinary files-backend repositories and linked
+/// worktrees with local alternates. Graph overlays and external attributes
+/// delegate. Object-store layout and access metadata are captured once per
+/// query/store; each hit verifies its directly named objects by content hash.
+/// Unreadable inputs prevent reuse rather than hide work.
 #[cfg(unix)]
 fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<String> {
-    let directory = repo.join(".git");
-    if !directory.is_dir() {
-        return None;
-    }
+    let (directory, common) = crate::native_refs::layout(repo).or_else(|| {
+        let directory = repo.join(".git");
+        directory.is_dir().then(|| (directory.clone(), directory))
+    })?;
     for unsupported in [
         "shallow",
         "info/grafts",
@@ -335,7 +338,7 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
         "refs/replace",
         "reftable",
     ] {
-        if directory.join(unsupported).exists() {
+        if common.join(unsupported).exists() {
             return None;
         }
     }
@@ -405,9 +408,13 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
     // change when a status read refreshes its index, without changing any
     // immutable input; the recursively read children detect source changes.
     directory_identity(repo, &mut digest)?;
-    snapshot(&directory, &mut digest, false)?;
+    snapshot(&common, &mut digest, false)?;
+    if common != directory {
+        optional_file(&repo.join(".git"), &mut digest)?;
+        snapshot(&directory, &mut digest, false)?;
+    }
     let mut visited = std::collections::BTreeSet::new();
-    object_stores(&directory.join("objects"), &mut digest, &mut visited)?;
+    object_stores(&common.join("objects"), &mut digest, &mut visited)?;
     if let Some(borrowing) = borrowing {
         if !visited.contains(borrowing) {
             object_stores(borrowing, &mut digest, &mut visited)?;
@@ -496,7 +503,18 @@ fn object_stores(
     if canonical != path || !visited.insert(canonical.clone()) {
         return None;
     }
-    snapshot(&canonical, digest, true)?;
+    let store = STORES.with(|stores| {
+        stores
+            .borrow_mut()
+            .entry(canonical.clone())
+            .or_insert_with(|| {
+                let mut digest = Sha256::new();
+                snapshot(&canonical, &mut digest, true)?;
+                Some(format!("{:x}", digest.finalize()))
+            })
+            .clone()
+    })?;
+    digest.update(store.as_bytes());
     if canonical.join("info/http-alternates").exists() {
         return None;
     }
@@ -571,7 +589,13 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
                 && matches!(
                     name.to_str(),
                     Some(
-                        "index" | "logs" | "hooks" | "COMMIT_EDITMSG" | "FETCH_HEAD" | "ORIG_HEAD"
+                        "objects"
+                            | "index"
+                            | "logs"
+                            | "hooks"
+                            | "COMMIT_EDITMSG"
+                            | "FETCH_HEAD"
+                            | "ORIG_HEAD"
                     )
                 )
             {
