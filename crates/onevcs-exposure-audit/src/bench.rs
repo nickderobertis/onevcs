@@ -275,13 +275,18 @@ pub fn run(workload: &Workload, work_dir: &Path) -> Step<serde_json::Value> {
     let mut short = false;
     let exported = entries.iter().map(|(_, path)| {
         let mut header = String::new();
-        let size: usize = match out.read_line(&mut header) {
+        // A missing header, or one whose size is not a number, fails the export
+        // rather than exporting the file as empty.
+        let size = match out.read_line(&mut header) {
             Ok(n) if n > 0 => header
                 .trim_end()
                 .rsplit(' ')
                 .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                .map(str::parse::<usize>),
+            _ => None,
+        };
+        let size = match size {
+            Some(Ok(size)) => size,
             _ => {
                 short = true;
                 0

@@ -511,7 +511,12 @@ impl Scan<'_, '_> {
                 failed = true;
                 continue;
             }
-            let size: usize = fields[2].parse().unwrap_or(0);
+            // A size git did not state as a number leaves the stream's framing unknown,
+            // so the scan stops there and the surface is a gap.
+            let Ok(size) = fields[2].parse::<usize>() else {
+                failed = true;
+                break;
+            };
             content.resize(size + 1, 0);
             if reader.read_exact(&mut content).is_err() {
                 failed = true;

@@ -625,10 +625,11 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
             ("persistence", "current")
         ]
     ));
-    assert!(items.iter().any(|r| r["persistence"] == "edit-history"
-        && r["term"] == "quietharbor"
-        && r["edit_deleted"] == true
-        && r["state"] == "CLOSED"));
+    assert!(items
+        .iter()
+        .any(|r| r["persistence"] == "deleted-edit-history"
+            && r["term"] == "quietharbor"
+            && r["state"] == "CLOSED"));
     assert!(has(
         &items,
         &[
@@ -1184,4 +1185,22 @@ fn the_bench_measures_matcher_export_and_publication_envelopes() {
         .expect("the bench runs");
     assert_eq!(out.status.code(), Some(2), "{}", text(&out));
     assert!(text(&out).contains("--scale and --paths must be positive"));
+
+    // A size that multiplies past the envelope, or past u64, is refused before
+    // anything is generated.
+    for args in [
+        &["bench", "--scale", "11", "--changed-mib", "100"][..],
+        &["bench", "--scale", "18446744073709551615", "--paths", "2"][..],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_onevcs-exposure-audit"))
+            .args(args)
+            .output()
+            .expect("the bench runs");
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(
+            text(&out).contains("exceeds the bench's envelope"),
+            "{}",
+            text(&out)
+        );
+    }
 }

@@ -822,6 +822,17 @@ pub fn run(options: Options) -> u8 {
     });
     let coverage =
         json!({ "repositories": repo_coverage, "boards": board_coverage, "survey": survey });
+    let Ok(report) = report::render(
+        vault.dir(),
+        &manifest_text,
+        (file_rows, history_rows, item_rows),
+    ) else {
+        return refuse(
+            "the vault's findings did not read back as the rows the run wrote",
+            "check the vault's disk and permissions, then re-run",
+            exit::STOPPED,
+        );
+    };
     let written = [
         ("coverage-manifest.md", manifest_text.clone()),
         (
@@ -832,14 +843,7 @@ pub fn run(options: Options) -> u8 {
             "coverage.json",
             serde_json::to_string_pretty(&coverage).unwrap_or_default(),
         ),
-        (
-            "report.md",
-            report::render(
-                vault.dir(),
-                &manifest_text,
-                (file_rows, history_rows, item_rows),
-            ),
-        ),
+        ("report.md", report),
     ]
     .iter()
     .all(|(name, text)| vault.write(name, text).is_ok());

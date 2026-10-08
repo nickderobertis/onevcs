@@ -307,6 +307,26 @@ fn bench(args: BenchArgs) -> ExitCode {
             "re-run with positive sizes",
         );
     }
+    // The generated workload is held in memory, so each size it multiplies out to is
+    // capped here, a hundred times the plan's upper bound, before anything is built.
+    let within = |sizes: &[u64], cap: u64| {
+        sizes
+            .iter()
+            .try_fold(args.scale, |total, &n| total.checked_mul(n))
+            .is_some_and(|total| total <= cap)
+    };
+    if !within(&[args.private_repos, args.terms_per_repo], 200_000)
+        || !within(&[args.changed_mib], 1024)
+        || !within(&[args.paths], 100_000)
+        || !within(&[args.identities], 1_000_000)
+        || !within(&[args.tasks], 1_000_000)
+    {
+        return refuse(
+            "the workload exceeds the bench's envelope: at most 200000 terms, 1024 MiB \
+             changed, 100000 paths, and 1000000 identities or tasks, each counted after --scale",
+            "re-run with smaller sizes or a smaller --scale",
+        );
+    }
     let Ok(work) = tempfile_dir() else {
         return refuse(
             "no temporary directory outside a checkout could be made",

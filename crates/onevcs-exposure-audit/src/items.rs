@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::github::{next_page, Api};
 use crate::ids::{BoardId, RepoId, Token};
-use crate::rows::{narrowed, snippet, ItemKind, ItemRow, Persistence, Survey};
+use crate::rows::{narrowed, snippet, ItemKind, ItemRow, ItemState, Persistence, Survey};
 use crate::status::Status;
 use crate::terms::Matcher;
 use crate::vault::Findings;
@@ -63,7 +63,7 @@ struct Place {
     kind: ItemKind,
     number: Option<u64>,
     url: Option<String>,
-    state: Option<String>,
+    state: Option<ItemState>,
 }
 
 pub struct Walker<'a> {
@@ -117,7 +117,7 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn scan(&mut self, text: &str, place: &Place, persistence: Persistence, deleted: bool) {
+    fn scan(&mut self, text: &str, place: &Place, persistence: Persistence) {
         self.stats.text_bytes += text.len() as u64;
         let hits = self.matcher.find(text.as_bytes());
         if hits.is_empty() {
@@ -131,12 +131,11 @@ impl<'a> Walker<'a> {
                 kind: place.kind,
                 number: place.number,
                 url: place.url.as_deref(),
-                state: place.state.as_deref(),
+                state: place.state,
                 term: &term.text,
                 class: term.class.as_str(),
                 narrowed: narrowed(term.narrowed),
                 persistence,
-                edit_deleted: deleted,
                 snippet: snippet(text.as_bytes(), hit.offset),
             });
         }
@@ -152,7 +151,7 @@ impl<'a> Walker<'a> {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .or_else(|| parent.url.clone()),
-            state: parent.state.clone(),
+            state: parent.state,
         };
         let mut text = String::new();
         for field in ["title", "body"].iter().chain(extra) {
@@ -161,7 +160,7 @@ impl<'a> Walker<'a> {
                 text.push('\n');
             }
         }
-        self.scan(&text, &place, Persistence::Current, false);
+        self.scan(&text, &place, Persistence::Current);
         if !node.get("lastEditedAt").unwrap_or(&Value::Null).is_null() {
             if let Some(id) = node.get("id").and_then(Value::as_str) {
                 self.stats.edited_texts += 1;
@@ -244,7 +243,7 @@ impl<'a> Walker<'a> {
         let each = |walker: &mut Self, rename: &Value| {
             if let Some(previous) = rename.get("previousTitle").and_then(Value::as_str) {
                 walker.stats.renamed_titles += 1;
-                walker.scan(previous, place, Persistence::TitleHistory, false);
+                walker.scan(previous, place, Persistence::TitleHistory);
             }
         };
         for rename in page
@@ -299,7 +298,10 @@ impl<'a> Walker<'a> {
             kind,
             number: node.get("number").and_then(Value::as_u64),
             url: node.get("url").and_then(Value::as_str).map(str::to_owned),
-            state: node.get("state").and_then(Value::as_str).map(str::to_owned),
+            state: node
+                .get("state")
+                .and_then(Value::as_str)
+                .and_then(ItemState::parse),
         }
     }
 
@@ -487,7 +489,12 @@ impl<'a> Walker<'a> {
                         walker.stats.edits_deleted += 1;
                     }
                     if let Some(diff) = edit.get("diff").and_then(Value::as_str) {
-                        walker.scan(diff, place, Persistence::EditHistory, deleted);
+                        let persistence = if deleted {
+                            Persistence::DeletedEditHistory
+                        } else {
+                            Persistence::EditHistory
+                        };
+                        walker.scan(diff, place, persistence);
                     }
                 };
                 for edit in page
@@ -627,7 +634,7 @@ impl<'a> Walker<'a> {
         };
         let on_field = |walker: &mut Self, value: &Value| {
             if let Some(text) = value.get("text").and_then(Value::as_str) {
-                walker.scan(text, &item_place, Persistence::Current, false);
+                walker.scan(text, &item_place, Persistence::Current);
             }
         };
         let fields = match item.get("fieldValues") {
@@ -675,7 +682,7 @@ impl<'a> Walker<'a> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                 );
-                self.scan(&text, &place, Persistence::Current, false);
+                self.scan(&text, &place, Persistence::Current);
             }
             Some(kind @ ("Issue" | "PullRequest")) => {
                 if content

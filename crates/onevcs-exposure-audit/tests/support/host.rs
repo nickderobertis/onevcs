@@ -219,12 +219,21 @@ fn serve(stream: TcpStream, world: &World, log: &Mutex<Vec<Request>>) {
             headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_owned());
         }
     }
-    let length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    // The audit's requests are small queries; a length past this, or one that is not
+    // a number, is a broken client and is answered without reading a body.
+    const MAX_BODY: usize = 1 << 20;
+    let length = match headers.get("content-length").map(|v| v.parse::<usize>()) {
+        None => 0,
+        Some(Ok(length)) if length <= MAX_BODY => length,
+        Some(_) => {
+            let _ = (&stream).write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+    };
     let mut body = vec![0; length];
-    let _ = reader.read_exact(&mut body);
+    if reader.read_exact(&mut body).is_err() {
+        return;
+    }
     let body = String::from_utf8_lossy(&body).into_owned();
     log.lock().expect("the log is not poisoned").push(Request {
         method: method.clone(),

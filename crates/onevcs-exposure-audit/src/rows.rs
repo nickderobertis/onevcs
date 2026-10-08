@@ -66,8 +66,32 @@ pub enum Persistence {
     Current,
     /// An earlier revision the host still shows.
     EditHistory,
+    /// An earlier revision since deleted from the host's edit history, read from
+    /// what the host still returns for it.
+    DeletedEditHistory,
     /// A title the item was renamed from, kept in its timeline.
     TitleHistory,
+}
+
+/// An issue's or change request's state, as the host names it. A state the host
+/// adds later is not guessed at: the row carries none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ItemState {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl ItemState {
+    pub fn parse(state: &str) -> Option<ItemState> {
+        match state {
+            "OPEN" => Some(ItemState::Open),
+            "CLOSED" => Some(ItemState::Closed),
+            "MERGED" => Some(ItemState::Merged),
+            _ => None,
+        }
+    }
 }
 
 /// A term in a file at the default branch's tip.
@@ -104,12 +128,11 @@ pub struct ItemRow<'a> {
     pub kind: ItemKind,
     pub number: Option<u64>,
     pub url: Option<&'a str>,
-    pub state: Option<&'a str>,
+    pub state: Option<ItemState>,
     pub term: &'a str,
     pub class: &'static str,
     pub narrowed: Option<&'static str>,
     pub persistence: Persistence,
-    pub edit_deleted: bool,
     pub snippet: String,
 }
 

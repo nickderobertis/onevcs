@@ -13,19 +13,39 @@ use std::path::Path;
 
 use serde_json::Value;
 
-fn rows(dir: &Path, name: &str) -> impl Iterator<Item = Value> {
-    let file = std::fs::File::open(dir.join(name)).ok();
-    file.into_iter()
-        .flat_map(|f| BufReader::new(f).lines())
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str(&line).ok())
+/// A findings stream did not read back as the rows the run wrote to it: the file
+/// was missing or unreadable, a line was not a JSON row, or the count differed.
+#[derive(Debug)]
+pub struct Unreadable;
+
+/// Every row of one findings stream, refused unless all `expected` of them read back.
+fn rows(dir: &Path, name: &str, expected: u64) -> Result<Vec<Value>, Unreadable> {
+    let file = std::fs::File::open(dir.join(name)).map_err(|_| Unreadable)?;
+    let rows = BufReader::new(file)
+        .lines()
+        .map(|line| {
+            let line = line.map_err(|_| Unreadable)?;
+            serde_json::from_str::<Value>(&line)
+                .ok()
+                .filter(Value::is_object)
+                .ok_or(Unreadable)
+        })
+        .collect::<Result<Vec<Value>, Unreadable>>()?;
+    if rows.len() as u64 != expected {
+        return Err(Unreadable);
+    }
+    Ok(rows)
 }
 
 fn field<'a>(row: &'a Value, name: &str) -> &'a str {
     row.get(name).and_then(Value::as_str).unwrap_or("")
 }
 
-pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u64)) -> String {
+pub fn render(
+    dir: &Path,
+    manifest: &str,
+    (files, history, items): (u64, u64, u64),
+) -> Result<String, Unreadable> {
     let mut out = String::new();
     let _ = writeln!(out, "# Exposure audit: full findings (private)\n");
     let _ = writeln!(
@@ -47,7 +67,7 @@ pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u6
     );
     let _ = writeln!(out, "| Repository | Path | Location | Line | Term | Class | Snippet |\n|---|---|---|---|---|---|---|");
     let mut narrowed: BTreeMap<(String, String), u64> = BTreeMap::new();
-    for row in rows(dir, "findings-current-files.jsonl") {
+    for row in rows(dir, "findings-current-files.jsonl", files)? {
         if let Some(n) = row.get("narrowed").and_then(Value::as_str) {
             *narrowed
                 .entry((n.to_owned(), field(&row, "term").to_owned()))
@@ -72,7 +92,7 @@ pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u6
 
     let _ = writeln!(out, "\n## Git history, by repository, commit and term\n\nUndone only by rewriting history on every ref that reaches the commit, including the host's `refs/pull/*`.\n");
     let mut by_commit: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
-    for row in rows(dir, "findings-history.jsonl") {
+    for row in rows(dir, "findings-history.jsonl", history)? {
         if let Some(n) = row.get("narrowed").and_then(Value::as_str) {
             *narrowed
                 .entry((n.to_owned(), field(&row, "term").to_owned()))
@@ -106,20 +126,15 @@ pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u6
         );
     }
 
-    let _ = writeln!(out, "\n## Issues, change requests and board items\n\nAn edit does not undo these where the persistence column says `edit-history` or `title-history`: GitHub shows earlier revisions and earlier titles to every reader. A `current` row edited away still leaves an `edit-history` revision behind.\n");
+    let _ = writeln!(out, "\n## Issues, change requests and board items\n\nAn edit does not undo these where the persistence column says `edit-history` or `title-history`: GitHub shows earlier revisions and earlier titles to every reader. A `deleted-edit-history` row is a revision since deleted from that history. A `current` row edited away still leaves an `edit-history` revision behind.\n");
     let _ = writeln!(out, "| Container | Kind | Number | State | Term | Persistence | URL | Snippet |\n|---|---|---|---|---|---|---|---|");
-    for row in rows(dir, "findings-items.jsonl") {
+    for row in rows(dir, "findings-items.jsonl", items)? {
         if let Some(n) = row.get("narrowed").and_then(Value::as_str) {
             *narrowed
                 .entry((n.to_owned(), field(&row, "term").to_owned()))
                 .or_default() += 1;
             continue;
         }
-        let persistence = if row.get("edit_deleted").and_then(Value::as_bool) == Some(true) {
-            format!("{} (revision deleted)", field(&row, "persistence"))
-        } else {
-            field(&row, "persistence").to_owned()
-        };
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | `{}` | {} | {} | {} |",
@@ -131,7 +146,7 @@ pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u6
                 .unwrap_or_default(),
             field(&row, "state"),
             field(&row, "term"),
-            persistence,
+            field(&row, "persistence"),
             field(&row, "url"),
             field(&row, "snippet").replace('|', "\\|")
         );
@@ -153,5 +168,44 @@ pub fn render(dir: &Path, manifest: &str, (files, history, items): (u64, u64, u6
         "{}",
         manifest.trim_start_matches("# Exposure audit coverage manifest\n")
     );
-    out
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vault(items: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        std::fs::write(dir.path().join("findings-current-files.jsonl"), "").expect("written");
+        std::fs::write(dir.path().join("findings-history.jsonl"), "").expect("written");
+        std::fs::write(dir.path().join("findings-items.jsonl"), items).expect("written");
+        dir
+    }
+
+    const ROW: &str = r#"{"container":"sample-owner/beta","kind":"issue","state":"CLOSED","term":"quietharbor","persistence":"deleted-edit-history","snippet":"a"}"#;
+
+    #[test]
+    fn the_report_renders_every_row_the_run_wrote() {
+        let dir = vault(&format!("{ROW}\n"));
+        let report = render(dir.path(), "", (0, 0, 1)).expect("rendered");
+        assert!(report.contains("| CLOSED | `quietharbor` | deleted-edit-history |"));
+    }
+
+    #[test]
+    fn a_findings_stream_that_does_not_read_back_is_refused() {
+        // A malformed line, a row that is not an object, a count that differs, and
+        // a missing stream are each refused rather than rendered without them.
+        for (items, count) in [
+            (format!("{ROW}\nnot json\n"), 2),
+            ("[1]\n".to_owned(), 1),
+            (format!("{ROW}\n"), 2),
+        ] {
+            let dir = vault(&items);
+            assert!(render(dir.path(), "", (0, 0, count)).is_err(), "{items}");
+        }
+        let dir = vault("");
+        std::fs::remove_file(dir.path().join("findings-history.jsonl")).expect("removed");
+        assert!(render(dir.path(), "", (0, 0, 0)).is_err());
+    }
 }
