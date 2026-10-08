@@ -390,6 +390,9 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
             && !key.starts_with("pull.")
             && !key.starts_with("push.")
             && !key.starts_with("gist.")
+            // Clean/smudge filters convert between worktree and index only; every
+            // admitted query reads commits and trees. git-lfs installs one system-wide.
+            && !is_filter_driver(key)
             && !matches!(
                 key,
                 "core.repositoryformatversion"
@@ -451,6 +454,13 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
         optional_file(&path, &mut digest)?;
     }
     Some(format!("{:x}", digest.finalize()))
+}
+
+#[cfg(unix)]
+fn is_filter_driver(key: &str) -> bool {
+    key.strip_prefix("filter.")
+        .and_then(|rest| rest.rsplit_once('.'))
+        .is_some_and(|(_, field)| matches!(field, "clean" | "smudge" | "process" | "required"))
 }
 
 #[cfg(unix)]

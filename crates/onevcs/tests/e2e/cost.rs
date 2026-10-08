@@ -747,7 +747,9 @@ fn manager_global_configuration_reuses_local_proofs_and_changed_log_style_delega
     tiered(&fixture);
     let config = fixture.world.path(".gitconfig");
     let original = std::fs::read_to_string(&config).unwrap();
-    let manager = format!("{original}\n[core]\n editor = /missing/editor\n[credential \"https://github.com\"]\n helper = /missing/github-helper\n[credential \"https://gist.github.com\"]\n helper = /missing/gist-helper\n[pull]\n rebase = true\n[push]\n default = simple\n");
+    // The filter block is what `git lfs install --system` writes, which the git-lfs
+    // package does on install — CI runners and most hosts carry it.
+    let manager = format!("{original}\n[core]\n editor = /missing/editor\n[credential \"https://github.com\"]\n helper = /missing/github-helper\n[credential \"https://gist.github.com\"]\n helper = /missing/gist-helper\n[pull]\n rebase = true\n[push]\n default = simple\n[filter \"lfs\"]\n clean = git-lfs clean -- %f\n smudge = git-lfs smudge -- %f\n process = git-lfs filter-process\n required = true\n");
     std::fs::write(&config, &manager).unwrap();
     let counting = Counting::installed(&fixture.world);
     let read = || {
