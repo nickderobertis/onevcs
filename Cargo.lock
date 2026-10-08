@@ -985,6 +985,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "onevcs-exposure-audit"
+version = "0.0.0"
+dependencies = [
+ "aho-corasick",
+ "assert_cmd",
+ "clap",
+ "libc",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "toml",
+ "ureq",
+]
+
+[[package]]
 name = "onevcs-testing"
 version = "0.13.1"
 dependencies = [

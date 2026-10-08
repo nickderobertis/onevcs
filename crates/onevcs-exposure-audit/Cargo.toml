@@ -1,0 +1,45 @@
+[package]
+name = "onevcs-exposure-audit"
+# A measurement spike's command, never published: it lives on a preserved branch so
+# the plan that ordered it can re-run it, and nothing installs it.
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Read-only audit of what an account's public repositories and boards expose about its private ones, with the measurements a boundary check is sized from."
+
+[[bin]]
+name = "onevcs-exposure-audit"
+path = "src/main.rs"
+
+[dependencies]
+# Every term is matched in one pass over a text, which is what keeps a history of
+# hundreds of thousands of blobs against thousands of terms linear in the bytes.
+# Already in the graph behind `regex`.
+aho-corasick = "1"
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+toml = { workspace = true }
+# The GitHub API client, already in the graph behind `onemessagebus`, built the way
+# it builds one — rustls over ring with the platform's root certificates — so this
+# adds no crate and no license to the graph. A status is read from the response
+# rather than raised, because a refusal is a coverage status here and never an
+# error to print.
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
