@@ -901,6 +901,22 @@ fn the_set_narrows_to_an_allowlist_or_to_registered_identities() {
 
 #[test]
 fn a_run_that_cannot_keep_its_findings_private_or_has_no_credential_refuses() {
+    let help = Command::new(env!("CARGO_BIN_EXE_onevcs-exposure-audit"))
+        .args(["run", "--help"])
+        .output()
+        .expect("the binary runs");
+    let help = text(&help);
+    for status in [
+        "0  completed",
+        "2  an input was refused",
+        "3  the run could not proceed",
+    ] {
+        assert!(
+            help.contains(status),
+            "--help states exit status {status}: {help}"
+        );
+    }
+
     let sandbox = Sandbox::new();
     let (world, _) = world(&sandbox);
     let host = Host::start(world);

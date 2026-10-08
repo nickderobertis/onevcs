@@ -28,8 +28,22 @@ use url::Url;
 use crate::ids::{BoardId, Login, RepoId, Token};
 use crate::manifest::Mode;
 
+/// The exit statuses, by meaning. `--help` states them from [`EXIT_STATUS`].
+pub mod exit {
+    /// An input was refused before anything was read.
+    pub const REFUSED: u8 = 2;
+    /// The run could not proceed, or could not keep what it found.
+    pub const STOPPED: u8 = 3;
+}
+
+/// What each exit status means, shown by `--help`.
+const EXIT_STATUS: &str = "Exit status:
+  0  completed; a surface that could not be read is a coverage status in the output, not a failure
+  2  an input was refused: a flag, the registry document, the exceptions file, or a vault root inside a git checkout
+  3  the run could not proceed: no credential, an unreadable owner listing, a vault that refused its files, or a failed bench step";
+
 #[derive(Parser)]
-#[command(name = "onevcs-exposure-audit", version, about)]
+#[command(name = "onevcs-exposure-audit", version, about, after_help = EXIT_STATUS)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -38,8 +52,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Audit an owner's public repositories and boards.
+    #[command(after_help = EXIT_STATUS)]
     Run(Box<RunArgs>),
     /// Measure the matcher, export and publication envelopes on generated data.
+    #[command(after_help = EXIT_STATUS)]
     Bench(BenchArgs),
 }
 
@@ -120,7 +136,7 @@ struct BenchArgs {
 fn refuse(message: &str, action: &str) -> ExitCode {
     eprintln!("exposure-audit: {message}");
     eprintln!("exposure-audit: ACTION: {action}");
-    ExitCode::from(2)
+    ExitCode::from(exit::REFUSED)
 }
 
 /// Each value parsed by `parse`; a refusal names the flag and the position, never
@@ -234,7 +250,7 @@ fn run(args: RunArgs) -> ExitCode {
             args.token_env
         );
         eprintln!("exposure-audit: ACTION: export {} or run `gh auth login`, then re-run; nothing was audited", args.token_env);
-        return ExitCode::from(3);
+        return ExitCode::from(exit::STOPPED);
     };
     let projects_token = args
         .projects_token_env
@@ -318,7 +334,7 @@ fn bench(args: BenchArgs) -> ExitCode {
         Err(step) => {
             eprintln!("exposure-audit: the bench failed: {step}");
             eprintln!("exposure-audit: ACTION: check that git runs and the temporary directory has room, then re-run");
-            ExitCode::from(3)
+            ExitCode::from(exit::STOPPED)
         }
     }
 }

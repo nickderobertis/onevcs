@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
 
+use crate::exit;
 use crate::github::{next_page, Api, Quota};
 use crate::gitscan::{self, GitStats, Sinks};
 use crate::ids::{BoardId, Login, RepoId, Token};
@@ -540,13 +541,13 @@ pub fn run(options: Options) -> u8 {
         Err(VaultRefusal::InsideCheckout) => return refuse(
             "the vault root is inside a git checkout; findings must stay outside every checkout",
             "pass --vault-root outside any repository, or leave it unset for the state directory",
-            2,
+            exit::REFUSED,
         ),
         Err(VaultRefusal::Unwritable) => {
             return refuse(
                 "the vault root cannot be created with mode 0700",
                 "check the permissions of the directory --vault-root names",
-                3,
+                exit::STOPPED,
             )
         }
     };
@@ -562,7 +563,7 @@ pub fn run(options: Options) -> u8 {
             return refuse(
                 &format!("the owner listing could not be read ({})", status.as_str()),
                 "check the credential and the owner, then re-run; nothing was audited",
-                3,
+                exit::STOPPED,
             );
         }
     };
@@ -575,7 +576,7 @@ pub fn run(options: Options) -> u8 {
             return refuse(
                 "the registry document is not readable JSON with an `identities` object",
                 "pass --registry naming onevcs's registry.json, or a document of that shape",
-                2,
+                exit::REFUSED,
             )
         }
     };
@@ -589,7 +590,7 @@ pub fn run(options: Options) -> u8 {
             return refuse(
                 "the term matcher could not be built from the derived terms",
                 "narrow the private sources or declare exceptions, then re-run",
-                3,
+                exit::STOPPED,
             )
         }
     };
@@ -604,7 +605,7 @@ pub fn run(options: Options) -> u8 {
         return refuse(
             "the vault did not accept terms.json",
             "check the vault's disk and permissions, then re-run",
-            3,
+            exit::STOPPED,
         );
     }
     phases.insert("terms", ms(phase));
@@ -620,7 +621,7 @@ pub fn run(options: Options) -> u8 {
         return refuse(
             "the vault did not accept its findings files",
             "check the vault's disk and permissions, then re-run",
-            3,
+            exit::STOPPED,
         );
     };
     let mut survey = Survey::default();
@@ -724,7 +725,7 @@ pub fn run(options: Options) -> u8 {
         return refuse(
             "the vault stopped accepting findings, so the report is incomplete",
             "check the vault's disk and permissions, then re-run",
-            3,
+            exit::STOPPED,
         );
     };
 
@@ -785,7 +786,7 @@ pub fn run(options: Options) -> u8 {
             return refuse(
                 "the coverage manifest could not be written where --manifest-out names",
                 "name a writable file; the vault holds a copy",
-                3,
+                exit::STOPPED,
             );
         }
     }
@@ -837,7 +838,7 @@ pub fn run(options: Options) -> u8 {
         return refuse(
             "the vault did not accept the report, coverage or measurements",
             "check the vault's disk and permissions, then re-run",
-            3,
+            exit::STOPPED,
         );
     }
 
