@@ -3152,6 +3152,10 @@ mod reclaim_race {
     fn host() -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("a scratch host");
         let at = root.path().canonicalize().expect("a canonical root");
+        // On Windows `canonicalize` is the verbatim `\\?\` spelling, and Git for Windows
+        // cannot read a global configuration named that way.
+        #[cfg(windows)]
+        let at = dunce::simplified(&at).to_path_buf();
         let config = at.join(".gitconfig");
         std::fs::write(
             &config,
