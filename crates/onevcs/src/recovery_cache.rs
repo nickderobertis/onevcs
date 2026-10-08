@@ -391,8 +391,10 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
             && !key.starts_with("pull.")
             && !key.starts_with("push.")
             && !key.starts_with("gist.")
-            // Clean/smudge filters convert between worktree and index only; every
-            // admitted query reads commits and trees. git-lfs installs one system-wide.
+            // Clean/smudge filters convert between worktree and index only. Every
+            // admitted query compares commits and trees named by object id, and none
+            // reads the worktree or the index; merge.* (renormalize) stays refused.
+            // git-lfs installs a filter system-wide.
             && !is_filter_driver(key)
             && !matches!(
                 key,

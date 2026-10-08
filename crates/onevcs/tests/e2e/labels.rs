@@ -831,6 +831,111 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
 }
 
 #[test]
+fn a_rewriting_filter_driver_leaves_reused_proofs_equal_to_git() {
+    // git-lfs installs a clean/smudge filter system-wide, so the proof cache admits
+    // filter drivers. That is sound only because every reused query compares commits
+    // and trees by object id; this driver rewrites every byte it touches, so a query
+    // that ran it would answer differently from one that did not.
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/filtered";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=filter"]);
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "lower case work\n",
+        "feat: filtered work",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let config = fixture.world.path(".gitconfig");
+    let original = std::fs::read_to_string(&config).expect("global configuration");
+    std::fs::write(
+        &config,
+        format!(
+            "{original}\n[filter \"shout\"]\n clean = tr a-z A-Z\n smudge = cat\n required = true\n"
+        ),
+    )
+    .expect("filter driver");
+    std::fs::write(fixture.checkout.join(".gitattributes"), "* filter=shout\n")
+        .expect("attributes");
+    let probe = fixture.world.path("probe.txt");
+    std::fs::write(&probe, "lower case work\n").expect("probe");
+    let probe = probe.to_str().expect("a UTF-8 path");
+    assert_ne!(
+        fixture.world.git(
+            &fixture.checkout,
+            &["hash-object", "--path=work.txt", probe]
+        ),
+        fixture
+            .world
+            .git(&fixture.checkout, &["hash-object", "--no-filters", probe]),
+        "the premise: the driver rewrites content wherever git runs it"
+    );
+
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    for detail in ["full", "decision"] {
+        let args = ["--detail", detail, "--session", &token, "--all"];
+        let uncached = fixture
+            .world
+            .onevcs()
+            .args(["recoverable", "--json"])
+            .args(args)
+            .env("GIT_NAMESPACE", "")
+            .assert()
+            .success();
+        let uncached: Vec<Value> =
+            serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+        assert_eq!(uncached.len(), 1, "the filtered branch is reported");
+        let read = || {
+            counting.clear();
+            let assert = counting
+                .onevcs(&fixture.world)
+                .args(["recoverable", "--json"])
+                .args(args)
+                .assert()
+                .success();
+            let rows: Vec<Value> =
+                serde_json::from_slice(&assert.get_output().stdout).expect("rows");
+            // Content comparisons between two commits named by object id: the ones the
+            // cache admits. A row's line statistics name the branch, so git answers them.
+            let content = counting
+                .calls()
+                .into_iter()
+                .filter(|call| {
+                    let mut words = call.args.split_whitespace();
+                    matches!(words.next(), Some("diff" | "merge-tree"))
+                        && words
+                            .filter(|word| !word.starts_with('-') && !word.starts_with(":("))
+                            .all(|word| {
+                                word.len() == 40 && word.bytes().all(|b| b.is_ascii_hexdigit())
+                            })
+                })
+                .count();
+            (rows, counting.calls().len(), content)
+        };
+        // Each detail starts from no proofs, so its first read derives them.
+        let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+        let (cold, cold_calls, cold_content) = read();
+        let (warm, warm_calls, warm_content) = read();
+        assert_eq!(cold, uncached, "{detail}: a cold read agrees with git");
+        assert_eq!(warm, uncached, "{detail}: a reused proof agrees with git");
+        assert!(
+            warm_calls < cold_calls,
+            "{detail}: proofs are reused under the filter: cold {cold_calls}, warm {warm_calls}"
+        );
+        assert!(cold_content > 0, "{detail}: the row compares content");
+        assert_eq!(
+            warm_content, 0,
+            "{detail}: the content comparisons are reused"
+        );
+    }
+}
+
+#[test]
 fn session_hints_observe_new_labels_and_refuse_changed_unrelated_records() {
     let fixture = Fixture::local(&local_direct());
     let branch = "feature/session-index";
