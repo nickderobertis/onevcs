@@ -579,25 +579,36 @@ fn a_repeat_pass_over_unchanged_state_reuses_every_verdict_and_asks_the_origin_o
     // many commits a branch holds that no origin ref has — `vcs::collect`'s question,
     // in `unpublished_ahead`'s spelling, which the pass never asks — so that one form is
     // the sweep's and is set aside.
+    let sweep_calls = || -> Vec<Call> {
+        counting
+            .calls()
+            .into_iter()
+            .filter(|call| {
+                !(call.args.starts_with("rev-list --count refs/heads/")
+                    && call.args.ends_with(" --not --remotes=origin --"))
+            })
+            .collect()
+    };
     counting.clear();
-    let (swept, _) = swept(&mut counting.onevcs(world));
-    let calls: Vec<Call> = counting
-        .calls()
-        .into_iter()
-        .filter(|call| {
-            !(call.args.starts_with("rev-list --count refs/heads/")
-                && call.args.ends_with(" --not --remotes=origin --"))
-        })
-        .collect();
-    assert_eq!(swept.len(), first.len());
-    for entry in &swept {
+    let (once, _) = swept(&mut counting.onevcs(world));
+    let calls = sweep_calls();
+    assert_eq!(once.len(), first.len());
+    for entry in &once {
         assert_eq!(entry["derivation"], "reused", "{entry}");
     }
+    assert_eq!(listings(&calls), ["ls-remote --heads origin"]);
+    // Its record family asks recovery's proof of every record, which a pass never
+    // records a verdict for; that proof's immutable answers are reused from the second
+    // sweep on, so a sweep over unchanged state then asks nothing of the history.
+    counting.clear();
+    let (again, _) = swept(&mut counting.onevcs(world));
+    let calls = sweep_calls();
+    assert_eq!(again, once, "an unchanged sweep reports what it reported");
     assert_eq!(listings(&calls), ["ls-remote --heads origin"]);
     assert_eq!(
         derivation_questions(&calls, &estate.base_tips()),
         [] as [String; 0],
-        "the sweep's pass asks no ancestry, history, diff or existence question"
+        "a repeat sweep asks no ancestry, history, diff or existence question"
     );
 }
 

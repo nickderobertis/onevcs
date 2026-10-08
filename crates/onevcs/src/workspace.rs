@@ -889,11 +889,16 @@ pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
     let open = OpenRoots::of(listed);
     let work = RecordWork::read(listed)?;
     let mut records = Vec::new();
-    for record in listed {
-        if git::memoized(|| spent(record, &open, &work))? {
-            records.push(record.clone());
+    // The proof is recovery's, so it reuses recovery's immutable answers: a repeat
+    // sweep over unchanged branches asks git no ancestry or history question again.
+    crate::recovery_cache::scope(|| -> Result<()> {
+        for record in listed {
+            if git::memoized(|| spent(record, &open, &work))? {
+                records.push(record.clone());
+            }
         }
-    }
+        Ok(())
+    })?;
     Ok(records)
 }
 

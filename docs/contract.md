@@ -4328,7 +4328,8 @@ recorded preserved tip through that same proof; missing local refs are not a
 landing and do not expand recovery's rows. The semantic landing/retirement proof
 recovery uses is the authority:
 no, unknown, in-part, superseded-with-changes and unreadable evidence retain.
-Deletion requires confident proof no work remains plus existing age, owner,
+Deletion requires confident proof no work remains — `retirable`, or `keep` with
+reason `is-base` (every copy at or behind the base) — plus existing age, owner,
 occupancy and dirtiness protections. Pool-slot ownership rules remain intact.
 Previously lost records are not reconstructed.
 An existing selected checkout that Git cannot read refuses the recovery query,

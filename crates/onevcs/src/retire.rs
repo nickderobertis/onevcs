@@ -2883,11 +2883,12 @@ pub(crate) fn record_has_work(
             tip: preserved.commit,
         });
     }
-    Ok(census
-        .classify(&record.branch, copies, &ask)?
-        .retirement
-        .class
-        != RetirementClass::Retirable)
+    // `is-base` is the proof that every copy stands at or behind the base: nothing
+    // beyond it to keep. A session never names its base as its branch, so that
+    // answer here comes from the tips rather than from the name.
+    let retirement = census.classify(&record.branch, copies, &ask)?.retirement;
+    Ok(retirement.class != RetirementClass::Retirable
+        && retirement.reason != Some(KeepReason::IsBase))
 }
 
 /// Retire one branch by name.
