@@ -164,7 +164,8 @@ enum Node {
     },
     Review {
         repo: usize,
-        pull: usize,
+        /// The index of the change request the review is on.
+        pull_index: usize,
         index: usize,
     },
     Comment(Text),
@@ -449,8 +450,15 @@ fn respond(
                         .map(|(r, rv)| review_json(&format!("{id}-r{r}"), rv))
                         .collect()
                 }
-                (Some(Node::Review { repo, pull, index }), "comments") => {
-                    let review = &item_of(world, *repo, true, *pull).reviews[*index];
+                (
+                    Some(Node::Review {
+                        repo,
+                        pull_index,
+                        index,
+                    }),
+                    "comments",
+                ) => {
+                    let review = &item_of(world, *repo, true, *pull_index).reviews[*index];
                     review
                         .comments
                         .iter()
@@ -581,7 +589,7 @@ fn index(world: &World) -> BTreeMap<String, Node> {
                         rid.clone(),
                         Node::Review {
                             repo: ri,
-                            pull: i,
+                            pull_index: i,
                             index: r,
                         },
                     );
@@ -598,7 +606,11 @@ fn index(world: &World) -> BTreeMap<String, Node> {
 fn edits_of(world: &World, node: &Node) -> Vec<(String, bool)> {
     match node {
         Node::Item { repo, pull, index } => item_of(world, *repo, *pull, *index).body.edits.clone(),
-        Node::Review { repo, pull, index } => item_of(world, *repo, true, *pull).reviews[*index]
+        Node::Review {
+            repo,
+            pull_index,
+            index,
+        } => item_of(world, *repo, true, *pull_index).reviews[*index]
             .body
             .edits
             .clone(),
