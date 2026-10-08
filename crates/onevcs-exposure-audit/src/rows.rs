@@ -120,6 +120,38 @@ pub struct HistoryRow<'a> {
     pub snippet: String,
 }
 
+/// Why a history hit's commits are not all listed.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HistoryGap {
+    /// More commits carry it than a hit is attributed to.
+    AttributionTruncated,
+    /// No commit carries it: only a ref naming a tree or a blob reaches it.
+    Unattributed,
+}
+
+/// A history hit whose attribution is incomplete. It carries the hit itself, so a
+/// hit no commit carries is kept rather than dropped with its missing rows.
+#[derive(Serialize)]
+pub struct HistoryGapRow<'a> {
+    pub repository: &'a str,
+    pub gap: HistoryGap,
+    pub location: HistoryLocation,
+    /// The blob's id, or the path.
+    pub object: &'a str,
+    /// For a blob, a path it is at, where one is known.
+    pub path: Option<&'a str>,
+    /// A ref that reaches it and is not a commit.
+    #[serde(rename = "ref")]
+    pub reached_by: Option<&'a str>,
+    pub terms: Vec<&'a str>,
+    pub snippets: Vec<&'a str>,
+    /// The commits its history rows list.
+    pub attributed: u64,
+    /// The commits that carry it.
+    pub commits: u64,
+}
+
 /// A term in an issue, a change request, a comment, a review, or a board item.
 #[derive(Serialize)]
 pub struct ItemRow<'a> {

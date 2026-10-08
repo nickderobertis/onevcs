@@ -44,7 +44,7 @@ fn field<'a>(row: &'a Value, name: &str) -> &'a str {
 pub fn render(
     dir: &Path,
     manifest: &str,
-    (files, history, items): (u64, u64, u64),
+    (files, history, items, gaps): (u64, u64, u64, u64),
 ) -> Result<String, Unreadable> {
     let mut out = String::new();
     let _ = writeln!(out, "# Exposure audit: full findings (private)\n");
@@ -159,6 +159,42 @@ pub fn render(
     for ((narrowing, term), count) in narrowed {
         let _ = writeln!(out, "| {narrowing} | `{term}` | {count} |");
     }
+    let _ = writeln!(out, "\n## Git history coverage gaps\n\nHits whose commits the history rows above do not all list. `attribution-truncated`: more commits carry it than its rows name, and the rest are not listed. `unattributed`: no commit carries it, only the ref named, so it has no history row and is kept here.\n");
+    let _ = writeln!(
+        out,
+        "| Repository | Gap | Where | Terms | Commits listed | Commits carrying it |\n|---|---|---|---|---|---|"
+    );
+    for row in rows(dir, "findings-history-gaps.jsonl", gaps)? {
+        let mut where_ = format!("{} `{}`", field(&row, "location"), field(&row, "object"));
+        if field(&row, "location") == "blob" && !field(&row, "path").is_empty() {
+            let _ = write!(where_, " at `{}`", field(&row, "path"));
+        }
+        if !field(&row, "ref").is_empty() {
+            let _ = write!(where_, " via `{}`", field(&row, "ref"));
+        }
+        let list = |name: &str| {
+            row.get(name)
+                .and_then(Value::as_array)
+                .map(|v| {
+                    v.iter()
+                        .filter_map(Value::as_str)
+                        .map(|t| format!("`{}`", t.replace('|', "\\|")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default()
+        };
+        let count = |name: &str| row.get(name).and_then(Value::as_u64).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "| {} | {} | {where_} | {} | {} | {} |",
+            field(&row, "repository"),
+            field(&row, "gap"),
+            list("terms"),
+            count("attributed"),
+            count("commits")
+        );
+    }
     let _ = writeln!(
         out,
         "\n## Coverage\n\nA surface not `scanned` is a gap: nothing above is claimed for it.\n"
@@ -180,6 +216,7 @@ mod tests {
         std::fs::write(dir.path().join("findings-current-files.jsonl"), "").expect("written");
         std::fs::write(dir.path().join("findings-history.jsonl"), "").expect("written");
         std::fs::write(dir.path().join("findings-items.jsonl"), items).expect("written");
+        std::fs::write(dir.path().join("findings-history-gaps.jsonl"), "").expect("written");
         dir
     }
 
@@ -188,7 +225,7 @@ mod tests {
     #[test]
     fn the_report_renders_every_row_the_run_wrote() {
         let dir = vault(&format!("{ROW}\n"));
-        let report = render(dir.path(), "", (0, 0, 1)).expect("rendered");
+        let report = render(dir.path(), "", (0, 0, 1, 0)).expect("rendered");
         assert!(report.contains("| CLOSED | `quietharbor` | deleted-edit-history |"));
     }
 
@@ -202,10 +239,10 @@ mod tests {
             (format!("{ROW}\n"), 2),
         ] {
             let dir = vault(&items);
-            assert!(render(dir.path(), "", (0, 0, count)).is_err(), "{items}");
+            assert!(render(dir.path(), "", (0, 0, count, 0)).is_err(), "{items}");
         }
         let dir = vault("");
         std::fs::remove_file(dir.path().join("findings-history.jsonl")).expect("removed");
-        assert!(render(dir.path(), "", (0, 0, 0)).is_err());
+        assert!(render(dir.path(), "", (0, 0, 0, 0)).is_err());
     }
 }

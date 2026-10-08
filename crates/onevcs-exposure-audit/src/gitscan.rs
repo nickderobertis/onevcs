@@ -7,6 +7,11 @@
 //! commits are then found for the blobs that matched, which keeps the scan linear in
 //! the bytes of distinct content rather than in commits times files.
 //!
+//! Paths and commits come from one walk of every commit's raw diff against each of
+//! its parents, merges included: a blob carries one name in an object listing however
+//! many paths hold it, and a merge's resolution writes content neither parent has. A
+//! hit whose commits cannot all be listed is a gap row in the vault, never dropped.
+//!
 //! git's own stderr is discarded: it names the URL it failed on.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -18,7 +23,8 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::rows::{
-    line_of, narrowed, snippet, FileLocation, FileRow, HistoryLocation, HistoryRow, Survey,
+    line_of, narrowed, snippet, FileLocation, FileRow, HistoryGap, HistoryGapRow, HistoryLocation,
+    HistoryRow, Survey,
 };
 use crate::status::Status;
 use crate::terms::Matcher;
@@ -58,6 +64,12 @@ pub struct GitStats {
     pub binary_skipped: u64,
     pub oversized_skipped: u64,
     pub paths: u64,
+    /// Refs that name a tree or a blob rather than reaching a commit.
+    pub commitless_refs: u64,
+    /// Hits more commits carry than their rows list.
+    pub attribution_truncated: u64,
+    /// Hits no commit carries.
+    pub unattributed: u64,
     pub tracked_files: u64,
     pub tracked_bytes: u64,
     pub clone_ms: u64,
@@ -75,6 +87,8 @@ pub struct GitOutcome {
 pub struct Sinks<'a> {
     pub files: &'a mut Findings,
     pub history: &'a mut Findings,
+    /// Hits whose commits are not all listed: [`HistoryGapRow`]s.
+    pub gaps: &'a mut Findings,
     pub survey: &'a mut Survey,
 }
 
@@ -166,6 +180,7 @@ pub fn scan(
         matcher,
         sinks,
         stats,
+        commitless: Vec::new(),
     }
     .run();
     outcome.stats.scan_ms = ms(scanning);
@@ -178,6 +193,8 @@ struct Scan<'a, 'b> {
     matcher: &'a Matcher,
     sinks: Sinks<'b>,
     stats: GitStats,
+    /// The refs that name a tree or a blob, which no commit walk reaches.
+    commitless: Vec<String>,
 }
 
 impl Scan<'_, '_> {
@@ -207,13 +224,12 @@ impl Scan<'_, '_> {
             Err(status) => *status,
         };
         let head = head.unwrap_or_default();
-        let mut pending = Pending::default();
+        let mut blobs = BTreeMap::new();
         let history = [
             self.commits(),
             self.tags(),
-            self.paths(&head, &mut pending),
-            self.blobs(&head, &mut pending),
-            self.attribute(pending),
+            self.blobs(&head, &mut blobs),
+            self.attribute(&head, blobs),
         ]
         .into_iter()
         .fold(Status::Scanned, |acc, r| {
@@ -234,13 +250,21 @@ impl Scan<'_, '_> {
     }
 
     fn refs(&mut self) -> Result<RefCounts, Status> {
-        let out =
-            output(git(self.dir).args(["for-each-ref", "--format=%(objectname) %(refname)"]))?;
+        let out = output(git(self.dir).args([
+            "for-each-ref",
+            "--format=%(objectname) %(objecttype) %(*objecttype) %(refname)",
+        ]))?;
         let mut counts = RefCounts::default();
         for line in String::from_utf8_lossy(&out).lines() {
-            let Some((oid, name)) = line.split_once(' ') else {
+            let fields: Vec<&str> = line.splitn(4, ' ').collect();
+            let [oid, kind, peeled, name] = fields[..] else {
                 continue;
             };
+            // A tag of a tag is peeled by git later; one this cannot see reach a
+            // commit is read as reaching none, which only reads more.
+            if kind != "commit" && !(kind == "tag" && peeled == "commit") {
+                self.commitless.push(name.to_owned());
+            }
             if name.starts_with("refs/heads/") {
                 counts.heads += 1;
             } else if name.starts_with("refs/tags/") {
@@ -402,62 +426,12 @@ impl Scan<'_, '_> {
         Ok(())
     }
 
-    /// Every path any reachable tree has held. A path at the tip is a current-file
-    /// row now; every path hit waits for [`Scan::attribute`] for its commits.
-    fn paths(
-        &mut self,
-        head: &HashMap<String, Vec<String>>,
-        pending: &mut Pending,
-    ) -> Result<(), Status> {
-        let out = output(git(self.dir).args(["rev-list", "--objects", "--all"]))?;
-        let current: BTreeSet<&str> = head.values().flatten().map(String::as_str).collect();
-        let mut paths: BTreeSet<String> = BTreeSet::new();
-        for line in String::from_utf8_lossy(&out).lines() {
-            if let Some((_, path)) = line.split_once(' ') {
-                if !path.is_empty() {
-                    paths.insert(path.to_owned());
-                }
-            }
-        }
-        self.stats.paths = paths.len() as u64;
-        for path in paths {
-            let hits = self.matcher.find(path.as_bytes());
-            if hits.is_empty() {
-                continue;
-            }
-            self.sinks
-                .survey
-                .tally(self.matcher, &hits, self.repository);
-            for hit in &hits {
-                let term = &self.matcher.terms()[hit.term];
-                if current.contains(path.as_str()) {
-                    self.sinks.files.push(&FileRow {
-                        repository: self.repository,
-                        path: &path,
-                        location: FileLocation::Path,
-                        term: &term.text,
-                        class: term.class.as_str(),
-                        narrowed: narrowed(term.narrowed),
-                        line: None,
-                        snippet: snippet(path.as_bytes(), hit.offset),
-                    });
-                }
-            }
-            let found = hits
-                .iter()
-                .map(|h| (h.term, snippet(path.as_bytes(), h.offset)))
-                .collect();
-            pending.paths.insert(path, found);
-        }
-        Ok(())
-    }
-
     /// Every distinct reachable blob, read once. A blob at the tip is a current-file
     /// row now; every blob hit waits for [`Scan::attribute`] for its commits.
     fn blobs(
         &mut self,
         head: &HashMap<String, Vec<String>>,
-        pending: &mut Pending,
+        pending: &mut BTreeMap<String, Pending>,
     ) -> Result<(), Status> {
         let listing = output(git(self.dir).args([
             "cat-file",
@@ -557,7 +531,7 @@ impl Scan<'_, '_> {
                 .iter()
                 .map(|h| (h.term, snippet(&content, h.offset)))
                 .collect();
-            pending.blobs.insert(oid.to_owned(), found);
+            pending.insert(oid.to_owned(), Pending::new(found));
         }
         let _ = feeder.join();
         let exited = child.wait().map(|s| s.success()).unwrap_or(false);
@@ -567,21 +541,28 @@ impl Scan<'_, '_> {
         Ok(())
     }
 
-    /// The commits each matching blob and path came in with, found in one pass over
-    /// every commit's raw diff rather than one history walk per hit. A blob is
+    /// Every path any reachable commit's tree has held, and the commits each matching
+    /// blob and path came in with, from one walk over every commit's raw diff
+    /// against each of its parents rather than one history walk per hit. A blob is
     /// attributed to the commits whose diff writes it; a path to the commits whose
-    /// diff touches it or anything under it. At most [`MAX_ATTRIBUTION`] each.
-    fn attribute(&mut self, pending: Pending) -> Result<(), Status> {
-        if pending.blobs.is_empty() && pending.paths.is_empty() {
-            return Ok(());
-        }
+    /// diff touches it or anything under it, at most [`MAX_ATTRIBUTION`] each. A path
+    /// at the tip is also a current-file row. The trees that only a commitless ref
+    /// names are listed after the walk, since no commit reaches them.
+    fn attribute(
+        &mut self,
+        head: &HashMap<String, Vec<String>>,
+        mut blobs: BTreeMap<String, Pending>,
+    ) -> Result<(), Status> {
         let mut child = git(self.dir)
             .args([
                 "log",
                 "--all",
                 "--raw",
+                "--root",
+                "-z",
                 "--no-abbrev",
                 "--no-renames",
+                "--diff-merges=separate",
                 "--format=%x1e%H",
             ])
             .stdout(Stdio::piped())
@@ -589,76 +570,250 @@ impl Scan<'_, '_> {
             .map_err(|_| Status::OtherError)?;
         let reader =
             BufReader::with_capacity(1 << 20, child.stdout.take().expect("stdout is piped"));
-        let mut blob_commits: HashMap<&str, Vec<String>> = HashMap::new();
-        let mut path_commits: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut paths = Paths::new(self.matcher, self.repository);
         let mut commit = String::new();
-        for line in reader.split(b'\n') {
-            let line = line.map_err(|_| Status::OtherError)?;
-            let line = String::from_utf8_lossy(&line);
-            if let Some(hash) = line.strip_prefix('\u{1e}') {
-                commit = hash.trim().to_owned();
-                continue;
-            }
-            let Some(raw) = line.strip_prefix(':') else {
-                continue;
-            };
-            let Some((meta, path)) = raw.split_once('\t') else {
-                continue;
-            };
-            let new_oid = meta.split(' ').nth(3).unwrap_or_default();
-            if let Some((key, _)) = pending.blobs.get_key_value(new_oid) {
-                let list = blob_commits.entry(key.as_str()).or_default();
-                if list.len() < MAX_ATTRIBUTION && list.last() != Some(&commit) {
-                    list.push(commit.clone());
+        // A merge's header repeats before its diff against each parent; the
+        // generation changes only when the commit does.
+        let mut generation = 0u64;
+        let mut written: Option<String> = None;
+        for token in reader.split(0) {
+            let token = token.map_err(|_| Status::OtherError)?;
+            // A path is the token after its entry's metadata, whatever it starts with.
+            if let Some(oid) = written.take() {
+                let path = String::from_utf8_lossy(&token);
+                if let Some(blob) = blobs.get_mut(&oid) {
+                    blob.attribution.add(&commit, generation);
+                    blob.path.get_or_insert_with(|| path.clone().into_owned());
                 }
-            }
-            let mut prefix = path;
-            loop {
-                if let Some((key, _)) = pending.paths.get_key_value(prefix) {
-                    let list = path_commits.entry(key.as_str()).or_default();
-                    if list.len() < MAX_ATTRIBUTION && list.last() != Some(&commit) {
-                        list.push(commit.clone());
+                let mut prefix: &str = &path;
+                loop {
+                    if let Some(hit) = paths.get(prefix, self.sinks.survey) {
+                        hit.attribution.add(&commit, generation);
+                    }
+                    match prefix.rsplit_once('/') {
+                        Some((parent, _)) => prefix = parent,
+                        None => break,
                     }
                 }
-                match prefix.rsplit_once('/') {
-                    Some((parent, _)) => prefix = parent,
-                    None => break,
+                continue;
+            }
+            let token = token.strip_prefix(b"\n").unwrap_or(&token);
+            if let Some(hash) = token.strip_prefix(b"\x1e") {
+                let hash = String::from_utf8_lossy(hash);
+                if hash != commit {
+                    commit = hash.into_owned();
+                    generation += 1;
                 }
+            } else if let Some(meta) = token.strip_prefix(b":") {
+                let meta = String::from_utf8_lossy(meta);
+                written = Some(meta.split(' ').nth(3).unwrap_or_default().to_owned());
             }
         }
         let exited = child.wait().map(|s| s.success()).unwrap_or(false);
-        for (location, found, commits) in [
-            (HistoryLocation::Blob, &pending.blobs, &blob_commits),
-            (HistoryLocation::Path, &pending.paths, &path_commits),
-        ] {
-            for (key, hits) in found {
-                let path = (location == HistoryLocation::Path).then_some(key.as_str());
-                for (term_index, text) in hits {
+        let commitless = self.commitless(&mut paths, &mut blobs);
+        self.stats.commitless_refs = self.commitless.len() as u64;
+        self.stats.paths = paths.seen.len() as u64;
+
+        let current: BTreeSet<&str> = head.values().flatten().map(String::as_str).collect();
+        let mut matched: Vec<(String, Pending)> = paths
+            .seen
+            .into_iter()
+            .filter_map(|(path, hit)| hit.map(|hit| (path, hit)))
+            .collect();
+        matched.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, hit) in &matched {
+            if current.contains(path.as_str()) {
+                for (term_index, text) in &hit.found {
                     let term = &self.matcher.terms()[*term_index];
-                    for commit in commits.get(key.as_str()).into_iter().flatten() {
-                        self.sinks.history.push(&HistoryRow {
-                            repository: self.repository,
-                            commit,
-                            term: &term.text,
-                            class: term.class.as_str(),
-                            narrowed: narrowed(term.narrowed),
-                            location,
-                            path,
-                            snippet: text.clone(),
-                        });
-                    }
+                    self.sinks.files.push(&FileRow {
+                        repository: self.repository,
+                        path,
+                        location: FileLocation::Path,
+                        term: &term.text,
+                        class: term.class.as_str(),
+                        narrowed: narrowed(term.narrowed),
+                        line: None,
+                        snippet: text.clone(),
+                    });
+                }
+            }
+            self.emit(HistoryLocation::Path, path, hit);
+        }
+        for (oid, hit) in &blobs {
+            self.emit(HistoryLocation::Blob, oid, hit);
+        }
+        (exited && commitless)
+            .then_some(())
+            .ok_or(Status::OtherError)
+    }
+
+    /// Read the trees the commitless refs name, path by path, and note which ref
+    /// reaches each hit there. `false` when one of them could not be read.
+    fn commitless(&mut self, paths: &mut Paths<'_>, blobs: &mut BTreeMap<String, Pending>) -> bool {
+        let mut read = true;
+        for name in &self.commitless {
+            let peeled = format!("{name}^{{}}");
+            let Ok(oid) = output(git(self.dir).args(["rev-parse", "--verify", "-q", &peeled]))
+            else {
+                read = false;
+                continue;
+            };
+            let oid = String::from_utf8_lossy(&oid).trim().to_owned();
+            if let Some(blob) = blobs.get_mut(&oid) {
+                blob.reached_by.get_or_insert_with(|| name.clone());
+                continue;
+            }
+            let Ok(kind) = output(git(self.dir).args(["cat-file", "-t", &oid])) else {
+                read = false;
+                continue;
+            };
+            if String::from_utf8_lossy(&kind).trim() != "tree" {
+                continue;
+            }
+            let Ok(listing) = output(git(self.dir).args(["ls-tree", "-r", "-t", "-z", &oid]))
+            else {
+                read = false;
+                continue;
+            };
+            for entry in listing.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+                let entry = String::from_utf8_lossy(entry);
+                let Some((meta, path)) = entry.split_once('\t') else {
+                    continue;
+                };
+                if let Some(hit) = paths.get(path, self.sinks.survey) {
+                    hit.reached_by.get_or_insert_with(|| name.clone());
+                }
+                if let Some(blob) = meta.split(' ').nth(2).and_then(|oid| blobs.get_mut(oid)) {
+                    blob.reached_by.get_or_insert_with(|| name.clone());
+                    blob.path.get_or_insert_with(|| path.to_owned());
                 }
             }
         }
-        exited.then_some(()).ok_or(Status::OtherError)
+        read
+    }
+
+    /// One hit's history rows, and its gap row when its commits are not all listed.
+    fn emit(&mut self, location: HistoryLocation, key: &str, hit: &Pending) {
+        let path = (location == HistoryLocation::Path).then_some(key);
+        for (term_index, text) in &hit.found {
+            let term = &self.matcher.terms()[*term_index];
+            for commit in &hit.attribution.commits {
+                self.sinks.history.push(&HistoryRow {
+                    repository: self.repository,
+                    commit,
+                    term: &term.text,
+                    class: term.class.as_str(),
+                    narrowed: narrowed(term.narrowed),
+                    location,
+                    path,
+                    snippet: text.clone(),
+                });
+            }
+        }
+        let attributed = hit.attribution.commits.len() as u64;
+        let gap = if hit.attribution.total == 0 {
+            self.stats.unattributed += 1;
+            HistoryGap::Unattributed
+        } else if hit.attribution.total > attributed {
+            self.stats.attribution_truncated += 1;
+            HistoryGap::AttributionTruncated
+        } else {
+            return;
+        };
+        self.sinks.gaps.push(&HistoryGapRow {
+            repository: self.repository,
+            gap,
+            location,
+            object: key,
+            path: path.or(hit.path.as_deref()),
+            reached_by: hit.reached_by.as_deref(),
+            terms: hit
+                .found
+                .iter()
+                .map(|(t, _)| self.matcher.terms()[*t].text.as_str())
+                .collect(),
+            snippets: hit.found.iter().map(|(_, s)| s.as_str()).collect(),
+            attributed,
+            commits: hit.attribution.total,
+        });
     }
 }
 
-/// Hits waiting for their commits: by blob id, and by path.
-#[derive(Default)]
+/// A hit waiting for its commits: its terms with their snippets, and what reaches it.
 struct Pending {
-    blobs: BTreeMap<String, Vec<(usize, String)>>,
-    paths: BTreeMap<String, Vec<(usize, String)>>,
+    found: Vec<(usize, String)>,
+    attribution: Attribution,
+    /// For a blob, the first path it was seen at.
+    path: Option<String>,
+    /// A commitless ref that reaches it.
+    reached_by: Option<String>,
+}
+
+impl Pending {
+    fn new(found: Vec<(usize, String)>) -> Pending {
+        Pending {
+            found,
+            attribution: Attribution::default(),
+            path: None,
+            reached_by: None,
+        }
+    }
+}
+
+/// The commits carrying a hit: the first [`MAX_ATTRIBUTION`] of them, and how many.
+#[derive(Default)]
+struct Attribution {
+    commits: Vec<String>,
+    total: u64,
+    /// The walk's generation of the commit counted last.
+    generation: u64,
+}
+
+impl Attribution {
+    fn add(&mut self, commit: &str, generation: u64) {
+        if self.generation == generation {
+            return;
+        }
+        self.generation = generation;
+        self.total += 1;
+        if self.commits.len() < MAX_ATTRIBUTION {
+            self.commits.push(commit.to_owned());
+        }
+    }
+}
+
+/// Every distinct path the walk has met, each matched once when first met.
+struct Paths<'a> {
+    matcher: &'a Matcher,
+    repository: &'a str,
+    seen: HashMap<String, Option<Pending>>,
+}
+
+impl<'a> Paths<'a> {
+    fn new(matcher: &'a Matcher, repository: &'a str) -> Paths<'a> {
+        Paths {
+            matcher,
+            repository,
+            seen: HashMap::new(),
+        }
+    }
+
+    /// The hit at `path`, or `None` where it matches nothing.
+    fn get(&mut self, path: &str, survey: &mut Survey) -> Option<&mut Pending> {
+        if !self.seen.contains_key(path) {
+            let hits = self.matcher.find(path.as_bytes());
+            let pending = (!hits.is_empty()).then(|| {
+                survey.tally(self.matcher, &hits, self.repository);
+                Pending::new(
+                    hits.iter()
+                        .map(|h| (h.term, snippet(path.as_bytes(), h.offset)))
+                        .collect(),
+                )
+            });
+            self.seen.insert(path.to_owned(), pending);
+        }
+        self.seen.get_mut(path).and_then(Option::as_mut)
+    }
 }
 
 fn ms(started: Instant) -> u64 {

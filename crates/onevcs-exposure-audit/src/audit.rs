@@ -624,9 +624,11 @@ pub fn run(options: Options) -> u8 {
         Findings::open(&vault, "findings-current-files.jsonl"),
         Findings::open(&vault, "findings-history.jsonl"),
         Findings::open(&vault, "findings-items.jsonl"),
+        Findings::open(&vault, "findings-history-gaps.jsonl"),
         vault.subdir("clones"),
     );
-    let (Ok(mut files), Ok(mut history), Ok(mut items), Ok(clones)) = opened else {
+    let (Ok(mut files), Ok(mut history), Ok(mut items), Ok(mut history_gaps), Ok(clones)) = opened
+    else {
         return refuse(
             "the vault did not accept its findings files",
             "check the vault's disk and permissions, then re-run",
@@ -686,6 +688,7 @@ pub fn run(options: Options) -> u8 {
             Sinks {
                 files: &mut files,
                 history: &mut history,
+                gaps: &mut history_gaps,
                 survey: &mut survey,
             },
         );
@@ -728,9 +731,12 @@ pub fn run(options: Options) -> u8 {
     if options.clones == Clones::Delete {
         let _ = std::fs::remove_dir(&clones);
     }
-    let (Ok(file_rows), Ok(history_rows), Ok(item_rows)) =
-        (files.finish(), history.finish(), items.finish())
-    else {
+    let (Ok(file_rows), Ok(history_rows), Ok(item_rows), Ok(gap_rows)) = (
+        files.finish(),
+        history.finish(),
+        items.finish(),
+        history_gaps.finish(),
+    ) else {
         return refuse(
             "the vault stopped accepting findings, so the report is incomplete",
             "check the vault's disk and permissions, then re-run",
@@ -825,7 +831,7 @@ pub fn run(options: Options) -> u8 {
     let Ok(report) = report::render(
         vault.dir(),
         &manifest_text,
-        (file_rows, history_rows, item_rows),
+        (file_rows, history_rows, item_rows, gap_rows),
     ) else {
         return refuse(
             "the vault's findings did not read back as the rows the run wrote",
@@ -874,6 +880,14 @@ pub fn run(options: Options) -> u8 {
         tally(Status::PermissionDenied),
         tally(Status::RateLimited),
         tally(Status::OtherError)
+    ));
+    let attribution =
+        |of: fn(&GitStats) -> u64| repo_coverage.iter().map(|c| of(&c.git)).sum::<u64>();
+    say(&format!(
+        "history attribution gaps: truncated {}, unattributed {}; commitless refs {}",
+        attribution(|g| g.attribution_truncated),
+        attribution(|g| g.unattributed),
+        attribution(|g| g.commitless_refs)
     ));
     say(&format!(
         "requests: rest {}, graphql {} (cost {}); duration {:.1}s",
@@ -930,6 +944,9 @@ fn measurements(m: &Measured<'_>) -> Value {
         git.binary_skipped += g.binary_skipped;
         git.oversized_skipped += g.oversized_skipped;
         git.paths += g.paths;
+        git.commitless_refs += g.commitless_refs;
+        git.attribution_truncated += g.attribution_truncated;
+        git.unattributed += g.unattributed;
         git.tracked_files += g.tracked_files;
         git.tracked_bytes += g.tracked_bytes;
         git.clone_ms += g.clone_ms;

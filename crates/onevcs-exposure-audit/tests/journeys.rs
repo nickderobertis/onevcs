@@ -534,6 +534,7 @@ fn an_audit_finds_every_kind_of_exposure_and_keeps_it_in_the_vault() {
             "coverage-manifest.md",
             "coverage.json",
             "findings-current-files.jsonl",
+            "findings-history-gaps.jsonl",
             "findings-history.jsonl",
             "findings-items.jsonl",
             "measurements.json",
@@ -1203,4 +1204,175 @@ fn the_bench_measures_matcher_export_and_publication_envelopes() {
             text(&out)
         );
     }
+}
+
+/// A public repository whose history hides exposures where a single-name, merge-blind
+/// walk does not look: content only a merge's resolution wrote, removed before the
+/// tip; a matching path whose content another path already carries; a matching path
+/// more commits touched than a row lists; and a tag naming a tree no commit holds.
+fn golf(sandbox: &Sandbox) -> (World, BTreeMap<&'static str, String>) {
+    let (mut world, _) = world(sandbox);
+    let mut commits = BTreeMap::new();
+    sandbox.remote("golf", |s, w| {
+        s.write(w, "base.txt", "base\n");
+        s.write(w, "plain.txt", "shared plain text\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Start golf"]);
+        s.git(w, &["checkout", "-q", "-b", "side"]);
+        s.write(w, "side.txt", "side\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Side work"]);
+        s.git(w, &["checkout", "-q", "main"]);
+        s.write(w, "main.txt", "main\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Main work"]);
+        // Neither parent holds this content: only the merge's resolution writes it.
+        s.git(w, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        s.write(w, "base.txt", "resolved after hiddenco/quietharbor\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Merge side"]);
+        commits.insert("merge", s.git(w, &["rev-parse", "HEAD"]).trim().to_owned());
+        s.git(w, &["branch", "-q", "-D", "side"]);
+        s.write(w, "base.txt", "clean\n");
+        // The same content as `plain.txt`, under a matching name.
+        s.write(w, "notes/hiddenco-plan.txt", "shared plain text\n");
+        // A name the raw diff could mistake for an entry's metadata.
+        s.write(w, ":hiddenco-draft.txt", "draft\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Tidy and plan"]);
+        commits.insert("copy", s.git(w, &["rev-parse", "HEAD"]).trim().to_owned());
+        s.git(w, &["rm", "-q", "notes/hiddenco-plan.txt"]);
+        s.git(w, &["commit", "-q", "-m", "Drop the plan"]);
+        for n in 0..21 {
+            s.write(w, "log/hiddenco-log.txt", &format!("entry {n}\n"));
+            s.git(w, &["add", "-A"]);
+            s.git(w, &["commit", "-q", "-m", &format!("Log {n}")]);
+        }
+        // A tree written from the index and tagged, never committed.
+        s.git(w, &["checkout", "-q", "--orphan", "loose"]);
+        s.git(w, &["rm", "-q", "-r", "--cached", "."]);
+        s.write(
+            w,
+            "loose/hiddenco-kept.txt",
+            "kept for lanternfish-internal\n",
+        );
+        s.git(w, &["add", "loose"]);
+        let tree = s.git(w, &["write-tree"]);
+        s.git(w, &["update-ref", "refs/tags/loose-tree", tree.trim()]);
+        s.git(w, &["rm", "-q", "-r", "--cached", "."]);
+        std::fs::remove_dir_all(w.join("loose")).expect("the loose files");
+        s.git(w, &["checkout", "-q", "-f", "main"]);
+    });
+    world
+        .repos
+        .push(Repo::new(OWNER, "golf", "public", "2026-07-01T00:00:00Z"));
+    (world, commits)
+}
+
+#[test]
+fn history_attributes_merge_resolutions_reads_every_name_and_states_its_gaps() {
+    let sandbox = Sandbox::new();
+    let (world, commits) = golf(&sandbox);
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &["--allow", "sample-owner/golf", "--manifest-out", "golf.md"],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let run = sandbox.run_dir();
+
+    let history = rows(&run, "findings-history.jsonl");
+    assert!(
+        has(
+            &history,
+            &[
+                ("commit", &commits["merge"]),
+                ("term", "hiddenco/quietharbor"),
+                ("location", "blob")
+            ]
+        ),
+        "content only a merge's resolution wrote is attributed to that merge"
+    );
+    assert!(
+        has(
+            &history,
+            &[
+                ("commit", &commits["copy"]),
+                ("term", "hiddenco"),
+                ("location", "path"),
+                ("path", "notes/hiddenco-plan.txt")
+            ]
+        ),
+        "a matching path is read even where its content is already known by another name"
+    );
+    assert!(
+        has(
+            &history,
+            &[
+                ("commit", &commits["copy"]),
+                ("location", "path"),
+                ("path", ":hiddenco-draft.txt")
+            ]
+        ),
+        "a path is read as a path whatever it starts with"
+    );
+    let logged = history
+        .iter()
+        .filter(|r| r.get("path").and_then(Value::as_str) == Some("log/hiddenco-log.txt"))
+        .count();
+    assert_eq!(logged, 20, "a path's rows stop at the attribution limit");
+
+    let gaps = rows(&run, "findings-history-gaps.jsonl");
+    let gap = |want: &[(&str, &str)]| {
+        gaps.iter()
+            .find(|r| {
+                want.iter()
+                    .all(|(k, v)| r.get(*k).and_then(Value::as_str) == Some(*v))
+            })
+            .unwrap_or_else(|| panic!("a gap with {want:?}: {gaps:?}"))
+            .clone()
+    };
+    let truncated = gap(&[
+        ("gap", "attribution-truncated"),
+        ("location", "path"),
+        ("object", "log/hiddenco-log.txt"),
+    ]);
+    assert_eq!(truncated["attributed"], 20);
+    assert_eq!(truncated["commits"], 21);
+    // A tree only a tag names is read, and what it exposes is kept with the ref that
+    // reaches it, since no commit does.
+    let loose_blob = gap(&[
+        ("gap", "unattributed"),
+        ("location", "blob"),
+        ("ref", "refs/tags/loose-tree"),
+        ("path", "loose/hiddenco-kept.txt"),
+    ]);
+    assert_eq!(
+        loose_blob["terms"],
+        serde_json::json!(["lanternfish-internal"])
+    );
+    assert_eq!(loose_blob["attributed"], 0);
+    let loose_path = gap(&[
+        ("gap", "unattributed"),
+        ("location", "path"),
+        ("object", "loose/hiddenco-kept.txt"),
+        ("ref", "refs/tags/loose-tree"),
+    ]);
+    assert_eq!(loose_path["terms"], serde_json::json!(["hiddenco"]));
+    assert_eq!(gaps.len(), 3, "and nothing else is a gap: {gaps:?}");
+
+    let report = std::fs::read_to_string(run.join("report.md")).expect("the report");
+    assert!(report.contains("## Git history coverage gaps"), "{report}");
+    assert!(report
+        .contains("| sample-owner/golf | attribution-truncated | path `log/hiddenco-log.txt` |"));
+    assert_eq!(mode(&run.join("findings-history-gaps.jsonl")), 0o600);
+    let manifest = std::fs::read_to_string(sandbox.path("checkout/golf.md")).expect("the manifest");
+    assert_no_private("the manifest", &manifest);
+    assert_vocabulary(&manifest);
+    assert!(
+        !manifest.contains("loose-tree"),
+        "a gap's detail stays in the vault"
+    );
 }
