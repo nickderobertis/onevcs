@@ -2978,6 +2978,22 @@ fn a_branch_a_live_session_still_holds_is_not_offered_as_ready_to_land() {
     fixture
         .world
         .commit_file(&worktree, "a.txt", "a\n", "feat: the work so far");
+    let primed = fixture
+        .world
+        .onevcs()
+        .args([
+            "recoverable",
+            "--json",
+            "--detail",
+            "decision",
+            "--session",
+            &token,
+        ])
+        .assert()
+        .success();
+    let unheld: Vec<serde_json::Value> =
+        serde_json::from_slice(&primed.get_output().stdout).unwrap();
+    assert!(row(&unheld, "feature/still-being-written")["held_by"].is_null());
     let occupant = World::occupy_shared(lease);
     // llmlint: ignore-end[tests_mirror_real_usage]
 

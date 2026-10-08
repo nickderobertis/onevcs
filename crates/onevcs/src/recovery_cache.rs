@@ -61,28 +61,56 @@ struct Entry {
 enum Answer {
     Success { stdout: String },
     Different,
+    Conflict { stdout: String },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryKind {
+    Read,
+    Difference,
+    Merge,
 }
 
 pub(crate) struct Query {
     path: PathBuf,
     key: String,
-    difference_is_answer: bool,
+    kind: QueryKind,
+    object_length: usize,
+    repo: PathBuf,
+    borrowing: Option<PathBuf>,
+    objects: Vec<String>,
 }
 
 impl Query {
     pub(crate) fn read(&self) -> Option<git::Output> {
         let entry: Entry = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
-        if entry.version != 1
+        if entry.version != 3
             || entry.key != self.key
             || entry.checksum != checksum(&entry.key, &entry.answer)
         {
             return None;
         }
+        let repo = git2::Repository::open(&self.repo).ok()?;
+        let odb = repo.odb().ok()?;
+        if let Some(borrowing) = &self.borrowing {
+            odb.add_disk_alternate(borrowing.to_str()?).ok()?;
+        }
+        for name in &self.objects {
+            let oid = git2::Oid::from_str(name).ok()?;
+            let object = odb.read(oid).ok()?;
+            if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
+                return None;
+            }
+        }
         let (status, stdout) = match entry.answer {
             Answer::Success { stdout } => (0, stdout),
-            Answer::Different if self.difference_is_answer => (1, String::new()),
-            Answer::Different => return None,
+            Answer::Different if self.kind == QueryKind::Difference => (1, String::new()),
+            Answer::Conflict { stdout } if self.kind == QueryKind::Merge => (1, stdout),
+            _ => return None,
         };
+        if self.kind == QueryKind::Merge && !self.valid_tree(&stdout) {
+            return None;
+        }
         Some(git::Output {
             status,
             ended: crate::git::Ended::Code(status),
@@ -92,21 +120,39 @@ impl Query {
         })
     }
 
+    fn valid_tree(&self, stdout: &str) -> bool {
+        stdout.lines().next().is_some_and(|tree| {
+            tree.len() == self.object_length && git::ObjectId::parse(tree).is_some()
+        })
+    }
     pub(crate) fn write(&self, output: &git::Output) {
         if !output.stderr.is_empty() || !output.read_failures.is_empty() {
             return;
         }
         let answer = if output.ok() {
+            if self.kind == QueryKind::Merge && !self.valid_tree(&output.stdout) {
+                return;
+            }
             Answer::Success {
                 stdout: output.stdout.clone(),
             }
-        } else if self.difference_is_answer && output.status == 1 && output.stdout.is_empty() {
+        } else if self.kind == QueryKind::Difference
+            && output.status == 1
+            && output.stdout.is_empty()
+        {
             Answer::Different
+        } else if self.kind == QueryKind::Merge
+            && output.status == 1
+            && self.valid_tree(&output.stdout)
+        {
+            Answer::Conflict {
+                stdout: output.stdout.clone(),
+            }
         } else {
             return;
         };
         let entry = Entry {
-            version: 1,
+            version: 3,
             key: self.key.clone(),
             checksum: checksum(&self.key, &answer),
             answer,
@@ -128,7 +174,7 @@ impl Query {
 
 fn checksum(key: &str, answer: &Answer) -> String {
     crate::ids::digest(&format!(
-        "1\0{key}\0{}",
+        "3\0{key}\0{}",
         serde_json::to_string(answer).expect("cache answer")
     ))
 }
@@ -176,14 +222,26 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             "--format=%H%x00%T",
             "-1",
             "--format=%ct",
+            "--format=%B",
+            "--format=%T%x00%P%x00%cI%x00%s",
+            "--fixed-strings",
+            "-n",
+            "1",
         ],
-        "rev-list" => &["--count", "--first-parent"],
+        "rev-list" => &["--count", "--first-parent", "--not", "--"],
         "cat-file" => &["-e"],
+        "merge-tree" => &["--write-tree"],
+        "rev-parse" => &["--verify"],
         _ => return None,
     };
     let mut revisions = 0;
+    let mut object_length = 0;
+    let mut objects = Vec::new();
     for arg in &args[1..] {
         if options.contains(arg) {
+            continue;
+        }
+        if args.first() == Some(&"log") && arg.starts_with("--grep=") {
             continue;
         }
         if args.first() == Some(&"diff") && arg.starts_with(":(literal)") && args.contains(&"--") {
@@ -193,19 +251,26 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             || arg
                 .strip_suffix("^{commit}")
                 .is_some_and(|sha| git::ObjectId::parse(sha).is_some())
+            || (args.first() == Some(&"rev-parse")
+                && arg
+                    .strip_suffix("^{tree}")
+                    .is_some_and(|sha| git::ObjectId::parse(sha).is_some()))
         {
+            object_length = arg.split('^').next()?.len();
+            objects.push(arg.split('^').next()?.to_owned());
             revisions += 1;
         } else if let Some((left, right)) = arg.split_once("..") {
             if git::ObjectId::parse(left).is_none() || git::ObjectId::parse(right).is_none() {
                 return None;
             }
             revisions += 2;
+            objects.extend([left.to_owned(), right.to_owned()]);
         } else {
             return None;
         }
     }
     if revisions
-        < if matches!(args.first(), Some(&"log" | &"cat-file")) {
+        < if matches!(args.first(), Some(&"log" | &"cat-file" | &"rev-parse")) {
             1
         } else {
             2
@@ -218,28 +283,45 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
             .borrow_mut()
             .entry(ContextKey {
                 repo: cwd.to_owned(),
-                content: args.first() == Some(&"diff"),
+                content: matches!(args.first(), Some(&"diff" | &"merge-tree")),
                 borrowing: borrowing.clone(),
             })
-            .or_insert_with(|| context(cwd, args.first() == Some(&"diff"), borrowing.as_deref()))
+            .or_insert_with(|| {
+                context(
+                    cwd,
+                    matches!(args.first(), Some(&"diff" | &"merge-tree")),
+                    borrowing.as_deref(),
+                )
+            })
             .clone()
     })?;
-    let key = crate::ids::digest(&serde_json::to_string(&(1, context, cwd, args, env)).ok()?);
+    let key = crate::ids::digest(&serde_json::to_string(&(3, context, cwd, args, env)).ok()?);
     Some(Query {
         path: crate::home::root()
             .ok()?
             .join("cache/recoverable/v1/git")
             .join(format!("{key}.json")),
         key,
-        difference_is_answer: (args.first() == Some(&"merge-base"))
-            || (args.first() == Some(&"diff") && args.contains(&"--quiet")),
+        kind: if args.first() == Some(&"merge-tree") {
+            QueryKind::Merge
+        } else if args.first() == Some(&"merge-base")
+            || (args.first() == Some(&"diff") && args.contains(&"--quiet"))
+        {
+            QueryKind::Difference
+        } else {
+            QueryKind::Read
+        },
+        object_length,
+        repo: cwd.to_owned(),
+        borrowing,
+        objects,
     })
 }
 
 /// Conservative context guard. Ordinary files-backend repositories are supported;
 /// worktrees, alternates, graph overlays and configured external attributes delegate.
-/// Object metadata includes ctime so replacement/corruption cannot hide behind an
-/// unchanged length/mtime. Unreadable inputs prevent reuse rather than hide work.
+/// Object bytes and permissions detect replacement/corruption even when a read
+/// freshens an unchanged object's timestamps. Unreadable inputs prevent reuse rather than hide work.
 #[cfg(unix)]
 fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<String> {
     let directory = repo.join(".git");
@@ -264,13 +346,20 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
         return None;
     }
     let mut digest = Sha256::new();
-    // Git config resolves includes itself. The configuration query is never cached.
-    let configuration =
-        git::run(&["config", "--null", "--list", "--show-origin"], Some(repo)).ok()?;
-    if configuration.status != 0 {
-        return None;
-    }
-    let lowered = configuration.stdout.to_lowercase();
+    // The scoped native snapshot resolves ordinary configuration; includes and
+    // unsupported contexts retain Git's parser and its refusal behavior.
+    let configuration = match crate::native_refs::configuration(repo) {
+        Some(configuration) => configuration,
+        None => {
+            let output =
+                git::run(&["config", "--null", "--list", "--show-origin"], Some(repo)).ok()?;
+            if !output.ok() {
+                return None;
+            }
+            output.stdout
+        }
+    };
+    let lowered = configuration.to_lowercase();
     // Commands with externally configured drivers can depend on executables or
     // resources outside the guarded repository. Delegate those contexts to Git.
     for field in lowered.split('\0') {
@@ -310,7 +399,7 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
     {
         return None;
     }
-    digest.update(configuration.stdout.as_bytes());
+    digest.update(configuration.as_bytes());
     digest.update(semantics()?.as_bytes());
     // Git's ownership checks concern the checkout too. Directory timestamps
     // change when a status read refreshes its index, without changing any
@@ -454,13 +543,20 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
                 meta.gid(),
                 meta.len(),
                 meta.mode(),
-                meta.mtime(),
-                meta.mtime_nsec(),
-                meta.ctime(),
-                meta.ctime_nsec(),
             ))
             .ok()?,
         );
+        if !objects {
+            digest.update(
+                serde_json::to_vec(&(
+                    meta.mtime(),
+                    meta.mtime_nsec(),
+                    meta.ctime(),
+                    meta.ctime_nsec(),
+                ))
+                .ok()?,
+            );
+        }
     }
     if meta.is_dir() {
         let mut entries = std::fs::read_dir(path)
@@ -483,7 +579,10 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
             }
             snapshot(&entry.path(), digest, objects || name == "objects")?;
         }
-    } else if !objects {
+    } else if !objects || path.parent()?.file_name()?.to_str() == Some("info") {
+        // Object storage is guarded by layout and readability metadata, with
+        // directly named objects verified by hash on each cache hit. Read the
+        // alternates/configuration evidence, without scanning pack contents.
         let raw = std::fs::read(path).ok()?;
         // Packed replacement refs are graph overlays too.
         if path.file_name()?.to_str() == Some("packed-refs")

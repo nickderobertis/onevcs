@@ -325,6 +325,7 @@ mod reads {
 
     pub(super) fn bypass<T>(read: impl FnOnce() -> T) -> T {
         let before = BYPASSED.with(|bypassed| bypassed.replace(true));
+        crate::recovery_cache::clear();
         let answered = read();
         BYPASSED.with(|bypassed| bypassed.set(before));
         answered
@@ -400,7 +401,7 @@ mod reads {
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
             if args.first() != Some(&"status") {
-                crate::native_refs::clear();
+                crate::recovery_cache::clear();
             }
         }
         None
@@ -1097,12 +1098,13 @@ pub fn check_bounds() -> Result<()> {
 /// its remote-tracking refs are frozen at the moment it was cut, but its lender
 /// keeps fetching, and the objects come with the alternates.
 pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
-    run_in(
-        cwd.into(),
-        &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)],
-    )
-    .map(|out| out.ok())
-    .unwrap_or(false)
+    let cwd = cwd.into();
+    if let Some(answer) = crate::native_refs::has_commit(cwd.path(), &cwd.env(), &sha.0) {
+        return answer;
+    }
+    run_in(cwd, &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)])
+        .map(|out| out.ok())
+        .unwrap_or(false)
 }
 
 /// Whether some ref of this repository already reaches `commit`, with the whole
@@ -1264,7 +1266,10 @@ pub fn common_dir(cwd: &Path) -> Result<PathBuf> {
 
 /// The URL configured for a remote.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<String> {
-    let value = checked(&["remote", "get-url", remote], Some(cwd))?.trimmed();
+    let value = match crate::native_refs::remote_url(cwd, remote) {
+        Some(value) => value,
+        None => checked(&["remote", "get-url", remote], Some(cwd))?.trimmed(),
+    };
     if !is_usable_remote(&value) {
         return Err(Error::Invalid {
             reason: format!("git remote {remote:?} returned an unusable URL"),
@@ -1290,6 +1295,9 @@ pub fn is_usable_remote(value: &str) -> bool {
 
 /// Whether a remote is configured at all.
 pub fn has_remote(cwd: &Path, remote: &str) -> bool {
+    if crate::native_refs::remote_url(cwd, remote).is_some() {
+        return true;
+    }
     run(&["remote", "get-url", remote], Some(cwd))
         .map(|out| out.ok())
         .unwrap_or(false)
@@ -1881,6 +1889,9 @@ pub fn committer_date<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Option<Str
 
 /// Local branch names, in git's deterministic ref order.
 pub fn branches(cwd: &Path) -> Result<Vec<String>> {
+    if let Some(heads) = crate::native_refs::heads(cwd) {
+        return Ok(heads.into_iter().map(|(branch, _)| branch).collect());
+    }
     Ok(checked(
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
         Some(cwd),
@@ -1899,6 +1910,9 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 /// branch the remote's default is, not a branch of its own, and a caller asking
 /// which names are taken there would otherwise be told one that is not.
 pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
+    if let Some(heads) = crate::native_refs::remote_heads(cwd, remote) {
+        return Ok(heads.into_keys().collect());
+    }
     Ok(checked(
         &[
             "for-each-ref",
@@ -1941,29 +1955,36 @@ pub fn unpublished_branches_among(
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
 ) -> Result<Vec<(String, String)>> {
-    let listing = checked(
-        &[
-            "for-each-ref",
-            "--format=%(refname)%00%(refname:short)%00%(objectname)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ],
-        Some(cwd),
-    )?;
-    let mut heads: Vec<(String, String)> = Vec::new();
-    let mut origin_tips: BTreeSet<String> = BTreeSet::new();
-    for line in listing.stdout.lines() {
-        let mut fields = line.split('\0');
-        let (Some(full), Some(short), Some(tip)) = (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if full.starts_with("refs/heads/") {
-            heads.push((short.to_owned(), tip.to_owned()));
-        } else if full.starts_with("refs/remotes/origin/") {
-            origin_tips.insert(tip.to_owned());
+    let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
+    let (heads, origin_tips) = if let Some((heads, origin)) = native {
+        (heads, origin)
+    } else {
+        let listing = checked(
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)",
+                "refs/heads",
+                "refs/remotes/origin",
+            ],
+            Some(cwd),
+        )?;
+        let mut heads: Vec<(String, String)> = Vec::new();
+        let mut origin_tips: BTreeSet<String> = BTreeSet::new();
+        for line in listing.stdout.lines() {
+            let mut fields = line.split('\0');
+            let (Some(full), Some(short), Some(tip)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if full.starts_with("refs/heads/") {
+                heads.push((short.to_owned(), tip.to_owned()));
+            } else if full.starts_with("refs/remotes/origin/") {
+                origin_tips.insert(tip.to_owned());
+            }
         }
-    }
+        (heads, origin_tips)
+    };
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -1976,7 +1997,7 @@ pub fn unpublished_branches_among(
         if origin_tips.contains(&tip) {
             continue;
         }
-        if unpublished_ahead(cwd, &branch, &[])? > 0 {
+        if unpublished_ahead(cwd, &tip, &[])? > 0 {
             unpublished.push((branch, tip));
         }
     }
@@ -2062,14 +2083,33 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
         .copied()
         .filter(|name| tip(cwd, name).is_some())
         .collect();
-    let mut args = vec![
-        "rev-list",
-        "--count",
-        reference,
-        "--not",
-        "--remotes=origin",
-    ];
-    args.extend_from_slice(&held);
+    let native = crate::native_refs::remote_tips(cwd, "origin").zip(
+        if ObjectId::parse(reference).is_some() {
+            Some(reference.to_owned())
+        } else {
+            crate::native_refs::tip(cwd, reference).flatten()
+        },
+    );
+    let immutable_query = native.is_some();
+    let immutable;
+    let mut args = if let Some((mut origin, tip)) = native {
+        origin.extend(held.iter().filter_map(|name| crate::git::tip(cwd, name)));
+        immutable = std::iter::once(tip).chain(origin).collect::<Vec<_>>();
+        let mut args = vec!["rev-list", "--count", immutable[0].as_str(), "--not"];
+        args.extend(immutable[1..].iter().map(String::as_str));
+        args
+    } else {
+        vec![
+            "rev-list",
+            "--count",
+            reference,
+            "--not",
+            "--remotes=origin",
+        ]
+    };
+    if !immutable_query {
+        args.extend_from_slice(&held);
+    }
     args.push("--");
     let counted = run(&args, Some(cwd))?;
     if !counted.ok() {
@@ -2325,6 +2365,8 @@ pub struct Shape {
 // `%T` is an object id or its `%cI` an ISO 8601 date would be this module checking
 // git's arithmetic, and the values are compared against each other rather than parsed.
 pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
+    let immutable = crate::native_refs::tip(cwd, reference).flatten();
+    let reference = immutable.as_deref().unwrap_or(reference);
     let printed = checked(
         &[
             "log",
@@ -2361,10 +2403,13 @@ pub fn is_ancestor<'a>(
     ancestor: &str,
     descendant: &str,
 ) -> Result<bool> {
-    let output = run_in(
-        cwd.into(),
-        &["merge-base", "--is-ancestor", ancestor, descendant],
-    )?;
+    let cwd = cwd.into();
+    if let Some(answer) =
+        crate::native_refs::is_ancestor(cwd.path(), &cwd.env(), ancestor, descendant)
+    {
+        return Ok(answer);
+    }
+    let output = run_in(cwd, &["merge-base", "--is-ancestor", ancestor, descendant])?;
     match output.status {
         0 => Ok(true),
         1 => Ok(false),
@@ -2554,6 +2599,22 @@ pub(crate) fn already_integrates<'a>(
     commit: &str,
 ) -> Result<bool> {
     let cwd = cwd.into();
+    let reusable = crate::recovery_cache::query(
+        &["merge-tree", "--write-tree", base, commit],
+        Some(cwd.path()),
+        &cwd.env(),
+    );
+    if let Some(output) = reusable
+        .as_ref()
+        .and_then(crate::recovery_cache::Query::read)
+    {
+        if output.status == 1 {
+            return Ok(false);
+        }
+        let tree =
+            checked_in(cwd, &["rev-parse", "--verify", &format!("{base}^{{tree}}")])?.trimmed();
+        return Ok(output.stdout.lines().next() == Some(tree.as_str()));
+    }
     // `merge-tree --write-tree` writes the synthetic result into the object store.
     // A report is read-only, so isolate those objects in a scratch store and read
     // the repository's real objects through Git's alternates mechanism.
@@ -2573,6 +2634,9 @@ pub(crate) fn already_integrates<'a>(
         Some(cwd.path()),
         &env,
     )?;
+    if let Some(reusable) = reusable {
+        reusable.write(&merged);
+    }
     match merged.status {
         // The first line is the tree the merge would write. Messages, when there
         // are any, follow it; only a successful, no-op merge can establish that
@@ -3728,6 +3792,8 @@ pub fn commit_message<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<Opt
 /// The newest commit `rev` reaches whose message carries `needle` verbatim, where
 /// one does.
 pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<String> {
+    let immutable = crate::native_refs::tip(cwd, rev).flatten();
+    let rev = immutable.as_deref().unwrap_or(rev);
     run(
         &[
             "log",

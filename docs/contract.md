@@ -4314,6 +4314,12 @@ branches: its key binds the repository path and context fingerprint, complete
 argument vector and every object id, cache format version, Git executable, and
 config, attributes, layout and object-availability guards. Such entries store no
 semantic landing or retirement verdict and no mutable state.
+The object guard verifies each directly named tip/base/object argument by its
+content hash on every hit, plus object-store layout, availability and access
+metadata. It neither walks reachability nor hashes entire packs. Corruption
+deeper in history that those directly named objects do not expose is outside
+that guard; an uncached Git read only detects it when it reads the affected
+object. Unsupported configurations or layouts delegate to Git.
 
 Sweep keeps a closed session's record and labels while its branch holds unlanded
 work, even when preserve pushed its tip to origin and its disposable checkout is
@@ -4322,6 +4328,11 @@ no, unknown, in-part, superseded-with-changes and unreadable evidence retain.
 Deletion requires confident proof no work remains plus existing age, owner,
 occupancy and dirtiness protections. Pool-slot ownership rules remain intact.
 Previously lost records are not reconstructed.
+An existing selected checkout that Git cannot read refuses the recovery query,
+naming that checkout and Git's diagnostic; a missing disposable checkout remains
+absent. This deliberately corrects v0.42.0's successful empty answer for an
+unreadable selected clone containing private work. Recovery's result has no
+separate findings channel in which to carry that unanswered read alongside rows.
 
 The testing-provider state document advances to version 19 for `Recoverable.tip`;
 older provider documents remain readable with a defaulted tip. This changes no

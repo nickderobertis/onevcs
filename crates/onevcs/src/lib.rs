@@ -85,6 +85,7 @@ mod publishing;
 mod queue;
 mod recover;
 mod recovery_cache;
+mod recovery_sessions;
 pub mod registry;
 mod release;
 pub mod releases;

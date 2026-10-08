@@ -568,7 +568,7 @@ fn collected(
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
     let trailers = provenance::from_rules(&rules);
-    let sessions = workspace::all()?;
+    let sessions = crate::recovery_sessions::read(selection)?;
     // Which sessions were asked about, and therefore which identities, checkouts and
     // branch names the scan below may stop at. Read before anything is opened, so a
     // token naming no record is refused before a single repository is.
@@ -745,6 +745,13 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             continue;
         }
         if !git::is_repo(&repo) {
+            if narrowed.is_some() && !matches!(repo.try_exists(), Ok(false)) {
+                let refused = git::run(&["rev-parse", "--is-inside-work-tree"], Some(&repo))?;
+                return Err(error::invalid(format!(
+                    "selected checkout {} could not be read as a Git worktree: {}; restore its readability and retry recovery",
+                    repo.display(), refused.diagnostic()
+                )));
+            }
             continue;
         }
         let base = match git::default_branch(&repo, "origin") {

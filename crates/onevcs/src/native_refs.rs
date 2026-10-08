@@ -40,12 +40,70 @@ pub(crate) fn is_repo(repo: &Path) -> Option<bool> {
 pub(crate) fn objects_dir(repo: &Path) -> Option<PathBuf> {
     read(repo, |snapshot| Some(snapshot.objects.clone()))
 }
+pub(crate) fn configuration(repo: &Path) -> Option<String> {
+    read(repo, |_| {
+        let repository = git2::Repository::open(repo).ok()?;
+        let config = repository.config().ok()?;
+        let mut entries = config.entries(None).ok()?;
+        let mut output = String::new();
+        while let Some(entry) = entries.next() {
+            let entry = entry.ok()?;
+            let name = entry.name()?;
+            if name.starts_with("include.") || name.starts_with("includeif.") {
+                return None;
+            }
+            output.push_str(&format!(
+                "native:{:?}\0{name}\n{}\0",
+                entry.level(),
+                entry.value()?
+            ));
+        }
+        Some(output)
+    })
+}
+pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
+    read(repo, |_| {
+        let repository = git2::Repository::open(repo).ok()?;
+        let config = repository.config().ok()?;
+        let mut entries = config.entries(None).ok()?;
+        let key = format!("remote.{remote}.url");
+        let mut url = None;
+        while let Some(entry) = entries.next() {
+            let entry = entry.ok()?;
+            let name = entry.name()?;
+            if name.starts_with("include.")
+                || name.starts_with("includeif.")
+                || name.starts_with("url.")
+            {
+                return None;
+            }
+            if name == key {
+                if url.is_some() {
+                    return None;
+                }
+                url = Some(entry.value()?.trim().to_owned());
+            }
+        }
+        url
+    })
+}
 pub(crate) fn symbolic(repo: &Path, name: &str) -> Option<Option<String>> {
     read(repo, |snapshot| Some(snapshot.symbolic.get(name).cloned()))
 }
 pub(crate) fn tip(repo: &Path, name: &str) -> Option<Option<String>> {
     if crate::git::ObjectId::parse(name).is_some() || !crate::git::plainly_a_ref_name(name) {
         return None;
+    }
+    // Git also resolves pseudorefs directly under .git, including merge state.
+    // Their values are mutable and are not part of the refs snapshot.
+    if name == "@" {
+        return None;
+    }
+    if name != "HEAD" && !name.starts_with("refs/") {
+        match std::fs::symlink_metadata(repo.join(".git").join(name)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            _ => return None,
+        }
     }
     read(repo, |snapshot| {
         Some(
@@ -111,6 +169,72 @@ pub(crate) fn remote_heads(repo: &Path, remote: &str) -> Option<BTreeMap<String,
 }
 pub(crate) fn worktrees(repo: &Path) -> Option<Vec<(PathBuf, Option<String>)>> {
     read(repo, |snapshot| Some(snapshot.worktrees.clone()))
+}
+pub(crate) fn remote_tips(repo: &Path, remote: &str) -> Option<BTreeSet<String>> {
+    let prefix = format!("refs/remotes/{remote}/");
+    read(repo, |snapshot| {
+        Some(
+            snapshot
+                .tips
+                .iter()
+                .filter(|(name, _)| name.starts_with(&prefix))
+                .map(|(_, tip)| tip.to_string())
+                .collect(),
+        )
+    })
+}
+fn object_repository(at: &Path, env: &[(String, String)]) -> Option<git2::Repository> {
+    read(at, |_| Some(()))?;
+    let repository = git2::Repository::open(at).ok()?;
+    match env {
+        [] => (),
+        [(name, path)]
+            if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+                && Path::new(path).is_absolute()
+                && !path.contains([':', '"', '\n']) =>
+        {
+            repository.odb().ok()?.add_disk_alternate(path).ok()?;
+        }
+        _ => return None,
+    }
+    Some(repository)
+}
+pub(crate) fn has_commit(at: &Path, env: &[(String, String)], name: &str) -> Option<bool> {
+    crate::git::ObjectId::parse(name)?;
+    let repository = object_repository(at, env)?;
+    let oid = git2::Oid::from_str(name).ok()?;
+    let present = repository
+        .find_object(oid, None)
+        .and_then(|object| object.peel_to_commit())
+        .is_ok();
+    Some(present)
+}
+pub(crate) fn is_ancestor(
+    at: &Path,
+    env: &[(String, String)],
+    ancestor: &str,
+    descendant: &str,
+) -> Option<bool> {
+    crate::git::ObjectId::parse(ancestor)?;
+    crate::git::ObjectId::parse(descendant)?;
+    let repository = object_repository(at, env)?;
+    let ancestor = repository
+        .find_object(git2::Oid::from_str(ancestor).ok()?, None)
+        .ok()?
+        .peel_to_commit()
+        .ok()?
+        .id();
+    let descendant = repository
+        .find_object(git2::Oid::from_str(descendant).ok()?, None)
+        .ok()?
+        .peel_to_commit()
+        .ok()?
+        .id();
+    if ancestor == descendant {
+        Some(true)
+    } else {
+        repository.graph_descendant_of(descendant, ancestor).ok()
+    }
 }
 
 fn snapshot(at: &Path) -> Option<Snapshot> {
@@ -364,11 +488,35 @@ mod tests {
             .iter()
             .map(|name| crate::git::tip(repo, name))
             .collect::<Vec<_>>();
+        let unpublished = crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new())
+            .map_err(|error| error.to_string());
+        let present = tips.iter().flatten().cloned().collect::<Vec<_>>();
+        let ancestry = present
+            .iter()
+            .map(|tip| {
+                (
+                    tip.clone(),
+                    crate::git::is_ancestor(repo, &present[0], tip).map_err(|e| e.to_string()),
+                )
+            })
+            .collect::<Vec<_>>();
         crate::recovery_cache::scope(|| {
             assert_eq!(
                 crate::git::heads(repo).map_err(|error| error.to_string()),
                 baseline
             );
+            assert_eq!(
+                crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new())
+                    .map_err(|error| error.to_string()),
+                unpublished
+            );
+            for (tip, expected) in &ancestry {
+                assert!(crate::git::has_commit(repo, &crate::host::Sha(tip.clone())));
+                assert_eq!(
+                    crate::git::is_ancestor(repo, &present[0], tip).map_err(|e| e.to_string()),
+                    *expected
+                );
+            }
             for (name, expected) in names.iter().zip(tips) {
                 assert_eq!(
                     crate::git::tip(repo, name),
@@ -439,9 +587,41 @@ mod tests {
             std::fs::write(&raw, value).unwrap();
             differential(repo, &["main", "raw"]);
         }
-        std::fs::remove_file(raw).unwrap();
+        std::fs::remove_file(&raw).unwrap();
         differential(repo, &names);
         crate::recovery_cache::scope(|| assert!(heads(repo).is_some(), "repair is observed"));
+        git(
+            repo,
+            &[
+                "-c",
+                "user.name=Reader",
+                "-c",
+                "user.email=reader@example.invalid",
+                "tag",
+                "-a",
+                "annotated",
+                "-m",
+                "tag object",
+            ],
+        );
+        crate::recovery_cache::scope(|| {
+            assert!(
+                heads(repo).is_some(),
+                "unrelated annotated tags retain the fast path"
+            )
+        });
+        let tag = git(repo, &["rev-parse", "refs/tags/annotated"]);
+        std::fs::write(&raw, format!("{tag}\n")).unwrap();
+        differential(repo, &["raw", "annotated", "HEAD", "@"]);
+        let blob = git(repo, &["hash-object", "-w", "--stdin"]);
+        std::fs::write(&raw, format!("{blob}\n")).unwrap();
+        differential(repo, &["raw"]);
+        std::fs::remove_file(&raw).unwrap();
+        let old = git(repo, &["rev-parse", "HEAD~1"]);
+        std::fs::write(repo.join(".git/MERGE_HEAD"), format!("{old}\n")).unwrap();
+        differential(repo, &["MERGE_HEAD", "@", "HEAD"]);
+        std::fs::remove_file(repo.join(".git/MERGE_HEAD")).unwrap();
+        differential(repo, &["MERGE_HEAD"]);
         git(repo, &["tag", "main"]);
         differential(repo, &["main", "HEAD"]);
     }

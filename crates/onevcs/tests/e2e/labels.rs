@@ -701,6 +701,42 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
         .world
         .git(&fixture.checkout, &["pack-refs", "--all"]);
     compare();
+    std::fs::write(
+        fixture.checkout.join(".git/info/grafts"),
+        format!("{}\n", tip.trim()),
+    )
+    .expect("external graph overlay");
+    compare();
+    std::fs::remove_file(fixture.checkout.join(".git/info/grafts")).unwrap();
+    let object = fixture
+        .checkout
+        .join(".git/objects")
+        .join(&tip.trim()[..2])
+        .join(&tip.trim()[2..]);
+    assert!(object.is_file(), "the directly named commit is loose");
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = std::fs::metadata(&object).unwrap().permissions();
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o600)).unwrap();
+    compare();
+    let bytes = std::fs::read(&object).unwrap();
+    std::fs::write(&object, vec![0u8; bytes.len()]).unwrap();
+    let refused = |native: bool| {
+        let mut command = fixture.world.onevcs();
+        command.args(["recoverable", "--json"]).args(args);
+        if native {
+            command.env("GIT_NAMESPACE", "");
+        }
+        let output = command.output().unwrap();
+        (output.status.code(), output.stdout)
+    };
+    assert_eq!(
+        refused(false),
+        refused(true),
+        "a corrupt directly named object cannot reuse a proof"
+    );
+    std::fs::write(&object, bytes).unwrap();
+    std::fs::set_permissions(&object, permissions).unwrap();
+    assert_eq!(compare(), original, "repair restores the report");
     fixture.world.git(&fixture.checkout, &["checkout", branch]);
     fixture.world.commit_file(
         &fixture.checkout,
@@ -710,4 +746,313 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     );
     let moved = compare();
     assert_ne!(moved[0]["tip"], original[0]["tip"]);
+}
+
+#[test]
+fn session_hints_observe_new_labels_and_refuse_changed_unrelated_records() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/session-index";
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=first"]);
+    fixture
+        .world
+        .commit_file(&worktree, "index.txt", "one\n", "feat: indexed work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let args = ["--detail", "decision", "--label", "launcher=first"];
+    let original = recoverable(&fixture, &args);
+    assert_eq!(original.len(), 1);
+    let cache = fixture
+        .world
+        .home()
+        .join("cache/recoverable/v1/sessions-index.json");
+    assert!(
+        cache.is_file(),
+        "matching recovery must populate session hints"
+    );
+    let (new_token, _) = fixture.open(&["--branch", branch, "--label", "launcher=second"]);
+    let selected = recoverable(
+        &fixture,
+        &["--detail", "decision", "--label", "launcher=second"],
+    );
+    assert_eq!(selected.len(), 1, "a freshly labelled session is seen");
+    assert_eq!(selected[0]["session"], new_token);
+    std::fs::write(&cache, "{broken").unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected
+    );
+    std::fs::remove_file(&cache).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected
+    );
+    std::fs::remove_dir(&cache).unwrap();
+    // A different identity's raw record must be checked before narrowing it away.
+    let other = fixture.world.bare_origin("other-index-origin");
+    let checkout = fixture.world.clone_of(&other, "other-index-checkout");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let assertion = fixture
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            &checkout.to_string_lossy(),
+            "--branch",
+            "feature/other-index",
+        ])
+        .assert()
+        .success();
+    let other_token = crate::world::token_of(&assertion.get_output().stdout);
+    recoverable(
+        &fixture,
+        &["--detail", "decision", "--label", "launcher=second"],
+    );
+    let path = fixture
+        .world
+        .home()
+        .join("sessions")
+        .join(format!("{other_token}.json"));
+    let raw = std::fs::read(&path).unwrap();
+    std::fs::write(&path, "{broken").unwrap();
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "recoverable",
+            "--json",
+            "--detail",
+            "decision",
+            "--label",
+            "launcher=second",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("session record"));
+    std::fs::write(&path, raw).unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected,
+        "deleted unrelated source is observed"
+    );
+}
+
+#[test]
+fn sweep_uses_recovery_evidence_for_uncertain_and_confident_preserved_sessions() {
+    for class in [
+        "unknown",
+        "in-part",
+        "superseded-with-changes",
+        "retirable",
+        "landed",
+    ] {
+        let fixture = Fixture::local(&local_direct());
+        let branch = format!("feature/sweep-{class}");
+        let (mut token, worktree) =
+            fixture.open(&["--branch", &branch, "--label", "launcher=semantic-sweep"]);
+        fixture
+            .world
+            .commit_file(&worktree, "semantic.txt", "mine\n", "feat: semantic work");
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        let args = [
+            "--all",
+            "--detail",
+            "decision",
+            "--label",
+            "launcher=semantic-sweep",
+        ];
+        let before = recoverable(&fixture, &args);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0]["landed"]["state"], "no");
+        if matches!(class, "in-part" | "landed") {
+            fixture
+                .world
+                .onevcs()
+                .args(["publish-branch", &branch, "--repo", "project"])
+                .assert()
+                .success();
+            if class == "in-part" {
+                let (continued, tree) =
+                    fixture.open(&["--branch", &branch, "--label", "launcher=semantic-sweep"]);
+                fixture
+                    .world
+                    .commit_file(&tree, "more.txt", "more\n", "feat: work after landing");
+                fixture
+                    .world
+                    .onevcs()
+                    .args(["session", "close", &continued])
+                    .assert()
+                    .success();
+                token = continued;
+            }
+        } else {
+            let (retry, tree) = fixture.open(&["--branch", "feature/sweep-retry"]);
+            let contents = if class == "retirable" {
+                "mine\n"
+            } else {
+                "theirs\n"
+            };
+            let subject = if class == "unknown" {
+                "feat: semantic work"
+            } else {
+                "feat: a retry"
+            };
+            fixture
+                .world
+                .commit_file(&tree, "semantic.txt", contents, subject);
+            fixture
+                .world
+                .onevcs()
+                .args(["session", "close", &retry])
+                .assert()
+                .success();
+            fixture
+                .world
+                .onevcs()
+                .args(["publish-branch", "feature/sweep-retry", "--repo", "project"])
+                .assert()
+                .success();
+            if class == "superseded-with-changes" {
+                let landing = fixture
+                    .world
+                    .git(&fixture.checkout, &["rev-parse", "origin/main"]);
+                fixture
+                    .world
+                    .onevcs()
+                    .args([
+                        "supersede",
+                        &branch,
+                        "--repo",
+                        "project",
+                        "--by",
+                        "feature/sweep-retry",
+                        "--landing",
+                        landing.trim(),
+                    ])
+                    .assert()
+                    .success();
+            }
+        }
+        fixture
+            .world
+            .onevcs()
+            .args(["preserve", &branch, "--repo", "project"])
+            .assert()
+            .success();
+        let rows = recoverable(&fixture, &args);
+        assert_eq!(rows.len(), 1, "{class}: {rows:#?}");
+        if class == "landed" {
+            assert_eq!(rows[0]["landed"]["state"], "yes");
+        } else if class == "unknown" || class == "in-part" {
+            assert_eq!(rows[0]["landed"]["state"], class);
+        } else {
+            assert_eq!(rows[0]["retirement"]["class"], class);
+        }
+        let path = fixture.world.sessions_dir().join(format!("{token}.json"));
+        assert!(
+            path.is_file(),
+            "record exists before the age floor: {class}"
+        );
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 3600);
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old)).unwrap();
+        fixture
+            .world
+            .onevcs()
+            .args(["sweep", "--min-age-hours", "4"])
+            .assert()
+            .success();
+        let retain = !matches!(class, "landed" | "retirable");
+        assert_eq!(path.is_file(), retain, "semantic sweep class {class}");
+        if retain {
+            let after = recoverable(&fixture, &args);
+            assert_eq!(after, rows, "retained session labels and evidence: {class}");
+            assert_eq!(after[0]["session"], token);
+            assert_eq!(after[0]["labels"]["launcher"], "semantic-sweep");
+        }
+    }
+}
+
+#[test]
+fn an_unreadable_selected_clone_is_a_finding_and_repairs_cleanly() {
+    let fixture = Fixture::local(&local_direct());
+    let (token, tree) = fixture.open(&["--branch", "feature/unreadable-selected", "--pool", "0"]);
+    fixture.world.commit_file(
+        &tree,
+        "private.txt",
+        "private\n",
+        "feat: private selected work",
+    );
+    let args = ["--session", token.as_str(), "--detail", "decision"];
+    let before = recoverable(&fixture, &args);
+    assert_eq!(before.len(), 1);
+    let stored = record(&fixture, &token);
+    let config = std::path::Path::new(stored["clone"].as_str().unwrap()).join(".git/config");
+    let original = std::fs::read(&config).unwrap();
+    std::fs::write(&config, "[broken\n").unwrap();
+    let broken = fixture
+        .world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .args(args)
+        .output()
+        .unwrap();
+    if let Some(baseline) = std::env::var_os("ONEVCS_BASELINE_BINARY") {
+        let legacy = std::process::Command::new(baseline)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", fixture.world.path(""))
+            .env("ONEVCS_HOME", fixture.world.home())
+            .current_dir(fixture.world.path(""))
+            .args(["recoverable", "--json", "--session", &token])
+            .output()
+            .unwrap();
+        assert!(legacy.status.success(), "the documented legacy exception");
+        assert!(serde_json::from_slice::<Vec<Value>>(&legacy.stdout)
+            .unwrap()
+            .is_empty());
+    }
+    std::fs::write(&config, original).unwrap();
+    assert_eq!(recoverable(&fixture, &args), before);
+    assert!(
+        !broken.status.success(),
+        "unreadable selected evidence must refuse"
+    );
+    let message = String::from_utf8_lossy(&broken.stderr);
+    assert!(message.contains(config.parent().unwrap().parent().unwrap().to_str().unwrap()));
+    assert!(
+        message.contains("bad config"),
+        "Git's diagnostic: {message}"
+    );
 }
