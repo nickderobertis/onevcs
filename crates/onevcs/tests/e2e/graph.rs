@@ -364,6 +364,37 @@ fn an_unknown_tier_command_is_refused_naming_it_and_a_valid_one() {
     }
 }
 
+/// The cross-platform legs run the recovery tier as `test-quick`, whose test binary
+/// is `#![cfg(unix)]`: on Windows it holds no tests, and nextest refuses an empty run
+/// by default. The recipe tells nextest an empty run passes there and fails
+/// everywhere the journeys exist, so a filter that stopped matching them is still a
+/// finding on Linux and macOS.
+#[test]
+fn the_recovery_tier_accepts_an_empty_run_only_where_its_journeys_do_not_compile() {
+    let planned = Reported::from(
+        Command::new("just")
+            .args(["--dry-run", "_recovery-quick"])
+            .current_dir(crate::support::workspace_root())
+            .output()
+            .expect("just must be on PATH to run this repository's recipes"),
+    );
+    assert!(planned.status.success(), "{}", planned.stderr);
+    let expected = if cfg!(unix) {
+        "--no-tests=fail"
+    } else {
+        "--no-tests=pass"
+    };
+    let nextest = planned
+        .stderr
+        .lines()
+        .find(|line| line.contains("cargo nextest run") && line.contains("recovery-workload"))
+        .unwrap_or_else(|| panic!("the recipe runs the workload binary:\n{}", planned.stderr));
+    assert!(
+        nextest.trim_end().ends_with(expected),
+        "expected {expected} on this platform: {nextest}"
+    );
+}
+
 /// Replace the body of one test recipe in the copy's justfile with a counter.
 fn count_runs_of(checkout: &Checkout, recipe: &str, counter: &Path) {
     let justfile = checkout.root.join("justfile");
