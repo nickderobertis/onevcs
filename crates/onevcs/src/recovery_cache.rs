@@ -37,6 +37,18 @@ pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
     read()
 }
 
+// These reads capture output and never launch an editor or an interactive pager.
+pub(crate) fn has_git_overrides() -> bool {
+    std::env::vars_os().any(|(name, _)| {
+        let name = name.to_string_lossy();
+        name.starts_with("GIT_")
+            && !matches!(
+                name.as_ref(),
+                "GIT_OPTIONAL_LOCKS" | "GIT_EDITOR" | "GIT_PAGER"
+            )
+    })
+}
+
 pub(crate) fn enabled() -> bool {
     ENABLED.with(std::cell::Cell::get)
 }
@@ -345,10 +357,7 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
             return None;
         }
     }
-    if std::env::vars_os().any(|(name, _)| {
-        let name = name.to_string_lossy();
-        name.starts_with("GIT_") && name != "GIT_OPTIONAL_LOCKS"
-    }) {
+    if has_git_overrides() {
         return None;
     }
     let mut digest = Sha256::new();
@@ -376,10 +385,16 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Strin
             && !key.starts_with("branch.")
             && !key.starts_with("user.")
             && !key.starts_with("advice.")
+            // Local object reads never invoke credential helpers, editors or transports.
+            && !key.starts_with("credential.")
+            && !key.starts_with("pull.")
+            && !key.starts_with("push.")
+            && !key.starts_with("gist.")
             && !matches!(
                 key,
                 "core.repositoryformatversion"
                     | "core.filemode"
+                    | "core.editor"
                     | "core.bare"
                     | "core.logallrefupdates"
                     | "core.symlinks"

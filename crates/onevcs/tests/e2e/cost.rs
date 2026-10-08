@@ -742,6 +742,50 @@ fn warm_recovery_reuses_provenance_ranges_parent_reads_and_reverse_history() {
 }
 
 #[test]
+fn manager_global_configuration_reuses_local_proofs_and_changed_log_style_delegates() {
+    let fixture = Fixture::local(&local_direct());
+    tiered(&fixture);
+    let config = fixture.world.path(".gitconfig");
+    let original = std::fs::read_to_string(&config).unwrap();
+    let manager = format!("{original}\n[core]\n editor = /missing/editor\n[credential \"https://github.com\"]\n helper = /missing/github-helper\n[credential \"https://gist.github.com\"]\n helper = /missing/gist-helper\n[pull]\n rebase = true\n[push]\n default = simple\n");
+    std::fs::write(&config, &manager).unwrap();
+    let counting = Counting::installed(&fixture.world);
+    let read = || {
+        counting.clear();
+        let result = counting
+            .onevcs(&fixture.world)
+            .env("GIT_EDITOR", "/missing/editor")
+            .env("GIT_PAGER", "/missing/pager")
+            .args(["recoverable", "--json", "--all", "--detail", "decision"])
+            .assert()
+            .success();
+        let rows: Vec<Value> = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        (rows, counting.calls())
+    };
+    let (cold, _) = read();
+    assert!(!cold.is_empty());
+    assert_eq!(read().0, cold);
+    let (warm, calls) = read();
+    assert_eq!(warm, cold);
+    assert!(
+        !calls.iter().any(|call| call
+            .args
+            .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")),
+        "ordinary manager configuration retains immutable proof reuse: {calls:?}"
+    );
+    std::fs::write(&config, format!("{manager}\n[color]\n ui = always\n")).unwrap();
+    let (_, delegated) = read();
+    assert!(
+        delegated.iter().any(|call| call
+            .args
+            .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")),
+        "byte-changing log style must delegate"
+    );
+    std::fs::write(&config, manager).unwrap();
+    assert_eq!(read().0, cold);
+}
+
+#[test]
 fn a_ref_name_is_validated_by_subprocess_at_most_once_per_distinct_name() {
     // `git check-ref-format` answers a question about a *name*, so the answer cannot
     // go stale — and every session record read validates two of them. On the measured

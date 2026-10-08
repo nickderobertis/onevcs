@@ -306,9 +306,7 @@ pub(crate) fn is_ancestor(
 
 fn snapshot(at: &Path) -> Option<Snapshot> {
     if !Path::new(crate::git::git_program()).is_absolute()
-        || std::env::vars_os().any(|(name, _)| {
-            name.to_string_lossy().starts_with("GIT_") && name != "GIT_OPTIONAL_LOCKS"
-        })
+        || crate::recovery_cache::has_git_overrides()
     {
         return None;
     }
@@ -517,6 +515,73 @@ mod tests {
             "isolated real Git differential journey"
         );
         true
+    }
+
+    #[test]
+    fn noninteractive_editor_and_pager_preserve_reads_and_other_overrides_refuse() {
+        const CHILD: &str = "ONEVCS_READER_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args([
+                "--exact",
+                "native_refs::tests::noninteractive_editor_and_pager_preserve_reads_and_other_overrides_refuse",
+                "--nocapture",
+            ]);
+            for (name, _) in
+                std::env::vars_os().filter(|(name, _)| name.to_string_lossy().starts_with("GIT_"))
+            {
+                child.env_remove(name);
+            }
+            child
+                .env(CHILD, "1")
+                .env("GIT_EDITOR", "/missing/onevcs-editor")
+                .env("GIT_PAGER", "/missing/onevcs-pager");
+            assert!(
+                child.status().unwrap().success(),
+                "isolated real Git environment journey"
+            );
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path());
+        let root = fixture("sha1");
+        let repo = root.path();
+        let tip = git(repo, &["rev-parse", "HEAD"]);
+        differential(repo, &["main"]);
+        crate::recovery_cache::scope(|| {
+            assert_eq!(
+                is_repo(repo),
+                Some(true),
+                "inert editor and pager retain the native read"
+            );
+            assert!(
+                crate::recovery_cache::query(
+                    &["log", "-1", "--format=%B", &tip, "--"],
+                    Some(repo),
+                    &[]
+                )
+                .is_some(),
+                "immutable proof reuse stays available"
+            );
+        });
+        std::env::set_var("GIT_CONFIG_COUNT", "1");
+        crate::recovery_cache::scope(|| {
+            assert_eq!(is_repo(repo), None);
+            assert!(crate::recovery_cache::query(
+                &["log", "-1", "--format=%B", &tip, "--"],
+                Some(repo),
+                &[]
+            )
+            .is_none());
+            assert!(
+                crate::git::heads(repo).is_err(),
+                "Git's malformed configuration refusal survives fallback"
+            );
+        });
+        std::env::remove_var("GIT_CONFIG_COUNT");
+        differential(repo, &["main"]);
+        crate::recovery_cache::scope(|| assert_eq!(is_repo(repo), Some(true)));
     }
 
     fn git(repo: &Path, args: &[&str]) -> String {
