@@ -315,7 +315,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         return None;
     }
     let repo = git2::Repository::open(at).ok()?;
-    if repo.is_bare() || repo.workdir()? != at {
+    // libgit2 resolves symlinks in the paths it reports (macOS's /var is one), so
+    // the caller's spelling of the checkout is compared resolved too.
+    if repo.is_bare()
+        || std::fs::canonicalize(repo.workdir()?).ok()? != std::fs::canonicalize(at).ok()?
+    {
         return None;
     }
     let directory = std::fs::canonicalize(repo.path()).ok()?;
@@ -740,15 +744,17 @@ mod tests {
         let names = ["HEAD", "main", "topic/a.b/版本"];
         differential(&linked, &names);
         let baseline = crate::git::worktrees(&linked).unwrap();
+        let objects = crate::git::objects_dir(&linked).unwrap();
         crate::recovery_cache::scope(|| {
             assert!(
                 heads(&linked).is_some(),
                 "ordinary linked layouts retain the native path"
             );
             assert_eq!(crate::git::worktrees(&linked).unwrap(), baseline);
+            // The native answer is resolved; Git's keeps whatever spelling reached it.
             assert_eq!(
-                crate::git::objects_dir(&linked).unwrap(),
-                repo.join(".git/objects")
+                std::fs::canonicalize(crate::git::objects_dir(&linked).unwrap()).unwrap(),
+                std::fs::canonicalize(&objects).unwrap()
             );
         });
         git(repo, &["pack-refs", "--all"]);
