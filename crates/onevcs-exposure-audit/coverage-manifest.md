@@ -1,6 +1,6 @@
 # Exposure audit coverage manifest
 
-Written by `onevcs-exposure-audit run` at 2026-10-08T14:29:39.873366594Z. It states what the audit read, not what it matched: that is kept only in the host-local vault.
+Written by `onevcs-exposure-audit run` at 2026-10-08T15:30:30.249306208Z. It states what the audit read, not what it matched: that is kept only in the host-local vault.
 
 ## Scope
 
@@ -26,9 +26,10 @@ Written by `onevcs-exposure-audit run` at 2026-10-08T14:29:39.873366594Z. It sta
 
 | Repository | Current files | Git history | Refs read | Issues | Change requests | Board items | Edit history |
 |---|---|---|---|---|---|---|---|
-| nickderobertis/oneharness | scanned | scanned | heads 115, tags 173, pull 1331, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/oneharness | scanned | scanned | heads 114, tags 173, pull 1330, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/onebudgetspec | scanned | scanned | heads 1, tags 5, pull 15, other 0 | scanned | scanned | not-found | scanned |
+| nickderobertis/onepipeline | scanned | scanned | heads 45, tags 161, pull 447, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/ai-orchestrator | scanned | scanned | heads 215, tags 0, pull 15, other 0 | scanned | scanned | permission-denied | scanned |
-| nickderobertis/onepipeline | scanned | scanned | heads 46, tags 160, pull 448, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/onetaskgraph | scanned | scanned | heads 5, tags 524, pull 203, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/crozier | scanned | scanned | heads 10, tags 109, pull 333, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/onepipeline-ui | scanned | scanned | heads 15, tags 56, pull 155, other 0 | scanned | scanned | not-found | scanned |
@@ -50,7 +51,6 @@ Written by `onevcs-exposure-audit run` at 2026-10-08T14:29:39.873366594Z. It sta
 | nickderobertis/onejudge | scanned | scanned | heads 3, tags 43, pull 113, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/github-secrets | scanned | scanned | heads 13, tags 9, pull 64, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/onemessagebus | scanned | scanned | heads 7, tags 17, pull 27, other 0 | scanned | scanned | not-found | scanned |
-| nickderobertis/onebudgetspec | scanned | scanned | heads 2, tags 4, pull 15, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/screencomp-demo | scanned | scanned | heads 3, tags 0, pull 13, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/nick-derobertis-site-visual-docs | scanned | scanned | heads 2, tags 0, pull 0, other 0 | scanned | scanned | not-found | scanned |
 | nickderobertis/spanish-language-tutor | scanned | scanned | heads 1, tags 0, pull 0, other 0 | scanned | scanned | not-found | scanned |
