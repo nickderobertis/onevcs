@@ -25,11 +25,12 @@ use std::process::{Command, Output};
 /// sweep runs. The live `onevcs-smoke` tier and the `onevcs-release-pr` journeys
 /// carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 5] = [
+const GATE_PROJECTS: [&str; 6] = [
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
     "onevcs-e2e",
+    "onevcs-recovery",
     "onevcs-scripts-e2e",
 ];
 
@@ -236,10 +237,21 @@ fn pull_request(head: &str) -> [(&'static str, &str); 4] {
 #[test]
 fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_them_alone() {
     let checkout = Checkout::new();
-    for path in [
-        "scripts/coverage.sh",
-        "npm/onevcs/bin/onevcs.js",
-        ".github/workflows/ci.yml",
+    // The recovery tier measures its journeys under coverage, so it reads the
+    // coverage script too; nothing else outside the crate reaches it.
+    for (path, tiers) in [
+        (
+            "scripts/coverage.sh",
+            &["onevcs-contract", "onevcs-recovery", "onevcs-scripts-e2e"][..],
+        ),
+        (
+            "npm/onevcs/bin/onevcs.js",
+            &["onevcs-contract", "onevcs-scripts-e2e"][..],
+        ),
+        (
+            ".github/workflows/ci.yml",
+            &["onevcs-contract", "onevcs-scripts-e2e"][..],
+        ),
     ] {
         checkout.branch_changing("change", &[path]);
         let tasks = checkout.selected(
@@ -248,7 +260,7 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
         );
         assert_eq!(
             projects_running(&tasks, "test"),
-            set(&["onevcs-contract", "onevcs-scripts-e2e"]),
+            set(tiers),
             "a change to {path} selected {tasks:?}"
         );
     }
@@ -292,7 +304,7 @@ fn any_rust_project_affected_runs_the_rust_artifact_jobs_and_none_affected_skips
 
 #[test]
 fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier() {
-    // One change, reaching two tiers; what the build runs is decided by whose pull
+    // One change, reaching three tiers; what the build runs is decided by whose pull
     // request it is.
     let checkout = Checkout::new();
     checkout.branch_changing("change", &["scripts/coverage.sh"]);
@@ -325,7 +337,7 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
     let scoped = checkout.selected(&["just", "ci-tier", "run", "-t", "check"], &ordinary);
     assert_eq!(
         projects_running(&scoped, "check"),
-        set(&["onevcs-contract", "onevcs-scripts-e2e"]),
+        set(&["onevcs-contract", "onevcs-recovery", "onevcs-scripts-e2e"]),
         "an ordinary pull request's affected tier selected {scoped:?}"
     );
 }
