@@ -30,8 +30,8 @@ pub enum HistoryLocation {
     Path,
     /// A commit message.
     Message,
-    /// A commit's author or committer identity.
-    Author,
+    /// A commit's author or committer identity: a name and an email.
+    Identity,
     /// A ref's name.
     Ref,
     /// An annotated tag's message.
@@ -226,8 +226,7 @@ mod tests {
     #[test]
     fn a_proportion_over_a_single_source_is_withheld() {
         let identity = PrivateIdentity {
-            owner: "hiddenco".into(),
-            name: "quietharbor".into(),
+            repo: crate::ids::RepoId::new("hiddenco", "quietharbor").expect("a synthetic identity"),
             packages: BTreeSet::new(),
         };
         let matcher = Matcher::new(derive(&[identity], &BTreeSet::new(), &BTreeSet::new(), &[]))

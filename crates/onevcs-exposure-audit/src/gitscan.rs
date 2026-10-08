@@ -341,8 +341,8 @@ impl Scan<'_, '_> {
                     Some(self.stats.newest_commit_unix.map_or(at, |n| n.max(at)));
             }
             for (location, body) in [
-                (HistoryLocation::Author, fields[2]),
-                (HistoryLocation::Author, fields[3]),
+                (HistoryLocation::Identity, fields[2]),
+                (HistoryLocation::Identity, fields[3]),
                 (HistoryLocation::Message, fields[4]),
             ] {
                 let hits = self.matcher.find(body.as_bytes());

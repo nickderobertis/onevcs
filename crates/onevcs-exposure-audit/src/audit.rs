@@ -116,13 +116,16 @@ fn reread(api: &Api, repo: &RepoId) -> Visibility {
             let public = body.get("visibility").and_then(Value::as_str) == Some("public")
                 && body.get("private").and_then(Value::as_bool) == Some(false);
             if public {
-                // A renamed repository answers under its current name.
-                let current = body
+                // A renamed repository answers under its current name; a name that
+                // does not parse is no confirmation.
+                match body
                     .get("full_name")
                     .and_then(Value::as_str)
-                    .and_then(RepoId::parse)
-                    .unwrap_or_else(|| repo.clone());
-                Visibility::Public(current)
+                    .map(RepoId::parse)
+                {
+                    Some(Some(current)) => Visibility::Public(current),
+                    _ => Visibility::Unreadable,
+                }
             } else {
                 Visibility::NotPublic
             }
@@ -247,8 +250,8 @@ fn manifest_packages(api: &Api, identities: &mut [PrivateIdentity]) -> u64 {
             fields.push(format!(
                 "r{i}: repository(owner: $o{i}, name: $n{i}) {{ cargo: object(expression: \"HEAD:Cargo.toml\") {{ ... on Blob {{ text }} }} npm: object(expression: \"HEAD:package.json\") {{ ... on Blob {{ text }} }} py: object(expression: \"HEAD:pyproject.toml\") {{ ... on Blob {{ text }} }} }}"
             ));
-            variables.insert(format!("o{i}"), json!(identity.owner));
-            variables.insert(format!("n{i}"), json!(identity.name));
+            variables.insert(format!("o{i}"), json!(identity.repo.owner().as_str()));
+            variables.insert(format!("n{i}"), json!(identity.repo.name()));
         }
         let query = format!(
             "query Manifests({}) {{ rateLimit {{ cost }} {} }}",
@@ -478,8 +481,7 @@ fn derive_terms(api: &Api, options: &Options, set: &AuditSet) -> Result<Terms, S
         }
         let entry = identities.entry(repo.key()).or_insert_with(|| {
             let identity = PrivateIdentity {
-                owner: repo.owner().to_string(),
-                name: repo.name().to_owned(),
+                repo: repo.clone(),
                 packages: BTreeSet::new(),
             };
             (identity, access)

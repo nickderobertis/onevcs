@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use serde::{Deserialize, Serialize};
 
+use crate::ids::RepoId;
+
 /// Where a term came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -101,8 +103,7 @@ pub struct Term {
 /// A private identity: what terms are derived from.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrivateIdentity {
-    pub owner: String,
-    pub name: String,
+    pub repo: RepoId,
     pub packages: BTreeSet<String>,
 }
 
@@ -230,21 +231,21 @@ pub fn derive(
     };
     for identity in identities {
         add(
-            &format!("{}/{}", identity.owner, identity.name),
+            &identity.repo.to_string(),
             TermClass::OwnerName,
             Rule::Substring,
             None,
         );
         let owner_narrowing = public_owners
-            .contains(&identity.owner.to_ascii_lowercase())
+            .contains(&identity.repo.owner().as_str().to_ascii_lowercase())
             .then_some(Narrowing::OwnerShared);
         add(
-            &identity.owner,
+            identity.repo.owner().as_str(),
             TermClass::Owner,
             Rule::WholeWord,
             owner_narrowing,
         );
-        let bare = std::iter::once((identity.name.as_str(), TermClass::Name)).chain(
+        let bare = std::iter::once((identity.repo.name(), TermClass::Name)).chain(
             identity
                 .packages
                 .iter()
@@ -409,8 +410,7 @@ mod tests {
 
     fn identity(owner: &str, name: &str, packages: &[&str]) -> PrivateIdentity {
         PrivateIdentity {
-            owner: owner.into(),
-            name: name.into(),
+            repo: RepoId::new(owner, name).expect("a synthetic identity"),
             packages: packages.iter().map(|p| (*p).to_owned()).collect(),
         }
     }
