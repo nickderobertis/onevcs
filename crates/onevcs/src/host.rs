@@ -646,11 +646,6 @@ impl Check {
         self.state() == CheckState::Passed
     }
 
-    /// Whether the host ended this run without a verdict either way.
-    pub(crate) fn no_verdict(&self) -> bool {
-        self.state() == CheckState::NoVerdict
-    }
-
     /// Whether a settled check ended in a way that blocks a merge.
     pub fn red(&self) -> bool {
         self.state() == CheckState::Failed

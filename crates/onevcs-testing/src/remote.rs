@@ -432,17 +432,33 @@ fn complete_sources() -> std::collections::BTreeSet<CheckSource> {
 
 /// Whether every required check on a change request lets the host merge it.
 ///
-/// A change with no required checks is not green: nothing has vouched for it, which
-/// is the state auto-merge waits in rather than lands from. A skipped required check
-/// lets the merge through, as it does on GitHub's own merge path — which is why that
-/// is a state of its own rather than a pass.
+/// What is required is every check seeded as required and every name the seeded
+/// [`HostState::required_checks`] declares, so a declared check that has not reported
+/// a run holds the merge as it does on GitHub's own merge path. A change with no
+/// required checks is not green: nothing has vouched for it, which is the state
+/// auto-merge waits in rather than lands from. A skipped required check lets the merge
+/// through, as it does on GitHub's own merge path — which is why that is a state of
+/// its own rather than a pass.
 fn required_checks_green(state: &HostState, id: &ChangeId) -> bool {
     let checks = current_checks(state, id);
-    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
+    let required: std::collections::BTreeSet<&str> = checks
+        .iter()
+        .filter(|check| check.required)
+        .map(|check| check.name.as_str())
+        .chain(
+            state
+                .required_checks
+                .iter()
+                .flat_map(|declared| declared.checks.iter().map(String::as_str)),
+        )
+        .collect();
     !required.is_empty()
-        && required
-            .iter()
-            .all(|check| matches!(check.state(), CheckState::Passed | CheckState::Skipped))
+        && required.iter().all(|name| {
+            let mut runs = checks.iter().filter(|check| check.name == *name).peekable();
+            runs.peek().is_some()
+                && runs
+                    .all(|check| matches!(check.state(), CheckState::Passed | CheckState::Skipped))
+        })
 }
 
 /// Whether this host holds a change request as a draft: opened as one, for a reason

@@ -887,10 +887,22 @@ fn a_change_request_this_publication_opened_itself_is_asked_about_only_under_the
     );
 }
 
-/// What a repository with no CI answers about a change's checks, from its whole rollup.
-fn no_checks() -> onevcs::ChangeChecks {
+/// What a repository that requires no check answers about a change's checks, from its
+/// whole rollup: a check that ran, marked not required. An *empty* rollup would not say
+/// it — these hosts cannot be asked what they require, and one that has marked nothing
+/// required yet has not answered that nothing is.
+fn nothing_required() -> onevcs::ChangeChecks {
     onevcs::ChangeChecks {
-        checks: Vec::new(),
+        checks: vec![onevcs::Check {
+            name: "lint".to_owned(),
+            status: "completed".to_owned(),
+            conclusion: Some("success".to_owned()),
+            required: false,
+            head: None,
+            url: None,
+            started_at: None,
+            completed_at: None,
+        }],
         sources: [onevcs::CheckSource::StatusChecks].into_iter().collect(),
     }
 }
@@ -948,7 +960,7 @@ impl onevcs::RemoteHost for Unreadable {
 
     fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
         // A repository with no CI, answered from the whole rollup.
-        Ok(no_checks())
+        Ok(nothing_required())
     }
 
     fn check_log(
@@ -956,7 +968,7 @@ impl onevcs::RemoteHost for Unreadable {
         _: &onevcs::ChangeRequest,
         _: &onevcs::Check,
     ) -> onevcs::Result<onevcs::ArtifactId> {
-        unreachable!("a host reporting no check is asked for no log")
+        unreachable!("this provider asks a host for no log")
     }
 
     fn merge(
@@ -1001,15 +1013,15 @@ fn a_host_written_before_drafts_publishes_here_the_way_it_always_did() {
             }])
         }
         fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
-            // Every change policy watches its checks now; this repository has none.
-            Ok(no_checks())
+            // Every change policy watches its checks now; this repository requires none.
+            Ok(nothing_required())
         }
         fn check_log(
             &self,
             _: &onevcs::ChangeRequest,
             _: &onevcs::Check,
         ) -> onevcs::Result<onevcs::ArtifactId> {
-            unreachable!("a host reporting no check is asked for no log")
+            unreachable!("this provider asks a host for no log")
         }
         fn merge(
             &self,

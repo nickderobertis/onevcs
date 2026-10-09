@@ -2649,11 +2649,11 @@ struct Reading {
 }
 
 impl Reading {
-    /// Each required check's standing in this reading, read off the checks' own
-    /// `required` — what a ready change's watch reads them by.
-    fn standing(&self) -> Vec<Standing<'_>> {
+    /// Each required check's standing in this reading, by what the host declared it
+    /// requires — so a declared check with no run yet stands with no state.
+    fn standing(&self, declared: &Declared) -> Vec<Standing<'_>> {
         let about: Vec<&Check> = self.reported.checks().iter().collect();
-        standings(&about, &Declared::Unknown)
+        standings(&about, declared)
     }
 }
 
@@ -2727,6 +2727,28 @@ impl Declared {
             _ => self.clone(),
         }
     }
+
+    /// Why what is required was read off the host's own per-check marking, where it
+    /// was: `unread` under [`Declared::Unknown`], and nothing under an answer the host
+    /// gave — which is what a settlement then has to say it was read from.
+    fn marked<'u>(&self, unread: Option<&'u str>) -> Option<&'u str> {
+        (*self == Declared::Unknown).then_some(unread).flatten()
+    }
+}
+
+/// Whether `standing` lets the change through: every required check passed or was
+/// skipped, over a set that is not empty unless the host answered, completely, that
+/// nothing is required. A declared check with no run yet stands with no state, so it
+/// holds the change; and where the declaration could not be read, an empty set is
+/// the host having marked nothing required *yet* rather than its answer that nothing is.
+fn lets_through(standing: &[Standing<'_>], declared: &Declared) -> bool {
+    (*declared == Declared::Nothing || !standing.is_empty())
+        && standing.iter().all(|standing| {
+            matches!(
+                standing.state,
+                Some(CheckState::Passed | CheckState::Skipped)
+            )
+        })
 }
 
 /// Where one required check stands in a reading: its name, the state its entries
@@ -2837,6 +2859,9 @@ struct Watcher<'a> {
     /// Whether an early lift prints its warning line: the resolved
     /// `drafts.warn_on_early_lift`.
     warn_on_early_lift: bool,
+    /// What the host declares a merge into the base requires, with why it could not
+    /// be read where it could not — asked once per watch, by [`Watcher::declared`].
+    declaration: Option<(Declared, Option<String>)>,
 }
 
 impl<'a> Watcher<'a> {
@@ -2861,7 +2886,18 @@ impl<'a> Watcher<'a> {
             reported: Vec::new(),
             logs: Vec::new(),
             settled: false,
+            declaration: None,
         })
+    }
+
+    /// What the host declares it requires before a merge into this change's base, and
+    /// why it could not be read where it could not: asked of the host the first time a
+    /// phase of the watch needs it and remembered for the rest of the watch, so one
+    /// watch reads every phase against one answer.
+    fn declared(&mut self) -> (Declared, Option<String>) {
+        self.declaration
+            .get_or_insert_with(|| declared_required(self.host, self.change))
+            .clone()
     }
 
     /// Ask the host once, narrow its answer to the pushed commit, and report every
@@ -2996,11 +3032,16 @@ impl<'a> Watcher<'a> {
 
     /// The bound elapsed, naming what the host had not settled, and recording the
     /// watch's gate run as one that reached no verdict.
+    ///
+    /// `declared` is what `standing` was read against and `unread` why the host's
+    /// declaration could not be read, where it could not, so the sentence says which
+    /// of its answers the standing came from.
     fn unsettled(
         &mut self,
         stream: &mut Stream,
         reading: &Reading,
         standing: &[Standing<'_>],
+        (declared, unread): (&Declared, Option<&str>),
         awaited: &str,
     ) -> Error {
         self.record_gate(stream, gate_run::Ruling::NoVerdict, standing);
@@ -3008,6 +3049,11 @@ impl<'a> Watcher<'a> {
             self.change,
             self.pushed,
             &reading.reported,
+            Requirement {
+                standing,
+                declared,
+                unread,
+            },
             self.bound,
             awaited,
         )
@@ -3081,48 +3127,51 @@ fn settle(watcher: &mut Watcher<'_>, stream: &mut Stream, drafted: bool) -> Resu
     }
 }
 
-/// Wait until every required check the host reports has settled without blocking.
+/// Wait until every check the host requires has settled without blocking.
 ///
 /// What a `change-direct` publication does before it asks the host to merge, and what
 /// every ready change does before its policy's ending: this run performs the merge,
 /// or reports the change as open, so an answer the host's own checks have already
 /// refused is one to report rather than act past.
 ///
-/// A skipped required check satisfies this, as it satisfies the host's own merge path
-/// — and the watch then records `checks-settled` as `passed-with-skipped`, naming it,
-/// so the record says what the host accepted rather than calling it green. A host that
-/// reports **no required check at all** is not a stall here. It has answered, and its
-/// answer is that nothing blocks; `change-auto` is the policy that fails closed on
-/// that, because its watch ends at a merge the host performs.
+/// What is required is what the host **declares** — its rulesets and its branch
+/// protection — so a required check that has not started yet holds the watch rather
+/// than going unnoticed; only where that declaration could not be read is it read off
+/// the checks' own marking, and then a settlement says so. A skipped required check
+/// satisfies this, as it satisfies the host's own merge path — and the watch then
+/// records `checks-settled` as `passed-with-skipped`, naming it, so the record says
+/// what the host accepted rather than calling it green. A host whose complete answer
+/// is that **nothing is required** is not a stall here: it has answered, and its
+/// answer is that nothing blocks. A host that could not say, and has marked nothing
+/// required, has not answered that, so it is waited on.
 fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
+    let (declared, unread) = watcher.declared();
     loop {
         let reading = watcher.read(stream)?;
+        let declared = declared.given(&reading);
+        let marked = declared.marked(unread.as_deref());
         if let Reported::About(checks) = &reading.reported {
             let about: Vec<&Check> = checks.iter().collect();
-            let standing = standings(&about, &Declared::Unknown);
+            let standing = standings(&about, &declared);
             if let Some(failed) = red(&standing) {
                 return Err(watcher.failed(stream, &standing, failed));
             }
-            if standing.iter().all(|standing| {
-                matches!(
-                    standing.state,
-                    Some(CheckState::Passed | CheckState::Skipped)
-                )
-            }) {
-                watcher.record_settled(stream, &standing, None);
+            if lets_through(&standing, &declared) {
+                watcher.record_settled(stream, &standing, marked);
                 return Ok(());
             }
         }
         // Otherwise the host has posted nothing about the commit this publication
-        // pushed, or something it requires is still running. The first is a clock and
-        // not an answer — the checks it *is* reporting belong to a head this run
-        // replaced — so the watch keeps waiting rather than merging on an emptiness
-        // that is really somebody else's verdict having been filtered out.
+        // pushed, or something it requires is still running or has not started. The
+        // first is a clock and not an answer — the checks it *is* reporting belong to
+        // a head this run replaced — so the watch keeps waiting rather than merging on
+        // an emptiness that is really somebody else's verdict having been filtered out.
         if watcher.out_of_time() {
             return Err(watcher.unsettled(
                 stream,
                 &reading,
-                &reading.standing(),
+                &reading.standing(&declared),
+                (&declared, marked),
                 "settled its required checks on",
             ));
         }
@@ -3156,7 +3205,7 @@ fn skipped_in(standing: &[Standing<'_>]) -> Vec<String> {
 /// window and no warning.
 fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> {
     let grace = std::time::Duration::from_secs_f64(gh::draft_grace()?);
-    let (declared, unread) = declared_required(watcher.host, watcher.change);
+    let (declared, unread) = watcher.declared();
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
@@ -3166,9 +3215,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         }
         // Whether what is required is being read off the host's marking because the
         // declaration could not be read, which a settlement then has to say.
-        let marked = (declared == Declared::Unknown)
-            .then_some(unread.as_deref())
-            .flatten();
+        let marked = declared.marked(unread.as_deref());
         let about: Vec<&Check> = reading.reported.checks().iter().collect();
         let standing = standings(&about, &declared);
         if let Some(failed) = red(&standing) {
@@ -3224,6 +3271,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 stream,
                 &reading,
                 &standing,
+                (&declared, marked),
                 "settled its required checks on",
             ));
         }
@@ -3365,6 +3413,7 @@ fn settle_after_early_lift(
                 stream,
                 &reading,
                 &standing,
+                (declared, unread),
                 "settled its required checks on",
             ));
         }
@@ -3385,22 +3434,20 @@ fn settle_after_early_lift(
 /// are for the session to resolve. A mergeability the host has not computed yet is
 /// never read as a conflict.
 fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
+    let (declared, unread) = watcher.declared();
     let mut armed = false;
     loop {
         let reading = watcher.read(stream)?;
+        let declared = declared.given(&reading);
+        let marked = declared.marked(unread.as_deref());
         if let Reported::About(checks) = &reading.reported {
             let about: Vec<&Check> = checks.iter().collect();
-            let standing = standings(&about, &Declared::Unknown);
+            let standing = standings(&about, &declared);
             if let Some(failed) = red(&standing) {
                 return Err(watcher.failed(stream, &standing, failed));
             }
-            if standing.iter().all(|standing| {
-                matches!(
-                    standing.state,
-                    Some(CheckState::Passed | CheckState::Skipped)
-                )
-            }) {
-                watcher.record_settled(stream, &standing, None);
+            if lets_through(&standing, &declared) {
+                watcher.record_settled(stream, &standing, marked);
             }
         }
         if !armed {
@@ -3425,7 +3472,13 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
             Err(unreadable) => return Err(unreadable),
         }
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(stream, &reading, &reading.standing(), "merged"));
+            return Err(watcher.unsettled(
+                stream,
+                &reading,
+                &reading.standing(&declared),
+                (&declared, marked),
+                "merged",
+            ));
         }
         watcher.pause()?;
     }
@@ -3480,20 +3533,36 @@ fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> 
     }
 }
 
+/// What a watch read the required checks against when its bound elapsed: each
+/// required check's standing, the declaration that standing was read by, and — set
+/// only under [`Declared::Unknown`] — why that declaration could not be read.
+struct Requirement<'s, 'c> {
+    standing: &'s [Standing<'c>],
+    declared: &'s Declared,
+    unread: Option<&'s str>,
+}
+
 /// The bound elapsed, naming what the host had not settled.
 ///
 /// It names them because the alternative is what the bound used to do: stop after
 /// an hour with a sentence that reads the same whether one check is still running,
 /// the repository declares none, or the host has simply never landed the change.
 /// Those are three different next moves.
+///
+/// Every name comes from the watch's own standing, never from the reported checks
+/// alone: a check the host declares required and has not started is the one most
+/// worth naming, and the reported checks are exactly where it is missing. So a
+/// sentence saying every required check settled is one the standing says, and a
+/// sentence saying the host declared none is one only its complete answer says.
 fn unsettled(
     change: &ChangeRequest,
     pushed: &Sha,
     reported: &Reported,
+    requirement: Requirement<'_, '_>,
     bound: std::time::Duration,
     awaited: &str,
 ) -> Error {
-    let Reported::About(checks) = reported else {
+    if let Reported::NotYet = reported {
         // A fourth ending, and the one that must not read as any of the three below:
         // the host answered, and everything it said was about a head this run
         // replaced. "Nothing blocks the merge" is what that used to look like.
@@ -3507,28 +3576,38 @@ fn unsettled(
                 commit = pushed.0,
             ),
         };
-    };
-    let required: Vec<&Check> = checks.iter().filter(|check| check.required).collect();
-    let pending: Vec<&str> = required
+    }
+    let Requirement {
+        standing,
+        declared,
+        unread,
+    } = requirement;
+    let pending: Vec<String> = standing
         .iter()
-        .filter(|check| check.state() == CheckState::Pending)
-        .map(|check| check.name.as_str())
+        .filter_map(|standing| match standing.state {
+            Some(CheckState::Pending) => Some(format!("{:?}", standing.name)),
+            None => Some(format!("{:?} (no run yet)", standing.name)),
+            _ => None,
+        })
         .collect();
-    let no_verdict: Vec<String> = required
+    let no_verdict: Vec<String> = standing
         .iter()
-        .filter(|check| check.no_verdict())
-        .map(|check| {
+        .filter(|standing| standing.state == Some(CheckState::NoVerdict))
+        .map(|standing| {
             format!(
                 "{:?}: {}",
-                check.name,
-                check.conclusion.as_deref().unwrap_or("unknown")
+                standing.name,
+                standing
+                    .check
+                    .and_then(|check| check.conclusion.as_deref())
+                    .unwrap_or("unknown")
             )
         })
         .collect();
-    let skipped: Vec<&str> = required
+    let skipped: Vec<&str> = standing
         .iter()
-        .filter(|check| check.state() == CheckState::Skipped)
-        .map(|check| check.name.as_str())
+        .filter(|standing| standing.state == Some(CheckState::Skipped))
+        .map(|standing| standing.name.as_str())
         .collect();
     let named = if !pending.is_empty() {
         let verdicts = if no_verdict.is_empty() {
@@ -3536,7 +3615,7 @@ fn unsettled(
         } else {
             format!("; completed with no verdict: {}", no_verdict.join(", "))
         };
-        format!("still unsettled: {}{verdicts}", guidance::listed(&pending))
+        format!("still unsettled: {}{verdicts}", pending.join(", "))
     } else if !no_verdict.is_empty() {
         format!("completed with no verdict: {}", no_verdict.join(", "))
     } else if !skipped.is_empty() {
@@ -3544,15 +3623,29 @@ fn unsettled(
             "skipped on the draft, so not run on it: {}",
             guidance::listed(&skipped)
         )
-    } else if required.is_empty() {
-        "the host declared no required check on it at all".to_owned()
+    } else if standing.is_empty() {
+        match declared {
+            Declared::Nothing => "the host declared no required check on it at all".to_owned(),
+            _ => "it has marked no check required on it".to_owned(),
+        }
     } else {
         "every required check it declared had settled".to_owned()
     };
+    // Where the host's declaration could not be read, what is required was read off
+    // its marking, and a reader deciding what to do next has to know the standing
+    // above may be missing a required check the host simply has not reported yet.
+    let read_from = unread
+        .map(|because| {
+            format!(
+                ". Which checks it requires could not be read, so they were read from the \
+                 checks it marked required: {because}"
+            )
+        })
+        .unwrap_or_default();
     // llmlint: ignore[names_match_behavior] one fixed kind for the bound's three endings.
     Error::ChecksUnsettled {
         reason: format!(
-            "the host had not {awaited} {url} within {seconds}s; {named}",
+            "the host had not {awaited} {url} within {seconds}s; {named}{read_from}",
             url = change.url,
             seconds = bound.as_secs_f64(),
         ),
