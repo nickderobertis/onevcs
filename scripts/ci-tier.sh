@@ -16,7 +16,7 @@
 # branch anyone can name that way gets a broader run than it needed, never a
 # narrower one, so the prefix needs no stronger proof than that.
 #
-# The live `onevcs-smoke` tier and the `onevcs-release-pr` journeys carry no
+# The live `onevcs-live` tier and the `onevcs-release-pr` journeys carry no
 # `check` target, so a sweep of `check` never reaches them; their own jobs do.
 set -euo pipefail
 

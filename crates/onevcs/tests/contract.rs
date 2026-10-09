@@ -6202,6 +6202,188 @@ fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
     );
 }
 
+/// The secret, and the variable it becomes, that names the live tier's scratch
+/// repository — read out of the tier's own `SMOKE_REPO_ENV`, so the workflow is held
+/// to the name the journeys read rather than to a second copy of it.
+fn smoke_repo_key() -> String {
+    let source = repo_file("crates/onevcs/tests/smoke/scratch.rs");
+    let declared = "pub const SMOKE_REPO_ENV: &str = \"";
+    let at = source
+        .find(declared)
+        .expect("tests/smoke/scratch.rs declares SMOKE_REPO_ENV as a string constant")
+        + declared.len();
+    let key = &source[at..];
+    key[..key.find('"').expect("SMOKE_REPO_ENV's value is closed")].to_owned()
+}
+
+/// Every string a workflow step hands to its runner as a value: its `run`, and each
+/// value under its `env` and its `with`. Not its `uses`, which names an action.
+fn step_values(step: &serde_yaml_ng::Value) -> Vec<String> {
+    let mut values: Vec<String> = step
+        .get("run")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    for key in ["env", "with"] {
+        let mapping = step.get(key).and_then(serde_yaml_ng::Value::as_mapping);
+        for value in mapping.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
+            match value {
+                serde_yaml_ng::Value::String(text) => values.push(text.clone()),
+                other => values.push(serde_yaml_ng::to_string(other).unwrap_or_default()),
+            }
+        }
+    }
+    values
+}
+
+/// The repository identities written out in one value: a `github.com/` URL, or a
+/// bare `owner/name` word. `owner/name` itself is the shape being described, not
+/// a repository, and a `${{ }}` expression is resolved by the runner, never written.
+fn repository_identities(value: &str) -> Vec<String> {
+    let segment = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    value
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | ')'))
+        .map(|word| word.trim_end_matches(['.', ',', ':', ';']))
+        .filter(|word| {
+            word.contains("github.com/")
+                || (*word != "owner/name"
+                    && word.split('/').count() == 2
+                    && word.split('/').all(segment))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
+    // Which repository the live tier publishes to is configuration: the step that
+    // runs it maps the secret into its own environment under the variable's name,
+    // so the identity is masked in logs and written nowhere in the tree.
+    let smoke_file = ".github/workflows/smoke.yml";
+    let key = smoke_repo_key();
+    let smoke = workflow(smoke_file);
+    let jobs = workflow_jobs(&smoke);
+    let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
+    let steps = job
+        .get("steps")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("the smoke job has steps");
+    let entry = steps
+        .iter()
+        .find(|step| {
+            step.get("run")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|run| run.trim() == "just smoke-real")
+        })
+        .expect("the smoke job no longer runs `just smoke-real`");
+    let mapped = entry
+        .get("env")
+        .and_then(|env| env.get(key.as_str()))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(
+        mapped.replace(' ', ""),
+        format!("${{{{secrets.{key}}}}}"),
+        "the step running `just smoke-real` must map secrets.{key} into its environment as \
+         {key}; it maps {mapped:?}"
+    );
+
+    // And nothing the workflow hands a runner writes a repository out: not a step's
+    // command, environment or inputs, and not a job's environment.
+    for (id, job) in &jobs {
+        let mut values: Vec<String> = Vec::new();
+        if let Some(env) = job.get("env") {
+            values.extend(step_values(&serde_yaml_ng::Value::Mapping(
+                [(serde_yaml_ng::Value::from("env"), env.clone())]
+                    .into_iter()
+                    .collect(),
+            )));
+        }
+        for step in job
+            .get("steps")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            values.extend(step_values(step));
+        }
+        let written: Vec<String> = values
+            .iter()
+            .flat_map(|value| repository_identities(value))
+            .collect();
+        assert!(
+            written.is_empty(),
+            "{smoke_file}'s `{id}` job hard-codes a repository identity {written:?}; name it \
+             through secrets.{key} instead"
+        );
+    }
+}
+
+#[test]
+fn every_secret_a_workflow_reads_is_one_the_provisioning_manifest_names() {
+    // `gh-secrets.json` is what a fork or a fresh clone provisions from, and a
+    // workflow that reads a secret the manifest does not name fails in CI with a
+    // blank value — which the live tier, for one, reads as "unset" and refuses on.
+    // So the two are held to one set, in both directions: a secret the manifest
+    // names and no workflow reads is a credential provisioned for nothing.
+    // `GITHUB_TOKEN` is the runner's own and is never provisioned.
+    let dir = repo_root().join(".github/workflows");
+    let mut read = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("the workflows directory must be readable") {
+        let path = entry.expect("a workflow entry").path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        for (at, _) in text.match_indices("secrets.") {
+            // A context reference, not a word ending in it, such as this manifest's
+            // own file name.
+            let starts_a_word = text[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
+            if !starts_a_word {
+                continue;
+            }
+            let name: String = text[at + "secrets.".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() && name != "GITHUB_TOKEN" {
+                read.insert(name);
+            }
+        }
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_str(&repo_file("gh-secrets.json")).expect("gh-secrets.json is JSON");
+    let named: BTreeSet<String> = manifest["secrets"]
+        .as_array()
+        .expect("gh-secrets.json lists its secrets")
+        .iter()
+        .map(|secret| {
+            secret["name"]
+                .as_str()
+                .expect("each provisioned secret has a name")
+                .to_owned()
+        })
+        .collect();
+    let key = smoke_repo_key();
+    assert!(
+        read.contains(&key),
+        "no workflow reads secrets.{key}, which names the live tier's scratch repository"
+    );
+    assert_eq!(
+        read, named,
+        "the secrets the workflows read and the ones gh-secrets.json provisions differ; \
+         change them together"
+    );
+}
+
 /// What this repository's release configuration publishes: the artifacts a
 /// dependent can name, and the per-platform npm packages that exist only so a
 /// launcher can resolve one.

@@ -16,8 +16,9 @@
 //! entry point CI's `smoke` job calls, so the journeys are defined once here and
 //! never reimplemented as workflow steps.
 //!
-//! **It never skips.** A missing `gh`, a missing credential, or a repository it is
-//! not allowed to touch each fail loudly and name what is missing. Nothing here
+//! **It never skips.** A missing `gh`, a missing credential, an unset
+//! `ONEVCS_SMOKE_REPO`, or a repository it is not allowed to touch each fail loudly
+//! and name what is missing. Nothing here
 //! falls back to a provider or a stand-in on the repository or the host side — a
 //! smoke that can pass without having talked to GitHub proves nothing, which is the
 //! entire reason this tier exists.

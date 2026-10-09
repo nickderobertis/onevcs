@@ -786,7 +786,7 @@ defect only the `cross` job sees.
 ## The test binaries are run by tier projects that own no source
 
 The `project.json` files under `tests/` — `onevcs-e2e`, `onevcs-scripts-e2e`,
-`onevcs-contract`, `onevcs-release-pr`, `onevcs-smoke` — are Nx projects with no
+`onevcs-contract`, `onevcs-release-pr`, `onevcs-live` — are Nx projects with no
 crate of their own: each runs a nextest filterset (the `*-tier` variables in the
 `justfile`) over this crate's existing test binaries, so a test belongs to a tier by
 which binary and module it is in, never by where its project file sits. Three rules
@@ -825,9 +825,12 @@ for a job by a check's *name* when it only ever accepted a job id. Both shipped
 green for every release, because the only thing that had ever read them was a shell
 script written beside them that answered to what they asked.
 
-- **The scratch repository is `nickderobertis/onevcs-smoke`**, and a repository
-  whose name does not end in `-smoke` is refused before the first mutating call.
-  `ONEVCS_SMOKE_REPO` names a different one; it must clear the same rule.
+- **The scratch repository is configuration, never a constant.** `ONEVCS_SMOKE_REPO`
+  names it as `owner/name` — an Actions secret of that name in CI, mapped into the
+  step that runs `just smoke-real`, and the environment variable of the same name
+  locally. Unset, every journey fails naming it; a repository whose name does not end
+  in `-smoke` is refused before the first mutating call. Keep the identity out of the
+  tree: a default would be the one place it leaks back in.
 - **A whole run is about a minute and under a hundred API calls** — measured twice
   on a warm build, 58s and 65s wall clock, three pull requests opened and merged
   each time. The call count varies with how long the real Actions job takes to
