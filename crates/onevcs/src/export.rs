@@ -31,6 +31,12 @@ use crate::{git, store};
 /// The one subject every export's commit carries.
 pub const EXPORT_SUBJECT: &str = "Add generic example fixtures";
 
+/// The whole message of the commit an export writes: generated here, so it is screened
+/// exactly as written rather than trusted for being this crate's own.
+fn export_message() -> String {
+    format!("{EXPORT_SUBJECT}\n")
+}
+
 /// The name every export's commit is authored and committed under.
 pub const EXPORT_AUTHOR_NAME: &str = "Example Export";
 
@@ -320,8 +326,9 @@ fn collect(
     Ok(())
 }
 
-/// Screen everything the export would write, and the source branch's own messages
-/// and name, against the scope's terms.
+/// Screen everything the export would write — including the commit message it
+/// generates itself and each file at the path it is written to — and the source
+/// branch's own messages and name, against the scope's terms.
 fn screen(
     request: &ExportRequest,
     source: &Source,
@@ -359,6 +366,7 @@ fn screen(
     check(Surface::Path, "target-directory", &request.target_directory);
     check(Surface::Path, "directory", &request.directory);
     check(Surface::Metadata, "source-branch", &request.branch);
+    check(Surface::CommitMessage, "export commit", &export_message());
     for (index, message) in source.messages.iter().enumerate() {
         check(
             Surface::CommitMessage,
@@ -368,6 +376,8 @@ fn screen(
     }
     for file in &source.files {
         check(Surface::Path, &file.path, &file.path);
+        let written = format!("{}/{}", request.target_directory, file.path);
+        check(Surface::Path, &written, &written);
         check(
             Surface::Content,
             &file.path,
@@ -419,7 +429,7 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
             None,
             &signature,
             &signature,
-            &format!("{EXPORT_SUBJECT}\n"),
+            &export_message(),
             &tree,
             &[&base],
         )

@@ -4521,9 +4521,10 @@ base at — deletions and renames included — must be inside `--directory`, or 
 refused. Both directories must be relative and normalized (no root, `.`, `..`, empty
 segment, `.git` or backslash); a symbolic link, a submodule, and any blob that is not
 UTF-8 or carries a NUL — whose terms cannot be checked — are refused. Only committed blobs
-are read. Before anything is written, the directory's paths and contents, the source
-branch's own commit messages since its base, its name, both directories and the new
-branch name are matched against every private identity's terms in the export's scope —
+are read. Before anything is written, the directory's paths and contents, each path as it
+is written under `--target-directory`, the source branch's own commit messages since its
+base, its name, both directories, the new branch name and the commit message the export
+generates itself are matched against every private identity's terms in the export's scope —
 the registry by default. The destination must be verified public. One commit is written
 on the destination's fetched base (`origin/<default>`) with the directory re-rooted under
 `--target-directory`, under the subject `Add generic example fixtures`, authored and

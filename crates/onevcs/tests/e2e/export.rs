@@ -727,6 +727,68 @@ fn an_export_is_screened_against_every_private_repository_in_its_scope_before_an
 }
 
 #[test]
+fn the_commit_message_an_export_generates_is_screened_like_everything_else_it_writes() {
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    // A private repository whose committed declaration prohibits a word of the subject
+    // the export writes itself, and of nothing the producer or the caller named.
+    host.private(
+        "thirdkeep/stillwater",
+        &[(
+            "private-terms.toml",
+            "schema_version = 1\nterms = [\"fixtures\"]\n",
+        )],
+    );
+    source.branch(
+        &host.world,
+        "generic",
+        &[("examples/a.txt", Some("a\n"))],
+        "docs: a",
+    );
+    let before = host.origin_refs();
+
+    for (scope, why) in [
+        (&[][..], "the registry's scope"),
+        (
+            &["--term-scope", "github.com/thirdkeep/stillwater"][..],
+            "a scope naming the declaring repository",
+        ),
+    ] {
+        let output = host.export("generic", "examples", "samples", "generic-samples", scope);
+        refused(&host, &output, "generic-samples", &before, why);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{why}: {stderr}");
+        assert!(
+            !stderr.to_lowercase().contains("fixtures"),
+            "{why}: {stderr}"
+        );
+    }
+
+    // Outside that repository's scope the same export is written, under that subject.
+    let output = host.export(
+        "generic",
+        "examples",
+        "samples",
+        "generic-samples",
+        &["--term-scope", "github.com/hiddenco/quietharbor"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        host.world
+            .git(
+                &host.public,
+                &["log", "-1", "--format=%s", "generic-samples"]
+            )
+            .trim(),
+        "Add generic example fixtures"
+    );
+}
+
+#[test]
 fn an_export_reaches_only_a_destination_verified_public() {
     let host = Boundary::new(LOCAL);
     let source = host.source(&[]);
