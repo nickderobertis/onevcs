@@ -501,6 +501,10 @@ fn a_malformed_ambiguous_or_unaimed_declaration_makes_the_check_unavailable_and_
         ],
         vec![("Cargo.toml", "[workspace]\nmembers = [\"../outside\"]\n")],
         vec![("Cargo.toml", "[workspace]\nmembers = \"crates\"\n")],
+        vec![(
+            "Cargo.toml",
+            "[workspace]\nmembers = []\nexclude = \"crates\"\n",
+        )],
         vec![("package.json", "{\"name\": ")],
         vec![("package.json", r#"{"workspaces": "packages"}"#)],
         vec![(
@@ -638,6 +642,19 @@ fn a_registry_or_a_checkout_the_check_cannot_read_is_unavailable_and_never_a_pas
     std::fs::write(&path, registry.to_string()).expect("a registry");
     let checked = host.text("a generic example", None);
     assert!(checked.unavailable(), "{}", checked.stdout);
+    let before_rules_check = std::fs::read_to_string(&path).expect("a registry");
+
+    // A rules file that does not parse.
+    std::fs::write(&path, &before_rules_check).expect("the registry back");
+    configure_rules(&host.world, "version: 4\nrules: [\n");
+    let checked = host.text("a generic example", None);
+    assert!(checked
+        .stderr
+        .contains("the public boundary check is unavailable: the rules file could not be read"));
+    configure_rules(
+        &host.world,
+        "version: 4\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    );
 
     // A registry that does not parse at all.
     std::fs::write(&path, "{ not json").expect("a broken registry");

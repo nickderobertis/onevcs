@@ -8607,6 +8607,14 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
     // The wire: the default scope is absent, a named one an array; a verdict is tagged.
     let written = serde_json::to_value(&input).expect("an input serializes");
     assert_eq!(written["scope"], json!(["github.com/hiddenco/quietharbor"]));
+    assert_eq!(
+        serde_json::to_value(TermScope::Registry).expect("serializes"),
+        Value::Null
+    );
+    let nulled: BoundaryInput =
+        serde_json::from_value(json!({"destination": "public", "scope": null}))
+            .expect("a null scope reads");
+    assert_eq!(nulled.scope, TermScope::Registry);
     let unscoped: BoundaryInput =
         serde_json::from_value(json!({"destination": "public"})).expect("a bare input reads");
     assert_eq!(unscoped.scope, TermScope::Registry);
