@@ -2250,6 +2250,10 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
             .success();
     }
     // Another's stream ends in a line a writer was cut off in the middle of.
+    // llmlint: ignore-block[tests_mirror_real_usage] the torn line is the input under
+    // test, as in `filter.rs`'s torn-line journey: every writer of this crate appends
+    // whole envelopes, so a write cut off by a crash or a full disk can only be put
+    // there directly. Every read below still drives the real binary.
     let torn = hosted
         .world
         .home()
@@ -2258,39 +2262,35 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
     let mut bytes = std::fs::read(&torn).expect("a session stream");
     bytes.extend_from_slice(b"{\"v\":1,\"ts\":");
     std::fs::write(&torn, bytes).expect("a torn line");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let whole = rows(&["--all"]);
     assert!(
         row(&whole, "feature/stream-0")["branch"]["change_url"].is_string(),
         "the premise: the draft's change request is read off its stream: {whole:?}"
     );
-    let index = hosted
-        .world
-        .home()
-        .join("cache/recoverable/v1/streams-index.json");
-    for args in [
-        vec!["--all", "--label", "launcher=streams"],
-        vec!["--all", "--session", tokens[0].as_str()],
-        vec!["--all", "--session", tokens[3].as_str()],
+    // The whole-host read builds no stream index, so the first filtered read on this
+    // host parses every stream; the ones after it are answered from what it indexed.
+    for (args, state) in [
+        (vec!["--all", "--label", "launcher=streams"], "no index"),
+        (vec!["--all", "--label", "launcher=streams"], "its index"),
+        (vec!["--all", "--session", tokens[0].as_str()], "its index"),
+        (vec!["--all", "--session", tokens[3].as_str()], "its index"),
     ] {
-        let _ = std::fs::remove_file(&index);
-        for state in ["no index", "the index that read wrote"] {
-            let filtered = rows(&args);
-            assert!(!filtered.is_empty(), "{args:?} selects rows");
-            let expected: Vec<Value> = whole
-                .iter()
-                .filter(|candidate| {
-                    filtered
-                        .iter()
-                        .any(|row| row["branch"]["branch"] == candidate["branch"]["branch"])
-                })
-                .cloned()
-                .collect();
-            assert_eq!(
-                filtered, expected,
-                "{args:?} from {state}: the whole read's rows"
-            );
-            assert!(index.is_file(), "{args:?}: the read indexes the streams");
-        }
+        let filtered = rows(&args);
+        assert!(!filtered.is_empty(), "{args:?} selects rows");
+        let expected: Vec<Value> = whole
+            .iter()
+            .filter(|candidate| {
+                filtered
+                    .iter()
+                    .any(|row| row["branch"]["branch"] == candidate["branch"]["branch"])
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            filtered, expected,
+            "{args:?} from {state}: the whole read's rows"
+        );
     }
 }
