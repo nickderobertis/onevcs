@@ -2193,3 +2193,104 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
     assert_eq!(repaired, original, "and readable again, the answer returns");
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
+
+/// With no stream index, a filtered read parses every stream the host holds — side by
+/// side, since each is its own file — to learn which belong to the branches it was
+/// asked about, and indexes what it learned for the next read. What either read takes
+/// off the streams must be what the whole-host read takes: here the change request a
+/// reviewed draft opened, which nothing but its stream records, beside a stream that
+/// ends in a torn line.
+#[test]
+fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_does() {
+    let hosted = crate::host::Hosted::new(crate::host::REVIEWED);
+    let rows = |extra: &[&str]| -> Vec<Value> {
+        let assert = hosted
+            .world
+            .onevcs()
+            .args(["recoverable", "--json"])
+            .args(extra)
+            .assert()
+            .success();
+        serde_json::from_slice(&assert.get_output().stdout).expect("recovery rows")
+    };
+    let mut tokens = Vec::new();
+    for step in 0..8 {
+        let opened = hosted
+            .world
+            .onevcs()
+            .args(["session", "open", "hosted", "--branch"])
+            .arg(format!("feature/stream-{step}"))
+            .args(["--label", "launcher=streams"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        hosted.world.commit_file(
+            &crate::world::worktree_of(&opened),
+            &format!("stream-{step}.txt"),
+            "work\n",
+            &format!("feat: stream {step}"),
+        );
+        tokens.push(crate::world::token_of(&opened));
+    }
+    // One is published and held as a draft for review: its stream records the change.
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &tokens[0]])
+        .assert()
+        .success();
+    for token in &tokens {
+        hosted
+            .world
+            .onevcs()
+            .args(["session", "close", token])
+            .assert()
+            .success();
+    }
+    // Another's stream ends in a line a writer was cut off in the middle of.
+    let torn = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", tokens[3]));
+    let mut bytes = std::fs::read(&torn).expect("a session stream");
+    bytes.extend_from_slice(b"{\"v\":1,\"ts\":");
+    std::fs::write(&torn, bytes).expect("a torn line");
+
+    let whole = rows(&["--all"]);
+    assert!(
+        row(&whole, "feature/stream-0")["branch"]["change_url"].is_string(),
+        "the premise: the draft's change request is read off its stream: {whole:?}"
+    );
+    let index = hosted
+        .world
+        .home()
+        .join("cache/recoverable/v1/streams-index.json");
+    for args in [
+        vec!["--all", "--label", "launcher=streams"],
+        vec!["--all", "--session", tokens[0].as_str()],
+        vec!["--all", "--session", tokens[3].as_str()],
+    ] {
+        let _ = std::fs::remove_file(&index);
+        for state in ["no index", "the index that read wrote"] {
+            let filtered = rows(&args);
+            assert!(!filtered.is_empty(), "{args:?} selects rows");
+            let expected: Vec<Value> = whole
+                .iter()
+                .filter(|candidate| {
+                    filtered
+                        .iter()
+                        .any(|row| row["branch"]["branch"] == candidate["branch"]["branch"])
+                })
+                .cloned()
+                .collect();
+            assert_eq!(
+                filtered, expected,
+                "{args:?} from {state}: the whole read's rows"
+            );
+            assert!(index.is_file(), "{args:?}: the read indexes the streams");
+        }
+    }
+}
