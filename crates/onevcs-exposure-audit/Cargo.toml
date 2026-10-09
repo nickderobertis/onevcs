@@ -1,0 +1,36 @@
+[package]
+name = "onevcs-exposure-audit"
+# A maintenance command of this workspace, never published: it lives on main so the
+# audit can be re-run after cleanup lands, and nothing installs it.
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Read-only audit of what an account's public repositories and boards expose about its private ones, through onevcs's own boundary terms."
+
+[[bin]]
+name = "onevcs-exposure-audit"
+path = "src/main.rs"
+
+[dependencies]
+# The term derivation and matcher the publication check uses: the audit has none
+# of its own, so it cannot come to disagree with the check about what a term is.
+onevcs = { path = "../onevcs" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

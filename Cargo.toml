@@ -116,6 +116,12 @@ aho-corasick = "1"
 # NFKC, so a full-width or compatibility spelling of a private term is the term. The
 # same ICU family `icu_properties` is from, and already in the graph behind `url`.
 icu_normalizer = "2.2"
+# The exposure audit's GitHub client, built the way `onemessagebus` builds its own —
+# rustls over ring with the platform's root certificates — so it adds no crate and
+# no license to the graph.
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 
 assert_cmd = "2"
 predicates = "3"

@@ -185,6 +185,23 @@ _compat-format:
 _compat-lint:
     @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet -- -D warnings
 
+# The exposure audit's command (`crates/onevcs-exposure-audit`), as its own Nx
+# project: the same bar as the crate's, scoped to that package.
+_audit-bootstrap:
+    @cargo fetch --locked --quiet
+
+_audit-format:
+    @cargo fmt -p onevcs-exposure-audit
+
+_audit-fmt-check:
+    @cargo fmt -p onevcs-exposure-audit -- --check || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
+
+_audit-lint:
+    @cargo clippy -p onevcs-exposure-audit --all-targets --locked --quiet -- -D warnings
+
+_audit-test:
+    @cargo nextest run -p onevcs-exposure-audit --locked --status-level fail
+
 # The offline suite, split into the Nx test tiers that run it. Each is a nextest
 # filterset over the workspace's test binaries, so the split moves no test: the
 # four below select every test but the `smoke` binary's, which needs a GitHub

@@ -52,6 +52,13 @@
       "{workspaceRoot}/CHANGELOG.md",
       "{workspaceRoot}/pyproject.toml"
     ],
+    "auditSource": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/crates/onevcs/**/*",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "sharedGlobals"
+    ],
     "compatSource": [
       "{projectRoot}/**/*",
       "{workspaceRoot}/crates/onevcs/**/*",
