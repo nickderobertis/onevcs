@@ -40,6 +40,14 @@ pub const EXPORT_AUTHOR_EMAIL: &str = "export@example.invalid";
 /// What to export, and where to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportRequest {
+    // llmlint: ignore-block[invalid_states_unrepresentable] every field is what a caller
+    // typed, spelled as the contract's public-boundary amendment declares it and as
+    // `onevcs export` takes it — the same shape `PreserveRequest` keeps for the same
+    // reason. `export` is the one boundary that decides each: a directory's normal form
+    // and a branch name git accepts (`git::is_valid_branch_name`, which may ask git
+    // itself). And it refuses each by naming the step, never the value, because the value
+    // may be the very private name an export exists to keep out of public output — a
+    // conversion that refused on construction would have to say what it refused.
     /// The private repository the work is in: an identity key, alias, origin or path.
     pub from: String,
     /// The branch holding the work.
@@ -53,6 +61,7 @@ pub struct ExportRequest {
     pub target_directory: String,
     /// The local branch to cut in the public repository's registered checkout.
     pub branch_name: String,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Which private repositories the export is screened against. Unset is every
     /// registered private one.
     #[serde(default, skip_serializing_if = "TermScope::is_registry")]
