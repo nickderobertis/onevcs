@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::boundary::TermScope;
 use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::git::{self, RemoteTip};
@@ -52,6 +53,10 @@ pub struct PreserveRequest {
     /// The branch to put on that identity's origin under its own name.
     pub branch: String,
     // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Which private repositories the public boundary check derives its terms from,
+    /// should the origin be public. Unset is every registered private one.
+    #[serde(default, skip_serializing_if = "TermScope::is_registry")]
+    pub term_scope: TermScope,
 }
 
 /// What preserving one branch found to do.
@@ -233,6 +238,24 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
             ));
         }
     }
+    // A preservation lands nothing, and it still puts the branch on the origin, where a
+    // public origin shows it to everybody: so it is held to the boundary like any other
+    // write there, against the identity's root.
+    let compared = format!("{ORIGIN}/{base}");
+    crate::boundary::evidence::guard_publication(
+        crate::Providers::real().hosting,
+        &resolution.key,
+        &crate::boundary::screen::Outgoing {
+            repo: &from,
+            base: git::tip(&from, &compared).map(|_| compared.as_str()),
+            tip: &reference,
+            branch: Some(branch),
+            title: None,
+            body: None,
+            messages: Vec::new(),
+        },
+        &request.term_scope,
+    )?;
     let pushed = git::push_preserving(&from, branch, ORIGIN)?;
     if !pushed.accepted() {
         return Err(refused(&resolution, branch, &remote, &pushed));

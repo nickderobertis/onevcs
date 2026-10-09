@@ -33,7 +33,23 @@ mod change;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod branches;
+// Unix only: the public boundary, through `boundary check`, `inspect` and `schema`,
+// over real repositories and the substituted `gh` that answers a repository's
+// visibility. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod boundary;
 mod cli;
+// Unix only: `onevcs export` from a real private clone into a real public checkout,
+// with visibility answered by the substituted `gh`. Its own header carries the reason.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod export;
+// Unix only: every publication entry point held to the public boundary, through the
+// substituted `gh` and real bare origins. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod publication_boundary;
 // The producer's own release declaration. It drives the binary and, for the half of
 // the promise a binary cannot show, the library beside it — see its own header.
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.

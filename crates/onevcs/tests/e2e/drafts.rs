@@ -1455,6 +1455,7 @@ fn publish_branch_opens_a_draft_and_keeps_it_for_review_on_a_team_identity() {
             title: None,
             body: None,
             policy: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the completed branch publishes");
@@ -1499,6 +1500,7 @@ fn recover_opens_a_draft_and_lifts_it_before_the_merge_on_green() {
             branch: "feature/drafted".to_owned(),
             title: Some(crate::library::subject("feat: land the interrupted work")),
             body: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the interrupted branch recovers");

@@ -408,9 +408,11 @@ fn merge_path_coverage_is_decided_by_the_resolved_policy_and_not_by_the_origin()
 }
 
 /// What a version 5 build wrote, with the two inferred fields beside an identity and
-/// unknown keys at both levels; and what this build writes it back as.
+/// unknown keys at both levels; what a version 6 build wrote it back as; and what this
+/// build writes it back as, which is version 6's shape at version 7.
 const REGISTRY_V5: &str = include_str!("../golden/registry-v5.json");
 const REGISTRY_V6: &str = include_str!("../golden/registry-v6.json");
+const REGISTRY_V7: &str = include_str!("../golden/registry-v7.json");
 
 #[test]
 fn a_version_5_registry_follows_the_configured_policy_and_is_rewritten_without_its_inference() {
@@ -466,9 +468,16 @@ fn a_version_5_registry_follows_the_configured_policy_and_is_rewritten_without_i
     // one beside the identity, one at the top — exactly as they were.
     assert_eq!(
         std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
-        REGISTRY_V6.replace("<root>", root),
+        REGISTRY_V7.replace("<root>", root),
         "the migrated document is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/registry-v6.json if the shape moved"
+         crates/onevcs/tests/golden/registry-v7.json if the shape moved"
+    );
+    // …which is the version 6 golden at version 7 and nothing else: the visibility a
+    // version 7 identity may carry is omitted while nothing has recorded one.
+    assert_eq!(
+        REGISTRY_V7,
+        REGISTRY_V6.replacen("\"version\": 6", "\"version\": 7", 1),
+        "version 7 moved nothing a version 6 document carries"
     );
 
     // The verb the inference used to refuse runs: this hosted identity's rules
@@ -499,7 +508,7 @@ fn a_version_5_registry_follows_the_configured_policy_and_is_rewritten_without_i
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(written["version"], 6);
+    assert_eq!(written["version"], 7);
     let legacy = &written["identities"]["github.com/acme-corp/legacy"];
     assert!(
         legacy.get("workflow").is_none() && legacy.get("repo_type").is_none(),
@@ -554,7 +563,7 @@ fn a_version_4_registry_migrates_lazily_on_the_first_read() {
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["version"], 7);
     assert_eq!(stored["identities"][&key]["gate"], "make check");
     assert!(
         stored["identities"][&key].get("workflow").is_none()

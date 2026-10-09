@@ -46,8 +46,8 @@ use onevcs::{
     ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
     SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
-    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
-    WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
+    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, TermScope, Url,
+    Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 use serde_json::{json, Value};
 
@@ -769,6 +769,7 @@ fn the_rules_fixture_round_trips() {
                 publication: Some(MergePolicy::ChangeOpen),
                 approvals: Some(Approvals::Required),
                 drafts: None,
+                visibility: None,
             },
             Rule {
                 r#match: RuleMatch {
@@ -779,6 +780,7 @@ fn the_rules_fixture_round_trips() {
                 // Unset in the fixture, so it falls back to the default policy.
                 approvals: None,
                 drafts: None,
+                visibility: None,
             },
         ]
     );
@@ -1340,7 +1342,7 @@ fn the_amendment_declares_the_release_surface_it_added() {
 
 /// The canonical declaration the producer amendment spells, as its own document.
 fn documented_declaration() -> String {
-    amendment_block_declaring("toml", "schema_version")
+    amendment_block_declaring("toml", "[[target]]")
 }
 
 #[test]
@@ -1976,10 +1978,7 @@ fn a_v6_registry_round_trips_and_carries_the_rules_reference() {
     assert_eq!(registry.version, 6);
     assert_eq!(
         registry.identities["github.com/acme-corp/service"],
-        Identity {
-            origin: "https://github.com/acme-corp/service".to_owned(),
-            gate: "just check".to_owned(),
-        }
+        Identity::new("https://github.com/acme-corp/service", "just check")
     );
     assert_eq!(
         registry.checkouts["nickderobertis/onevcs"],
@@ -3079,6 +3078,8 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         // The field the draft amendment added, declared there rather than here, which
         // is why the assertion below reads the older amendment's declaration unchanged.
         draft: None,
+        // …and the one the public-boundary amendment added, for the same reason.
+        term_scope: TermScope::Registry,
     };
     let publication = Publication {
         session: record.session.token.clone(),
@@ -3169,6 +3170,7 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
             reference: "feature/the-pinned-branch".to_owned(),
             because: "the pin moves when the release lands".to_owned(),
         }),
+        term_scope: TermScope::Identities(vec!["github.com/hiddenco/quietharbor".to_owned()]),
     };
     let serialized = serde_json::to_value(&request).expect("a request serializes");
     let fields: BTreeSet<String> = serialized
@@ -3306,11 +3308,12 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
     // clap's own, on every command it generates — not part of anybody's contract.
     implemented.remove("help");
 
-    // Two amendments each add options to `publish`, and each says so on a line that
-    // opens with the command: the body's, and the held draft's.
+    // Three amendments each add options to `publish`, and each says so on a line that
+    // opens with the command: the body's, the held draft's, and the term scope's.
     let amended: BTreeSet<String> = backticked_on_line("`onevcs publish` takes the body two ways")
         .into_iter()
         .chain(backticked_on_line("`onevcs publish` takes a draft as"))
+        .chain(backticked_on_line("`onevcs publish` takes a term scope as"))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(
@@ -3616,6 +3619,11 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("reclaim", operation!(onevcs::retire)),
         ("retire-finished", operation!(onevcs::retire_finished)),
         ("supersede", operation!(onevcs::record_supersession)),
+        ("boundary inspect", operation!(onevcs::inspect_repository)),
+        ("boundary check", operation!(onevcs::check_public_output)),
+        ("boundary schema", operation!(onevcs::boundary_schema)),
+        ("export", operation!(onevcs::export)),
+        ("rules apply", operation!(onevcs::rules_apply)),
     ]
 }
 
@@ -5261,6 +5269,9 @@ fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_m
     let description = ChangeDescription {
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: "## What\n\nThe seam.\n".to_owned(),
+        // The field the public-boundary amendment added, declared there; at its default
+        // it is not written, so the two keys below are still the whole description.
+        term_scope: TermScope::Registry,
     };
     let written = serde_json::to_value(&description).expect("a description serializes");
     assert_eq!(

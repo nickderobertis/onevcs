@@ -482,6 +482,16 @@ impl World {
         write_script(&bin.join("gh"), FAKE_GH);
     }
 
+    /// What the substituted host says one repository's visibility is: `public`,
+    /// `private`, `internal`, or `refuse` for a host that will not say. A repository it
+    /// has been told nothing about is one it will not say about either.
+    pub fn host_visibility(&self, slug: &str, visibility: &str) {
+        let answer = self.path("gh-state/visibility").join(slug);
+        std::fs::create_dir_all(answer.parent().expect("an owner directory"))
+            .expect("a visibility directory");
+        std::fs::write(answer, visibility).expect("the host's visibility answer");
+    }
+
     /// What the substituted host reports as a change request's checks.
     ///
     /// One `|`-separated row per check: name, status, conclusion, and whether it

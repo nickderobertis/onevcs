@@ -1598,7 +1598,7 @@ fn a_registry_written_before_this_build_is_read_by_the_resolved_policy_and_never
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["version"], 7);
     assert!(
         stored["identities"]["github.com/acme-corp/v2"]
             .get("workflow")

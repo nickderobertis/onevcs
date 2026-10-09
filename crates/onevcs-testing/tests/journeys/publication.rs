@@ -378,6 +378,7 @@ fn a_requested_title_and_body_are_the_ones_the_host_is_given() {
             title: Some(subject("  feat: the requested title  ")),
             body: Some(drafted.to_owned()),
             draft: None,
+            term_scope: Default::default(),
         },
         &host,
     )
@@ -559,6 +560,7 @@ fn a_drafted_publication_opens_a_draft_here_the_way_it_opens_one_next_door() {
                 title: None,
                 body: None,
                 draft: Some(reason.clone()),
+                term_scope: Default::default(),
             },
             &host,
         )
@@ -648,6 +650,7 @@ fn a_second_lift_here_asks_the_host_for_nothing_and_reports_the_original() {
                 title: None,
                 body: None,
                 draft: Some(awaiting_a_release()),
+                term_scope: Default::default(),
             },
             &host,
         )
@@ -695,6 +698,7 @@ fn drafting_is_refused_here_where_it_is_refused_next_door() {
                 title: None,
                 body: None,
                 draft: Some(awaiting_a_release()),
+                term_scope: Default::default(),
             },
             &host,
         )
@@ -727,6 +731,7 @@ fn drafting_is_refused_here_where_it_is_refused_next_door() {
                 title: None,
                 body: None,
                 draft: Some(awaiting_a_release()),
+                term_scope: Default::default(),
             },
             &second,
         )
@@ -775,6 +780,7 @@ fn a_draft_reason_this_provider_could_not_publish_is_refused_where_it_arrives() 
                     title: None,
                     body: None,
                     draft: Some(unusable),
+                    term_scope: Default::default(),
                 },
                 &host,
             )

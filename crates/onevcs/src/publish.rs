@@ -22,6 +22,7 @@ use url::Url;
 
 use std::collections::BTreeSet;
 
+use crate::boundary::TermScope;
 use crate::host::{
     ChangeRequest, ChangeSpec, Check, CheckState, Hosting, MergeOutcome, Mergeability, RemoteHost,
     Sha,
@@ -84,6 +85,10 @@ pub struct PublishRequest {
     /// at once, for a session that wants its draft lifted without landing anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftReason>,
+    /// Which private repositories the public boundary check derives its terms from,
+    /// should the destination be public. Unset is every registered private one.
+    #[serde(default, skip_serializing_if = "TermScope::is_registry")]
+    pub term_scope: TermScope,
 }
 
 /// Why a change request is a draft, in the shape a machine reads it.
@@ -670,6 +675,7 @@ pub fn run_for_session(
         hosting,
         cancellation,
         built: Built::InWorkspace,
+        term_scope: request.term_scope.clone(),
     };
     let branch = record.branch.to_string();
     let outcome = match run_resolving(&context, &mut stream) {
@@ -796,6 +802,8 @@ pub struct Context<'a> {
     pub cancellation: &'a dyn PublicationCancellation,
     /// Where this publication was built, which decides how its landing is recorded.
     pub built: Built,
+    /// Which private repositories the public boundary check derives its terms from.
+    pub term_scope: TermScope,
 }
 
 /// Where a publication was built.
@@ -1038,6 +1046,7 @@ impl<'a> Context<'a> {
             hosting: self.hosting,
             cancellation: self.cancellation,
             built: self.built,
+            term_scope: self.term_scope.clone(),
         }
     }
 }
@@ -1140,6 +1149,10 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
     // here — and it re-describes the branch after the queue anyway. Asking now is
     // still what refuses a branch with no usable subject before anything is pushed.
     let (subject, _) = describe(context, &compared)?;
+    // The last thing before the first write to the remote: everything this
+    // publication would put there — its commits against every parent, their
+    // messages, the branch, the title and the body — is held to the public boundary.
+    hold_to_the_boundary(context, &compared, Some(&subject))?;
     let environment = merge_path::comparison_env("origin", context.target.base());
 
     let outcome = match context.effective {
@@ -1147,6 +1160,29 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
         _ => publish_as_change(context, stream, &subject, &environment, push)?,
     };
     Ok((outcome, target))
+}
+
+/// Hold what this publication would write to its destination to the public
+/// boundary: refused before any remote mutation where it carries a private term, and
+/// passed without a term being read where the destination is not public.
+fn hold_to_the_boundary(context: &Context<'_>, compared: &str, title: Option<&str>) -> Result<()> {
+    let tip = context.branch.to_string();
+    let base = git::tip(&context.repo, compared).map(|_| compared);
+    let outgoing = crate::boundary::screen::Outgoing {
+        repo: &context.repo,
+        base,
+        tip: &tip,
+        branch: Some(&tip),
+        title,
+        body: context.body.as_deref(),
+        messages: Vec::new(),
+    };
+    crate::boundary::evidence::guard_publication(
+        context.hosting,
+        &context.resolution.key,
+        &outgoing,
+        &context.term_scope,
+    )
 }
 
 /// The subject a publication of one branch would carry, or the refusal that none
@@ -2088,6 +2124,10 @@ pub(crate) fn resume(
     }
     // A resumed publication is an attempt of its own, whose one gate is the watch.
     stream.begin_attempt();
+    // Held again, under this resumption's own scope: what it may land under — a title,
+    // a body — is new, and the commits are screened once more for the same reason.
+    let compared = format!("origin/{}", context.target.base());
+    hold_to_the_boundary(context, &compared, context.title.as_deref())?;
     (|| -> Result<PublishOutcome> {
         let slug = change_host(&context.resolution.key)?;
         let host = context.hosting.for_repo(&slug)?;

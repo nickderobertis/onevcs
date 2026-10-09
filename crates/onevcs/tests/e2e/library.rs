@@ -244,10 +244,7 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
     // A hosted identity on a host this build does not speak for: the request is
     // well-formed and the seam behind it has no body, which is this repository's
     // own exit code 70 and never a refusal to start.
-    let elsewhere = Identity {
-        origin: "gitlab.com/acme-corp/widgets".to_owned(),
-        gate: "just check".to_owned(),
-    };
+    let elsewhere = Identity::new("gitlab.com/acme-corp/widgets", "just check");
     let vcs = MemoryVcs::seeded(VcsState {
         identities: vec![elsewhere],
         ..VcsState::default()
@@ -297,10 +294,7 @@ fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
     // a repository side with no execution checkout retains nothing, and the CLI
     // must then say nothing about one rather than name a path nobody has.
     let vcs = MemoryVcs::seeded(VcsState {
-        identities: vec![Identity {
-            origin: "gitlab.com/acme-corp/widgets".to_owned(),
-            gate: "just check".to_owned(),
-        }],
+        identities: vec![Identity::new("gitlab.com/acme-corp/widgets", "just check")],
         ..VcsState::default()
     });
     let host = MemoryHost::new();
@@ -419,6 +413,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             title: Some(subject("feat: the narrowed thing")),
             body: None,
             draft: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -440,6 +435,7 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             title: None,
             body: None,
             draft: None,
+            term_scope: Default::default(),
         },
     )
     .expect_err("a widening is refused rather than published");
@@ -933,6 +929,7 @@ fn a_title_that_could_not_be_a_subject_is_refused_where_the_request_is_built() {
         title: Some(subject),
         body: Some("## Why\n\nBecause the reviewer has to read something.\n".to_owned()),
         draft: None,
+        term_scope: Default::default(),
     };
     let json = serde_json::to_string(&request).expect("a request serializes");
     assert_eq!(
@@ -979,6 +976,7 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
             title: Some(subject("feat: the title the caller asked for")),
             body: None,
             draft: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -1024,6 +1022,7 @@ fn a_requested_body_is_what_the_change_request_is_opened_with_verbatim() {
             title: None,
             body: Some(DRAFTED.to_owned()),
             draft: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3078,6 +3077,7 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
             title: None,
             body: Some(DRAFTED.to_owned()),
             draft: Some(reason.clone()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3245,6 +3245,7 @@ fn a_draft_is_merged_by_nothing_under_any_policy_this_crate_publishes_under() {
                 title: None,
                 body: None,
                 draft: Some(awaiting_a_release()),
+                term_scope: Default::default(),
             },
         )
         .expect("the publication runs");
@@ -3296,6 +3297,7 @@ fn a_local_direct_publication_refuses_a_draft_by_name_before_anything_is_pushed(
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3340,6 +3342,7 @@ fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
             title: None,
             body: Some(DRAFTED.to_owned()),
             draft: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3425,6 +3428,7 @@ fn a_draft_reason_that_would_not_render_as_itself_is_refused_where_it_arrives() 
                 title: None,
                 body: None,
                 draft: Some(unusable),
+                term_scope: Default::default(),
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -3499,6 +3503,7 @@ fn a_host_that_will_not_say_whether_it_drafted_the_change_is_not_read_as_having_
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3532,6 +3537,7 @@ fn the_real_host_is_asked_for_a_draft_and_asked_to_lift_it() {
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3612,6 +3618,7 @@ fn a_real_host_that_will_not_say_whether_it_drafted_the_change_is_a_refusal() {
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3644,6 +3651,7 @@ fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3705,6 +3713,7 @@ fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() 
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3783,6 +3792,7 @@ fn a_real_host_that_will_not_say_during_a_lift_stops_the_publication() {
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -3934,6 +3944,7 @@ fn a_change_request_already_open_for_review_is_not_put_back_into_a_draft() {
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -4034,6 +4045,7 @@ fn a_host_that_takes_the_draft_request_and_opens_an_ordinary_change_is_refused()
             title: None,
             body: None,
             draft: Some(awaiting_a_release()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -4661,6 +4673,7 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
             title: None,
             body: Some(DRAFTED.to_owned()),
             draft: Some(reason.clone()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -4721,6 +4734,7 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
             title: None,
             body: None,
             draft: Some(reason.clone()),
+            term_scope: Default::default(),
         },
     )
     .expect("the second publication runs");
@@ -4786,6 +4800,7 @@ fn a_draft_of_either_kind_is_refused_under_local_direct_before_anything_is_pushe
                 title: None,
                 body: None,
                 draft: Some(reason.clone()),
+                term_scope: Default::default(),
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -4840,6 +4855,7 @@ fn a_draft_of_either_kind_is_refused_over_a_change_request_already_open_for_revi
                 title: None,
                 body: None,
                 draft: Some(reason.clone()),
+                term_scope: Default::default(),
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -4898,6 +4914,7 @@ fn a_session_reads_describes_and_readies_its_own_change_request() {
     let description = onevcs::ChangeDescription {
         title: None,
         body: DESCRIBED.to_owned(),
+        term_scope: Default::default(),
     };
     for refused in [
         onevcs::describe_change(&providers, &session.token, &description)
@@ -4932,6 +4949,7 @@ fn a_session_reads_describes_and_readies_its_own_change_request() {
             ),
             body: None,
             draft: Some(held_by_the_session()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -5008,6 +5026,7 @@ fn a_session_reads_describes_and_readies_its_own_change_request() {
                     .expect("a subject"),
             ),
             body: "## What\n\nFinished.\n".to_owned(),
+            term_scope: Default::default(),
         },
     )
     .expect("the second description is written");
@@ -5084,6 +5103,7 @@ fn a_described_title_is_held_to_the_repositorys_own_commit_msg_hook() {
             title: None,
             body: None,
             draft: Some(held_by_the_session()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -5099,6 +5119,7 @@ fn a_described_title_is_held_to_the_repositorys_own_commit_msg_hook() {
                     .expect("a subject"),
             ),
             body: DESCRIBED.to_owned(),
+            term_scope: Default::default(),
         },
     )
     .expect_err("the hook turns the subject down");
@@ -5135,6 +5156,7 @@ fn a_described_title_is_held_to_the_repositorys_own_commit_msg_hook() {
                     .expect("a subject"),
             ),
             body: DESCRIBED.to_owned(),
+            term_scope: Default::default(),
         },
     )
     .expect("the hook accepts a releasing subject");
@@ -5179,6 +5201,7 @@ fn a_consumer_drives_a_whole_closeout_against_the_providers() {
             title: None,
             body: None,
             draft: Some(held_by_the_session()),
+            term_scope: Default::default(),
         },
     )
     .expect("the publication runs");
@@ -5211,6 +5234,7 @@ fn a_consumer_drives_a_whole_closeout_against_the_providers() {
                 onevcs::Subject::try_from("feat: the closeout".to_owned()).expect("a subject"),
             ),
             body: DESCRIBED.to_owned(),
+            term_scope: Default::default(),
         },
     )
     .expect("the description is written");
@@ -5472,6 +5496,7 @@ fn preserving_a_branch_answers_what_it_did_and_the_enumeration_beside_it_names_i
     let request = onevcs::PreserveRequest {
         repo: "hosted".to_owned(),
         branch: session.branch.clone(),
+        term_scope: Default::default(),
     };
     let preserved = onevcs::preserve(&request).expect("the branch is preserved");
     assert_eq!(preserved.outcome, onevcs::Preservation::Pushed);
@@ -5488,10 +5513,16 @@ fn preserving_a_branch_answers_what_it_did_and_the_enumeration_beside_it_names_i
         preserved.from, clone,
         "the branch is pushed from the run clone that holds it: {preserved:?}"
     );
+    // The one thing it asks the host is whether the origin is public, which decides
+    // whether the branch is held to the public boundary before it is pushed.
+    let asked: Vec<String> = world
+        .host_calls()
+        .into_iter()
+        .filter(|call| call != "api repos/acme-corp/hosted")
+        .collect();
     assert!(
-        world.host_calls().is_empty(),
-        "a preservation reaches git and nothing else: {:?}",
-        world.host_calls()
+        asked.is_empty(),
+        "a preservation reaches git and nothing else: {asked:?}"
     );
 
     // The same request again finds the work already kept and pushes nothing, which is
@@ -5571,6 +5602,7 @@ fn preserving_a_branch_with_nowhere_to_go_still_names_the_commit_at_risk() {
     let preserved = onevcs::preserve(&onevcs::PreserveRequest {
         repo: "stranded".to_owned(),
         branch: "feature/stranded".to_owned(),
+        term_scope: Default::default(),
     })
     .expect("a branch with nowhere to go is an answer rather than a failure");
     assert_eq!(preserved.outcome, onevcs::Preservation::NoRemote);
@@ -5596,6 +5628,7 @@ fn preserving_a_branch_no_checkout_of_the_identity_holds_is_refused_by_name() {
     let refused = onevcs::preserve(&onevcs::PreserveRequest {
         repo: "hosted".to_owned(),
         branch: "feature/nobody-has-this".to_owned(),
+        term_scope: Default::default(),
     })
     .expect_err("a branch nothing holds is nothing to preserve")
     .to_string();
@@ -6178,7 +6211,7 @@ fn a_registry_older_than_this_build_is_migrated_by_the_library_read_as_it_is_by_
     assert!(
         std::fs::read_to_string(world.home().join("registry.json"))
             .expect("a registry")
-            .contains("\"version\": 6"),
+            .contains("\"version\": 7"),
         "and leaves it at the version this build writes"
     );
 
@@ -6502,6 +6535,7 @@ fn the_branch_operations_answer_values_where_their_commands_print_prose() {
     let integrated = onevcs::integrate(&onevcs::IntegrateRequest {
         branches: vec!["feature/stranded".to_owned()],
         push: onevcs::BasePush::Keep,
+        term_scope: Default::default(),
     })
     .expect("the train runs");
     assert_eq!(&*integrated.base, "main");
@@ -6708,6 +6742,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
             branch: "feature/finished".to_owned(),
             title: None,
             body: None,
+            term_scope: Default::default(),
         },
     )
     .expect_err("a branch carrying no incomplete-step marker is not recoverable work");
@@ -6726,6 +6761,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
             title: None,
             body: None,
             policy: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the completed branch publishes");
@@ -6757,6 +6793,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
             title: None,
             body: None,
             policy: None,
+            term_scope: Default::default(),
         },
     )
     .expect_err("completed work is what publish-branch takes");
@@ -6783,6 +6820,7 @@ fn the_branch_keyed_publications_answer_typed_outcomes_through_the_library() {
             branch: "feature/interrupted".to_owned(),
             title: Some(subject("feat: land the interrupted work")),
             body: None,
+            term_scope: Default::default(),
         },
     )
     .expect("the interrupted branch recovers");

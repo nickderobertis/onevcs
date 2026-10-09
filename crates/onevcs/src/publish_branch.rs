@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::boundary::TermScope;
 use crate::branch::{self, Verb};
 use crate::error::{Error, Result};
 use crate::host::{ChangeRequest, Hosting, Sha};
@@ -44,11 +45,12 @@ pub fn run(
     title: Option<Subject>,
     body: Option<String>,
     policy: Option<MergePolicy>,
+    term_scope: &TermScope,
     hosting: &dyn Hosting,
     stream: &mut Stream,
 ) -> Result<PublishOutcome> {
     if let Some(resumed) = resumable(registry, repo, branch, policy, hosting)? {
-        return resumed.run(title, body, hosting, stream);
+        return resumed.run(title, body, term_scope, hosting, stream);
     }
     let landing = branch::prepare(registry, Verb::PublishBranch, repo, branch, policy)?;
 
@@ -75,7 +77,7 @@ pub fn run(
     }
 
     landing.sync_change_base(stream)?;
-    landing.publish(title, body, hosting, stream)
+    landing.publish(title, body, term_scope, hosting, stream)
 }
 
 /// A publication found exactly at the boundary its verification passed, ready to
@@ -250,6 +252,7 @@ impl Resumed {
         self,
         title: Option<Subject>,
         body: Option<String>,
+        term_scope: &TermScope,
         hosting: &dyn Hosting,
         stream: &mut Stream,
     ) -> Result<PublishOutcome> {
@@ -280,6 +283,7 @@ impl Resumed {
             hosting,
             cancellation: &publish::NeverCancelled,
             built: publish::Built::Resumed,
+            term_scope: term_scope.clone(),
         };
         publish::resume(
             &context,

@@ -10,6 +10,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use url::Url;
 
+use crate::boundary::{TermScope, Visibility};
 use crate::releases::TargetName;
 use crate::rules::MergePolicy;
 use crate::sweep;
@@ -103,6 +104,143 @@ pub enum Command {
     RetireFinished(RetireFinishedArgs),
     /// Record that a branch was superseded by a retry that landed.
     Supersede(SupersedeArgs),
+    /// Ask the public boundary: a repository's visibility, or whether output may be
+    /// written to a destination.
+    Boundary {
+        /// Which boundary question.
+        #[command(subcommand)]
+        command: BoundaryCommand,
+    },
+    /// Copy one directory of a private branch, as one new neutral commit, onto a local
+    /// branch of a public repository. Nothing is pushed.
+    Export(ExportArgs),
+}
+
+/// Which private repositories a public boundary check derives its terms from.
+///
+/// Every verb that can write to a public destination takes it. Unset, the check
+/// derives terms from every registered repository whose effective visibility is
+/// private; `--term-scope` narrows that to the named identities, and
+/// `--term-scope-empty` to none at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct TermScopeArgs {
+    /// Derive terms from this registered identity — repeatable. Unset, from every
+    /// registered private repository.
+    #[arg(
+        long = "term-scope",
+        value_name = "IDENTITY",
+        conflicts_with = "term_scope_empty"
+    )]
+    pub term_scope: Vec<String>,
+    /// Derive no terms at all: the work this writes names no private repository.
+    #[arg(long)]
+    pub term_scope_empty: bool,
+}
+
+impl TermScopeArgs {
+    /// The scope these flags select.
+    pub fn scope(&self) -> TermScope {
+        if self.term_scope_empty {
+            TermScope::Identities(Vec::new())
+        } else if self.term_scope.is_empty() {
+            TermScope::Registry
+        } else {
+            TermScope::Identities(self.term_scope.clone())
+        }
+    }
+}
+
+/// The `onevcs boundary` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum BoundaryCommand {
+    /// Read `{"repository": ...}` and answer `{"visibility": ...}`, refreshed from the
+    /// host unless a rule overrides it.
+    Inspect(BoundaryInspectArgs),
+    /// Read a boundary input and answer its verdict: exit 0 to pass, 1 to refuse, and
+    /// any other non-zero status when the check is unavailable.
+    Check(BoundaryCheckArgs),
+    /// Print the versioned JSON schemas `inspect` and `check` exchange.
+    Schema(BoundarySchemaArgs),
+}
+
+/// Arguments for `onevcs boundary inspect`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct BoundaryInspectArgs {
+    /// Where the request is read from: `-` for standard input, or a file.
+    #[arg(long, value_name = "PATH|-")]
+    pub input: PathBuf,
+    /// Answer as JSON, which is the only answer it gives.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs boundary check`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct BoundaryCheckArgs {
+    /// Where the output is going. A `destination` the input names must agree.
+    #[arg(long, value_enum, value_name = "VISIBILITY")]
+    pub destination: CliVisibility,
+    /// Where the input is read from: `-` for standard input, or a file.
+    #[arg(long, value_name = "PATH|-")]
+    pub input: PathBuf,
+}
+
+/// A visibility as the command line spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliVisibility {
+    /// Anybody can read it.
+    Public,
+    /// It is private.
+    Private,
+    /// Nobody has said; treated as private.
+    Unknown,
+}
+
+impl From<CliVisibility> for Visibility {
+    fn from(visibility: CliVisibility) -> Self {
+        match visibility {
+            CliVisibility::Public => Visibility::Public,
+            CliVisibility::Private => Visibility::Private,
+            CliVisibility::Unknown => Visibility::Unknown,
+        }
+    }
+}
+
+/// Arguments for `onevcs boundary schema`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct BoundarySchemaArgs {
+    /// Print the schemas as JSON, which is the only form they take.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs export`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ExportArgs {
+    /// The private repository the work is in: an identity key, alias, origin or path.
+    #[arg(long, value_name = "IDENTITY")]
+    pub from: String,
+    /// The branch holding the work, compared with its recorded base.
+    #[arg(long, value_name = "REF")]
+    pub branch: String,
+    /// The one directory of that branch the work is confined to, relative to its root.
+    #[arg(long, value_name = "RELATIVE-DIR")]
+    pub directory: String,
+    /// The public repository to export into.
+    #[arg(long, value_name = "IDENTITY")]
+    pub to: String,
+    /// Where the directory's contents go in the public repository, relative to its root.
+    #[arg(long, value_name = "RELATIVE-DIR")]
+    pub target_directory: String,
+    /// The local branch cut in the public repository's checkout to hold the export.
+    #[arg(long, value_name = "NEUTRAL-LOCAL-REF")]
+    pub branch_name: String,
+    /// Answer as JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs retire`, which `onevcs reclaim` takes too.
@@ -403,6 +541,9 @@ pub struct PublishArgs {
     // checked at dispatch for that reason.
     #[arg(long, value_name = "TEXT")]
     pub draft_reason: Option<String>,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// The `onevcs change` subcommands: a session's own change request, after it exists.
@@ -456,6 +597,9 @@ pub struct ChangeDescribeArgs {
     /// Report the change as it stands after the write as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs change ready`.
@@ -508,6 +652,9 @@ pub struct PublishBranchArgs {
     #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs preserve`.
@@ -530,6 +677,9 @@ pub struct PreserveArgs {
     // rendering of it.
     #[arg(long, value_name = "REPO")]
     pub repo: String,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs recover`.
@@ -558,6 +708,9 @@ pub struct RecoverArgs {
     #[arg(long, value_name = "PATH")]
     pub body_file: Option<PathBuf>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs recoverable`.
@@ -653,6 +806,9 @@ pub struct IntegrateArgs {
     /// Push the base once every branch has landed.
     #[arg(long)]
     pub push: bool,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
 }
 
 /// Arguments for `onevcs sync`.
@@ -739,6 +895,24 @@ pub struct ArtifactCatArgs {
 pub enum RulesCommand {
     /// Report which rule a repository matches, and the policy that follows.
     Check(RulesCheckArgs),
+    /// Compose a base rules file and its overlays, validate the result, and install
+    /// it where the registry looks for rules.
+    Apply(RulesApplyArgs),
+}
+
+/// Arguments for `onevcs rules apply`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct RulesApplyArgs {
+    /// The base rules file: the tracked policy every overlay is laid over.
+    #[arg(long, value_name = "FILE")]
+    pub base: PathBuf,
+    /// An overlay, laid over the base in the order given — repeatable. A later
+    /// overlay's rule for the same match, and its default's fields, win.
+    #[arg(long, value_name = "FILE")]
+    pub overlay: Vec<PathBuf>,
+    /// Report what would be installed, and install nothing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Arguments for `onevcs rules check`.

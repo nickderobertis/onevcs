@@ -109,6 +109,14 @@ onemessagebus = "0.9.0"
 # rather than in whatever order a hash map yielded.
 schemars = { version = "1", features = ["preserve_order"] }
 
+# The one matcher the public boundary check runs every term through: one automaton
+# over thousands of terms, matched in a single pass over megabytes of a publication.
+# Already in the graph behind `regex`.
+aho-corasick = "1"
+# NFKC, so a full-width or compatibility spelling of a private term is the term. The
+# same ICU family `icu_properties` is from, and already in the graph behind `url`.
+icu_normalizer = "2.2"
+
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"

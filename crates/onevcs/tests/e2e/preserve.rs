@@ -411,10 +411,16 @@ fn a_preserving_push_reaches_no_change_request_and_runs_no_merge_path() {
         .success()
         .stdout(predicate::str::contains("preserved:"));
 
+    // …beyond whether the origin is public, which decides whether the branch is held
+    // to the public boundary before it is pushed: a read, and no change request.
+    let asked: Vec<String> = world
+        .host_calls()
+        .into_iter()
+        .filter(|call| call != "api repos/acme-corp/hosted")
+        .collect();
     assert!(
-        world.host_calls().is_empty(),
-        "a preservation opens no change request and asks the host nothing: {:?}",
-        world.host_calls()
+        asked.is_empty(),
+        "a preservation opens no change request and asks the host nothing else: {asked:?}"
     );
     assert!(
         !ran.exists(),
