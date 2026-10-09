@@ -63,7 +63,14 @@ thread_local! {
     /// Generations this process has asked whether every loose object is whole, and
     /// the answer.
     static SOUND: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
+    /// Each repository's shared context prefix, within one read.
+    #[cfg(unix)]
+    static PREFIXES: RefCell<HashMap<PathBuf, Option<Prefix>>> = RefCell::new(HashMap::new());
 }
+
+/// A context's digest so far, and the stores it reads.
+#[cfg(unix)]
+type Prefix = (Sha256, Vec<(PathBuf, Store)>);
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
     struct Reset(bool);
@@ -100,6 +107,8 @@ pub(crate) fn clear() {
     COVERED.with(|covered| covered.borrow_mut().clear());
     LISTED.with(|listed| listed.borrow_mut().clear());
     SOUND.with(|sound| sound.borrow_mut().clear());
+    #[cfg(unix)]
+    PREFIXES.with(|prefixes| prefixes.borrow_mut().clear());
 }
 
 /// An immutable Git query's successful bytes, bound to its full context and argv.
@@ -534,7 +543,12 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// directly named objects by content hash. Unreadable inputs prevent reuse rather
 /// than hide work.
 #[cfg(unix)]
-fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+/// Everything a repository's contexts share, whatever store it is lent and whether
+/// content is compared: its layout, configuration, Git program, directory and its
+/// own object stores, digested in that order. Read once per repository within a
+/// read, and continued for each context asked of it.
+#[cfg(unix)]
+fn prefix(repo: &Path) -> Option<Prefix> {
     let (directory, common) = crate::native_refs::layout(repo).or_else(|| {
         let directory = repo.join(".git");
         directory.is_dir().then(|| (directory.clone(), directory))
@@ -630,6 +644,18 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
     }
     let mut stores = Vec::new();
     object_stores(&common.join("objects"), &mut digest, &mut stores)?;
+    Some((digest, stores))
+}
+
+#[cfg(unix)]
+fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+    let (mut digest, mut stores) = PREFIXES.with(|prefixes| {
+        prefixes
+            .borrow_mut()
+            .entry(repo.to_owned())
+            .or_insert_with(|| prefix(repo))
+            .clone()
+    })?;
     if let Some(borrowing) = borrowing {
         if !stores.iter().any(|(path, _)| path == borrowing) {
             object_stores(borrowing, &mut digest, &mut stores)?;
