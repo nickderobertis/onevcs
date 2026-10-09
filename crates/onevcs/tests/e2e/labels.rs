@@ -1697,3 +1697,373 @@ fn an_unreadable_selected_clone_is_a_finding_and_repairs_cleanly() {
         "Git's diagnostic: {message}"
     );
 }
+
+/// The common git directory of every repository the last counted read compared
+/// content in: where the proofs it stored were derived.
+fn proof_stores(fixture: &Fixture, counting: &crate::cost::Counting) -> Vec<std::path::PathBuf> {
+    let mut stores = std::collections::BTreeSet::new();
+    for call in counting.calls() {
+        let mut words = call.args.split_whitespace();
+        if matches!(words.next(), Some("diff" | "merge-tree")) {
+            let common = fixture.world.git(
+                &call.cwd,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            );
+            stores.insert(std::path::PathBuf::from(common.trim()));
+        }
+    }
+    stores.into_iter().collect()
+}
+
+/// Other sessions' fetches rewrite a busy checkout's refs every few minutes, and a
+/// cached proof names only full object ids — so ordinary ref and worktree-metadata
+/// churn keeps every proof, while each graph overlay and each loss of an object a
+/// proof read still makes the read git's own.
+#[test]
+fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
+    let (fixture, token) = deep_history_session("churn");
+    let args = decision_of(&token);
+    let base = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "origin/main"]);
+    let base = base.trim();
+    let tip = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "feature/store-growth"]);
+    let tip = tip.trim();
+    let linked = fixture.world.path("churn-worktree");
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "churn/linked",
+            &linked.to_string_lossy(),
+            base,
+        ],
+    );
+    let original = answered(&fixture, &args, true);
+    assert_eq!(original.0, Some(0), "{original:?}");
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    forget_proofs(&fixture);
+    let (cold, _) = counted(&fixture, &counting, &args);
+    let cold_content = content_comparisons(&counting);
+    let stores = proof_stores(&fixture, &counting);
+    let asked = counting.calls();
+    let (warm, _) = counted(&fixture, &counting, &args);
+    let unreused = counting.calls();
+    assert_eq!((&cold, &warm), (&original, &original), "the cache is git's");
+    assert!(cold_content > 0, "the premise: the read compares content");
+    assert_eq!(
+        content_comparisons(&counting),
+        0,
+        "the premise: proofs are reused"
+    );
+    assert!(
+        !stores.is_empty(),
+        "the premise: proofs were derived somewhere"
+    );
+
+    // Ordinary churn, in every repository a proof was derived in: refs added, moved
+    // and deleted under refs/heads and refs/remotes, packed-refs repacked and then
+    // overridden by loose refs, a linked worktree checked out elsewhere and locked.
+    // None names the session's tip: a remote-tracking ref holding it would publish
+    // the branch, which is an answer moving rather than churn.
+    for common in &stores {
+        let repo = common.parent().expect("a checkout above its git directory");
+        for (name, value) in [
+            ("refs/heads/churn/added", base),
+            ("refs/remotes/origin/churn", base),
+            ("refs/remotes/origin/elsewhere", &format!("{base}~1")),
+        ] {
+            fixture.world.git(repo, &["update-ref", name, value]);
+        }
+        fixture.world.git(repo, &["pack-refs", "--all"]);
+        fixture.world.git(
+            repo,
+            &["update-ref", "refs/heads/churn/added", &format!("{base}~1")],
+        );
+        fixture
+            .world
+            .git(repo, &["update-ref", "-d", "refs/remotes/origin/churn"]);
+        fixture.world.git(
+            repo,
+            &[
+                "update-ref",
+                "refs/heads/churn/after-pack",
+                &format!("{base}~3"),
+            ],
+        );
+    }
+    fixture.world.git(
+        &linked,
+        &["checkout", "-q", "--detach", &format!("{base}~2")],
+    );
+    fixture.world.git(
+        &fixture.checkout,
+        &["worktree", "lock", &linked.to_string_lossy()],
+    );
+    let (churned, _) = counted(&fixture, &counting, &args);
+    assert_eq!(churned, original, "ref churn moves no answer");
+    assert_eq!(
+        content_comparisons(&counting),
+        0,
+        "every proof is reused across ordinary ref and worktree churn"
+    );
+    // A question the remote-tracking refs pose — what a branch holds that none of
+    // them reaches — is a new question once they move, and git is asked it. Nothing
+    // asked before the churn is asked again, beyond what a warm read always asks.
+    let reasked: Vec<_> = counting
+        .calls()
+        .into_iter()
+        .filter(|call| asked.contains(call) && !unreused.contains(call))
+        .collect();
+    assert!(
+        reasked.is_empty(),
+        "ref churn asks git no question a stored proof answered: {reasked:?}"
+    );
+    assert_eq!(churned, answered(&fixture, &args, true), "and git agrees");
+
+    // Each overlay can move an answer, so none reuses a proof and every answer is
+    // git's. Each is taken away again before the next.
+    let reverts_to_reuse = |what: &str| {
+        let (back, _) = counted(&fixture, &counting, &args);
+        assert_eq!(back, original, "{what}: removing it restores the answer");
+    };
+    let overlaid = |what: &str| {
+        let native = answered(&fixture, &args, true);
+        let (cached, _) = counted(&fixture, &counting, &args);
+        assert_eq!(cached, native, "{what}: the read is git's");
+        assert!(
+            content_comparisons(&counting) > 0,
+            "{what}: no stored proof is reused"
+        );
+        native
+    };
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", tip, base]);
+    let replaced = overlaid("refs/replace");
+    assert_ne!(
+        replaced, original,
+        "the premise: a replacement moves the answer"
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", "-d", tip]);
+    reverts_to_reuse("refs/replace");
+
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", tip, base]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["pack-refs", "--all"]);
+    assert!(
+        std::fs::read_to_string(fixture.checkout.join(".git/packed-refs"))
+            .expect("packed refs")
+            .contains(" refs/replace/"),
+        "the premise: the replacement is packed"
+    );
+    overlaid("packed refs/replace");
+    fixture
+        .world
+        .git(&fixture.checkout, &["replace", "-d", tip]);
+    reverts_to_reuse("packed refs/replace");
+
+    for common in &stores {
+        std::fs::create_dir_all(common.join("info")).expect("info directory");
+        std::fs::write(common.join("info/grafts"), format!("{tip}\n")).expect("graft");
+    }
+    overlaid("info/grafts");
+    for common in &stores {
+        std::fs::remove_file(common.join("info/grafts")).expect("remove graft");
+    }
+    reverts_to_reuse("info/grafts");
+
+    for common in &stores {
+        std::fs::write(common.join("shallow"), format!("{base}\n")).expect("shallow");
+    }
+    overlaid("shallow");
+    for common in &stores {
+        std::fs::remove_file(common.join("shallow")).expect("remove shallow");
+    }
+    reverts_to_reuse("shallow");
+
+    // An alternate that adds nothing still changes where objects come from.
+    let lent = fixture.world.path("lent-objects");
+    std::fs::create_dir_all(&lent).expect("an empty object store");
+    let lent = std::fs::canonicalize(&lent).expect("absolute store");
+    let mut previous = Vec::new();
+    for common in &stores {
+        let alternates = common.join("objects/info/alternates");
+        let before = std::fs::read_to_string(&alternates).ok();
+        let mut text = before.clone().unwrap_or_default();
+        text.push_str(&format!("{}\n", lent.display()));
+        std::fs::create_dir_all(alternates.parent().unwrap()).expect("objects/info");
+        std::fs::write(&alternates, text).expect("alternates");
+        previous.push((alternates, before));
+    }
+    let lending = overlaid("objects/info/alternates");
+    assert_eq!(lending, original, "an empty alternate moves no answer");
+    for (alternates, before) in &previous {
+        match before {
+            Some(text) => std::fs::write(alternates, text).expect("restore alternates"),
+            None => std::fs::remove_file(alternates).expect("remove alternates"),
+        }
+    }
+    let (back, _) = counted(&fixture, &counting, &args);
+    assert_eq!(back, original);
+    assert!(
+        content_comparisons(&counting) > 0,
+        "the proofs stored under the alternate belong to that context, not this one"
+    );
+    reverts_to_reuse("objects/info/alternates");
+
+    // An object a proof names, taken away and given back.
+    let raw = fixture.world.path("churn-tip");
+    std::fs::write(
+        &raw,
+        crate::world::World::git_raw(
+            &fixture.world,
+            &fixture.checkout,
+            &["cat-file", "commit", tip],
+        )
+        .stdout,
+    )
+    .expect("the tip's bytes");
+    let copies = loose_copies(&fixture.world.path(""), tip);
+    assert!(!copies.is_empty(), "the premise: the tip is loose");
+    for copy in &copies {
+        std::fs::remove_file(copy).expect("take the tip away");
+    }
+    let missing = answered(&fixture, &args, true);
+    assert_ne!(missing, original, "the premise: git's answer needs the tip");
+    let (cached, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        cached, missing,
+        "a missing named object answers what git answers"
+    );
+    for copy in &copies {
+        let repository = copy.ancestors().nth(3).expect("the repository of a store");
+        fixture.world.git(
+            repository,
+            &["hash-object", "-t", "commit", "-w", &raw.to_string_lossy()],
+        );
+    }
+    let (restored, _) = counted(&fixture, &counting, &args);
+    assert_eq!(restored, original, "and the answer returns with it");
+}
+
+/// Proofs stored for a read under a configuration, and whether a warm read reused
+/// them, answered beside what git alone answers under it.
+fn under_configuration(
+    fixture: &Fixture,
+    counting: &crate::cost::Counting,
+    args: &[&str],
+) -> ((Option<i32>, String), usize, usize) {
+    forget_proofs(fixture);
+    let native = answered(fixture, args, true);
+    let (cold, _) = counted(fixture, counting, args);
+    let stored = std::fs::read_dir(fixture.world.home().join("cache/recoverable/v1/git"))
+        .map_or(0, |entries| entries.count());
+    let (warm, _) = counted(fixture, counting, args);
+    assert_eq!(cold, native, "a cold read is git's");
+    assert_eq!(warm, native, "a warm read is git's");
+    (native, stored, content_comparisons(counting))
+}
+
+/// Transport and receive-side configuration cannot change a local object-id read, so
+/// a host that tunes either — a pool clone's `http.postBuffer`, a checkout pushed
+/// into with `receive.denyCurrentBranch` — keeps its proofs. Every key outside the
+/// admitted categories still refuses them.
+#[test]
+fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_them() {
+    let (fixture, token) = deep_history_session("configured");
+    let args = decision_of(&token);
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    let global = fixture.world.path(".gitconfig");
+    let plain = std::fs::read_to_string(&global).expect("global configuration");
+    let (unconfigured, stored, _) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(unconfigured.0, Some(0), "{unconfigured:?}");
+    assert!(
+        stored > 0,
+        "the premise: an unconfigured read stores proofs"
+    );
+    // Proofs are derived in the checkout and in the session's clone alike, so a
+    // repository-level key is set in each of them.
+    forget_proofs(&fixture);
+    let _ = counted(&fixture, &counting, &args);
+    let stores = proof_stores(&fixture, &counting);
+    assert!(
+        stores.len() > 1,
+        "the premise: proofs come from more than one repository"
+    );
+
+    std::fs::write(
+        &global,
+        format!(
+            "{plain}\n[http]\n\tpostBuffer = 524288000\n\tsslVerify = true\n\
+             [http \"https://example.invalid/\"]\n\textraHeader = X-Fixture: 1\n\
+             [receive]\n\tdenyCurrentBranch = updateInstead\n"
+        ),
+    )
+    .expect("global transport configuration");
+    for common in &stores {
+        let repo = common.parent().expect("a checkout above its git directory");
+        for (key, value) in [
+            ("http.postBuffer", "157286400"),
+            ("http.lowSpeedTime", "60"),
+            ("receive.denyCurrentBranch", "ignore"),
+            ("receive.denyNonFastForwards", "true"),
+        ] {
+            fixture.world.git(repo, &["config", key, value]);
+        }
+    }
+    let (configured, stored, warm_content) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(configured, unconfigured, "the keys move no answer");
+    assert!(stored > 0, "http.* and receive.* store proofs");
+    assert_eq!(warm_content, 0, "and a warm read reuses them");
+
+    // Every other key refuses, at either level.
+    for (key, value) in [
+        ("core.autocrlf", "true"),
+        ("color.ui", "always"),
+        ("merge.renormalize", "true"),
+        ("diff.fixture.textconv", "cat"),
+    ] {
+        for global in [true, false] {
+            let scope: &[&str] = if global { &["--global"] } else { &[] };
+            let repos: Vec<_> = if global {
+                vec![fixture.checkout.clone()]
+            } else {
+                stores
+                    .iter()
+                    .map(|common| common.parent().expect("a checkout").to_path_buf())
+                    .collect()
+            };
+            for repo in &repos {
+                fixture
+                    .world
+                    .git(repo, &[&["config"], scope, &[key, value]].concat());
+            }
+            let (refused, stored, warm_content) = under_configuration(&fixture, &counting, &args);
+            assert_eq!(refused, unconfigured, "{key}: the answer is git's");
+            assert_eq!(stored, 0, "{key} (global {global}) refuses proof reuse");
+            assert!(warm_content > 0, "{key}: git compares content itself");
+            for repo in &repos {
+                fixture
+                    .world
+                    .git(repo, &[&["config"], scope, &["--unset", key]].concat());
+            }
+        }
+    }
+    let (restored, stored, warm_content) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(restored, unconfigured);
+    assert!(
+        stored > 0 && warm_content == 0,
+        "reuse returns with the keys gone"
+    );
+}

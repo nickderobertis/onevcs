@@ -23,7 +23,7 @@ struct ContextKey {
 
 /// The shape of an entry and of the key it is stored under. An entry of any other
 /// is recomputed.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 /// What a repository's reads were answered from, beyond its configuration and
 /// layout: every object store it reads, by path, as this process found it.
@@ -508,7 +508,8 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 
 /// Conservative guard for ordinary files-backend repositories and linked
 /// worktrees with local alternates. Graph overlays and external attributes
-/// delegate. Object-store layout and access metadata are captured once per
+/// delegate; ordinary refs, pseudorefs and linked-worktree metadata are not
+/// inputs and are left out. Object-store layout and access metadata are captured once per
 /// query/store — the fixed part in the key, the loose objects and packs as a
 /// [`Store`] generation an entry may outgrow but not lose; each hit verifies its
 /// directly named objects by content hash. Unreadable inputs prevent reuse rather
@@ -558,8 +559,11 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
             && !key.starts_with("branch.")
             && !key.starts_with("user.")
             && !key.starts_with("advice.")
-            // Local object reads never invoke credential helpers, editors or transports.
+            // Local object reads never invoke credential helpers, editors or transports,
+            // and never act as the receiving end of a push.
             && !key.starts_with("credential.")
+            && !key.starts_with("http.")
+            && !key.starts_with("receive.")
             && !key.starts_with("pull.")
             && !key.starts_with("push.")
             && !key.starts_with("gist.")
@@ -853,23 +857,35 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let name = entry.file_name();
-            // Index/logs are not inputs to immutable history/content queries.
+            // Index/logs are not inputs to immutable history/content queries, and
+            // neither are ordinary refs: a cached query names only full object ids,
+            // and the refs a report does read are read afresh on every call. Other
+            // sessions' fetches rewrite them constantly, so keying on them would
+            // retire every proof in a busy checkout. Replacement refs and grafts are
+            // graph overlays that do move an answer, and are refused by `context`
+            // and below rather than keyed.
             if !objects
-                && matches!(
-                    name.to_str(),
-                    Some(
+                && name.to_str().is_some_and(|name| {
+                    matches!(
+                        name,
                         "objects"
                             | "index"
                             | "logs"
                             | "hooks"
                             | "COMMIT_EDITMSG"
-                            | "FETCH_HEAD"
-                            | "ORIG_HEAD"
+                            | "refs"
+                            | "worktrees"
+                            | "HEAD"
                             // This crate's own lock beside a fetch, never read by git.
                             | git::FETCH_LOCK
-                    )
-                )
+                    ) || name.ends_with("_HEAD")
+                        || name.ends_with(".lock")
+                })
             {
+                continue;
+            }
+            if !objects && name == "packed-refs" {
+                replacement_free(&entry.path())?;
                 continue;
             }
             snapshot(&entry.path(), digest, objects || name == "objects")?;
@@ -878,16 +894,23 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         // Object storage is guarded by layout and readability metadata, with
         // directly named objects verified by hash on each cache hit. Read the
         // alternates/configuration evidence, without scanning pack contents.
-        let raw = std::fs::read(path).ok()?;
-        // Packed replacement refs are graph overlays too.
-        if path.file_name()?.to_str() == Some("packed-refs")
-            && String::from_utf8_lossy(&raw).contains(" refs/replace/")
-        {
-            return None;
-        }
-        digest.update(raw);
+        digest.update(std::fs::read(path).ok()?);
     }
     Some(())
+}
+
+/// Packed replacement refs are graph overlays too. The file is otherwise not an
+/// input, so one a concurrent repack has just replaced is read as it now stands.
+#[cfg(unix)]
+fn replacement_free(path: &Path) -> Option<()> {
+    match std::fs::read(path) {
+        Ok(raw) => (!raw
+            .windows(b" refs/replace/".len())
+            .any(|window| window == b" refs/replace/"))
+        .then_some(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(()),
+        Err(_) => None,
+    }
 }
 
 #[cfg(unix)]
