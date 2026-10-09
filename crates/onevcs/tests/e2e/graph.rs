@@ -274,9 +274,14 @@ fn a_change_under_crates_reaches_the_crate_and_every_tier_that_reads_it() {
         &["bash", "scripts/nx-affected.sh", "-t", "test"],
         &[("ONEVCS_NX_BASE_REF", "main")],
     );
+    // …and the exposure audit's own test target, which links the crate's boundary
+    // matcher and so reads its source; it has no `check` of its own, which is why it
+    // is not among the gate projects a sweep runs.
+    let mut reached = set(&GATE_PROJECTS);
+    reached.insert("onevcs-exposure-audit".to_owned());
     assert_eq!(
         projects_running(&tasks, "test"),
-        set(&GATE_PROJECTS),
+        reached,
         "a change to the crate's source selected {tasks:?}"
     );
 }
