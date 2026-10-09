@@ -23,6 +23,12 @@ to drive a real `onevcs` without a real GitHub. A separate crate rather than a
 feature, because Cargo features are additive across a dependency graph and a
 feature could switch test implementations on inside somebody's release binary.
 
+`crates/onevcs-exposure-audit` is a third crate that is never published
+(`publish = false`): the read-only audit of what public repositories already carry
+of the private ones, kept so it can be re-run after a cleanup lands. It derives and
+matches terms through `onevcs::boundary` and has no matcher of its own — the
+publication check and the audit cannot disagree about a term.
+
 ## The contract comes first, and it is not negotiable in passing
 
 [`docs/contract.md`](docs/contract.md) is the approved contract, committed
