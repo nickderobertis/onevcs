@@ -78,6 +78,9 @@
       "inputs": [
         "{workspaceRoot}/budgets.yaml",
         "{workspaceRoot}/scripts/recoverable*.mjs",
+        "{workspaceRoot}/scripts/boundary-check-budget.schema.json",
+        "{workspaceRoot}/scripts/boundary-check-budget*.mjs",
+        "{projectRoot}/budgets.yaml",
         "{workspaceRoot}/scripts/recoverable-budget.schema.json",
         "sharedGlobals",
         {

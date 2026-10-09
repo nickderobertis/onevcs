@@ -8,7 +8,11 @@ import { fileURLToPath } from "node:url";
 const directory = fileURLToPath(new URL("../target/budget-records/", import.meta.url));
 const run_id = randomBytes(32).toString("hex");
 const manifest = state => writeFileSync(`${directory}/recoverable-invocation.json`, JSON.stringify({ state, run_id }));
-const retract = () => rmSync(`${directory}/recoverable.json`, { force: true });
+// Every record this invocation's producers write is retracted together: recovery's and
+// the public boundary check's share its invocation, binary and source identity.
+const retract = () => {
+  for (const name of ["recoverable.json", "boundary.json"]) rmSync(`${directory}/${name}`, { force: true });
+};
 const failed = reason => {
   // The cause and next action come first: a cleanup that fails as well must not hide them.
   console.error(`recovery producer: ${reason}\nnext: run 'just recoverable-journeys' to regenerate complete current-build records`);

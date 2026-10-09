@@ -14,3 +14,12 @@ own edge: an ordinary e2e edit must not rebuild them.
 configuration set, held to the registered warm thresholds; it records no
 telemetry. Every workload test takes `exclusive()` first, so the timed journey's
 clock never carries another workload's load.
+
+`boundary.rs` is the public boundary's budget journey: it builds
+`onevcs_testing::boundary`'s workload, drives the release binary's `publish-branch`
+and `export` over it, and writes `boundary.json` beside `recoverable.json`, stamped
+with the same invocation, binary and source identity — the wrapper retracts both
+together. The check's phases come from the binary's own `ONEVCS_BOUNDARY_DIAGNOSTICS`
+line and its peak memory from `wait4`; `scripts/boundary-check-budget.mjs` is the only
+reader, and `crates/onevcs/budgets.yaml` the only budget over it. It takes
+`exclusive()` too, so neither workload's clock carries the other's load.

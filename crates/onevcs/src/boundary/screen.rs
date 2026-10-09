@@ -23,7 +23,6 @@
 //! Commit author and committer identities are not read. A binary file's contents are
 //! not matched — its path is.
 
-use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Instant;
@@ -237,7 +236,7 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
         });
     }
 
-    let changes = RefCell::new(Vec::new());
+    let mut changes = Vec::new();
     for (index, commit) in commits.iter().enumerate() {
         let tree = repository
             .find_commit(commit.id)
@@ -259,54 +258,100 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
                 ),
             };
             let mut options = git2::DiffOptions::new();
-            options.context_lines(0).ignore_submodules(false);
+            options.ignore_submodules(false).include_typechange(true);
             let diff = repository
                 .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
                 .map_err(|error| format!("a commit cannot be diffed: {error}"))?;
-            diff.foreach(
-                &mut |delta, _| {
-                    let path = |file: git2::DiffFile<'_>| {
-                        file.path().map(|p| p.to_string_lossy().replace('\\', "/"))
-                    };
-                    let status = delta.status();
-                    changes.borrow_mut().push(Change {
-                        commit: index,
-                        parent,
-                        old_path: path(delta.old_file()),
-                        new_path: path(delta.new_file()),
-                        added_path: matches!(
-                            status,
-                            git2::Delta::Added | git2::Delta::Renamed | git2::Delta::Copied
-                        ),
-                        deleted_path: status == git2::Delta::Deleted,
-                        added: String::new(),
-                        removed: String::new(),
-                    });
-                    true
-                },
-                None,
-                None,
-                Some(&mut |_, _, line| {
-                    let mut changes = changes.borrow_mut();
-                    let Some(change) = changes.last_mut() else {
-                        return true;
-                    };
-                    let text = String::from_utf8_lossy(line.content());
-                    let text = text.trim_end_matches(['\n', '\r']);
+            for delta in diff.deltas() {
+                changes.push(change(&repository, index, parent, &delta)?);
+            }
+        }
+    }
+    Ok((repository, commits, changes))
+}
+
+/// One file's change against one parent: its paths, and the text it adds and removes.
+///
+/// A file that is new or gone is the whole of its blob, read directly; only a file that
+/// changed is diffed line by line. A binary blob contributes its paths and no text.
+fn change(
+    repository: &git2::Repository,
+    commit: usize,
+    parent: Option<usize>,
+    delta: &git2::DiffDelta<'_>,
+) -> Result<Change, String> {
+    let path =
+        |file: git2::DiffFile<'_>| file.path().map(|p| p.to_string_lossy().replace('\\', "/"));
+    let status = delta.status();
+    let mut change = Change {
+        commit,
+        parent,
+        old_path: path(delta.old_file()),
+        new_path: path(delta.new_file()),
+        added_path: matches!(
+            status,
+            git2::Delta::Added | git2::Delta::Renamed | git2::Delta::Copied
+        ),
+        deleted_path: status == git2::Delta::Deleted,
+        added: String::new(),
+        removed: String::new(),
+    };
+    let blob = |id: git2::Oid| -> Result<Option<git2::Blob<'_>>, String> {
+        if id.is_zero() {
+            return Ok(None);
+        }
+        match repository.find_blob(id) {
+            Ok(blob) if blob.is_binary() => Ok(None),
+            Ok(blob) => Ok(Some(blob)),
+            // A submodule's commit is not an object of this repository.
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(format!("a blob cannot be read: {error}")),
+        }
+    };
+    let text = |blob: &git2::Blob<'_>| String::from_utf8_lossy(blob.content()).into_owned();
+    match status {
+        git2::Delta::Added => {
+            if let Some(new) = blob(delta.new_file().id())? {
+                change.added = text(&new);
+            }
+        }
+        git2::Delta::Deleted => {
+            if let Some(old) = blob(delta.old_file().id())? {
+                change.removed = text(&old);
+            }
+        }
+        git2::Delta::Modified | git2::Delta::Typechange => {
+            let (Some(old), Some(new)) =
+                (blob(delta.old_file().id())?, blob(delta.new_file().id())?)
+            else {
+                return Ok(change);
+            };
+            let mut options = git2::DiffOptions::new();
+            options.context_lines(0);
+            let patch = git2::Patch::from_blobs(&old, None, &new, None, Some(&mut options))
+                .map_err(|error| format!("a file cannot be diffed: {error}"))?;
+            for hunk in 0..patch.num_hunks() {
+                let lines = patch
+                    .num_lines_in_hunk(hunk)
+                    .map_err(|error| format!("a file cannot be diffed: {error}"))?;
+                for at in 0..lines {
+                    let line = patch
+                        .line_in_hunk(hunk, at)
+                        .map_err(|error| format!("a file cannot be diffed: {error}"))?;
                     let into = match line.origin() {
                         '+' => &mut change.added,
                         '-' => &mut change.removed,
-                        _ => return true,
+                        _ => continue,
                     };
-                    into.push_str(text);
+                    let content = String::from_utf8_lossy(line.content());
+                    into.push_str(content.trim_end_matches(['\n', '\r']));
                     into.push('\n');
-                    true
-                }),
-            )
-            .map_err(|error| format!("a commit cannot be diffed: {error}"))?;
+                }
+            }
         }
+        _ => {}
     }
-    Ok((repository, commits, changes.into_inner()))
+    Ok(change)
 }
 
 fn tree_of<'r>(repository: &'r git2::Repository, revision: &str) -> Option<git2::Tree<'r>> {

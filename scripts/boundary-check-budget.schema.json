@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "description": "The record `scripts/boundary-check-budget.mjs` reads, and nothing else writes.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
+    },
+    "scenario": {
+      "$ref": "#/$defs/Scenario"
+    },
+    "covered": {
+      "$ref": "#/$defs/Covered"
+    },
+    "check": {
+      "$ref": "#/$defs/Check"
+    },
+    "check_peak_rss_kib": {
+      "description": "The publishing process's peak resident memory, from its own resource usage.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "publication_wall_ms": {
+      "description": "The whole `publish-branch`, of which the check is one step.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "export_wall_ms": {
+      "description": "One `export` of the same files.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "preparation_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "load1": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "scenario",
+    "covered",
+    "check",
+    "check_peak_rss_kib",
+    "publication_wall_ms",
+    "export_wall_ms",
+    "preparation_ms",
+    "load1"
+  ],
+  "$defs": {
+    "Build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ]
+    },
+    "Scenario": {
+      "type": "string",
+      "enum": [
+        "publication-term-check"
+      ]
+    },
+    "Covered": {
+      "description": "What the check covered, as the binary counted it.",
+      "type": "object",
+      "properties": {
+        "identities": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "terms": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "commits": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "paths": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "identities",
+        "terms",
+        "commits",
+        "paths",
+        "bytes"
+      ]
+    },
+    "Check": {
+      "description": "What the check took, as the binary measured it, in microseconds.",
+      "type": "object",
+      "properties": {
+        "total_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "derivation_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "diff_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matcher_build_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matching_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "total_us",
+        "derivation_us",
+        "diff_us",
+        "matcher_build_us",
+        "matching_us"
+      ]
+    }
+  },
+  "x-workload": {
+    "identities": 20,
+    "terms": 2000,
+    "paths": 1000,
+    "bytes": 10485760
+  }
+}
