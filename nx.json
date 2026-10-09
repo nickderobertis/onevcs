@@ -54,7 +54,9 @@
     ],
     "auditSource": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/crates/onevcs/**/*",
+      "{workspaceRoot}/crates/onevcs/src/boundary.rs",
+      "{workspaceRoot}/crates/onevcs/src/boundary/**/*",
+      "{workspaceRoot}/crates/onevcs/Cargo.toml",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/Cargo.lock",
       "sharedGlobals"

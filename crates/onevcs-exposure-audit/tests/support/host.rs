@@ -165,6 +165,9 @@ pub struct World {
     pub forbid_edits: bool,
     /// Answer the private-repository listing without its connection.
     pub broken_private_listing: bool,
+    /// Answer the private-repository listing with one node whose name is not
+    /// `owner/name`.
+    pub malformed_private_name: bool,
     /// Answer `/rate_limit` with a 404.
     pub no_rate_limit: bool,
     /// Answer git's smart-HTTP discovery (`/info/refs`) with this status; 0 serves
@@ -402,12 +405,15 @@ fn respond(
             if world.broken_private_listing {
                 return data(json!({ "rateLimit": { "cost": 1 }, "viewer": {} }));
             }
-            let all: Vec<Value> = world
+            let mut all: Vec<Value> = world
                 .repos
                 .iter()
                 .filter(|r| r.visibility == "private")
                 .map(|r| json!({ "nameWithOwner": r.full() }))
                 .collect();
+            if world.malformed_private_name {
+                all.push(json!({ "nameWithOwner": "not a repository" }));
+            }
             data(
                 json!({ "rateLimit": { "cost": 1 }, "viewer": { "repositories": page_of(all, &vars["cursor"]) } }),
             )

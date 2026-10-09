@@ -1197,6 +1197,33 @@ fn a_run_that_cannot_keep_its_findings_private_or_has_no_credential_refuses() {
 }
 
 #[test]
+fn a_private_listing_naming_something_that_is_not_a_repository_is_unreadable_not_shorter() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    world.malformed_private_name = true;
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &["--private-from", "account", "--allow", "sample-owner/alpha"],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let run = sandbox.run_dir();
+    let m = read_json(&run.join("measurements.json"));
+    assert_eq!(m["private_sources"]["account_listing"], "other-error");
+    let terms = read_json(&run.join("terms.json"));
+    assert!(
+        !terms["rules"]
+            .as_array()
+            .expect("the rules")
+            .iter()
+            .any(|rule| rule["term"] == "hiddenco/quietharbor"),
+        "nothing from a listing this run could not read is a source"
+    );
+}
+
+#[test]
 fn private_sources_and_committed_declarations_decide_the_terms() {
     let sandbox = Sandbox::new();
     let (world, _) = world(&sandbox);
@@ -1621,12 +1648,21 @@ fn a_refused_flag_is_named_by_position_never_by_value_and_nothing_is_read() {
         "{\"identities\": [\"hiddenco/quietharbor\"]}",
     )
     .expect("a file");
-    for path in [&registry, &not_json, &no_identities] {
+    // …or whose hosted identity is not `host/owner/name`, which is a document this run
+    // cannot trust rather than one identity fewer.
+    let malformed_key = sandbox.path("registry-malformed-key");
+    std::fs::write(
+        &malformed_key,
+        "{\"identities\": {\"github.com/hiddenco\": {}}}",
+    )
+    .expect("a file");
+    for path in [&registry, &not_json, &no_identities, &malformed_key] {
         let out = sandbox.run(&host, &["--registry", utf8(path)], &[("GH_TOKEN", TOKEN)]);
         assert_refused(
             &out,
             2,
-            "the registry document is not readable JSON with an `identities` object",
+            "the registry document is not readable JSON whose `identities` are hosted \
+             repositories or local paths",
         );
     }
 }
@@ -1838,6 +1874,9 @@ fn odd_host_answers_are_scope_figures_and_gaps_never_failures() {
             "github.com/sample-owner/delta-stale": {},
             "github.com/sample-owner/echo-gone": {},
             "git.example.test/sample-owner/alpha": {},
+            // A local-only identity has no host to be read from, and is left out on
+            // purpose rather than refused.
+            "/srv/checkouts/stillwater": {},
         },
         "checkouts": {},
     });

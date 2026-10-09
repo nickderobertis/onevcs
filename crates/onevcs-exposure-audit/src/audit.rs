@@ -213,14 +213,20 @@ fn list_private(api: &Api) -> Result<Vec<RepoId>, Status> {
         let Some(page) = data.pointer("/viewer/repositories") else {
             return Err(Status::OtherError);
         };
-        out.extend(
-            page.get("nodes")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|node| node.get("nameWithOwner").and_then(Value::as_str))
-                .filter_map(RepoId::parse),
-        );
+        // A node whose name is missing or is not `owner/name` is an answer this run
+        // cannot read, and an unreadable listing is a gap — never a shorter list.
+        for node in page
+            .get("nodes")
+            .and_then(Value::as_array)
+            .ok_or(Status::OtherError)?
+        {
+            let repo = node
+                .get("nameWithOwner")
+                .and_then(Value::as_str)
+                .and_then(RepoId::parse)
+                .ok_or(Status::OtherError)?;
+            out.push(repo);
+        }
         match next_page(page)? {
             Some(next) => cursor = next,
             None => return Ok(out),
@@ -234,8 +240,11 @@ struct Registered {
     repo: RepoId,
 }
 
-/// The identities registered on this host, from onevcs's registry document. A
-/// missing document is none; one that does not parse is refused.
+/// The hosted identities registered on this host, from onevcs's registry document. A
+/// missing document is none; one that does not parse is refused. A local-only
+/// identity — keyed by a path, with no host to read it from — is not one this audit
+/// can read and is left out on purpose; a hosted key that is not `host/owner/name` is
+/// a document this run cannot trust, and is refused.
 fn registered(path: &Path) -> Result<Vec<Registered>, ()> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -247,16 +256,18 @@ fn registered(path: &Path) -> Result<Vec<Registered>, ()> {
         .get("identities")
         .and_then(Value::as_object)
         .ok_or(())?;
-    Ok(identities
-        .keys()
-        .filter_map(|key| {
-            let (host, rest) = key.split_once('/')?;
-            Some(Registered {
-                host: host.to_owned(),
-                repo: RepoId::parse(rest)?,
-            })
-        })
-        .collect())
+    let mut hosted = Vec::new();
+    for key in identities.keys() {
+        if Path::new(key).is_absolute() {
+            continue;
+        }
+        let (host, rest) = key.split_once('/').ok_or(())?;
+        hosted.push(Registered {
+            host: host.to_owned(),
+            repo: RepoId::parse(rest).ok_or(())?,
+        });
+    }
+    Ok(hosted)
 }
 
 /// Whether a private identity's committed declarations can be read.
@@ -612,7 +623,8 @@ pub fn run(options: Options) -> u8 {
         Ok(list) => list.unwrap_or_default(),
         Err(()) => {
             return refuse(
-                "the registry document is not readable JSON with an `identities` object",
+                "the registry document is not readable JSON whose `identities` are hosted \
+                 repositories or local paths",
                 "pass --registry naming onevcs's registry.json, or a document of that shape",
                 exit::REFUSED,
             )
