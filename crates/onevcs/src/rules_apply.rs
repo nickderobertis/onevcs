@@ -57,7 +57,7 @@ pub struct RulesApplied {
     pub document: String,
 }
 
-/// An overlay: every key a rules file has, each optional.
+/// An overlay: a declared `version` and, optionally, every other key a rules file has.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Overlay {
