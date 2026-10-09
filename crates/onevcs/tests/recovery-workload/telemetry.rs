@@ -74,19 +74,92 @@ fn telemetry_schema_matches_the_producer() {
     );
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InputPrefix {
     directory: String,
     prefix: String,
 }
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InputManifest {
     version: u32,
     files: Vec<String>,
     directories: Vec<String>,
     prefixes: Vec<InputPrefix>,
+}
+
+/// Parse the build-input manifest, refusing any entry that is not a repository-relative
+/// path before it becomes a filesystem operand — the rule `scripts/recoverable-build.mjs`
+/// applies to the same file, so the two fingerprints walk the same inputs.
+fn read_manifest(raw: &[u8]) -> Result<InputManifest, String> {
+    fn relative(field: &str, path: &str) -> Result<(), String> {
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.contains('\\')
+            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        {
+            return Err(format!(
+                "build-input manifest {field} entry {path:?} is not a repository-relative path"
+            ));
+        }
+        Ok(())
+    }
+    let manifest: InputManifest = serde_json::from_slice(raw)
+        .map_err(|error| format!("build-input manifest does not parse: {error}"))?;
+    if manifest.version != 1 {
+        return Err("unsupported build-input manifest version".into());
+    }
+    for path in &manifest.files {
+        relative("files", path)?;
+    }
+    for path in &manifest.directories {
+        relative("directories", path)?;
+    }
+    for entry in &manifest.prefixes {
+        relative("prefixes", &entry.directory)?;
+        if entry.prefix.is_empty() || entry.prefix.contains('/') {
+            return Err(format!(
+                "build-input manifest prefixes entry {:?} needs a non-empty prefix without '/'",
+                entry.prefix
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
+#[test]
+fn build_input_manifest_refuses_paths_outside_the_repository() {
+    let manifest = |files: &str, directories: &str, prefixes: &str| {
+        read_manifest(
+            format!(
+                r#"{{"version":1,"files":{files},"directories":{directories},"prefixes":{prefixes}}}"#
+            )
+            .as_bytes(),
+        )
+    };
+    let checked = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/recoverable-build-inputs.json");
+    read_manifest(&std::fs::read(checked).expect("checked manifest")).expect("checked manifest");
+    for (refused, message) in [
+        (
+            manifest(r#"["../outside"]"#, "[]", "[]"),
+            r#"files entry "../outside""#,
+        ),
+        (
+            manifest("[]", r#"["/etc"]"#, "[]"),
+            r#"directories entry "/etc""#,
+        ),
+        (manifest(r#"["a//b"]"#, "[]", "[]"), r#"files entry "a//b""#),
+        (
+            manifest("[]", "[]", r#"[{"directory":"scripts","prefix":"../x"}]"#),
+            "needs a non-empty prefix",
+        ),
+        (manifest(r#""Cargo.toml""#, "[]", "[]"), "does not parse"),
+    ] {
+        let error = refused.expect_err(message);
+        assert!(error.contains(message), "{error}");
+    }
 }
 
 pub(super) fn source_fingerprint(root: &std::path::Path) -> String {
@@ -107,11 +180,9 @@ pub(super) fn source_fingerprint(root: &std::path::Path) -> String {
             files.insert(path.to_owned());
         }
     }
-    let manifest: InputManifest = serde_json::from_slice(
-        &std::fs::read(root.join("scripts/recoverable-build-inputs.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(manifest.version, 1);
+    let manifest =
+        read_manifest(&std::fs::read(root.join("scripts/recoverable-build-inputs.json")).unwrap())
+            .unwrap_or_else(|error| panic!("{error}"));
     let mut files: BTreeSet<String> = manifest.files.into_iter().collect();
     for directory in manifest.directories {
         walk(root, &directory, &mut files);
