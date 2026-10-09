@@ -48,8 +48,8 @@ enum Shape<'a> {
     MergeBase(git2::Oid, git2::Oid),
     /// `merge-base --is-ancestor A B`.
     IsAncestor(git2::Oid, git2::Oid),
-    /// `rev-list --count A --not B --`.
-    Count(git2::Oid, git2::Oid),
+    /// `rev-list --count A --not B… --`.
+    Count(git2::Oid, Vec<git2::Oid>),
     /// `rev-list --reverse A..B --`.
     Listed(git2::Oid, git2::Oid),
     /// `log --reverse --format=%H%x00%B%x00%x1e A..B --`.
@@ -65,6 +65,8 @@ enum Shape<'a> {
     Peeled(Vec<Peel>),
     /// `cat-file -e X`.
     Exists(git2::Oid),
+    /// `cat-file -e X^{commit}`.
+    IsCommit(git2::Oid),
     /// `diff --name-only --no-renames -z A B -- [:(literal)PATH…]`.
     Names(git2::Oid, git2::Oid, Vec<&'a [u8]>),
     /// `diff --quiet A B -- [:(literal)PATH…]`.
@@ -117,16 +119,18 @@ impl<'a> Shape<'a> {
     /// Every object the arguments name.
     fn named(&self) -> Vec<git2::Oid> {
         match self {
+            Self::Count(a, hidden) => std::iter::once(*a).chain(hidden.iter().copied()).collect(),
             Self::MergeBase(a, b)
             | Self::IsAncestor(a, b)
-            | Self::Count(a, b)
             | Self::Listed(a, b)
             | Self::Messages(a, b)
             | Self::Names(a, b, _)
             | Self::Differs(a, b, _) => vec![*a, *b],
-            Self::FirstParents(x) | Self::CommittedAt(x) | Self::Message(x) | Self::Exists(x) => {
-                vec![*x]
-            }
+            Self::FirstParents(x)
+            | Self::CommittedAt(x)
+            | Self::Message(x)
+            | Self::Exists(x)
+            | Self::IsCommit(x) => vec![*x],
             Self::Peeled(revisions) => revisions
                 .iter()
                 .map(|revision| match revision {
@@ -140,7 +144,12 @@ impl<'a> Shape<'a> {
         Some(match args {
             ["merge-base", a, b] => Self::MergeBase(oid(a)?, oid(b)?),
             ["merge-base", "--is-ancestor", a, b] => Self::IsAncestor(oid(a)?, oid(b)?),
-            ["rev-list", "--count", a, "--not", b, "--"] => Self::Count(oid(a)?, oid(b)?),
+            ["rev-list", "--count", a, "--not", hidden @ .., "--"] if !hidden.is_empty() => {
+                Self::Count(
+                    oid(a)?,
+                    hidden.iter().map(|id| oid(id)).collect::<Option<_>>()?,
+                )
+            }
             ["rev-list", "--reverse", spec, "--"] => {
                 let (from, to) = range(spec)?;
                 Self::Listed(from, to)
@@ -160,7 +169,10 @@ impl<'a> Shape<'a> {
             {
                 Self::Peeled(vec![peel(first)?, peel(second)?])
             }
-            ["cat-file", "-e", x] => Self::Exists(oid(x)?),
+            ["cat-file", "-e", x] => match x.strip_suffix("^{commit}") {
+                Some(x) => Self::IsCommit(oid(x)?),
+                None => Self::Exists(oid(x)?),
+            },
             ["diff", "--name-only", "--no-renames", "-z", a, b, "--", paths @ ..] => {
                 Self::Names(oid(a)?, oid(b)?, literal_paths(paths)?)
             }
@@ -188,11 +200,12 @@ impl<'a> Shape<'a> {
                 let ancestor = a == b || repository.graph_descendant_of(b, a).ok()?;
                 Some(exited(if ancestor { 0 } else { 1 }, String::new()))
             }
-            Self::Count(a, b) => {
-                let (a, b) = (commit(repository, *a)?.id(), commit(repository, *b)?.id());
+            Self::Count(a, hidden) => {
                 let mut walk = repository.revwalk().ok()?;
-                walk.push(a).ok()?;
-                walk.hide(b).ok()?;
+                walk.push(commit(repository, *a)?.id()).ok()?;
+                for id in hidden {
+                    walk.hide(commit(repository, *id)?.id()).ok()?;
+                }
                 let mut count = 0_usize;
                 for listed in walk {
                     listed.ok()?;
@@ -265,6 +278,10 @@ impl<'a> Shape<'a> {
                 repository.odb().ok()?.read_header(*x).ok()?;
                 Some(exited(0, String::new()))
             }
+            Self::IsCommit(x) => {
+                commit(repository, *x)?;
+                Some(exited(0, String::new()))
+            }
             Self::Names(a, b, paths) => {
                 let mut out = Vec::new();
                 for path in changed(repository, *a, *b, paths)? {
@@ -293,7 +310,7 @@ impl Shape<'_> {
                 let ancestor = view.is_ancestor(*a, *b)?;
                 Some(exited(if ancestor { 0 } else { 1 }, String::new()))
             }
-            Self::Count(a, b) => printed(format!("{}\n", view.count(*a, *b)?)),
+            Self::Count(a, hidden) => printed(format!("{}\n", view.count(*a, hidden)?)),
             Self::Listed(from, to) => printed(
                 view.linear_range(*from, *to)?
                     .iter()
@@ -341,6 +358,10 @@ impl Shape<'_> {
                     out.push_str(&format!("{peeled}\n"));
                 }
                 printed(out)
+            }
+            Self::IsCommit(x) => {
+                view.commit(*x)?;
+                Some(exited(0, String::new()))
             }
             Self::Message(_) | Self::Exists(_) | Self::Names(..) | Self::Differs(..) => None,
         }
@@ -603,13 +624,16 @@ mod graph {
             Some(seen)
         }
 
-        /// The commits reachable from `to` and not from `from`.
-        fn only(&self, to: git2::Oid, from: git2::Oid) -> Option<HashSet<git2::Oid>> {
-            let excluded = self.ancestors(from)?;
+        /// The commits reachable from `to` and from none of `from`.
+        fn only(&self, to: git2::Oid, from: &[git2::Oid]) -> Option<HashSet<git2::Oid>> {
+            let excluded = from
+                .iter()
+                .map(|id| self.ancestors(*id))
+                .collect::<Option<Vec<_>>>()?;
             let mut members = HashSet::new();
             let mut pending = vec![to];
             while let Some(next) = pending.pop() {
-                if excluded.contains(&next) || !members.insert(next) {
+                if excluded.iter().any(|set| set.contains(&next)) || !members.insert(next) {
                     continue;
                 }
                 pending.extend(self.commit(next)?.parents.iter().copied());
@@ -617,9 +641,10 @@ mod graph {
             Some(members)
         }
 
-        /// `rev-list --count a --not b`.
-        pub(super) fn count(&self, a: git2::Oid, b: git2::Oid) -> Option<usize> {
-            Some(self.only(a, b)?.len())
+        /// `rev-list --count a --not hidden…`.
+        pub(super) fn count(&self, a: git2::Oid, hidden: &[git2::Oid]) -> Option<usize> {
+            self.commit(a)?;
+            Some(self.only(a, hidden)?.len())
         }
 
         /// `from..to` newest first, where every commit in it has at most one parent:
@@ -630,7 +655,7 @@ mod graph {
             to: git2::Oid,
         ) -> Option<Vec<git2::Oid>> {
             self.commit(from)?;
-            let members = self.only(to, from)?;
+            let members = self.only(to, &[from])?;
             let mut chain = Vec::with_capacity(members.len());
             let mut next = Some(to);
             while let Some(id) = next.filter(|id| members.contains(id)) {

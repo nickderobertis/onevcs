@@ -44,7 +44,7 @@ fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
             .entry(repo.to_owned())
-            .or_insert_with(|| snapshot(repo))
+            .or_insert_with(|| settled_snapshot(repo))
             .as_ref()?;
         choose(snapshot)
     })
@@ -408,6 +408,15 @@ pub(crate) fn is_ancestor(
     })
 }
 
+/// A snapshot of refs nothing moved while they were read.
+///
+/// Other sessions' fetches rewrite a checkout's refs at any moment, and a snapshot
+/// whose listing and whose values disagree is refused rather than answered from; a
+/// refusal of that kind is read again, a few times, so that a ref moved during the
+/// read costs one more read rather than every ref read of the call going to git.
+fn settled_snapshot(at: &Path) -> Option<Snapshot> {
+    (0..3).find_map(|_| snapshot(at))
+}
 fn snapshot(at: &Path) -> Option<Snapshot> {
     if !Path::new(crate::git::git_program()).is_absolute()
         || crate::recovery_cache::has_git_overrides()
