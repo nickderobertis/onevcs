@@ -93,6 +93,11 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
     const refused = run();
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /next: run 'just recoverable-journeys'/);
+    rmSync(join(f.root, "scripts", "recoverable-budget.schema.json"));
+    const unschemed = run();
+    assert.equal(unschemed.status, 1);
+    assert.match(unschemed.stderr, /recoverable telemetry: .*recoverable-budget\.schema\.json/);
+    assert.match(unschemed.stderr, /next: run 'just recoverable-journeys'/);
   } finally { rmSync(f.root, {recursive:true,force:true}); }
 });
 
@@ -153,4 +158,34 @@ test("reader rejects changed current source even when artifact and binary still 
     writeFileSync(join(sources,"crates/onevcs/src/lib.rs"),"changed current build input");
     assert.throws(()=>readRecord(f.root,sources),/stale source\/build/);
   } finally {rmSync(f.root,{recursive:true,force:true});rmSync(sources,{recursive:true,force:true});}
+});
+
+test("a producer that cannot reset its records refuses with the cause and regeneration command", () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.root, "scripts"));
+    copyFileSync(fileURLToPath(new URL("recoverable-invocation.mjs", import.meta.url)), join(f.root, "scripts", "recoverable-invocation.mjs"));
+    writeFileSync(join(f.root, "target"), "a file where the records directory belongs");
+    const run = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-invocation.mjs"), process.execPath, "-e", "process.exit(0)"], {cwd:f.root,encoding:"utf8"});
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /could not reset the records under .*budget-records/);
+    assert.match(run.stderr, /next: run 'just recoverable-journeys'/);
+  } finally { rmSync(f.root,{recursive:true,force:true}); }
+});
+
+const manifestRefusals = {
+  "a parent-escaping file": [{files:["../outside"],directories:[],prefixes:[]}, /files entry "\.\.\/outside" is not a repository-relative path/],
+  "an absolute directory": [{files:[],directories:["/etc"],prefixes:[]}, /directories entry "\/etc" is not a repository-relative path/],
+  "a non-string file": [{files:[7],directories:[],prefixes:[]}, /files entry 7 is not a repository-relative path/],
+  "files that are not a list": [{files:"Cargo.toml",directories:[],prefixes:[]}, /files is not a list/],
+  "a prefix without a directory": [{files:[],directories:[],prefixes:[{prefix:"recoverable"}]}, /prefixes entry undefined is not a repository-relative path/],
+  "a prefix naming a path": [{files:[],directories:[],prefixes:[{directory:"scripts",prefix:"../x"}]}, /needs a non-empty prefix without '\/'/],
+};
+for (const [name,[manifest,message]] of Object.entries(manifestRefusals)) test(`build-input manifest refuses ${name}`,()=>{
+  const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(),"recovery-manifest-"));
+  try {
+    mkdirSync(join(root,"scripts"));
+    writeFileSync(join(root,"scripts","recoverable-build-inputs.json"),JSON.stringify({version:1,...manifest}));
+    assert.throws(()=>inputFiles(root),message);
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });

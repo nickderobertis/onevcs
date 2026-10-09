@@ -5,17 +5,26 @@ import { fileURLToPath } from "node:url";
 import Ajv from "ajv/dist/2020.js";
 import { repositoryRoot, sourceFingerprint } from "./recoverable-build.mjs";
 
-const schema = JSON.parse(readFileSync(new URL("./recoverable-budget.schema.json", import.meta.url)));
-const ajv = new Ajv({ strict: false });
-for (const format of ["uint", "uint32", "uint64"]) ajv.addFormat(format, { type: "number", validate: n => Number.isSafeInteger(n) && n >= 0 });
-ajv.addFormat("double", { type: "number", validate: Number.isFinite });
-const validate = ajv.compile(schema);
+// Compiled on first read rather than at import, so a missing or broken schema reaches
+// the caller's error handler and its next action instead of failing module loading.
+let compiled;
+function schemaValidator() {
+  if (!compiled) {
+    const schema = JSON.parse(readFileSync(new URL("./recoverable-budget.schema.json", import.meta.url)));
+    const ajv = new Ajv({ strict: false });
+    for (const format of ["uint", "uint32", "uint64"]) ajv.addFormat(format, { type: "number", validate: n => Number.isSafeInteger(n) && n >= 0 });
+    ajv.addFormat("double", { type: "number", validate: Number.isFinite });
+    compiled = { schema, validate: ajv.compile(schema) };
+  }
+  return compiled;
+}
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const digest = text => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
 export const journeyCommand = "just recoverable-journeys";
 export const recordDirectory = fileURLToPath(new URL("../target/budget-records/", import.meta.url));
 
 export function readRecord(directory = recordDirectory, sourceRoot = repositoryRoot) {
+  const { schema, validate } = schemaValidator();
   const read = name => JSON.parse(readFileSync(`${directory}/${name}`, "utf8"));
   const expected = read("recoverable-invocation.json");
   if (expected.state !== "complete" || !digest(expected.run_id)) {

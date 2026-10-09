@@ -6,16 +6,27 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const directory = fileURLToPath(new URL("../target/budget-records/", import.meta.url));
-mkdirSync(directory, { recursive: true });
 const run_id = randomBytes(32).toString("hex");
 const manifest = state => writeFileSync(`${directory}/recoverable-invocation.json`, JSON.stringify({ state, run_id }));
+const retract = () => rmSync(`${directory}/recoverable.json`, { force: true });
 const failed = reason => {
-  manifest("failed");
-  rmSync(`${directory}/recoverable.json`, { force: true });
+  // The cause and next action come first: a cleanup that fails as well must not hide them.
   console.error(`recovery producer: ${reason}\nnext: run 'just recoverable-journeys' to regenerate complete current-build records`);
+  try {
+    manifest("failed");
+    retract();
+  } catch (error) {
+    console.error(`recovery producer: could not mark ${directory} failed (${error.message}); remove it before reading budgets`);
+  }
 };
-manifest("started");
-rmSync(`${directory}/recoverable.json`, { force: true });
+try {
+  mkdirSync(directory, { recursive: true });
+  manifest("started");
+  retract();
+} catch (error) {
+  failed(`could not reset the records under ${directory}: ${error.message}`);
+  process.exit(1);
+}
 const [program, ...args] = process.argv.slice(2);
 if (!program) {
   failed("producer command is missing");
