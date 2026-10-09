@@ -45,6 +45,8 @@ struct Context {
 /// still there with the same identity.
 #[derive(Clone)]
 struct Store {
+    /// Built and keyed only where store identity is read, which is Unix.
+    #[cfg(unix)]
     fixed: String,
     held: Rc<BTreeSet<String>>,
     generation: String,
