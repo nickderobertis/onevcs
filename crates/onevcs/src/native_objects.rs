@@ -424,6 +424,7 @@ mod graph {
 
     impl View {
         pub(super) fn of(at: &Path, borrowing: Option<&Path>) -> Self {
+            let borrowing = crate::native_refs::beyond_alternates(at, borrowing);
             Self {
                 at: at.to_owned(),
                 borrowing: borrowing.map(Path::to_owned),

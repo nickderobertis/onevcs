@@ -28,6 +28,11 @@ thread_local! {
     static STORES: RefCell<HashMap<PathBuf, Option<git2::Repository>>> = RefCell::new(HashMap::new());
     /// The stores a repository borrows, as its alternates name them.
     static BORROWED: RefCell<HashMap<Lending, Vec<PathBuf>>> = RefCell::new(HashMap::new());
+    /// Each snapshot's configuration as it read it, frozen: every read of it is of
+    /// that one reading, rather than a fresh look at every file it came from.
+    static CONFIGURATIONS: RefCell<HashMap<PathBuf, git2::Config>> = RefCell::new(HashMap::new());
+    /// Every path resolved within one read, and what it resolved to.
+    static CANONICAL: RefCell<HashMap<PathBuf, Option<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
     crate::native_objects::clear();
@@ -40,7 +45,49 @@ pub(crate) fn clear() {
         Box::new(STORES.with(|stores| std::mem::take(&mut *stores.borrow_mut()))),
     ];
     BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
+    CANONICAL.with(|canonical| canonical.borrow_mut().clear());
+    CONFIGURATIONS.with(|configurations| configurations.borrow_mut().clear());
     release(opened);
+}
+/// `std::fs::canonicalize`, resolved once per path within a read.
+///
+/// A read asks the same repositories' paths, and the long prefix they share, to be
+/// resolved again and again, and each resolution reads every component's link. So a
+/// path is resolved from its parent's resolution: a last component that is a link is
+/// resolved whole as before, and one that is not is the parent's resolution with
+/// that name — which is what resolving it whole answers. A relative path, or one
+/// naming `.` or `..`, is resolved whole every time, and outside a read nothing is
+/// remembered.
+pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !crate::recovery_cache::enabled()
+        || !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+    {
+        return std::fs::canonicalize(path).ok();
+    }
+    if let Some(known) = CANONICAL.with(|canonical| canonical.borrow().get(path).cloned()) {
+        return known;
+    }
+    let resolved = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => canonical(parent).and_then(|parent| {
+            let candidate = parent.join(name);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(&candidate).ok(),
+                Ok(_) => Some(candidate),
+                Err(_) => None,
+            }
+        }),
+        _ => std::fs::canonicalize(path).ok(),
+    };
+    CANONICAL.with(|canonical| {
+        canonical
+            .borrow_mut()
+            .insert(path.to_owned(), resolved.clone())
+    });
+    resolved
 }
 /// Let go of the repositories one read opened, off the read's own path.
 ///
@@ -94,47 +141,56 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
 #[cfg(unix)]
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
-        let config = snapshot.repository.config().ok()?;
-        let mut entries = config.entries(None).ok()?;
+        let _ = snapshot;
         let mut output = String::new();
-        while let Some(entry) = entries.next() {
-            let entry = entry.ok()?;
-            let name = entry.name().ok()?;
-            if name.starts_with("include.") || name.starts_with("includeif.") {
-                return None;
+        frozen(repo, |configuration| {
+            let mut entries = configuration.entries(None).ok()?;
+            while let Some(entry) = entries.next() {
+                let entry = entry.ok()?;
+                let name = entry.name().ok()?;
+                if name.starts_with("include.") || name.starts_with("includeif.") {
+                    return None;
+                }
+                output.push_str(&format!(
+                    "native:{:?}\0{name}\n{}\0",
+                    entry.level(),
+                    entry.value().ok()?
+                ));
             }
-            output.push_str(&format!(
-                "native:{:?}\0{name}\n{}\0",
-                entry.level(),
-                entry.value().ok()?
-            ));
-        }
+            Some(())
+        })?;
         Some(output)
     })
 }
+/// `read` asked of the configuration a repository's snapshot froze.
+fn frozen<T>(repo: &Path, read: impl FnOnce(&git2::Config) -> Option<T>) -> Option<T> {
+    CONFIGURATIONS.with(|configurations| read(configurations.borrow().get(repo)?))
+}
 pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     read(repo, |snapshot| {
-        let config = snapshot.repository.config().ok()?;
-        let mut entries = config.entries(None).ok()?;
-        let key = format!("remote.{remote}.url");
-        let mut url = None;
-        while let Some(entry) = entries.next() {
-            let entry = entry.ok()?;
-            let name = entry.name().ok()?;
-            if name.starts_with("include.")
-                || name.starts_with("includeif.")
-                || name.starts_with("url.")
-            {
-                return None;
-            }
-            if name == key {
-                if url.is_some() {
+        let _ = snapshot;
+        frozen(repo, |configuration| {
+            let mut entries = configuration.entries(None).ok()?;
+            let key = format!("remote.{remote}.url");
+            let mut url = None;
+            while let Some(entry) = entries.next() {
+                let entry = entry.ok()?;
+                let name = entry.name().ok()?;
+                if name.starts_with("include.")
+                    || name.starts_with("includeif.")
+                    || name.starts_with("url.")
+                {
                     return None;
                 }
-                url = Some(entry.value().ok()?.trim().to_owned());
+                if name == key {
+                    if url.is_some() {
+                        return None;
+                    }
+                    url = Some(entry.value().ok()?.trim().to_owned());
+                }
             }
-        }
-        url
+            url
+        })
     })
 }
 pub(crate) fn symbolic(repo: &Path, name: &str) -> Option<Option<String>> {
@@ -265,6 +321,7 @@ pub(crate) fn with_objects<T>(
     borrowing: Option<&Path>,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let borrowing = beyond_alternates(at, borrowing);
     let mut choose = Some(choose);
     if borrowing.is_none() {
         if let Some(answer) = read(at, |snapshot| Some(choose.take()?(&snapshot.repository))) {
@@ -337,6 +394,18 @@ pub(crate) fn with_store<T>(
             })
             .as_ref()?;
         choose(repository)
+    })
+}
+/// The store `at` is lent, where it is not one `at` already reads through its own
+/// alternates: lending a repository a store it borrows already changes no object it
+/// can read, so it is read through the same repository rather than a second one.
+pub(crate) fn beyond_alternates<'a>(at: &Path, borrowing: Option<&'a Path>) -> Option<&'a Path> {
+    borrowing.filter(|lent| {
+        let lent_canonical = canonical(lent);
+        !borrowed(at, None).iter().any(|alternate| {
+            alternate == lent
+                || (lent_canonical.is_some() && canonical(alternate) == lent_canonical)
+        })
     })
 }
 /// The stores `at` reads besides its own, by absolute path: its alternates, and the
@@ -456,13 +525,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     let repo = git2::Repository::open(at).ok()?;
     // libgit2 resolves symlinks in the paths it reports (macOS's /var is one), so
     // the caller's spelling of the checkout is compared resolved too.
-    if repo.is_bare()
-        || std::fs::canonicalize(repo.workdir()?).ok()? != std::fs::canonicalize(at).ok()?
-    {
+    if repo.is_bare() || canonical(repo.workdir()?)? != canonical(at)? {
         return None;
     }
-    let directory = std::fs::canonicalize(repo.path()).ok()?;
-    let common = std::fs::canonicalize(repo.commondir()).ok()?;
+    let directory = canonical(repo.path())?;
+    let common = canonical(repo.commondir())?;
     if common.file_name()?.to_str() != Some(".git") {
         return None;
     }
@@ -475,10 +542,10 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         } else {
             at.join(target)
         };
-        if std::fs::canonicalize(target).ok()? != directory {
+        if canonical(&target)? != directory {
             return None;
         }
-    } else if std::fs::canonicalize(at.join(".git")).ok()? != directory {
+    } else if canonical(&at.join(".git"))? != directory {
         return None;
     }
     if ["reftable", "refs/replace", "info/grafts", "shallow"]
@@ -522,7 +589,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     if names.iter().any(|name| name.starts_with("refs/replace/")) {
         return None;
     }
-    let configuration = repo.config().ok()?;
+    let configuration = repo.config().ok()?.snapshot().ok()?;
     for key in [
         "core.worktree",
         "core.warnAmbiguousRefs",
@@ -591,6 +658,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         worktrees.push((path.to_owned(), branch));
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
+    CONFIGURATIONS.with(|configurations| {
+        configurations
+            .borrow_mut()
+            .insert(at.to_owned(), configuration)
+    });
     Some(Snapshot {
         repository: repo,
         tips,

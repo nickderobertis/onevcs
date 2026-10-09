@@ -750,7 +750,7 @@ fn object_stores(
     digest: &mut Sha256,
     visited: &mut Vec<(PathBuf, Store)>,
 ) -> Option<()> {
-    let canonical = std::fs::canonicalize(path).ok()?;
+    let canonical = crate::native_refs::canonical(path)?;
     if canonical != path || visited.iter().any(|(seen, _)| *seen == canonical) {
         return None;
     }
