@@ -829,6 +829,11 @@ fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
     held.insert(listed_identity(root, path, &meta)?);
     for entry in std::fs::read_dir(path).ok()? {
         let entry = entry.ok()?;
+        // Asked of the entry itself before anything is stat'ed, so a link is refused
+        // rather than followed.
+        if entry.file_type().ok()?.is_symlink() {
+            return None;
+        }
         let meta = entry.metadata().ok()?;
         if meta.file_type().is_symlink() {
             return None;

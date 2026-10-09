@@ -230,12 +230,15 @@ fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str)
     let verbs = fixture.root.join("verbs.log");
     let shim = fixture.root.join("verbs");
     std::fs::create_dir(&shim).expect("verb shim directory");
+    // Quoted the way the counting shim quotes its own paths, so a scratch directory
+    // holding a quote cannot end the string early.
+    let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
     std::fs::write(
         shim.join("git"),
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\nexec '{}' \"$@\"\n",
-            verbs.display(),
-            fixture.root.join("counting/git").display()
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\nexec {} \"$@\"\n",
+            quote(&verbs),
+            quote(&fixture.root.join("counting/git"))
         ),
     )
     .expect("verb shim");
