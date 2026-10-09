@@ -18,7 +18,28 @@ use crate::git::{Ended, ObjectId, Output};
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
-    crate::native_refs::with_objects(repo, borrowing, |repository| shape.answer(repository))
+    let view = graph::View::of(repo, borrowing);
+    shape.walked(&view).or_else(|| {
+        crate::native_refs::with_objects_holding(repo, borrowing, &shape.named(), |repository| {
+            shape.answer(repository)
+        })
+    })
+}
+
+/// Whether `ancestor` is an ancestor of `descendant` (or is it), as git's
+/// `merge-base --is-ancestor` decides, where the walk can be made here.
+pub(crate) fn is_ancestor(
+    repo: &Path,
+    borrowing: Option<&Path>,
+    ancestor: git2::Oid,
+    descendant: git2::Oid,
+) -> Option<bool> {
+    graph::View::of(repo, borrowing).is_ancestor(ancestor, descendant)
+}
+
+/// Forget every commit read within the read that is ending.
+pub(crate) fn clear() {
+    graph::clear();
 }
 
 /// One argument shape, with its object ids already parsed.
@@ -93,6 +114,28 @@ fn literal_paths<'a>(specs: &[&'a str]) -> Option<Vec<&'a [u8]>> {
 }
 
 impl<'a> Shape<'a> {
+    /// Every object the arguments name.
+    fn named(&self) -> Vec<git2::Oid> {
+        match self {
+            Self::MergeBase(a, b)
+            | Self::IsAncestor(a, b)
+            | Self::Count(a, b)
+            | Self::Listed(a, b)
+            | Self::Messages(a, b)
+            | Self::Names(a, b, _)
+            | Self::Differs(a, b, _) => vec![*a, *b],
+            Self::FirstParents(x) | Self::CommittedAt(x) | Self::Message(x) | Self::Exists(x) => {
+                vec![*x]
+            }
+            Self::Peeled(revisions) => revisions
+                .iter()
+                .map(|revision| match revision {
+                    Peel::Tree(id) | Peel::Commit(id) | Peel::FirstParent(id) => *id,
+                })
+                .collect(),
+        }
+    }
+
     fn of(args: &[&'a str]) -> Option<Self> {
         Some(match args {
             ["merge-base", a, b] => Self::MergeBase(oid(a)?, oid(b)?),
@@ -234,6 +277,371 @@ impl<'a> Shape<'a> {
                 let differs = !changed(repository, *a, *b, paths)?.is_empty();
                 Some(exited(if differs { 1 } else { 0 }, String::new()))
             }
+        }
+    }
+}
+
+impl Shape<'_> {
+    /// The answer made over the commit graph read once per read, where this shape is
+    /// a walk: the merge base, ancestry, counts, ranges and first parents a decision
+    /// asks of one identity's checkouts again and again. Anything else, and any walk
+    /// that cannot be made here, is answered by [`Shape::answer`].
+    fn walked(&self, view: &graph::View) -> Option<Output> {
+        match self {
+            Self::MergeBase(a, b) => printed(format!("{}\n", view.merge_base(*a, *b)?)),
+            Self::IsAncestor(a, b) => {
+                let ancestor = view.is_ancestor(*a, *b)?;
+                Some(exited(if ancestor { 0 } else { 1 }, String::new()))
+            }
+            Self::Count(a, b) => printed(format!("{}\n", view.count(*a, *b)?)),
+            Self::Listed(from, to) => printed(
+                view.linear_range(*from, *to)?
+                    .iter()
+                    .rev()
+                    .map(|id| format!("{id}\n"))
+                    .collect(),
+            ),
+            Self::Messages(from, to) => {
+                let mut out = Vec::new();
+                for id in view.linear_range(*from, *to)?.iter().rev() {
+                    out.extend_from_slice(id.to_string().as_bytes());
+                    out.push(0);
+                    view.with_commit(*id, |commit| {
+                        out.extend_from_slice(body(commit)?);
+                        Some(())
+                    })?;
+                    out.extend_from_slice(b"\0\x1e\n");
+                }
+                printed_bytes(out)
+            }
+            Self::FirstParents(x) => {
+                let mut current = (*x, view.commit(*x)?);
+                let mut out = String::new();
+                for _ in 0..65 {
+                    out.push_str(&format!("{}\0{}\n", current.0, current.1.tree));
+                    let Some(parent) = current.1.parents.first().copied() else {
+                        break;
+                    };
+                    current = (parent, view.commit(parent)?);
+                }
+                printed(out)
+            }
+            Self::CommittedAt(x) => printed(format!("{}\n", view.commit(*x)?.time)),
+            Self::Peeled(revisions) => {
+                let mut out = String::new();
+                for revision in revisions {
+                    let peeled = match revision {
+                        Peel::Tree(id) => view.commit(*id)?.tree,
+                        Peel::Commit(id) => {
+                            view.commit(*id)?;
+                            *id
+                        }
+                        Peel::FirstParent(id) => *view.commit(*id)?.parents.first()?,
+                    };
+                    out.push_str(&format!("{peeled}\n"));
+                }
+                printed(out)
+            }
+            Self::Message(_) | Self::Exists(_) | Self::Names(..) | Self::Differs(..) => None,
+        }
+    }
+}
+
+/// The commit graph of one read, made once for every checkout of an identity.
+///
+/// A commit is its content, so what it says — its parents, its tree, its committer
+/// time — is the same in every repository holding it; what differs between
+/// repositories is only *whether* they hold it. So each commit is remembered with
+/// the store it was read from, and lent only to repositories that read that store:
+/// one read from the checkout's store every clone borrows answers for all of them,
+/// and one read from a clone's own store answers for that clone alone. Every commit a
+/// walk reaches is read through the repository asking, as git would read it, and a
+/// commit it cannot read ends the walk so that git answers.
+mod graph {
+    use std::cell::RefCell;
+    use std::collections::{BinaryHeap, HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
+    pub(super) struct Parsed {
+        pub(super) parents: Vec<git2::Oid>,
+        pub(super) tree: git2::Oid,
+        pub(super) time: i64,
+    }
+
+    /// Where a remembered commit was read: a store any borrower of it may use, or
+    /// one repository's whole view.
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum Source {
+        Store(PathBuf),
+        Repository(PathBuf, Option<PathBuf>),
+    }
+
+    type Ancestors = Rc<HashSet<git2::Oid>>;
+
+    thread_local! {
+        static COMMITS: RefCell<HashMap<(Source, git2::Oid), Rc<Parsed>>> = RefCell::new(HashMap::new());
+        static ANCESTORS: RefCell<HashMap<(Source, git2::Oid), Ancestors>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn clear() {
+        COMMITS.with(|commits| commits.borrow_mut().clear());
+        ANCESTORS.with(|ancestors| ancestors.borrow_mut().clear());
+    }
+
+    const PARENT1: u8 = 1;
+    const PARENT2: u8 = 2;
+    const STALE: u8 = 4;
+    const RESULT: u8 = 8;
+
+    /// One repository, and the stores it borrows.
+    pub(super) struct View {
+        at: PathBuf,
+        borrowing: Option<PathBuf>,
+        shared: Vec<PathBuf>,
+    }
+
+    impl View {
+        pub(super) fn of(at: &Path, borrowing: Option<&Path>) -> Self {
+            Self {
+                at: at.to_owned(),
+                borrowing: borrowing.map(Path::to_owned),
+                shared: crate::native_refs::borrowed(at, borrowing),
+            }
+        }
+
+        fn own(&self) -> Source {
+            Source::Repository(self.at.clone(), self.borrowing.clone())
+        }
+
+        /// `read` asked of the commit through the store holding it, where one this
+        /// repository borrows does, and otherwise through the repository itself.
+        pub(super) fn with_commit<T>(
+            &self,
+            id: git2::Oid,
+            read: impl FnOnce(&git2::Commit<'_>) -> Option<T>,
+        ) -> Option<T> {
+            let mut read = Some(read);
+            for store in &self.shared {
+                let held = crate::native_refs::with_store(store, |repository| {
+                    let held = repository
+                        .odb()
+                        .ok()?
+                        .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH);
+                    held.then(|| {
+                        repository
+                            .find_commit(id)
+                            .ok()
+                            .and_then(|commit| read.take()?(&commit))
+                    })
+                });
+                if let Some(answer) = held {
+                    return answer;
+                }
+            }
+            crate::native_refs::with_objects(&self.at, self.borrowing.as_deref(), |repository| {
+                read.take()?(&repository.find_commit(id).ok()?)
+            })
+        }
+
+        /// The commit's parents, tree and committer time.
+        pub(super) fn commit(&self, id: git2::Oid) -> Option<Rc<Parsed>> {
+            let remembered = COMMITS.with(|commits| {
+                let commits = commits.borrow();
+                self.shared
+                    .iter()
+                    .find_map(|store| commits.get(&(Source::Store(store.clone()), id)))
+                    .or_else(|| commits.get(&(self.own(), id)))
+                    .cloned()
+            });
+            if remembered.is_some() {
+                return remembered;
+            }
+            let parse = |commit: &git2::Commit<'_>| Parsed {
+                parents: commit.parent_ids().collect(),
+                tree: commit.tree_id(),
+                time: commit.committer().when().seconds(),
+            };
+            for store in &self.shared {
+                let read = crate::native_refs::with_store(store, |repository| {
+                    repository
+                        .odb()
+                        .ok()?
+                        .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH)
+                        .then(|| repository.find_commit(id).ok().map(|commit| parse(&commit)))
+                });
+                if let Some(read) = read {
+                    let parsed = Rc::new(read?);
+                    COMMITS.with(|commits| {
+                        commits
+                            .borrow_mut()
+                            .insert((Source::Store(store.clone()), id), parsed.clone())
+                    });
+                    return Some(parsed);
+                }
+            }
+            let parsed = Rc::new(crate::native_refs::with_objects(
+                &self.at,
+                self.borrowing.as_deref(),
+                |repository| Some(parse(&repository.find_commit(id).ok()?)),
+            )?);
+            COMMITS.with(|commits| {
+                commits
+                    .borrow_mut()
+                    .insert((self.own(), id), parsed.clone())
+            });
+            Some(parsed)
+        }
+
+        /// Git's paint down to the common ancestors of `one` and `two`: every commit
+        /// reached from each side carries that side's mark, a commit carrying both is
+        /// a candidate, and its ancestors are stale. Which order the walk takes
+        /// changes how far it goes and never which commits end up marked.
+        fn paint(
+            &self,
+            one: git2::Oid,
+            two: git2::Oid,
+        ) -> Option<(HashMap<git2::Oid, u8>, Vec<git2::Oid>)> {
+            let mut flags: HashMap<git2::Oid, u8> = HashMap::new();
+            let mut queue: BinaryHeap<(i64, std::cmp::Reverse<u64>, git2::Oid)> = BinaryHeap::new();
+            let mut pushed = 0_u64;
+            let mut push = |queue: &mut BinaryHeap<_>, id: git2::Oid, time: i64| {
+                queue.push((time, std::cmp::Reverse(pushed), id));
+                pushed += 1;
+            };
+            flags.insert(one, PARENT1);
+            push(&mut queue, one, self.commit(one)?.time);
+            *flags.entry(two).or_insert(0) |= PARENT2;
+            push(&mut queue, two, self.commit(two)?.time);
+            let mut results = Vec::new();
+            while queue
+                .iter()
+                .any(|(_, _, id)| flags.get(id).is_some_and(|flag| flag & STALE == 0))
+            {
+                let Some((_, _, id)) = queue.pop() else {
+                    break;
+                };
+                let held = flags.get(&id).copied().unwrap_or(0);
+                let mut marks = held & (PARENT1 | PARENT2 | STALE);
+                if marks == PARENT1 | PARENT2 {
+                    if held & RESULT == 0 {
+                        flags.insert(id, held | RESULT);
+                        results.push(id);
+                    }
+                    marks |= STALE;
+                }
+                for parent in self.commit(id)?.parents.clone() {
+                    let carried = flags.get(&parent).copied().unwrap_or(0);
+                    if carried & marks == marks {
+                        continue;
+                    }
+                    let time = self.commit(parent)?.time;
+                    flags.insert(parent, carried | marks);
+                    push(&mut queue, parent, time);
+                }
+            }
+            Some((flags, results))
+        }
+
+        /// The one best common ancestor, where there is exactly one.
+        ///
+        /// Each best common ancestor is reached from both sides along commits nothing
+        /// common lies below, so it is marked and never stale; and every other common
+        /// commit lies below it. So where one unstale candidate remains, it is the only
+        /// best one, whatever order the walk took — and where more remain, git's own
+        /// reduction answers.
+        pub(super) fn merge_base(&self, a: git2::Oid, b: git2::Oid) -> Option<git2::Oid> {
+            if a == b {
+                self.commit(a)?;
+                return Some(a);
+            }
+            let (flags, results) = self.paint(a, b)?;
+            match results
+                .into_iter()
+                .filter(|id| flags.get(id).is_some_and(|flag| flag & STALE == 0))
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [only] => Some(*only),
+                _ => None,
+            }
+        }
+
+        /// Whether `ancestor` is reached from `descendant`, which is the side's mark
+        /// the paint leaves on it: the commits between the two are below nothing common,
+        /// so the walk cannot stop before it gets there.
+        pub(super) fn is_ancestor(
+            &self,
+            ancestor: git2::Oid,
+            descendant: git2::Oid,
+        ) -> Option<bool> {
+            if ancestor == descendant {
+                self.commit(ancestor)?;
+                return Some(true);
+            }
+            let (flags, _) = self.paint(ancestor, descendant)?;
+            Some(flags.get(&ancestor).is_some_and(|flag| flag & PARENT2 != 0))
+        }
+
+        /// Every ancestor of `id`, itself included.
+        fn ancestors(&self, id: git2::Oid) -> Option<Ancestors> {
+            let key = (self.own(), id);
+            if let Some(known) = ANCESTORS.with(|ancestors| ancestors.borrow().get(&key).cloned()) {
+                return Some(known);
+            }
+            let mut seen = HashSet::from([id]);
+            let mut pending = vec![id];
+            while let Some(next) = pending.pop() {
+                for parent in self.commit(next)?.parents.clone() {
+                    if seen.insert(parent) {
+                        pending.push(parent);
+                    }
+                }
+            }
+            let seen = Rc::new(seen);
+            ANCESTORS.with(|ancestors| ancestors.borrow_mut().insert(key, seen.clone()));
+            Some(seen)
+        }
+
+        /// The commits reachable from `to` and not from `from`.
+        fn only(&self, to: git2::Oid, from: git2::Oid) -> Option<HashSet<git2::Oid>> {
+            let excluded = self.ancestors(from)?;
+            let mut members = HashSet::new();
+            let mut pending = vec![to];
+            while let Some(next) = pending.pop() {
+                if excluded.contains(&next) || !members.insert(next) {
+                    continue;
+                }
+                pending.extend(self.commit(next)?.parents.iter().copied());
+            }
+            Some(members)
+        }
+
+        /// `rev-list --count a --not b`.
+        pub(super) fn count(&self, a: git2::Oid, b: git2::Oid) -> Option<usize> {
+            Some(self.only(a, b)?.len())
+        }
+
+        /// `from..to` newest first, where every commit in it has at most one parent:
+        /// the one order git's date walk can take over a single line of history.
+        pub(super) fn linear_range(
+            &self,
+            from: git2::Oid,
+            to: git2::Oid,
+        ) -> Option<Vec<git2::Oid>> {
+            self.commit(from)?;
+            let members = self.only(to, from)?;
+            let mut chain = Vec::with_capacity(members.len());
+            let mut next = Some(to);
+            while let Some(id) = next.filter(|id| members.contains(id)) {
+                let parsed = self.commit(id)?;
+                if parsed.parents.len() > 1 || chain.len() >= members.len() {
+                    return None;
+                }
+                chain.push(id);
+                next = parsed.parents.first().copied();
+            }
+            (chain.len() == members.len()).then_some(chain)
         }
     }
 }

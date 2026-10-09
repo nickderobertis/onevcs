@@ -18,13 +18,23 @@ struct Snapshot {
     #[cfg(unix)]
     common: PathBuf,
 }
+/// A repository, and the store it is lent where it is lent one.
+type Lending = (PathBuf, Option<PathBuf>);
 thread_local! {
     static OBJECT_REPOSITORIES: RefCell<HashMap<(PathBuf, Option<PathBuf>), git2::Repository>> = RefCell::new(HashMap::new());
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
+    /// One object store read on its own, by its path, for every repository that
+    /// borrows it.
+    static STORES: RefCell<HashMap<PathBuf, Option<git2::Repository>>> = RefCell::new(HashMap::new());
+    /// The stores a repository borrows, as its alternates name them.
+    static BORROWED: RefCell<HashMap<Lending, Vec<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
+    crate::native_objects::clear();
     SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().clear());
     OBJECT_REPOSITORIES.with(|repositories| repositories.borrow_mut().clear());
+    STORES.with(|stores| stores.borrow_mut().clear());
+    BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
 }
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
@@ -249,28 +259,108 @@ pub(crate) fn with_objects<T>(
         choose(repositories.get(&key)?)
     })
 }
+/// [`with_objects`], asked first of a store the repository borrows where every
+/// object `named` is in it.
+///
+/// A repository reads every object of the stores it borrows, so a walk from objects a
+/// borrowed store holds reaches the same objects there as in the repository — the
+/// parents a commit names are part of its content — and answers the same; and every
+/// clone of one identity borrows the same checkout's store, which read once for all of
+/// them is read once rather than once per clone. A store that cannot answer — it
+/// lacks a named object, or the walk meets one it does not hold — leaves the question
+/// to the repository itself.
+pub(crate) fn with_objects_holding<T>(
+    at: &Path,
+    borrowing: Option<&Path>,
+    named: &[git2::Oid],
+    choose: impl Fn(&git2::Repository) -> Option<T>,
+) -> Option<T> {
+    for store in borrowed(at, borrowing) {
+        let answer = with_store(&store, |repository| {
+            let odb = repository.odb().ok()?;
+            named
+                .iter()
+                .all(|id| odb.exists_ext(*id, git2::OdbLookupFlags::NO_REFRESH))
+                .then(|| choose(repository))
+                .flatten()
+        });
+        if answer.is_some() {
+            return answer;
+        }
+    }
+    with_objects(at, borrowing, choose)
+}
+/// One store's objects, and only its own and its alternates', read through a
+/// repository opened on nothing else, once within a read.
+pub(crate) fn with_store<T>(
+    store: &Path,
+    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+) -> Option<T> {
+    STORES.with(|stores| {
+        let mut stores = stores.borrow_mut();
+        let repository = stores
+            .entry(store.to_owned())
+            .or_insert_with(|| {
+                let odb = git2::Odb::new().ok()?;
+                odb.add_disk_alternate(store.to_str()?).ok()?;
+                git2::Repository::from_odb(odb).ok()
+            })
+            .as_ref()?;
+        choose(repository)
+    })
+}
+/// The stores `at` reads besides its own, by absolute path: its alternates, and the
+/// one it is lent.
+pub(crate) fn borrowed(at: &Path, borrowing: Option<&Path>) -> Vec<PathBuf> {
+    let key = (at.to_owned(), borrowing.map(Path::to_owned));
+    if let Some(known) = BORROWED.with(|borrowed| borrowed.borrow().get(&key).cloned()) {
+        return known;
+    }
+    let mut stores: Vec<PathBuf> = objects_dir(at)
+        .and_then(|objects| std::fs::read_to_string(objects.join("info/alternates")).ok())
+        .map(|raw| {
+            raw.lines()
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(lent) = borrowing {
+        if !stores.iter().any(|store| store == lent) {
+            stores.push(lent.to_owned());
+        }
+    }
+    BORROWED.with(|borrowed| borrowed.borrow_mut().insert(key, stores.clone()));
+    stores
+}
 fn with_object_repository<T>(
     at: &Path,
     env: &[(String, String)],
-    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+    named: &[git2::Oid],
+    choose: impl Fn(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
     read(at, |_| Some(()))?;
-    let borrowing = match env {
-        [] => None,
+    with_objects_holding(at, lent(env)?, named, choose)
+}
+/// The one store an environment lends, where it lends nothing else: `Some(None)` for
+/// none, `None` for an environment this does not read.
+fn lent(env: &[(String, String)]) -> Option<Option<&Path>> {
+    match env {
+        [] => Some(None),
         [(name, path)]
             if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
                 && Path::new(path).is_absolute()
                 && !path.contains([':', '"', '\n']) =>
         {
-            Some(Path::new(path))
+            Some(Some(Path::new(path)))
         }
-        _ => return None,
-    };
-    with_objects(at, borrowing, choose)
+        _ => None,
+    }
 }
 pub(crate) fn has_commit(at: &Path, env: &[(String, String)], name: &str) -> Option<bool> {
     crate::git::ObjectId::parse(name)?;
-    with_object_repository(at, env, |repository| {
+    let named = [git2::Oid::from_str(name).ok()?];
+    with_object_repository(at, env, &named, |repository| {
         let oid = git2::Oid::from_str(name).ok()?;
         let present = repository
             .find_object(oid, None)
@@ -287,7 +377,17 @@ pub(crate) fn is_ancestor(
 ) -> Option<bool> {
     crate::git::ObjectId::parse(ancestor)?;
     crate::git::ObjectId::parse(descendant)?;
-    with_object_repository(at, env, |repository| {
+    read(at, |_| Some(()))?;
+    let named = [
+        git2::Oid::from_str(ancestor).ok()?,
+        git2::Oid::from_str(descendant).ok()?,
+    ];
+    if let Some(answer) = lent(env)
+        .and_then(|borrowing| crate::native_objects::is_ancestor(at, borrowing, named[0], named[1]))
+    {
+        return Some(answer);
+    }
+    with_object_repository(at, env, &named, |repository| {
         let ancestor = repository
             .find_object(git2::Oid::from_str(ancestor).ok()?, None)
             .ok()?

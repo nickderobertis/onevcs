@@ -6,107 +6,153 @@
 
 #[cfg(unix)]
 mod unix {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::path::{Path, PathBuf};
 
     use serde::{Deserialize, Serialize};
 
     use crate::error::{self, Result};
     use crate::session::Selection;
-    use crate::workspace::{self, Record, Ref, Token};
+    use crate::workspace::{self, Record};
 
     /// The shape of the document below. A document of any other is rebuilt.
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
 
-    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Stamp {
-        device: u64,
-        inode: u64,
-        length: u64,
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        modified: (i64, i64),
-        changed: (i64, i64),
-    }
+    /// A record file's identity and contents, as its metadata says: device, inode,
+    /// length, mode, owner, group, and both timestamps to the nanosecond.
+    type Stamp = (u64, u64, u64, u32, u32, u32, i64, i64, i64, i64);
+
     /// What one record says about where a selection's rows are read, held to the
-    /// file it was read from.
-    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Hint {
-        stamp: Stamp,
-        token: Token,
-        identity: String,
-        branch: Ref,
-        labels: BTreeMap<String, String>,
-        clone: PathBuf,
-        execution_checkout: PathBuf,
-    }
-    impl Hint {
-        fn valid(&self, token: &str, stamp: &Stamp) -> bool {
-            self.token.to_string() == token
-                && self.stamp == *stamp
-                && crate::label::validate(&self.labels).is_ok()
-        }
-        fn of(record: &Record, stamp: Stamp) -> Self {
-            Self {
-                stamp,
-                token: record.token.clone(),
-                identity: record.identity.clone(),
-                branch: record.branch.clone(),
-                labels: record.labels.clone(),
-                clone: record.clone.clone(),
-                execution_checkout: record.execution_checkout.clone(),
-            }
-        }
-    }
+    /// file it was read from: its token, its stamp, then its identity, branch, clone,
+    /// execution checkout and labels — the values most records share being indexes
+    /// into the document's tables.
+    type Entry = (String, Stamp, usize, String, PathBuf, usize, usize);
 
     /// The whole document, held to one digest of its own text: a hint that was
     /// corrupted into another valid one would narrow a selection away from its rows.
-    #[derive(Serialize, Deserialize)]
+    #[derive(Default, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Index {
         version: u32,
         directory: PathBuf,
-        hints: BTreeMap<String, Hint>,
+        identities: Vec<String>,
+        checkouts: Vec<PathBuf>,
+        labels: Vec<BTreeMap<String, String>>,
+        hints: Vec<Entry>,
     }
 
-    fn load_index(path: &Path, directory: &Path) -> BTreeMap<String, Hint> {
-        let Some(raw) = std::fs::read_to_string(path).ok() else {
-            return BTreeMap::new();
-        };
-        let Some((digest, body)) = raw.split_once('\n') else {
-            return BTreeMap::new();
-        };
-        if crate::ids::digest(body) != digest {
-            return BTreeMap::new();
+    impl Index {
+        fn read(path: &Path, directory: &Path) -> Self {
+            let read = || {
+                let raw = std::fs::read_to_string(path).ok()?;
+                let (digest, body) = raw.split_once('\n')?;
+                if crate::ids::digest(body) != digest {
+                    return None;
+                }
+                let index: Self = serde_json::from_str(body).ok()?;
+                let bounded = index
+                    .hints
+                    .iter()
+                    .all(|(_, _, identity, _, _, checkout, labels)| {
+                        *identity < index.identities.len()
+                            && *checkout < index.checkouts.len()
+                            && *labels < index.labels.len()
+                    });
+                (index.version == VERSION && index.directory == directory && bounded)
+                    .then_some(index)
+            };
+            read().unwrap_or_default()
         }
-        match serde_json::from_str::<Index>(body) {
-            Ok(index) if index.version == VERSION && index.directory == directory => index.hints,
-            _ => BTreeMap::new(),
+
+        fn write(&self, path: &Path) {
+            let Some(parent) = path.parent() else {
+                return;
+            };
+            let Ok(body) = serde_json::to_string(self) else {
+                return;
+            };
+            let staged = parent.join(format!(".sessions-index.{}.tmp", crate::ids::unique()));
+            let _ = std::fs::create_dir_all(parent)
+                .and_then(|()| {
+                    std::fs::write(&staged, format!("{}\n{body}", crate::ids::digest(&body)))
+                })
+                .and_then(|()| std::fs::rename(&staged, path));
+            let _ = std::fs::remove_file(staged);
         }
     }
 
-    fn store_index(path: &Path, directory: &Path, hints: BTreeMap<String, Hint>) {
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        let index = Index {
-            version: VERSION,
-            directory: directory.to_owned(),
-            hints,
-        };
-        let Ok(body) = serde_json::to_string(&index) else {
-            return;
-        };
-        let staged = parent.join(format!(".sessions-index.{}.tmp", crate::ids::unique()));
-        let _ = std::fs::create_dir_all(parent)
-            .and_then(|()| {
-                std::fs::write(&staged, format!("{}\n{body}", crate::ids::digest(&body)))
-            })
-            .and_then(|()| std::fs::rename(&staged, path));
-        let _ = std::fs::remove_file(staged);
+    /// The hints of one read, every shared value interned once.
+    #[derive(Default)]
+    struct Tables {
+        identities: Vec<String>,
+        checkouts: Vec<PathBuf>,
+        labels: Vec<BTreeMap<String, String>>,
+        identity_at: HashMap<String, usize>,
+        checkout_at: HashMap<PathBuf, usize>,
+        labels_at: HashMap<BTreeMap<String, String>, usize>,
+    }
+
+    impl Tables {
+        fn of(index: &mut Index) -> Self {
+            let mut tables = Self {
+                identities: std::mem::take(&mut index.identities),
+                checkouts: std::mem::take(&mut index.checkouts),
+                labels: std::mem::take(&mut index.labels),
+                ..Self::default()
+            };
+            tables.identity_at = tables
+                .identities
+                .iter()
+                .enumerate()
+                .map(|(at, identity)| (identity.clone(), at))
+                .collect();
+            tables.checkout_at = tables
+                .checkouts
+                .iter()
+                .enumerate()
+                .map(|(at, checkout)| (checkout.clone(), at))
+                .collect();
+            tables.labels_at = tables
+                .labels
+                .iter()
+                .enumerate()
+                .map(|(at, labels)| (labels.clone(), at))
+                .collect();
+            tables
+        }
+
+        fn entry(&mut self, token: &str, stamp: Stamp, record: &Record) -> Entry {
+            let identity = *self
+                .identity_at
+                .entry(record.identity.clone())
+                .or_insert_with(|| {
+                    self.identities.push(record.identity.clone());
+                    self.identities.len() - 1
+                });
+            let checkout = *self
+                .checkout_at
+                .entry(record.execution_checkout.clone())
+                .or_insert_with(|| {
+                    self.checkouts.push(record.execution_checkout.clone());
+                    self.checkouts.len() - 1
+                });
+            let labels = *self
+                .labels_at
+                .entry(record.labels.clone())
+                .or_insert_with(|| {
+                    self.labels.push(record.labels.clone());
+                    self.labels.len() - 1
+                });
+            (
+                token.to_owned(),
+                stamp,
+                identity,
+                record.branch.to_string(),
+                record.clone.clone(),
+                checkout,
+                labels,
+            )
+        }
     }
 
     /// The records a selection's rows can be read from, in token order.
@@ -128,82 +174,110 @@ mod unix {
         }
         let directory = crate::home::sessions_dir()?;
         let path = crate::home::root()?.join("cache/recoverable/v1/sessions-index.json");
-        let old = load_index(&path, &directory);
+        let mut index = Index::read(&path, &directory);
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(_) => return workspace::all(),
         };
-        let mut known: Vec<(String, Hint)> = Vec::new();
-        let mut changed: Vec<(String, Stamp)> = Vec::new();
+        let mut listed = Vec::new();
         for entry in entries {
             let entry = entry.map_err(error::at("list the session records in", &directory))?;
-            let Some(token) = entry
+            if let Some(token) = entry
                 .file_name()
                 .to_string_lossy()
                 .strip_suffix(".json")
                 .map(str::to_owned)
-            else {
-                continue;
-            };
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(_) => return workspace::all(),
-            };
-            let stamp = Stamp {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                length: metadata.len(),
-                mode: metadata.mode(),
-                uid: metadata.uid(),
-                gid: metadata.gid(),
-                modified: (metadata.mtime(), metadata.mtime_nsec()),
-                changed: (metadata.ctime(), metadata.ctime_nsec()),
-            };
-            match old.get(&token).filter(|hint| hint.valid(&token, &stamp)) {
-                Some(hint) => known.push((token, hint.clone())),
-                None => changed.push((token, stamp)),
+            {
+                listed.push((token, entry));
+            }
+        }
+        // Each record is its own file, so they are stamped side by side.
+        let stamped = crate::vcs::concurrently(&listed, |(_, entry)| {
+            entry.metadata().ok().map(|metadata| {
+                (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.len(),
+                    metadata.mode(),
+                    metadata.uid(),
+                    metadata.gid(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
+            })
+        });
+        let Some(stamps) = stamped.into_iter().collect::<Option<Vec<Stamp>>>() else {
+            return workspace::all();
+        };
+        let mut tables = Tables::of(&mut index);
+        let well_labelled: Vec<bool> = tables
+            .labels
+            .iter()
+            .map(|labels| crate::label::validate(labels).is_ok())
+            .collect();
+        let mut known: HashMap<String, Entry> = std::mem::take(&mut index.hints)
+            .into_iter()
+            .map(|entry| (entry.0.clone(), entry))
+            .collect();
+        let remembered = known.len();
+        let mut fresh: Vec<Entry> = Vec::with_capacity(listed.len());
+        let mut changed: Vec<(String, Stamp)> = Vec::new();
+        for ((token, _), stamp) in listed.iter().zip(stamps) {
+            match known
+                .remove(token)
+                .filter(|entry| entry.1 == stamp && well_labelled[entry.6])
+            {
+                Some(entry) => fresh.push(entry),
+                None => changed.push((token.clone(), stamp)),
             }
         }
         // Raw validation precedes narrowing, including unrelated records. Each is
         // its own file, so they are read side by side, and the first refusal in
         // listing order is the one reported, as reading them in turn would.
         let read = crate::vcs::concurrently(&changed, |(token, _)| workspace::load(token));
-        let mut loaded = BTreeMap::new();
-        let mut fresh = BTreeMap::new();
+        let moved = !changed.is_empty() || fresh.len() != remembered;
+        let mut loaded = HashMap::new();
         for ((token, stamp), record) in changed.into_iter().zip(read) {
             let record = record?;
-            fresh.insert(token.clone(), Hint::of(&record, stamp));
+            fresh.push(tables.entry(&token, stamp, &record));
             loaded.insert(token, record);
         }
-        fresh.extend(known);
-        let named = |token: &Token| selection.sessions.iter().any(|asked| **token == *asked.0);
+        fresh.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let named = |token: &str| selection.sessions.iter().any(|asked| *asked.0 == *token);
+        let labelled: Vec<bool> = tables
+            .labels
+            .iter()
+            .map(|labels| crate::label::matches(labels, &selection.labels))
+            .collect();
         // The identities read before (a named token's included, so that `narrowed`
         // can tell a known token whose labels do not match from an unknown one), and
         // what the sessions the selection picks name inside them.
         let mut identities = BTreeSet::new();
         let mut branches = BTreeSet::new();
         let mut checkouts = BTreeSet::new();
-        for hint in fresh.values() {
-            let labelled = crate::label::matches(&hint.labels, &selection.labels);
-            if named(&hint.token) || (selection.sessions.is_empty() && labelled) {
-                identities.insert(hint.identity.as_str());
+        for (token, _, identity, branch, clone, checkout, labels) in &fresh {
+            let asked = named(token);
+            if asked || (selection.sessions.is_empty() && labelled[*labels]) {
+                identities.insert(*identity);
             }
-            if (selection.sessions.is_empty() || named(&hint.token)) && labelled {
-                branches.insert(&*hint.branch);
-                checkouts.insert(hint.clone.as_path());
-                checkouts.insert(hint.execution_checkout.as_path());
+            if (selection.sessions.is_empty() || asked) && labelled[*labels] {
+                branches.insert(branch.as_str());
+                checkouts.insert(clone.as_path());
+                checkouts.insert(tables.checkouts[*checkout].as_path());
             }
         }
         let wanted: Vec<&String> = fresh
             .iter()
-            .filter(|(_, hint)| {
-                named(&hint.token)
-                    || (identities.contains(hint.identity.as_str())
-                        && (branches.contains(&*hint.branch)
-                            || checkouts.contains(hint.clone.as_path())))
+            .filter(|(token, _, identity, branch, clone, _, _)| {
+                named(token)
+                    || (identities.contains(identity)
+                        && (branches.contains(branch.as_str())
+                            || checkouts.contains(clone.as_path())))
             })
-            .map(|(token, _)| token)
+            .map(|(token, ..)| token)
             .collect();
         let unread: Vec<&String> = wanted
             .iter()
@@ -218,18 +292,54 @@ mod unix {
             }))
             .collect();
         let mut records = Vec::with_capacity(wanted.len());
-        for token in wanted {
-            records.push(match loaded.remove(token) {
+        for token in &wanted {
+            records.push(match loaded.remove(*token) {
                 Some(record) => record,
                 None => reread
                     .remove(token)
                     .expect("every unread wanted record was read")?,
             });
         }
-        if fresh != old {
-            store_index(&path, &directory, fresh);
+        if moved {
+            store(&path, &directory, &tables, &fresh);
         }
         Ok(records)
+    }
+
+    /// Write the hints with only the table values they still use.
+    fn store(path: &Path, directory: &Path, tables: &Tables, fresh: &[Entry]) {
+        let mut index = Index {
+            version: VERSION,
+            directory: directory.to_owned(),
+            ..Index::default()
+        };
+        let mut identities: HashMap<usize, usize> = HashMap::new();
+        let mut checkouts: HashMap<usize, usize> = HashMap::new();
+        let mut labels: HashMap<usize, usize> = HashMap::new();
+        for (token, stamp, identity, branch, clone, checkout, labelled) in fresh {
+            let identity = *identities.entry(*identity).or_insert_with(|| {
+                index.identities.push(tables.identities[*identity].clone());
+                index.identities.len() - 1
+            });
+            let checkout = *checkouts.entry(*checkout).or_insert_with(|| {
+                index.checkouts.push(tables.checkouts[*checkout].clone());
+                index.checkouts.len() - 1
+            });
+            let labelled = *labels.entry(*labelled).or_insert_with(|| {
+                index.labels.push(tables.labels[*labelled].clone());
+                index.labels.len() - 1
+            });
+            index.hints.push((
+                token.clone(),
+                *stamp,
+                identity,
+                branch.clone(),
+                clone.clone(),
+                checkout,
+                labelled,
+            ));
+        }
+        index.write(path);
     }
 }
 #[cfg(unix)]

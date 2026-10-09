@@ -2311,12 +2311,12 @@ pub(crate) fn recorded_streams_about(
     let root = crate::home::root()
         .ok()
         .map(|root| root.join("cache/recoverable/v1"));
-    if let Some(lookup) = root
-        .as_deref()
-        .and_then(|root| streams_index::Lookup::read(root, &directory))
-        .filter(|lookup| lookup.listed == Some(listed))
-    {
-        return Ok(lookup.recorded(&directory, wanted, &named, about));
+    if let Some(recorded) = root.as_deref().and_then(|root| {
+        streams_index::Lookup::read(root, &directory)
+            .filter(|lookup| lookup.listed == Some(listed))?
+            .recorded(root, &directory, wanted, &named, &about)
+    }) {
+        return Ok(recorded);
     }
     streams_index::relist(&directory, root.as_deref(), &listed, about)
 }
@@ -2333,8 +2333,8 @@ mod streams_index {
     use super::{read_stream, recorded_streams, Recorded};
     use crate::error::Result;
 
-    /// The shape of both documents. A document of any other is rebuilt.
-    const VERSION: u32 = 2;
+    /// The shape of every document here. A document of any other is rebuilt.
+    const VERSION: u32 = 3;
 
     /// How recently the directory may have moved and still stand for its listing.
     /// A filesystem stamps a directory at its own granularity, so a change made in
@@ -2442,12 +2442,57 @@ mod streams_index {
         /// The directory as the listing found it, or nothing where it had moved too
         /// recently to stand for it.
         pub(super) listed: Option<Listed>,
-        /// The streams that named both, by what they named.
-        attributed: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+        /// Each identity's [`Shard`], by the digest of the document it was written
+        /// as: a shard of any other listing is not this one's.
+        shards: BTreeMap<String, String>,
+        /// Every stream a branch-keyed verb writes under a name of its own spelling,
+        /// which a read asks for by name.
+        keyed: BTreeSet<String>,
         /// The streams a later event can still attribute, with what they named.
         open: BTreeMap<String, Attributed>,
         /// The streams no stamp or no whole reading stands for, read every time.
         unindexed: Vec<String>,
+    }
+
+    /// The streams that named one identity and a branch, by the branch.
+    #[derive(Serialize, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct Shard {
+        version: u32,
+        identity: String,
+        branches: BTreeMap<String, Vec<String>>,
+    }
+
+    /// The prefixes of the names branch-keyed verbs write their streams under.
+    const KEYED: [&str; 3] = ["publish-branch-", "recover-", "preserve-"];
+
+    fn shard_path(root: &Path, identity: &str) -> PathBuf {
+        root.join("streams-index")
+            .join(format!("{}.json", crate::ids::digest(identity)))
+    }
+
+    /// A shard and the digest it was written under, where it is whole.
+    fn read_shard(path: &Path) -> Option<(String, Shard)> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let (digest, body) = raw.split_once('\n')?;
+        (crate::ids::digest(body) == digest)
+            .then(|| serde_json::from_str::<Shard>(body).ok())
+            .flatten()
+            .filter(|shard| shard.version == VERSION)
+            .map(|shard| (digest.to_owned(), shard))
+    }
+
+    /// Write a shard, and the digest a lookup records it by.
+    fn write_shard(path: &Path, shard: &Shard) -> Option<String> {
+        let body = serde_json::to_string(shard).ok()?;
+        let digest = crate::ids::digest(&body);
+        let parent = path.parent()?;
+        let staged = parent.join(format!(".shard.{}.tmp", crate::ids::unique()));
+        let written = std::fs::create_dir_all(parent)
+            .and_then(|()| std::fs::write(&staged, format!("{digest}\n{body}")))
+            .and_then(|()| std::fs::rename(&staged, path));
+        let _ = std::fs::remove_file(staged);
+        written.ok().map(|()| digest)
     }
 
     /// One document, held to one digest of its own text.
@@ -2486,30 +2531,61 @@ mod streams_index {
                 .filter(|lookup| lookup.version == VERSION && lookup.directory == directory)
         }
 
-        /// The streams about the selection, read from the directory this stands for.
+        /// The streams about the selection, read from the directory this stands for,
+        /// or nothing where a shard it names is not the one it was written with.
         pub(super) fn recorded(
             &self,
+            root: &Path,
             directory: &Path,
             wanted: &BTreeSet<(String, String)>,
             named: &BTreeSet<String>,
-            about: impl Fn(Option<&String>, Option<&String>, &str) -> bool + Sync,
-        ) -> Vec<Recorded> {
+            about: &(impl Fn(Option<&String>, Option<&String>, &str) -> bool + Sync),
+        ) -> Option<Vec<Recorded>> {
+            let mut shards: BTreeMap<&str, Shard> = BTreeMap::new();
+            for (identity, _) in wanted {
+                if shards.contains_key(identity.as_str()) {
+                    continue;
+                }
+                let Some(digest) = self.shards.get(identity) else {
+                    continue;
+                };
+                let (written, shard) = read_shard(&shard_path(root, identity))?;
+                if written != *digest || shard.identity != *identity {
+                    return None;
+                }
+                shards.insert(identity, shard);
+            }
             let mut candidates: BTreeSet<&str> = BTreeSet::new();
             for (identity, branch) in wanted {
-                if let Some(tokens) = self
-                    .attributed
-                    .get(identity)
-                    .and_then(|branches| branches.get(branch))
+                if let Some(tokens) = shards
+                    .get(identity.as_str())
+                    .and_then(|shard| shard.branches.get(branch))
                 {
                     candidates.extend(tokens.iter().map(String::as_str));
                 }
             }
             // A token a wanted branch is read under by name is a stream only where
-            // the directory holds one, and the listing this stands for says which.
+            // the directory holds one, and the listing this stands for says which:
+            // every branch-keyed name it holds, every stream of the identities read
+            // above, and the streams it could not attribute. Any other is asked of
+            // the directory itself.
+            let held: std::collections::HashSet<&str> = shards
+                .values()
+                .flat_map(|shard| shard.branches.values().flatten())
+                .chain(self.open.keys())
+                .chain(&self.unindexed)
+                .map(String::as_str)
+                .collect();
             for token in named {
-                if crate::ids::is_safe_name(token)
-                    && std::fs::symlink_metadata(directory.join(format!("{token}.ndjson"))).is_ok()
-                {
+                let present = if KEYED.iter().any(|prefix| token.starts_with(prefix)) {
+                    self.keyed.contains(token)
+                } else {
+                    held.contains(token.as_str())
+                        || (crate::ids::is_safe_name(token)
+                            && std::fs::symlink_metadata(directory.join(format!("{token}.ndjson")))
+                                .is_ok())
+                };
+                if present {
                     candidates.insert(token);
                 }
             }
@@ -2532,16 +2608,18 @@ mod streams_index {
                 record.gaps = !gap_notes.is_empty();
                 record
             });
-            parsed
-                .into_iter()
-                .filter(|record| {
-                    about(
-                        record.identity.as_ref(),
-                        record.branch.as_ref(),
-                        &record.token,
-                    )
-                })
-                .collect()
+            Some(
+                parsed
+                    .into_iter()
+                    .filter(|record| {
+                        about(
+                            record.identity.as_ref(),
+                            record.branch.as_ref(),
+                            &record.token,
+                        )
+                    })
+                    .collect(),
+            )
         }
     }
 
@@ -2663,15 +2741,19 @@ mod streams_index {
             version: VERSION,
             directory: directory.to_owned(),
             listed: settled.then_some(*listed),
-            attributed: BTreeMap::new(),
+            shards: BTreeMap::new(),
+            keyed: BTreeSet::new(),
             open: BTreeMap::new(),
             unindexed,
         };
         lookup.unindexed.sort();
+        let mut attributed: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         for (token, entry) in &fresh {
+            if KEYED.iter().any(|prefix| token.starts_with(prefix)) {
+                lookup.keyed.insert(token.clone());
+            }
             match (&entry.identity, &entry.branch) {
-                (Some(identity), Some(branch)) => lookup
-                    .attributed
+                (Some(identity), Some(branch)) => attributed
                     .entry(identity.clone())
                     .or_default()
                     .entry(branch.clone())
@@ -2682,6 +2764,38 @@ mod streams_index {
                 }
             }
         }
+        lookup.keyed.extend(
+            lookup
+                .unindexed
+                .iter()
+                .filter(|token| KEYED.iter().any(|prefix| token.starts_with(prefix)))
+                .cloned(),
+        );
+        // Each identity's shard is written only where it is not the one the last
+        // listing wrote, and the lookup records the digest of the one it stands for.
+        let previous = Lookup::read(root, directory);
+        for (identity, branches) in attributed {
+            let shard = Shard {
+                version: VERSION,
+                identity: identity.clone(),
+                branches,
+            };
+            let path = shard_path(root, &identity);
+            let digest = match previous
+                .as_ref()
+                .and_then(|previous| previous.shards.get(&identity))
+                .zip(read_shard(&path))
+            {
+                Some((recorded, (written, kept))) if *recorded == written && kept == shard => {
+                    Some(written)
+                }
+                _ => write_shard(&path, &shard),
+            };
+            let Some(digest) = digest else {
+                return Ok(kept);
+            };
+            lookup.shards.insert(identity, digest);
+        }
         let stamps = Stamps {
             version: VERSION,
             directory: directory.to_owned(),
@@ -2690,7 +2804,7 @@ mod streams_index {
         if stamps.streams != index {
             write_document(&root.join("streams-stamps.json"), &stamps);
         }
-        if Lookup::read(root, directory).as_ref() != Some(&lookup) {
+        if previous.as_ref() != Some(&lookup) {
             write_document(&root.join("streams-index.json"), &lookup);
         }
         Ok(kept)
