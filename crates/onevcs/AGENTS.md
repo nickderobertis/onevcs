@@ -657,6 +657,13 @@ this crate slower, never wrong. The fast path exists because reading a few hundr
 session records used to validate a few hundred distinct names, and a filtered
 `recoverable` would spend a process on each before opening a single checkout.
 
+The proof cache's (`recovery_cache.rs`) holds that a git read which failed while an
+object was missing is never stored, so it is asked again once the object is back.
+A journey cannot hold that: which proof a report reads first after the object returns
+decides whether a stored failure would ever be consulted, and an unrelated proof's
+write retires the generation the failure was stored under. So it asks one read,
+through the real `git::run` and real git, on both sides of the absence.
+
 `tests/e2e/honesty.rs`, `tests/e2e/seam.rs`, and `tests/e2e/library.rs` are the
 modules that do not spawn the binary, and the reason is the thing they test: the
 library surface — `run_with`, and the typed entry points beside it — is reached by

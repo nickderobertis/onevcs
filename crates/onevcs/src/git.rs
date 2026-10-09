@@ -1,7 +1,7 @@
 //! Real git, and the bound every call to it carries.
 //!
-//! Every operation shells out to the `git` binary, so the lifecycle is exercised
-//! against genuine git rather than against a library's idea of it. Two things are
+//! Mutations and unsupported reads use the `git` binary. Recovery can read ordinary
+//! refs in process and reuse immutable reads under complete context guards. Two things are
 //! non-negotiable here and are the reason this is one module rather than a call at
 //! each site:
 //!
@@ -30,6 +30,49 @@ use std::time::{Duration, Instant};
 use crate::error::{self, Error, Result};
 use crate::host::Sha;
 use crate::{ids, lock};
+
+/// Resolve Git once, preserving the first executable on PATH (including caller
+/// shims). On failure keep the original command so `unstarted` reports the same
+/// missing-Git error as before.
+pub(crate) fn git_program() -> &'static std::ffi::OsStr {
+    static PROGRAM: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            std::env::var_os("PATH")
+                .and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .flat_map(|directory| {
+                            #[cfg(windows)]
+                            let names = ["git.exe", "git.cmd", "git.bat", "git"];
+                            #[cfg(not(windows))]
+                            let names = ["git"];
+                            names.into_iter().map(move |name| directory.join(name))
+                        })
+                        .find(|path| executable(path))
+                        .and_then(|path| std::path::absolute(path).ok())
+                })
+                .map_or_else(|| "git".into(), PathBuf::into_os_string)
+        })
+        .as_os_str()
+}
+
+fn executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
 
 /// Bound, in seconds, on a command that runs no repository hook.
 pub const TIMEOUT_ENV: &str = "ONEVCS_GIT_TIMEOUT";
@@ -165,6 +208,14 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
+    let reusable = crate::recovery_cache::query(args, cwd, env);
+    if let Some(output) = reusable
+        .as_ref()
+        .and_then(crate::recovery_cache::Query::read)
+    {
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
     // hand each hook the environment of the tree it starts in — see [`HookShims`].
@@ -174,7 +225,7 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
-    let mut command = Command::new("git");
+    let mut command = Command::new(git_program());
     command.args(args);
     let ran = bounded(
         command,
@@ -200,6 +251,9 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
+    if let Some(reusable) = reusable {
+        reusable.write(&output);
+    }
     reads::remember(args, cwd, env, &output);
     Ok(output)
 }
@@ -263,6 +317,7 @@ mod reads {
             depth.set(depth.get() - 1);
             if depth.get() == 0 {
                 MEMO.with(|memo| memo.borrow_mut().clear());
+                crate::native_refs::clear();
                 SETTLED.with(|settled| settled.borrow_mut().clear());
             }
         });
@@ -270,6 +325,7 @@ mod reads {
 
     pub(super) fn bypass<T>(read: impl FnOnce() -> T) -> T {
         let before = BYPASSED.with(|bypassed| bypassed.replace(true));
+        crate::recovery_cache::clear();
         let answered = read();
         BYPASSED.with(|bypassed| bypassed.set(before));
         answered
@@ -304,6 +360,9 @@ mod reads {
     /// worth remembering, or a write, and the second empties the memo.
     fn remembered(args: &[&str]) -> bool {
         match args.first().copied() {
+            Some("--exec-path") => args.len() == 1,
+            Some("config") => args == ["config", "--null", "--list", "--show-origin"],
+            Some("remote") => args.get(1) == Some(&"get-url"),
             Some("cat-file") => args.get(1) == Some(&"-e"),
             Some(
                 "rev-parse" | "show-ref" | "for-each-ref" | "rev-list" | "merge-base" | "log"
@@ -341,6 +400,9 @@ mod reads {
         }
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
+            if args.first() != Some(&"status") {
+                crate::recovery_cache::clear();
+            }
         }
         None
     }
@@ -1036,12 +1098,13 @@ pub fn check_bounds() -> Result<()> {
 /// its remote-tracking refs are frozen at the moment it was cut, but its lender
 /// keeps fetching, and the objects come with the alternates.
 pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
-    run_in(
-        cwd.into(),
-        &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)],
-    )
-    .map(|out| out.ok())
-    .unwrap_or(false)
+    let cwd = cwd.into();
+    if let Some(answer) = crate::native_refs::has_commit(cwd.path(), &cwd.env(), &sha.0) {
+        return answer;
+    }
+    run_in(cwd, &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)])
+        .map(|out| out.ok())
+        .unwrap_or(false)
 }
 
 /// Whether some ref of this repository already reaches `commit`, with the whole
@@ -1074,6 +1137,9 @@ pub fn refs_reach(cwd: &Path, commit: &str) -> bool {
 
 /// A ref's commit SHA, or `None` when the repository does not have it.
 pub fn tip(cwd: &Path, reference: &str) -> Option<String> {
+    if let Some(tip) = crate::native_refs::tip(cwd, reference) {
+        return tip;
+    }
     run(
         &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
         Some(cwd),
@@ -1177,6 +1243,9 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
+    if let Some(found) = crate::native_refs::is_repo(path) {
+        return found;
+    }
     run(&["rev-parse", "--is-inside-work-tree"], Some(path))
         .map(|out| out.ok() && out.trimmed() == "true")
         .unwrap_or(false)
@@ -1197,7 +1266,10 @@ pub fn common_dir(cwd: &Path) -> Result<PathBuf> {
 
 /// The URL configured for a remote.
 pub fn remote_url(cwd: &Path, remote: &str) -> Result<String> {
-    let value = checked(&["remote", "get-url", remote], Some(cwd))?.trimmed();
+    let value = match crate::native_refs::remote_url(cwd, remote) {
+        Some(value) => value,
+        None => checked(&["remote", "get-url", remote], Some(cwd))?.trimmed(),
+    };
     if !is_usable_remote(&value) {
         return Err(Error::Invalid {
             reason: format!("git remote {remote:?} returned an unusable URL"),
@@ -1223,6 +1295,9 @@ pub fn is_usable_remote(value: &str) -> bool {
 
 /// Whether a remote is configured at all.
 pub fn has_remote(cwd: &Path, remote: &str) -> bool {
+    if crate::native_refs::remote_url(cwd, remote).is_some() {
+        return true;
+    }
     run(&["remote", "get-url", remote], Some(cwd))
         .map(|out| out.ok())
         .unwrap_or(false)
@@ -1439,6 +1514,9 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 /// The object store a checkout keeps its own history in, which is what another
 /// repository is given to read when it is asked about a commit it never fetched.
 pub fn objects_dir(cwd: &Path) -> Result<PathBuf> {
+    if let Some(objects) = crate::native_refs::objects_dir(cwd) {
+        return Ok(objects);
+    }
     git_owned_path(cwd, "objects")
 }
 
@@ -1670,6 +1748,16 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
 
 /// The branch `<remote>/HEAD` names, when it names one that is still there.
 fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    let reference = format!("refs/remotes/{remote}/HEAD");
+    if let Some(target) = crate::native_refs::symbolic(cwd, &reference) {
+        return Ok(target
+            .and_then(|target| {
+                target
+                    .strip_prefix(&format!("refs/remotes/{remote}/"))
+                    .map(str::to_owned)
+            })
+            .filter(|branch| ref_exists(cwd, &format!("refs/remotes/{remote}/{branch}"))));
+    }
     let named = run(
         &[
             "symbolic-ref",
@@ -1707,6 +1795,9 @@ fn advertised_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
 
 /// Whether a fully spelled ref exists.
 pub fn ref_exists(cwd: &Path, reference: &str) -> bool {
+    if let Some(tip) = crate::native_refs::tip(cwd, reference) {
+        return tip.is_some();
+    }
     run(&["show-ref", "--verify", "--quiet", reference], Some(cwd))
         .map(|out| out.ok())
         .unwrap_or(false)
@@ -1798,6 +1889,9 @@ pub fn committer_date<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Option<Str
 
 /// Local branch names, in git's deterministic ref order.
 pub fn branches(cwd: &Path) -> Result<Vec<String>> {
+    if let Some(heads) = crate::native_refs::heads(cwd) {
+        return Ok(heads.into_iter().map(|(branch, _)| branch).collect());
+    }
     Ok(checked(
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
         Some(cwd),
@@ -1816,6 +1910,9 @@ pub fn branches(cwd: &Path) -> Result<Vec<String>> {
 /// branch the remote's default is, not a branch of its own, and a caller asking
 /// which names are taken there would otherwise be told one that is not.
 pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
+    if let Some(heads) = crate::native_refs::remote_heads(cwd, remote) {
+        return Ok(heads.into_keys().collect());
+    }
     Ok(checked(
         &[
             "for-each-ref",
@@ -1858,29 +1955,36 @@ pub fn unpublished_branches_among(
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
 ) -> Result<Vec<(String, String)>> {
-    let listing = checked(
-        &[
-            "for-each-ref",
-            "--format=%(refname)%00%(refname:short)%00%(objectname)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ],
-        Some(cwd),
-    )?;
-    let mut heads: Vec<(String, String)> = Vec::new();
-    let mut origin_tips: BTreeSet<String> = BTreeSet::new();
-    for line in listing.stdout.lines() {
-        let mut fields = line.split('\0');
-        let (Some(full), Some(short), Some(tip)) = (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if full.starts_with("refs/heads/") {
-            heads.push((short.to_owned(), tip.to_owned()));
-        } else if full.starts_with("refs/remotes/origin/") {
-            origin_tips.insert(tip.to_owned());
+    let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
+    let (heads, origin_tips) = if let Some((heads, origin)) = native {
+        (heads, origin)
+    } else {
+        let listing = checked(
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)",
+                "refs/heads",
+                "refs/remotes/origin",
+            ],
+            Some(cwd),
+        )?;
+        let mut heads: Vec<(String, String)> = Vec::new();
+        let mut origin_tips: BTreeSet<String> = BTreeSet::new();
+        for line in listing.stdout.lines() {
+            let mut fields = line.split('\0');
+            let (Some(full), Some(short), Some(tip)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if full.starts_with("refs/heads/") {
+                heads.push((short.to_owned(), tip.to_owned()));
+            } else if full.starts_with("refs/remotes/origin/") {
+                origin_tips.insert(tip.to_owned());
+            }
         }
-    }
+        (heads, origin_tips)
+    };
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -1893,7 +1997,7 @@ pub fn unpublished_branches_among(
         if origin_tips.contains(&tip) {
             continue;
         }
-        if unpublished_ahead(cwd, &branch, &[])? > 0 {
+        if unpublished_ahead(cwd, &tip, &[])? > 0 {
             unpublished.push((branch, tip));
         }
     }
@@ -1979,14 +2083,33 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
         .copied()
         .filter(|name| tip(cwd, name).is_some())
         .collect();
-    let mut args = vec![
-        "rev-list",
-        "--count",
-        reference,
-        "--not",
-        "--remotes=origin",
-    ];
-    args.extend_from_slice(&held);
+    let native = crate::native_refs::remote_tips(cwd, "origin").zip(
+        if ObjectId::parse(reference).is_some() {
+            Some(reference.to_owned())
+        } else {
+            crate::native_refs::tip(cwd, reference).flatten()
+        },
+    );
+    let immutable_query = native.is_some();
+    let immutable;
+    let mut args = if let Some((mut origin, tip)) = native {
+        origin.extend(held.iter().filter_map(|name| crate::git::tip(cwd, name)));
+        immutable = std::iter::once(tip).chain(origin).collect::<Vec<_>>();
+        let mut args = vec!["rev-list", "--count", immutable[0].as_str(), "--not"];
+        args.extend(immutable[1..].iter().map(String::as_str));
+        args
+    } else {
+        vec![
+            "rev-list",
+            "--count",
+            reference,
+            "--not",
+            "--remotes=origin",
+        ]
+    };
+    if !immutable_query {
+        args.extend_from_slice(&held);
+    }
     args.push("--");
     let counted = run(&args, Some(cwd))?;
     if !counted.ok() {
@@ -2015,37 +2138,22 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     })
 }
 
-/// Whether a name is one git accepts that this crate can recognise without asking.
-///
-/// Deliberately **narrower** than git's own grammar, and that asymmetry is the whole
-/// safety of it: it accepts only names made of ASCII letters, digits, `_`, `-`, `.`
-/// and `/`, with none of the component shapes git refuses — no empty component, none
-/// beginning with `.`, none ending in `.` or `.lock`, and no `..` anywhere. Every
-/// name it accepts is therefore one `git check-ref-format refs/heads/<name>` accepts,
-/// and a name it does not recognise is not refused here: it falls through to git,
-/// which remains the thing that decides. So a git whose grammar moves can only make
-/// this *slower*, never wrong — and `the_fast_path_accepts_only_names_git_accepts`
-/// beside it holds the subset against the git this suite runs on.
-///
-/// It exists because a listing reads the session records, every record validates the
-/// two names it carries, and a host with a few hundred records has a few hundred
-/// distinct ones — so "once per distinct name" is still a few hundred processes per
-/// read, and a filtered read that opens two checkouts would spend them all before
-/// looking at either.
-fn plainly_a_ref_name(branch: &str) -> bool {
-    if branch.is_empty() || branch.starts_with('/') || branch.ends_with('/') {
-        return false;
-    }
-    branch.split('/').all(|component| {
-        !component.is_empty()
-            && !component.starts_with('.')
-            && !component.ends_with('.')
-            && !component.ends_with(".lock")
-            && !component.contains("..")
-            && component
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    })
+/// Git's full-ref grammar applied to a branch suffix. Unicode and punctuation
+/// are valid names too; only Git's forbidden bytes and component shapes reject.
+/// This validates names, never raw ref values or repository layout.
+pub(crate) fn plainly_a_ref_name(branch: &str) -> bool {
+    !branch.is_empty()
+        && !branch.ends_with('.')
+        && !branch.contains("..")
+        && !branch.contains("@{")
+        && !branch.bytes().any(|byte| {
+            byte <= b' '
+                || byte == 0x7f
+                || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+        })
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// Whether a branch name is one git will accept.
@@ -2137,8 +2245,13 @@ pub fn log_messages<'a>(
     base: &str,
     branch: &str,
 ) -> Result<Vec<CommitMessage>> {
+    let cwd = cwd.into();
+    let base_tip = crate::native_refs::tip_with_objects(cwd.at, base, cwd.borrowing).flatten();
+    let branch_tip = crate::native_refs::tip_with_objects(cwd.at, branch, cwd.borrowing).flatten();
+    let base = base_tip.as_deref().unwrap_or(base);
+    let branch = branch_tip.as_deref().unwrap_or(branch);
     let output = checked_in(
-        cwd.into(),
+        cwd,
         &[
             "log",
             "--reverse",
@@ -2257,6 +2370,8 @@ pub struct Shape {
 // `%T` is an object id or its `%cI` an ISO 8601 date would be this module checking
 // git's arithmetic, and the values are compared against each other rather than parsed.
 pub fn shape_of(cwd: &Path, reference: &str) -> Result<Shape> {
+    let immutable = crate::native_refs::tip(cwd, reference).flatten();
+    let reference = immutable.as_deref().unwrap_or(reference);
     let printed = checked(
         &[
             "log",
@@ -2293,10 +2408,13 @@ pub fn is_ancestor<'a>(
     ancestor: &str,
     descendant: &str,
 ) -> Result<bool> {
-    let output = run_in(
-        cwd.into(),
-        &["merge-base", "--is-ancestor", ancestor, descendant],
-    )?;
+    let cwd = cwd.into();
+    if let Some(answer) =
+        crate::native_refs::is_ancestor(cwd.path(), &cwd.env(), ancestor, descendant)
+    {
+        return Ok(answer);
+    }
+    let output = run_in(cwd, &["merge-base", "--is-ancestor", ancestor, descendant])?;
     match output.status {
         0 => Ok(true),
         1 => Ok(false),
@@ -2486,6 +2604,22 @@ pub(crate) fn already_integrates<'a>(
     commit: &str,
 ) -> Result<bool> {
     let cwd = cwd.into();
+    let reusable = crate::recovery_cache::query(
+        &["merge-tree", "--write-tree", base, commit],
+        Some(cwd.path()),
+        &cwd.env(),
+    );
+    if let Some(output) = reusable
+        .as_ref()
+        .and_then(crate::recovery_cache::Query::read)
+    {
+        if output.status == 1 {
+            return Ok(false);
+        }
+        let tree =
+            checked_in(cwd, &["rev-parse", "--verify", &format!("{base}^{{tree}}")])?.trimmed();
+        return Ok(output.stdout.lines().next() == Some(tree.as_str()));
+    }
     // `merge-tree --write-tree` writes the synthetic result into the object store.
     // A report is read-only, so isolate those objects in a scratch store and read
     // the repository's real objects through Git's alternates mechanism.
@@ -2505,6 +2639,9 @@ pub(crate) fn already_integrates<'a>(
         Some(cwd.path()),
         &env,
     )?;
+    if let Some(reusable) = reusable {
+        reusable.write(&merged);
+    }
     match merged.status {
         // The first line is the tree the merge would write. Messages, when there
         // are any, follow it; only a successful, no-op merge can establish that
@@ -2646,6 +2783,8 @@ pub fn rebase_onto(cwd: &Path, onto: &str, upstream: &str, branch: &str) -> Resu
 
 /// When a ref's commit was made, as whole seconds since the epoch.
 pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
+    let immutable = crate::native_refs::tip(cwd, reference).flatten();
+    let reference = immutable.as_deref().unwrap_or(reference);
     run(&["log", "-1", "--format=%ct", reference, "--"], Some(cwd))
         .ok()
         .filter(Output::ok)
@@ -3444,6 +3583,12 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
         return LocalTip::Absent;
     }
     let reference = format!("refs/heads/{branch}");
+    if let Some(tip) = crate::native_refs::raw_tip(cwd, &reference) {
+        return match tip.and_then(|tip| ObjectId::parse(&tip)) {
+            Some(tip) => LocalTip::At(tip),
+            None => LocalTip::Absent,
+        };
+    }
     match run(
         &["for-each-ref", "--format=%(objectname)", &reference],
         Some(cwd),
@@ -3468,6 +3613,9 @@ pub fn local_tip(cwd: &Path, branch: &str) -> LocalTip {
 /// Every local branch of a repository with the commit it stands at, in git's ref
 /// order.
 pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
+    if let Some(heads) = crate::native_refs::heads(cwd) {
+        return Ok(heads);
+    }
     Ok(checked(
         &[
             "for-each-ref",
@@ -3486,6 +3634,9 @@ pub fn heads(cwd: &Path) -> Result<Vec<(String, String)>> {
 /// Every remote-tracking branch of one remote with the commit it stands at, by the
 /// name the remote gives it; `HEAD` is not a branch and is left out.
 pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>> {
+    if let Some(heads) = crate::native_refs::remote_heads(cwd, remote) {
+        return Ok(heads);
+    }
     let prefix = format!("refs/remotes/{remote}/");
     Ok(checked(
         &[
@@ -3506,6 +3657,9 @@ pub fn remote_heads(cwd: &Path, remote: &str) -> Result<BTreeMap<String, String>
 /// Every worktree of a repository — its own and every linked one — with the branch
 /// each has checked out, or `None` for one that is detached or bare.
 pub fn worktrees(cwd: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    if let Some(worktrees) = crate::native_refs::worktrees(cwd) {
+        return Ok(worktrees);
+    }
     let listing = checked(&["worktree", "list", "--porcelain", "-z"], Some(cwd))?;
     let mut found = Vec::new();
     let mut path: Option<PathBuf> = None;
@@ -3643,6 +3797,8 @@ pub fn commit_message<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<Opt
 /// The newest commit `rev` reaches whose message carries `needle` verbatim, where
 /// one does.
 pub fn first_commit_mentioning(cwd: &Path, rev: &str, needle: &str) -> Option<String> {
+    let immutable = crate::native_refs::tip(cwd, rev).flatten();
+    let rev = immutable.as_deref().unwrap_or(rev);
     run(
         &[
             "log",
@@ -3879,6 +4035,10 @@ mod ref_name_tests {
         "trailing/",
         "/leading",
         "unicode/ünïcøde",
+        "标点/分支.v1",
+        "punct/one!two#three$four%five&six(seven)+eight=nine;ten,eleven",
+        "unicode/space\u{a0}inside",
+        "dots/interior.part/last",
         "control\u{1}char",
     ];
 
@@ -3914,6 +4074,10 @@ mod ref_name_tests {
             "feature/x",
             "onevcs/s-9fa99cfb80da",
             "worktree-agent-7",
+            "unicode/ünïcøde",
+            "标点/分支.v1",
+            "punct/one!two#three$four%five&six(seven)+eight=nine;ten,eleven",
+            "dots/interior.part/last",
         ] {
             assert!(
                 plainly_a_ref_name(ordinary),

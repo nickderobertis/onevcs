@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
+    },
+    "scenario": {
+      "$ref": "#/$defs/Scenario"
+    },
+    "workloads": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Workload"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "preparation_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "total_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "load1": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "scenario",
+    "workloads",
+    "preparation_ms",
+    "total_ms",
+    "load1"
+  ],
+  "$defs": {
+    "Build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ]
+    },
+    "Scenario": {
+      "type": "string",
+      "enum": [
+        "launcher-decision"
+      ]
+    },
+    "Workload": {
+      "type": "object",
+      "properties": {
+        "scale": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "class_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "cold": {
+          "$ref": "#/$defs/Sample"
+        },
+        "warm": {
+          "$ref": "#/$defs/Sample"
+        },
+        "cold_git": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "warm_git": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "counted_verdict_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scale",
+        "shape",
+        "class_counts",
+        "cold",
+        "warm",
+        "cold_git",
+        "warm_git",
+        "counted_verdict_sha256"
+      ]
+    },
+    "Sample": {
+      "type": "object",
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "load1": {
+          "type": "number",
+          "format": "double"
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "verdict_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "load1",
+        "rows",
+        "verdict_sha256"
+      ]
+    }
+  },
+  "x-workloads": {
+    "1": [
+      20,
+      371,
+      41,
+      2308
+    ],
+    "10": [
+      200,
+      3714,
+      414,
+      23085
+    ]
+  }
+}

@@ -118,7 +118,9 @@ pub trait Vcs {
     /// both. So every implementation narrows identically, and what an override buys is
     /// not a different answer but a cheaper one: an implementation that knows *where*
     /// it looks can decline to look, which is what [`Git`] does with it. A selection
-    /// that asks nothing is the whole report, which is what every caller before this
+    /// that asks nothing is the whole report at `Detail::Full`. `Detail::Decision`
+    /// retains identical rows and semantic fields, including `tip` and the recovery
+    /// command; only presentation fields may be omitted. This is what every caller before this
     /// existed asked for.
     fn recoverable_matching(
         &self,
@@ -129,6 +131,8 @@ pub trait Vcs {
     }
 
     /// [`preserved`](Self::preserved), narrowed the same way and for the same reason.
+    /// `Selection::detail` changes presentation cost only: both detail modes keep
+    /// the same rows, tip, landing evidence, holds, retirement and recovery command.
     fn preserved_matching(&self, scope: Scope, selection: &Selection) -> Result<Vec<Recoverable>> {
         retain(self.preserved(scope)?, selection)
     }
@@ -553,7 +557,7 @@ pub fn collect_matching(
     reporting: Reporting,
     selection: &Selection,
 ) -> Result<Vec<Recoverable>> {
-    git::memoized(|| collected(scope, reporting, selection))
+    crate::recovery_cache::scope(|| git::memoized(|| collected(scope, reporting, selection)))
 }
 
 fn collected(
@@ -564,7 +568,7 @@ fn collected(
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
     let trailers = provenance::from_rules(&rules);
-    let sessions = workspace::all()?;
+    let sessions = crate::recovery_sessions::read(selection)?;
     // Which sessions were asked about, and therefore which identities, checkouts and
     // branch names the scan below may stop at. Read before anything is opened, so a
     // token naming no record is refused before a single repository is.
@@ -574,7 +578,10 @@ fn collected(
     // this report has nowhere to say one — and costs only certainty: a branch whose
     // record could not be read falls to a lower tier and is judged from the base's own
     // history instead.
-    let streams = crate::status::recorded_streams(&mut Vec::new())?;
+    let streams = crate::status::recorded_streams_about(
+        narrowed.as_ref().map(|only| &only.branches),
+        &sessions,
+    )?;
     let wanted = match scope {
         Scope::All => None,
         Scope::Repo(repo) => Some(store::resolve(&registry, repo)?.key),
@@ -613,6 +620,7 @@ fn collected(
         trailers: &trailers,
         narrowed: &narrowed,
         reporting,
+        detail: selection.detail,
     };
     // Each identity is scanned on its own thread, and the answers are joined in the
     // order the identities are named. That changes no verdict and no row: every
@@ -629,7 +637,7 @@ fn collected(
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for scanned in concurrently(&identities, |identity| {
-        git::memoized(|| scanned(identity, &scan))
+        crate::recovery_cache::scope(|| git::memoized(|| scanned(identity, &scan)))
     }) {
         let scanned = scanned?;
         rows.extend(scanned.rows);
@@ -658,6 +666,7 @@ fn collected(
 /// What one `recoverable` read holds for the whole of its scan, lent to each
 /// identity's.
 struct Scan<'a> {
+    detail: crate::Detail,
     registry: &'a crate::registry::Registry,
     streams: &'a [crate::status::Recorded],
     sessions: &'a [workspace::Record],
@@ -683,6 +692,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         trailers,
         narrowed,
         reporting,
+        ..
     } = *scan;
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
@@ -723,7 +733,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         narrowed.as_ref().map(|only| &only.checkouts),
     )?;
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
-    for repo in workspace::checkouts_of(registry, &resolution)? {
+    for repo in workspace::checkouts_among(registry, &resolution, sessions) {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
         // answer and one that narrows the work, and on a host with forty retained
@@ -735,13 +745,27 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             continue;
         }
         if !git::is_repo(&repo) {
+            if narrowed.is_some() && !matches!(repo.try_exists(), Ok(false)) {
+                let refused = git::run(&["rev-parse", "--is-inside-work-tree"], Some(&repo))?;
+                return Err(error::invalid(format!(
+                    "selected checkout {} could not be read as a Git worktree: {}; restore its readability and retry recovery",
+                    repo.display(), refused.diagnostic()
+                )));
+            }
             continue;
         }
         let base = match git::default_branch(&repo, "origin") {
             Ok(base) => base,
             Err(_) => continue,
         };
-        let asked = git::Asked::borrowing(&repo, lent.as_deref());
+        let asked = git::Asked::borrowing(
+            &repo,
+            if repo == publication {
+                None
+            } else {
+                lent.as_deref()
+            },
+        );
         let compared = judged_against(asked, &base, current.as_ref());
         // Only the names asked about are counted against their remote-tracking
         // refs, which is a process per branch per checkout that a filtered read
@@ -807,7 +831,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                     asked,
                     &compared,
                     current.as_ref(),
-                    &branch,
+                    &tip,
                     &recorded,
                     trailers,
                 )?
@@ -865,6 +889,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 },
                 sessions,
                 trailers,
+                scan.detail,
+                Some(tip.clone()),
             )?;
             if withheld {
                 withheld_rows.push(row);
@@ -948,6 +974,8 @@ fn preserved_row(
     preserved: &Preserved<'_>,
     sessions: &[workspace::Record],
     trailers: &provenance::Trailers,
+    detail: crate::Detail,
+    tip: Option<String>,
 ) -> Result<(Option<u64>, Recoverable)> {
     let Preserved {
         identity,
@@ -970,7 +998,12 @@ fn preserved_row(
         None => provenance::provenance_of(repo, compared, branch, trailers)?,
     };
     let incomplete = kind == Provenance::IncompleteStep;
-    let change_base = provenance::recorded_change_base(repo, compared, branch, trailers)?;
+    let decision = detail == crate::Detail::Decision;
+    let change_base = if decision {
+        None
+    } else {
+        provenance::recorded_change_base(repo, compared, branch, trailers)?
+    };
     // Asked before the row says anything about why the work stopped,
     // because a branch a live session is still writing to has not stopped.
     let held_by = held_by(sessions, identity, branch)?;
@@ -1069,11 +1102,16 @@ fn preserved_row(
                 change_base,
             },
             checkout: repo.path().to_path_buf(),
+            tip,
             landed: verdict.clone(),
-            stopped_because: stopped,
+            stopped_because: if decision { String::new() } else { stopped },
             recover_command,
             held_by,
-            net_negative: net_negative(repo, compared, branch)?,
+            net_negative: if decision {
+                None
+            } else {
+                net_negative(repo, compared, branch)?
+            },
             session: answering.map(|record| SessionToken(record.token.to_string())),
             labels: answering
                 .map(|record| record.labels.clone())

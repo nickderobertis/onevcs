@@ -2731,7 +2731,8 @@ pub trait Vcs {                              // the declared methods, unchanged,
         -> Result<Vec<Recoverable>>;         // defaulted the same way
 }
 pub struct Selection { pub sessions: Vec<SessionToken>,
-                       pub labels: BTreeMap<String, String> }   // empty asks for everything
+                       pub labels: BTreeMap<String, String>,
+                       pub detail: Detail }   // empty asks for everything at Full
 
 // One declared type gains two fields, and nothing else about it moves:
 //   Recoverable  pub session: Option<SessionToken>             // always written, `null` for none
@@ -2739,7 +2740,7 @@ pub struct Selection { pub sessions: Vec<SessionToken>,
 ```
 
 ```
-onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN]... [--json]
+onevcs recoverable [--repo PATH] [--all] [--label KEY=VALUE]... [--session TOKEN]... [--detail <full|decision>] [--json]
 ```
 
 Event kinds added: none.
@@ -4274,6 +4275,85 @@ at version 18; a version 17 document reads, its merges reading as ones whose tim
 build never recorded.
 
 Event kinds added: `gate-run`.
+
+
+## Recovery detail and branch tips
+
+`Vcs::recoverable_matching(&self, scope: Scope, selection: &Selection) ->
+Result<Vec<Recoverable>>` and `preserved_matching` keep their signatures and
+selection semantics. Recovery retains the same withheld-row rule, landing and
+retirement vocabulary, label matching and unknown-session refusal.
+
+```rust
+pub enum Detail { Full, Decision } // Default: Full; serde: kebab-case
+// Selection gains pub detail: Detail, #[serde(default)].
+// Recoverable gains pub tip: Option<String>, #[serde(default)].
+```
+
+`tip` is the full object name of the commit the branch stands at in the row's
+`checkout`. It is written on every row, including `null` only when that branch's
+ref cannot be read there. Older stored rows without it deserialize as `None`.
+`onevcs recoverable --json` and `--all --json` both carry it.
+
+`Selection::default()` remains the whole report at `Full`. The CLI accepts
+`onevcs recoverable --detail <full|decision>`, defaulting to `full`. `Full` is the
+complete existing row. `Decision` returns exactly the same rows, with identical
+`identity`, `branch.branch`, `branch.base`, `checkout`, `tip`, `landed` state and
+evidence, presence and value of `held_by`, `retirement`, `session`, `labels` and
+`recover_command`. Only in `Decision`, `stopped_because` may be empty,
+`branch.change_url` and `branch.change_base` may be null, and `net_negative` and
+`on_origin` may be absent where computing them costs Git work.
+
+No registry, session, stream or other existing `$ONEVCS_HOME` file migrates.
+Disposable recovery proof caches may live only under `cache/recoverable/v1/`.
+Deleting, corrupting or making that cache unreadable changes no answer. Entries
+are derived only from immutable inputs, with complete Git-context guards; mutable
+holders, leases, publication, landing and supersession records remain fresh.
+Raw Git output over full immutable object ids may be shared across identities and
+branches: its key binds the repository path and context fingerprint, complete
+argument vector and every object id, cache format version, Git executable, and
+config, attributes, layout and object-availability guards. Such entries store no
+semantic landing or retirement verdict and no mutable state.
+The object guard verifies each directly named tip/base/object argument by its
+content hash on every hit, plus object-store layout, availability and access
+metadata. A store's loose objects and packs may only grow: an entry records the
+generation of every store it was read from, and a hit requires each loose object
+and pack that generation listed to be present still with the same file identity,
+so a fetch that adds objects keeps reuse while a prune, repack, removal or
+in-place rewrite recomputes. Everything else in a store — its directory and
+`info/` (alternates, commit graphs) — must be unchanged, and replace refs,
+grafts, a shallow boundary and alternates invalidate exactly as before. Growth
+is safe because an answer over full object ids cannot change when objects are
+only added. An answer that depended on an absence is never stored, so a grown
+store never reuses one: no error or refusal (any stderr, any read failure, any
+status the query's kind does not admit) is written, and nothing is written
+unless every named object is present and hashes to its name at that moment.
+It neither walks reachability nor hashes entire packs. Corruption
+deeper in history that those directly named objects do not expose is outside
+that guard; an uncached Git read only detects it when it reads the affected
+object. Unsupported configurations or layouts delegate to Git.
+
+Sweep keeps a closed session's record and labels while its branch holds unlanded
+work, even when preserve pushed its tip to origin and its disposable checkout is
+gone, including when only the preserved origin copy remains. Sweep judges the
+recorded preserved tip through that same proof; missing local refs are not a
+landing and do not expand recovery's rows. The semantic landing/retirement proof
+recovery uses is the authority:
+no, unknown, in-part, superseded-with-changes and unreadable evidence retain.
+Deletion requires confident proof no work remains — `retirable`, or `keep` with
+reason `is-base` (every copy at or behind the base) — plus existing age, owner,
+occupancy and dirtiness protections. Pool-slot ownership rules remain intact.
+Previously lost records are not reconstructed.
+An existing selected checkout that Git cannot read refuses the recovery query,
+naming that checkout and Git's diagnostic; a missing disposable checkout remains
+absent. This deliberately corrects v0.42.0's successful empty answer for an
+unreadable selected clone containing private work. Recovery's result has no
+separate findings channel in which to carry that unanswered read alongside rows.
+
+The testing-provider state document advances to version 19 for `Recoverable.tip`;
+older provider documents remain readable with a defaulted tip. This changes no
+file shape in the real Git provider’s `$ONEVCS_HOME`.
+
 
 ---
 

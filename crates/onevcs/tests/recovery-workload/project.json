@@ -1,0 +1,63 @@
+{
+  "name": "onevcs-recovery",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": [
+    "scope:recovery",
+    "lang:rust"
+  ],
+  "targets": {
+    "test": {
+      "command": "just _recovery-test",
+      "parallelism": false,
+      "inputs": [
+        "sharedGlobals",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/recovery.rs",
+        "{workspaceRoot}/crates/onevcs-testing/src/lib.rs",
+        "{workspaceRoot}/scripts/recoverable*.mjs",
+        "{workspaceRoot}/scripts/recoverable-budget.schema.json",
+        "{workspaceRoot}/scripts/coverage.sh",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/scripts/recoverable-build-inputs.json",
+        "{workspaceRoot}/.cargo/config.toml"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/onevcs-recovery.profdata",
+        "{workspaceRoot}/target/budget-records"
+      ]
+    },
+    "test-quick": {
+      "command": "just recoverable-journeys",
+      "inputs": [
+        "sharedGlobals",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/recovery.rs",
+        "{workspaceRoot}/crates/onevcs-testing/src/lib.rs",
+        "{workspaceRoot}/scripts/recoverable*.mjs",
+        "{workspaceRoot}/scripts/recoverable-budget.schema.json",
+        "{workspaceRoot}/scripts/coverage.sh",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/scripts/recoverable-build-inputs.json",
+        "{workspaceRoot}/.cargo/config.toml"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/budget-records"
+      ]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test"
+      ]
+    }
+  }
+}

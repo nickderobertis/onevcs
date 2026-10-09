@@ -20,6 +20,8 @@
       "Bash(just check)",
       "Bash(just check-affected)",
       "Bash(just gate)",
+      "Bash(just budgets)",
+      "Bash(just recoverable-journeys)",
       "Bash(just test)",
       "Bash(just test-e2e)",
       "Bash(just test-quick)",

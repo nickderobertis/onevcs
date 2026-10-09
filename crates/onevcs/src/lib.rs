@@ -70,6 +70,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod native_refs;
 mod ops;
 mod policy;
 mod pool;
@@ -83,6 +84,8 @@ mod publish_branch;
 mod publishing;
 mod queue;
 mod recover;
+mod recovery_cache;
+mod recovery_sessions;
 pub mod registry;
 mod release;
 pub mod releases;
@@ -94,6 +97,9 @@ mod status;
 mod store;
 mod stream;
 mod sweep;
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing;
 mod vcs;
 mod verdict;
 mod verified;
@@ -153,7 +159,7 @@ pub use retire::{
 };
 pub use rules::MergePolicy;
 pub use session::{
-    HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
+    Detail, HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
     PreservedBranch, Provenance, Recoverable, Scope, Selection, Session, SessionHolder,
     SessionRecord, SessionRequest, SessionToken,
 };

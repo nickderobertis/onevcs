@@ -28,10 +28,15 @@ path = "src/lib.rs"
 name = "onevcs"
 path = "src/main.rs"
 
+[features]
+# Persistence writers used only by the sibling test-support crate.
+testing = []
+
 [dependencies]
 clap = { workspace = true }
 filetime = { workspace = true }
 fs4 = { workspace = true }
+git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 icu_properties = { workspace = true }
 minijinja = { workspace = true }
 onemessagebus = { workspace = true }
@@ -132,3 +137,8 @@ path = "tests/smoke/main.rs"
 [[test]]
 name = "release_pr"
 path = "tests/release_pr/main.rs"
+
+# Host-sized recovery measurement has its own affected project and producer edge.
+[[test]]
+name = "recovery-workload"
+path = "tests/recovery-workload/main.rs"

@@ -63,6 +63,46 @@ pub(crate) struct Call {
     pub(crate) args: String,
 }
 
+#[test]
+fn git_is_resolved_once_and_missing_git_keeps_its_refusal() {
+    let fixture = Fixture::local(&local_direct());
+    let counting = Counting::installed(&fixture.world);
+    let shim = counting.directory.join("git");
+    let original = std::fs::read_to_string(&shim).expect("forwarding git shim");
+    let removing = original.replacen(
+        "exec '",
+        &format!("/bin/rm '{}'\nexec '", shim.display()),
+        1,
+    );
+    std::fs::write(&shim, removing).expect("shim removes itself after its first real Git call");
+    counting
+        .onevcs(&fixture.world)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .failure();
+    assert_eq!(
+        counting.calls().len(),
+        1,
+        "the next spawn uses the resolved path, rather than finding a different Git on PATH"
+    );
+    std::fs::write(&shim, original).expect("restore Git for a new process");
+    counting
+        .onevcs(&fixture.world)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .success();
+    let empty = fixture.world.path("empty-path");
+    std::fs::create_dir(&empty).expect("PATH without Git");
+    fixture
+        .world
+        .onevcs()
+        .env("PATH", empty)
+        .args(["register", &fixture.checkout.to_string_lossy()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a git checkout"));
+}
+
 impl Counting {
     pub(crate) fn installed(world: &World) -> Self {
         let directory = world.path("counting");
@@ -665,6 +705,89 @@ fn a_second_identity(world: &World, branch: &str, labels: &[&str]) -> (PathBuf, 
 }
 
 #[test]
+fn warm_recovery_reuses_provenance_ranges_parent_reads_and_reverse_history() {
+    let fixture = Fixture::local(&local_direct());
+    tiered(&fixture);
+    let counting = Counting::installed(&fixture.world);
+    let (cold, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert!(!cold.is_empty());
+    assert!(calls.iter().any(|call| call
+        .args
+        .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")));
+    assert!(calls
+        .iter()
+        .any(|call| call.args.starts_with("rev-list --reverse ")));
+    assert!(calls
+        .iter()
+        .any(|call| call.args.starts_with("rev-parse --verify ")
+            && call.args.ends_with("^1^{commit}")));
+    let (prime, _, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert_eq!(prime, cold);
+    let (warm, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert_eq!(warm, cold);
+    let repeated = calls
+        .iter()
+        .filter(|call| {
+            call.args
+                .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")
+                || call.args.starts_with("rev-list --reverse ")
+                || (call.args.starts_with("rev-parse --verify ")
+                    && call.args.ends_with("^1^{commit}"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        repeated.is_empty(),
+        "unchanged immutable reads must be reused: {repeated:?}"
+    );
+}
+
+#[test]
+fn manager_global_configuration_reuses_local_proofs_and_changed_log_style_delegates() {
+    let fixture = Fixture::local(&local_direct());
+    tiered(&fixture);
+    let config = fixture.world.path(".gitconfig");
+    let original = std::fs::read_to_string(&config).unwrap();
+    // The filter block is what `git lfs install --system` writes, which the git-lfs
+    // package does on install — CI runners and most hosts carry it.
+    let manager = format!("{original}\n[core]\n editor = /missing/editor\n[credential \"https://github.com\"]\n helper = /missing/github-helper\n[credential \"https://gist.github.com\"]\n helper = /missing/gist-helper\n[pull]\n rebase = true\n[push]\n default = simple\n[filter \"lfs\"]\n clean = git-lfs clean -- %f\n smudge = git-lfs smudge -- %f\n process = git-lfs filter-process\n required = true\n");
+    std::fs::write(&config, &manager).unwrap();
+    let counting = Counting::installed(&fixture.world);
+    let read = || {
+        counting.clear();
+        let result = counting
+            .onevcs(&fixture.world)
+            .env("GIT_EDITOR", "/missing/editor")
+            .env("GIT_PAGER", "/missing/pager")
+            .args(["recoverable", "--json", "--all", "--detail", "decision"])
+            .assert()
+            .success();
+        let rows: Vec<Value> = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        (rows, counting.calls())
+    };
+    let (cold, _) = read();
+    assert!(!cold.is_empty());
+    assert_eq!(read().0, cold);
+    let (warm, calls) = read();
+    assert_eq!(warm, cold);
+    assert!(
+        !calls.iter().any(|call| call
+            .args
+            .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")),
+        "ordinary manager configuration retains immutable proof reuse: {calls:?}"
+    );
+    std::fs::write(&config, format!("{manager}\n[color]\n ui = always\n")).unwrap();
+    let (_, delegated) = read();
+    assert!(
+        delegated.iter().any(|call| call
+            .args
+            .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")),
+        "byte-changing log style must delegate"
+    );
+    std::fs::write(&config, manager).unwrap();
+    assert_eq!(read().0, cold);
+}
+
+#[test]
 fn a_ref_name_is_validated_by_subprocess_at_most_once_per_distinct_name() {
     // `git check-ref-format` answers a question about a *name*, so the answer cannot
     // go stale — and every session record read validates two of them. On the measured
@@ -688,38 +811,67 @@ fn a_ref_name_is_validated_by_subprocess_at_most_once_per_distinct_name() {
 }
 
 #[test]
-fn a_branch_a_record_decides_is_never_content_compared() {
-    // The comparison of content is the last tier and the expensive one — a diff of
-    // every path the branch touched, against a base that has moved. A branch a
-    // recorded landing, a change request's number, or a landing trailer already
-    // decided has no need of it, and reaching it anyway is work spent to be told what
-    // three cheaper tiers already said.
+fn complete_recorded_landings_skip_content_but_squash_guards_compare() {
+    // Complete recorded/trailer landings prove the whole tip. A squash landing
+    // and work continued after a landing still require the semantic content guard.
     let fixture = Fixture::local(&local_direct());
     tiered(&fixture);
     let counting = Counting::installed(&fixture.world);
 
-    let (_, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
+    let (rows, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
     let compared = content_comparisons(&calls);
-    for decided in [
-        "feature/recorded",
-        "preserved/by-trailer",
-        "feature/by-change-request",
-        "feature/continued",
-    ] {
+    let tip_of = |branch: &str| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == branch)
+            .and_then(|row| row["tip"].as_str())
+            .expect("reported branch tip")
+    };
+    for decided in ["feature/recorded", "preserved/by-trailer"] {
         assert!(
-            !compared.iter().any(|branch| branch == decided),
+            !compared.iter().any(|branch| branch == tip_of(decided)),
             "{decided} was decided by a record and content-compared anyway: {compared:?}"
         );
     }
-    // …and the tier is still reached for the branches nothing records, which is what
-    // makes the assertion above about the tiers rather than about the tier being gone.
+    // The fallback and guards remain observable through their immutable operands.
+    // An optional pinned-release run proves these guards were already baseline work.
+    if let Some(baseline) = std::env::var_os("ONEVCS_BASELINE_BINARY") {
+        counting.clear();
+        let template = fixture.world.onevcs_std();
+        let environment = template.get_envs().collect::<Vec<_>>();
+        let mut command = assert_cmd::Command::new(baseline);
+        command.env_clear().current_dir(fixture.world.path(""));
+        for (name, value) in environment {
+            if let Some(value) = value {
+                command.env(name, value);
+            }
+        }
+        let mut paths = std::ffi::OsString::from(&counting.directory);
+        paths.push(":");
+        paths.push(std::env::var_os("PATH").unwrap_or_default());
+        command.env("PATH", paths);
+        command
+            .args(["recoverable", "--json", "--all"])
+            .assert()
+            .success();
+        let baseline_compared = content_comparisons(&counting.calls());
+        for guarded in ["feature/by-change-request", "feature/continued"] {
+            assert!(
+                baseline_compared
+                    .iter()
+                    .any(|operand| operand == tip_of(guarded)),
+                "pinned baseline must already compare {guarded}: {baseline_compared:?}"
+            );
+        }
+    }
     for undecided in [
         "feature/unpublished",
         "feature/undecidable",
         "worktree-agent-9",
+        "feature/by-change-request",
+        "feature/continued",
     ] {
         assert!(
-            compared.iter().any(|branch| branch == undecided),
+            compared.iter().any(|branch| branch == tip_of(undecided)),
             "{undecided} has no record, so the comparison is the only tier left: {compared:?}"
         );
     }

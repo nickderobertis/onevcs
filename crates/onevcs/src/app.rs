@@ -1146,6 +1146,7 @@ fn recoverable(args: &RecoverableArgs, providers: &Providers<'_>) -> Result<u8> 
     // label is answered before a repository is opened. Which *sessions* a selection
     // names is decided behind the seam, where the records are.
     let selection = Selection {
+        detail: args.detail,
         sessions: args.session.iter().cloned().map(SessionToken).collect(),
         labels: label::parse_all(&args.label)?,
     };
