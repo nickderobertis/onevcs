@@ -1018,6 +1018,118 @@ fn a_fetch_that_adds_objects_keeps_proofs_and_answers_what_a_cold_recompute_does
     assert_eq!(fetched, answered(&fixture, &args, true), "and git's");
 }
 
+/// How many content comparisons the last counted read ran: `diff` and `merge-tree`
+/// between commits named by full object id, the reads a proof stands in for.
+fn content_comparisons(counting: &crate::cost::Counting) -> usize {
+    counting
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            let mut words = call.args.split_whitespace();
+            matches!(words.next(), Some("diff" | "merge-tree"))
+                && words
+                    .filter(|word| !word.starts_with('-') && !word.starts_with(":("))
+                    .all(|word| word.len() == 40 && word.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+        .count()
+}
+
+/// A repack loses no object but moves every one of them into a new pack, so the store
+/// a proof was derived from is not the one it would be reused against: the proofs are
+/// derived again rather than trusted, and answer what a cold read and git answer.
+#[test]
+fn a_repack_after_proofs_were_stored_derives_them_again() {
+    let (fixture, token) = deep_history_session("repacked");
+    let args = decision_of(&token);
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    forget_proofs(&fixture);
+    let (cold, _) = counted(&fixture, &counting, &args);
+    let cold_content = content_comparisons(&counting);
+    let (warm, _) = counted(&fixture, &counting, &args);
+    assert_eq!(cold.0, Some(0), "{cold:?}");
+    assert_eq!(warm, cold);
+    assert!(cold_content > 0, "the premise: the read compares content");
+    assert_eq!(
+        content_comparisons(&counting),
+        0,
+        "the premise: the stored proofs are reused"
+    );
+
+    let loose = |fixture: &Fixture| {
+        fixture
+            .world
+            .git(&fixture.checkout, &["count-objects", "-v"])
+            .lines()
+            .find_map(|line| line.strip_prefix("count: "))
+            .and_then(|count| count.trim().parse::<usize>().ok())
+            .expect("loose object count")
+    };
+    assert!(
+        loose(&fixture) > 0,
+        "the premise: the checkout holds loose objects"
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["repack", "-a", "-d", "-q"]);
+    assert_eq!(
+        loose(&fixture),
+        0,
+        "the premise: the repack packed them all"
+    );
+
+    let (repacked, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        content_comparisons(&counting),
+        cold_content,
+        "every proof is derived again after the store was repacked"
+    );
+    assert_eq!(repacked, cold, "and answers what it did before");
+    forget_proofs(&fixture);
+    let (recomputed, _) = counted(&fixture, &counting, &args);
+    assert_eq!(repacked, recomputed, "the answer is a cold recompute's");
+    assert_eq!(repacked, answered(&fixture, &args, true), "and git's");
+}
+
+/// Proofs are keyed on the `git` program that derived them: a read through another
+/// program derives its own rather than reusing the first one's, then reuses those.
+#[test]
+fn proofs_one_git_program_derived_are_not_reused_through_another() {
+    let (fixture, token) = deep_history_session("executable");
+    let args = decision_of(&token);
+    let proofs = fixture.world.home().join("cache/recoverable/v1/git");
+    forget_proofs(&fixture);
+    let original = answered(&fixture, &args, false);
+    assert_eq!(original.0, Some(0), "{original:?}");
+    assert!(
+        std::fs::read_dir(&proofs).is_ok_and(|mut entries| entries.next().is_some()),
+        "the premise: the installed git stored proofs"
+    );
+
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    let (through_shim, _) = counted(&fixture, &counting, &args);
+    let shim_content = content_comparisons(&counting);
+    let (again, _) = counted(&fixture, &counting, &args);
+    assert_eq!((&through_shim, &again), (&original, &original));
+    assert_eq!(
+        content_comparisons(&counting),
+        0,
+        "the other program reuses the proofs it derived itself"
+    );
+    forget_proofs(&fixture);
+    let (cold, _) = counted(&fixture, &counting, &args);
+    let cold_content = content_comparisons(&counting);
+    assert_eq!(
+        shim_content, cold_content,
+        "the other program reused none of the first one's proofs"
+    );
+    assert!(cold_content > 0, "the premise: the read compares content");
+    assert_eq!(
+        cold,
+        answered(&fixture, &args, true),
+        "and every answer is git's"
+    );
+}
+
 /// An object taken away can move a proof, so an entry whose store lost one asks git
 /// again — and an answer reached while the object was missing is not what the report
 /// says once git has it back.
@@ -1255,8 +1367,8 @@ fn a_rewriting_filter_driver_leaves_reused_proofs_equal_to_git() {
     .expect("renormalize");
     let proofs = fixture.world.home().join("cache/recoverable/v1/git");
     let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
-    // Decision detail, because the full row's line statistics ask git afresh about
-    // the same history, and would see a missing object whatever the cache did.
+    // The loop above shows this read storing proofs while reuse is allowed, so an
+    // empty store after it is the refusal rather than a read with nothing to cache.
     let args = ["--detail", "decision", "--session", &token, "--all"];
     let renormalized = recoverable(&fixture, &args);
     let uncached = fixture
