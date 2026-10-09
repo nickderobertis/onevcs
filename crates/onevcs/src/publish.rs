@@ -1175,7 +1175,6 @@ fn hold_to_the_boundary(context: &Context<'_>, compared: &str, title: Option<&st
         branch: Some(&tip),
         title,
         body: context.body.as_deref(),
-        messages: Vec::new(),
     };
     crate::boundary::evidence::guard_publication(
         context.hosting,

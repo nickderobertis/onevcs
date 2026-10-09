@@ -252,7 +252,6 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
             branch: Some(branch),
             title: None,
             body: None,
-            messages: Vec::new(),
         },
         &request.term_scope,
     )?;

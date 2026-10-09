@@ -159,7 +159,7 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
     phases.paths = read.files.len();
     phases.bytes = read.files.iter().map(|file| file.contents.len()).sum();
 
-    let screened = screen(request, &read, &mut phases, started);
+    let screened = screen(request, &read, &mut phases);
     diagnostics::record("export", &screened.0, &phases.ended(started));
     evidence::settle(screened.0, screened.1)?;
 
@@ -333,7 +333,6 @@ fn screen(
     request: &ExportRequest,
     source: &Source,
     phases: &mut Phases,
-    started: std::time::Instant,
 ) -> (BoundaryVerdict, Vec<Evidence>) {
     let mut evidence = Vec::new();
     let deriving = std::time::Instant::now();
@@ -383,7 +382,6 @@ fn screen(
         );
     }
     phases.matching = matching.elapsed();
-    let _ = started;
     (verdict, evidence)
 }
 

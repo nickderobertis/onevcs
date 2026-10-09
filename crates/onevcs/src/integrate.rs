@@ -341,7 +341,6 @@ fn train(
                 branch: Some(base),
                 title: None,
                 body: None,
-                messages: Vec::new(),
             },
             term_scope,
         )?;

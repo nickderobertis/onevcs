@@ -5,9 +5,9 @@
 //! the publication term check and an export over.
 //!
 //! Twenty registered private repositories, each committing a manifest and a term
-//! declaration that derive exactly [`TERMS_PER_IDENTITY`] terms, and one registered
-//! public repository with a branch adding [`PATHS`] files of neutral UTF-8 text,
-//! [`BYTES`] in all. One of the private repositories carries the same files on a
+//! declaration that derive exactly `TERMS_PER_IDENTITY` terms, and one registered
+//! public repository with a branch adding `PATHS` files of neutral UTF-8 text,
+//! `BYTES` in all. One of the private repositories carries the same files on a
 //! branch, confined to one directory, for an export. Everything is built with real
 //! git — `fast-import` for the large commits — and the registry is written through
 //! onevcs's own test-support bridge. Nothing here matches, diffs, derives or exports:
@@ -150,7 +150,7 @@ const WORDS: [&str; 32] = [
     "canyon", "drift", "estuary", "fern",
 ];
 
-/// The files the publication adds and the export copies: [`PATHS`] of them, whose
+/// The files the publication adds and the export copies: `PATHS` of them, whose
 /// sizes sum to [`BYTES`], each a deterministic run of neutral words.
 fn workload_files() -> Vec<(String, String)> {
     let mut state: u64 = 0x5eed_b0a7;

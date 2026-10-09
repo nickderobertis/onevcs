@@ -47,8 +47,6 @@ pub struct Outgoing<'a> {
     pub title: Option<&'a str>,
     /// A change request's body, where one is written.
     pub body: Option<&'a str>,
-    /// Messages written beyond the commits' own — a squash's, say.
-    pub messages: Vec<String>,
 }
 
 /// The verdict, the private detail, and how long each part took.
@@ -178,13 +176,6 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
     }
     if let Some(body) = outgoing.body {
         judge.text(Surface::Body, body, "body".to_owned());
-    }
-    for (index, message) in outgoing.messages.iter().enumerate() {
-        judge.text(
-            Surface::CommitMessage,
-            message,
-            format!("message {}", index + 1),
-        );
     }
     for change in &changes {
         judge.change(change);
