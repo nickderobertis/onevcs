@@ -716,3 +716,55 @@ fn an_export_reaches_only_a_destination_verified_public() {
     assert!(!stderr.contains("unregistered"), "{stderr}");
     assert_neutral(&stderr);
 }
+
+#[test]
+fn the_private_history_below_the_branch_is_neither_screened_nor_copied() {
+    let host = Boundary::new(LOCAL);
+    // The source's base carries its own name everywhere — a file outside the
+    // directory, and its commit messages — which is what a private repository is.
+    let source = host.source(&[("INTERNALS.md", "how hiddenco/quietharbor works\n")]);
+    host.world.git(
+        &source.checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "chore: tune quietharbor internals",
+        ],
+    );
+    host.world
+        .git(&source.checkout, &["push", "-q", "origin", "main"]);
+    source.branch(
+        &host.world,
+        "generic-examples",
+        &[("examples/a.txt", Some("a generic example\n"))],
+        "docs: add a generic example",
+    );
+    let output = host.export(
+        "generic-examples",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &["--json"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let head = host
+        .world
+        .git(&host.public, &["rev-parse", "refs/heads/generic-fixtures"])
+        .trim()
+        .to_owned();
+    // Nothing of the base below the branch reached the public commit or its tree.
+    let everything = format!(
+        "{}\n{}",
+        host.world.git(&host.public, &["cat-file", "-p", &head]),
+        host.world
+            .git(&host.public, &["ls-tree", "-r", "--name-only", &head]),
+    );
+    assert_neutral(&everything);
+    assert!(!everything.contains("INTERNALS"), "{everything}");
+}

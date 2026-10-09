@@ -721,3 +721,261 @@ fn what_a_refusal_found_is_kept_privately_and_the_timings_name_nothing() {
     assert_neutral(&lines);
     assert!(!lines.contains("demo"), "{lines}");
 }
+
+impl Boundary {
+    /// A finished branch: worked in a session and closed unpublished, which hands it
+    /// back to the registered checkout. `uncommitted` work is left in the worktree, so
+    /// the close commits it behind an incomplete-step marker.
+    fn finished(&self, branch: &str, path: &str, contents: &str, uncommitted: bool) {
+        let (token, worktree) = self.session(branch);
+        write(&worktree, path, contents);
+        if !uncommitted {
+            commit(&self.world, &worktree, "docs: add an example");
+        }
+        self.world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+    }
+
+    fn run(&self, args: &[&str], cwd: Option<&Path>) -> std::process::Output {
+        let mut command = self.world.onevcs();
+        command.args(args);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command.output().expect("the binary runs")
+    }
+}
+
+#[test]
+fn publish_branch_and_recover_are_held_to_the_boundary_and_land_neutral_work() {
+    let host = Boundary::with_private(&[]);
+    // A repository merge path, so a recovery has something that verified it.
+    host.world.install_pre_push(&host.public, "true");
+    let repo = host.public.to_string_lossy().into_owned();
+
+    host.finished(
+        "finished-term",
+        "examples/a.md",
+        "from quietharbor\n",
+        false,
+    );
+    let before = host.origin_refs();
+    let output = host.run(&["publish-branch", "finished-term", "--repo", &repo], None);
+    host.refused(&output, "an added line", &before, "publish-branch");
+    let output = host.run(
+        &[
+            "publish-branch",
+            "finished-term",
+            "--repo",
+            &repo,
+            "--term-scope-empty",
+        ],
+        None,
+    );
+    host.published(&output, &before, "publish-branch under an empty scope");
+
+    host.finished(
+        "finished-neutral",
+        "examples/b.md",
+        "a generic example\n",
+        false,
+    );
+    let before = host.origin_refs();
+    let output = host.run(
+        &["publish-branch", "finished-neutral", "--repo", &repo],
+        None,
+    );
+    host.published(&output, &before, "publish-branch of neutral work");
+
+    host.finished(
+        "interrupted-term",
+        "examples/c.md",
+        "from hiddenco/quietharbor\n",
+        true,
+    );
+    let before = host.origin_refs();
+    let output = host.run(
+        &[
+            "recover",
+            "interrupted-term",
+            "--repo",
+            &repo,
+            "--title",
+            "docs: add an example",
+        ],
+        None,
+    );
+    host.refused(&output, "an added line", &before, "recover");
+
+    host.finished(
+        "interrupted-neutral",
+        "examples/d.md",
+        "a generic example\n",
+        true,
+    );
+    let before = host.origin_refs();
+    let output = host.run(
+        &[
+            "recover",
+            "interrupted-neutral",
+            "--repo",
+            &repo,
+            "--title",
+            "docs: add an example",
+        ],
+        None,
+    );
+    host.published(&output, &before, "recover of neutral work");
+}
+
+#[test]
+fn preserve_and_direct_integration_are_held_to_the_boundary_and_push_neutral_work() {
+    let host = Boundary::with_private(&[]);
+    let world = &host.world;
+
+    // A preservation puts the branch on a public origin, so it is held too.
+    host.finished("kept-term", "examples/a.md", "from quietharbor\n", false);
+    let before = host.origin_refs();
+    let output = host.run(&["preserve", "kept-term", "--repo", "openwidget"], None);
+    host.refused(&output, "an added line", &before, "preserve");
+    host.finished(
+        "kept-neutral",
+        "examples/b.md",
+        "a generic example\n",
+        false,
+    );
+    let output = host.run(&["preserve", "kept-neutral", "--repo", "openwidget"], None);
+    host.published(&output, &before, "preserve of neutral work");
+    assert!(host.origin_refs().contains("refs/heads/kept-neutral"));
+
+    // Direct integration pushes the advanced base: refused before the push, so the
+    // origin's base never moves; the local base is put back for the next train.
+    world.git(
+        &host.public,
+        &["checkout", "-q", "-b", "train-term", "main"],
+    );
+    write(
+        &host.public,
+        "examples/c.md",
+        "after hiddenco/quietharbor\n",
+    );
+    commit(world, &host.public, "docs: add an example");
+    world.git(&host.public, &["checkout", "-q", "main"]);
+    let before = host.origin_refs();
+    let output = host.run(&["integrate", "train-term", "--push"], Some(&host.public));
+    host.refused(&output, "an added line", &before, "integrate --push");
+    world.git(&host.public, &["reset", "-q", "--hard", "origin/main"]);
+
+    world.git(
+        &host.public,
+        &["checkout", "-q", "-b", "train-neutral", "main"],
+    );
+    write(&host.public, "examples/d.md", "a generic example\n");
+    commit(world, &host.public, "docs: add an example");
+    world.git(&host.public, &["checkout", "-q", "main"]);
+    let output = host.run(
+        &["integrate", "train-neutral", "--push"],
+        Some(&host.public),
+    );
+    host.published(&output, &before, "integrate --push of neutral work");
+}
+
+#[test]
+fn a_change_requests_description_is_held_to_the_boundary_before_the_host_is_written() {
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    host.private("hiddenco/quietharbor", &[]);
+    let (token, worktree) = host.session("described");
+    write(&worktree, "examples/a.md", "a generic example\n");
+    commit(&host.world, &worktree, "docs: add a generic example");
+    let before = host.origin_refs();
+
+    // Opening the change request is a publication like any other: a body naming the
+    // private repository is refused before the branch is pushed or anything opened.
+    let output = host.publish(&token, &["--draft", "--body", "Ported from quietharbor."]);
+    host.refused(&output, "its body", &before, "a draft's body");
+    assert!(
+        !host
+            .world
+            .host_calls()
+            .iter()
+            .any(|call| call.starts_with("pr create")),
+        "nothing was opened"
+    );
+    let output = host.publish(&token, &["--draft"]);
+    host.published(&output, &before, "a neutral draft");
+
+    // The drafter's final words are checked again when they are written.
+    let unchanged = host.world.change_request_body(1);
+    for (extra, surface) in [
+        (
+            vec!["--body", "Mirrors hiddenco/quietharbor exactly."],
+            "its body",
+        ),
+        (
+            vec![
+                "--body",
+                "A generic example.",
+                "--title",
+                "docs: port quietharbor",
+            ],
+            "its title",
+        ),
+    ] {
+        let mut args = vec!["change", "describe", token.as_str()];
+        args.extend(extra);
+        let output = host.run(&args, None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "public output carries a term of a private repository in {surface}"
+            )),
+            "{stderr}"
+        );
+        assert_neutral(&stderr);
+        assert_eq!(
+            host.world.change_request_body(1),
+            unchanged,
+            "the host was written"
+        );
+    }
+    let output = host.run(
+        &[
+            "change",
+            "describe",
+            &token,
+            "--body",
+            "A generic example, described.",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        host.world.change_request_body(1),
+        "A generic example, described."
+    );
+    // …and under a scope that leaves the repository out, its name is just a word.
+    let output = host.run(
+        &[
+            "change",
+            "describe",
+            &token,
+            "--body",
+            "Mirrors hiddenco/quietharbor.",
+            "--term-scope-empty",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
