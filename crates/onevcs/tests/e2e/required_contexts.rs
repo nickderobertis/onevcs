@@ -13,6 +13,14 @@
 //! The real binary, real git and a real bare origin; the one stand-in is the `gh` every
 //! hosted journey uses, for the reason `host.rs` gives at its head.
 
+// llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which
+// contexts branch protection requires, what the rollup reports, whether it performs a
+// merge — is the one boundary an offline, credential-free gate cannot drive, and a
+// required context with no run is a state no real host can be held in on demand.
+// `Hosted` installs `world.rs`'s program that answers it as `gh`, as every hosted
+// journey in `host.rs` does, and substitutes nothing else: the binary is the real one,
+// the origin a real bare repository, every publication a real `git push`, and the
+// one merge here is real git against that origin.
 // llmlint: ignore-file[tests_mirror_real_usage] scripting the substituted host — which
 // contexts its branch protection requires, what its rollup reports, and that it accepts
 // an auto-merge without performing it — is how a journey says what GitHub reports. It

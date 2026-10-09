@@ -2668,9 +2668,12 @@ enum Declared {
     Nothing,
     /// The checks the host names as required, from every source that answered.
     Names(BTreeSet<String>),
-    /// The host did not say — a source it could not read, or no answer at all. What
-    /// is required is then read off the checks' own `required` as they arrive.
-    Unknown,
+    /// The host did not say — a source it could not read, or no answer at all — with
+    /// why. What is required is then read off the checks' own `required` as they
+    /// arrive, and a settlement read that way has to say so and why: by the manager's
+    /// ruling on the amendment, such a green must never read as an ordinary complete
+    /// answer.
+    Unknown(String),
 }
 
 /// What the host says it requires before a merge into this change's base.
@@ -2678,35 +2681,24 @@ enum Declared {
 /// Asked once, before the draft's checks are watched, through the same seam the audit
 /// reads. A host that was never taught to answer, or would not, has not said nothing
 /// is required.
-///
-/// Beside a [`Declared::Unknown`] is why the declaration could not be read, which is
-/// what a settlement read from the host's own per-check marking has to say it was: by
-/// the manager's ruling on the amendment, such a green must never read as an ordinary
-/// complete answer.
-fn declared_required(host: &dyn RemoteHost, change: &ChangeRequest) -> (Declared, Option<String>) {
+fn declared_required(host: &dyn RemoteHost, change: &ChangeRequest) -> Declared {
     match host.required_checks_on(&change.base) {
-        Ok(answer) if answer.checks.is_empty() && answer.complete() => (Declared::Nothing, None),
-        Ok(answer) if !answer.checks.is_empty() => (Declared::Names(answer.checks), None),
-        Ok(answer) => (
-            Declared::Unknown,
-            Some(format!(
-                "the host could not read {} for which checks a merge into {} requires",
-                answer
-                    .unconsulted
-                    .keys()
-                    .map(|source| source.describe())
-                    .collect::<Vec<_>>()
-                    .join(" or "),
-                change.base
-            )),
-        ),
-        Err(refused) => (
-            Declared::Unknown,
-            Some(format!(
-                "the host would not say which checks a merge into {} requires: {refused}",
-                change.base
-            )),
-        ),
+        Ok(answer) if answer.checks.is_empty() && answer.complete() => Declared::Nothing,
+        Ok(answer) if !answer.checks.is_empty() => Declared::Names(answer.checks),
+        Ok(answer) => Declared::Unknown(format!(
+            "the host could not read {} for which checks a merge into {} requires",
+            answer
+                .unconsulted
+                .keys()
+                .map(|source| source.describe())
+                .collect::<Vec<_>>()
+                .join(" or "),
+            change.base
+        )),
+        Err(refused) => Declared::Unknown(format!(
+            "the host would not say which checks a merge into {} requires: {refused}",
+            change.base
+        )),
     }
 }
 
@@ -2717,7 +2709,7 @@ impl Declared {
     /// checks reported" — and is read as it.
     fn given(&self, reading: &Reading) -> Declared {
         match (self, &reading.reported) {
-            (Declared::Unknown, Reported::About(checks))
+            (Declared::Unknown(_), Reported::About(checks))
                 if reading.complete
                     && !checks.is_empty()
                     && checks.iter().all(|check| !check.required) =>
@@ -2728,11 +2720,14 @@ impl Declared {
         }
     }
 
-    /// Why what is required was read off the host's own per-check marking, where it
-    /// was: `unread` under [`Declared::Unknown`], and nothing under an answer the host
-    /// gave — which is what a settlement then has to say it was read from.
-    fn marked<'u>(&self, unread: Option<&'u str>) -> Option<&'u str> {
-        (*self == Declared::Unknown).then_some(unread).flatten()
+    /// Why what is required is read off the host's own per-check marking, where it
+    /// is — under [`Declared::Unknown`], and nowhere the host gave an answer — which is
+    /// what a settlement then has to say it was read from.
+    fn unread(&self) -> Option<&str> {
+        match self {
+            Declared::Unknown(because) => Some(because),
+            Declared::Nothing | Declared::Names(_) => None,
+        }
     }
 }
 
@@ -2772,7 +2767,7 @@ fn standings<'c>(checks: &[&'c Check], declared: &Declared) -> Vec<Standing<'c>>
     let names: BTreeSet<String> = match declared {
         Declared::Names(names) => names.clone(),
         Declared::Nothing => BTreeSet::new(),
-        Declared::Unknown => checks
+        Declared::Unknown(_) => checks
             .iter()
             .filter(|check| check.required)
             .map(|check| check.name.clone())
@@ -2859,9 +2854,9 @@ struct Watcher<'a> {
     /// Whether an early lift prints its warning line: the resolved
     /// `drafts.warn_on_early_lift`.
     warn_on_early_lift: bool,
-    /// What the host declares a merge into the base requires, with why it could not
-    /// be read where it could not — asked once per watch, by [`Watcher::declared`].
-    declaration: Option<(Declared, Option<String>)>,
+    /// What the host declares a merge into the base requires — asked once per watch,
+    /// by [`Watcher::declared`].
+    declaration: Option<Declared>,
 }
 
 impl<'a> Watcher<'a> {
@@ -2890,11 +2885,10 @@ impl<'a> Watcher<'a> {
         })
     }
 
-    /// What the host declares it requires before a merge into this change's base, and
-    /// why it could not be read where it could not: asked of the host the first time a
-    /// phase of the watch needs it and remembered for the rest of the watch, so one
-    /// watch reads every phase against one answer.
-    fn declared(&mut self) -> (Declared, Option<String>) {
+    /// What the host declares it requires before a merge into this change's base:
+    /// asked of the host the first time a phase of the watch needs it and remembered
+    /// for the rest of the watch, so one watch reads every phase against one answer.
+    fn declared(&mut self) -> Declared {
         self.declaration
             .get_or_insert_with(|| declared_required(self.host, self.change))
             .clone()
@@ -3033,15 +3027,14 @@ impl<'a> Watcher<'a> {
     /// The bound elapsed, naming what the host had not settled, and recording the
     /// watch's gate run as one that reached no verdict.
     ///
-    /// `declared` is what `standing` was read against and `unread` why the host's
-    /// declaration could not be read, where it could not, so the sentence says which
-    /// of its answers the standing came from.
+    /// `declared` is what `standing` was read against, so the sentence says which of
+    /// the host's answers the standing came from.
     fn unsettled(
         &mut self,
         stream: &mut Stream,
         reading: &Reading,
         standing: &[Standing<'_>],
-        (declared, unread): (&Declared, Option<&str>),
+        declared: &Declared,
         awaited: &str,
     ) -> Error {
         self.record_gate(stream, gate_run::Ruling::NoVerdict, standing);
@@ -3049,11 +3042,7 @@ impl<'a> Watcher<'a> {
             self.change,
             self.pushed,
             &reading.reported,
-            Requirement {
-                standing,
-                declared,
-                unread,
-            },
+            Requirement { standing, declared },
             self.bound,
             awaited,
         )
@@ -3145,11 +3134,10 @@ fn settle(watcher: &mut Watcher<'_>, stream: &mut Stream, drafted: bool) -> Resu
 /// answer is that nothing blocks. A host that could not say, and has marked nothing
 /// required, has not answered that, so it is waited on.
 fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
-    let (declared, unread) = watcher.declared();
+    let declared = watcher.declared();
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
-        let marked = declared.marked(unread.as_deref());
         if let Reported::About(checks) = &reading.reported {
             let about: Vec<&Check> = checks.iter().collect();
             let standing = standings(&about, &declared);
@@ -3157,7 +3145,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
                 return Err(watcher.failed(stream, &standing, failed));
             }
             if lets_through(&standing, &declared) {
-                watcher.record_settled(stream, &standing, marked);
+                watcher.record_settled(stream, &standing, declared.unread());
                 return Ok(());
             }
         }
@@ -3171,7 +3159,7 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
                 stream,
                 &reading,
                 &reading.standing(&declared),
-                (&declared, marked),
+                &declared,
                 "settled its required checks on",
             ));
         }
@@ -3205,7 +3193,7 @@ fn skipped_in(standing: &[Standing<'_>]) -> Vec<String> {
 /// window and no warning.
 fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> {
     let grace = std::time::Duration::from_secs_f64(gh::draft_grace()?);
-    let (declared, unread) = watcher.declared();
+    let declared = watcher.declared();
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
@@ -3215,7 +3203,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         }
         // Whether what is required is being read off the host's marking because the
         // declaration could not be read, which a settlement then has to say.
-        let marked = declared.marked(unread.as_deref());
+        let marked = declared.unread();
         let about: Vec<&Check> = reading.reported.checks().iter().collect();
         let standing = standings(&about, &declared);
         if let Some(failed) = red(&standing) {
@@ -3247,7 +3235,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         // answer, exactly as a ready change's watch reads it; where nothing ran, or
         // something was skipped, it is the draft-skipping repository, and only a lift
         // can show what runs.
-        let unseen = declared == Declared::Unknown && standing.is_empty();
+        let unseen = matches!(declared, Declared::Unknown(_)) && standing.is_empty();
         let grace_elapsed = watcher.started.elapsed() >= grace;
         let about = reading.reported.checks();
         if unseen
@@ -3263,7 +3251,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
         if grace_elapsed && !running && (!not_run.is_empty() || unseen) {
             let snapshot = reading.reported.checks().to_vec();
             lift_early(watcher, stream, &not_run, grace)?;
-            return settle_after_early_lift(watcher, stream, &declared, marked, &snapshot, grace)
+            return settle_after_early_lift(watcher, stream, &declared, &snapshot, grace)
                 .map(|()| false);
         }
         if watcher.out_of_time() {
@@ -3271,7 +3259,7 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 stream,
                 &reading,
                 &standing,
-                (&declared, marked),
+                &declared,
                 "settled its required checks on",
             ));
         }
@@ -3360,7 +3348,6 @@ fn settle_after_early_lift(
     watcher: &mut Watcher<'_>,
     stream: &mut Stream,
     declared: &Declared,
-    unread: Option<&str>,
     snapshot: &[Check],
     grace: std::time::Duration,
 ) -> Result<()> {
@@ -3390,7 +3377,7 @@ fn settle_after_early_lift(
                 )
             })
         {
-            watcher.record_settled(stream, &standing, unread);
+            watcher.record_settled(stream, &standing, declared.unread());
             return Ok(());
         }
         if !rerun && lifted.elapsed() >= grace {
@@ -3413,7 +3400,7 @@ fn settle_after_early_lift(
                 stream,
                 &reading,
                 &standing,
-                (declared, unread),
+                declared,
                 "settled its required checks on",
             ));
         }
@@ -3434,12 +3421,11 @@ fn settle_after_early_lift(
 /// are for the session to resolve. A mergeability the host has not computed yet is
 /// never read as a conflict.
 fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
-    let (declared, unread) = watcher.declared();
+    let declared = watcher.declared();
     let mut armed = false;
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
-        let marked = declared.marked(unread.as_deref());
         if let Reported::About(checks) = &reading.reported {
             let about: Vec<&Check> = checks.iter().collect();
             let standing = standings(&about, &declared);
@@ -3447,7 +3433,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
                 return Err(watcher.failed(stream, &standing, failed));
             }
             if lets_through(&standing, &declared) {
-                watcher.record_settled(stream, &standing, marked);
+                watcher.record_settled(stream, &standing, declared.unread());
             }
         }
         if !armed {
@@ -3476,7 +3462,7 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
                 stream,
                 &reading,
                 &reading.standing(&declared),
-                (&declared, marked),
+                &declared,
                 "merged",
             ));
         }
@@ -3534,12 +3520,10 @@ fn checks_failed(check: &Check, logs: &[(String, crate::event::ArtifactId)]) -> 
 }
 
 /// What a watch read the required checks against when its bound elapsed: each
-/// required check's standing, the declaration that standing was read by, and — set
-/// only under [`Declared::Unknown`] — why that declaration could not be read.
+/// required check's standing, and the declaration that standing was read by.
 struct Requirement<'s, 'c> {
     standing: &'s [Standing<'c>],
     declared: &'s Declared,
-    unread: Option<&'s str>,
 }
 
 /// The bound elapsed, naming what the host had not settled.
@@ -3577,11 +3561,7 @@ fn unsettled(
             ),
         };
     }
-    let Requirement {
-        standing,
-        declared,
-        unread,
-    } = requirement;
+    let Requirement { standing, declared } = requirement;
     let pending: Vec<String> = standing
         .iter()
         .filter_map(|standing| match standing.state {
@@ -3634,7 +3614,8 @@ fn unsettled(
     // Where the host's declaration could not be read, what is required was read off
     // its marking, and a reader deciding what to do next has to know the standing
     // above may be missing a required check the host simply has not reported yet.
-    let read_from = unread
+    let read_from = declared
+        .unread()
         .map(|because| {
             format!(
                 ". Which checks it requires could not be read, so they were read from the \
