@@ -135,8 +135,11 @@ test("the budget and its producer are wired where the onevcs project's budgets t
 
 // Inside a producing invocation the wrapper hands every step its id, so the record the
 // journeys just wrote is held to the reader here: the journey-to-reader path, end to end.
+// The journeys are `#![cfg(unix)]`, so a Windows invocation writes no record to read.
 const invocation = process.env.ONEVCS_RECOVERY_INVOCATION;
-test("the record this invocation's journeys wrote is one the reader accepts", { skip: !invocation && "not inside a producing invocation" }, () => {
+const skip = !invocation ? "not inside a producing invocation"
+  : process.platform === "win32" ? "the journeys that write the record run on unix only" : false;
+test("the record this invocation's journeys wrote is one the reader accepts", { skip }, () => {
   const record = readBoundaryRecord(recordDirectory);
   assert.equal(record.build.run_id, invocation);
   assert.ok(record.check.total_us > 0);
