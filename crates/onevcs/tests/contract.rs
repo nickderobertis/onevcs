@@ -6240,7 +6240,7 @@ fn repository_identities(value: &str) -> Vec<String> {
     };
     value
         .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | ')'))
-        .map(|word| word.trim_end_matches(|c: char| matches!(c, '.' | ',' | ':' | ';')))
+        .map(|word| word.trim_end_matches(['.', ',', ':', ';']))
         .filter(|word| {
             word.contains("github.com/")
                 || (*word != "owner/name"
