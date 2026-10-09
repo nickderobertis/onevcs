@@ -595,8 +595,8 @@ minutes. Three things are easy to undo.
   and a worktree's `.gitattributes` files are read where a listing names one.
 
 `tests/e2e/labels.rs` drives ref churn, each overlay and the configuration categories
-against uncached git; `tests/e2e/proof_churn.rs` holds the workload fixture's warm read
-under a concurrent ref writer to the registered warm budgets.
+against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
+read under a concurrent ref writer to the registered warm budgets.
 
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 

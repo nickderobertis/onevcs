@@ -10,6 +10,7 @@ use onevcs_testing::recovery::{build, Class, Fixture, Scale};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+mod churn;
 mod counting;
 mod telemetry;
 use counting::Counting;
@@ -28,6 +29,21 @@ fn milliseconds(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis())
         .expect("elapsed time fits telemetry")
         .max(1)
+}
+/// One full-size workload at a time: each builds production-shaped fixtures and
+/// drives the release binary over them, and the timed journey's wall clock must not
+/// carry another's load. Taken before the timed journey starts its clock.
+fn exclusive() -> std::fs::File {
+    use fs4::fs_std::FileExt;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/recovery-workload.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .expect("the workload lock opens");
+    FileExt::lock_exclusive(&file).expect("the workload lock is taken");
+    file
 }
 fn binary() -> std::ffi::OsString {
     std::env::var_os("ONEVCS_RECOVERY_BINARY")
@@ -205,6 +221,7 @@ fn sample(fixture: &Fixture, expected: &[Value]) -> Sample {
 
 #[test]
 fn full_workload_recovery() {
+    let _exclusive = exclusive();
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/budget-records");
     std::fs::create_dir_all(&directory).expect("telemetry directory");
     let binary = binary().to_string_lossy().into_owned();

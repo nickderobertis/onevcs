@@ -6,6 +6,9 @@
 //! receive-side configuration at global and repository level. The warm
 //! launcher-filtered Decision read is held to the registered warm Git-count
 //! thresholds, read from `budgets.yaml`, and to the rows git answers alone.
+//!
+//! It records no telemetry: the timed journey in `main.rs` is the budgets' one
+//! producer, and these hold the fixture lock it holds so neither loads the other.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -13,9 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use onevcs_testing::recovery::{build, Fixture, Scale};
 use serde_json::Value;
 
-#[path = "../recovery-workload/counting.rs"]
-mod counting;
-use counting::Counting;
+use super::{binary, exclusive, Counting};
 
 /// The registered threshold of one budget, from the document the gate reads.
 fn threshold(id: &str) -> usize {
@@ -83,7 +84,7 @@ fn repositories(root: &Path) -> Vec<PathBuf> {
 /// counting shim where one is given, and by git alone where `uncached`, since any
 /// `GIT_*` override is a context the proof cache delegates.
 fn read(fixture: &Fixture, counting: Option<&Counting>, uncached: bool) -> Vec<Value> {
-    let program = assert_cmd::cargo::cargo_bin("onevcs");
+    let program = binary();
     let mut command = match counting {
         Some(counting) => counting.with_program(&program),
         None => {
@@ -173,6 +174,7 @@ fn churn(fixture: &Fixture, repos: &[PathBuf], stop: &AtomicBool, rewrites: &Ato
 }
 
 fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str) {
+    let _exclusive = exclusive();
     let scratch = std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);

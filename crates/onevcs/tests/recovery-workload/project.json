@@ -24,6 +24,7 @@
         "{workspaceRoot}/scripts/coverage.sh",
         "{workspaceRoot}/crates/onevcs/src/**/*",
         "{workspaceRoot}/scripts/recoverable-build-inputs.json",
+        "{workspaceRoot}/budgets.yaml",
         "{workspaceRoot}/.cargo/config.toml"
       ],
       "outputs": [
@@ -47,6 +48,7 @@
         "{workspaceRoot}/scripts/coverage.sh",
         "{workspaceRoot}/crates/onevcs/src/**/*",
         "{workspaceRoot}/scripts/recoverable-build-inputs.json",
+        "{workspaceRoot}/budgets.yaml",
         "{workspaceRoot}/.cargo/config.toml"
       ],
       "outputs": [
