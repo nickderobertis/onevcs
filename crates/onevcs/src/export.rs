@@ -218,12 +218,14 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
             Some(&mut options),
         )
         .map_err(because("its branch cannot be compared with its base"))?;
-    let inside = |path: Option<&Path>| {
+    // A side with no path (the absent side of an addition or a deletion) is not
+    // outside anything; every side that names a path is judged.
+    let outside = |path: Option<&Path>| {
         path.map(|p| p.to_string_lossy().replace('\\', "/"))
-            .is_some_and(|p| p.starts_with(&format!("{}/", request.directory)))
+            .is_some_and(|p| !p.starts_with(&format!("{}/", request.directory)))
     };
     for delta in diff.deltas() {
-        if !inside(delta.old_file().path()) || !inside(delta.new_file().path()) {
+        if outside(delta.old_file().path()) || outside(delta.new_file().path()) {
             return Err(refused(
                 "its branch changes a path outside the export directory",
                 "a change outside the directory",
