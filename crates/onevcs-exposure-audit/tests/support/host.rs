@@ -52,6 +52,9 @@ pub struct Item {
     pub head_ref: String,
     pub reviews: Vec<Review>,
     pub closed: bool,
+    pub merged: bool,
+    /// Answer every follow-up read of this item's own connections with an error.
+    pub broken_threads: bool,
 }
 
 #[derive(Clone)]
@@ -61,8 +64,11 @@ pub struct Repo {
     /// Whether the owner listing reports it public.
     pub listed: bool,
     pub pushed_at: String,
-    /// What `GET /repos/{owner}/{name}` answers: `public`, `private`, or `gone` (404).
+    /// What `GET /repos/{owner}/{name}` answers: `public`, `private`, `gone` (404),
+    /// `limited` (a 429 quota refusal) or `error` (a 500).
     pub visibility: &'static str,
+    /// The name `GET /repos/{owner}/{name}` answers with, when it was renamed since.
+    pub renamed_to: Option<String>,
     pub issues_enabled: bool,
     pub issues: Vec<Item>,
     pub pulls: Vec<Item>,
@@ -72,6 +78,10 @@ pub struct Repo {
     pub rate_limit_pulls: bool,
     /// Answer this repository's issue pages claiming a next page with no cursor.
     pub broken_cursor: bool,
+    /// Answer this repository's change-request pages the same way.
+    pub broken_pull_cursor: bool,
+    /// Answer this repository's issue reads with a GraphQL `RATE_LIMITED` error.
+    pub limit_issues: bool,
 }
 
 impl Repo {
@@ -88,6 +98,9 @@ impl Repo {
             forbid_issues: false,
             rate_limit_pulls: false,
             broken_cursor: false,
+            broken_pull_cursor: false,
+            limit_issues: false,
+            renamed_to: None,
         }
     }
     fn full(&self) -> String {
@@ -99,7 +112,11 @@ impl Repo {
 pub enum Content {
     /// An issue of a repository in the world, by repository and number.
     Issue(String, u64),
+    /// A change request of a repository in the world, by repository and number.
+    Pull(String, u64),
     Draft(String, String),
+    /// Content the viewer may not see, which the host answers as `null`.
+    Hidden,
 }
 
 #[derive(Clone)]
@@ -132,6 +149,8 @@ pub struct Board {
     pub public: bool,
     pub title: String,
     pub items: Vec<BoardItem>,
+    /// Answer this board's item pages claiming a next page with no cursor.
+    pub broken_cursor: bool,
 }
 
 #[derive(Clone, Default)]
@@ -142,6 +161,15 @@ pub struct World {
     pub projects_token: String,
     /// The token every read needs; any other answers 401.
     pub token: String,
+    /// Answer the edit-history batch query with an error.
+    pub forbid_edits: bool,
+    /// Answer the private-repository listing without its connection.
+    pub broken_private_listing: bool,
+    /// Answer `/rate_limit` with a 404.
+    pub no_rate_limit: bool,
+    /// Answer git's smart-HTTP discovery (`/info/refs`) with this status; 0 serves
+    /// it the way every other path is served.
+    pub git_status: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -262,7 +290,17 @@ fn respond(
 ) -> (u16, String, Value) {
     let quota = || json!({ "resources": { "core": { "limit": 5000, "remaining": 4990 }, "graphql": { "limit": 5000, "remaining": 4980 } } });
     if path == "/rate_limit" {
+        if world.no_rate_limit {
+            return (404, String::new(), json!({ "message": "Not Found" }));
+        }
         return (200, String::new(), quota());
+    }
+    if world.git_status != 0 && path.contains("/info/refs") {
+        return (
+            world.git_status,
+            String::new(),
+            json!({ "message": "fake-host-refusal" }),
+        );
     }
     let projects = !world.projects_token.is_empty() && token == world.projects_token;
     if token != world.token && !projects {
@@ -274,11 +312,25 @@ fn respond(
                 .repos
                 .iter()
                 .find(|r| r.full().eq_ignore_ascii_case(rest));
-            return match found {
-                Some(repo) if repo.visibility != "gone" => (
+            return match found.map(|r| (r, r.visibility)) {
+                Some((_, "limited")) => (
+                    429,
+                    "Retry-After: 60\r\n".into(),
+                    json!({ "message": "API rate limit exceeded" }),
+                ),
+                Some((_, "error")) => (
+                    500,
+                    String::new(),
+                    json!({ "message": "fake-host-refusal" }),
+                ),
+                Some((repo, visibility)) if visibility != "gone" => (
                     200,
                     String::new(),
-                    json!({ "full_name": repo.full(), "visibility": repo.visibility, "private": repo.visibility != "public" }),
+                    json!({
+                        "full_name": repo.renamed_to.clone().unwrap_or_else(|| repo.full()),
+                        "visibility": visibility,
+                        "private": visibility != "public",
+                    }),
                 ),
                 _ => (404, String::new(), json!({ "message": "Not Found" })),
             };
@@ -324,17 +376,32 @@ fn respond(
     match op {
         "OwnerRepos" => {
             let owner = vars["owner"].as_str().unwrap_or_default();
+            if !world.repos.iter().any(|r| r.owner == owner) {
+                // An account the host does not know.
+                return data(json!({ "rateLimit": { "cost": 1 }, "repositoryOwner": null }));
+            }
             let all: Vec<Value> = world
                 .repos
                 .iter()
                 .filter(|r| r.listed && r.owner == owner)
-                .map(|r| json!({ "nameWithOwner": r.full(), "pushedAt": r.pushed_at }))
+                .map(|r| {
+                    // An empty timestamp is a repository never pushed to.
+                    let pushed = if r.pushed_at.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(r.pushed_at)
+                    };
+                    json!({ "nameWithOwner": r.full(), "pushedAt": pushed })
+                })
                 .collect();
             data(
                 json!({ "rateLimit": { "cost": 1 }, "repositoryOwner": { "repositories": page_of(all, &vars["cursor"]) } }),
             )
         }
         "Private" => {
+            if world.broken_private_listing {
+                return data(json!({ "rateLimit": { "cost": 1 }, "viewer": {} }));
+            }
             let all: Vec<Value> = world
                 .repos
                 .iter()
@@ -361,6 +428,9 @@ fn respond(
             if op == "Issues" && repo.forbid_issues {
                 return error("FORBIDDEN");
             }
+            if op == "Issues" && repo.limit_issues {
+                return error("RATE_LIMITED");
+            }
             if op == "Pulls" && repo.rate_limit_pulls {
                 return (
                     403,
@@ -378,7 +448,7 @@ fn respond(
             let key = if pull { "pullRequests" } else { "issues" };
             let mut repository = json!({ "hasIssuesEnabled": repo.issues_enabled });
             repository[key] = page_of(all, &vars["cursor"]);
-            if repo.broken_cursor && !pull {
+            if (repo.broken_cursor && !pull) || (repo.broken_pull_cursor && pull) {
                 repository[key]["pageInfo"] = json!({ "hasNextPage": true, "endCursor": null });
             }
             data(json!({ "rateLimit": { "cost": 1 }, "repository": repository }))
@@ -397,6 +467,11 @@ fn respond(
                 return data(
                     json!({ "rateLimit": { "cost": 1 }, "node": { "conn": page_of(item.fields(), &vars["cursor"]) } }),
                 );
+            }
+            if let Some(Node::Item { repo, pull, index }) = nodes.get(id) {
+                if item_of(world, *repo, *pull, *index).broken_threads {
+                    return error("INTERNAL");
+                }
             }
             let all: Vec<Value> = match (nodes.get(id), conn) {
                 (Some(Node::Item { repo, pull, index }), "comments") => {
@@ -448,6 +523,9 @@ fn respond(
             )
         }
         "Edits" => {
+            if world.forbid_edits {
+                return error("FORBIDDEN");
+            }
             let ids: Vec<&str> = vars["ids"]
                 .as_array()
                 .into_iter()
@@ -488,11 +566,14 @@ fn respond(
                 .map(|(i, item)| {
                     let content = match &item.content {
                         Content::Draft(title, body) => json!({ "__typename": "DraftIssue", "id": format!("D{i}"), "title": title, "body": body }),
-                        Content::Issue(full, number) => {
+                        Content::Hidden => Value::Null,
+                        Content::Issue(full, number) | Content::Pull(full, number) => {
+                            let pull = matches!(item.content, Content::Pull(..));
                             let (ri, repo) = world.repos.iter().enumerate().find(|(_, r)| r.full() == *full).expect("a seeded repository");
-                            let index = repo.issues.iter().position(|it| it.number == *number).expect("a seeded issue");
-                            let mut value = item_json(ri, false, index, &repo.issues[index], repo);
-                            value["__typename"] = json!("Issue");
+                            let items = if pull { &repo.pulls } else { &repo.issues };
+                            let index = items.iter().position(|it| it.number == *number).expect("a seeded item");
+                            let mut value = item_json(ri, pull, index, &items[index], repo);
+                            value["__typename"] = json!(if pull { "PullRequest" } else { "Issue" });
                             value["repository"] = json!({ "nameWithOwner": repo.full(), "visibility": repo.visibility.to_ascii_uppercase() });
                             value
                         }
@@ -500,10 +581,14 @@ fn respond(
                     json!({ "id": format!("PI{}x{i}", board.number), "isArchived": item.archived, "type": "ISSUE", "content": content, "fieldValues": first_page(item.fields()) })
                 })
                 .collect();
+            let mut items = page_of(all, &vars["cursor"]);
+            if board.broken_cursor {
+                items["pageInfo"] = json!({ "hasNextPage": true, "endCursor": null });
+            }
             data(
                 json!({ "rateLimit": { "cost": 1 }, "repositoryOwner": { "projectV2": {
                 "public": board.public, "title": board.title, "shortDescription": null, "readme": null,
-                "items": page_of(all, &vars["cursor"]),
+                "items": items,
             } } }),
             )
         }
@@ -630,7 +715,13 @@ fn item_json(repo_index: usize, pull: bool, index: usize, item: &Item, repo: &Re
     let mut value = text_json(&id, &item.body, None);
     value["number"] = json!(item.number);
     value["title"] = json!(item.title);
-    value["state"] = json!(if item.closed { "CLOSED" } else { "OPEN" });
+    value["state"] = json!(if item.merged {
+        "MERGED"
+    } else if item.closed {
+        "CLOSED"
+    } else {
+        "OPEN"
+    });
     value["url"] = json!(format!(
         "https://example.test/{}/{}",
         repo.full(),

@@ -151,19 +151,40 @@ impl Sandbox {
     }
 
     fn run(&self, host: &Host, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.run_with_git(host, &self.git_root(), args, env)
+    }
+
+    /// The `file://` root the seeded remotes are cloned from.
+    fn git_root(&self) -> String {
+        format!("file://{}", self.path("remotes").display())
+    }
+
+    fn run_with_git(&self, host: &Host, git: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut all = vec!["--owner", OWNER, "--pushed-since", "2026-01-01"];
+        all.extend(["--api-url", &host.url, "--git-url", git]);
+        all.extend(args);
+        let base = [
+            ("HOME", self.path("home")),
+            ("XDG_STATE_HOME", self.path("state")),
+        ];
+        let base: Vec<(&str, &str)> = base
+            .iter()
+            .map(|(k, v)| (*k, v.to_str().expect("a UTF-8 sandbox path")))
+            .chain(env.iter().copied())
+            .collect();
+        self.raw(&all, &base)
+    }
+
+    /// `run` with exactly `args`, and of the sandbox's environment only `PATH`, the
+    /// gh config directory and `env`: no home or state directory unless `env` names one.
+    fn raw(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_onevcs-exposure-audit"));
         command
             .arg("run")
-            .args(["--owner", OWNER, "--pushed-since", "2026-01-01"])
-            .args(["--api-url", &host.url])
-            .arg("--git-url")
-            .arg(format!("file://{}", self.path("remotes").display()))
             .args(args)
             .current_dir(self.path("checkout"))
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", self.path("home"))
-            .env("XDG_STATE_HOME", self.path("state"))
             .env("GH_CONFIG_DIR", self.path("gh-config"))
             .env("GIT_CONFIG_NOSYSTEM", "1");
         // The one inherited variable: a coverage run tells the instrumented binary where
@@ -427,6 +448,7 @@ fn world(sandbox: &Sandbox) -> (World, Vec<PathBuf>) {
                         archived: true,
                     },
                 ],
+                broken_cursor: false,
             },
             Board {
                 owner: OWNER.into(),
@@ -440,10 +462,12 @@ fn world(sandbox: &Sandbox) -> (World, Vec<PathBuf>) {
                     broken_fields: false,
                     archived: false,
                 }],
+                broken_cursor: false,
             },
         ],
         projects_token: PROJECTS_TOKEN.into(),
         token: TOKEN.into(),
+        ..World::default()
     };
     let registry = serde_json::json!({
         "version": 6,
@@ -1453,5 +1477,845 @@ fn history_attributes_merge_resolutions_reads_every_name_and_states_its_gaps() {
     assert!(
         !manifest.contains("loose-tree"),
         "a gap's detail stays in the vault"
+    );
+}
+
+/// A sandbox path as the `&str` an environment entry takes.
+fn utf8(path: &Path) -> &str {
+    path.to_str().expect("a UTF-8 sandbox path")
+}
+
+fn read_manifest(sandbox: &Sandbox, name: &str) -> String {
+    let manifest =
+        std::fs::read_to_string(sandbox.path("checkout").join(name)).expect("the manifest");
+    assert_no_private("the manifest", &manifest);
+    assert_vocabulary(&manifest);
+    manifest
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).expect("a vault file")).expect("JSON")
+}
+
+/// A refused run: its exit status, its message and an ACTION line, nothing private.
+fn assert_refused(out: &Output, code: i32, message: &str) {
+    let printed = text(out);
+    assert_eq!(out.status.code(), Some(code), "{printed}");
+    assert!(printed.contains(message), "{message}: {printed}");
+    assert!(printed.contains("exposure-audit: ACTION: "), "{printed}");
+    assert_no_private("a refusal", &printed);
+}
+
+#[test]
+fn a_refused_flag_is_named_by_position_never_by_value_and_nothing_is_read() {
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    let host = Host::start(world);
+    let (home, state) = (sandbox.path("home"), sandbox.path("state"));
+    let env = [
+        ("HOME", utf8(&home)),
+        ("XDG_STATE_HOME", utf8(&state)),
+        ("GH_TOKEN", TOKEN),
+    ];
+    let git = sandbox.git_root();
+    let base = |extra: &[&'static str]| -> Vec<String> {
+        let mut args: Vec<String> = ["--owner", OWNER, "--pushed-since", "2026-01-01"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        if !extra.contains(&"--api-url") {
+            args.extend(["--api-url".to_owned(), host.url.clone()]);
+        }
+        if !extra.contains(&"--git-url") {
+            args.extend(["--git-url".to_owned(), git.clone()]);
+        }
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        args
+    };
+    let cases: Vec<(Vec<String>, &str)> = vec![
+        (
+            vec![
+                "--owner".into(),
+                "hiddenco/quietharbor".into(),
+                "--pushed-since".into(),
+                "2026-01-01".into(),
+            ],
+            "--owner is not an account name",
+        ),
+        (
+            vec![
+                "--owner".into(),
+                OWNER.into(),
+                "--pushed-since".into(),
+                "quietharbor".into(),
+            ],
+            "--pushed-since is not a YYYY-MM-DD date",
+        ),
+        (
+            base(&["--board-issues", "hiddenco"]),
+            "--board-issues entry 1 is not OWNER/NAME",
+        ),
+        (
+            base(&[
+                "--board",
+                "sample-owner/2",
+                "--board",
+                "hiddenco/quietharbor",
+            ]),
+            "--board entry 2 is not OWNER/NUMBER",
+        ),
+        (
+            base(&["--api-url", "file:///hiddenco/quietharbor"]),
+            "--api-url is not an http or https URL",
+        ),
+        (
+            base(&["--git-url", "ssh://hiddenco.example.test/quietharbor"]),
+            "--git-url is not an http, https or file URL",
+        ),
+    ];
+    for (args, message) in &cases {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = sandbox.raw(&args, &env);
+        assert_refused(&out, 2, message);
+        assert!(
+            text(&out).contains("ACTION: pass "),
+            "the action says how to spell it: {}",
+            text(&out)
+        );
+    }
+
+    // No home and no state directory: nowhere to put the vault by default.
+    let args = base(&[]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = sandbox.raw(&args, &[("GH_TOKEN", TOKEN)]);
+    assert_refused(
+        &out,
+        2,
+        "no vault root: HOME and XDG_STATE_HOME are both unset",
+    );
+    assert!(host.requests().is_empty(), "nothing was read");
+    assert!(!sandbox.vault_root().exists(), "and no vault was made");
+
+    // An account the host does not know has no listing to audit.
+    let out = sandbox.raw(
+        &[
+            "--owner",
+            "unknown-owner",
+            "--pushed-since",
+            "2026-01-01",
+            "--api-url",
+            &host.url,
+        ],
+        &env,
+    );
+    assert_refused(&out, 3, "the owner listing could not be read (not-found)");
+
+    // A registry that is a directory, that is not JSON, or that has no identities.
+    let registry = sandbox.path("registry-dir");
+    std::fs::create_dir_all(&registry).expect("a directory");
+    let not_json = sandbox.path("registry-not-json");
+    std::fs::write(&not_json, "hiddenco/quietharbor\n").expect("a file");
+    let no_identities = sandbox.path("registry-no-identities");
+    std::fs::write(
+        &no_identities,
+        "{\"identities\": [\"hiddenco/quietharbor\"]}",
+    )
+    .expect("a file");
+    for path in [&registry, &not_json, &no_identities] {
+        let out = sandbox.run(&host, &["--registry", utf8(path)], &[("GH_TOKEN", TOKEN)]);
+        assert_refused(
+            &out,
+            2,
+            "the registry document is not readable JSON with an `identities` object",
+        );
+    }
+}
+
+#[test]
+fn a_vault_root_that_cannot_be_resolved_or_created_is_refused_and_a_dotted_one_is_resolved() {
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    let host = Host::start(world);
+
+    // A dangling link: where it leads, and so whether that is a checkout, is unknown.
+    let dangling = sandbox.path("hiddenco-dangling");
+    std::os::unix::fs::symlink(sandbox.path("nowhere/quietharbor"), &dangling).expect("a symlink");
+    let out = sandbox.run(
+        &host,
+        &["--vault-root", utf8(&dangling)],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert_refused(&out, 2, "the vault root cannot be resolved");
+    assert!(!text(&out).contains(utf8(&dangling)), "no path is named");
+
+    // A directory this user may not write into.
+    let locked = sandbox.path("locked");
+    std::fs::create_dir_all(&locked).expect("a directory");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    let out = sandbox.run(
+        &host,
+        &["--vault-root", utf8(&locked.join("vault"))],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    assert_refused(&out, 3, "the vault root cannot be created with mode 0700");
+    assert!(host.requests().is_empty(), "nothing was read");
+
+    // A `..` through a directory that does not exist yet is resolved lexically.
+    let dotted = sandbox.path("outside/missing/../vault");
+    let out = sandbox.run(
+        &host,
+        &[
+            "--vault-root",
+            utf8(&dotted),
+            "--allow",
+            "sample-owner/beta",
+        ],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let vault = sandbox.path("outside/vault");
+    assert_eq!(mode(&vault), 0o700);
+    assert_eq!(std::fs::read_dir(&vault).expect("the vault").count(), 1);
+    assert!(
+        !sandbox.path("outside/missing").exists(),
+        "the missing part was never made"
+    );
+
+    // A manifest that cannot be written where it was asked for stops the run.
+    let out = sandbox.run(
+        &host,
+        &[
+            "--allow",
+            "sample-owner/beta",
+            "--manifest-out",
+            "missing/coverage.md",
+        ],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert_refused(
+        &out,
+        3,
+        "the coverage manifest could not be written where --manifest-out names",
+    );
+    assert_eq!(
+        sandbox.git(
+            &sandbox.path("checkout"),
+            &["status", "--porcelain", "--untracked-files=all"]
+        ),
+        "",
+        "nothing landed in the checkout"
+    );
+}
+
+#[test]
+fn a_credential_falls_back_to_gh_and_a_host_without_a_quota_endpoint_is_no_failure() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    world.no_rate_limit = true;
+    let host = Host::start(world);
+    let bin = sandbox.path("bin");
+    std::fs::create_dir_all(&bin).expect("a bin directory");
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        format!("#!/bin/sh\ntest \"$1 $2\" = \"auth token\" || exit 1\necho {TOKEN}\n"),
+    )
+    .expect("a fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = sandbox.run(
+        &host,
+        &["--allow", "sample-owner/beta", "--manifest-out", "gh.md"],
+        &[("PATH", &path)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let printed = text(&out);
+    assert_no_private("stdout and stderr", &printed);
+    assert!(
+        !printed.contains("quota:"),
+        "no quota is claimed: {printed}"
+    );
+    let manifest = read_manifest(&sandbox, "gh.md");
+    assert_eq!(
+        table(&manifest)["sample-owner/beta"][3],
+        "scanned",
+        "the credential gh gave was the one used"
+    );
+    let m = read_json(&sandbox.run_dir().join("measurements.json"));
+    assert!(m["api"]["quota_before"].is_null());
+}
+
+/// A private repository whose name is longer than a snippet's window.
+const LONG: &str = "harborlight-telemetry-ingest-pipeline-for-the-northern-lighthouse-fleet";
+
+#[test]
+fn odd_host_answers_are_scope_figures_and_gaps_never_failures() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    // Listed repositories the host answers oddly about.
+    let never = Repo::new(OWNER, "never-pushed", "public", "");
+    let undated = Repo::new(OWNER, "undated", "public", "yesterday");
+    let misnamed = Repo::new(OWNER, "mis named", "public", "2026-03-03T00:00:00Z");
+    let mut flaky = Repo::new(OWNER, "flaky", "error", "2026-03-04T00:00:00Z");
+    flaky.listed = true;
+    let mut renamed = Repo::new(OWNER, "oldname", "public", "2026-03-05T00:00:00Z");
+    renamed.renamed_to = Some(format!("{OWNER}/newname"));
+    // Public, but answered under a name that is no OWNER/NAME: no confirmation.
+    let mut garbled = Repo::new(OWNER, "garbled", "public", "2026-03-05T00:00:00Z");
+    garbled.renamed_to = Some("garbled".into());
+    world
+        .repos
+        .extend([never, undated, misnamed, flaky, renamed, garbled]);
+    world.repos.push(Repo::new(
+        "hiddenco",
+        LONG,
+        "private",
+        "2026-02-01T00:00:00Z",
+    ));
+    world.repos[3].issues = vec![Item {
+        number: 1,
+        title: "Internal".into(),
+        ..Item::default()
+    }];
+    world.repos[1].pulls[0].merged = true;
+    world.repos[1].pulls[0].body =
+        Text::edited("Refactor after quietharbor", &[("first draft", false)]);
+    world.broken_private_listing = true;
+    world.forbid_edits = true;
+    let item = |content: Content| BoardItem {
+        content,
+        field_text: None,
+        more_fields: Vec::new(),
+        broken_fields: false,
+        archived: false,
+    };
+    let board = |number: u64, public: bool, items: Vec<BoardItem>| Board {
+        owner: OWNER.into(),
+        number,
+        public,
+        title: "Plans".into(),
+        items,
+        broken_cursor: false,
+    };
+    let mut broken = board(5, true, vec![item(Content::Draft("A".into(), "a".into()))]);
+    broken.broken_cursor = true;
+    world.boards = vec![
+        board(
+            2,
+            true,
+            vec![
+                item(Content::Issue(format!("{OWNER}/beta"), 1)),
+                item(Content::Pull(format!("{OWNER}/beta"), 3)),
+                item(Content::Hidden),
+                item(Content::Issue(format!("{OWNER}/charlie-hidden"), 1)),
+            ],
+        ),
+        board(4, false, vec![item(Content::Draft("B".into(), "b".into()))]),
+        broken,
+    ];
+    // A declaration that does not parse, and a line too long for one snippet window
+    // naming a private repository whose name is longer than half of one.
+    sandbox.commit_to(
+        OWNER,
+        "lanternfish-internal",
+        "private-terms.toml",
+        "schema_version = = 1\n",
+    );
+    let line = format!("{} hiddenco/{LONG} {}\n", "a".repeat(45), "b ".repeat(100));
+    sandbox.commit_to(OWNER, "alpha", "docs/long.md", &line);
+    let registry = serde_json::json!({
+        "version": 6,
+        "identities": {
+            "github.com/hiddenco/quietharbor": {},
+            "github.com/sample-owner/lanternfish-internal": {},
+            format!("github.com/hiddenco/{LONG}"): {},
+            "github.com/sample-owner/delta-stale": {},
+            "github.com/sample-owner/echo-gone": {},
+            "git.example.test/sample-owner/alpha": {},
+        },
+        "checkouts": {},
+    });
+    std::fs::write(
+        sandbox.path("home/.onevcs/registry.json"),
+        registry.to_string(),
+    )
+    .expect("the registry");
+
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &[
+            "--allow",
+            "sample-owner/alpha",
+            "--allow",
+            "sample-owner/newname",
+            "--board-issues",
+            "sample-owner/foxtrot",
+            "--board",
+            "sample-owner/2",
+            "--board",
+            "sample-owner/4",
+            "--board",
+            "sample-owner/5",
+            "--board",
+            "sample-owner/9",
+            "--projects-token-env",
+            "BOARD_TOKEN",
+            "--manifest-out",
+            "odd.md",
+        ],
+        &[("GH_TOKEN", TOKEN), ("BOARD_TOKEN", PROJECTS_TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let manifest = read_manifest(&sandbox, "odd.md");
+    for line in [
+        "Pushed on or after the cutoff: 8; pushed before it, excluded: 2.",
+        "Visibility re-read: 4 confirmed public; dropped as not public: 1; as unknown: 1; as unreadable: 4.",
+        "Allowlist: 2 entries, 0 not in the derived set.",
+        "Board issue repositories added beyond the listing: 1.",
+        "Registered identities confirmed public: 1, of which in the listing: 0.",
+        "Repositories audited: 3.",
+    ] {
+        assert!(manifest.contains(line), "{line}\n{manifest}");
+    }
+    let rows_by_label = table(&manifest);
+    let row = |label: &str| {
+        rows_by_label
+            .get(label)
+            .unwrap_or_else(|| panic!("a row for {label}: {manifest}"))
+            .clone()
+    };
+    assert_eq!(
+        row("sample-owner/newname")[..5],
+        [
+            "not-found",
+            "not-found",
+            "none read",
+            "not-found",
+            "not-found"
+        ],
+        "a renamed repository the host serves nothing under is not found, not clean"
+    );
+    assert_eq!(row("sample-owner/foxtrot")[3], "permission-denied");
+    assert!(
+        !rows_by_label.contains_key("sample-owner project 4"),
+        "a board that is not public is no surface"
+    );
+    assert_eq!(row("sample-owner project 5")[5], "other-error");
+    assert_eq!(row("sample-owner project 9")[3..], ["not-found"; 4]);
+    assert_eq!(row("sample-owner project 2")[3..5], ["scanned", "scanned"]);
+    assert_eq!(
+        row("sample-owner project 2")[6],
+        "permission-denied",
+        "edits the host refused to show are a gap"
+    );
+
+    let run = sandbox.run_dir();
+    let terms = read_json(&run.join("terms.json"));
+    let gaps = terms["source_gaps"].as_array().expect("the gaps");
+    let stage = |identity: &str| {
+        gaps.iter()
+            .find(|g| g["identity"] == identity)
+            .map(|g| g["stage"].clone())
+    };
+    assert_eq!(
+        stage("github.com/sample-owner/lanternfish-internal"),
+        Some(Value::from("manifests"))
+    );
+    assert_eq!(
+        stage(&format!("github.com/hiddenco/{LONG}")),
+        Some(Value::from("clone"))
+    );
+    assert_eq!(gaps.len(), 2, "{gaps:?}");
+    let rules = terms["rules"].as_array().expect("the rules");
+    assert!(
+        !rules
+            .iter()
+            .any(|r| r["identities"] == serde_json::json!(["git.example.test/sample-owner/alpha"])),
+        "an audited repository is never a private source, under any host"
+    );
+    let m = read_json(&run.join("measurements.json"));
+    assert_eq!(m["private_sources"]["account_listing"], "other-error");
+    assert_eq!(m["private_sources"]["source_gaps"], 2);
+
+    let files = rows(&run, "findings-current-files.jsonl");
+    let long = files
+        .iter()
+        .find(|r| r["path"] == "docs/long.md" && r["term"] == LONG)
+        .expect("the long name in a current file");
+    assert_eq!(long["line"], 1);
+    let snippet = long["snippet"].as_str().expect("a snippet");
+    assert!(
+        snippet.chars().count() <= 120 && snippet.starts_with("aaa"),
+        "a term no window holds whole keeps the line's start: {snippet}"
+    );
+
+    let items = rows(&run, "findings-items.jsonl");
+    assert!(
+        has(
+            &items,
+            &[
+                ("container", "board:sample-owner/2"),
+                ("kind", "board-issue-comment"),
+                ("term", "hiddenco/quietharbor")
+            ]
+        ),
+        "a backing issue outside the audited set has its comments read from the board"
+    );
+    assert!(
+        has(
+            &items,
+            &[
+                ("container", "board:sample-owner/2"),
+                ("kind", "board-change-request"),
+                ("state", "MERGED"),
+                ("term", "quietharbor")
+            ]
+        ),
+        "{items:?}"
+    );
+    let coverage = read_json(&run.join("coverage.json"));
+    let board = coverage["boards"]
+        .as_array()
+        .expect("the boards")
+        .iter()
+        .find(|b| b["number"] == 2)
+        .expect("board 2")
+        .clone();
+    assert_eq!(board["items"]["backing_items_not_public"], 1);
+    assert_eq!(board["items"]["board_items"], 4);
+}
+
+#[test]
+fn long_threads_renames_and_edits_are_read_to_their_end_and_a_quota_error_stops_the_reads() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    let plain = |number: u64| Item {
+        number,
+        title: format!("Item {number}"),
+        ..Item::default()
+    };
+    let mut hotel = Repo::new(OWNER, "hotel", "public", "2026-03-06T00:00:00Z");
+    hotel.issues = vec![
+        Item {
+            number: 1,
+            title: "Tracking".into(),
+            previous_titles: vec!["a".into(), "b".into(), "Port hiddenco tooling".into()],
+            body: Text::edited("Tracking.", &[("was about quietharbor-core", false)]),
+            comments: ["c1", "c2", "c3", "c4", "mirrors hiddenco/quietharbor"]
+                .iter()
+                .map(|c| Text::new(c))
+                .collect(),
+            ..Item::default()
+        },
+        plain(2),
+        plain(3),
+        Item {
+            broken_threads: true,
+            comments: vec![Text::new("x"), Text::new("y"), Text::new("z")],
+            ..plain(4)
+        },
+    ];
+    hotel.pulls = vec![plain(5), plain(6), plain(7)];
+    let mut india = Repo::new(OWNER, "india", "public", "2026-03-07T00:00:00Z");
+    india.issues_enabled = false;
+    india.broken_pull_cursor = true;
+    let mut juliet = Repo::new(OWNER, "juliet", "public", "2026-03-08T00:00:00Z");
+    juliet.limit_issues = true;
+    juliet.issues = vec![plain(1)];
+    world.repos.extend([hotel, india, juliet]);
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &[
+            "--allow",
+            "sample-owner/hotel",
+            "--allow",
+            "sample-owner/india",
+            "--allow",
+            "sample-owner/juliet",
+            "--private-from",
+            "registry",
+            "--manifest-out",
+            "threads.md",
+        ],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+    let manifest = read_manifest(&sandbox, "threads.md");
+    let rows_by_label = table(&manifest);
+    assert_eq!(
+        rows_by_label["sample-owner/hotel"][3..5],
+        ["other-error", "scanned"],
+        "a thread whose later page failed is a gap; every change request page was read"
+    );
+    assert_eq!(
+        rows_by_label["sample-owner/india"][3..5],
+        ["not-found", "other-error"],
+        "issues turned off with none filed are not found; a page with no cursor is a gap"
+    );
+    assert_eq!(
+        rows_by_label["sample-owner/juliet"][3..5],
+        ["rate-limited", "rate-limited"]
+    );
+
+    let run = sandbox.run_dir();
+    let items = rows(&run, "findings-items.jsonl");
+    for (kind, term, persistence) in [
+        ("issue", "hiddenco", "title-history"),
+        ("issue", "quietharbor-core", "edit-history"),
+        ("issue-comment", "hiddenco/quietharbor", "current"),
+    ] {
+        assert!(
+            has(
+                &items,
+                &[
+                    ("container", "sample-owner/hotel"),
+                    ("kind", kind),
+                    ("term", term),
+                    ("persistence", persistence)
+                ]
+            ),
+            "{kind} {term} {persistence}: {items:?}"
+        );
+    }
+    let coverage = read_json(&run.join("coverage.json"));
+    let hotel = coverage["repositories"]
+        .as_array()
+        .expect("the repositories")
+        .iter()
+        .find(|r| r["repository"] == "sample-owner/hotel")
+        .expect("hotel")
+        .clone();
+    assert_eq!(hotel["items"]["issues"], 4);
+    assert_eq!(hotel["items"]["change_requests"], 3);
+    assert_eq!(hotel["items"]["renamed_titles"], 3);
+    assert_eq!(hotel["items"]["edits_read"], 1);
+    let m = read_json(&run.join("measurements.json"));
+    assert_eq!(m["api"]["requests"]["rate_limited_responses"], 1);
+    assert!(
+        m["api"]["requests"]["short_circuited"]
+            .as_u64()
+            .expect("a count")
+            >= 1,
+        "nothing more is asked of the host after a quota refusal"
+    );
+}
+
+#[test]
+fn every_ref_kind_binary_and_oversized_blobs_and_odd_heads_are_read_or_stated() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    sandbox.remote("kilo", |s, w| {
+        s.write(w, "README.md", "Kilo.\n");
+        s.write(
+            w,
+            "assets/logo.bin",
+            "\u{0}\u{1}binary hiddenco/quietharbor\n",
+        );
+        // Past the size the scan reads, and cheap to store: it compresses to nothing.
+        s.write(w, "data/huge.txt", &"a\n".repeat(17 * 1024 * 1024));
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Start kilo"]);
+        let head = s.git(w, &["rev-parse", "HEAD"]);
+        let gitlink = format!("160000,{},vendor/widget", head.trim());
+        s.git(w, &["update-index", "--add", "--cacheinfo", &gitlink]);
+        s.git(w, &["commit", "-q", "-m", "Vendor a submodule"]);
+        s.git(
+            w,
+            &[
+                "tag",
+                "-a",
+                "v1",
+                "-m",
+                "Release notes: synced from hiddenco/quietharbor",
+            ],
+        );
+        s.git(w, &["notes", "add", "-m", "reviewed", "HEAD"]);
+        // Two blobs only a tag names: one carrying a term, one not.
+        for (file, text, tag) in [
+            (
+                "loose.txt",
+                "loose hiddenco/quietharbor\n",
+                "refs/tags/loose-blob",
+            ),
+            ("plain.txt", "nothing here\n", "refs/tags/plain-blob"),
+        ] {
+            s.write(w, file, text);
+            let oid = s.git(w, &["hash-object", "-w", file]);
+            std::fs::remove_file(w.join(file)).expect("the loose file");
+            s.git(w, &["update-ref", tag, oid.trim()]);
+        }
+    });
+    sandbox.remote("lima", |_, _| {});
+    let mike = sandbox.remote("mike", |s, w| {
+        s.git(w, &["checkout", "-q", "-b", "trunk"]);
+        s.write(w, "README.md", "Mike, ported from hiddenco/quietharbor.\n");
+        s.git(w, &["add", "-A"]);
+        s.git(w, &["commit", "-q", "-m", "Start mike"]);
+    });
+    sandbox.git(&mike, &["symbolic-ref", "HEAD", "refs/heads/gone"]);
+    for name in ["kilo", "lima", "mike"] {
+        world
+            .repos
+            .push(Repo::new(OWNER, name, "public", "2026-03-09T00:00:00Z"));
+    }
+    // Re-read last, so its quota refusal comes after the set is drawn; every API read
+    // after it is answered rate-limited without asking, and git spends no API quota.
+    let mut november = Repo::new(OWNER, "november", "limited", "2026-03-10T00:00:00Z");
+    november.listed = true;
+    world.repos.push(november);
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &[
+            "--allow",
+            "sample-owner/kilo",
+            "--allow",
+            "sample-owner/lima",
+            "--allow",
+            "sample-owner/mike",
+            "--manifest-out",
+            "refs.md",
+        ],
+        &[("GH_TOKEN", TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    let printed = text(&out);
+    assert_no_private("stdout and stderr", &printed);
+    assert!(printed.contains("commitless refs 2"), "{printed}");
+    let manifest = read_manifest(&sandbox, "refs.md");
+    assert!(manifest.contains("as unreadable: 1."), "{manifest}");
+    let rows_by_label = table(&manifest);
+    assert_eq!(
+        rows_by_label["sample-owner/kilo"][..4],
+        [
+            "scanned",
+            "scanned",
+            "heads 1, tags 3, pull 0, other 1",
+            "rate-limited"
+        ]
+    );
+    assert_eq!(
+        rows_by_label["sample-owner/lima"][..3],
+        ["not-found", "not-found", "heads 0, tags 0, pull 0, other 0"],
+        "an empty repository has nothing to scan, which is not clean"
+    );
+    assert_eq!(
+        rows_by_label["sample-owner/mike"][..2],
+        ["not-found", "scanned"],
+        "a head naming no branch has no current files, but its history is read"
+    );
+
+    let run = sandbox.run_dir();
+    let history = rows(&run, "findings-history.jsonl");
+    assert!(has(
+        &history,
+        &[
+            ("repository", "sample-owner/kilo"),
+            ("location", "tag"),
+            ("term", "hiddenco/quietharbor")
+        ]
+    ));
+    assert!(has(
+        &history,
+        &[
+            ("repository", "sample-owner/mike"),
+            ("location", "blob"),
+            ("term", "hiddenco/quietharbor")
+        ]
+    ));
+    let files = rows(&run, "findings-current-files.jsonl");
+    assert!(
+        !files.iter().any(|r| r["path"] == "assets/logo.bin"),
+        "a binary blob is counted, not read"
+    );
+    let gaps = rows(&run, "findings-history-gaps.jsonl");
+    assert!(
+        has(
+            &gaps,
+            &[
+                ("gap", "unattributed"),
+                ("location", "blob"),
+                ("ref", "refs/tags/loose-blob")
+            ]
+        ),
+        "{gaps:?}"
+    );
+    let m = read_json(&run.join("measurements.json"));
+    assert_eq!(m["corpus"]["git"]["oversized_skipped"], 1);
+    assert_eq!(m["corpus"]["git"]["binary_skipped"], 1);
+    assert_eq!(m["corpus"]["git"]["commitless_refs"], 2);
+    assert_eq!(m["corpus"]["refs"]["other"], 1);
+}
+
+/// A loopback host whose address spells neither status git's refusals are told apart
+/// by, so a refusal's kind is read from what git says and not from the URL it names.
+fn git_host(world: &World) -> Host {
+    loop {
+        let host = Host::start(world.clone());
+        if !["403", "429"].iter().any(|code| host.url.contains(code)) {
+            return host;
+        }
+    }
+}
+
+#[test]
+fn a_git_host_that_refuses_a_clone_is_a_stated_gap_by_kind() {
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    for (status, want) in [
+        (0, "permission-denied"),
+        (429, "rate-limited"),
+        (500, "other-error"),
+    ] {
+        let mut world = world.clone();
+        world.git_status = status;
+        let host = git_host(&world);
+        let name = format!("git-{status}.md");
+        let out = sandbox.run_with_git(
+            &host,
+            &host.url,
+            &[
+                "--allow",
+                "sample-owner/beta",
+                "--private-from",
+                "registry",
+                "--manifest-out",
+                &name,
+            ],
+            &[("GH_TOKEN", TOKEN)],
+        );
+        assert!(out.status.success(), "{status}: {}", text(&out));
+        assert_no_private("stdout and stderr", &text(&out));
+        let manifest = read_manifest(&sandbox, &name);
+        assert_eq!(
+            table(&manifest)["sample-owner/beta"][..4],
+            [want, want, "none read", "scanned"],
+            "a clone refused with {status} is {want}; the API surfaces are still read"
+        );
+    }
+    let gaps: Vec<Value> = std::fs::read_dir(sandbox.vault_root())
+        .expect("the vault root")
+        .map(|e| read_json(&e.expect("a run").path().join("terms.json")))
+        .flat_map(|t| t["source_gaps"].as_array().cloned().unwrap_or_default())
+        .collect();
+    assert!(
+        gaps.iter()
+            .all(|g| g["stage"] == "clone" && g["identity"] == "github.com/hiddenco/quietharbor"),
+        "{gaps:?}"
+    );
+    assert_eq!(
+        gaps.len(),
+        3,
+        "each run states the private clone it could not make"
     );
 }

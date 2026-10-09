@@ -94,12 +94,9 @@ impl Api {
         self.stats.borrow().clone()
     }
 
-    fn url(&self, path_or_url: &str) -> String {
-        if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-            path_or_url.to_owned()
-        } else {
-            format!("{}{}", self.base, path_or_url)
-        }
+    /// A path under the API root: every read the audit makes is one.
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base, path)
     }
 
     /// The quota left, read from the endpoint that costs none of it.
@@ -127,7 +124,7 @@ impl Api {
     }
 
     /// One REST `GET`.
-    pub fn get(&self, path_or_url: &str) -> Result<Page, Status> {
+    pub fn get(&self, path: &str) -> Result<Page, Status> {
         if self.tripped.get() {
             self.stats.borrow_mut().short_circuited += 1;
             return Err(Status::RateLimited);
@@ -136,7 +133,7 @@ impl Api {
         let started = Instant::now();
         let result = self
             .agent
-            .get(&self.url(path_or_url))
+            .get(&self.url(path))
             .header("Authorization", &format!("Bearer {}", self.token.expose()))
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
@@ -223,14 +220,16 @@ impl Api {
             .read_to_string()
             .map_err(|_| Status::OtherError)?;
         let body: Value = serde_json::from_str(&text).map_err(|_| Status::OtherError)?;
-        if let Some(errors) = body.get("errors").and_then(Value::as_array) {
-            if !errors.is_empty() {
-                let refused = classify_graphql(errors);
-                if refused == Status::RateLimited {
-                    self.trip();
-                }
-                return Err(refused);
+        let errors = body
+            .get("errors")
+            .and_then(Value::as_array)
+            .filter(|errors| !errors.is_empty());
+        if let Some(errors) = errors {
+            let refused = classify_graphql(errors);
+            if refused == Status::RateLimited {
+                self.trip();
             }
+            return Err(refused);
         }
         let data = body.get("data").cloned().unwrap_or(Value::Null);
         if let Some(cost) = data.pointer("/rateLimit/cost").and_then(Value::as_u64) {

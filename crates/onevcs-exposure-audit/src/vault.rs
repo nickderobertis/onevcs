@@ -51,13 +51,13 @@ pub fn resolve(path: &Path) -> Option<PathBuf> {
         existing = existing.parent()?;
     }
     let mut resolved = fs::canonicalize(existing).ok()?;
+    // Only names and `..` can be missing: the root exists, and `components` drops
+    // every `.` but a leading one, which an absolute path does not have.
     for component in missing.into_iter().rev() {
-        match component {
-            Component::Normal(part) => resolved.push(part),
-            Component::ParentDir => {
-                resolved.pop();
-            }
-            _ => {}
+        if component == Component::ParentDir {
+            resolved.pop();
+        } else {
+            resolved.push(component);
         }
     }
     Some(resolved)
