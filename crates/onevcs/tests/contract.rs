@@ -6315,6 +6315,63 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
     }
 }
 
+#[test]
+fn every_secret_a_workflow_reads_is_one_the_provisioning_manifest_names() {
+    // `gh-secrets.json` is what a fork or a fresh clone provisions from, and a
+    // workflow that reads a secret the manifest does not name fails in CI with a
+    // blank value — which the live tier, for one, reads as "unset" and refuses on.
+    // So the two are held to one set, in both directions: a secret the manifest
+    // names and no workflow reads is a credential provisioned for nothing.
+    // `GITHUB_TOKEN` is the runner's own and is never provisioned.
+    let dir = repo_root().join(".github/workflows");
+    let mut read = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("the workflows directory must be readable") {
+        let path = entry.expect("a workflow entry").path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        for (at, _) in text.match_indices("secrets.") {
+            // A context reference, not a word ending in it, such as this manifest's
+            // own file name.
+            let starts_a_word = text[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')));
+            if !starts_a_word {
+                continue;
+            }
+            let name: String = text[at + "secrets.".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() && name != "GITHUB_TOKEN" {
+                read.insert(name);
+            }
+        }
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_str(&repo_file("gh-secrets.json")).expect("gh-secrets.json is JSON");
+    let named: BTreeSet<String> = manifest["secrets"]
+        .as_array()
+        .expect("gh-secrets.json lists its secrets")
+        .iter()
+        .map(|secret| {
+            secret["name"]
+                .as_str()
+                .expect("each provisioned secret has a name")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        read.contains(SMOKE_REPO_KEY),
+        "no workflow reads secrets.{SMOKE_REPO_KEY}, which names the live tier's scratch repository"
+    );
+    assert_eq!(
+        read, named,
+        "the secrets the workflows read and the ones gh-secrets.json provisions differ; \
+         change them together"
+    );
+}
+
 /// What this repository's release configuration publishes: the artifacts a
 /// dependent can name, and the per-platform npm packages that exist only so a
 /// launcher can resolve one.
