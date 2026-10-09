@@ -40,6 +40,10 @@ mod branches;
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod boundary;
 mod cli;
+// Unix only: one journey makes the state root unwritable by mode, to hold that a
+// write which cannot complete installs nothing.
+#[cfg(unix)]
+mod rules_apply;
 // Unix only: `onevcs export` from a real private clone into a real public checkout,
 // with visibility answered by the substituted `gh`. Its own header carries the reason.
 #[cfg(unix)]
