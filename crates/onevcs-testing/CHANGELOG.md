@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.13.2...onevcs-testing-v0.13.3) - 2026-10-09
+
+### Added
+
+- *(recoverable)* answer decision reads cheaply and retain preserved session labels ([#332](https://github.com/nickderobertis/onevcs/pull/332))
+
+### Fixed
+
+- *(publish)* count a required context with no run as pending before calling checks settled ([#339](https://github.com/nickderobertis/onevcs/pull/339))
+
 ## [0.13.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.12.4...onevcs-testing-v0.13.0) - 2026-10-05
 
 ### Added
