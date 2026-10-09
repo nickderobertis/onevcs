@@ -935,3 +935,104 @@ fn optional_file(path: &Path, digest: &mut Sha256) -> Option<()> {
     }
     Some(())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new(crate::git::git_program())
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// `Query::write` is the one place an answer enters this cache, and it refuses a
+    /// failed read — anything on stderr, a read failure, a status the query's kind does
+    /// not admit, or a named object that is not there — before a byte is written. So a
+    /// store that grows the missing object back asks git again rather than reusing an
+    /// answer about its absence. Held here rather than through `recoverable`, because
+    /// which proof a report happens to read first after the object returns decides
+    /// whether a stored failure would ever be consulted; this asks one read, through
+    /// the real `git::run` and the real cache, on both sides of the absence.
+    #[test]
+    fn a_read_that_failed_while_an_object_was_missing_is_asked_again_once_it_arrives() {
+        // A `GIT_*` override is a context the cache delegates, so it would test nothing.
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("GIT_") {
+                std::env::remove_var(name);
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path());
+        std::env::set_var("ONEVCS_HOME", home.path().join("onevcs"));
+        let root = tempfile::tempdir().unwrap();
+        let repo = &std::fs::canonicalize(root.path()).unwrap();
+        git(repo, &["init", "-q", "-b", "main"]);
+        git(repo, &["config", "user.name", "Cache"]);
+        git(repo, &["config", "user.email", "cache@example.invalid"]);
+        for step in 0..7 {
+            std::fs::write(repo.join(format!("step-{step}.txt")), "step\n").unwrap();
+            git(repo, &["add", "-A"]);
+            git(repo, &["commit", "-q", "-m", &format!("step {step}")]);
+        }
+        let tip = git(repo, &["rev-parse", "HEAD"]);
+        let first = git(repo, &["rev-list", "--max-parents=0", "HEAD"]);
+        // A walk that names only the tip, and reads the root commit on its way.
+        let args = [
+            "log",
+            "--first-parent",
+            "-n65",
+            "--format=%H%x00%T",
+            &tip,
+            "--",
+        ];
+        let read = || super::scope(|| crate::git::run(&args, Some(repo)).unwrap());
+        assert!(
+            super::scope(|| super::query(&args, Some(repo), &[]).is_some()),
+            "the premise: the walk is a read this cache may answer"
+        );
+        let cold = read();
+        assert!(cold.ok() && cold.stdout.contains(&first), "{cold:?}");
+        assert_eq!(
+            read().stdout,
+            cold.stdout,
+            "the premise: the walk is cached"
+        );
+
+        let object = repo
+            .join(".git/objects")
+            .join(&first[..2])
+            .join(&first[2..]);
+        let raw = home.path().join("root-commit");
+        let bytes = std::process::Command::new(crate::git::git_program())
+            .args(["cat-file", "commit", &first])
+            .current_dir(repo)
+            .output()
+            .unwrap()
+            .stdout;
+        std::fs::write(&raw, bytes).unwrap();
+        std::fs::remove_file(&object).unwrap();
+        let missing = read();
+        assert!(
+            !missing.ok(),
+            "git refuses the walk without its root: {missing:?}"
+        );
+
+        let written = git(
+            repo,
+            &["hash-object", "-t", "commit", "-w", &raw.to_string_lossy()],
+        );
+        assert_eq!(written, first, "the same object arrived");
+        let arrived = read();
+        assert!(arrived.ok(), "the walk is asked of git again: {arrived:?}");
+        assert_eq!(
+            arrived.stdout, cold.stdout,
+            "nothing git printed while the root was missing is reused"
+        );
+    }
+}
