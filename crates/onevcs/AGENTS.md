@@ -600,6 +600,25 @@ minutes. Three things are easy to undo.
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
 read under a concurrent ref writer to the registered warm budgets.
 
+Inside a context that admits reuse, the immutable reads a decision asks most are not
+reused but answered in process (`native_objects.rs`), never stored, and byte for byte
+as git prints them; any shape or answer git could word differently is still git's.
+Three things are easy to undo.
+
+- **No store is read in process until every loose object in it is proved whole**
+  (`recovery_cache::sound`). libgit2's inflate never returns from a loose object cut
+  short, so one truncated ancestor hangs the read; the proof is remembered per listed
+  object identity and bounded per read, and an unproved store goes to git.
+- **The commit graph is shared per identity within a read, keyed by the store a commit
+  was read from.** A commit read from the checkout store every clone borrows answers
+  for all of them; one read from a clone's own store answers for that clone only.
+  Ancestry and a single unstale merge-base candidate are exact whatever the walk
+  order; anything else goes to libgit2 and then git.
+- **A journey that counts spawned git as its instrument counts an uncached read**
+  (`GIT_NAMESPACE=` refuses proofs and in-process answers): with in-process answers a
+  warm or cold read may spawn nothing, which proves nothing about which tier a branch
+  reached.
+
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
 `branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the

@@ -23,6 +23,7 @@
         "{workspaceRoot}/scripts/recoverable-budget.schema.json",
         "{workspaceRoot}/scripts/coverage.sh",
         "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs/examples/**/*",
         "{workspaceRoot}/scripts/recoverable-build-inputs.json",
         "{workspaceRoot}/budgets.yaml",
         "{workspaceRoot}/.cargo/config.toml"
@@ -47,6 +48,7 @@
         "{workspaceRoot}/scripts/recoverable-budget.schema.json",
         "{workspaceRoot}/scripts/coverage.sh",
         "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs/examples/**/*",
         "{workspaceRoot}/scripts/recoverable-build-inputs.json",
         "{workspaceRoot}/budgets.yaml",
         "{workspaceRoot}/.cargo/config.toml"

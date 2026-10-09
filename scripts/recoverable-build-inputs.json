@@ -16,6 +16,7 @@
   ],
   "directories": [
     "crates/onevcs/src",
+    "crates/onevcs/examples",
     "crates/onevcs/tests/recovery-workload"
   ],
   "prefixes": [

@@ -32,7 +32,7 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   }
   const record = read("recoverable.json");
   if (!validate(record)) throw new Error(`incomplete telemetry: ${JSON.stringify(validate.errors)}`);
-  if (record.version !== 1 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
+  if (record.version !== 2 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
   if (record.build.run_id !== expected.run_id || record.build.binary !== expected.binary ||
       record.build.binary_sha256 !== expected.binary_sha256 || record.build.source_sha256 !== expected.source_sha256) throw new Error("stale or foreign invocation/build");
   if (!digest(record.build.source_sha256) || record.build.source_sha256 !== sourceFingerprint(sourceRoot)) {
@@ -63,6 +63,20 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
     const decisionRows = ["no", "unknown", "in-part", "live", "superseded"].reduce((sum, name) => sum + workload.class_counts[name], 0);
     if (workload.cold.rows !== decisionRows || workload.cold.rows !== workload.warm.rows || workload.cold_git <= 0 || workload.warm_git <= 0) {
       throw new Error("incomplete counting call");
+    }
+    if (!digest(workload.uncached_verdict_sha256)) throw new Error("missing uncached in-process verdict");
+    // In-process calls: ten of each, every one answering the uncached read's rows.
+    const modes = expectedScale === 1 ? ["warm", "cold"] : ["warm"];
+    if (expectedScale !== 1 && workload.in_process_cold !== undefined) throw new Error("foreign in-process cold calls");
+    for (const mode of modes) {
+      const calls = workload[`in_process_${mode}`];
+      if (!Array.isArray(calls) || calls.length !== 10) throw new Error(`incomplete in-process ${mode} calls`);
+      for (const call of calls) {
+        if (!(call.wall_ms > 0) || !Number.isFinite(call.load1) || call.load1 < 0 || call.rows !== decisionRows ||
+            call.verdict_sha256 !== workload.uncached_verdict_sha256) {
+          throw new Error(`incomplete or incorrect in-process ${mode} call`);
+        }
+      }
     }
   }
   return record;

@@ -18,8 +18,11 @@ function fixture() {
   const build = { run_id:sha("invocation"), binary:"onevcs",binary_sha256:sha(binary),source_sha256:sourceFingerprint() };
   const sample = {wall_ms:10,load1:1,rows:5,verdict_sha256:sha("validated verdict")};
   const class_counts = Object.fromEntries(["in-part","landed","live","no","retirable","superseded","unknown"].map(name=>[name,1]));
-  const record = {version:1,build,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
-    workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256}))};
+  const call = {wall_ms:12.5,load1:1,rows:5,verdict_sha256:sha("uncached verdict")};
+  const calls = () => Array.from({length:10},()=>({...call}));
+  const record = {version:2,build,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
+    workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256,
+      uncached_verdict_sha256:call.verdict_sha256,in_process_warm:calls(),...(scale === 1 ? {in_process_cold:calls()} : {})}))};
   const invocation = {state:"complete",...build};
   const save = () => {
     writeFileSync(join(root,"recoverable.json"),JSON.stringify(record));
@@ -51,7 +54,12 @@ const refusals = {
   "stale binary":f=>writeFileSync(join(f.root,"onevcs"),"another build"),
   "foreign binary path":f=>{f.record.build.binary=f.invocation.binary="../other";f.save();},
   "foreign scenario":f=>{f.record.scenario="other";f.save();},
-  "foreign format":f=>{f.record.version=2;f.save();},
+  "foreign format":f=>{f.record.version=1;f.save();},
+  "missing in-process calls":f=>{delete f.record.workloads[1].in_process_warm;f.save();},
+  "missing in-process cold calls":f=>{delete f.record.workloads[0].in_process_cold;f.save();},
+  "too few in-process calls":f=>{f.record.workloads[0].in_process_cold.pop();f.save();},
+  "an in-process call answering other rows":f=>{f.record.workloads[0].in_process_warm[3].verdict_sha256=sha("different verdict");f.save();},
+  "an untimed in-process call":f=>{f.record.workloads[1].in_process_warm[9].wall_ms=0;f.save();},
   "foreign scale":f=>{f.record.workloads[0].scale=10;f.save();},
   "shrunk workload":f=>{f.record.workloads[0].shape=[1,1,1,1];f.save();},
   "missing sample":f=>{delete f.record.workloads[0].warm;f.save();},
@@ -98,6 +106,42 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
     assert.equal(unschemed.status, 1);
     assert.match(unschemed.stderr, /recoverable telemetry: .*recoverable-budget\.schema\.json/);
     assert.match(unschemed.stderr, /next: run 'just recoverable-journeys'/);
+  } finally { rmSync(f.root, {recursive:true,force:true}); }
+});
+
+// The latency reader reports the slowest of the ten recorded calls, in seconds, and
+// refuses a mode the record does not hold rather than reporting nothing.
+test("latency reader reports the slowest in-process call and refuses unrecorded modes", () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.root, "scripts"));
+    mkdirSync(join(f.root, "target", "budget-records"), { recursive: true });
+    symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(f.root, "node_modules"), "dir");
+    for (const path of inputFiles()) {
+      mkdirSync(join(f.root, path, ".."), {recursive:true});
+      copyFileSync(join(repositoryRoot,path),join(f.root,path));
+    }
+    f.record.workloads[1].in_process_warm[4].wall_ms = 270.25;
+    f.save();
+    for (const name of ["onevcs", "recoverable.json", "recoverable-invocation.json"]) {
+      copyFileSync(join(f.root, name), join(f.root, "target", "budget-records", name));
+    }
+    const run = (...args) => spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-latency-budget.mjs"), ...args], {
+      encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
+    });
+    for (const [args, value] of [[["--scale", "1", "--warm"], 0.0125], [["--scale", "1", "--cold"], 0.0125], [["--scale", "10", "--warm"], 0.27025]]) {
+      rmSync(join(f.root, "result.json"), { force: true });
+      const accepted = run(...args);
+      assert.equal(accepted.status, 0, accepted.stderr);
+      assert.ok(readFileSync(join(f.root, "result.json"), "utf8").includes(String(value)), `${args.join(" ")} reports ${value}`);
+    }
+    const unrecorded = run("--scale", "10", "--cold");
+    assert.equal(unrecorded.status, 1);
+    assert.match(unrecorded.stderr, /no in-process cold calls were recorded at scale 10/);
+    assert.match(unrecorded.stderr, /next: run 'just recoverable-journeys'/);
+    const malformed = run("--scale", "2", "--warm");
+    assert.equal(malformed.status, 1);
+    assert.match(malformed.stderr, /expected --scale 1\|10 --cold\|--warm/);
   } finally { rmSync(f.root, {recursive:true,force:true}); }
 });
 
