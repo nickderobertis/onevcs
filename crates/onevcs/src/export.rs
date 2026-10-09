@@ -89,6 +89,11 @@ fn refused(step: &str, detail: impl Into<String>) -> Error {
     Error::Invalid { reason: said }
 }
 
+/// The refusal for `step`, keeping whatever failed as its private detail.
+fn because<E: std::fmt::Display>(step: &'static str) -> impl FnOnce(E) -> Error {
+    move |error| refused(step, error.to_string())
+}
+
 /// A relative, normalized directory: no root, no `.` or `..`, no empty segment, no
 /// `.git`, and no backslash.
 fn normalized(directory: &str) -> bool {
@@ -128,25 +133,16 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
             "--branch-name",
         ));
     }
-    let registry =
-        store::load().map_err(|e| refused("the registry could not be read", e.to_string()))?;
+    let registry = store::load().map_err(because("the registry could not be read"))?;
     let source = store::resolve(&registry, &request.from)
-        .map_err(|e| refused("its source is not a registered repository", e.to_string()))?;
-    let target = store::resolve(&registry, &request.to).map_err(|e| {
-        refused(
-            "its destination is not a registered repository",
-            e.to_string(),
-        )
-    })?;
+        .map_err(because("its source is not a registered repository"))?;
+    let target = store::resolve(&registry, &request.to)
+        .map_err(because("its destination is not a registered repository"))?;
     if source.key == target.key {
         return Err(refused("its source and destination are one repository", ""));
     }
-    let destination = visibility::refresh(providers.hosting, &target.key).map_err(|e| {
-        refused(
-            "its destination's visibility could not be read",
-            e.to_string(),
-        )
-    })?;
+    let destination = visibility::refresh(providers.hosting, &target.key)
+        .map_err(because("its destination's visibility could not be read"))?;
     if destination.effective() != Visibility::Public {
         return Err(refused("its destination is not verified public", ""));
     }
@@ -178,13 +174,13 @@ struct Source {
 
 fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let repository = git2::Repository::open(checkout)
-        .map_err(|e| refused("its source repository cannot be opened", e.to_string()))?;
+        .map_err(because("its source repository cannot be opened"))?;
     let tip = repository
         .revparse_single(&format!("refs/heads/{}", request.branch))
         .and_then(|object| object.peel_to_commit())
-        .map_err(|e| refused("its source branch does not resolve", e.to_string()))?;
+        .map_err(because("its source branch does not resolve"))?;
     let base_name = git::default_branch(checkout, "origin")
-        .map_err(|e| refused("its source's base cannot be named", e.to_string()))?;
+        .map_err(because("its source's base cannot be named"))?;
     let base = [
         format!("refs/remotes/origin/{base_name}"),
         format!("refs/heads/{base_name}"),
@@ -200,12 +196,7 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let fork = repository
         .merge_base(tip.id(), base.id())
         .and_then(|id| repository.find_commit(id))
-        .map_err(|e| {
-            refused(
-                "its source branch shares no history with its base",
-                e.to_string(),
-            )
-        })?;
+        .map_err(because("its source branch shares no history with its base"))?;
 
     // The branch's whole net change against where it left its base, deletions and
     // renames included, must be inside the directory.
@@ -213,18 +204,11 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     options.ignore_submodules(false).include_typechange(true);
     let diff = repository
         .diff_tree_to_tree(
-            Some(
-                &fork
-                    .tree()
-                    .map_err(|e| refused("its base cannot be read", e.to_string()))?,
-            ),
-            Some(
-                &tip.tree()
-                    .map_err(|e| refused("its branch cannot be read", e.to_string()))?,
-            ),
+            Some(&fork.tree().map_err(because("its base cannot be read"))?),
+            Some(&tip.tree().map_err(because("its branch cannot be read"))?),
             Some(&mut options),
         )
-        .map_err(|e| refused("its branch cannot be compared with its base", e.to_string()))?;
+        .map_err(because("its branch cannot be compared with its base"))?;
     let inside = |path: Option<&Path>| {
         path.map(|p| p.to_string_lossy().replace('\\', "/"))
             .is_some_and(|p| p.starts_with(&format!("{}/", request.directory)))
@@ -241,20 +225,18 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let mut messages = Vec::new();
     let mut walk = repository
         .revwalk()
-        .map_err(|e| refused("its branch's history cannot be read", e.to_string()))?;
+        .map_err(because("its branch's history cannot be read"))?;
     walk.push(tip.id())
         .and_then(|()| walk.hide(fork.id()))
-        .map_err(|e| refused("its branch's history cannot be read", e.to_string()))?;
+        .map_err(because("its branch's history cannot be read"))?;
     for id in walk {
         let commit = id
             .and_then(|id| repository.find_commit(id))
-            .map_err(|e| refused("its branch's history cannot be read", e.to_string()))?;
+            .map_err(because("its branch's history cannot be read"))?;
         messages.push(String::from_utf8_lossy(commit.message_bytes()).into_owned());
     }
 
-    let tree = tip
-        .tree()
-        .map_err(|e| refused("its branch cannot be read", e.to_string()))?;
+    let tree = tip.tree().map_err(because("its branch cannot be read"))?;
     let entry = tree
         .get_path(Path::new(&request.directory))
         .map_err(|_| refused("its source directory is not on the branch", ""))?;
@@ -264,7 +246,7 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let directory = entry
         .to_object(&repository)
         .and_then(|object| object.peel_to_tree())
-        .map_err(|e| refused("its source directory cannot be read", e.to_string()))?;
+        .map_err(because("its source directory cannot be read"))?;
     let mut files = Vec::new();
     collect(&repository, &directory, "", &mut files)?;
     if files.is_empty() {
@@ -294,14 +276,14 @@ fn collect(
                 let subtree = entry
                     .to_object(repository)
                     .and_then(|object| object.peel_to_tree())
-                    .map_err(|e| refused("a directory in it cannot be read", e.to_string()))?;
+                    .map_err(because("a directory in it cannot be read"))?;
                 collect(repository, &subtree, &path, files)?;
             }
             0o100644 | 0o100755 => {
                 let blob = entry
                     .to_object(repository)
                     .and_then(|object| object.peel_to_blob())
-                    .map_err(|e| refused("a file in it cannot be read", e.to_string()))?;
+                    .map_err(because("a file in it cannot be read"))?;
                 let contents = blob.content().to_vec();
                 if contents.contains(&0) || std::str::from_utf8(&contents).is_err() {
                     return Err(refused(
@@ -389,10 +371,10 @@ fn screen(
 fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Result<String> {
     if git::has_remote(checkout, "origin") {
         git::fetch(checkout, "origin")
-            .map_err(|e| refused("its destination's base could not be fetched", e.to_string()))?;
+            .map_err(because("its destination's base could not be fetched"))?;
     }
     let repository = git2::Repository::open(checkout)
-        .map_err(|e| refused("its destination repository cannot be opened", e.to_string()))?;
+        .map_err(because("its destination repository cannot be opened"))?;
     let reference = format!("refs/heads/{}", request.branch_name);
     if repository.find_reference(&reference).is_ok() {
         return Err(refused(
@@ -401,19 +383,14 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
         ));
     }
     let base_name = git::default_branch(checkout, "origin")
-        .map_err(|e| refused("its destination's base cannot be named", e.to_string()))?;
+        .map_err(because("its destination's base cannot be named"))?;
     let base = repository
         .revparse_single(&format!("refs/remotes/origin/{base_name}"))
         .and_then(|object| object.peel_to_commit())
-        .map_err(|e| {
-            refused(
-                "its destination's public base does not resolve",
-                e.to_string(),
-            )
-        })?;
+        .map_err(because("its destination's public base does not resolve"))?;
     let base_tree = base
         .tree()
-        .map_err(|e| refused("its destination's base cannot be read", e.to_string()))?;
+        .map_err(because("its destination's base cannot be read"))?;
 
     let exported = build_tree(&repository, files)?;
     let segments: Vec<&str> = request.target_directory.split('/').collect();
@@ -423,9 +400,9 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
     }
     let tree = repository
         .find_tree(tree)
-        .map_err(|e| refused("the exported tree cannot be read", e.to_string()))?;
+        .map_err(because("the exported tree cannot be read"))?;
     let signature = git2::Signature::now(EXPORT_AUTHOR_NAME, EXPORT_AUTHOR_EMAIL)
-        .map_err(|e| refused("the export's author cannot be written", e.to_string()))?;
+        .map_err(because("the export's author cannot be written"))?;
     let commit = repository
         .commit(
             None,
@@ -435,10 +412,10 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
             &tree,
             &[&base],
         )
-        .map_err(|e| refused("the export's commit cannot be written", e.to_string()))?;
+        .map_err(because("the export's commit cannot be written"))?;
     repository
         .reference(&reference, commit, false, EXPORT_SUBJECT)
-        .map_err(|e| refused("its branch cannot be cut", e.to_string()))?;
+        .map_err(because("its branch cannot be cut"))?;
     Ok(commit.to_string())
 }
 
@@ -448,7 +425,7 @@ fn build_tree(repository: &git2::Repository, files: &[File]) -> Result<git2::Oid
     for file in files {
         let blob = repository
             .blob(&file.contents)
-            .map_err(|e| refused("a file cannot be written", e.to_string()))?;
+            .map_err(because("a file cannot be written"))?;
         let mode = if file.executable { 0o100755 } else { 0o100644 };
         root.insert(&file.path.split('/').collect::<Vec<_>>(), blob, mode);
     }
@@ -478,21 +455,21 @@ impl Node {
     fn write(&self, repository: &git2::Repository) -> Result<git2::Oid> {
         let mut builder = repository
             .treebuilder(None)
-            .map_err(|e| refused("the exported tree cannot be built", e.to_string()))?;
+            .map_err(because("the exported tree cannot be built"))?;
         for (name, blob, mode) in &self.files {
             builder
                 .insert(name, *blob, *mode)
-                .map_err(|e| refused("the exported tree cannot be built", e.to_string()))?;
+                .map_err(because("the exported tree cannot be built"))?;
         }
         for (name, node) in &self.directories {
             let tree = node.write(repository)?;
             builder
                 .insert(name, tree, 0o040000)
-                .map_err(|e| refused("the exported tree cannot be built", e.to_string()))?;
+                .map_err(because("the exported tree cannot be built"))?;
         }
         builder
             .write()
-            .map_err(|e| refused("the exported tree cannot be built", e.to_string()))
+            .map_err(because("the exported tree cannot be built"))
     }
 }
 
@@ -508,7 +485,7 @@ fn place(
     };
     let mut builder = repository
         .treebuilder(tree)
-        .map_err(|e| refused("the destination's tree cannot be built", e.to_string()))?;
+        .map_err(because("the destination's tree cannot be built"))?;
     let child = if rest.is_empty() {
         exported
     } else {
@@ -520,8 +497,8 @@ fn place(
     };
     builder
         .insert(first, child, 0o040000)
-        .map_err(|e| refused("the destination's tree cannot be built", e.to_string()))?;
+        .map_err(because("the destination's tree cannot be built"))?;
     builder
         .write()
-        .map_err(|e| refused("the destination's tree cannot be built", e.to_string()))
+        .map_err(because("the destination's tree cannot be built"))
 }

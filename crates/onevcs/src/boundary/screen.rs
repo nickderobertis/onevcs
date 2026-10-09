@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use super::diagnostics::Phases;
 use super::matcher::Matcher;
-use super::scope::{self, Derived};
+use super::scope::{self, Derived, Failed};
 use super::{BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
 
 /// Everything one publication is about to write.
@@ -83,43 +83,36 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
     let started = Instant::now();
     let mut phases = Phases::default();
     let mut evidence = Vec::new();
-
-    let derived = match scope::derive(scope) {
-        Ok(derived) => derived,
-        Err(failed) => {
-            phases.derivation = started.elapsed();
-            let verdict = failed.verdict(&mut evidence);
-            return Screened {
-                verdict,
-                evidence,
-                phases: phases.ended(started),
-            };
-        }
+    let verdict = match judged(outgoing, scope, &mut phases, &mut evidence) {
+        Ok(verdict) => verdict,
+        Err(failed) => failed.verdict(&mut evidence),
     };
-    phases.derivation = started.elapsed();
+    Screened {
+        verdict,
+        evidence,
+        phases: phases.ended(started),
+    }
+}
+
+/// The verdict on `outgoing`, timing each phase into `phases` — or why there is none.
+fn judged(
+    outgoing: &Outgoing<'_>,
+    scope: &TermScope,
+    phases: &mut Phases,
+    evidence: &mut Vec<Evidence>,
+) -> Result<BoundaryVerdict, Failed> {
+    let deriving = Instant::now();
+    let derived = scope::derive(scope);
+    phases.derivation = deriving.elapsed();
+    let derived = derived?;
     phases.terms = derived.rules.len();
     phases.identities = derived.sources;
 
     let diffing = Instant::now();
     let read = read(outgoing);
     phases.diff = diffing.elapsed();
-    let (repository, commits, changes) = match read {
-        Ok(read) => read,
-        Err(detail) => {
-            evidence.push(Evidence::Unavailable {
-                reason: Unavailability::History,
-                identity: None,
-                detail,
-            });
-            return Screened {
-                verdict: BoundaryVerdict::Unavailable {
-                    reason: Unavailability::History,
-                },
-                evidence,
-                phases: phases.ended(started),
-            };
-        }
-    };
+    let (repository, commits, changes) =
+        read.map_err(|detail| Failed::new(Unavailability::History, None, detail))?;
     phases.commits = commits.len();
     phases.paths = changes
         .iter()
@@ -132,19 +125,9 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
         .sum();
 
     let building = Instant::now();
-    let matcher = match derived.matcher() {
-        Ok(matcher) => matcher,
-        Err(failed) => {
-            phases.matcher_build = building.elapsed();
-            let verdict = failed.verdict(&mut evidence);
-            return Screened {
-                verdict,
-                evidence,
-                phases: phases.ended(started),
-            };
-        }
-    };
+    let matcher = derived.matcher();
     phases.matcher_build = building.elapsed();
+    let matcher = matcher?;
 
     let matching = Instant::now();
     let mut judge = Judge {
@@ -159,7 +142,7 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
             .chain(boundary_trees(&repository, &commits))
             .collect(),
         verdict: BoundaryVerdict::Pass,
-        evidence: &mut evidence,
+        evidence,
     };
     for (index, commit) in commits.iter().enumerate() {
         judge.text(
@@ -168,25 +151,28 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
             format!("commit {}", index + 1),
         );
     }
-    if let Some(branch) = outgoing.branch {
-        judge.text(Surface::Branch, branch, "branch".to_owned());
-    }
-    if let Some(title) = outgoing.title {
-        judge.text(Surface::Title, title, "title".to_owned());
-    }
-    if let Some(body) = outgoing.body {
-        judge.text(Surface::Body, body, "body".to_owned());
+    for (surface, text) in [
+        (Surface::Branch, outgoing.branch),
+        (Surface::Title, outgoing.title),
+        (Surface::Body, outgoing.body),
+    ] {
+        if let Some(text) = text {
+            judge.text(surface, text, surface_name(surface));
+        }
     }
     for change in &changes {
         judge.change(change);
     }
-    let verdict = judge.verdict;
     phases.matching = matching.elapsed();
-    Screened {
-        verdict,
-        evidence,
-        phases: phases.ended(started),
-    }
+    Ok(judge.verdict)
+}
+
+/// How evidence names a short field: the surface's own wire word.
+pub fn surface_name(surface: Surface) -> String {
+    serde_json::to_value(surface)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 type Read = (git2::Repository, Vec<Commit>, Vec<Change>);

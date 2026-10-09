@@ -59,7 +59,11 @@ pub fn guard_fields(
                             if verdict == BoundaryVerdict::Pass {
                                 verdict = BoundaryVerdict::Refuse { surface: *surface };
                             }
-                            evidence.push(derived.evidence(*surface, surface_name(*surface), rule));
+                            evidence.push(derived.evidence(
+                                *surface,
+                                screen::surface_name(*surface),
+                                rule,
+                            ));
                         }
                     }
                     verdict
@@ -69,13 +73,6 @@ pub fn guard_fields(
     };
     diagnostics::record("fields", &verdict, &phases.ended(started));
     settle(verdict, evidence)
-}
-
-fn surface_name(surface: Surface) -> String {
-    serde_json::to_value(surface)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
 }
 
 /// Whether a publication's failure reason is one of this module's, which says nothing

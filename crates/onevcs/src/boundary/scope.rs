@@ -35,7 +35,12 @@ pub struct Failed {
 }
 
 impl Failed {
-    fn new(reason: Unavailability, identity: Option<&str>, detail: impl Into<String>) -> Failed {
+    /// A failure for `reason`, about `identity` where there is one.
+    pub fn new(
+        reason: Unavailability,
+        identity: Option<&str>,
+        detail: impl Into<String>,
+    ) -> Failed {
         Failed {
             reason,
             identity: identity.map(str::to_owned),
