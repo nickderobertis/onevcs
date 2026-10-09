@@ -13,5 +13,6 @@ mod lifecycle;
 mod publication;
 mod refs;
 mod repository;
+mod required_contexts;
 mod round_trip;
 mod support;
