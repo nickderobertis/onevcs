@@ -209,6 +209,13 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         return Ok(recalled);
     }
     let reusable = crate::recovery_cache::query(args, cwd, env);
+    // A read the admitted context lets this process answer from the objects
+    // themselves costs no process and no stored proof, and is never stored: it is
+    // as cheap to make again as it would be to check.
+    if let Some(output) = reusable.as_ref().and_then(|query| query.native(args)) {
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
     if let Some(output) = reusable
         .as_ref()
         .and_then(crate::recovery_cache::Query::read)

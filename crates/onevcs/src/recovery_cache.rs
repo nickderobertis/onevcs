@@ -60,6 +60,9 @@ thread_local! {
     static COVERED: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
     /// Generations this process has already recorded a listing for.
     static LISTED: RefCell<HashSet<(PathBuf, String)>> = RefCell::new(HashSet::new());
+    /// Generations this process has asked whether every loose object is whole, and
+    /// the answer.
+    static SOUND: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
 }
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
@@ -96,6 +99,7 @@ pub(crate) fn clear() {
     STORES.with(|stores| stores.borrow_mut().clear());
     COVERED.with(|covered| covered.borrow_mut().clear());
     LISTED.with(|listed| listed.borrow_mut().clear());
+    SOUND.with(|sound| sound.borrow_mut().clear());
 }
 
 /// An immutable Git query's successful bytes, bound to its full context and argv.
@@ -158,6 +162,21 @@ pub(crate) struct Query {
 }
 
 impl Query {
+    /// The answer git would give, made in process from the objects it names, where
+    /// this is a shape [`crate::native_objects`] reads — inside the context this
+    /// query was admitted under, and fresh rather than reused.
+    ///
+    /// Only over stores whose every loose object is proved whole: libgit2 reads
+    /// whatever object a walk reaches, and its inflate never returns from a loose
+    /// object cut short, where git refuses one. A store not yet proved is left to
+    /// git and the proofs above, exactly as before.
+    pub(crate) fn native(&self, args: &[&str]) -> Option<git::Output> {
+        if !self.stores.iter().all(|(path, store)| sound(path, store)) {
+            return None;
+        }
+        crate::native_objects::answer(args, &self.repo, self.borrowing.as_deref())
+    }
+
     pub(crate) fn read(&self) -> Option<git::Output> {
         let entry: Entry = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
         if entry.version != VERSION
@@ -775,6 +794,188 @@ fn read_store(root: &Path) -> Option<Store> {
         generation: generation_of(held.iter()),
         held: Rc::new(held),
     })
+}
+
+/// How many bytes of loose objects one store may have proved whole in one read.
+/// What is proved is remembered, so a store with more than this is proved over
+/// several reads, and answered by git and its proofs until it is.
+#[cfg(unix)]
+const PROVED_PER_READ: u64 = 16 << 20;
+
+/// The shape of a store's record of its loose objects proved whole.
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Proved {
+    version: u32,
+    store: PathBuf,
+    whole: BTreeSet<String>,
+}
+
+/// Whether every loose object `store` holds inflates to a whole stream.
+///
+/// Each is proved once for the identity its listing line holds it to — device,
+/// inode, owner, size and mode — and that line is what is remembered, so an object
+/// truncated or made unreadable in place is a line nothing proved and is read again.
+/// A store holding one that is not whole is unsound for as long as it holds it.
+#[cfg(unix)]
+fn sound(root: &Path, store: &Store) -> bool {
+    let asked = (root.to_owned(), store.generation.clone());
+    if let Some(known) = SOUND.with(|sound| sound.borrow().get(&asked).copied()) {
+        return known;
+    }
+    let record = crate::home::root().ok().map(|home| {
+        home.join("cache/recoverable/v1/stores").join(format!(
+            "{}.whole.json",
+            crate::ids::digest(&root.to_string_lossy())
+        ))
+    });
+    let remembered: BTreeSet<String> = record
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| {
+            let (digest, body) = raw.split_once('\n')?;
+            (crate::ids::digest(body) == digest)
+                .then(|| serde_json::from_str::<Proved>(body).ok())
+                .flatten()
+        })
+        .filter(|proved| proved.version == VERSION && proved.store == root)
+        .map(|proved| proved.whole)
+        .unwrap_or_default();
+    let loose: BTreeSet<&String> = store
+        .held
+        .iter()
+        .filter(|line| loose_object(line).is_some())
+        .collect();
+    let mut whole: BTreeSet<String> = BTreeSet::new();
+    let mut budget = PROVED_PER_READ;
+    let mut sound = true;
+    for line in loose {
+        if remembered.contains(line) {
+            whole.insert(line.clone());
+            continue;
+        }
+        // Once one object is not whole, or this read's share is spent, the store is
+        // unsound for this read; what is already proved is still kept.
+        if !sound {
+            continue;
+        }
+        let (relative, length) = loose_object(line).expect("a loose object's line");
+        if budget == 0 || !inflates_whole(&root.join(relative)) {
+            sound = false;
+            continue;
+        }
+        budget = budget.saturating_sub(length);
+        whole.insert(line.clone());
+    }
+    if whole != remembered {
+        if let (Some(path), Ok(body)) = (
+            record,
+            serde_json::to_string(&Proved {
+                version: VERSION,
+                store: root.to_owned(),
+                whole,
+            }),
+        ) {
+            let digest = crate::ids::digest(&body);
+            replace(&path, &digest, format!("{digest}\n{body}").as_bytes());
+        }
+    }
+    SOUND.with(|known| known.borrow_mut().insert(asked, sound));
+    sound
+}
+
+#[cfg(not(unix))]
+fn sound(_root: &Path, _store: &Store) -> bool {
+    false
+}
+
+/// A loose object's path and size, where a listing line names one: a fan-out
+/// directory's two hex digits and the rest of a SHA-1 name.
+#[cfg(unix)]
+fn loose_object(line: &str) -> Option<(&str, u64)> {
+    let mut fields = line.split('\0');
+    let relative = fields.next()?;
+    let (fan, rest) = relative.split_once('/')?;
+    let named = fan.len() == 2
+        && rest.len() == 38
+        && relative
+            .bytes()
+            .filter(|byte| *byte != b'/')
+            .all(|byte| byte.is_ascii_hexdigit());
+    let length = fields.nth(4)?.parse().ok()?;
+    named.then_some((relative, length))
+}
+
+/// Whether the file is one zlib stream that ends, read through the zlib libgit2
+/// links. A stream that runs out of input before its end is the shape libgit2 never
+/// returns from, and anything zlib refuses is refused here too.
+#[cfg(unix)]
+fn inflates_whole(path: &Path) -> bool {
+    use std::io::Read;
+
+    unsafe extern "C" fn allocate(
+        _: libz_sys::voidpf,
+        items: libz_sys::uInt,
+        size: libz_sys::uInt,
+    ) -> libz_sys::voidpf {
+        // SAFETY: zlib's allocator contract, met by the C allocator.
+        unsafe { libc::calloc(items as usize, size as usize) }
+    }
+    unsafe extern "C" fn release(_: libz_sys::voidpf, address: libz_sys::voidpf) {
+        // SAFETY: frees only what `allocate` returned to zlib.
+        unsafe { libc::free(address) }
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut input = vec![0_u8; 1 << 16];
+    let mut output = vec![0_u8; 1 << 16];
+    let mut stream = libz_sys::z_stream {
+        next_in: std::ptr::null_mut(),
+        avail_in: 0,
+        total_in: 0,
+        next_out: std::ptr::null_mut(),
+        avail_out: 0,
+        total_out: 0,
+        msg: std::ptr::null_mut(),
+        state: std::ptr::null_mut(),
+        zalloc: allocate,
+        zfree: release,
+        opaque: std::ptr::null_mut(),
+        data_type: 0,
+        adler: 0,
+        reserved: 0,
+    };
+    // SAFETY: the stream is initialised before use and ended exactly once; every
+    // pointer handed to zlib is into a buffer that outlives the call using it.
+    unsafe {
+        let size = std::mem::size_of::<libz_sys::z_stream>() as std::ffi::c_int;
+        if libz_sys::inflateInit_(&mut stream, libz_sys::zlibVersion(), size) != libz_sys::Z_OK {
+            return false;
+        }
+        let whole = loop {
+            if stream.avail_in == 0 {
+                match file.read(&mut input) {
+                    Ok(0) | Err(_) => break false,
+                    Ok(read) => {
+                        stream.next_in = input.as_mut_ptr();
+                        stream.avail_in = read as libz_sys::uInt;
+                    }
+                }
+            }
+            stream.next_out = output.as_mut_ptr();
+            stream.avail_out = output.len() as libz_sys::uInt;
+            match libz_sys::inflate(&mut stream, libz_sys::Z_NO_FLUSH) {
+                libz_sys::Z_STREAM_END => break true,
+                libz_sys::Z_OK => {}
+                libz_sys::Z_BUF_ERROR if stream.avail_in == 0 => {}
+                _ => break false,
+            }
+        };
+        libz_sys::inflateEnd(&mut stream);
+        whole
+    }
 }
 
 /// One path a store generation lists, with the identity it is held to.

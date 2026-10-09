@@ -178,6 +178,24 @@ impl Counting {
             .expect("`recoverable --json` prints rows");
         (rows, self.calls(), elapsed)
     }
+
+    /// The same read with every proof and in-process read refused, so each question
+    /// the decision asks reaches git and is counted here: a `GIT_*` override is what
+    /// refuses them. This is how a journey observes which tier a branch reached
+    /// rather than how cheaply its reads were answered.
+    fn uncached(&self, world: &World, extra: &[&str]) -> (Vec<Value>, Vec<Call>) {
+        self.clear();
+        let assert = self
+            .onevcs(world)
+            .env("GIT_NAMESPACE", "")
+            .args(["recoverable", "--json"])
+            .args(extra)
+            .assert()
+            .success();
+        let rows: Vec<Value> = serde_json::from_slice(&assert.get_output().stdout)
+            .expect("`recoverable --json` prints rows");
+        (rows, self.calls())
+    }
 }
 
 /// The names `git check-ref-format` was asked about, in the order it was asked.
@@ -709,8 +727,31 @@ fn warm_recovery_reuses_provenance_ranges_parent_reads_and_reverse_history() {
     let fixture = Fixture::local(&local_direct());
     tiered(&fixture);
     let counting = Counting::installed(&fixture.world);
-    let (cold, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
-    assert!(!cold.is_empty());
+    let immutable = |calls: &[Call]| {
+        calls
+            .iter()
+            .filter(|call| {
+                call.args
+                    .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")
+                    || call.args.starts_with("rev-list --reverse ")
+                    || (call.args.starts_with("rev-parse --verify ")
+                        && call.args.ends_with("^1^{commit}"))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    // The premise, asked of git itself: a `GIT_*` override refuses every proof and
+    // every in-process read, so this read asks git each of the three kinds.
+    counting.clear();
+    let uncached = counting
+        .onevcs(&fixture.world)
+        .env("GIT_NAMESPACE", "")
+        .args(["recoverable", "--json", "--all", "--detail", "decision"])
+        .assert()
+        .success();
+    let uncached: Vec<Value> =
+        serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+    let calls = counting.calls();
     assert!(calls.iter().any(|call| call
         .args
         .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")));
@@ -721,20 +762,21 @@ fn warm_recovery_reuses_provenance_ranges_parent_reads_and_reverse_history() {
         .iter()
         .any(|call| call.args.starts_with("rev-parse --verify ")
             && call.args.ends_with("^1^{commit}")));
+    let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+    // Read from the objects themselves, none of them costs a process even cold.
+    let (cold, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
+    assert!(!cold.is_empty());
+    assert_eq!(cold, uncached, "the cold read answers what git answers");
+    assert!(
+        immutable(&calls).is_empty(),
+        "a cold read answers immutable reads without git: {:?}",
+        immutable(&calls)
+    );
     let (prime, _, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
     assert_eq!(prime, cold);
     let (warm, calls, _) = counting.recoverable(&fixture.world, &["--all", "--detail", "decision"]);
     assert_eq!(warm, cold);
-    let repeated = calls
-        .iter()
-        .filter(|call| {
-            call.args
-                .starts_with("log --reverse --format=%H%x00%B%x00%x1e ")
-                || call.args.starts_with("rev-list --reverse ")
-                || (call.args.starts_with("rev-parse --verify ")
-                    && call.args.ends_with("^1^{commit}"))
-        })
-        .collect::<Vec<_>>();
+    let repeated = immutable(&calls);
     assert!(
         repeated.is_empty(),
         "unchanged immutable reads must be reused: {repeated:?}"
@@ -818,7 +860,11 @@ fn complete_recorded_landings_skip_content_but_squash_guards_compare() {
     tiered(&fixture);
     let counting = Counting::installed(&fixture.world);
 
-    let (rows, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
+    let (rows, _, _) = counting.recoverable(&fixture.world, &["--all"]);
+    // Which branches reach the comparison is the decision's, and asked of git it is
+    // observable: every content comparison is then a process.
+    let (uncached, calls) = counting.uncached(&fixture.world, &["--all"]);
+    assert_eq!(uncached, rows, "the read answers what git answers");
     let compared = content_comparisons(&calls);
     let tip_of = |branch: &str| {
         rows.iter()
@@ -893,6 +939,20 @@ fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() 
         .args(["session", "close", &token])
         .assert()
         .success();
+    // Beside it, a branch nothing records, which only the comparison can decide: what
+    // shows the instrument below sees a content comparison where one is made.
+    let (control, control_worktree) = fixture.open(&["--branch", "feature/unrecorded"]);
+    world.commit_file(
+        &control_worktree,
+        "unrecorded.txt",
+        "u\n",
+        "feat: unrecorded work",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &control])
+        .assert()
+        .success();
     // The one link nothing can follow: a retry this host has no record of. Every
     // link this crate writes goes through the boundary that refuses one, so the
     // record is edited the way `tests/e2e/retries.rs` edits it — a record is
@@ -909,7 +969,10 @@ fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() 
     .expect("the record is rewritten");
     let counting = Counting::installed(world);
 
-    let (rows, calls, _) = counting.recoverable(world, &[]);
+    let (rows, _, _) = counting.recoverable(world, &[]);
+    // Asked of git, every question the tiers ask is a process this can see.
+    let (uncached, calls) = counting.uncached(world, &[]);
+    assert_eq!(uncached, rows, "the read answers what git answers");
     let answered = row(&rows, "feature/orphaned-retry");
     assert_eq!(
         answered["landed"]["state"], "unknown",
@@ -918,11 +981,28 @@ fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() 
     assert_eq!(answered["session"], Value::String(token.clone()));
     // The two questions only the tiers ask: the content comparison at the bottom, and
     // the merge a landing's guard puts to every commit above the landing it found.
-    let compared = content_comparisons(&calls);
+    // The comparison ends in asking whether the base carries what the tip changed —
+    // `git diff --quiet <tip> <base> -- <paths>` — which names the tip it compared.
+    // (Retirement reads a branch's differing paths with `diff --name-only` whatever
+    // its landing, so that listing is not the tiers'.)
+    let compared: Vec<String> = calls
+        .iter()
+        .filter_map(|call| call.args.strip_prefix("diff --quiet "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_owned)
+        .collect();
+    let tip = |branch: &str| {
+        row(&rows, branch)["tip"]
+            .as_str()
+            .expect("a reported tip")
+            .to_owned()
+    };
     assert!(
-        !compared
-            .iter()
-            .any(|branch| branch == "feature/orphaned-retry"),
+        compared.contains(&tip("feature/unrecorded")),
+        "the premise: a branch nothing records is content-compared, and seen being: {compared:?}"
+    );
+    assert!(
+        !compared.contains(&tip("feature/orphaned-retry")),
         "a branch whose verdict the chain already decided was content-compared: {compared:?}"
     );
     let merged: Vec<&Call> = calls

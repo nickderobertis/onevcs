@@ -909,6 +909,32 @@ fn counted(
     )
 }
 
+/// The same read made by a released `onevcs` a caller names in
+/// `ONEVCS_DECISION_BASELINE_BINARY`, under this host's environment, where one is named.
+fn released(fixture: &Fixture, args: &[&str]) -> Option<(Option<i32>, String)> {
+    let program = std::env::var_os("ONEVCS_DECISION_BASELINE_BINARY")?;
+    let template = fixture.world.onevcs_std();
+    let mut command = std::process::Command::new(program);
+    command.env_clear();
+    if let Some(directory) = template.get_current_dir() {
+        command.current_dir(directory);
+    }
+    for (name, value) in template.get_envs() {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    let output = command
+        .args(["recoverable", "--json"])
+        .args(args)
+        .output()
+        .expect("the released recoverable runs");
+    Some((
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    ))
+}
+
 fn forget_proofs(fixture: &Fixture) {
     let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
 }
@@ -2161,6 +2187,12 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
         cached, native,
         "a truncated ancestor answers what git answers"
     );
+    if let Some(release) = released(&fixture, &args) {
+        assert_eq!(
+            cached, release,
+            "a truncated ancestor answers what the release answers"
+        );
+    }
 
     // Restored, then made unreadable: the same inode and size, another mode.
     for (copy, (bytes, _, mode)) in copies.iter().zip(&kept) {
@@ -2186,6 +2218,12 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
         cached, native,
         "an unreadable ancestor answers what git answers"
     );
+    if let Some(release) = released(&fixture, &args) {
+        assert_eq!(
+            cached, release,
+            "an unreadable ancestor answers what the release answers"
+        );
+    }
     for (copy, (_, _, mode)) in copies.iter().zip(&kept) {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(*mode)).unwrap();
     }

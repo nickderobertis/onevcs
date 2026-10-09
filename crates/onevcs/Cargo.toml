@@ -56,6 +56,7 @@ url = { workspace = true }
 # cannot outlive the push it was gating. There is no portable spelling for that.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+libz-sys = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 dunce = { workspace = true }

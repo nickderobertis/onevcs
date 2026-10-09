@@ -93,6 +93,11 @@ icu_properties = "2.2"
 # portable spelling. Depended on for Unix only; Windows gets the bound without the
 # group teardown.
 libc = "0.2"
+# zlib itself, which libgit2 already links: a recovery read answered in process
+# first proves every loose object it could reach inflates to a whole stream,
+# because libgit2's own inflate never returns from one cut short. The same crate
+# and features libgit2-sys builds, so nothing new enters the graph.
+libz-sys = "1.1.29"
 # The event envelope's *shape*, its filter grammar, the payload bound, the
 # redaction tables, and the emitter and reader over a stream: one copy shared by
 # every producer in the stack, where each used to keep its own. The core is
