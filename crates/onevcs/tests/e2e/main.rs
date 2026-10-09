@@ -181,6 +181,12 @@ mod publication_watch;
 mod refusing_fs;
 #[cfg(unix)]
 mod registry;
+// Unix only: a required context the host declares and has not started, published
+// through the same substituted `gh` as `host.rs` over real git and a real bare origin.
+// Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod required_contexts;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`, over
 // real git and a real bare origin. Its own header carries the reason in full.
 #[cfg(unix)]

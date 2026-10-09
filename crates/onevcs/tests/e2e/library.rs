@@ -3841,15 +3841,29 @@ fn a_host_written_before_drafts_adopts_its_change_request_and_publishes_unchange
             }])
         }
         fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
-            // Every change policy watches its checks; this repository has none, and
-            // says so from its whole rollup.
+            // Every change policy watches its checks; this repository requires none,
+            // and says so from its whole rollup — a check that ran, marked not
+            // required. An *empty* rollup would not say it: this host cannot be asked
+            // what it requires either, and a host that has marked nothing required
+            // yet has not answered that nothing is.
             Ok(onevcs::ChangeChecks {
-                checks: Vec::new(),
+                checks: vec![Check {
+                    name: "lint".to_owned(),
+                    status: "completed".to_owned(),
+                    conclusion: Some("success".to_owned()),
+                    required: false,
+                    head: None,
+                    url: None,
+                    started_at: None,
+                    completed_at: None,
+                }],
                 sources: [CheckSource::StatusChecks].into_iter().collect(),
             })
         }
         fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<onevcs::ArtifactId> {
-            unreachable!("a host reporting no check is asked for no log")
+            Err(onevcs::Error::NotImplemented {
+                operation: "RemoteHost::check_log",
+            })
         }
         fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
             unreachable!("change-open asks a host to merge nothing")

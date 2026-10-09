@@ -1690,6 +1690,43 @@ fn a_host_that_will_not_say_what_it_requires_is_waited_out_and_then_read_by_its_
     assert_marked(&world, &session, &said, "classic branch protection");
 }
 
+#[test]
+fn a_ready_change_whose_declaration_cannot_be_read_is_green_by_its_marking_and_says_so() {
+    // The lifecycle off, so this is a ready change's own watch rather than a draft's.
+    // The credential is refused classic branch protection, so what is required is read
+    // off the checks' marking — and a green read that way records where it came from,
+    // as the draft's does, rather than reading as the host's complete answer.
+    for rules in [DIRECT_OFF, AUTO_OFF] {
+        let (world, _origin, session) = scene(rules, "600", "20");
+        let host = MemoryHost::seeded(HostState {
+            required_checks: Some(RequiredChecks {
+                checks: BTreeSet::new(),
+                unconsulted: BTreeMap::from([(
+                    ProtectionSource::BranchProtection,
+                    "Resource not accessible by personal access token (HTTP 403)".to_owned(),
+                )]),
+            }),
+            ..host_with(vec![check("gate", Some("success"), true, 1)], None)
+        });
+        let mut published = None;
+        let said = stderr_of(|| {
+            published = Some(publish(&host, &session, &PublishRequest::default()));
+        });
+        let published = published.expect("it ran");
+
+        assert!(
+            matches!(published.outcome, PublishOutcome::Merged(_)),
+            "{rules}: {published:?}"
+        );
+        assert_eq!(
+            world.events_of(&session.token.0, "checks-settled")[0]["payload"]["verdict"],
+            "passed",
+            "{rules}"
+        );
+        assert_marked(&world, &session, &said, "classic branch protection");
+    }
+}
+
 /// That a settlement was read from the host's own per-check marking because the
 /// required-checks declaration could not be read, and says why, on `checks-settled`
 /// and on stderr.

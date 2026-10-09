@@ -421,6 +421,14 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   once.
 - **`policy::GreenDraft` is the one statement of the table**, asked by the publication
   and by `rules check`; a second `match` on publication and approvals would drift.
+- **Every phase reads what is required from the host's declaration** (`Watcher::declared`,
+  asked once per watch), never from the rollup's own `required` alone: a context branch
+  protection requires and that has not started is absent from the rollup, so a watch that
+  read the marking journalled `passed` before the gate existed. Only `Declared::Nothing` —
+  the host's *complete* answer — settles an empty set; an unreadable declaration falls back
+  to the marking, never settles on nothing, and a green read that way records
+  `requirement.read_from: host-marking`. `onevcs-testing` mirrors this, its host's
+  auto-merge included.
 - **A post-lift run is told from a draft-era one by its `started_at`** (`ran_after_the_lift`),
   never by what it concluded: a re-run on `ready_for_review` can conclude `skipped` just as
   the draft's run did, and never by its status either. A check — running or settled — with
