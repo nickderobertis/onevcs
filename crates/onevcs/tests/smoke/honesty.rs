@@ -220,15 +220,27 @@ fn ready_to_publish(
 /// among the values the comparison was always allowed to differ in. Everything else
 /// about the event, including that it *has* an id and that the same event carries
 /// it, is still compared.
+///
+/// Every event that names the change by that number is reduced, not only the one
+/// that opened it: a publication goes on to report the change as drafted, lifted and
+/// checked under the same id, and a scratch repository with any history numbers it
+/// past one. Only the opened change's own number is replaced, so an event that names
+/// a different change still differs.
 fn anonymous_changes(events: Vec<Value>) -> Vec<Value> {
+    let opened = events
+        .iter()
+        .find(|event| event["kind"] == "change-opened")
+        .map(|event| {
+            assert!(
+                event["payload"]["id"].is_string(),
+                "a change-opened event names the change: {event}"
+            );
+            event["payload"]["id"].clone()
+        });
     events
         .into_iter()
         .map(|mut event| {
-            if event["kind"] == "change-opened" {
-                assert!(
-                    event["payload"]["id"].is_string(),
-                    "a change-opened event names the change: {event}"
-                );
+            if opened.as_ref() == Some(&event["payload"]["id"]) {
                 event["payload"]["id"] = Value::String("<change>".to_owned());
             }
             event
