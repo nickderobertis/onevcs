@@ -425,6 +425,91 @@ fn a_cleanup_that_removes_a_line_the_base_dropped_meanwhile_is_still_public_hist
 }
 
 #[test]
+fn a_binary_files_contents_are_not_read_and_every_path_is() {
+    let host = Boundary::with_private(&[]);
+    let before = host.origin_refs();
+    // The stated limit: a binary blob's bytes are not matched — this one carries the
+    // private name — while its path, like every path, is.
+    let (token, worktree) = host.session("binary-neutral");
+    let mut bytes = b"\0\x01binary hiddenco/quietharbor payload\0".to_vec();
+    std::fs::create_dir_all(worktree.join("assets")).expect("a directory");
+    std::fs::write(worktree.join("assets/image.bin"), &bytes).expect("a blob");
+    commit(&host.world, &worktree, "docs: add an image");
+    bytes.extend_from_slice(b"\0more quietharbor\0");
+    std::fs::write(worktree.join("assets/image.bin"), &bytes).expect("a changed blob");
+    commit(&host.world, &worktree, "docs: update the image");
+    host.published(&host.publish(&token, &[]), &before, "binary contents");
+
+    let before = host.origin_refs();
+    let (token, worktree) = host.session("binary-named");
+    std::fs::create_dir_all(worktree.join("assets")).expect("a directory");
+    std::fs::write(worktree.join("assets/quietharbor.bin"), b"\0\x02").expect("a blob");
+    commit(&host.world, &worktree, "docs: add an image");
+    host.refused(
+        &host.publish(&token, &[]),
+        "a path",
+        &before,
+        "a binary file's path",
+    );
+
+    // A submodule is a path with no blob behind it, and its path is checked too.
+    let (token, worktree) = host.session("vendored");
+    let commit_id = host
+        .world
+        .git(&worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    host.world.git(
+        &worktree,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{commit_id},vendor/quietharbor"),
+        ],
+    );
+    // Beside a file, since a branch whose only change is a submodule has nothing to
+    // publish at all.
+    write(&worktree, "vendor/README.md", "vendored\n");
+    host.world.git(&worktree, &["add", "vendor/README.md"]);
+    host.world.git(
+        &worktree,
+        &["commit", "-q", "-m", "chore: vendor a dependency"],
+    );
+    host.refused(
+        &host.publish(&token, &[]),
+        "a path",
+        &before,
+        "a submodule's path",
+    );
+}
+
+#[test]
+fn a_sync_from_the_base_brings_its_public_content_in_unchallenged() {
+    // The base already carries a private name somebody else landed, and moves on while
+    // the branch is out: one more such line, and one reworded. Merging the base into
+    // the branch writes neither — the merge's content is what is in none of its
+    // parents — so neutral work still lands.
+    let host = Boundary::with_private(&SEEDED);
+    let (token, worktree) = host.session("synced");
+    write(&worktree, "examples/demo.md", "a generic demo\n");
+    commit(&host.world, &worktree, "docs: add a generic demo");
+    host.land_on_base(
+        &[
+            (
+                "docs/notes.md",
+                "# Notes\nported from hiddenco/quietharbor\na generic line\nalso see quietharbor-core\n",
+            ),
+            ("legacy/quietharbor.txt", "plain words, reworded\n"),
+        ],
+        "docs: a change landed by somebody else",
+    );
+    let before = host.origin_refs();
+    let output = host.publish(&token, &[]);
+    host.published(&output, &before, "a sync with the base's own content");
+}
+
+#[test]
 fn a_merge_is_held_against_every_parent_so_only_its_own_resolution_is_its_content() {
     let host = Boundary::with_private(&[]);
     let before = host.origin_refs();
@@ -707,9 +792,41 @@ fn what_a_refusal_found_is_kept_privately_and_the_timings_name_nothing() {
     assert_eq!(evidence[0]["identity"], "github.com/hiddenco/quietharbor");
     assert_eq!(evidence[0]["at"], "examples/demo.md");
 
+    // A pass is timed too, and a diagnostics file that cannot be written changes
+    // nothing about the publication but a warning.
+    let (token, worktree) = host.session("work-timed");
+    write(&worktree, "examples/timed.md", "a generic demo\n");
+    commit(&host.world, &worktree, "docs: add a demo");
+    let output = host
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .env("ONEVCS_BOUNDARY_DIAGNOSTICS", &diagnostics)
+        .output()
+        .expect("the binary runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (token, worktree) = host.session("work-untimed");
+    write(&worktree, "examples/untimed.md", "a generic demo\n");
+    commit(&host.world, &worktree, "docs: add a demo");
+    let output = host
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .env("ONEVCS_BOUNDARY_DIAGNOSTICS", host.world.path(""))
+        .output()
+        .expect("the binary runs");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("the boundary diagnostics could not be written"));
+
     let lines = std::fs::read_to_string(&diagnostics).expect("diagnostics were written");
+    assert!(lines.contains("\"verdict\":\"pass\""), "{lines}");
     let line: serde_json::Value =
-        serde_json::from_str(lines.lines().last().expect("a line")).expect("one JSON line");
+        serde_json::from_str(lines.lines().next().expect("a line")).expect("one JSON line");
     assert_eq!(line["check"], "publication");
     assert_eq!(line["verdict"], "refuse");
     for key in [
@@ -969,6 +1086,27 @@ fn a_change_requests_description_is_held_to_the_boundary_before_the_host_is_writ
         host.world.change_request_body(1),
         "A generic example, described."
     );
+    // A registered private repository whose declaration cannot be read makes the
+    // description unavailable, written nowhere.
+    host.private(
+        "otherhold/meadowlark",
+        &[("private-terms.toml", "schema_version = 1\nterms = [\"\"]\n")],
+    );
+    let output = host.run(
+        &[
+            "change",
+            "describe",
+            &token,
+            "--body",
+            "A generic example, again.",
+        ],
+        None,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        host.world.change_request_body(1),
+        "A generic example, described."
+    );
     // …and under a scope that leaves the repository out, its name is just a word.
     let output = host.run(
         &[
@@ -978,6 +1116,24 @@ fn a_change_requests_description_is_held_to_the_boundary_before_the_host_is_writ
             "--body",
             "Mirrors hiddenco/quietharbor.",
             "--term-scope-empty",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A destination the host now says is private is not a public write at all.
+    host.world
+        .host_visibility("sample-owner/openwidget", "private");
+    let output = host.run(
+        &[
+            "change",
+            "describe",
+            &token,
+            "--body",
+            "Mirrors hiddenco/quietharbor.",
         ],
         None,
     );

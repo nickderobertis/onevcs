@@ -223,6 +223,16 @@ fn an_unknown_key_an_invalid_composition_a_dry_run_and_a_failed_write_install_no
     assert_eq!(apply(&world, &typo_base, &[], &[]).status.code(), Some(2));
     unchanged("an unknown key in the base");
 
+    // An overlay that is not there, and one at a version this build does not read.
+    let output = apply(&world, &base, &[&world.path("private/absent.yml")], &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read the rules file"));
+    let ancient = file(&world, "private/ancient.yml", "version: 0\n");
+    let output = apply(&world, &base, &[&ancient], &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("declares version 0"));
+    unchanged("an absent or unreadable overlay");
+
     // A key its own version does not have, and a composition no policy can honour.
     let early = file(
         &world,
@@ -280,6 +290,45 @@ fn an_unknown_key_an_invalid_composition_a_dry_run_and_a_failed_write_install_no
     assert!(std::fs::read_to_string(&installed)
         .expect("the installed rules")
         .contains("someone-else"));
+}
+
+#[test]
+fn an_overlay_lays_its_prefix_and_its_draft_keys_over_the_base_key_by_key() {
+    let world = host();
+    let base = file(
+        &world,
+        "repo/rules.yml",
+        "version: 3\nrules:\n  - match: {host: github.com, owner: sample-owner}\n    \
+         publication: change-auto\n    approvals: none\n    drafts: {disabled: true}\n\
+         default: {publication: change-open, approvals: required, drafts: {disabled: true}}\n",
+    );
+    let overlay = file(
+        &world,
+        "private/overlay.yml",
+        "version: 4\ntrailer_prefix: Acme-\nrules:\n  - match: {host: github.com, owner: \
+         sample-owner}\n    drafts: {warn_on_early_lift: false}\n    approvals: null\n\
+         default:\n  drafts: {warn_on_early_lift: false}\n",
+    );
+    let output = apply(&world, &base, &[&overlay], &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    world
+        .onevcs()
+        .args(["rules", "check", "openwidget"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("drafts: off (from rule 1)"))
+        .stdout(predicate::str::contains(
+            "early-lift warning: off (from rule 1)",
+        ))
+        .stdout(predicate::str::contains(
+            "trailer_prefix: Acme- (from the rules file)",
+        ));
+    let document = std::fs::read_to_string(world.home().join("rules.yml")).expect("installed");
+    assert!(document.contains("warn_on_early_lift: false"), "{document}");
 }
 
 #[test]

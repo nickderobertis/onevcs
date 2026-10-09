@@ -246,6 +246,10 @@ fn a_qualified_name_and_its_url_forms_refuse_anywhere_and_bare_words_only_as_wor
         // the term once normalized.
         "ｈｉｄｄｅｎｃｏ/ｑｕｉｅｔｈａｒｂｏｒ",
         "quiet\u{200b}harbor",
+        // Text that is not ASCII is folded as Unicode folds it, and a term found twice
+        // is one refusal.
+        "Über QUIETHARBOR",
+        "quietharbor, and quietharbor again",
     ] {
         let checked = host.text(refused, None);
         assert!(
@@ -354,6 +358,22 @@ fn every_supported_manifest_names_package_terms_from_its_committed_tree_alone() 
             ("apps/site/package.json", r#"{"name": "@meadowlark/site-kit"}"#),
         ],
     );
+    // A workspace object naming no packages, and a literal member it excludes, name no
+    // package beyond the root's own.
+    host.private(
+        "otherhold/quietledger",
+        &[
+            (
+                "package.json",
+                r#"{"name": "ledger-ui-kit", "workspaces": {"nohoist": []}}"#,
+            ),
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"legacy\"]\nexclude = [\"legacy\"]\n",
+            ),
+        ],
+    );
+    assert!(host.text("the ledger-ui-kit package", None).refused());
     for refused in [
         "meadowlark-engine",
         "meadowlark-cli",
@@ -466,15 +486,32 @@ fn a_malformed_ambiguous_or_unaimed_declaration_makes_the_check_unavailable_and_
             .passed());
     }
 
-    // A manifest that does not parse, and a member named literally whose manifest is
-    // not committed, are unreadable in the same way.
+    // A manifest that does not parse, a member named literally whose manifest is not
+    // committed, a member outside the repository, a workspace list that is not one,
+    // and an exception naming an empty term are unreadable in the same way.
     for files in [
         vec![("Cargo.toml", "[package\nname = ")],
         vec![(
             "Cargo.toml",
             "[workspace]\nmembers = [\"crates/missing\"]\n",
         )],
+        vec![
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/empty\"]\n"),
+            ("crates/empty/README.md", "no manifest here\n"),
+        ],
+        vec![("Cargo.toml", "[workspace]\nmembers = [\"../outside\"]\n")],
+        vec![("Cargo.toml", "[workspace]\nmembers = \"crates\"\n")],
         vec![("package.json", "{\"name\": ")],
+        vec![("package.json", r#"{"workspaces": "packages"}"#)],
+        vec![(
+            "package.json",
+            r#"{"workspaces": {"packages": "packages"}}"#,
+        )],
+        vec![("package.json", r#"{"workspaces": [7]}"#)],
+        vec![(
+            "private-terms.toml",
+            "schema_version = 1\n[[exceptions]]\nterm = \" \"\naction = \"drop\"\n",
+        )],
     ] {
         let host = Boundary::new("{publication: local-direct, approvals: none}");
         host.private("hiddenco/quietharbor", &files);
@@ -577,6 +614,41 @@ fn an_unknown_or_local_only_repository_is_private_and_contributes_its_terms() {
         .assert()
         .success();
     assert!(host.text("the harborlight crate", None).refused());
+}
+
+#[test]
+fn a_registry_or_a_checkout_the_check_cannot_read_is_unavailable_and_never_a_pass() {
+    let host = Boundary::new("{publication: local-direct, approvals: none}");
+    // A repository with no commit yet has a name and nothing committed to read.
+    host.world
+        .host_visibility("hiddenco/quietharbor", "private");
+    let empty = host.world.path("private-empty");
+    std::fs::create_dir_all(&empty).expect("a directory");
+    host.world.git(&empty, &["init", "-q", "-b", "main"]);
+    register(&host.world, &empty, "hiddenco/quietharbor");
+    assert!(host.text("see hiddenco/quietharbor", None).refused());
+    assert!(host.text("a generic example", None).passed());
+
+    // A private identity the registry holds with no checkout to read it from.
+    let path = host.world.home().join("registry.json");
+    let mut registry: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("a registry")).expect("JSON");
+    registry["identities"]["github.com/otherhold/meadowlark"] =
+        json!({"origin": "github.com/otherhold/meadowlark", "gate": "<no-op>"});
+    std::fs::write(&path, registry.to_string()).expect("a registry");
+    let checked = host.text("a generic example", None);
+    assert!(checked.unavailable(), "{}", checked.stdout);
+
+    // A registry that does not parse at all.
+    std::fs::write(&path, "{ not json").expect("a broken registry");
+    let checked = host.text("a generic example", None);
+    assert!(checked.unavailable());
+    assert!(checked
+        .stderr
+        .contains("the public boundary check is unavailable: the registry could not be read"));
+    // …while an empty scope reads nothing, and passes.
+    let none: &[&str] = &[];
+    assert!(host.text("a generic example", Some(none)).passed());
 }
 
 #[test]

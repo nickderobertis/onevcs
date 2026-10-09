@@ -91,14 +91,11 @@ const HEADER: &str = "# Installed by `onevcs rules apply`. Edit the base and ove
 /// reference, where the registry names none.
 pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied> {
     let raw = read(&request.base)?;
-    refuse_unknown_keys::<RulesFile>(&request.base, &raw)?;
+    strictly::<RulesFile>(&request.base, &raw)?;
     let mut composed = policy::parse(&request.base, &raw)?;
     for overlay in &request.overlays {
         let raw = read(overlay)?;
-        refuse_unknown_keys::<Overlay>(overlay, &raw)?;
-        let laid: Overlay = serde_yaml_ng::from_str(&raw).map_err(|error| Error::Invalid {
-            reason: format!("the overlay at {} is malformed: {error}", overlay.display()),
-        })?;
+        let laid: Overlay = strictly(overlay, &raw)?;
         lay(&mut composed, laid, overlay)?;
     }
     let destination = destination()?;
@@ -196,15 +193,12 @@ fn lay(composed: &mut RulesFile, overlay: Overlay, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Refuse, by name, any key in `raw` that `T` does not read back.
+/// `raw` read as `T`, refusing by name any key that `T` does not read back.
 ///
 /// The document is read as `T` and written again; a key that went in and did not come
 /// out is one nothing here understands. A key set to null says nothing either way and
 /// is passed over.
-fn refuse_unknown_keys<T: Serialize + for<'de> Deserialize<'de>>(
-    path: &Path,
-    raw: &str,
-) -> Result<()> {
+fn strictly<T: Serialize + for<'de> Deserialize<'de>>(path: &Path, raw: &str) -> Result<T> {
     let malformed = |error: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {error}", path.display()),
     };
@@ -220,7 +214,7 @@ fn refuse_unknown_keys<T: Serialize + for<'de> Deserialize<'de>>(
             ),
         });
     }
-    Ok(())
+    Ok(typed)
 }
 
 fn unknown_key(

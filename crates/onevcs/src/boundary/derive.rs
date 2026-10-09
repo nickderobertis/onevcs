@@ -128,14 +128,14 @@ fn apply_declaration(
         }
         if let Some(earlier) = declaration.exceptions[..index]
             .iter()
-            .position(|other| same_term(&other.term, &exception.term, false))
+            .position(|other| same_term(&other.term, &exception.term))
         {
             return Err(format!(
                 "exceptions {} and {number} name the same term, so which applies is ambiguous",
                 earlier + 1
             ));
         }
-        if qualified.is_some_and(|qualified| same_term(qualified, &exception.term, false)) {
+        if qualified.is_some_and(|qualified| same_term(qualified, &exception.term)) {
             return Err(format!(
                 "exception {number} names the repository's own owner/name, which always matches"
             ));
@@ -144,7 +144,7 @@ fn apply_declaration(
         for candidate in candidates.iter_mut() {
             if candidate.origin != Origin::Word
                 || candidate.rule.is_none()
-                || !same_term(&candidate.word, &exception.term, false)
+                || !same_term(&candidate.word, &exception.term)
             {
                 continue;
             }
@@ -152,12 +152,10 @@ fn apply_declaration(
             candidate.rule = match exception.action {
                 ExceptionAction::Drop => None,
                 ExceptionAction::OwnerNameOnly => owner_name_only(),
-                ExceptionAction::WholeWord => candidate.rule.take().map(|mut rule| {
-                    if rule.mode == TermMode::Substring {
-                        rule.mode = TermMode::WholeWord;
-                    }
-                    rule
-                }),
+                // Every word rule is already a whole word, and one narrowed to the
+                // qualified name is narrower still, so this leaves the rule as it is:
+                // the action is what a declaration says to make sure of.
+                ExceptionAction::WholeWord => candidate.rule.take(),
                 ExceptionAction::CaseSensitive => candidate.rule.take().map(|mut rule| {
                     if rule.mode != TermMode::OwnerNameOnly {
                         rule.term = exception.term.clone();

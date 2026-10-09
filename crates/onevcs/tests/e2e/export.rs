@@ -466,12 +466,76 @@ fn a_change_outside_the_directory_or_a_hazard_inside_it_refuses_and_leaves_nothi
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("relative, normalized path"));
     }
+    // A branch name git would refuse, one repository as both ends, and a "directory"
+    // that is a file are refused before anything is read or written.
+    refused(
+        &host,
+        &host.export("generic", "examples", "fixtures", "bad..name", &[]),
+        "bad..name",
+        &before,
+        "a branch name",
+    );
+    let output = host
+        .world
+        .onevcs()
+        .args([
+            "export",
+            "--from",
+            "github.com/hiddenco/quietharbor",
+            "--branch",
+            "generic",
+            "--directory",
+            "examples",
+            "--to",
+            "github.com/hiddenco/quietharbor",
+            "--target-directory",
+            "fixtures",
+            "--branch-name",
+            "generic-fixtures",
+        ])
+        .output()
+        .expect("the binary runs");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("one repository"));
+    source.branch(
+        world,
+        "a-file",
+        &[("examples/a.txt", Some("a\n"))],
+        "docs: a",
+    );
+    refused(
+        &host,
+        &host.export(
+            "a-file",
+            "examples/a.txt",
+            "fixtures",
+            "generic-fixtures",
+            &[],
+        ),
+        "generic-fixtures",
+        &before,
+        "a file",
+    );
     // …and with them fixed, the same branch exports.
     let output = host.export("generic", "examples", "fixtures", "generic-fixtures", &[]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Once the destination's base carries exactly that, exporting it again would change
+    // nothing, and is refused rather than written as an empty commit.
+    world.git(
+        &host.public,
+        &["push", "-q", "origin", "generic-fixtures:main"],
+    );
+    let before = host.origin_refs();
+    refused(
+        &host,
+        &host.export("generic", "examples", "fixtures", "again-fixtures", &[]),
+        "again-fixtures",
+        &before,
+        "nothing new",
     );
 }
 

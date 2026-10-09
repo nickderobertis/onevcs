@@ -7132,4 +7132,49 @@ fn the_boundary_operations_answer_what_the_boundary_commands_print() {
         .is_empty());
     assert!(matcher.find("quietharborage").is_empty());
     assert!(TermSource::from_committed(&host.world.path("nowhere"), "github.com/a/b").is_err());
+
+    // The matcher on its own: an owner-name-only rule is the qualified name standing
+    // alone, `.git` after it included, and an empty rule matches nothing.
+    let narrowed = TermMatcher::new(vec![
+        TermRule {
+            term: "hiddenco/docs".to_owned(),
+            mode: TermMode::OwnerNameOnly,
+            case_sensitive: false,
+        },
+        TermRule {
+            term: String::new(),
+            mode: TermMode::Substring,
+            case_sensitive: false,
+        },
+    ])
+    .expect("compiled");
+    assert_eq!(narrowed.rules().len(), 2);
+    for (text, found) in [
+        ("hiddenco/docs", true),
+        ("git@github.com:hiddenco/docs.git", true),
+        ("(hiddenco/docs)", true),
+        ("hiddenco/docs.", true),
+        ("hiddenco/docsite", false),
+        ("hiddenco/docs.site", false),
+        ("hiddenco/docs.gitx", false),
+        ("xhiddenco/docs", false),
+    ] {
+        assert_eq!(!narrowed.find(text).is_empty(), found, "{text}");
+    }
+
+    // A declaration this build refuses is an error from the derivation, and from the
+    // repository's own boundary.
+    let mut refused = TermSource::from_committed(&checkout, "github.com/hiddenco/quietharbor")
+        .expect("the committed tree reads");
+    refused.declaration = Some(onevcs::boundary::PrivateTerms {
+        schema_version: 1,
+        terms: vec![String::new()],
+        exceptions: Vec::new(),
+    });
+    assert!(derive_terms(&[refused], &PublicNames::default()).is_err());
+    host.private(
+        "otherhold/meadowlark",
+        &[("private-terms.toml", "schema_version = 1\nterms = [\"\"]\n")],
+    );
+    assert!(onevcs::repository_boundary("github.com/otherhold/meadowlark").is_err());
 }

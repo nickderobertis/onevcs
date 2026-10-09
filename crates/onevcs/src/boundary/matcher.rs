@@ -211,15 +211,10 @@ fn fold(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Whether two spellings are one term once normalized and, unless `case_sensitive`,
-/// folded: how an exception finds the rule it names.
-pub fn same_term(a: &str, b: &str, case_sensitive: bool) -> bool {
-    let (a, b) = (normalize(a), normalize(b));
-    if case_sensitive {
-        a == b
-    } else {
-        fold(&a) == fold(&b)
-    }
+/// Whether two spellings are one term once normalized and folded: how an exception
+/// finds the rule it names.
+pub fn same_term(a: &str, b: &str) -> bool {
+    term_key(a) == term_key(b)
 }
 
 /// The key two spellings of one term share once normalized and folded.

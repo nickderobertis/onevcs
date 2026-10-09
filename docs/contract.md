@@ -4574,7 +4574,7 @@ onevcs change describe <token> [--term-scope <identity>]... [--term-scope-empty]
 
 ```rust
 pub enum Visibility { Public, Private, Unknown }            // serde: lowercase; Default: Unknown
-impl Visibility { pub fn effective(self) -> Visibility; pub fn is_unknown(&self) -> bool; pub fn spell(self) -> &'static str; }
+impl Visibility { pub fn effective(self) -> Visibility; pub fn is_unknown(&self) -> bool; }
 pub enum Observation { Host, Override, Unknown }             // serde: lowercase; Default: Unknown
 // registry::Identity gains: pub visibility: Visibility, pub observation: Observation,
 //                           pub observed_at: Option<String>; and Identity::new(origin, gate)

@@ -101,15 +101,6 @@ impl Visibility {
     pub fn is_unknown(&self) -> bool {
         *self == Visibility::Unknown
     }
-
-    /// How it is spelled in every document and on every command line.
-    pub fn spell(self) -> &'static str {
-        match self {
-            Visibility::Public => "public",
-            Visibility::Private => "private",
-            Visibility::Unknown => "unknown",
-        }
-    }
 }
 
 /// Where a registry identity's recorded [`Visibility`] came from.
