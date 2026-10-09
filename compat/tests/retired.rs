@@ -19,7 +19,7 @@ use std::process::Command;
 use onevcs::{EventLines, EventStream, Scope, SessionToken};
 use onevcs_current::{
     BranchPublishRequest, Providers as CurrentProviders, RetireMode, RetireOutcome, RetireRequest,
-    RetirementQuery, SessionRequest, Supersession,
+    RetirementQuery, SessionRequest, Supersession, TermScope,
 };
 
 /// A scratch host: its own home and state root, removed when the journey ends.
@@ -331,6 +331,7 @@ fn a_released_build_reads_the_host_this_build_retired_a_branch_on() {
             title: None,
             body: None,
             policy: None,
+            term_scope: TermScope::default(),
         },
     )
     .expect("this build lands it");

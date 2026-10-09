@@ -60,7 +60,7 @@ claim is about:
 - `tests/verdicts.rs` holds both to a state root on which this build's
   finished-branches pass has recorded verdicts under `$ONEVCS_HOME/verdicts/`. The pass
   moves nothing an older build reads — the registry and every session record stay the
-  bytes they were, at versions 6 and 3 — and **0.32.2** answers every read it makes
+  bytes they were, at versions 7 and 3 — and **0.32.2** answers every read it makes
   (the registry, the session records, `recoverable`, `status`, every stream) exactly as
   before. **0.13.0 already refuses the base's registry**: it reads registry versions 2
   to 5 and parses a later one as version 5's shape, and version 6 dropped two fields
