@@ -777,9 +777,9 @@ fn read_store(root: &Path) -> Option<Store> {
     })
 }
 
-/// One listed path with its identity.
+/// One path a store generation lists, with the identity it is held to.
 #[cfg(unix)]
-fn line(root: &Path, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
+fn listed_identity(root: &Path, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let relative = path.strip_prefix(root).ok()?.to_str()?;
     if relative.contains(['\0', '\n']) {
@@ -805,7 +805,7 @@ fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()>
     if meta.file_type().is_symlink() {
         return None;
     }
-    held.insert(line(root, path, &meta)?);
+    held.insert(listed_identity(root, path, &meta)?);
     if meta.is_dir() {
         for entry in std::fs::read_dir(path).ok()? {
             growable(root, &entry.ok()?.path(), held)?;
@@ -826,7 +826,7 @@ fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
     if !meta.is_dir() {
         return growable(root, path, held);
     }
-    held.insert(line(root, path, &meta)?);
+    held.insert(listed_identity(root, path, &meta)?);
     for entry in std::fs::read_dir(path).ok()? {
         let entry = entry.ok()?;
         let meta = entry.metadata().ok()?;
@@ -837,7 +837,7 @@ fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
             growable(root, &entry.path(), held)?;
             continue;
         }
-        held.insert(line(root, &entry.path(), &meta)?);
+        held.insert(listed_identity(root, &entry.path(), &meta)?);
     }
     Some(())
 }

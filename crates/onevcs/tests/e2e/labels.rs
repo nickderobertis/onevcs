@@ -1720,6 +1720,11 @@ fn proof_stores(fixture: &Fixture, counting: &crate::cost::Counting) -> Vec<std:
 /// churn keeps every proof, while each graph overlay and each loss of an object a
 /// proof read still makes the read git's own.
 #[test]
+// llmlint: ignore[tests_mirror_real_usage] what this journey holds is what a read
+// costs and whether a stored proof stood in for git — the Git-execution count the
+// registered recovery budgets measure — and no command reports that. The counting `git`
+// on PATH execs the real one, so the binary is driven unchanged, and every answer it
+// gives is also compared with uncached git's through the same command.
 fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
     let (fixture, token) = deep_history_session("churn");
     let args = decision_of(&token);
@@ -1980,6 +1985,11 @@ fn under_configuration(
 /// into with `receive.denyCurrentBranch` — keeps its proofs. Every key outside the
 /// admitted categories still refuses them.
 #[test]
+// llmlint: ignore[tests_mirror_real_usage] what this journey holds is what a read
+// costs and whether a stored proof stood in for git — the Git-execution count the
+// registered recovery budgets measure — and no command reports that. The counting `git`
+// on PATH execs the real one, so the binary is driven unchanged, and every answer it
+// gives is also compared with uncached git's through the same command.
 fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_them() {
     let (fixture, token) = deep_history_session("configured");
     let args = decision_of(&token);
@@ -2083,6 +2093,11 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
 /// whose walk read such an ancestor names only its endpoints, which still hash, so the
 /// store's listing is what has to notice — and the read is git's again.
 #[test]
+// llmlint: ignore[tests_mirror_real_usage] what this journey holds is what a read
+// costs and whether a stored proof stood in for git — the Git-execution count the
+// registered recovery budgets measure — and no command reports that. The counting `git`
+// on PATH execs the real one, so the binary is driven unchanged, and every answer it
+// gives is also compared with uncached git's through the same command.
 fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let (fixture, token) = deep_history_session("damaged");

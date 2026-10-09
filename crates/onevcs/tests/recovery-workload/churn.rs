@@ -83,10 +83,21 @@ fn repositories(root: &Path) -> Vec<PathBuf> {
 /// `recoverable --json` for the fixture's launcher at decision detail; through the
 /// counting shim where one is given, and by git alone where `uncached`, since any
 /// `GIT_*` override is a context the proof cache delegates.
-fn read(fixture: &Fixture, counting: Option<&Counting>, uncached: bool) -> Vec<Value> {
+fn recoverable_rows(fixture: &Fixture, counting: Option<&Counting>, uncached: bool) -> Vec<Value> {
     let program = binary();
     let mut command = match counting {
-        Some(counting) => counting.with_program(&program),
+        Some(counting) => {
+            // The verb of each call, logged in front of the counting shim the budgets
+            // measure with, so a count over one can be read as what it was spent on.
+            let mut command = counting.with_program(&program);
+            let shim = fixture.root.join("verbs");
+            let path = std::env::join_paths(std::iter::once(shim).chain(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            )))
+            .expect("verb shim PATH");
+            command.env("PATH", path);
+            command
+        }
         None => {
             let mut command = assert_cmd::Command::new(&program);
             command
@@ -212,10 +223,27 @@ fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str)
                 .success());
         }
     }
-    let expected = read(&fixture, None, true);
+    let expected = recoverable_rows(&fixture, None, true);
     assert!(!expected.is_empty(), "the launcher selects rows");
 
     let counting = Counting::installed(&fixture.root);
+    let verbs = fixture.root.join("verbs.log");
+    let shim = fixture.root.join("verbs");
+    std::fs::create_dir(&shim).expect("verb shim directory");
+    std::fs::write(
+        shim.join("git"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\nexec '{}' \"$@\"\n",
+            verbs.display(),
+            fixture.root.join("counting/git").display()
+        ),
+    )
+    .expect("verb shim");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))
+            .expect("executable verb shim");
+    }
     let stop = AtomicBool::new(false);
     let rewrites = AtomicUsize::new(0);
     let (cold, primed, warm, warm_git, uncached, during) = std::thread::scope(|scope| {
@@ -223,14 +251,15 @@ fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str)
         while rewrites.load(Ordering::Relaxed) == 0 {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let cold = read(&fixture, Some(&counting), false);
-        let primed = read(&fixture, Some(&counting), false);
+        let cold = recoverable_rows(&fixture, Some(&counting), false);
+        let primed = recoverable_rows(&fixture, Some(&counting), false);
         let started = rewrites.load(Ordering::Relaxed);
         counting.clear();
-        let warm = read(&fixture, Some(&counting), false);
+        let _ = std::fs::remove_file(&verbs);
+        let warm = recoverable_rows(&fixture, Some(&counting), false);
         let warm_git = counting.calls().len();
         let during = rewrites.load(Ordering::Relaxed) - started;
-        let uncached = read(&fixture, None, true);
+        let uncached = recoverable_rows(&fixture, None, true);
         stop.store(true, Ordering::Relaxed);
         writer.join().expect("the writer finishes");
         (cold, primed, warm, warm_git, uncached, during)
@@ -244,9 +273,13 @@ fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str)
     }
     assert_eq!(uncached, expected, "the churn moved no answer");
     let threshold = threshold(budget);
+    let mut spent = std::collections::BTreeMap::<String, usize>::new();
+    for verb in std::fs::read_to_string(&verbs).unwrap_or_default().lines() {
+        *spent.entry(verb.to_owned()).or_default() += 1;
+    }
     eprintln!(
         "scale {}: warm read under {during} ref rewrites ran {warm_git} Git executions \
-         ({budget} {threshold})",
+         ({budget} {threshold}): {spent:?}",
         scale.number()
     );
     assert!(

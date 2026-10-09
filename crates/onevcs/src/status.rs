@@ -2421,9 +2421,9 @@ pub(crate) fn recorded_streams_about(
         {
             return None;
         }
-        let mut own = Vec::new();
-        let mut record = read_stream(&directory, token, &mut own);
-        record.gaps = !own.is_empty();
+        let mut gap_notes = Vec::new();
+        let mut record = read_stream(&directory, token, &mut gap_notes);
+        record.gaps = !gap_notes.is_empty();
         Some(record)
     });
     for ((token, stamp, known), record) in stamped.into_iter().zip(parsed) {
