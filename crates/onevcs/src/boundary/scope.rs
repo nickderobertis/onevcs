@@ -89,6 +89,12 @@ impl Derived {
 
 /// Derive every rule `scope` selects.
 pub fn derive(scope: &TermScope) -> Result<Derived, Failed> {
+    derive_excluding(scope, None)
+}
+
+/// [`derive`], leaving out `excluded` — a write's own destination, whose names writing
+/// to it cannot expose — whatever its visibility.
+pub fn derive_excluding(scope: &TermScope, excluded: Option<&str>) -> Result<Derived, Failed> {
     if matches!(scope, TermScope::Identities(named) if named.is_empty()) {
         return Ok(Derived::empty());
     }
@@ -146,6 +152,11 @@ pub fn derive(scope: &TermScope) -> Result<Derived, Failed> {
         }
     };
 
+    let excluded = excluded.map(|key| store::normalize(key).key);
+    let selected: Vec<String> = selected
+        .into_iter()
+        .filter(|key| Some(key) != excluded.as_ref())
+        .collect();
     let mut rules: Vec<TermRule> = Vec::new();
     let mut identities: Vec<String> = Vec::new();
     let mut seen: BTreeSet<TermRule> = BTreeSet::new();

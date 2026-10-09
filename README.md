@@ -245,7 +245,8 @@ repository; a repository may commit a `private-terms.toml` adding terms and narr
 or dropping derived ones. A cleanup may remove what its destination already carries
 and nothing is exempt from the rest. Which repositories are public is GitHub's answer,
 recorded in the registry and refreshed at every write, or a rule's `visibility:` —
-unknown is private. `--term-scope IDENTITY` (repeatable) narrows the check to the
+unknown is private, and a hosted destination whose visibility cannot be confirmed is
+screened rather than written to unchecked. `--term-scope IDENTITY` (repeatable) narrows the check to the
 repositories a piece of work names, and `--term-scope-empty` to none.
 
 `onevcs export --from REPO --branch REF --directory DIR --to REPO --target-directory

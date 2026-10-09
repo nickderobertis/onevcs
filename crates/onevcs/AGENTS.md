@@ -1330,7 +1330,7 @@ every time a pass met a session's leftover worker.
 ## The public boundary is one check, and nothing is exempt from it
 
 `boundary.rs` holds the shapes the contract's public-boundary amendment fixes;
-`boundary/` holds the check. Six things are easy to undo.
+`boundary/` holds the check. Eight things are easy to undo.
 
 - **One matcher.** Normalization (NFKC, default-ignorables removed, case folding), word
   boundaries and what each `TermMode` accepts live in `boundary/matcher.rs` and nowhere
@@ -1347,10 +1347,15 @@ every time a pass met a session's leftover worker.
   (0700/0600). That includes what is printed *beside* a refusal: a publication's
   hand-back line drops the branch name when the failure is the boundary's
   (`evidence::is_boundary_reason`), because the name may be what was refused.
-- **Unknown is private, and a failed probe is unknown.** `visibility::refresh` records
-  the host's answer, a rule's override, or — on any failure — `unknown`; never the last
-  answer. A destination that is not effectively public is not checked at all, and every
-  identity that is not public contributes terms.
+- **Unknown is private, and a failed probe is unknown — but never an unchecked write.**
+  `visibility::refresh` records the host's answer, a rule's override, or — on any
+  failure — `unknown`; never the last answer. Every identity that is not public
+  contributes terms. A write skips the screen only where `visibility::screens_writes`
+  says its destination is *verified* not public; a hosted destination the host could not
+  answer for is screened.
+- **A removal is allowed against the resolved destination base and nothing else.** Not
+  earlier base history, and not another parent of a merge: every parent diff is held to
+  the whole policy.
 - **Terms come from committed trees.** `boundary/manifests.rs` reads the commit `HEAD`
   names through git's object store; reading a worktree file there is reading what a
   dirty tree happens to say. Anything it cannot read is `Unavailable`, which a write

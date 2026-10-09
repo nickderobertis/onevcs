@@ -4381,8 +4381,13 @@ asked (`gh api repos/{owner}/{name}`: `public`, and `private` or `internal` as p
 when a checkout is registered, by `onevcs boundary inspect`, and **at every write that
 could reach a public destination**; its answer is recorded as `observation: host`, and a
 probe that fails is recorded as `unknown` — never as the last answer — so a failure is
-private. A local-only identity is never probed. A write whose destination is not
-effectively public is not checked: it is not a public write.
+private wherever terms are derived. A local-only identity is never probed. **A write is
+let through unchecked only where its destination is verified not public**: a rule
+declaring it private, a host answering private, or a local-only identity no rule calls
+public. A hosted destination whose visibility the host could not answer for is screened
+as a public one would be, so an unverified destination never receives an unchecked
+write. The destination's own identity contributes no terms to the screen of a write to
+it.
 
 ```yaml
 version: 4
@@ -4475,8 +4480,8 @@ every publication; no branch, node, label or flag exempts anything:
 - **(a)** every added line, every new path, every outgoing commit's message, the branch
   name, and the change request's title and body are checked in full;
 - **(b)** a removed line, or a deleted path, that carries a term passes only where that
-  exact text is already at that path in the public destination base it lands on — its
-  base tip, or the commit the branch left it at, which is that base's own public history;
+  exact text is already at that path in the destination base the publication lands on,
+  as resolved for that write — and nowhere else, earlier history of that base included;
 - **(c)** text a branch adds and later removes was never public at the base, so the commit
   that added it is refused for the addition;
 - **(d)** a term-bearing line moved or copied elsewhere, or reintroduced by a later commit,
@@ -4485,9 +4490,10 @@ every publication; no branch, node, label or flag exempts anything:
   and its lines are checked where they land.
 
 Each outgoing commit — everything the published revision reaches that the destination
-base does not — is diffed against **every one of its parents**. A merge's own content is
-what is in none of its parents, and its own removal what was in all of them, so content
-a merge's resolution writes is checked as the merge's. **Commit author and committer
+base does not — is diffed against **every one of its parents**, and every one of those
+diffs is held to (a) and (b): no line is excused because another parent carries it, so
+content a merge writes — its resolution, or what it brings in from either side — is
+checked as the merge's own. **Commit author and committer
 identities are not read**, by the user's ruling. **A binary file's contents are not
 term-checked** — its path is — so a binary blob carrying a private term is outside what
 this check can see.

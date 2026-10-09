@@ -6,19 +6,18 @@
 //! - **(a)** every added line, every new path, every outgoing commit's message, the
 //!   branch name, and a change request's title and body are checked in full;
 //! - **(b)** a removed line, and a deleted path, that carries a term passes only where
-//!   that exact text is already at that path in the public destination — its base tip,
-//!   or a commit of the base the published history left it at, which is that base's
-//!   own public history;
+//!   that exact text is already at that path in the destination base the publication
+//!   lands on — that base's tree as resolved for this write, and no other;
 //! - **(c)** text a branch adds and later removes was never public, so the commit that
 //!   added it is refused for the addition;
 //! - **(d)** a line moved or copied anywhere, or brought back by a later commit, is an
 //!   addition where it lands. Git's rename detection is not asked, so a renamed file is
 //!   a deleted path and an added one.
 //!
-//! Every outgoing commit is diffed against **every** parent. A merge's own content is
-//! what is in none of its parents — so a line a merge brings in from one side is that
-//! side's, checked in that side's own commit or already public at the base — and a
-//! line a merge removes is its own only where every parent had it.
+//! Every outgoing commit is diffed against **every** parent, and every one of those
+//! diffs is held to (a) and (b) alike: a merge is not excused a line because another
+//! parent carries it, so content a merge writes — its resolution, or whatever it
+//! brings in from a side — is checked as the merge's own.
 //!
 //! Commit author and committer identities are not read. A binary file's contents are
 //! not matched — its path is.
@@ -61,8 +60,6 @@ pub struct Screened {
 
 /// One file of one commit against one parent.
 struct Change {
-    commit: usize,
-    parent: Option<usize>,
     old_path: Option<String>,
     new_path: Option<String>,
     added_path: bool,
@@ -79,11 +76,11 @@ struct Commit {
 }
 
 /// Screen `outgoing` against the terms `scope` selects.
-pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
+pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope, destination: Option<&str>) -> Screened {
     let started = Instant::now();
     let mut phases = Phases::default();
     let mut evidence = Vec::new();
-    let verdict = match judged(outgoing, scope, &mut phases, &mut evidence) {
+    let verdict = match judged(outgoing, scope, destination, &mut phases, &mut evidence) {
         Ok(verdict) => verdict,
         Err(failed) => failed.verdict(&mut evidence),
     };
@@ -98,11 +95,12 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
 fn judged(
     outgoing: &Outgoing<'_>,
     scope: &TermScope,
+    destination: Option<&str>,
     phases: &mut Phases,
     evidence: &mut Vec<Evidence>,
 ) -> Result<BoundaryVerdict, Failed> {
     let deriving = Instant::now();
-    let derived = scope::derive(scope);
+    let derived = scope::derive_excluding(scope, destination);
     phases.derivation = deriving.elapsed();
     let derived = derived?;
     phases.terms = derived.rules.len();
@@ -134,13 +132,7 @@ fn judged(
         derived: &derived,
         matcher: &matcher,
         repository: &repository,
-        commits: &commits,
-        public: outgoing
-            .base
-            .and_then(|base| tree_of(&repository, base))
-            .into_iter()
-            .chain(boundary_trees(&repository, &commits))
-            .collect(),
+        base: outgoing.base.and_then(|base| tree_of(&repository, base)),
         verdict: BoundaryVerdict::Pass,
         evidence,
     };
@@ -214,33 +206,32 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
     }
 
     let mut changes = Vec::new();
-    for (index, commit) in commits.iter().enumerate() {
+    for commit in &commits {
         let tree = repository
             .find_commit(commit.id)
             .and_then(|c| c.tree())
             .map_err(|error| format!("a commit's tree cannot be read: {error}"))?;
-        let parents: Vec<Option<usize>> = if commit.parents.is_empty() {
-            vec![None]
-        } else {
-            (0..commit.parents.len()).map(Some).collect()
-        };
-        for parent in parents {
-            let parent_tree = match parent {
-                None => None,
-                Some(at) => Some(
-                    repository
-                        .find_commit(commit.parents[at])
-                        .and_then(|c| c.tree())
-                        .map_err(|error| format!("a parent's tree cannot be read: {error}"))?,
-                ),
-            };
+        // A root commit is diffed against nothing; every other one against each parent.
+        let mut parent_trees = Vec::new();
+        for parent in &commit.parents {
+            parent_trees.push(Some(
+                repository
+                    .find_commit(*parent)
+                    .and_then(|c| c.tree())
+                    .map_err(|error| format!("a parent's tree cannot be read: {error}"))?,
+            ));
+        }
+        if parent_trees.is_empty() {
+            parent_trees.push(None);
+        }
+        for parent_tree in parent_trees {
             let mut options = git2::DiffOptions::new();
             options.ignore_submodules(false).include_typechange(true);
             let diff = repository
                 .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
                 .map_err(|error| format!("a commit cannot be diffed: {error}"))?;
             for delta in diff.deltas() {
-                changes.push(change(&repository, index, parent, &delta)?);
+                changes.push(change(&repository, &delta)?);
             }
         }
     }
@@ -251,18 +242,11 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
 ///
 /// A file that is new or gone is the whole of its blob, read directly; only a file that
 /// changed is diffed line by line. A binary blob contributes its paths and no text.
-fn change(
-    repository: &git2::Repository,
-    commit: usize,
-    parent: Option<usize>,
-    delta: &git2::DiffDelta<'_>,
-) -> Result<Change, String> {
+fn change(repository: &git2::Repository, delta: &git2::DiffDelta<'_>) -> Result<Change, String> {
     let path =
         |file: git2::DiffFile<'_>| file.path().map(|p| p.to_string_lossy().replace('\\', "/"));
     let status = delta.status();
     let mut change = Change {
-        commit,
-        parent,
         old_path: path(delta.old_file()),
         new_path: path(delta.new_file()),
         added_path: matches!(
@@ -338,22 +322,6 @@ fn tree_of<'r>(repository: &'r git2::Repository, revision: &str) -> Option<git2:
         .ok()
 }
 
-/// The trees of every commit the published history leaves the destination's base at:
-/// each parent of an outgoing commit that is not outgoing itself, and so is the base's
-/// own, already public, history.
-fn boundary_trees<'r>(repository: &'r git2::Repository, commits: &[Commit]) -> Vec<git2::Tree<'r>> {
-    let outgoing: BTreeSet<git2::Oid> = commits.iter().map(|commit| commit.id).collect();
-    let boundary: BTreeSet<git2::Oid> = commits
-        .iter()
-        .flat_map(|commit| commit.parents.iter().copied())
-        .filter(|parent| !outgoing.contains(parent))
-        .collect();
-    boundary
-        .into_iter()
-        .filter_map(|id| repository.find_commit(id).ok()?.tree().ok())
-        .collect()
-}
-
 /// The lines a tree holds at `path`, or `None` where it holds no file there.
 fn lines_at(
     repository: &git2::Repository,
@@ -379,9 +347,8 @@ struct Judge<'a, 'r> {
     derived: &'a Derived,
     matcher: &'a Matcher,
     repository: &'r git2::Repository,
-    commits: &'a [Commit],
-    /// The destination base's tree and every base commit the history leaves it at.
-    public: Vec<git2::Tree<'r>>,
+    /// The destination base's tree, as resolved for this write.
+    base: Option<git2::Tree<'r>>,
     verdict: BoundaryVerdict,
     evidence: &'a mut Vec<Evidence>,
 }
@@ -404,93 +371,45 @@ impl<'r> Judge<'_, 'r> {
         }
     }
 
-    /// The trees of the commit's other parents, for a merge.
-    fn others(&self, change: &Change) -> Vec<git2::Tree<'r>> {
-        let commit = &self.commits[change.commit];
-        if commit.parents.len() < 2 {
-            return Vec::new();
-        }
-        commit
-            .parents
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| Some(*at) != change.parent)
-            .filter_map(|(_, id)| {
-                let repository: &'r git2::Repository = self.repository;
-                repository.find_commit(*id).ok()?.tree().ok()
-            })
-            .collect()
-    }
-
-    /// Whether the destination already carries `path`, at its base tip or at a base
-    /// commit the published history left it at.
+    /// Whether the destination base already carries `path`.
     fn public_path(&self, path: &str) -> bool {
-        self.public.iter().any(|tree| has_path(tree, path))
+        self.base.as_ref().is_some_and(|tree| has_path(tree, path))
     }
 
-    /// Whether the destination already carries `line` at `path`.
+    /// Whether the destination base already carries `line` at `path`.
     fn public_line(&self, path: &str, line: &str) -> bool {
-        self.public.iter().any(|tree| {
+        self.base.as_ref().is_some_and(|tree| {
             lines_at(self.repository, tree, path).is_some_and(|lines| lines.contains(line))
         })
     }
 
     fn change(&mut self, change: &Change) {
-        let others = self.others(change);
-        let merge = !others.is_empty();
         if change.added_path {
             if let Some(path) = &change.new_path {
-                let found = self.matcher.find(path);
-                // A merge's path is its own only where no other parent has it.
-                if !found.is_empty() && !(merge && others.iter().any(|tree| has_path(tree, path))) {
-                    self.refuse(Surface::Path, path.clone(), found);
-                }
+                self.text(Surface::Path, path, path.clone());
             }
         }
         if change.deleted_path {
             if let Some(path) = &change.old_path {
                 let found = self.matcher.find(path);
-                let theirs = merge && others.iter().any(|tree| !has_path(tree, path));
-                if !found.is_empty() && !theirs && !self.public_path(path) {
+                if !found.is_empty() && !self.public_path(path) {
                     self.refuse(Surface::Removal, path.clone(), found);
                 }
             }
         }
         if !change.added.is_empty() && !self.matcher.find(&change.added).is_empty() {
             let path = change.new_path.clone().unwrap_or_default();
-            let lines: Vec<&str> = change.added.lines().collect();
-            let theirs: Vec<BTreeSet<String>> = others
-                .iter()
-                .filter_map(|tree| lines_at(self.repository, tree, &path))
-                .collect();
-            for line in lines {
-                let found = self.matcher.find(line);
-                if found.is_empty() || theirs.iter().any(|lines| lines.contains(line)) {
-                    continue;
-                }
-                self.refuse(Surface::Content, path.clone(), found);
+            for line in change.added.lines() {
+                self.text(Surface::Content, line, path.clone());
             }
         }
         if !change.removed.is_empty() && !self.matcher.find(&change.removed).is_empty() {
             let path = change.old_path.clone().unwrap_or_default();
-            let lines: Vec<&str> = change.removed.lines().collect();
-            let others_lines: Vec<Option<BTreeSet<String>>> = others
-                .iter()
-                .map(|tree| lines_at(self.repository, tree, &path))
-                .collect();
-            for line in lines {
+            for line in change.removed.lines() {
                 let found = self.matcher.find(line);
-                if found.is_empty() {
-                    continue;
+                if !found.is_empty() && !self.public_line(&path, line) {
+                    self.refuse(Surface::Removal, path.clone(), found);
                 }
-                // A merge's removal is its own only where every parent had the line.
-                let theirs = others_lines
-                    .iter()
-                    .any(|lines| !lines.as_ref().is_some_and(|lines| lines.contains(line)));
-                if theirs || self.public_line(&path, line) {
-                    continue;
-                }
-                self.refuse(Surface::Removal, path.clone(), found);
             }
         }
     }

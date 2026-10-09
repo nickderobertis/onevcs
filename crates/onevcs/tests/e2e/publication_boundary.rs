@@ -403,9 +403,11 @@ fn a_cleanup_may_remove_what_the_base_already_carries_and_nothing_else_is_exempt
 }
 
 #[test]
-fn a_cleanup_that_removes_a_line_the_base_dropped_meanwhile_is_still_public_history() {
-    // The base had the line when the branch left it and has since removed it itself;
-    // the branch's own removal of it reaches nothing the destination has not shown.
+fn a_removal_of_text_only_the_bases_history_carried_refuses() {
+    // The base had the line when the branch left it and has since removed it itself.
+    // The branch's own removal of it is checked against the base it now lands on, which
+    // no longer carries the line — earlier history of that base is not the destination
+    // — so the removal refuses, and nothing reaches the origin.
     let host = Boundary::with_private(&SEEDED);
     let (token, worktree) = host.session("cleanup-after");
     write(&worktree, "docs/notes.md", "# Notes\na generic line\n");
@@ -416,11 +418,11 @@ fn a_cleanup_that_removes_a_line_the_base_dropped_meanwhile_is_still_public_hist
         "docs: tidy the notes upstream",
     );
     let before = host.origin_refs();
-    let output = host.publish(&token, &[]);
-    host.published(
-        &output,
+    host.refused(
+        &host.publish(&token, &[]),
+        "a removal its public destination does not already carry",
         &before,
-        "a removal of what the base's history carried",
+        "a removal only the base's history carried",
     );
 }
 
@@ -485,11 +487,11 @@ fn a_binary_files_contents_are_not_read_and_every_path_is() {
 }
 
 #[test]
-fn a_sync_from_the_base_brings_its_public_content_in_unchallenged() {
-    // The base already carries a private name somebody else landed, and moves on while
-    // the branch is out: one more such line, and one reworded. Merging the base into
-    // the branch writes neither — the merge's content is what is in none of its
-    // parents — so neutral work still lands.
+fn a_merge_is_checked_against_every_parent_including_what_it_brings_in_from_the_base() {
+    // The base moves on while the branch is out, and somebody else's change adds a line
+    // carrying a private name. Merging the base into the branch adds that line against
+    // the branch's own parent, and that diff is held to the policy like any other: the
+    // merge writes it, so it refuses, though the other parent carries it.
     let host = Boundary::with_private(&SEEDED);
     let (token, worktree) = host.session("synced");
     write(&worktree, "examples/demo.md", "a generic demo\n");
@@ -505,8 +507,33 @@ fn a_sync_from_the_base_brings_its_public_content_in_unchallenged() {
         "docs: a change landed by somebody else",
     );
     let before = host.origin_refs();
+    host.refused(
+        &host.publish(&token, &[]),
+        "an added line",
+        &before,
+        "a merge bringing a private name in",
+    );
+
+    // A base that moved on with neutral content merges and lands: the merge is held to
+    // the policy, not refused for being a merge.
+    let host = Boundary::with_private(&SEEDED);
+    let (token, worktree) = host.session("synced-neutral");
+    write(&worktree, "examples/demo.md", "a generic demo\n");
+    commit(&host.world, &worktree, "docs: add a generic demo");
+    host.land_on_base(
+        &[("docs/changelog.md", "a generic entry\n")],
+        "docs: a change landed by somebody else",
+    );
+    let before = host.origin_refs();
     let output = host.publish(&token, &[]);
-    host.published(&output, &before, "a sync with the base's own content");
+    host.published(&output, &before, "a merge of neutral base content");
+    let log = host
+        .world
+        .git(&host.origin, &["log", "--format=%s", "main"]);
+    assert!(
+        log.contains("docs: a change landed by somebody else"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -734,18 +761,49 @@ fn the_destinations_visibility_is_refreshed_at_the_write_and_a_rule_overrides_it
         .count();
     assert_eq!(asked.len(), asked_after, "the host was asked over a rule");
 
-    // A refresh that fails is recorded unknown, which is private: no rule, and a host
-    // that will not say.
+    // A destination the host last said was public, whose refresh now fails: it is
+    // recorded unknown — never its last answer — and still screened, because a write
+    // that could reach a public repository is never let through unchecked. Nothing
+    // reaches the origin.
     configure_rules(
         &host.world,
         format!("version: 4\nrules: []\ndefault: {LOCAL}\n"),
     );
     host.world
+        .host_visibility("sample-owner/openwidget", "public");
+    host.world
+        .onevcs()
+        .args(["boundary", "inspect", "--input", "-", "--json"])
+        .write_stdin(r#"{"repository": "openwidget"}"#)
+        .assert()
+        .success();
+    assert_eq!(
+        host.registry()["identities"]["github.com/sample-owner/openwidget"]["visibility"],
+        "public"
+    );
+    host.world
         .host_visibility("sample-owner/openwidget", "refuse");
-    let output = host.publish(&token, &[]);
-    host.published(&output, &before, "an unknown destination");
+    host.refused(
+        &host.publish(&token, &[]),
+        "an added line",
+        &before,
+        "a destination whose refresh failed",
+    );
     let recorded = &host.registry()["identities"]["github.com/sample-owner/openwidget"];
     assert_eq!(recorded.get("visibility"), None, "{recorded}");
+    assert_eq!(recorded.get("observed_at"), None, "{recorded}");
+
+    // The same write under a rule declaring the destination private is the operator's
+    // statement, which wins over a host that will not say: it lands unchecked.
+    configure_rules(
+        &host.world,
+        format!(
+            "version: 4\nrules:\n  - match: {{owner: sample-owner}}\n    visibility: private\n\
+             default: {LOCAL}\n"
+        ),
+    );
+    let output = host.publish(&token, &[]);
+    host.published(&output, &before, "a rule's private over an unanswered host");
 }
 
 #[test]

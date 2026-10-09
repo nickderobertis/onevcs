@@ -62,6 +62,27 @@ pub fn refresh_named(hosting: &dyn Hosting, repo: &str) -> Result<Visibility> {
 /// hosted identity is asked; its answer is recorded with the moment, and a failure is
 /// recorded as unknown. A local-only identity is left as it is.
 pub fn refresh(hosting: &dyn Hosting, key: &str) -> Result<Visibility> {
+    Ok(refreshed(hosting, key)?.0)
+}
+
+/// Whether a write to `key` must be screened: refresh its visibility, and answer
+/// `true` unless it is *verified* not public.
+///
+/// A rule's declared visibility is the operator's statement and decides outright; a
+/// host that answered decides next. A hosted identity the host could not answer for —
+/// a probe that failed, or a host this build cannot ask — is recorded unknown, which
+/// is private for every other purpose, and is screened all the same: a write that
+/// could reach a public repository is never let through unchecked because its
+/// visibility could not be confirmed. A local-only identity has no host and stays
+/// private unless a rule says otherwise.
+pub fn screens_writes(hosting: &dyn Hosting, key: &str) -> Result<bool> {
+    let (visibility, answered) = refreshed(hosting, key)?;
+    let hosted = store::normalize(key).hosted.is_some();
+    Ok(visibility.effective() == Visibility::Public || (hosted && !answered))
+}
+
+/// The refreshed visibility, and whether a rule or the host answered it.
+fn refreshed(hosting: &dyn Hosting, key: &str) -> Result<(Visibility, bool)> {
     let registry = store::load()?;
     let (file, source) = policy::load(&registry)?;
     let checkout = checkout_of(&registry, key)
@@ -69,20 +90,21 @@ pub fn refresh(hosting: &dyn Hosting, key: &str) -> Result<Visibility> {
         .unwrap_or_default();
     if let Some(declared) = declared(&file, &source, key, &checkout) {
         record(key, declared, Observation::Override)?;
-        return Ok(declared);
+        return Ok((declared, true));
     }
     let Some(slug) = crate::gh::slug(key) else {
-        return Ok(registry
+        let recorded = registry
             .identities
             .get(key)
             .map(|identity| identity.visibility)
-            .unwrap_or_default());
+            .unwrap_or_default();
+        return Ok((recorded, false));
     };
     let answered = hosting.for_repo(&slug).and_then(|host| host.visibility());
     match answered {
         Ok(visibility) if !visibility.is_unknown() => {
             record(key, visibility, Observation::Host)?;
-            Ok(visibility)
+            Ok((visibility, true))
         }
         _ => {
             let unchanged = registry.identities.get(key).is_some_and(|identity| {
@@ -91,7 +113,7 @@ pub fn refresh(hosting: &dyn Hosting, key: &str) -> Result<Visibility> {
             if !unchanged {
                 record(key, Visibility::Unknown, Observation::Unknown)?;
             }
-            Ok(Visibility::Unknown)
+            Ok((Visibility::Unknown, false))
         }
     }
 }
