@@ -652,13 +652,11 @@ fn a_registry_or_a_checkout_the_check_cannot_read_is_unavailable_and_never_a_pas
     assert!(host.text("see hiddenco/quietharbor", None).refused());
     assert!(host.text("a generic example", None).passed());
 
-    // A private identity the registry holds with no checkout to read it from.
+    // A private identity the registry holds whose checkout has since been removed, so
+    // there is nothing committed to read it from.
+    let gone = host.private("otherhold/meadowlark", &[]);
+    std::fs::remove_dir_all(&gone).expect("the checkout removed");
     let path = host.world.home().join("registry.json");
-    let mut registry: Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).expect("a registry")).expect("JSON");
-    registry["identities"]["github.com/otherhold/meadowlark"] =
-        json!({"origin": "github.com/otherhold/meadowlark", "gate": "<no-op>"});
-    std::fs::write(&path, registry.to_string()).expect("a registry");
     let checked = host.text("a generic example", None);
     assert!(checked.unavailable(), "{}", checked.stdout);
     let before_rules_check = std::fs::read_to_string(&path).expect("a registry");
