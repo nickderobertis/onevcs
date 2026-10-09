@@ -76,11 +76,11 @@ struct Commit {
 }
 
 /// Screen `outgoing` against the terms `scope` selects.
-pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope, destination: Option<&str>) -> Screened {
+pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
     let started = Instant::now();
     let mut phases = Phases::default();
     let mut evidence = Vec::new();
-    let verdict = match judged(outgoing, scope, destination, &mut phases, &mut evidence) {
+    let verdict = match judged(outgoing, scope, &mut phases, &mut evidence) {
         Ok(verdict) => verdict,
         Err(failed) => failed.verdict(&mut evidence),
     };
@@ -95,12 +95,11 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope, destination: Option<&s
 fn judged(
     outgoing: &Outgoing<'_>,
     scope: &TermScope,
-    destination: Option<&str>,
     phases: &mut Phases,
     evidence: &mut Vec<Evidence>,
 ) -> Result<BoundaryVerdict, Failed> {
     let deriving = Instant::now();
-    let derived = scope::derive_excluding(scope, destination);
+    let derived = scope::derive(scope);
     phases.derivation = deriving.elapsed();
     let derived = derived?;
     phases.terms = derived.rules.len();

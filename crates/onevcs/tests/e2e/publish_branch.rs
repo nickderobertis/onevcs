@@ -1337,6 +1337,8 @@ fn a_checkout_whose_path_needs_quoting_is_named_in_a_command_that_still_runs() {
         format!("version: 1\nrules: []\ndefault: {DIRECT}\n"),
     );
     world.install_fake_host(&origin);
+    // A real host answers for a repository it serves, and this one is private.
+    world.host_visibility("acme-corp/spacey", "private");
     world.host_checks(&[green_check()]);
 
     let assert = world
@@ -1850,7 +1852,8 @@ fn a_hosted_origin_this_build_does_not_speak_for_answers_the_seam_it_has_no_body
         .success();
     configure_rules(
         &world,
-        "version: 1\nrules: []\n\
+        // This build cannot ask a GitLab host what it serves, so the operator says.
+        "version: 4\nrules:\n  - match: {owner: acme-corp}\n    visibility: private\n\
          default: {publication: change-open, approvals: required}\n",
     );
     world.install_fake_host(&origin);

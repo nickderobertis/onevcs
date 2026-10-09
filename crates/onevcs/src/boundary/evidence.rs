@@ -16,8 +16,8 @@ use crate::error::{Error, Result};
 use crate::host::Hosting;
 
 /// Refresh the destination's visibility and, unless it is verified not public, screen
-/// `outgoing` — against every private repository in scope but the destination itself,
-/// whose own names a write to it cannot expose.
+/// `outgoing` against every private repository its scope selects — the destination
+/// included, when it is in scope and not public.
 pub fn guard_publication(
     hosting: &dyn Hosting,
     destination: &str,
@@ -27,7 +27,7 @@ pub fn guard_publication(
     if !visibility::screens_writes(hosting, destination)? {
         return Ok(());
     }
-    let screened = screen::screen(outgoing, scope, Some(destination));
+    let screened = screen::screen(outgoing, scope);
     diagnostics::record("publication", &screened.verdict, &screened.phases);
     settle(screened.verdict, screened.evidence)
 }
@@ -46,7 +46,7 @@ pub fn guard_fields(
     let started = Instant::now();
     let mut evidence = Vec::new();
     let mut phases = Phases::default();
-    let verdict = match scope::derive_excluding(scope, Some(destination)) {
+    let verdict = match scope::derive(scope) {
         Err(failed) => failed.verdict(&mut evidence),
         Ok(derived) => {
             phases.derivation = started.elapsed();

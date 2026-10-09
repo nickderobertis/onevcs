@@ -295,6 +295,25 @@ fn a_qualified_name_and_its_url_forms_refuse_anywhere_and_bare_words_only_as_wor
 }
 
 #[test]
+fn an_owner_of_only_private_repositories_is_a_term_even_when_its_login_is_a_common_word() {
+    let host = Boundary::new("{publication: local-direct, approvals: none}");
+    // `harbor` is on the generic-word list, which narrows bare and package names and
+    // never an owner: owning nothing public, it is a whole-word term of its own.
+    host.private("harbor/quietwharf", &[]);
+    assert!(host.text("a safe harbor nearby", None).refused());
+    assert!(host.text("the harborage", None).passed());
+    assert!(host.text("see harbor/quietwharf", None).refused());
+
+    // Once the same owner also owns a public repository, its login is no term — while
+    // its private repository's qualified name still is.
+    let public = host.repository("harbor/openlog", &[]);
+    host.world.host_visibility("harbor/openlog", "public");
+    register(&host.world, &public, "harbor/openlog");
+    assert!(host.text("a safe harbor nearby", None).passed());
+    assert!(host.text("see harbor/quietwharf", None).refused());
+}
+
+#[test]
 fn generic_and_public_names_narrow_to_the_qualified_name_and_a_public_owner_is_no_term() {
     let host = Boundary::new("{publication: local-direct, approvals: none}");
     // A private repository named after a common word, and packages named after the

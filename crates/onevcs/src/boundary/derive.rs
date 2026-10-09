@@ -77,9 +77,11 @@ pub fn derive(source: &TermSource, public: &PublicNames) -> Result<Vec<TermRule>
             },
         });
     }
+    // An owner of only private repositories is a whole-word term whatever its login
+    // spells; only owning a public repository suppresses it. The generic-word list
+    // narrows bare and package names, never an owner.
     if let Some(owner) = &source.owner {
-        let key = term_key(owner);
-        if !public.owners.contains(&key) && !words::is_generic(&key) {
+        if !public.owners.contains(&term_key(owner)) {
             candidates.push(Candidate {
                 word: owner.clone(),
                 origin: Origin::Word,

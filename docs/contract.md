@@ -4386,8 +4386,9 @@ let through unchecked only where its destination is verified not public**: a rul
 declaring it private, a host answering private, or a local-only identity no rule calls
 public. A hosted destination whose visibility the host could not answer for is screened
 as a public one would be, so an unverified destination never receives an unchecked
-write. The destination's own identity contributes no terms to the screen of a write to
-it.
+write. That screen derives terms exactly as `boundary check` does over the write's
+scope: the destination itself, where the scope selects it and it is not public,
+contributes its terms like any other private repository.
 
 ```yaml
 version: 4
@@ -4412,7 +4413,8 @@ untracked or ignored file says nothing — with no network request:
    generic-word list is **narrowed to owner-name-only**: it matches only the fully
    qualified `owner/name` standing on its own (`.git` after it included);
 4. an owner that owns no public repository yields a whole-word owner term; an owner that
-   owns one yields none. An owner login that is itself a generic word yields none either.
+   owns one yields none. The generic-word list narrows bare and package terms only, so an
+   owner of only private repositories whose login is a common word is still a term.
 
 The manifests read are Cargo's `[package].name` and every `[workspace].members` entry's
 own `Cargo.toml` (`exclude` honoured), `package.json`'s `name` and every `workspaces`

@@ -1201,3 +1201,109 @@ fn a_change_requests_description_is_held_to_the_boundary_before_the_host_is_writ
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn a_destination_in_scope_whose_refresh_fails_contributes_its_own_committed_terms() {
+    // A change-request destination, public when its draft was opened.
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    let (drafted, worktree) = host.session("described-scoped");
+    write(&worktree, "examples/a.md", "a generic example\n");
+    commit(&host.world, &worktree, "docs: add a generic example");
+    let opened = host.origin_refs();
+    host.published(
+        &host.publish(&drafted, &["--draft"]),
+        &opened,
+        "a neutral draft",
+    );
+    assert_eq!(
+        host.registry()["identities"]["github.com/sample-owner/openwidget"]["visibility"],
+        "public"
+    );
+
+    // The destination commits a term of its own, and then its host stops answering:
+    // it is unknown — private — and, named in the scope, contributes that term.
+    let declare = |contents: &str, subject: &str| {
+        write(&host.public, "private-terms.toml", contents);
+        commit(&host.world, &host.public, subject);
+        host.world
+            .git(&host.public, &["push", "-q", "origin", "main"]);
+    };
+    declare(
+        "schema_version = 1\nterms = [\"tidewatcher\"]\n",
+        "chore: declare a term",
+    );
+    host.world
+        .host_visibility("sample-owner/openwidget", "refuse");
+    let scope = ["--term-scope", "github.com/sample-owner/openwidget"];
+
+    let (token, worktree) = host.session("scoped-term");
+    write(&worktree, "examples/b.md", "notes from tidewatcher\n");
+    commit(&host.world, &worktree, "docs: add an example");
+    let before = host.origin_refs();
+    let creates = |host: &Boundary| {
+        host.world
+            .host_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count()
+    };
+    let opened_before = creates(&host);
+    host.refused(
+        &host.publish(&token, &scope),
+        "an added line",
+        &before,
+        "a publication carrying the destination's own declared term",
+    );
+    assert_eq!(creates(&host), opened_before, "nothing was opened");
+    assert_eq!(
+        host.registry()["identities"]["github.com/sample-owner/openwidget"].get("visibility"),
+        None,
+        "the failed refresh is recorded unknown"
+    );
+
+    // The drafter's description is held the same way, and the host is not written.
+    let body = host.world.change_request_body(1);
+    let mut args = vec!["change", "describe", drafted.as_str()];
+    args.extend(["--body", "Ported to tidewatcher."]);
+    args.extend(scope);
+    let output = host.run(&args, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("public output carries a term of a private repository in its body"),
+        "{stderr}"
+    );
+    assert_neutral(&stderr);
+    assert!(!stderr.contains("tidewatcher"), "{stderr}");
+    assert_eq!(
+        host.world.change_request_body(1),
+        body,
+        "the host was written"
+    );
+
+    // A committed declaration this build refuses is unavailable — never a pass, and
+    // never read around because the destination's visibility was not confirmed.
+    declare(
+        "schema_version = 9\n",
+        "chore: a declaration from the future",
+    );
+    let before = host.origin_refs();
+    let output = host.publish(&token, &scope);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the public boundary check is unavailable"),
+        "{stderr}"
+    );
+    assert_eq!(host.origin_refs(), before);
+    let mut args = vec!["change", "describe", drafted.as_str()];
+    args.extend(["--body", "A generic example."]);
+    args.extend(scope);
+    let output = host.run(&args, None);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        host.world.change_request_body(1),
+        body,
+        "the host was written"
+    );
+}
