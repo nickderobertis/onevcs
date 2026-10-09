@@ -312,22 +312,23 @@ test-quick:
 # CI's `smoke` job calls this same recipe, so the journeys are defined once — in
 # the test binary — rather than reimplemented as workflow steps.
 #
-# It needs `gh` and a credential (`gh auth login`, or GH_TOKEN). With neither it
-# fails and names what is missing; it never skips and never falls back to a fake.
-# Set ONEVCS_SMOKE_REPO to publish somewhere other than the default scratch
-# repository; which names it will accept is the tier's own rule, and the tier says
-# so when it refuses one (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
+# It needs `gh`, a credential (`gh auth login`, or GH_TOKEN), and ONEVCS_SMOKE_REPO
+# naming the scratch repository as owner/name — CI maps the secret of that name.
+# Without any of them it fails and names what is missing; it never skips, never
+# falls back to a fake, and has no default repository. Which names it will accept
+# is the tier's own rule, and the tier says so when it refuses one
+# (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
 # value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
 # and a real credential: stopping at the first failure hides how the other journeys
 # fared under the same one, which is the question this tier is asked.
 #
-# It runs as the uncached `onevcs-smoke:smoke-real` target, streamed rather than
+# It runs as the uncached `onevcs-live:smoke-real` target, streamed rather than
 # folded into a summary line, because what it printed is the evidence.
 # Drive both interfaces against real git, a real remote, and the real GitHub API.
 smoke-real:
-    @ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh run onevcs-smoke:smoke-real
+    @ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh run onevcs-live:smoke-real
 
-# The `onevcs-smoke:smoke-real` target's body.
+# The `onevcs-live:smoke-real` target's body.
 _smoke-real:
     @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
       --status-level all

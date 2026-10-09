@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// Every project that carries the gate's `check` target: what the release PR's
-/// sweep runs. The live `onevcs-smoke` tier and the `onevcs-release-pr` journeys
+/// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` journeys
 /// carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
 const GATE_PROJECTS: [&str; 6] = [
@@ -320,7 +320,7 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
         set(&GATE_PROJECTS),
         "the release PR's sweep selected {swept:?}"
     );
-    for live in ["onevcs-smoke", "onevcs-release-pr", "workspace"] {
+    for live in ["onevcs-live", "onevcs-release-pr", "workspace"] {
         assert!(
             !swept
                 .iter()

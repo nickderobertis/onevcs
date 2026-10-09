@@ -14,10 +14,13 @@ use serde_json::Value;
 
 use onevcs::{Envelope, EventStream, Providers, RemoteHost, SessionToken};
 
-/// The scratch repository these journeys publish to when nothing names another.
-pub const DEFAULT_SMOKE_REPO: &str = "nickderobertis/onevcs-smoke";
-
-/// The variable that names a different scratch repository.
+/// The variable that names the scratch repository, as `owner/name`.
+///
+/// Configuration rather than a constant: in CI it is the Actions secret of this
+/// name, mapped into the step that runs the tier, and locally it is the environment
+/// variable of the same name. Unset, every journey fails naming it — there is no
+/// default to fall back to, because a default is a repository's identity written
+/// into the tree.
 pub const SMOKE_REPO_ENV: &str = "ONEVCS_SMOKE_REPO";
 
 /// What a repository's name has to end with for these journeys to touch it.
@@ -31,7 +34,7 @@ pub const SCRATCH_SUFFIX: &str = "-smoke";
 
 /// The prefix every branch this tier creates carries, so what it left behind is
 /// recognizable on the scratch repository.
-pub const BRANCH_PREFIX: &str = "onevcs-smoke";
+pub const BRANCH_PREFIX: &str = "onevcs-live-smoke";
 
 /// The line the scratch repository's `smoke-check.yml` writes into its job log,
 /// which is what proves [`RemoteHost::check_log`] fetched the real thing rather
@@ -54,7 +57,14 @@ pub fn scratch_repo() -> String {
     let slug = std::env::var(SMOKE_REPO_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_SMOKE_REPO.to_owned());
+        .unwrap_or_else(|| {
+            panic!(
+                "{SMOKE_REPO_ENV} is not set: this tier publishes to the scratch repository it \
+                 names, as owner/name. Set it to one whose name ends in {SCRATCH_SUFFIX:?} — in CI \
+                 it is the {SMOKE_REPO_ENV} secret, mapped into the step that runs `just \
+                 smoke-real`. This tier never skips and has no default repository."
+            )
+        });
     let parts: Vec<&str> = slug.split('/').collect();
     let [owner, name] = parts[..] else {
         panic!(
@@ -70,7 +80,7 @@ pub fn scratch_repo() -> String {
         name.ends_with(SCRATCH_SUFFIX),
         "{SMOKE_REPO_ENV}={slug:?} is not a scratch repository: this tier pushes branches, opens \
          pull requests, and merges them, so it runs only against a repository whose name ends in \
-         {SCRATCH_SUFFIX:?}. Point it at one, or leave it unset for {DEFAULT_SMOKE_REPO:?}."
+         {SCRATCH_SUFFIX:?}. Point it at one."
     );
     slug
 }

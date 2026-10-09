@@ -6202,6 +6202,119 @@ fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
     );
 }
 
+/// The secret, and the variable it becomes, that names the live tier's scratch
+/// repository — `SMOKE_REPO_ENV` in `tests/smoke/scratch.rs`.
+const SMOKE_REPO_KEY: &str = "ONEVCS_SMOKE_REPO";
+
+/// Every string a workflow step hands to its runner as a value: its `run`, and each
+/// value under its `env` and its `with`. Not its `uses`, which names an action.
+fn step_values(step: &serde_yaml_ng::Value) -> Vec<String> {
+    let mut values: Vec<String> = step
+        .get("run")
+        .and_then(serde_yaml_ng::Value::as_str)
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    for key in ["env", "with"] {
+        let mapping = step.get(key).and_then(serde_yaml_ng::Value::as_mapping);
+        for value in mapping.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
+            match value {
+                serde_yaml_ng::Value::String(text) => values.push(text.clone()),
+                other => values.push(serde_yaml_ng::to_string(other).unwrap_or_default()),
+            }
+        }
+    }
+    values
+}
+
+/// The repository identities written out in one value: a `github.com/` URL, or a
+/// bare `owner/name` word. `owner/name` itself is the shape being described, not
+/// a repository, and a `${{ }}` expression is resolved by the runner, never written.
+fn repository_identities(value: &str) -> Vec<String> {
+    let segment = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    value
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | ')'))
+        .map(|word| word.trim_end_matches(|c: char| matches!(c, '.' | ',' | ':' | ';')))
+        .filter(|word| {
+            word.contains("github.com/")
+                || (*word != "owner/name"
+                    && word.split('/').count() == 2
+                    && word.split('/').all(segment))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
+    // Which repository the live tier publishes to is configuration: the step that
+    // runs it maps the secret into its own environment under the variable's name,
+    // so the identity is masked in logs and written nowhere in the tree.
+    let smoke_file = ".github/workflows/smoke.yml";
+    let smoke = workflow(smoke_file);
+    let jobs = workflow_jobs(&smoke);
+    let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
+    let steps = job
+        .get("steps")
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .expect("the smoke job has steps");
+    let entry = steps
+        .iter()
+        .find(|step| {
+            step.get("run")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|run| run.trim() == "just smoke-real")
+        })
+        .expect("the smoke job no longer runs `just smoke-real`");
+    let mapped = entry
+        .get("env")
+        .and_then(|env| env.get(SMOKE_REPO_KEY))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(
+        mapped.replace(' ', ""),
+        format!("${{{{secrets.{SMOKE_REPO_KEY}}}}}"),
+        "the step running `just smoke-real` must map secrets.{SMOKE_REPO_KEY} into its \
+         environment as {SMOKE_REPO_KEY}; it maps {mapped:?}"
+    );
+
+    // And nothing the workflow hands a runner writes a repository out: not a step's
+    // command, environment or inputs, and not a job's environment.
+    for (id, job) in &jobs {
+        let mut values: Vec<String> = Vec::new();
+        if let Some(env) = job.get("env") {
+            values.extend(step_values(&serde_yaml_ng::Value::Mapping(
+                [(serde_yaml_ng::Value::from("env"), env.clone())]
+                    .into_iter()
+                    .collect(),
+            )));
+        }
+        for step in job
+            .get("steps")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .into_iter()
+            .flatten()
+        {
+            values.extend(step_values(step));
+        }
+        let written: Vec<String> = values
+            .iter()
+            .flat_map(|value| repository_identities(value))
+            .collect();
+        assert!(
+            written.is_empty(),
+            "{smoke_file}'s `{id}` job hard-codes a repository identity {written:?}; name it \
+             through secrets.{SMOKE_REPO_KEY} instead"
+        );
+    }
+}
+
 /// What this repository's release configuration publishes: the artifacts a
 /// dependent can name, and the per-platform npm packages that exist only so a
 /// launcher can resolve one.
