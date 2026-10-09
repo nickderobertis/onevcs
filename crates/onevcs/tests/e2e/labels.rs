@@ -2197,55 +2197,28 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
 /// With no stream index, a filtered read parses every stream the host holds — side by
 /// side, since each is its own file — to learn which belong to the branches it was
 /// asked about, and indexes what it learned for the next read. What either read takes
-/// off the streams must be what the whole-host read takes: here the change request a
-/// reviewed draft opened, which nothing but its stream records, beside a stream that
-/// ends in a torn line.
+/// off the streams must be what the whole-host read takes: here the preservations
+/// that keep a branch the origin now carries listed at all, which nothing but its
+/// session's stream records, beside a stream that ends in a torn line.
 #[test]
 fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_does() {
-    let hosted = crate::host::Hosted::new(crate::host::REVIEWED);
-    let rows = |extra: &[&str]| -> Vec<Value> {
-        let assert = hosted
+    let fixture = Fixture::local(&local_direct());
+    let rows = |extra: &[&str]| recoverable(&fixture, extra);
+    let tokens: Vec<String> = (0..8)
+        .map(|step| {
+            preserved(
+                &fixture,
+                &format!("feature/stream-{step}"),
+                &["launcher=streams"],
+            )
+        })
+        .collect();
+    for step in [0, 2, 5] {
+        fixture
             .world
             .onevcs()
-            .args(["recoverable", "--json"])
-            .args(extra)
-            .assert()
-            .success();
-        serde_json::from_slice(&assert.get_output().stdout).expect("recovery rows")
-    };
-    let mut tokens = Vec::new();
-    for step in 0..8 {
-        let opened = hosted
-            .world
-            .onevcs()
-            .args(["session", "open", "hosted", "--branch"])
-            .arg(format!("feature/stream-{step}"))
-            .args(["--label", "launcher=streams"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        hosted.world.commit_file(
-            &crate::world::worktree_of(&opened),
-            &format!("stream-{step}.txt"),
-            "work\n",
-            &format!("feat: stream {step}"),
-        );
-        tokens.push(crate::world::token_of(&opened));
-    }
-    // One is published and held as a draft for review: its stream records the change.
-    hosted
-        .world
-        .onevcs()
-        .args(["publish", &tokens[0]])
-        .assert()
-        .success();
-    for token in &tokens {
-        hosted
-            .world
-            .onevcs()
-            .args(["session", "close", token])
+            .args(["preserve", &format!("feature/stream-{step}"), "--repo"])
+            .arg(&fixture.checkout)
             .assert()
             .success();
     }
@@ -2254,7 +2227,7 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
     // test, as in `filter.rs`'s torn-line journey: every writer of this crate appends
     // whole envelopes, so a write cut off by a crash or a full disk can only be put
     // there directly. Every read below still drives the real binary.
-    let torn = hosted
+    let torn = fixture
         .world
         .home()
         .join("streams")
@@ -2265,10 +2238,9 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
     // llmlint: ignore-end[tests_mirror_real_usage]
 
     let whole = rows(&["--all"]);
-    assert!(
-        row(&whole, "feature/stream-0")["branch"]["change_url"].is_string(),
-        "the premise: the draft's change request is read off its stream: {whole:?}"
-    );
+    for step in [0, 2, 5] {
+        let _ = row(&whole, &format!("feature/stream-{step}"));
+    }
     // The whole-host read builds no stream index, so the first filtered read on this
     // host parses every stream; the ones after it are answered from what it indexed.
     for (args, state) in [

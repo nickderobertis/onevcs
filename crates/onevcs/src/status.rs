@@ -2421,6 +2421,9 @@ pub(crate) fn recorded_streams_about(
         {
             return None;
         }
+        // llmlint: ignore[changed_behavior_has_e2e] unchanged by parsing in parallel:
+        // these notes only mark a stream as having a gap, as the one `notes` list did
+        // before, and `recoverable` has nowhere to report them (see `vcs::collected`).
         let mut gap_notes = Vec::new();
         let mut record = read_stream(&directory, token, &mut gap_notes);
         record.gaps = !gap_notes.is_empty();
