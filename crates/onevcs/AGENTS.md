@@ -591,8 +591,10 @@ minutes. Three things are easy to undo.
   receiving end of a push. Never refuse on a substring of the whole listing: a branch's
   name is part of its tracking keys.
 - **A context is computed by every process, warm or cold**, so its cost is the floor
-  under every read: loose objects are listed from their directories rather than statted,
-  and a worktree's `.gitattributes` files are read where a listing names one.
+  under every read — but every loose object keeps its full identity (inode, owner, size,
+  mode), because an ancestor damaged in place keeps its name and inode while no proof
+  names it. Each is stat'ed relative to its listed directory, and a worktree's
+  `.gitattributes` files are read where a listing names one.
 
 `tests/e2e/labels.rs` drives ref churn, each overlay and the configuration categories
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm

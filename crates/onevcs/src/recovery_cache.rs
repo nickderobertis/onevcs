@@ -814,33 +814,30 @@ fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()>
     Some(())
 }
 
-/// One loose-object fan-out directory, its objects listed by name and inode from the
-/// directory itself rather than by a stat of each: an object is written once and
-/// renamed into place, so one pruned, packed away or replaced is a name or an inode
-/// that is gone — and a checkout holding thousands of loose objects is listed in a
-/// handful of reads on every process that asks. Anything in it that is not a plain
-/// file is listed the way `pack/` is.
+/// One loose-object fan-out directory, each object listed with the same identity
+/// `pack/` is — device, inode, owner, size and mode — so an ancestor a proof read and
+/// no proof names is still held to being there and readable: truncated or made
+/// unreadable in place, it keeps its name and inode and changes the rest. Each is
+/// stat'ed relative to the directory it was listed from, rather than by resolving its
+/// full path again, which is what a checkout holding thousands of them pays for.
 #[cfg(unix)]
 fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
-    use std::os::unix::fs::DirEntryExt;
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_dir() {
         return growable(root, path, held);
     }
     held.insert(line(root, path, &meta)?);
-    let relative = path.strip_prefix(root).ok()?.to_str()?;
     for entry in std::fs::read_dir(path).ok()? {
         let entry = entry.ok()?;
-        if !entry.file_type().ok()?.is_file() {
+        let meta = entry.metadata().ok()?;
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+        if meta.is_dir() {
             growable(root, &entry.path(), held)?;
             continue;
         }
-        let name = entry.file_name();
-        let name = name.to_str()?;
-        if name.contains(['\0', '\n']) {
-            return None;
-        }
-        held.insert(format!("{relative}/{name}\0{}", entry.ino()));
+        held.insert(line(root, &entry.path(), &meta)?);
     }
     Some(())
 }

@@ -2077,3 +2077,101 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
         "reuse returns with the keys gone"
     );
 }
+
+/// A loose object is never rewritten by git, but a disk or a person can damage one in
+/// place: the same name and inode, a different size, or no longer readable. A proof
+/// whose walk read such an ancestor names only its endpoints, which still hash, so the
+/// store's listing is what has to notice — and the read is git's again.
+#[test]
+fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let (fixture, token) = deep_history_session("damaged");
+    let args = decision_of(&token);
+    let original = answered(&fixture, &args, true);
+    assert_eq!(original.0, Some(0), "{original:?}");
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    forget_proofs(&fixture);
+    let _ = counted(&fixture, &counting, &args);
+    let (warm, _) = counted(&fixture, &counting, &args);
+    assert_eq!(warm, original);
+    assert_eq!(
+        content_comparisons(&counting),
+        0,
+        "the premise: the proofs are reused"
+    );
+
+    // An ancestor the stored walk read and no proof names: the base history's root.
+    let ancestor = fixture.world.git(
+        &fixture.checkout,
+        &["rev-list", "--max-parents=0", "feature/store-growth"],
+    );
+    let ancestor = ancestor.trim().to_owned();
+    let copies = loose_copies(&fixture.world.path(""), &ancestor);
+    assert!(!copies.is_empty(), "the premise: the ancestor is loose");
+    let kept: Vec<_> = copies
+        .iter()
+        .map(|copy| {
+            let meta = std::fs::metadata(copy).expect("the ancestor's metadata");
+            (
+                std::fs::read(copy).expect("the ancestor's bytes"),
+                meta.ino(),
+                meta.mode(),
+            )
+        })
+        .collect();
+
+    // Truncated in place: the same inode and mode, half its length.
+    for (copy, (bytes, inode, mode)) in copies.iter().zip(&kept) {
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(copy).unwrap();
+        file.set_len((bytes.len() / 2) as u64).unwrap();
+        drop(file);
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(*mode)).unwrap();
+        let after = std::fs::metadata(copy).unwrap();
+        assert_eq!(
+            (after.ino(), after.mode()),
+            (*inode, *mode),
+            "the premise: in place"
+        );
+    }
+    let native = answered(&fixture, &args, true);
+    assert_ne!(
+        native, original,
+        "the premise: git cannot read the truncated ancestor"
+    );
+    let (cached, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        cached, native,
+        "a truncated ancestor answers what git answers"
+    );
+
+    // Restored, then made unreadable: the same inode and size, another mode.
+    for (copy, (bytes, _, mode)) in copies.iter().zip(&kept) {
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(copy, bytes).unwrap();
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let (restored, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        restored, original,
+        "the repaired ancestor restores the answer"
+    );
+    for copy in &copies {
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let native = answered(&fixture, &args, true);
+    assert_ne!(
+        native, original,
+        "the premise: git cannot read the ancestor"
+    );
+    let (cached, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        cached, native,
+        "an unreadable ancestor answers what git answers"
+    );
+    for (copy, (_, _, mode)) in copies.iter().zip(&kept) {
+        std::fs::set_permissions(copy, std::fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let (repaired, _) = counted(&fixture, &counting, &args);
+    assert_eq!(repaired, original, "and readable again, the answer returns");
+}
