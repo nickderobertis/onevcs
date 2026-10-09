@@ -23,7 +23,7 @@ struct ContextKey {
 
 /// The shape of an entry and of the key it is stored under. An entry of any other
 /// is recomputed.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 /// What a repository's reads were answered from, beyond its configuration and
 /// layout: every object store it reads, by path, as this process found it.
@@ -508,7 +508,8 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 
 /// Conservative guard for ordinary files-backend repositories and linked
 /// worktrees with local alternates. Graph overlays and external attributes
-/// delegate. Object-store layout and access metadata are captured once per
+/// delegate; ordinary refs, pseudorefs and linked-worktree metadata are not
+/// inputs and are left out. Object-store layout and access metadata are captured once per
 /// query/store — the fixed part in the key, the loose objects and packs as a
 /// [`Store`] generation an entry may outgrow but not lose; each hit verifies its
 /// directly named objects by content hash. Unreadable inputs prevent reuse rather
@@ -558,8 +559,11 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
             && !key.starts_with("branch.")
             && !key.starts_with("user.")
             && !key.starts_with("advice.")
-            // Local object reads never invoke credential helpers, editors or transports.
+            // Local object reads never invoke credential helpers, editors or transports,
+            // and never act as the receiving end of a push.
             && !key.starts_with("credential.")
+            && !key.starts_with("http.")
+            && !key.starts_with("receive.")
             && !key.starts_with("pull.")
             && !key.starts_with("push.")
             && !key.starts_with("gist.")
@@ -590,14 +594,10 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
             return None;
         }
     }
-    if lowered.contains("core.attributesfile")
-        || lowered.contains("extensions.")
-        || lowered.contains("include.path")
-        || lowered.contains("includeif.")
-        || lowered.contains("core.worktree")
-    {
-        return None;
-    }
+    // Includes, extensions, `core.attributesfile` and `core.worktree` are refused
+    // above by name, as every key outside the admitted categories is. Never by a
+    // substring of the whole listing: a branch's name is part of its tracking keys,
+    // and `branch.clients-extensions.remote` is not an extension.
     digest.update(configuration.as_bytes());
     digest.update(semantics()?.as_bytes());
     // Git's ownership checks concern the checkout too. Directory timestamps
@@ -762,7 +762,9 @@ fn read_store(root: &Path) -> Option<Store> {
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
         });
-        if grows {
+        if grows && name != "pack" {
+            loose(root, &entry.path(), &mut held)?;
+        } else if grows {
             growable(root, &entry.path(), &mut held)?;
         } else {
             snapshot(&entry.path(), &mut fixed, true)?;
@@ -775,20 +777,15 @@ fn read_store(root: &Path) -> Option<Store> {
     })
 }
 
-/// List one loose-object directory or `pack/`, each path with its identity, so a
-/// file replaced or rewritten in place is a file that is gone.
+/// One path a store generation lists, with the identity it is held to.
 #[cfg(unix)]
-fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+fn listed_identity(root: &Path, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if meta.file_type().is_symlink() {
-        return None;
-    }
     let relative = path.strip_prefix(root).ok()?.to_str()?;
     if relative.contains(['\0', '\n']) {
         return None;
     }
-    held.insert(format!(
+    Some(format!(
         "{relative}{}\0{}\0{}\0{}\0{}\0{}\0{}",
         if meta.is_dir() { "/" } else { "" },
         meta.dev(),
@@ -797,11 +794,55 @@ fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()>
         meta.gid(),
         if meta.is_dir() { 0 } else { meta.len() },
         meta.mode(),
-    ));
+    ))
+}
+
+/// List `pack/` (or anything unusual in a fan-out directory), each path with its
+/// identity, so a file replaced or rewritten in place is a file that is gone.
+#[cfg(unix)]
+fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() {
+        return None;
+    }
+    held.insert(listed_identity(root, path, &meta)?);
     if meta.is_dir() {
         for entry in std::fs::read_dir(path).ok()? {
             growable(root, &entry.ok()?.path(), held)?;
         }
+    }
+    Some(())
+}
+
+/// One loose-object fan-out directory, each object listed with the same identity
+/// `pack/` is — device, inode, owner, size and mode — so an ancestor a proof read and
+/// no proof names is still held to being there and readable: truncated or made
+/// unreadable in place, it keeps its name and inode and changes the rest. Each is
+/// stat'ed relative to the directory it was listed from, rather than by resolving its
+/// full path again, which is what a checkout holding thousands of them pays for.
+#[cfg(unix)]
+fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return growable(root, path, held);
+    }
+    held.insert(listed_identity(root, path, &meta)?);
+    for entry in std::fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        // Asked of the entry itself before anything is stat'ed, so a link is refused
+        // rather than followed.
+        if entry.file_type().ok()?.is_symlink() {
+            return None;
+        }
+        let meta = entry.metadata().ok()?;
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+        if meta.is_dir() {
+            growable(root, &entry.path(), held)?;
+            continue;
+        }
+        held.insert(listed_identity(root, &entry.path(), &meta)?);
     }
     Some(())
 }
@@ -853,23 +894,35 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let name = entry.file_name();
-            // Index/logs are not inputs to immutable history/content queries.
+            // Index/logs are not inputs to immutable history/content queries, and
+            // neither are ordinary refs: a cached query names only full object ids,
+            // and the refs a report does read are read afresh on every call. Other
+            // sessions' fetches rewrite them constantly, so keying on them would
+            // retire every proof in a busy checkout. Replacement refs and grafts are
+            // graph overlays that do move an answer, and are refused by `context`
+            // and below rather than keyed.
             if !objects
-                && matches!(
-                    name.to_str(),
-                    Some(
+                && name.to_str().is_some_and(|name| {
+                    matches!(
+                        name,
                         "objects"
                             | "index"
                             | "logs"
                             | "hooks"
                             | "COMMIT_EDITMSG"
-                            | "FETCH_HEAD"
-                            | "ORIG_HEAD"
+                            | "refs"
+                            | "worktrees"
+                            | "HEAD"
                             // This crate's own lock beside a fetch, never read by git.
                             | git::FETCH_LOCK
-                    )
-                )
+                    ) || name.ends_with("_HEAD")
+                        || name.ends_with(".lock")
+                })
             {
+                continue;
+            }
+            if !objects && name == "packed-refs" {
+                replacement_free(&entry.path())?;
                 continue;
             }
             snapshot(&entry.path(), digest, objects || name == "objects")?;
@@ -878,16 +931,23 @@ fn snapshot(path: &Path, digest: &mut Sha256, objects: bool) -> Option<()> {
         // Object storage is guarded by layout and readability metadata, with
         // directly named objects verified by hash on each cache hit. Read the
         // alternates/configuration evidence, without scanning pack contents.
-        let raw = std::fs::read(path).ok()?;
-        // Packed replacement refs are graph overlays too.
-        if path.file_name()?.to_str() == Some("packed-refs")
-            && String::from_utf8_lossy(&raw).contains(" refs/replace/")
-        {
-            return None;
-        }
-        digest.update(raw);
+        digest.update(std::fs::read(path).ok()?);
     }
     Some(())
+}
+
+/// Packed replacement refs are graph overlays too. The file is otherwise not an
+/// input, so one a concurrent repack has just replaced is read as it now stands.
+#[cfg(unix)]
+fn replacement_free(path: &Path) -> Option<()> {
+    match std::fs::read(path) {
+        Ok(raw) => (!raw
+            .windows(b" refs/replace/".len())
+            .any(|window| window == b" refs/replace/"))
+        .then_some(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(()),
+        Err(_) => None,
+    }
 }
 
 #[cfg(unix)]
@@ -905,7 +965,6 @@ fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
 
 #[cfg(unix)]
 fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
-    optional_file(&path.join(".gitattributes"), digest)?;
     let mut entries = std::fs::read_dir(path)
         .ok()?
         .collect::<std::io::Result<Vec<_>>>()
@@ -913,6 +972,12 @@ fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         if entry.file_name() == ".git" {
+            continue;
+        }
+        // Read where the listing names one, rather than asked of every directory:
+        // a large worktree is thousands of directories and a handful of these.
+        if entry.file_name() == ".gitattributes" {
+            optional_file(&entry.path(), digest)?;
             continue;
         }
         if entry.file_type().ok()?.is_dir() {

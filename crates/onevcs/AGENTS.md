@@ -575,6 +575,31 @@ and what a name already means are each stated rather than left to be inferred.
   has none and `git add -A && git commit` would still conclude it — and every teardown
   aborts it first with `git::abort_merge` rather than committing it.
 
+## A recovery proof is keyed on what can move its answer, and on nothing else
+
+`recovery_cache.rs` reuses git reads named wholly by full object ids. Its context key is
+what such a read depends on; adding an input that cannot move the answer only retires
+proofs on a busy host, where other sessions' fetches rewrite a checkout's refs every few
+minutes. Three things are easy to undo.
+
+- **Ordinary refs, pseudorefs, `packed-refs` and linked-worktree metadata are not keyed.**
+  The refs a report does read are read afresh on every call (`native_refs`). Graph
+  overlays are: `refs/replace` (loose or packed), `info/grafts` and `shallow` refuse,
+  and alternates and every loose object and pack a proof read are held to its entry.
+- **Configuration is an allowlist of key categories, matched by key name.** `http.*` and
+  `receive.*` are admitted because a local object-id read is never a transport or the
+  receiving end of a push. Never refuse on a substring of the whole listing: a branch's
+  name is part of its tracking keys.
+- **A context is computed by every process, warm or cold**, so its cost is the floor
+  under every read — but every loose object keeps its full identity (inode, owner, size,
+  mode), because an ancestor damaged in place keeps its name and inode while no proof
+  names it. Each is stat'ed relative to its listed directory, and a worktree's
+  `.gitattributes` files are read where a listing names one.
+
+`tests/e2e/labels.rs` drives ref churn, each overlay and the configuration categories
+against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
+read under a concurrent ref writer to the registered warm budgets.
+
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
 `branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the

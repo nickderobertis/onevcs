@@ -9,3 +9,8 @@ whole artifact directory together; a failed producer invalidates earlier
 records before compilation starts. `just recoverable-journeys` regenerates the
 same evidence without unrelated journeys. Keep these full workloads on their
 own edge: an ordinary e2e edit must not rebuild them.
+
+`churn.rs` drives the same fixtures under a concurrent ref writer with transport
+configuration set, held to the registered warm thresholds; it records no
+telemetry. Every workload test takes `exclusive()` first, so the timed journey's
+clock never carries another workload's load.
