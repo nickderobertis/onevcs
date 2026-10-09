@@ -166,6 +166,12 @@ impl Sandbox {
             .env("XDG_STATE_HOME", self.path("state"))
             .env("GH_CONFIG_DIR", self.path("gh-config"))
             .env("GIT_CONFIG_NOSYSTEM", "1");
+        // The one inherited variable: a coverage run tells the instrumented binary where
+        // to write its profile, and cleared it would write one into the checkout these
+        // journeys assert the audit leaves untouched.
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         for (k, v) in env {
             command.env(k, v);
         }
