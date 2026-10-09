@@ -6203,8 +6203,18 @@ fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
 }
 
 /// The secret, and the variable it becomes, that names the live tier's scratch
-/// repository — `SMOKE_REPO_ENV` in `tests/smoke/scratch.rs`.
-const SMOKE_REPO_KEY: &str = "ONEVCS_SMOKE_REPO";
+/// repository — read out of the tier's own `SMOKE_REPO_ENV`, so the workflow is held
+/// to the name the journeys read rather than to a second copy of it.
+fn smoke_repo_key() -> String {
+    let source = repo_file("crates/onevcs/tests/smoke/scratch.rs");
+    let declared = "pub const SMOKE_REPO_ENV: &str = \"";
+    let at = source
+        .find(declared)
+        .expect("tests/smoke/scratch.rs declares SMOKE_REPO_ENV as a string constant")
+        + declared.len();
+    let key = &source[at..];
+    key[..key.find('"').expect("SMOKE_REPO_ENV's value is closed")].to_owned()
+}
 
 /// Every string a workflow step hands to its runner as a value: its `run`, and each
 /// value under its `env` and its `with`. Not its `uses`, which names an action.
@@ -6257,6 +6267,7 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
     // runs it maps the secret into its own environment under the variable's name,
     // so the identity is masked in logs and written nowhere in the tree.
     let smoke_file = ".github/workflows/smoke.yml";
+    let key = smoke_repo_key();
     let smoke = workflow(smoke_file);
     let jobs = workflow_jobs(&smoke);
     let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
@@ -6274,14 +6285,14 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
         .expect("the smoke job no longer runs `just smoke-real`");
     let mapped = entry
         .get("env")
-        .and_then(|env| env.get(SMOKE_REPO_KEY))
+        .and_then(|env| env.get(key.as_str()))
         .and_then(serde_yaml_ng::Value::as_str)
         .unwrap_or_default();
     assert_eq!(
         mapped.replace(' ', ""),
-        format!("${{{{secrets.{SMOKE_REPO_KEY}}}}}"),
-        "the step running `just smoke-real` must map secrets.{SMOKE_REPO_KEY} into its \
-         environment as {SMOKE_REPO_KEY}; it maps {mapped:?}"
+        format!("${{{{secrets.{key}}}}}"),
+        "the step running `just smoke-real` must map secrets.{key} into its environment as \
+         {key}; it maps {mapped:?}"
     );
 
     // And nothing the workflow hands a runner writes a repository out: not a step's
@@ -6310,7 +6321,7 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
         assert!(
             written.is_empty(),
             "{smoke_file}'s `{id}` job hard-codes a repository identity {written:?}; name it \
-             through secrets.{SMOKE_REPO_KEY} instead"
+             through secrets.{key} instead"
         );
     }
 }
@@ -6361,9 +6372,10 @@ fn every_secret_a_workflow_reads_is_one_the_provisioning_manifest_names() {
                 .to_owned()
         })
         .collect();
+    let key = smoke_repo_key();
     assert!(
-        read.contains(SMOKE_REPO_KEY),
-        "no workflow reads secrets.{SMOKE_REPO_KEY}, which names the live tier's scratch repository"
+        read.contains(&key),
+        "no workflow reads secrets.{key}, which names the live tier's scratch repository"
     );
     assert_eq!(
         read, named,
