@@ -443,8 +443,31 @@ struct Private {
 #[derive(Serialize)]
 struct SourceGap {
     identity: String,
-    stage: &'static str,
+    stage: GapStage,
     detail: String,
+}
+
+/// Where reading an identity's term source stopped.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum GapStage {
+    /// Its `HEAD` could not be cloned.
+    Clone,
+    /// Its committed manifests could not be read.
+    Manifests,
+    /// Its committed declaration was refused.
+    Declaration,
+}
+
+/// A timed stage of a run, as the measurements name it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Phase {
+    Scope,
+    Terms,
+    Boards,
+    Git,
+    Items,
 }
 
 /// The terms, and the figures about where they came from.
@@ -511,7 +534,7 @@ fn term_source(
     if private.access == ManifestAccess::Unreadable {
         return (name_only, None);
     }
-    let gap = |stage: &'static str, detail: String| {
+    let gap = |stage: GapStage, detail: String| {
         Some(SourceGap {
             identity: private.identity.clone(),
             stage,
@@ -526,10 +549,10 @@ fn term_source(
         private.repo.name()
     );
     let read = match gitscan::clone_head(&url, &dest, &options.token) {
-        Err(status) => (name_only, gap("clone", status.as_str().to_owned())),
+        Err(status) => (name_only, gap(GapStage::Clone, status.as_str().to_owned())),
         Ok(()) => match TermSource::from_committed(&dest, &private.identity) {
             Ok(source) => (source, None),
-            Err(error) => (name_only, gap("manifests", error.to_string())),
+            Err(error) => (name_only, gap(GapStage::Manifests, error.to_string())),
         },
     };
     if options.clones == Clones::Delete {
@@ -564,7 +587,7 @@ fn derive(api: &Api, options: &Options, set: &AuditSet, clones: &Path) -> Result
     let (terms, refused) = Terms::build(&sources, &public);
     gaps.extend(refused.into_iter().map(|r| SourceGap {
         identity: r.identity,
-        stage: "declaration",
+        stage: GapStage::Declaration,
         detail: r.reason,
     }));
     Ok(Derived {
@@ -602,7 +625,7 @@ pub fn run(options: Options) -> u8 {
     };
     let api = Api::new(&options.api_url, options.token.clone());
     let quota_before = api.quota();
-    let mut phases: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut phases: BTreeMap<Phase, u64> = BTreeMap::new();
     let mut phase = Instant::now();
 
     let listing = match list_public(&api, &options.owner, options.pushed_since) {
@@ -631,7 +654,7 @@ pub fn run(options: Options) -> u8 {
         }
     };
     let set = audit_set(&api, &options, listing, registry);
-    phases.insert("scope", ms(phase));
+    phases.insert(Phase::Scope, ms(phase));
     phase = Instant::now();
 
     let Ok(private_clones) = vault.subdir("private-clones") else {
@@ -670,7 +693,7 @@ pub fn run(options: Options) -> u8 {
             exit::STOPPED,
         );
     }
-    phases.insert("terms", ms(phase));
+    phases.insert(Phase::Terms, ms(phase));
     phase = Instant::now();
 
     let opened = (
@@ -719,7 +742,7 @@ pub fn run(options: Options) -> u8 {
             items: stats,
         });
     }
-    phases.insert("boards", ms(phase));
+    phases.insert(Phase::Boards, ms(phase));
 
     let mut repo_coverage: Vec<RepoCoverage> = Vec::new();
     let (mut git_ms, mut items_ms) = (0, 0);
@@ -779,8 +802,8 @@ pub fn run(options: Options) -> u8 {
             items: walker.stats.clone(),
         });
     }
-    phases.insert("git", git_ms);
-    phases.insert("items", items_ms);
+    phases.insert(Phase::Git, git_ms);
+    phases.insert(Phase::Items, items_ms);
     if options.clones == Clones::Delete {
         let _ = std::fs::remove_dir(&clones);
     }
@@ -974,7 +997,7 @@ struct Measured<'a> {
     stats: &'a crate::github::ApiStats,
     quota: (Option<Quota>, Option<Quota>),
     started: Instant,
-    phases: &'a BTreeMap<&'static str, u64>,
+    phases: &'a BTreeMap<Phase, u64>,
     registry_size: usize,
 }
 
