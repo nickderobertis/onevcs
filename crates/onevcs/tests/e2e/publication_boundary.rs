@@ -470,11 +470,17 @@ fn an_exception_lets_what_it_permits_through_and_unavailable_policy_refuses_with
     let host = Boundary::new(LOCAL);
     host.private(
         "hiddenco/quietharbor",
-        &[(
-            "private-terms.toml",
-            "schema_version = 1\nterms = [\"Lantern\"]\n\n[[exceptions]]\nterm = \"Lantern\"\n\
-             action = \"case-sensitive\"\n",
-        )],
+        &[
+            ("Cargo.toml", "[package]\nname = \"tidepoolkit\"\n"),
+            (
+                "private-terms.toml",
+                "schema_version = 1\nterms = [\"Lantern\", \"quietledger\", \"harborkit\"]\n\n\
+                 [[exceptions]]\nterm = \"Lantern\"\naction = \"case-sensitive\"\n\n\
+                 [[exceptions]]\nterm = \"quietledger\"\naction = \"drop\"\n\n\
+                 [[exceptions]]\nterm = \"tidepoolkit\"\naction = \"owner-name-only\"\n\n\
+                 [[exceptions]]\nterm = \"harborkit\"\naction = \"whole-word\"\n",
+            ),
+        ],
     );
     let before = host.origin_refs();
     let (token, worktree) = host.session("work-lantern");
@@ -487,17 +493,19 @@ fn an_exception_lets_what_it_permits_through_and_unavailable_policy_refuses_with
         "the spelling kept",
     );
 
+    // What each exception permits lands: the other spelling, a dropped term, a
+    // package narrowed to its qualified name, and a word containing a whole-word term.
     let (token, worktree) = host.session("work-lamp");
     write(
         &worktree,
         "examples/lights.md",
-        "carry a lantern at night\n",
+        "carry a lantern at night\nquietledger columns\nthe tidepoolkit crate\nharborkits\n",
     );
     commit(&host.world, &worktree, "docs: add an example");
     host.published(
         &host.publish(&token, &[]),
         &before,
-        "the exception permits it",
+        "the exceptions permit it",
     );
 
     // A registered private repository whose declaration this build refuses makes every

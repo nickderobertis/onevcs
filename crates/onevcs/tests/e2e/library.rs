@@ -7032,3 +7032,104 @@ fn the_release_read_the_engine_links_answers_a_retired_squash_landing_as_the_com
     );
     assert_eq!(answered, command(&url, "wheel"));
 }
+
+#[test]
+fn the_boundary_operations_answer_what_the_boundary_commands_print() {
+    use onevcs::boundary::{
+        derive_terms, Evidence, InspectRequest, PublicNames, Surface, TermMatcher, TermSource,
+    };
+    use onevcs::{BoundaryInput, BoundaryVerdict, TermMode, TermRule, TermScope, Visibility};
+
+    let host = crate::boundary::Boundary::new(LOCAL);
+    let checkout = host.private(
+        "hiddenco/quietharbor",
+        &[("Cargo.toml", "[package]\nname = \"quietharbor-core\"\n")],
+    );
+    inhabit(&host.world);
+
+    // What one repository contributes: nothing for a public one, its terms for a
+    // private one — refreshed and recorded as `inspect` refreshes it.
+    let public = onevcs::repository_boundary("openwidget").expect("the public repository");
+    assert_eq!(public.visibility, Visibility::Public);
+    assert!(public.terms.is_empty());
+    let private = onevcs::repository_boundary("github.com/hiddenco/quietharbor")
+        .expect("the private repository");
+    assert_eq!(private.visibility, Visibility::Private);
+    for (term, mode) in [
+        ("hiddenco/quietharbor", TermMode::Substring),
+        ("quietharbor", TermMode::WholeWord),
+        ("quietharbor-core", TermMode::WholeWord),
+        ("hiddenco", TermMode::WholeWord),
+    ] {
+        assert!(
+            private.terms.contains(&TermRule {
+                term: term.to_owned(),
+                mode,
+                case_sensitive: false,
+            }),
+            "{term}: {:?}",
+            private.terms
+        );
+    }
+    assert_eq!(
+        onevcs::inspect_repository(&InspectRequest {
+            repository: "openwidget".to_owned(),
+        })
+        .expect("inspected")
+        .visibility,
+        Visibility::Public
+    );
+
+    // The verdict, and the private detail only its caller holds.
+    let mut evidence = Vec::new();
+    let verdict = onevcs::check_public_output_with_evidence(
+        BoundaryInput {
+            destination: Visibility::Public,
+            text: vec![
+                "a generic line".to_owned(),
+                "uses quietharbor-core".to_owned(),
+            ],
+            paths: Vec::new(),
+            metadata: Vec::new(),
+            scope: TermScope::Registry,
+        },
+        &mut evidence,
+    )
+    .expect("checked");
+    assert_eq!(
+        verdict,
+        BoundaryVerdict::Refuse {
+            surface: Surface::Text
+        }
+    );
+    assert!(evidence.iter().all(|found| matches!(
+        found,
+        Evidence::Term { surface: Surface::Text, at, identity, .. }
+            if at == "1" && identity == "github.com/hiddenco/quietharbor"
+    )));
+    assert_eq!(
+        onevcs::check_public_output(BoundaryInput {
+            destination: Visibility::Unknown,
+            text: vec!["uses quietharbor-core".to_owned()],
+            paths: Vec::new(),
+            metadata: Vec::new(),
+            scope: TermScope::Registry,
+        })
+        .expect("checked"),
+        BoundaryVerdict::Pass,
+        "an unknown destination is private"
+    );
+
+    // A reader of a repository this host never registered derives and matches through
+    // the same code the check runs — which is what the exposure audit does.
+    let source = TermSource::from_committed(&checkout, "github.com/hiddenco/quietharbor")
+        .expect("the committed tree reads");
+    assert!(source.packages.contains("quietharbor-core"));
+    let rules = derive_terms(&[source], &PublicNames::default()).expect("derived");
+    let matcher = TermMatcher::new(rules).expect("compiled");
+    assert!(!matcher
+        .find("git@github.com:hiddenco/quietharbor.git")
+        .is_empty());
+    assert!(matcher.find("quietharborage").is_empty());
+    assert!(TermSource::from_committed(&host.world.path("nowhere"), "github.com/a/b").is_err());
+}
