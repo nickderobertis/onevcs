@@ -2384,34 +2384,55 @@ pub(crate) fn recorded_streams_about(
         tokens.push((token, meta));
     }
     tokens.sort_by(|left, right| left.0.cmp(&right.0));
-    for (token, meta) in tokens {
-        let stamp = Indexed {
-            len: meta.len(),
-            modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
-            changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
-            device: meta.dev(),
-            inode: meta.ino(),
-            identity: None,
-            branch: None,
-            checksum: String::new(),
-        };
-        let known = index.get(&token).filter(|entry| {
-            entry.len == stamp.len
-                && entry.modified == stamp.modified
-                && entry.inode == stamp.inode
-                && entry.changed == stamp.changed
-                && entry.device == stamp.device
-                && entry.valid(&directory, &token)
-        });
-        if let Some(entry) = known {
-            fresh.insert(token.clone(), entry.clone());
-            if !about(entry.identity.as_ref(), entry.branch.as_ref(), &token) {
-                continue;
-            }
+    let stamped: Vec<(String, Indexed, Option<Indexed>)> = tokens
+        .into_iter()
+        .map(|(token, meta)| {
+            let stamp = Indexed {
+                len: meta.len(),
+                modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+                changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+                device: meta.dev(),
+                inode: meta.ino(),
+                identity: None,
+                branch: None,
+                checksum: String::new(),
+            };
+            let known = index
+                .get(&token)
+                .filter(|entry| {
+                    entry.len == stamp.len
+                        && entry.modified == stamp.modified
+                        && entry.inode == stamp.inode
+                        && entry.changed == stamp.changed
+                        && entry.device == stamp.device
+                        && entry.valid(&directory, &token)
+                })
+                .cloned();
+            (token, stamp, known)
+        })
+        .collect();
+    // Every stream the index cannot answer for is parsed, which is every stream on a
+    // read with no index. Each is its own file and its own answer, so they are parsed
+    // side by side and taken back in token order.
+    let parsed = crate::vcs::concurrently(&stamped, |(token, _, known)| {
+        if known
+            .as_ref()
+            .is_some_and(|entry| !about(entry.identity.as_ref(), entry.branch.as_ref(), token))
+        {
+            return None;
         }
-        let before = notes.len();
-        let mut record = read_stream(&directory, &token, &mut notes);
-        record.gaps = notes.len() > before;
+        let mut own = Vec::new();
+        let mut record = read_stream(&directory, token, &mut own);
+        record.gaps = !own.is_empty();
+        Some(record)
+    });
+    for ((token, stamp, known), record) in stamped.into_iter().zip(parsed) {
+        if let Some(entry) = &known {
+            fresh.insert(token.clone(), entry.clone());
+        }
+        let Some(record) = record else {
+            continue;
+        };
         if known.is_none() && !record.gaps {
             let mut indexed = Indexed {
                 identity: record.identity.clone(),

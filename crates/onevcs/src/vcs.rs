@@ -911,9 +911,9 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
 ///
 /// Scoped threads, so each borrows what the caller holds and none outlives the
 /// call; a bounded number of them, because an item here is a stream of git
-/// processes and a host with more identities than cores gains nothing from
-/// starting them all at once.
-fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+/// processes (or, for `status`, a stream file to parse) and a host with more items
+/// than cores gains nothing from starting them all at once.
+pub(crate) fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(items.len());

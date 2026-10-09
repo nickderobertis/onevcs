@@ -2018,13 +2018,23 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
             ("http.lowSpeedTime", "60"),
             ("receive.denyCurrentBranch", "ignore"),
             ("receive.denyNonFastForwards", "true"),
+            // A tracked branch whose name reads like a refused category is still a
+            // branch key: `extensions.` and `core.worktree` are keys, not substrings.
+            ("branch.nick/429/clients-extensions.remote", "origin"),
+            (
+                "branch.core.worktree-notes.merge",
+                "refs/heads/core.worktree-notes",
+            ),
         ] {
             fixture.world.git(repo, &["config", key, value]);
         }
     }
     let (configured, stored, warm_content) = under_configuration(&fixture, &counting, &args);
     assert_eq!(configured, unconfigured, "the keys move no answer");
-    assert!(stored > 0, "http.* and receive.* store proofs");
+    assert!(
+        stored > 0,
+        "http.*, receive.* and branch keys naming refused categories store proofs"
+    );
     assert_eq!(warm_content, 0, "and a warm read reuses them");
 
     // Every other key refuses, at either level.

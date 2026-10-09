@@ -594,14 +594,10 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
             return None;
         }
     }
-    if lowered.contains("core.attributesfile")
-        || lowered.contains("extensions.")
-        || lowered.contains("include.path")
-        || lowered.contains("includeif.")
-        || lowered.contains("core.worktree")
-    {
-        return None;
-    }
+    // Includes, extensions, `core.attributesfile` and `core.worktree` are refused
+    // above by name, as every key outside the admitted categories is. Never by a
+    // substring of the whole listing: a branch's name is part of its tracking keys,
+    // and `branch.clients-extensions.remote` is not an extension.
     digest.update(configuration.as_bytes());
     digest.update(semantics()?.as_bytes());
     // Git's ownership checks concern the checkout too. Directory timestamps
@@ -766,7 +762,9 @@ fn read_store(root: &Path) -> Option<Store> {
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
         });
-        if grows {
+        if grows && name != "pack" {
+            loose(root, &entry.path(), &mut held)?;
+        } else if grows {
             growable(root, &entry.path(), &mut held)?;
         } else {
             snapshot(&entry.path(), &mut fixed, true)?;
@@ -779,20 +777,15 @@ fn read_store(root: &Path) -> Option<Store> {
     })
 }
 
-/// List one loose-object directory or `pack/`, each path with its identity, so a
-/// file replaced or rewritten in place is a file that is gone.
+/// One listed path with its identity.
 #[cfg(unix)]
-fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+fn line(root: &Path, path: &Path, meta: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if meta.file_type().is_symlink() {
-        return None;
-    }
     let relative = path.strip_prefix(root).ok()?.to_str()?;
     if relative.contains(['\0', '\n']) {
         return None;
     }
-    held.insert(format!(
+    Some(format!(
         "{relative}{}\0{}\0{}\0{}\0{}\0{}\0{}",
         if meta.is_dir() { "/" } else { "" },
         meta.dev(),
@@ -801,11 +794,53 @@ fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()>
         meta.gid(),
         if meta.is_dir() { 0 } else { meta.len() },
         meta.mode(),
-    ));
+    ))
+}
+
+/// List `pack/` (or anything unusual in a fan-out directory), each path with its
+/// identity, so a file replaced or rewritten in place is a file that is gone.
+#[cfg(unix)]
+fn growable(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() {
+        return None;
+    }
+    held.insert(line(root, path, &meta)?);
     if meta.is_dir() {
         for entry in std::fs::read_dir(path).ok()? {
             growable(root, &entry.ok()?.path(), held)?;
         }
+    }
+    Some(())
+}
+
+/// One loose-object fan-out directory, its objects listed by name and inode from the
+/// directory itself rather than by a stat of each: an object is written once and
+/// renamed into place, so one pruned, packed away or replaced is a name or an inode
+/// that is gone — and a checkout holding thousands of loose objects is listed in a
+/// handful of reads on every process that asks. Anything in it that is not a plain
+/// file is listed the way `pack/` is.
+#[cfg(unix)]
+fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
+    use std::os::unix::fs::DirEntryExt;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return growable(root, path, held);
+    }
+    held.insert(line(root, path, &meta)?);
+    let relative = path.strip_prefix(root).ok()?.to_str()?;
+    for entry in std::fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_file() {
+            growable(root, &entry.path(), held)?;
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_str()?;
+        if name.contains(['\0', '\n']) {
+            return None;
+        }
+        held.insert(format!("{relative}/{name}\0{}", entry.ino()));
     }
     Some(())
 }
@@ -928,7 +963,6 @@ fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
 
 #[cfg(unix)]
 fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
-    optional_file(&path.join(".gitattributes"), digest)?;
     let mut entries = std::fs::read_dir(path)
         .ok()?
         .collect::<std::io::Result<Vec<_>>>()
@@ -936,6 +970,12 @@ fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         if entry.file_name() == ".git" {
+            continue;
+        }
+        // Read where the listing names one, rather than asked of every directory:
+        // a large worktree is thousands of directories and a handful of these.
+        if entry.file_name() == ".gitattributes" {
+            optional_file(&entry.path(), digest)?;
             continue;
         }
         if entry.file_type().ok()?.is_dir() {
