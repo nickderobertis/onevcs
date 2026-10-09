@@ -244,7 +244,7 @@ fn warm_read_under_churn_and_transport_configuration(scale: Scale, budget: &str)
     .expect("verb shim");
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(shim.join("git"), std::fs::Permissions::from_mode(0o700))
             .expect("executable verb shim");
     }
     let stop = AtomicBool::new(false);
