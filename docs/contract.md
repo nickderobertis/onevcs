@@ -4355,6 +4355,303 @@ older provider documents remain readable with a defaulted tip. This changes no
 file shape in the real Git provider’s `$ONEVCS_HOME`.
 
 
+### Private work informs public repositories, and public output never names it
+
+The user's ruling, taken as one general feature: private repositories may inform public
+ones through generic examples, while nothing published to a public destination reveals a
+private repository's names, paths, identifiers or contents. Every write this crate makes
+to a public destination is held to one check before its first remote mutation, and two
+new commands make the same check, and an identity's visibility, available to any
+policy consumer. The authoritative definitions are in `crates/onevcs/src/boundary.rs`,
+`export.rs` and `rules_apply.rs`; this amendment is held to them by `tests/contract.rs`.
+
+**Visibility.** A repository is `public`, `private` or `unknown`, and only `public` is
+public: `effective(unknown)` and `effective(local-only)` are `private`. A registry
+identity records what it last learned, in three optional keys each omitted while it says
+nothing — `visibility` (default `unknown`), `observation` (`host`, `override` or
+`unknown`; where the recorded visibility came from) and `observed_at` (RFC3339, UTC,
+millisecond precision) — so **the registry is written at version 7**; a version 6
+document is one that has recorded nothing, is read as version 7 and written back at 7,
+and every build since version 6 reads a later version as its own shape and keeps the keys
+it does not know. `tests/golden/registry-v7.json` is the checked-in document. A rule may
+declare `visibility: public|private` — **the rules file is at version 4**, and the key is
+refused by name at an earlier declared version — which overrides the host outright: the
+host is not asked and the identity records `observation: override`. Otherwise GitHub is
+asked (`gh api repos/{owner}/{name}`: `public`, and `private` or `internal` as private)
+when a checkout is registered, by `onevcs boundary inspect`, and **at every write that
+could reach a public destination**; its answer is recorded as `observation: host`, and a
+probe that fails is recorded as `unknown` — never as the last answer — so a failure is
+private wherever terms are derived. A local-only identity is never probed. **A write is
+let through unchecked only where its destination is verified not public**: a rule
+declaring it private, a host answering private, or a local-only identity no rule calls
+public. A hosted destination whose visibility the host could not answer for is screened
+as a public one would be, so an unverified destination never receives an unchecked
+write. That screen derives terms exactly as `boundary check` does over the write's
+scope: the destination itself, where the scope selects it and it is not public,
+contributes its terms like any other private repository.
+
+```yaml
+version: 4
+rules:
+  - match: {host: github.com, owner: hiddenco}
+    visibility: private
+  - match: {host: github.com, owner: sample-owner, name: openwidget}
+    visibility: public
+default: {publication: change-open, approvals: required}
+```
+
+**Terms.** A check derives terms from the private identities its scope selects, each read
+out of the commit its registered checkout's `HEAD` names — never a worktree, so a dirty,
+untracked or ignored file says nothing — with no network request:
+
+1. `owner/name` matches case-insensitively, anywhere, which covers its URL forms (`https`,
+   `git@host:owner/name(.git)`, and the normalized remote `host/owner/name`);
+2. the bare repository name and the package names its committed manifests declare match
+   as **whole words only**, so `quietharbor` never matches inside `quietharborage`;
+3. a bare or package term equal to the name of a repository the registry knows is
+   public, the login of an owner that owns a public repository, or a word in the shipped
+   generic-word list is **narrowed to owner-name-only**: it matches only the fully
+   qualified `owner/name` standing on its own (`.git` after it included);
+4. an owner that owns no public repository yields a whole-word owner term; an owner that
+   owns one yields none. The generic-word list narrows bare and package terms only, so an
+   owner of only private repositories whose login is a common word is still a term.
+
+The manifests read are Cargo's `[package].name` and every `[workspace].members` entry's
+own `Cargo.toml` (`exclude` honoured), `package.json`'s `name` and every `workspaces`
+entry's own `package.json` (an array, or an object's `packages`; a scoped `@scope/name`
+also yields `name`), and `pyproject.toml`'s `[project].name` and `[tool.poetry].name`. A
+member pattern may use `*` within a path segment. A manifest that does not parse, and a
+member named literally whose manifest is not committed, make the check unavailable.
+
+The generic-word list is data: `crates/onevcs/src/boundary/generic-words.txt`, headed
+`# onevcs generic words, version 1`, several thousand common English and software words,
+one per line, sorted. Changing it changes which names narrow, and moves its version.
+
+A repository may commit `private-terms.toml` at its root:
+
+```toml
+schema_version = 1
+terms = ["Lantern", "harborlight"]
+
+[[exceptions]]
+term = "Lantern"
+action = "case-sensitive"
+
+[[exceptions]]
+term = "quietharbor-core"
+action = "owner-name-only"
+```
+
+`terms` are added as whole words. Each exception names a derived or declared term,
+compared without case, and only narrows: `drop` removes the rule, `whole-word` and
+`case-sensitive` (which keeps the exception's own spelling) narrow it, and
+`owner-name-only` replaces it with the fully qualified `owner/name`. A declaration that is
+not `schema_version = 1`, carries an unknown key or an empty term, names one term in two
+exceptions (ambiguous), names a term the repository neither derives nor declares, or names
+the repository's own `owner/name` (which always matches) is refused — and a refused or
+unreadable declaration makes the check unavailable rather than passing. A missing
+declaration uses the automatic terms.
+
+**One matcher** owns every comparison: text and terms are put through Unicode NFKC with
+every default-ignorable code point removed, compared in lower case unless a rule is
+case-sensitive, and a word character is a Unicode letter or digit or `_`. The publication
+check, `boundary check`, export and the exposure audit all match through it.
+
+**Term scope.** By the user's ruling, which private identities a check derives terms from
+is caller-supplied scope, and no check lists an account's repositories. `registry` (the
+default) derives from every registered identity whose effective visibility is private —
+private, unknown and local-only alike. `identities` derives only from the named identities
+whose effective visibility is private: a named public identity adds none, and a named
+identity that is unregistered, or whose committed declarations cannot be read, makes the
+check unavailable. An empty `identities` derives nothing and reads no registry entry,
+manifest or declaration. Per-repository declarations and exceptions apply within the
+scope. There is no rules-file setting for term sources. Every publication entry point and
+export takes a scope: the library through its request's `term_scope`, the command line
+through a repeatable `--term-scope <identity>` or `--term-scope-empty`, which are mutually
+exclusive.
+
+`onevcs publish` takes a term scope as `--term-scope` (repeatable) or `--term-scope-empty`, beside the options the earlier amendments gave it.
+
+**The publication check** runs on `publish`, `publish-branch`, `recover`, `preserve`,
+`integrate --push` (direct integration), `change describe` (title and body, which is how
+a drafter's final output is rechecked) and a resumed verified publication, after
+everything the publication will write is known and before any remote mutation — the push,
+the change request's opening, a description's write. One remediation policy, identical for
+every publication; no branch, node, label or flag exempts anything:
+
+- **(a)** every added line, every new path, every outgoing commit's message, the branch
+  name, and the change request's title and body are checked in full;
+- **(b)** a removed line, or a deleted path, that carries a term passes only where that
+  exact text is already at that path in the destination base the publication lands on,
+  as resolved for that write — and nowhere else, earlier history of that base included;
+- **(c)** text a branch adds and later removes was never public at the base, so the commit
+  that added it is refused for the addition;
+- **(d)** a term-bearing line moved or copied elsewhere, or reintroduced by a later commit,
+  is an addition and refuses. Rename detection is not asked: a renamed file is a deleted
+  path and an added one, so renaming away a term-bearing path passes while its new path
+  and its lines are checked where they land.
+
+Each outgoing commit — everything the published revision reaches that the destination
+base does not — is diffed against **every one of its parents**, and every one of those
+diffs is held to (a) and (b): no line is excused because another parent carries it, so
+content a merge writes — its resolution, or what it brings in from either side — is
+checked as the merge's own. **Commit author and committer
+identities are not read**, by the user's ruling. **A binary file's contents are not
+term-checked** — its path is — so a binary blob carrying a private term is outside what
+this check can see.
+
+**A refusal** is `Error::GateFailed` (exit 1, `FailureKind::Gate`) and **an unavailable
+check** is `Error::Invalid` (exit 2); neither adds a failure kind. Both say only *where*
+the check stopped — `public output carries a term of a private repository in <surface>`,
+or `the public boundary check is unavailable: <reason>` — and never the term, the
+identity or the path. What the check found is written, as JSON, to a file under
+`$ONEVCS_HOME/boundary/evidence/` in a mode-0700 directory with mode 0600, which the
+refusal names; that is the caller-owned private sink on the command line, and the library
+hands the same detail to `check_public_output_with_evidence`'s caller.
+
+**Diagnostics.** Where `ONEVCS_BOUNDARY_DIAGNOSTICS` names a file, each check appends one
+JSON line: `check` (`publication`, `fields` or `export`), `verdict`, `total_us`,
+`derivation_us`, `diff_us`, `matcher_build_us`, `matching_us`, `terms`, `identities`,
+`commits`, `paths` and `bytes`. It carries no term, identity, path or text; it is how the
+release-binary tier times the check from inside the binary.
+
+**Export** copies one directory of a private branch into a public repository as one new
+neutral commit. The source branch's complete net diff to the commit it left its identity's
+base at — deletions and renames included — must be inside `--directory`, or it is
+refused. Both directories must be relative and normalized (no root, `.`, `..`, empty
+segment, `.git` or backslash); a symbolic link, a submodule, and any blob that is not
+UTF-8 or carries a NUL — whose terms cannot be checked — are refused. Only committed blobs
+are read. Before anything is written, the directory's paths and contents, each path as it
+is written under `--target-directory`, the source branch's own commit messages since its
+base, its name, both directories, the new branch name and the commit message the export
+generates itself are matched against every private identity's terms in the export's scope —
+the registry by default. The destination must be verified public. One commit is written
+on the destination's fetched base (`origin/<default>`) with the directory re-rooted under
+`--target-directory`, under the subject `Add generic example fixtures`, authored and
+committed by `Example Export <export@example.invalid>`, and `--branch-name` is cut there
+locally. The result is `{"branch", "head"}` and refers only to the public result. No
+private history, note, trailer, hash, filename, name, source ref or attribution enters the
+public tree, commit, ref or output; nothing is pushed — an export is never a publication or
+a landing — and a refusal leaves no branch. Every refusal says which step stopped and
+nothing it read.
+
+**`rules apply`** composes a base rules file with overlays, in order, and installs the
+result atomically at the registry's rules reference — or at `$ONEVCS_HOME/rules.yml`,
+recorded as the reference, where the registry names none. An overlay is a rules file
+whose every key is optional. A later overlay's rule with the same `match` as an earlier
+rule is laid over it in its place, field by field; a rule matching anything else goes in
+front, so it takes precedence under first-match-wins; a later `default:` replaces the
+composed default field by field; the composed version is the highest declared. Every file
+is strict here — an unknown key is refused by name — and the base, every overlay and the
+composition are validated before anything is written, so invalid input, `--dry-run`, and
+an interruption before the replacement leave the installed rules unchanged. No host path
+is compiled in.
+
+**`boundary inspect`** reads `{"repository": "..."}` and answers `{"visibility": ...}` —
+refreshed, recorded, and nothing else: no term, no echo of the identity, no provenance.
+**`boundary check`** reads a `BoundaryInput` (its `destination` may be omitted and taken
+from `--destination`, and must agree where both are given), prints its verdict, says the
+neutral reason on stderr, and exits 0 to pass, 1 to refuse and 2 when unavailable.
+**`boundary schema --json`** prints the versioned JSON schemas of both, generated from the
+Rust definitions, with `schema_version` 1; `tests/golden/boundary-schema-v1.json` is the
+checked-in copy.
+
+```
+onevcs boundary inspect --input - [--json]
+onevcs boundary check --destination <visibility> --input -
+onevcs boundary schema --json
+onevcs export --from <identity> --branch <ref> --directory <relative-dir> --to <identity> --target-directory <relative-dir> --branch-name <neutral-local-ref> [--json] [--term-scope <identity>]... [--term-scope-empty]
+onevcs rules apply --base <file> [--overlay <file>]... [--dry-run]
+onevcs publish <token> [--term-scope <identity>]... [--term-scope-empty]
+onevcs publish-branch <branch> --repo <path> [--term-scope <identity>]... [--term-scope-empty]
+onevcs recover <branch> --repo <path> [--term-scope <identity>]... [--term-scope-empty]
+onevcs preserve <branch> --repo <repo> [--term-scope <identity>]... [--term-scope-empty]
+onevcs integrate <branch>... [--push] [--term-scope <identity>]... [--term-scope-empty]
+onevcs change describe <token> [--term-scope <identity>]... [--term-scope-empty]
+```
+
+```json
+{"destination": "public",
+ "text": ["a generic example"], "paths": ["examples/demo.txt"],
+ "metadata": ["chore: add an example"],
+ "scope": ["github.com/hiddenco/quietharbor"]}
+```
+
+```json
+{"verdict": "refuse", "surface": "text"}
+```
+
+```rust
+pub enum Visibility { Public, Private, Unknown }            // serde: lowercase; Default: Unknown
+impl Visibility { pub fn effective(self) -> Visibility; pub fn is_unknown(&self) -> bool; }
+pub enum Observation { Host, Override, Unknown }             // serde: lowercase; Default: Unknown
+// registry::Identity gains: pub visibility: Visibility, pub observation: Observation,
+//                           pub observed_at: Option<String>; and Identity::new(origin, gate)
+// rules::Rule gains: pub visibility: Option<DeclaredVisibility>
+pub enum DeclaredVisibility { Public, Private }             // rules::; serde: lowercase
+pub enum TermMode { Substring, WholeWord, OwnerNameOnly }   // serde: kebab-case
+pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: bool }
+pub enum TermScope { Registry, Identities(Vec<String>) }    // Default: Registry; wire: absent | [identity]
+pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }
+pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }
+pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History }
+pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }   // tag: verdict
+pub enum Evidence { Term { surface: Surface, at: String, rule: TermRule, identity: String }, Unavailable { reason: Unavailability, identity: Option<String>, detail: String } }
+pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }
+pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }
+pub struct TermException { pub term: String, pub action: ExceptionAction }
+pub enum ExceptionAction { Drop, WholeWord, CaseSensitive, OwnerNameOnly }
+pub struct TermSource { pub identity: String, pub owner: Option<String>, pub name: String, pub packages: BTreeSet<String>, pub declaration: Option<PrivateTerms> }
+impl TermSource { pub fn from_committed(checkout: &Path, identity: &str) -> Result<TermSource>; }
+pub struct PublicNames { pub repositories: BTreeSet<String>, pub owners: BTreeSet<String> }
+pub struct TermMatcher;
+impl TermMatcher { pub fn new(rules: Vec<TermRule>) -> Result<TermMatcher>; pub fn rules(&self) -> &[TermRule]; pub fn find(&self, text: &str) -> Vec<usize>; }
+pub struct InspectRequest { pub repository: String }
+pub struct InspectAnswer { pub visibility: Visibility }
+pub const PRIVATE_TERMS_FILE: &str = "private-terms.toml";
+pub const PRIVATE_TERMS_VERSION: u32 = 1;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 1;
+pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;
+pub fn boundary_schema() -> serde_json::Value;
+pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;
+pub fn inspect_repository(request: &InspectRequest) -> Result<InspectAnswer>;
+pub fn check_public_output(input: BoundaryInput) -> Result<BoundaryVerdict>;
+pub fn check_public_output_with_evidence(input: BoundaryInput, evidence: &mut Vec<Evidence>) -> Result<BoundaryVerdict>;
+pub trait RemoteHost { fn visibility(&self) -> Result<Visibility> { /* NotImplemented */ } }
+// PublishRequest, BranchPublishRequest, RecoverRequest, PreserveRequest, IntegrateRequest
+// and ChangeDescription each gain: pub term_scope: TermScope  (omitted on the wire when Registry)
+pub struct ExportRequest { pub from: String, pub branch: String, pub directory: String, pub to: String, pub target_directory: String, pub branch_name: String, pub term_scope: TermScope }
+pub struct Exported { pub branch: String, pub head: String }
+pub const EXPORT_SUBJECT: &str = "Add generic example fixtures";
+pub const EXPORT_AUTHOR_NAME: &str = "Example Export";
+pub const EXPORT_AUTHOR_EMAIL: &str = "export@example.invalid";
+pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported>;
+pub struct RulesApplyRequest { pub base: PathBuf, pub overlays: Vec<PathBuf>, pub dry_run: bool }
+pub struct RulesApplied { pub path: PathBuf, pub installed: bool, pub rules: RulesFile, pub document: String }
+pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied>;
+```
+
+`TermSource`, `PublicNames`, `derive_terms` and `TermMatcher` are the derivation and
+the matcher the check itself runs, public so that a reader of a repository the registry
+does not hold — the exposure audit below — derives and matches through the same code
+rather than a copy of it.
+
+**The exposure audit** is `crates/onevcs-exposure-audit`, an unpublished workspace crate:
+a read-only command that surveys what public repositories and boards already carry of a
+set of private identities, matching through `TermMatcher` and deriving through
+`derive_terms` with no term-matching code of its own, and writing its findings only into a
+mode-0700 directory outside every checkout. Nothing it commits names a real private
+repository.
+
+**Residual limits, stated plainly.** Paraphrase and abbreviation are invisible to any term
+list. A scoped check is blind to every private identity outside its scope, so a worker that
+learned a private name from a repository its plan does not name is not checked for it. An
+unscoped check knows no private repository that is not registered on this host until a
+declaration names it. Binary contents are not term-checked. Commit identities are not read.
+
+Event kinds added: none.
+
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

@@ -9,16 +9,18 @@
 use std::io::Write;
 use std::path::Path;
 
+use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
-    ArtifactCommand, ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command,
-    EventsArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
+    ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
+    ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command, EventsArgs,
+    ExportArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
     PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs,
     RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
     ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesCheckArgs, RulesCommand, SessionCommand,
-    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs,
-    SweepFormat, SyncArgs,
+    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
+    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs,
+    SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -105,6 +107,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Rules { command } => match command {
             RulesCommand::Check(args) => rules_check(args),
+            RulesCommand::Apply(args) => rules_apply(args),
         },
         Command::Release { command } => match command {
             ReleaseCommand::Targets(args) => release_targets(args),
@@ -123,7 +126,137 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Reclaim(args) => reclaim_branch(args, providers),
         Command::RetireFinished(args) => retire_finished(args, providers),
         Command::Supersede(args) => supersede(args),
+        Command::Boundary { command } => match command {
+            BoundaryCommand::Inspect(args) => boundary_inspect(args, providers),
+            BoundaryCommand::Check(args) => boundary_check(args),
+            BoundaryCommand::Schema(args) => boundary_schema(args),
+        },
+        Command::Export(args) => export(args, providers),
     }
+}
+
+/// Read a boundary command's JSON input: `-` is standard input, anything else a file.
+fn boundary_input(input: &Path) -> Result<serde_json::Value> {
+    let text = if input == Path::new("-") {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .map_err(|e| error::invalid(format!("cannot read standard input: {e}")))?;
+        text
+    } else {
+        std::fs::read_to_string(input).map_err(error::at("read", input))?
+    };
+    serde_json::from_str(&text)
+        .map_err(|e| error::invalid(format!("the boundary input is not JSON: {e}")))
+}
+
+/// Render `onevcs boundary inspect`: `{"visibility": ...}` and nothing else.
+///
+/// Every refusal is neutral: a repository this host does not know is said to be
+/// unknown to it, without echoing what was asked about or listing what it knows.
+fn boundary_inspect(args: &BoundaryInspectArgs, providers: &Providers<'_>) -> Result<u8> {
+    let request: InspectRequest =
+        serde_json::from_value(boundary_input(&args.input)?).map_err(|e| {
+            error::invalid(format!(
+                "the inspect input is not one this build reads: {e}"
+            ))
+        })?;
+    let answer = crate::boundary::inspect_repository_with(providers, &request).map_err(|_| {
+        error::invalid(
+            "the repository could not be inspected: it is not one this host has registered, or \
+             its visibility could not be recorded",
+        )
+    })?;
+    print_json(&answer)
+}
+
+/// Render `onevcs boundary check`: the verdict on stdout, its neutral reason on
+/// stderr, and 0 to pass, 1 to refuse, and 2 when the check is unavailable.
+fn boundary_check(args: &BoundaryCheckArgs) -> Result<u8> {
+    let mut input = boundary_input(&args.input)?;
+    let destination = crate::boundary::Visibility::from(args.destination);
+    match input.get("destination") {
+        None => {
+            if let Some(object) = input.as_object_mut() {
+                object.insert("destination".to_owned(), serde_json::json!(destination));
+            }
+        }
+        Some(named) if *named == serde_json::json!(destination) => {}
+        Some(_) => {
+            return Err(error::invalid(
+                "the input's destination is not the one --destination names",
+            ))
+        }
+    }
+    let input: crate::boundary::BoundaryInput = serde_json::from_value(input)
+        .map_err(|e| error::invalid(format!("the check input is not one this build reads: {e}")))?;
+    let verdict = crate::check_public_output(input)?;
+    print_json(&verdict)?;
+    if let Some(reason) = verdict.reason() {
+        eprintln!("onevcs: {reason}");
+    }
+    Ok(match verdict {
+        crate::boundary::BoundaryVerdict::Pass => 0,
+        crate::boundary::BoundaryVerdict::Refuse { .. } => 1,
+        crate::boundary::BoundaryVerdict::Unavailable { .. } => 2,
+    })
+}
+
+/// Render `onevcs boundary schema`: the two commands' JSON schemas, versioned.
+fn boundary_schema(_args: &BoundarySchemaArgs) -> Result<u8> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::boundary::boundary_schema()).map_err(serialization)?
+    );
+    Ok(0)
+}
+
+/// Render `onevcs export`: the public branch and its head, and nothing about the
+/// source.
+fn export(args: &ExportArgs, providers: &Providers<'_>) -> Result<u8> {
+    let exported = crate::export(
+        providers,
+        &crate::ExportRequest {
+            from: args.from.clone(),
+            branch: args.branch.clone(),
+            directory: args.directory.clone(),
+            to: args.to.clone(),
+            target_directory: args.target_directory.clone(),
+            branch_name: args.branch_name.clone(),
+            term_scope: args.term_scope.scope(),
+        },
+    )?;
+    if args.json {
+        return print_json(&exported);
+    }
+    println!(
+        "exported: branch {:?} at {}",
+        exported.branch, exported.head
+    );
+    Ok(0)
+}
+
+/// Render `onevcs rules apply`: where the composed rules went, or with `--dry-run`
+/// the document that would be installed there.
+fn rules_apply(args: &RulesApplyArgs) -> Result<u8> {
+    let applied = crate::rules_apply(&crate::RulesApplyRequest {
+        base: args.base.clone(),
+        overlays: args.overlay.clone(),
+        dry_run: args.dry_run,
+    })?;
+    if applied.installed {
+        println!(
+            "installed: the rules composed from {} file(s) are at {}",
+            1 + args.overlay.len(),
+            applied.path.display()
+        );
+    } else {
+        print!("{}", applied.document);
+        eprintln!(
+            "onevcs: dry run: nothing was installed at {}",
+            applied.path.display()
+        );
+    }
+    Ok(0)
 }
 
 /// The exit code `onevcs retire` and `onevcs reclaim` answer a branch whose class
@@ -773,6 +906,7 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
             title,
             body,
             draft,
+            term_scope: args.term_scope.scope(),
         },
     )?;
     let PublishOutcome::Failed {
@@ -785,11 +919,21 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
         return Ok(0);
     };
     eprintln!("onevcs: {reason}");
+    // A boundary refusal says nothing of what it read, and the branch's own name may be
+    // what it refused — so its hand-back names the checkout and not the branch.
+    let neutral = crate::boundary::evidence::is_boundary_reason(reason);
     match retained {
+        Some(Retention::HandedBack(checkout)) if neutral => {
+            eprintln!("onevcs: the branch is preserved in {}", checkout.display())
+        }
         Some(Retention::HandedBack(checkout)) => eprintln!(
             "onevcs: branch {:?} is preserved in {}",
             publication.branch,
             checkout.display()
+        ),
+        Some(Retention::Refused(checkout)) if neutral => eprintln!(
+            "onevcs: warning: {} refused the branch, so nothing outside this session carries it",
+            checkout.display(),
         ),
         Some(Retention::Refused(checkout)) => eprintln!(
             "onevcs: warning: {} refused branch {:?}, so nothing outside this session carries it",
@@ -872,7 +1016,11 @@ fn change_describe(args: &ChangeDescribeArgs, providers: &Providers<'_>) -> Resu
     let change = crate::describe_change(
         providers,
         &SessionToken(args.token.clone()),
-        &ChangeDescription { title, body },
+        &ChangeDescription {
+            title,
+            body,
+            term_scope: args.term_scope.scope(),
+        },
     )?;
     print_change(&change, args.json)?;
     Ok(0)
@@ -1021,6 +1169,7 @@ fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
     let preserved = crate::preserve(&crate::PreserveRequest {
         repo: args.repo.clone(),
         branch: args.branch.clone(),
+        term_scope: args.term_scope.scope(),
     })?;
     let branch = &preserved.branch;
     match preserved.outcome {
@@ -1086,6 +1235,7 @@ fn recover_branch(args: &RecoverArgs, providers: &Providers<'_>) -> Result<u8> {
             branch: args.branch.clone(),
             title,
             body,
+            term_scope: args.term_scope.scope(),
         },
     ))
 }
@@ -1113,6 +1263,7 @@ fn publish_branch(args: &PublishBranchArgs, providers: &Providers<'_>) -> Result
             title,
             body,
             policy: args.policy,
+            term_scope: args.term_scope.scope(),
         },
     ))
 }
@@ -1547,6 +1698,7 @@ fn integrate_branches(args: &IntegrateArgs) -> Result<u8> {
             true => BasePush::Push,
             false => BasePush::Keep,
         },
+        term_scope: args.term_scope.scope(),
     })?;
     println!("Integration train for {}:", outcome.base);
     for branch in &outcome.branches {

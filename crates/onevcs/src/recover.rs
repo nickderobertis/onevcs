@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde_json::json;
 
+use crate::boundary::TermScope;
 use crate::branch::{self, Verb};
 use crate::error::{Error, Result};
 use crate::event::EventKind;
@@ -29,12 +30,17 @@ use crate::workspace::object;
 use crate::{guidance, provenance};
 
 /// Verify and publish a preserved branch.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the verb's own operands, kept in step with publish_branch::run"
+)]
 pub fn run(
     registry: &Registry,
     repo: &Path,
     branch: &str,
     title: Option<Subject>,
     body: Option<String>,
+    term_scope: &TermScope,
     hosting: &dyn Hosting,
     stream: &mut Stream,
 ) -> Result<PublishOutcome> {
@@ -71,7 +77,7 @@ pub fn run(
         })),
     );
 
-    landing.publish(title, body, hosting, stream)
+    landing.publish(title, body, term_scope, hosting, stream)
 }
 
 /// Why a branch with no unattested marker is not this verb's, and whose it is.

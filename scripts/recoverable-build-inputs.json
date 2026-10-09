@@ -11,6 +11,7 @@
     "crates/onevcs/Cargo.toml",
     "crates/onevcs-testing/Cargo.toml",
     "crates/onevcs-testing/src/recovery.rs",
+    "crates/onevcs-testing/src/boundary.rs",
     "crates/onevcs-testing/src/lib.rs",
     ".cargo/config.toml"
   ],
@@ -22,6 +23,10 @@
     {
       "directory": "scripts",
       "prefix": "recoverable"
+    },
+    {
+      "directory": "scripts",
+      "prefix": "boundary-check-budget"
     }
   ]
 }

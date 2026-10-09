@@ -248,10 +248,7 @@ fn the_real_commands_read_what_a_provider_wrote() {
     // what a provider wrote, which is the only reconciliation that means anything.
     let world = World::new();
     inhabit(&world);
-    let identity = onevcs::Identity {
-        origin: "github.com/acme-corp/hosted".to_owned(),
-        gate: "just check".to_owned(),
-    };
+    let identity = onevcs::Identity::new("github.com/acme-corp/hosted", "just check");
     let vcs = MemoryVcs::seeded(VcsState {
         identities: vec![identity.clone()],
         ..VcsState::default()

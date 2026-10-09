@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::boundary::TermScope;
 use crate::error::{self, Error, Result};
 use crate::host::Hosting;
 use crate::publish::{self, PublishOutcome, Subject};
@@ -583,6 +584,7 @@ impl Landing {
         &self,
         title: Option<Subject>,
         body: Option<String>,
+        term_scope: &TermScope,
         hosting: &dyn Hosting,
         stream: &mut Stream,
     ) -> Result<PublishOutcome> {
@@ -626,6 +628,7 @@ impl Landing {
             hosting,
             cancellation: &publish::NeverCancelled,
             built: publish::Built::InWorkspace,
+            term_scope: term_scope.clone(),
         };
         let outcome = publish::run(&context, stream);
         if outcome.is_err() {

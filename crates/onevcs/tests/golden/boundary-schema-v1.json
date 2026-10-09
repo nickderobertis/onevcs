@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "inspect": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "InspectRequest",
+      "description": "What `onevcs boundary inspect` reads: one repository.",
+      "type": "object",
+      "properties": {
+        "repository": {
+          "description": "An identity key, a registered alias, an origin URL, or a path.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repository"
+      ]
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "InspectAnswer",
+      "description": "What `onevcs boundary inspect` answers: its visibility and nothing else.",
+      "type": "object",
+      "properties": {
+        "visibility": {
+          "description": "Its visibility, refreshed from the host unless a rule overrides it.",
+          "$ref": "#/$defs/Visibility"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "visibility"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Whether a repository is public.\n\nOnly [`Public`](Visibility::Public) is: see [`effective`](Visibility::effective).",
+          "oneOf": [
+            {
+              "description": "Anybody can read it.",
+              "type": "string",
+              "const": "public"
+            },
+            {
+              "description": "It is private, or internal to an organisation.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "Nobody has said. Treated as private.",
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "check": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "BoundaryInput",
+      "description": "What a caller is about to write somewhere, put to the check.",
+      "type": "object",
+      "properties": {
+        "destination": {
+          "description": "Where it is going. Anything but `public` passes without a term being read.",
+          "$ref": "#/$defs/Visibility"
+        },
+        "text": {
+          "description": "Prose and file contents.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "paths": {
+          "description": "Paths it names or writes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "metadata": {
+          "description": "Branch names, titles, commit messages and every other short field.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "scope": {
+          "description": "Which private repositories the terms come from.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "destination"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Whether a repository is public.\n\nOnly [`Public`](Visibility::Public) is: see [`effective`](Visibility::effective).",
+          "oneOf": [
+            {
+              "description": "Anybody can read it.",
+              "type": "string",
+              "const": "public"
+            },
+            {
+              "description": "It is private, or internal to an organisation.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "Nobody has said. Treated as private.",
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        }
+      }
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "BoundaryVerdict",
+      "description": "What the check decided.\n\nThe public-facing half carries no term, no identity and no path: a refusal says\n*where* a term was found and nothing about which. The detail is\n[`Evidence`], which only a caller that supplied somewhere private to put it gets.",
+      "oneOf": [
+        {
+          "description": "Nothing private was found, or the destination is not public.",
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "const": "pass"
+            }
+          },
+          "required": [
+            "verdict"
+          ]
+        },
+        {
+          "description": "A private term was found.",
+          "type": "object",
+          "properties": {
+            "surface": {
+              "description": "Where.",
+              "$ref": "#/$defs/Surface"
+            },
+            "verdict": {
+              "type": "string",
+              "const": "refuse"
+            }
+          },
+          "required": [
+            "verdict",
+            "surface"
+          ]
+        },
+        {
+          "description": "The check could not decide, and the write must not go ahead.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Why.",
+              "$ref": "#/$defs/Unavailability"
+            },
+            "verdict": {
+              "type": "string",
+              "const": "unavailable"
+            }
+          },
+          "required": [
+            "verdict",
+            "reason"
+          ]
+        }
+      ],
+      "$defs": {
+        "Surface": {
+          "description": "Where in a write a private term was found — the whole of what a refusal says\nabout it.",
+          "oneOf": [
+            {
+              "description": "A [`BoundaryInput::text`] entry.",
+              "type": "string",
+              "const": "text"
+            },
+            {
+              "description": "A [`BoundaryInput::paths`] entry, a path a publication adds, or a path an\nexport writes.",
+              "type": "string",
+              "const": "path"
+            },
+            {
+              "description": "A [`BoundaryInput::metadata`] entry.",
+              "type": "string",
+              "const": "metadata"
+            },
+            {
+              "description": "A line a publication adds, or a file an export writes.",
+              "type": "string",
+              "const": "content"
+            },
+            {
+              "description": "A line or a path a publication removes that its destination does not already\ncarry there.",
+              "type": "string",
+              "const": "removal"
+            },
+            {
+              "description": "An outgoing commit's message.",
+              "type": "string",
+              "const": "commit-message"
+            },
+            {
+              "description": "The branch the write is made on.",
+              "type": "string",
+              "const": "branch"
+            },
+            {
+              "description": "A change request's title.",
+              "type": "string",
+              "const": "title"
+            },
+            {
+              "description": "A change request's body.",
+              "type": "string",
+              "const": "body"
+            }
+          ]
+        },
+        "Unavailability": {
+          "description": "Why a check could not decide. Never a pass.",
+          "oneOf": [
+            {
+              "description": "The registry could not be read.",
+              "type": "string",
+              "const": "registry"
+            },
+            {
+              "description": "The rules file could not be read.",
+              "type": "string",
+              "const": "rules"
+            },
+            {
+              "description": "A scoped identity is not registered.",
+              "type": "string",
+              "const": "unregistered"
+            },
+            {
+              "description": "A private identity's committed manifests or term declaration could not be\nread, or declare something this build refuses.",
+              "type": "string",
+              "const": "declarations"
+            },
+            {
+              "description": "The terms could not be compiled into one matcher.",
+              "type": "string",
+              "const": "matcher"
+            },
+            {
+              "description": "What is being published could not be read out of the repository.",
+              "type": "string",
+              "const": "history"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

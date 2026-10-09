@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RulesFile {
     /// The schema version: `1` is this shape without `trailer_prefix`, `2` with it,
-    /// `3` without `gate`.
+    /// `3` without `gate`, `4` with a rule's `visibility`.
     // llmlint: ignore[boundary_inputs_validated] which versions this build can read is the
     // loader's question rather than this type's, and it answers it: it refuses one below
     // the oldest it reads, refuses a trailer_prefix in a version that predates the key,
@@ -134,6 +134,31 @@ pub struct Rule {
     /// unset falls back to the default policy's, and then to the shipped default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drafts: Option<Drafts>,
+    /// Whether the repositories this rule matches are public, said by the operator
+    /// rather than asked of the host. Set, it wins over every probe and the host is
+    /// not asked; unset, the host's answer is recorded. Version 4 and later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<DeclaredVisibility>,
+}
+
+/// A repository's visibility as a rule declares it: one of the two answers, never
+/// "unknown", since a rule that knows nothing sets nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeclaredVisibility {
+    /// Anybody can read it.
+    Public,
+    /// It is private.
+    Private,
+}
+
+impl From<DeclaredVisibility> for crate::boundary::Visibility {
+    fn from(declared: DeclaredVisibility) -> Self {
+        match declared {
+            DeclaredVisibility::Public => crate::boundary::Visibility::Public,
+            DeclaredVisibility::Private => crate::boundary::Visibility::Private,
+        }
+    }
 }
 
 /// What a rule applies to. Every field is optional; the ones that are set must

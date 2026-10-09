@@ -1327,6 +1327,50 @@ to parse the reason to tell an unusable slot from a busy one reported false brea
 every time a pass met a session's leftover worker.
 
 
+## The public boundary is one check, and nothing is exempt from it
+
+`boundary.rs` holds the shapes the contract's public-boundary amendment fixes;
+`boundary/` holds the check. Eight things are easy to undo.
+
+- **One matcher.** Normalization (NFKC, default-ignorables removed, case folding), word
+  boundaries and what each `TermMode` accepts live in `boundary/matcher.rs` and nowhere
+  else. `boundary check`, every publication, export and the exposure audit
+  (`crates/onevcs-exposure-audit`) all compile a `TermMatcher` over derived rules; a
+  second comparison anywhere is the drift this exists to prevent.
+- **Every public write asks before its first remote mutation, and no caller is
+  exempt.** `publish::hold_to_the_boundary` runs after the subject is known and before
+  either publication path pushes; `preserve`, the merge train's push and `describe_change`
+  call `boundary::evidence` directly. A new verb that writes to a remote adds the same
+  call, and a flag or label that skips it is a defect, not a feature.
+- **Refusals are neutral, and the detail is private.** A refusal names the surface and
+  never the term, identity or path; the detail goes to `$ONEVCS_HOME/boundary/evidence/`
+  (0700/0600). That includes what is printed *beside* a refusal: a publication's
+  hand-back line drops the branch name when the failure is the boundary's
+  (`evidence::is_boundary_reason`), because the name may be what was refused.
+- **Unknown is private, and a failed probe is unknown — but never an unchecked write.**
+  `visibility::refresh` records the host's answer, a rule's override, or — on any
+  failure — `unknown`; never the last answer. Every identity that is not public
+  contributes terms. A write skips the screen only where `visibility::screens_writes`
+  says its destination is *verified* not public; a hosted destination the host could not
+  answer for is screened.
+- **A removal is allowed against the resolved destination base and nothing else.** Not
+  earlier base history, and not another parent of a merge: every parent diff is held to
+  the whole policy.
+- **Terms come from committed trees.** `boundary/manifests.rs` reads the commit `HEAD`
+  names through git's object store; reading a worktree file there is reading what a
+  dirty tree happens to say. Anything it cannot read is `Unavailable`, which a write
+  treats as a refusal.
+- **Registry version 7 is stamped by a write, never a read.** A version 6 document is
+  read as this shape and left byte for byte as it is (`store::SHAPE_SINCE`) until
+  something writes, so a read never rewrites shared host state for a version that moved
+  no key it carries.
+
+`onevcs export` writes objects and one local ref into the destination's registered
+checkout with git2 and pushes nothing; the ref is cut last, so a refusal leaves no
+branch. `rules apply` is strict where `policy::load` is lenient — it refuses a key the
+types do not read back — because a misspelt key an operator believes is installed is
+worse than a refusal.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory

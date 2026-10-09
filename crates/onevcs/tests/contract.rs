@@ -46,8 +46,8 @@ use onevcs::{
     ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
     SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
-    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, Url, Vcs,
-    WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
+    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, TermScope, Url,
+    Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 use serde_json::{json, Value};
 
@@ -769,6 +769,7 @@ fn the_rules_fixture_round_trips() {
                 publication: Some(MergePolicy::ChangeOpen),
                 approvals: Some(Approvals::Required),
                 drafts: None,
+                visibility: None,
             },
             Rule {
                 r#match: RuleMatch {
@@ -779,6 +780,7 @@ fn the_rules_fixture_round_trips() {
                 // Unset in the fixture, so it falls back to the default policy.
                 approvals: None,
                 drafts: None,
+                visibility: None,
             },
         ]
     );
@@ -1340,7 +1342,7 @@ fn the_amendment_declares_the_release_surface_it_added() {
 
 /// The canonical declaration the producer amendment spells, as its own document.
 fn documented_declaration() -> String {
-    amendment_block_declaring("toml", "schema_version")
+    amendment_block_declaring("toml", "[[target]]")
 }
 
 #[test]
@@ -1976,10 +1978,7 @@ fn a_v6_registry_round_trips_and_carries_the_rules_reference() {
     assert_eq!(registry.version, 6);
     assert_eq!(
         registry.identities["github.com/acme-corp/service"],
-        Identity {
-            origin: "https://github.com/acme-corp/service".to_owned(),
-            gate: "just check".to_owned(),
-        }
+        Identity::new("https://github.com/acme-corp/service", "just check")
     );
     assert_eq!(
         registry.checkouts["nickderobertis/onevcs"],
@@ -3079,6 +3078,8 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         // The field the draft amendment added, declared there rather than here, which
         // is why the assertion below reads the older amendment's declaration unchanged.
         draft: None,
+        // …and the one the public-boundary amendment added, for the same reason.
+        term_scope: TermScope::Registry,
     };
     let publication = Publication {
         session: record.session.token.clone(),
@@ -3169,6 +3170,7 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
             reference: "feature/the-pinned-branch".to_owned(),
             because: "the pin moves when the release lands".to_owned(),
         }),
+        term_scope: TermScope::Identities(vec!["github.com/hiddenco/quietharbor".to_owned()]),
     };
     let serialized = serde_json::to_value(&request).expect("a request serializes");
     let fields: BTreeSet<String> = serialized
@@ -3306,11 +3308,12 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
     // clap's own, on every command it generates — not part of anybody's contract.
     implemented.remove("help");
 
-    // Two amendments each add options to `publish`, and each says so on a line that
-    // opens with the command: the body's, and the held draft's.
+    // Three amendments each add options to `publish`, and each says so on a line that
+    // opens with the command: the body's, the held draft's, and the term scope's.
     let amended: BTreeSet<String> = backticked_on_line("`onevcs publish` takes the body two ways")
         .into_iter()
         .chain(backticked_on_line("`onevcs publish` takes a draft as"))
+        .chain(backticked_on_line("`onevcs publish` takes a term scope as"))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(
@@ -3616,6 +3619,11 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("reclaim", operation!(onevcs::retire)),
         ("retire-finished", operation!(onevcs::retire_finished)),
         ("supersede", operation!(onevcs::record_supersession)),
+        ("boundary inspect", operation!(onevcs::inspect_repository)),
+        ("boundary check", operation!(onevcs::check_public_output)),
+        ("boundary schema", operation!(onevcs::boundary_schema)),
+        ("export", operation!(onevcs::export)),
+        ("rules apply", operation!(onevcs::rules_apply)),
     ]
 }
 
@@ -5261,6 +5269,9 @@ fn the_amendment_declares_the_session_change_surface_and_defaults_the_two_host_m
     let description = ChangeDescription {
         title: Some(Subject::try_from("feat: add the seam".to_owned()).expect("a subject")),
         body: "## What\n\nThe seam.\n".to_owned(),
+        // The field the public-boundary amendment added, declared there; at its default
+        // it is not written, so the two keys below are still the whole description.
+        term_scope: TermScope::Registry,
     };
     let written = serde_json::to_value(&description).expect("a description serializes");
     assert_eq!(
@@ -8462,5 +8473,322 @@ fn recovery_detail_and_tip_match_the_declared_wire_surface() {
     assert_eq!(
         serde_json::to_value(row).unwrap().get("tip"),
         Some(&Value::Null)
+    );
+}
+
+/// The public-boundary amendment's declarations, which is what a consumer compiling
+/// against the document reads.
+fn boundary_declarations() -> String {
+    amendment_declaring("pub enum TermMode")
+}
+
+#[test]
+fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly_it() {
+    use onevcs::boundary::{
+        BoundaryInput, BoundaryVerdict, Evidence, ExceptionAction, InspectAnswer, InspectRequest,
+        Observation, PrivateTerms, PublicNames, RepositoryBoundary, Surface, TermException,
+        TermMatcher, TermMode, TermRule, TermScope, TermSource, Unavailability, Visibility,
+    };
+    use onevcs::rules::DeclaredVisibility;
+    use onevcs::{ExportRequest, Exported, RulesApplied, RulesApplyRequest};
+
+    let declared = boundary_declarations();
+    for line in [
+        "pub enum Visibility { Public, Private, Unknown }",
+        "pub enum Observation { Host, Override, Unknown }",
+        "pub enum DeclaredVisibility { Public, Private }",
+        "pub enum TermMode { Substring, WholeWord, OwnerNameOnly }",
+        "pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: bool }",
+        "pub enum TermScope { Registry, Identities(Vec<String>) }",
+        "pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }",
+        "pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }",
+        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History }",
+        "pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }",
+        "pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }",
+        "pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }",
+        "pub enum ExceptionAction { Drop, WholeWord, CaseSensitive, OwnerNameOnly }",
+        "pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;",
+        "pub fn check_public_output(input: BoundaryInput) -> Result<BoundaryVerdict>;",
+        "pub fn check_public_output_with_evidence(input: BoundaryInput, evidence: &mut Vec<Evidence>) -> Result<BoundaryVerdict>;",
+        "pub fn inspect_repository(request: &InspectRequest) -> Result<InspectAnswer>;",
+        "pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;",
+        "pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported>;",
+        "pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied>;",
+        "pub struct Exported { pub branch: String, pub head: String }",
+        "pub const EXPORT_SUBJECT: &str = \"Add generic example fixtures\";",
+        "fn visibility(&self) -> Result<Visibility>",
+    ] {
+        assert!(declared.contains(line), "the boundary amendment no longer declares: {line}");
+    }
+
+    // Built with exactly the declared fields, and every operation referenced at the
+    // declared signature, so either moving fails to compile here.
+    let rule = TermRule {
+        term: "hiddenco/quietharbor".to_owned(),
+        mode: TermMode::Substring,
+        case_sensitive: false,
+    };
+    let input = BoundaryInput {
+        destination: Visibility::Public,
+        text: vec!["a generic example".to_owned()],
+        paths: Vec::new(),
+        metadata: Vec::new(),
+        scope: TermScope::Identities(vec!["github.com/hiddenco/quietharbor".to_owned()]),
+    };
+    let _ = RepositoryBoundary {
+        visibility: Visibility::Private,
+        terms: vec![rule.clone()],
+    };
+    let _ = PrivateTerms {
+        schema_version: onevcs::boundary::PRIVATE_TERMS_VERSION,
+        terms: Vec::new(),
+        exceptions: vec![TermException {
+            term: "x".to_owned(),
+            action: ExceptionAction::Drop,
+        }],
+    };
+    let _ = TermSource {
+        identity: "github.com/hiddenco/quietharbor".to_owned(),
+        owner: Some("hiddenco".to_owned()),
+        name: "quietharbor".to_owned(),
+        packages: BTreeSet::new(),
+        declaration: None,
+    };
+    let _ = PublicNames::default();
+    let _ = InspectAnswer {
+        visibility: Visibility::Unknown,
+    };
+    let _ = Evidence::Term {
+        surface: Surface::Text,
+        at: "0".to_owned(),
+        rule: rule.clone(),
+        identity: "github.com/hiddenco/quietharbor".to_owned(),
+    };
+    let _ = ExportRequest {
+        from: "github.com/hiddenco/quietharbor".to_owned(),
+        branch: "examples".to_owned(),
+        directory: "examples".to_owned(),
+        to: "github.com/sample-owner/openwidget".to_owned(),
+        target_directory: "fixtures".to_owned(),
+        branch_name: "generic-fixtures".to_owned(),
+        term_scope: TermScope::Registry,
+    };
+    let _ = Exported {
+        branch: "generic-fixtures".to_owned(),
+        head: "0".repeat(40),
+    };
+    let _ = RulesApplyRequest {
+        base: PathBuf::from("rules.yml"),
+        overlays: Vec::new(),
+        dry_run: true,
+    };
+    let _: fn(&str) -> onevcs::Result<RepositoryBoundary> = onevcs::repository_boundary;
+    let _: fn(BoundaryInput) -> onevcs::Result<BoundaryVerdict> = onevcs::check_public_output;
+    let _: fn(&InspectRequest) -> onevcs::Result<InspectAnswer> = onevcs::inspect_repository;
+    let _: fn(&[TermSource], &PublicNames) -> onevcs::Result<Vec<TermRule>> =
+        onevcs::boundary::derive_terms;
+    let _: fn(&Providers<'_>, &ExportRequest) -> onevcs::Result<Exported> = onevcs::export;
+    let _: fn(&RulesApplyRequest) -> onevcs::Result<RulesApplied> = onevcs::rules_apply;
+    let _ = DeclaredVisibility::Private;
+    let _ = Observation::Override;
+    assert_eq!(onevcs::EXPORT_SUBJECT, "Add generic example fixtures");
+    assert_eq!(onevcs::EXPORT_AUTHOR_NAME, "Example Export");
+    assert_eq!(onevcs::EXPORT_AUTHOR_EMAIL, "export@example.invalid");
+    assert!(declared.contains(&format!(
+        "pub const EXPORT_AUTHOR_EMAIL: &str = \"{}\";",
+        onevcs::EXPORT_AUTHOR_EMAIL
+    )));
+
+    // The one matcher, through its public face.
+    let matcher = TermMatcher::new(vec![rule]).expect("one rule compiles");
+    assert_eq!(matcher.find("see HiddenCo/QuietHarbor"), vec![0]);
+    assert!(matcher.find("a generic example").is_empty());
+
+    // The wire: the default scope is absent, a named one an array; a verdict is tagged.
+    let written = serde_json::to_value(&input).expect("an input serializes");
+    assert_eq!(written["scope"], json!(["github.com/hiddenco/quietharbor"]));
+    assert_eq!(
+        serde_json::to_value(TermScope::Registry).expect("serializes"),
+        Value::Null
+    );
+    let nulled: BoundaryInput =
+        serde_json::from_value(json!({"destination": "public", "scope": null}))
+            .expect("a null scope reads");
+    assert_eq!(nulled.scope, TermScope::Registry);
+    let unscoped: BoundaryInput =
+        serde_json::from_value(json!({"destination": "public"})).expect("a bare input reads");
+    assert_eq!(unscoped.scope, TermScope::Registry);
+    assert!(serde_json::to_value(&unscoped)
+        .expect("serializes")
+        .get("scope")
+        .is_none());
+    assert_eq!(
+        serde_json::to_value(BoundaryVerdict::Refuse {
+            surface: Surface::CommitMessage
+        })
+        .expect("serializes"),
+        json!({"verdict": "refuse", "surface": "commit-message"})
+    );
+    assert_eq!(
+        serde_json::to_value(BoundaryVerdict::Unavailable {
+            reason: Unavailability::Declarations
+        })
+        .expect("serializes"),
+        json!({"verdict": "unavailable", "reason": "declarations"})
+    );
+    // The amendment's own input and verdict fixtures are ones this build reads.
+    let fixture: BoundaryInput = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"destination\": \"public\"",
+    ))
+    .expect("the amendment's input fixture reads");
+    assert_eq!(fixture.destination, Visibility::Public);
+    let verdict: BoundaryVerdict = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"verdict\": \"refuse\"",
+    ))
+    .expect("the amendment's verdict fixture reads");
+    assert_eq!(
+        verdict,
+        BoundaryVerdict::Refuse {
+            surface: Surface::Text
+        }
+    );
+    assert_eq!(
+        InspectRequest {
+            repository: "x".to_owned()
+        }
+        .repository,
+        "x"
+    );
+}
+
+#[test]
+fn the_rules_version_4_fixture_round_trips_with_a_declared_visibility() {
+    let fixture = amendment_yaml_spelling("visibility: private");
+    let rules: RulesFile = serde_yaml_ng::from_str(&fixture).expect("the fixture reads");
+    assert_eq!(rules.version, 4);
+    assert_eq!(
+        rules.rules[0].visibility,
+        Some(onevcs::rules::DeclaredVisibility::Private)
+    );
+    assert_eq!(
+        rules.rules[1].visibility,
+        Some(onevcs::rules::DeclaredVisibility::Public)
+    );
+    let written: serde_yaml_ng::Value =
+        serde_yaml_ng::to_value(&rules).expect("the rules serialize");
+    let read: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fixture).expect("YAML");
+    assert_eq!(written, read, "the fixture round-trips");
+    // A rule that sets none writes none, so a version 3 file read here is unchanged.
+    let older = RulesFile {
+        version: 3,
+        trailer_prefix: None,
+        rules: vec![Rule {
+            r#match: RuleMatch::default(),
+            publication: Some(MergePolicy::LocalDirect),
+            approvals: None,
+            drafts: None,
+            visibility: None,
+        }],
+        default: rules.default.clone(),
+    };
+    assert!(!serde_yaml_ng::to_string(&older)
+        .expect("serializes")
+        .contains("visibility"));
+}
+
+#[test]
+fn the_private_terms_fixture_is_the_declaration_this_build_reads() {
+    let fixture = amendment_block_declaring("toml", "[[exceptions]]");
+    let declared: onevcs::boundary::PrivateTerms =
+        toml::from_str(&fixture).expect("the amendment's declaration reads");
+    assert_eq!(
+        declared.schema_version,
+        onevcs::boundary::PRIVATE_TERMS_VERSION
+    );
+    assert_eq!(declared.terms, ["Lantern", "harborlight"]);
+    assert_eq!(
+        declared
+            .exceptions
+            .iter()
+            .map(|exception| exception.action)
+            .collect::<Vec<_>>(),
+        [
+            onevcs::boundary::ExceptionAction::CaseSensitive,
+            onevcs::boundary::ExceptionAction::OwnerNameOnly
+        ]
+    );
+    assert!(regions().0.contains(&format!(
+        "`{}` at its root",
+        onevcs::boundary::PRIVATE_TERMS_FILE
+    )));
+}
+
+#[test]
+fn the_shipped_generic_word_list_is_versioned_sorted_and_dictionary_scale() {
+    let list = repo_file("crates/onevcs/src/boundary/generic-words.txt");
+    let header = list.lines().next().expect("a header");
+    assert_eq!(header, "# onevcs generic words, version 1");
+    assert!(
+        regions().0.contains(&format!("headed\n`{header}`"))
+            || regions().0.contains(&format!("`{header}`")),
+        "the amendment states the list's version"
+    );
+    let words: Vec<&str> = list
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(words.len() >= 5000, "{} words", words.len());
+    assert!(
+        words.windows(2).all(|pair| pair[0] < pair[1]),
+        "sorted and unique"
+    );
+    assert!(words
+        .iter()
+        .all(|word| word.bytes().all(|byte| byte.is_ascii_lowercase())));
+    for generic in ["docs", "server", "core", "app", "the"] {
+        assert!(words.binary_search(&generic).is_ok(), "{generic}");
+    }
+    // The packaged crate carries it: a word list the build reads and the archive
+    // leaves out is a crate that does not compile from crates.io.
+    let manifest = repo_file("crates/onevcs/Cargo.toml");
+    assert!(manifest.contains("\"src/boundary/generic-words.txt\""));
+}
+
+#[test]
+fn a_version_7_registry_round_trips_its_recorded_visibility_and_omits_what_it_never_recorded() {
+    let golden: Value =
+        serde_json::from_str(&repo_file("crates/onevcs/tests/golden/registry-v7.json"))
+            .expect("the golden is JSON");
+    assert_eq!(golden["version"], 7);
+    let observed = json!({
+        "version": 7,
+        "identities": {
+            "github.com/sample-owner/openwidget": {
+                "origin": "github.com/sample-owner/openwidget",
+                "gate": "just gate",
+                "visibility": "public",
+                "observation": "host",
+                "observed_at": "2026-10-09T12:00:00.000Z",
+            },
+            "github.com/hiddenco/quietharbor": {
+                "origin": "github.com/hiddenco/quietharbor",
+                "gate": "just gate",
+            },
+        },
+        "checkouts": {},
+    });
+    let registry: Registry = serde_json::from_value(observed.clone()).expect("a v7 registry");
+    let public = &registry.identities["github.com/sample-owner/openwidget"];
+    assert_eq!(public.visibility, onevcs::Visibility::Public);
+    assert_eq!(public.observation, onevcs::boundary::Observation::Host);
+    let unknown = &registry.identities["github.com/hiddenco/quietharbor"];
+    assert_eq!(unknown.visibility, onevcs::Visibility::Unknown);
+    assert_eq!(unknown.observed_at, None);
+    assert_eq!(
+        serde_json::to_value(&registry).expect("serializes"),
+        observed,
+        "what was recorded comes back, and nothing unrecorded is written"
     );
 }

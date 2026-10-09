@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use crate::boundary::TermScope;
 use crate::error::{Error, Result};
 use crate::event::EventKind;
 use crate::rules::MergePolicy;
@@ -125,6 +126,7 @@ pub fn run(
     resolution: &Resolution,
     candidates: &[String],
     push: bool,
+    term_scope: &TermScope,
     stream: &mut Stream,
 ) -> Result<Outcome> {
     // The rules are read once, here, and what they decide is carried into the
@@ -231,7 +233,9 @@ pub fn run(
     );
 
     let trailers = provenance::from_rules(&file);
-    let outcome = train(resolution, &base, candidates, push, &trailers, stream);
+    let outcome = train(
+        resolution, &base, candidates, push, &trailers, term_scope, stream,
+    );
     drop(turn);
     outcome
 }
@@ -276,6 +280,7 @@ fn train(
     candidates: &[String],
     push: bool,
     trailers: &provenance::Trailers,
+    term_scope: &TermScope,
     stream: &mut Stream,
 ) -> Result<Outcome> {
     let root = &resolution.publication;
@@ -323,6 +328,22 @@ fn train(
                 ),
             });
         }
+        // What the train advanced the base by is held to the boundary before the base
+        // reaches the origin: every commit it would push, against every parent.
+        let compared = format!("origin/{base}");
+        crate::boundary::evidence::guard_publication(
+            crate::Providers::real().hosting,
+            &resolution.key,
+            &crate::boundary::screen::Outgoing {
+                repo: root,
+                base: git::tip(root, &compared).map(|_| compared.as_str()),
+                tip: base,
+                branch: Some(base),
+                title: None,
+                body: None,
+            },
+            term_scope,
+        )?;
         // The train's push is a publication attempt of its own, and the hook it runs
         // is that attempt's gate.
         stream.begin_attempt();

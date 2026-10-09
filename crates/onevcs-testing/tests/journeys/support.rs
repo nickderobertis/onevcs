@@ -74,10 +74,7 @@ impl Home {
 
 /// The identity every journey here works against.
 pub fn identity() -> Identity {
-    Identity {
-        origin: "github.com/acme-corp/widgets".to_owned(),
-        gate: "just check".to_owned(),
-    }
+    Identity::new("github.com/acme-corp/widgets", "just check")
 }
 
 /// A repository side that knows one identity and nothing else.

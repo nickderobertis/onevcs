@@ -1,0 +1,18 @@
+# The onevcs crate's own feature budgets, checked by its `budgets` target beside the
+# repository's root file. Each one reads a record a journey on the release-binary tier
+# (the `onevcs-recovery` project) wrote, and measures nothing itself.
+schema_version: 1
+budgets:
+  - id: public-boundary-check-latency
+    measure: reported
+    command: [node, ../../scripts/boundary-check-budget.mjs]
+    unit: seconds
+    direction: max
+    threshold: 0.5
+    description: >-
+      Wall time of one complete publication term check, as the release binary times it
+      from inside: deriving a 20-repository term scope (100 terms each) from committed
+      manifests and declarations, diffing the outgoing commits against every parent,
+      building the matcher and matching 10 MiB across 1,000 paths plus message, branch,
+      title and body. Detail, unbudgeted: the phases, the check process's peak resident
+      memory, and one export of the same files.

@@ -6,7 +6,7 @@
 //! stream event kind is added. What that is worth is proved here against the releases
 //! themselves rather than asserted from this build's sources. The pinned 0.32.2 — the
 //! build consumers ran beside this one — operates over the root as it did before the
-//! records existed, and 0.13.0, which already refuses a version 6 registry, gives every
+//! records existed, and 0.13.0, which already refuses a version 6 or later registry, gives every
 //! answer, that refusal included, byte for byte as it gave it before.
 //!
 //! All three builds are linked into this one process and asked through their libraries,
@@ -16,7 +16,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use onevcs_current::{BranchPublishRequest, Providers as CurrentProviders, SessionRequest};
+use onevcs_current::{
+    BranchPublishRequest, Providers as CurrentProviders, SessionRequest, TermScope,
+};
 
 /// A scratch host: its own home and state root, removed when the journey ends.
 struct Scratch(PathBuf);
@@ -237,6 +239,7 @@ fn released_builds_answer_as_before_over_a_state_root_holding_verdict_records() 
             title: None,
             body: None,
             policy: None,
+            term_scope: TermScope::default(),
         },
     )
     .expect("this build lands it");
@@ -269,17 +272,17 @@ fn released_builds_answer_as_before_over_a_state_root_holding_verdict_records() 
     );
 
     // Nothing the older builds read has moved: the registry and every session record are
-    // the bytes they were, at the schema versions the base this change started from wrote.
+    // the bytes they were, at the schema versions this build writes.
     let registry_after = std::fs::read(&registry).expect("the registry");
     assert_eq!(registry_after, registry_before, "the registry did not move");
-    assert_eq!(declared_version(&registry_after), 6);
+    assert_eq!(declared_version(&registry_after), 7);
     let sessions_after = files(&sessions);
     assert_eq!(sessions_after, sessions_before, "no session record moved");
     for bytes in sessions_after.values() {
         assert_eq!(declared_version(bytes), 3);
     }
 
-    // 0.13.0 already refuses a version 6 registry, and refuses it — like every other
+    // 0.13.0 already refuses a version 6 or later registry, and refuses it — like every other
     // answer it gives here — exactly as it did before the records existed.
     let era_after = envelope_era_answers(&scratch);
     assert!(

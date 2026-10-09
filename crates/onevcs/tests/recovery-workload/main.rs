@@ -10,6 +10,7 @@ use onevcs_testing::recovery::{build, Class, Fixture, Scale};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+mod boundary;
 mod churn;
 mod counting;
 mod telemetry;
