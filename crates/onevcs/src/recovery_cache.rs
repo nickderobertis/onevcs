@@ -153,7 +153,7 @@ pub(crate) struct Query {
     object_length: usize,
     repo: PathBuf,
     borrowing: Option<PathBuf>,
-    objects: Vec<String>,
+    objects: Vec<git::ObjectId>,
     stores: Vec<(PathBuf, Store)>,
 }
 
@@ -268,7 +268,7 @@ impl Query {
         crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
             let odb = repo.odb().ok()?;
             for name in &self.objects {
-                let oid = git2::Oid::from_str(name).ok()?;
+                let oid = git2::Oid::from_str(name.as_str()).ok()?;
                 let object = odb.read(oid).ok()?;
                 if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
                     return None;
@@ -443,15 +443,13 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
                     .strip_suffix("^{tree}")
                     .is_some_and(|sha| git::ObjectId::parse(sha).is_some()))
         {
-            object_length = arg.split('^').next()?.len();
-            objects.push(arg.split('^').next()?.to_owned());
+            let object = git::ObjectId::parse(arg.split('^').next()?)?;
+            object_length = object.as_str().len();
+            objects.push(object);
             revisions += 1;
         } else if let Some((left, right)) = arg.split_once("..") {
-            if git::ObjectId::parse(left).is_none() || git::ObjectId::parse(right).is_none() {
-                return None;
-            }
+            objects.extend([git::ObjectId::parse(left)?, git::ObjectId::parse(right)?]);
             revisions += 2;
-            objects.extend([left.to_owned(), right.to_owned()]);
         } else {
             return None;
         }

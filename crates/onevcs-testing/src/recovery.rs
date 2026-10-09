@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use onevcs::registry::{Checkout, Identity, Registry};
-use onevcs::testing::{self, SessionSeed};
+use onevcs::testing::{self, ObjectId, Ref, SessionSeed, Token};
 use onevcs::{Error, EventKind, Result};
 use serde_json::{json, Map, Value};
 
@@ -77,13 +77,13 @@ pub struct Expected {
     /// Normalized identity.
     pub identity: String,
     /// Branch ref suffix.
-    pub branch: String,
+    pub branch: Ref,
     /// Last session naming the branch.
-    pub session: String,
+    pub session: Token,
     /// Semantic fixture class.
     pub class: Class,
     /// Actual full branch object name.
-    pub tip: String,
+    pub tip: ObjectId,
 }
 
 /// A generated host, whose live session owners remain this process while it lives.
@@ -102,8 +102,8 @@ pub struct Fixture {
 }
 
 struct Work {
-    branch: String,
-    token: String,
+    branch: Ref,
+    token: Token,
     launcher: String,
     class: Class,
     path: String,
@@ -113,7 +113,7 @@ struct Work {
     first: usize,
     landed: bool,
     selected: bool,
-    previous: Option<String>,
+    previous: Option<Token>,
 }
 
 struct Import {
@@ -256,7 +256,7 @@ pub fn build(root: &Path, scale: Scale) -> Result<Fixture> {
         labelled_count += part.labelled;
         stream_count += part.streams;
     }
-    expected.sort_by(|a, b| (&a.identity, &a.branch).cmp(&(&b.identity, &b.branch)));
+    expected.sort_by(|a, b| (&a.identity, &*a.branch).cmp(&(&b.identity, &*b.branch)));
     testing::write_registry(&home, &registry)?;
     let counts = scale.counts();
     if [
@@ -389,7 +389,7 @@ fn build_identity(
                 CLASSES[(2 * identity + n) % 7]
             };
             let branch = format!("work/r{identity}-{n}-{}", class_name(class));
-            add_work(&mut import, &mut work, &branch, launcher, class, true, seed);
+            add_work(&mut import, &mut work, &branch, launcher, class, true, seed)?;
         }
     }
     // Twins and continuations count as retained sessions too; leave fourteen
@@ -405,7 +405,7 @@ fn build_identity(
             class,
             false,
             seed,
-        );
+        )?;
     }
     let next = import.next;
     let marks = import.run(&repo, &root.join(format!("marks-{identity}-work")))?;
@@ -427,7 +427,7 @@ fn build_identity(
                 &[(entry.path.clone(), entry.contents.clone())],
             );
             base = format!(":{mark}");
-            landing_marks.insert(entry.branch.clone(), mark);
+            landing_marks.insert(entry.branch.to_string(), mark);
         }
     }
     let landed = landing.run(&repo, &root.join(format!("marks-{identity}-landed")))?;
@@ -472,7 +472,7 @@ fn build_identity(
                     "add",
                     "-q",
                     &worktree.to_string_lossy(),
-                    &entry.branch,
+                    &*entry.branch,
                 ],
             )?;
         }
@@ -483,10 +483,10 @@ fn build_identity(
         testing::write_session(
             home,
             &SessionSeed {
-                token: entry.token.clone().try_into().map_err(invalid)?,
+                token: entry.token.clone(),
                 identity: key.clone(),
                 alias: alias.clone(),
-                branch: entry.branch.clone().try_into().map_err(invalid)?,
+                branch: entry.branch.clone(),
                 checkout: repo.clone(),
                 clone,
                 worktree,
@@ -504,18 +504,18 @@ fn build_identity(
         }
         let mut events = vec![(
             EventKind::SessionOpened,
-            payload(json!({"branch":entry.branch})),
+            payload(json!({"branch":&*entry.branch})),
         )];
-        if let Some(mark) = landing_marks.get(&entry.branch) {
+        if let Some(mark) = landing_marks.get(&*entry.branch) {
             events.push((
                 EventKind::MergeCompleted,
-                payload(json!({"branch":entry.branch,"sha":landed[mark]})),
+                payload(json!({"branch":&*entry.branch,"sha":landed[mark]})),
             ));
         }
         if entry.class != Class::Live {
             events.push((
                 EventKind::SessionClosed,
-                payload(json!({"branch":entry.branch})),
+                payload(json!({"branch":&*entry.branch})),
             ));
         }
         testing::write_events(home, &entry.token, &key, &events)?;
@@ -525,29 +525,34 @@ fn build_identity(
                 identity: key.clone(),
                 branch: entry.branch.clone(),
                 session: if entry.class == Class::InPart {
-                    format!(
+                    token(format!(
                         "s-fixture-{}-{}",
                         entry.branch.replace('/', "-"),
                         entry.mark
-                    )
+                    ))?
                 } else {
                     entry.token.clone()
                 },
                 class: entry.class,
-                tip: marks[&entry.mark].clone(),
+                tip: ObjectId::parse(&marks[&entry.mark]).ok_or_else(|| {
+                    invalid(format!(
+                        "fixture tip {:?} is not an object name",
+                        marks[&entry.mark]
+                    ))
+                })?,
             });
         }
     }
     // Synthetic branch publications and supersessions remain real event streams.
     for entry in &work {
-        if let Some(mark) = landing_marks.get(&entry.branch).filter(|_| entry.landed) {
+        if let Some(mark) = landing_marks.get(&*entry.branch).filter(|_| entry.landed) {
             testing::write_events(
                 home,
                 &format!("publish-{identity}-{}", entry.mark),
                 &key,
                 &[(
                     EventKind::MergeCompleted,
-                    payload(json!({"branch":entry.branch,"sha":landed[mark]})),
+                    payload(json!({"branch":&*entry.branch,"sha":landed[mark]})),
                 )],
             )?;
             stream_count += 1;
@@ -562,7 +567,7 @@ fn build_identity(
                 &[(
                     EventKind::BranchSuperseded,
                     payload(
-                        json!({"identity":key,"branch":entry.branch,"superseded_by":twin,"landing":landed[&mark],"labels":{}}),
+                        json!({"identity":key,"branch":&*entry.branch,"superseded_by":twin,"landing":landed[&mark],"labels":{}}),
                     ),
                 )],
             )?;
@@ -632,7 +637,7 @@ fn add_work(
     class: Class,
     selected: bool,
     seed: usize,
-) {
+) -> Result<()> {
     let path = format!("src/{branch}.txt");
     let contents = if class == Class::Retirable {
         "same\n"
@@ -663,8 +668,8 @@ fn add_work(
         );
     }
     work.push(Work {
-        branch: branch.into(),
-        token: format!("s-fixture-{}-{first}", branch.replace('/', "-")),
+        branch: reference(branch.to_owned())?,
+        token: token(format!("s-fixture-{}-{first}", branch.replace('/', "-")))?,
         launcher: launcher.into(),
         class,
         path: path.clone(),
@@ -702,8 +707,8 @@ fn add_work(
             &[(path.clone(), body.clone())],
         );
         work.push(Work {
-            branch: twin,
-            token: format!("s-fixture-{}-{mark}", branch.replace('/', "-")),
+            branch: reference(twin)?,
+            token: token(format!("s-fixture-{}-{mark}", branch.replace('/', "-")))?,
             launcher: launcher.into(),
             class: Class::Landed,
             path,
@@ -717,8 +722,8 @@ fn add_work(
         });
     } else if class == Class::InPart {
         work.push(Work {
-            branch: branch.into(),
-            token: format!("s-fixture-{}-{mark}", branch.replace('/', "-")),
+            branch: reference(branch.to_owned())?,
+            token: token(format!("s-fixture-{}-{mark}", branch.replace('/', "-")))?,
             launcher: launcher.into(),
             class,
             path,
@@ -728,9 +733,20 @@ fn add_work(
             first,
             landed: false,
             selected,
-            previous: Some(format!("s-fixture-{}-{first}", branch.replace('/', "-"))),
+            previous: Some(token(format!(
+                "s-fixture-{}-{first}",
+                branch.replace('/', "-")
+            ))?),
         });
     }
+    Ok(())
+}
+
+fn reference(name: String) -> Result<Ref> {
+    name.try_into().map_err(invalid)
+}
+fn token(name: String) -> Result<Token> {
+    name.try_into().map_err(invalid)
 }
 
 fn class_name(class: Class) -> &'static str {

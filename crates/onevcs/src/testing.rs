@@ -15,6 +15,8 @@ use crate::session::Lifecycle;
 use crate::vocabulary::Emitter;
 use crate::workspace::{self, Record};
 
+/// Validated full object names for the commits a persisted fixture expects.
+pub use crate::git::ObjectId;
 /// Validated production branch and session names for persisted fixtures.
 pub use crate::workspace::{Ref, Token};
 

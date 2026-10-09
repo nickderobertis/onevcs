@@ -138,11 +138,11 @@ fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
         let row = rows
             .iter()
             .find(|row| {
-                row["identity"] == expected.identity && row["branch"]["branch"] == expected.branch
+                row["identity"] == expected.identity && row["branch"]["branch"] == *expected.branch
             })
             .unwrap_or_else(|| panic!("missing {} {}", expected.identity, expected.branch));
-        assert_eq!(row["tip"], expected.tip);
-        assert_eq!(row["session"], expected.session);
+        assert_eq!(row["tip"], expected.tip.as_str());
+        assert_eq!(row["session"], *expected.session);
         assert_eq!(row["labels"]["launcher"], fixture.launcher);
         let (state, retirement) = match expected.class {
             Class::Landed => ("yes", "retirable"),
@@ -171,7 +171,7 @@ fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
         assert!(actual.status.success());
         assert_eq!(
             String::from_utf8(actual.stdout).expect("tip").trim(),
-            expected.tip
+            expected.tip.as_str()
         );
         *classes
             .entry(class_name(expected.class).into())
@@ -315,8 +315,8 @@ fn full_workload_recovery() {
                 .iter()
                 .find(|row| row.class == class)
                 .expect("class session");
-            let full = query(&fixture, "full", true, Some(&expected.session), None);
-            let decision = query(&fixture, "decision", true, Some(&expected.session), None);
+            let full = query(&fixture, "full", true, Some(&*expected.session), None);
+            let decision = query(&fixture, "decision", true, Some(&*expected.session), None);
             assert_eq!(
                 full.len(),
                 1,
@@ -331,7 +331,7 @@ fn full_workload_recovery() {
                             &fixture,
                             "full",
                             true,
-                            Some(&expected.session),
+                            Some(&*expected.session),
                             None,
                             Some(&baseline)
                         ),
