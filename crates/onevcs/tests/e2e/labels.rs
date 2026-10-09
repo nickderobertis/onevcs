@@ -830,6 +830,89 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     assert_ne!(moved[0]["tip"], original[0]["tip"]);
 }
 
+/// One closed session's branch over a base history deeper than a merge base reaches,
+/// so the history's root commit is read by the walk a proof caches and by nothing a
+/// decision-detail report asks git afresh. Answers `(fixture, token)`.
+fn deep_history_session(label: &str) -> (Fixture, String) {
+    let fixture = Fixture::local(&local_direct());
+    for step in 0..6 {
+        fixture.world.commit_file(
+            &fixture.checkout,
+            &format!("history-{step}.txt"),
+            "history\n",
+            &format!("chore: history {step}"),
+        );
+    }
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "origin", "main"]);
+    let (token, worktree) = fixture.open(&[
+        "--branch",
+        "feature/store-growth",
+        "--label",
+        &format!("launcher={label}"),
+    ]);
+    fixture
+        .world
+        .commit_file(&worktree, "growth.txt", "work\n", "feat: growth work");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    (fixture, token)
+}
+
+/// Decision detail, because the full row's line statistics ask git afresh about the
+/// same history, and would see a missing object whatever the cache did.
+fn decision_of(token: &str) -> [&str; 5] {
+    ["--detail", "decision", "--session", token, "--all"]
+}
+
+/// `recoverable`'s exit code and stdout, read by git alone where `native`: any `GIT_*`
+/// override is a context the proof cache delegates to git.
+fn answered(fixture: &Fixture, args: &[&str], native: bool) -> (Option<i32>, String) {
+    let mut command = fixture.world.onevcs();
+    command.args(["recoverable", "--json"]).args(args);
+    if native {
+        command.env("GIT_NAMESPACE", "");
+    }
+    let output = command.output().expect("recoverable runs");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+/// The same read under the counting shim, and how many times it ran git. Every
+/// cached comparison runs here, so it reads the proofs the counted runs before it
+/// wrote: the shim is another `git` program, and proofs are never shared across two.
+fn counted(
+    fixture: &Fixture,
+    counting: &crate::cost::Counting,
+    args: &[&str],
+) -> ((Option<i32>, String), usize) {
+    counting.clear();
+    let output = counting
+        .onevcs(&fixture.world)
+        .args(["recoverable", "--json"])
+        .args(args)
+        .output()
+        .expect("recoverable runs");
+    (
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        counting.calls().len(),
+    )
+}
+
+fn forget_proofs(fixture: &Fixture) {
+    let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+}
+
 /// Every loose copy of `object` in any object store under this host's scratch root.
 fn loose_copies(root: &std::path::Path, object: &str) -> Vec<std::path::PathBuf> {
     let (fan, rest) = object.split_at(2);
@@ -851,153 +934,160 @@ fn loose_copies(root: &std::path::Path, object: &str) -> Vec<std::path::PathBuf>
     found
 }
 
-/// A fetch adds objects to a store, and a proof about objects that were already
-/// there cannot move with it — so a store that only grew keeps its proofs, which is
-/// what lets a repeat sweep after the deriving sweep fetched reuse what it proved.
-/// An object taken away can move one, and then the answer is git's again.
+/// A fetch adds objects to a store, and a proof about objects that were already there
+/// cannot move with it — so a store that only grew keeps its proofs, which is what lets
+/// a repeat sweep reuse what the sweep before it proved after that sweep fetched. The
+/// fetch is the one the finished-branches pass makes: one branch's objects, no ref.
 #[test]
-fn a_store_that_only_grew_keeps_its_proofs_and_one_that_lost_an_object_asks_git() {
-    let fixture = Fixture::local(&local_direct());
-    // A base history deeper than the merge base reaches, so its root commit is read by
-    // the walk a proof caches and by nothing this report asks git afresh.
-    for step in 0..6 {
-        fixture.world.commit_file(
-            &fixture.checkout,
-            &format!("history-{step}.txt"),
-            "history\n",
-            &format!("chore: history {step}"),
-        );
-    }
-    fixture
-        .world
-        .git(&fixture.checkout, &["push", "origin", "main"]);
-    let branch = "feature/store-growth";
-    let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=growth"]);
-    fixture
-        .world
-        .commit_file(&worktree, "growth.txt", "work\n", "feat: growth work");
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "close", &token])
-        .assert()
-        .success();
-    // Decision detail, because the full row's line statistics ask git afresh about
-    // the same history, and would see a missing object whatever the cache did.
-    let args = ["--detail", "decision", "--session", &token, "--all"];
-    let answered = |native: bool| {
-        let mut command = fixture.world.onevcs();
-        command.args(["recoverable", "--json"]).args(args);
-        if native {
-            // Any `GIT_*` override is a context the proof cache delegates to git.
-            command.env("GIT_NAMESPACE", "");
-        }
-        let output = command.output().expect("recoverable runs");
-        (
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        )
-    };
-    let original = answered(false);
+fn a_fetch_that_adds_objects_keeps_proofs_and_answers_what_a_cold_recompute_does() {
+    let (fixture, token) = deep_history_session("fetched");
+    let args = decision_of(&token);
+    let original = answered(&fixture, &args, false);
     assert_eq!(original.0, Some(0), "{original:?}");
-    assert_eq!(original, answered(true), "cache must agree with native Git");
-
-    // The cached side of every comparison below runs under the counting shim, so it
-    // reads the proofs the counted runs before it wrote: the shim is another `git`
-    // program, and proofs are never shared across two.
+    assert_eq!(
+        original,
+        answered(&fixture, &args, true),
+        "cache agrees with git"
+    );
     let counting = crate::cost::Counting::installed(&fixture.world);
-    let cached = || {
-        counting.clear();
-        let output = counting
-            .onevcs(&fixture.world)
-            .args(["recoverable", "--json"])
-            .args(args)
-            .output()
-            .expect("recoverable runs");
-        (
-            (
-                output.status.code(),
-                String::from_utf8_lossy(&output.stdout).into_owned(),
-            ),
-            counting.calls().len(),
-        )
-    };
-    let counted = || {
-        let (answer, calls) = cached();
-        assert_eq!(answer, original);
-        calls
-    };
-    let cold = {
-        let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
-        counted()
-    };
-    let warm = counted();
+    forget_proofs(&fixture);
+    let (cold, cold_calls) = counted(&fixture, &counting, &args);
+    let (warm, warm_calls) = counted(&fixture, &counting, &args);
+    assert_eq!((&cold, &warm), (&original, &original));
     assert!(
-        warm < cold,
-        "the premise: proofs are reused, cold {cold}, warm {warm}"
+        warm_calls < cold_calls,
+        "the premise: proofs are reused, cold {cold_calls}, warm {warm_calls}"
     );
 
-    // Grow every store a proof was read from by an object nothing names.
-    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", branch]);
-    let tip = tip.trim();
-    let stores: Vec<std::path::PathBuf> = loose_copies(&fixture.world.path(""), tip)
-        .into_iter()
-        .map(|object| object.parent().unwrap().parent().unwrap().to_path_buf())
-        .collect();
-    assert!(!stores.is_empty(), "the premise: the tip is a loose object");
-    let unnamed = fixture.world.path("unnamed.txt");
-    std::fs::write(&unnamed, "an object no proof names\n").expect("new content");
-    for store in &stores {
-        // `objects/` of a `.git` directory: write through the repository it serves.
-        let repository = store.parent().unwrap();
-        fixture.world.git(
-            repository,
-            &["hash-object", "-w", &unnamed.to_string_lossy()],
-        );
-    }
-    let grown = counted();
-    assert!(
-        grown <= warm,
-        "a store that only grew must keep its proofs: warm {warm}, after growth {grown}"
-    );
-
-    // Take away an object the proofs read but none of them names: the history's
-    // root commit, which a walk from the tip reaches.
-    let root = fixture
+    // Objects only the origin has: a branch another clone pushed.
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture
         .world
-        .git(&fixture.checkout, &["rev-list", "--max-parents=0", branch]);
-    let copies = loose_copies(&fixture.world.path(""), root.trim());
+        .git(&elsewhere, &["checkout", "-q", "-b", "elsewhere"]);
+    fixture.world.commit_file(
+        &elsewhere,
+        "elsewhere.txt",
+        "elsewhere\n",
+        "feat: elsewhere",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "elsewhere"]);
+    let arriving = fixture.world.git(&elsewhere, &["rev-parse", "HEAD"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "fetch",
+            "--no-tags",
+            "--refmap=",
+            "origin",
+            "refs/heads/elsewhere",
+        ],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["cat-file", "-e", arriving.trim()]);
+    assert!(
+        !crate::world::World::git_raw(
+            &fixture.world,
+            &fixture.checkout,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                "refs/remotes/origin/elsewhere"
+            ],
+        )
+        .status
+        .success(),
+        "the premise: the fetch added objects and moved no ref"
+    );
+
+    let (fetched, fetched_calls) = counted(&fixture, &counting, &args);
+    assert!(
+        fetched_calls <= warm_calls,
+        "a store a fetch only grew keeps its proofs: warm {warm_calls}, after it \
+         {fetched_calls}"
+    );
+    forget_proofs(&fixture);
+    let (recomputed, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        fetched, recomputed,
+        "the reused answer is a cold recompute's"
+    );
+    assert_eq!(fetched, answered(&fixture, &args, true), "and git's");
+}
+
+/// An object taken away can move a proof, so an entry whose store lost one asks git
+/// again — and an answer reached while the object was missing is not what the report
+/// says once git has it back.
+#[test]
+fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives() {
+    let (fixture, token) = deep_history_session("missing");
+    let args = decision_of(&token);
+    let original = answered(&fixture, &args, false);
+    assert_eq!(original.0, Some(0), "{original:?}");
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    let _ = counted(&fixture, &counting, &args);
+    let (warm, warm_calls) = counted(&fixture, &counting, &args);
+    assert_eq!(warm, original);
+
+    // Take away an object the proofs read but none of them names: the history's root
+    // commit, which a walk from the tip reaches. Its bytes are kept to write it back.
+    let root = fixture.world.git(
+        &fixture.checkout,
+        &["rev-list", "--max-parents=0", "feature/store-growth"],
+    );
+    let root = root.trim();
+    let raw = fixture.world.path("root-commit");
+    std::fs::write(
+        &raw,
+        crate::world::World::git_raw(
+            &fixture.world,
+            &fixture.checkout,
+            &["cat-file", "commit", root],
+        )
+        .stdout,
+    )
+    .expect("the root commit's bytes");
+    let copies = loose_copies(&fixture.world.path(""), root);
     assert!(!copies.is_empty(), "the premise: the root commit is loose");
-    let aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = copies
-        .into_iter()
-        .map(|copy| {
-            let moved = copy.with_extension("aside");
-            std::fs::rename(&copy, &moved).expect("set the root aside");
-            (copy, moved)
-        })
-        .collect();
-    let native = answered(true);
+    for copy in &copies {
+        std::fs::remove_file(copy).expect("take the root commit away");
+    }
+    let native = answered(&fixture, &args, true);
     assert_ne!(
         native, original,
         "the premise: git's answer moves without the root commit"
     );
-    let (lost, asked) = cached();
+    let (missing, missing_calls) = counted(&fixture, &counting, &args);
     assert_eq!(
-        lost, native,
-        "a store that lost an object must answer what git answers"
+        missing, native,
+        "a store that lost an object answers what git answers"
     );
     assert!(
-        asked > warm,
-        "the proofs that read the lost object were asked of git again: warm {warm}, now {asked}"
+        missing_calls > warm_calls,
+        "the proofs that read it were asked of git again: warm {warm_calls}, now {missing_calls}"
     );
-    for (copy, moved) in &aside {
-        std::fs::rename(moved, copy).expect("put the root back");
+
+    // Git writes the object back into every store it was taken from.
+    for copy in &copies {
+        let repository = copy.ancestors().nth(3).expect("the repository of a store");
+        let written = fixture.world.git(
+            repository,
+            &["hash-object", "-t", "commit", "-w", &raw.to_string_lossy()],
+        );
+        assert_eq!(written.trim(), root, "the same object arrived");
     }
-    assert_eq!(cached().0, original, "repair restores the report");
+    let (arrived, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        answered(false),
-        original,
-        "and so does a run without the shim"
+        arrived, original,
+        "an answer reached without the object is recomputed once it is back"
+    );
+    assert_eq!(
+        arrived,
+        answered(&fixture, &args, true),
+        "and agrees with git"
     );
 }
 
