@@ -4321,8 +4321,14 @@ generation of every store it was read from, and a hit requires each loose object
 and pack that generation listed to be present still with the same file identity,
 so a fetch that adds objects keeps reuse while a prune, repack, removal or
 in-place rewrite recomputes. Everything else in a store — its directory and
-`info/` (alternates, commit graphs) — must be unchanged. It neither walks
-reachability nor hashes entire packs. Corruption
+`info/` (alternates, commit graphs) — must be unchanged, and replace refs,
+grafts, a shallow boundary and alternates invalidate exactly as before. Growth
+is safe because an answer over full object ids cannot change when objects are
+only added. An answer that depended on an absence is never stored, so a grown
+store never reuses one: no error or refusal (any stderr, any read failure, any
+status the query's kind does not admit) is written, and nothing is written
+unless every named object is present and hashes to its name at that moment.
+It neither walks reachability nor hashes entire packs. Corruption
 deeper in history that those directly named objects do not expose is outside
 that guard; an uncached Git read only detects it when it reads the affected
 object. Unsupported configurations or layouts delegate to Git.

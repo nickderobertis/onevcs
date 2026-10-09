@@ -1089,6 +1089,56 @@ fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives(
         answered(&fixture, &args, true),
         "and agrees with git"
     );
+
+    // The same for an object every proof names: the branch's tip.
+    let tip = fixture
+        .world
+        .git(&fixture.checkout, &["rev-parse", "feature/store-growth"]);
+    let tip = tip.trim();
+    let raw = fixture.world.path("tip-commit");
+    std::fs::write(
+        &raw,
+        crate::world::World::git_raw(
+            &fixture.world,
+            &fixture.checkout,
+            &["cat-file", "commit", tip],
+        )
+        .stdout,
+    )
+    .expect("the tip commit's bytes");
+    let copies = loose_copies(&fixture.world.path(""), tip);
+    assert!(!copies.is_empty(), "the premise: the tip commit is loose");
+    for copy in &copies {
+        std::fs::remove_file(copy).expect("take the tip commit away");
+    }
+    let native = answered(&fixture, &args, true);
+    assert_ne!(
+        native, original,
+        "the premise: git's answer moves without the tip"
+    );
+    let (missing, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        missing, native,
+        "a missing named object answers what git answers"
+    );
+    for copy in &copies {
+        let repository = copy.ancestors().nth(3).expect("the repository of a store");
+        let written = fixture.world.git(
+            repository,
+            &["hash-object", "-t", "commit", "-w", &raw.to_string_lossy()],
+        );
+        assert_eq!(written.trim(), tip, "the same object arrived");
+    }
+    let (arrived, _) = counted(&fixture, &counting, &args);
+    assert_eq!(
+        arrived, original,
+        "nothing answered while the tip was missing is reused once it is back"
+    );
+    assert_eq!(
+        arrived,
+        answered(&fixture, &args, true),
+        "and agrees with git"
+    );
 }
 
 #[test]

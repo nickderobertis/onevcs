@@ -173,17 +173,7 @@ impl Query {
                 return None;
             }
         }
-        crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
-            let odb = repo.odb().ok()?;
-            for name in &self.objects {
-                let oid = git2::Oid::from_str(name).ok()?;
-                let object = odb.read(oid).ok()?;
-                if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
-                    return None;
-                }
-            }
-            Some(())
-        })?;
+        self.names_present()?;
         let (status, stdout) = match entry.answer {
             Answer::Success { stdout } => (0, stdout),
             Answer::Different if self.kind == QueryKind::Difference => (1, String::new()),
@@ -268,8 +258,31 @@ impl Query {
         }
     }
 
+    /// Every object the query names is in the store and hashes to its name. Asked
+    /// on every hit, and before every write: an answer git gave while a named object
+    /// was missing is an answer about its absence, and a store that later grows the
+    /// object must ask git again rather than reuse it.
+    fn names_present(&self) -> Option<()> {
+        crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
+            let odb = repo.odb().ok()?;
+            for name in &self.objects {
+                let oid = git2::Oid::from_str(name).ok()?;
+                let object = odb.read(oid).ok()?;
+                if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
+                    return None;
+                }
+            }
+            Some(())
+        })
+    }
+
     pub(crate) fn write(&self, output: &git::Output) {
-        if !output.stderr.is_empty() || !output.read_failures.is_empty() {
+        // An error or a refusal is never stored: git names it on stderr, and an answer
+        // a missing object produced is not one a grown store may reuse.
+        if !output.stderr.is_empty()
+            || !output.read_failures.is_empty()
+            || self.names_present().is_none()
+        {
             return;
         }
         let answer = if output.ok() {
