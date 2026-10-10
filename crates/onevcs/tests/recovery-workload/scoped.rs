@@ -113,9 +113,9 @@ fn warm_opens(fixture: &onevcs_testing::recovery::Fixture) -> (Vec<Value>, Opene
     (rows, opened)
 }
 
-/// Grow the host by `times` its other launchers' sessions and streams, in the same
-/// identities: closed sessions of their own branches, each with its stream, and the
-/// swept sessions' history streams beside them.
+/// Grow the host by `sessions` more of other launchers' sessions and `streams` more
+/// streams, in the same identities: closed sessions of their own branches, each with
+/// its stream, and the swept sessions' history streams beside them.
 fn crowd(fixture: &onevcs_testing::recovery::Fixture, sessions: usize, streams: usize) {
     let registry: Value = serde_json::from_slice(
         &std::fs::read(fixture.home.join("registry.json")).expect("registry"),
