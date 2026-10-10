@@ -92,9 +92,19 @@ pub(crate) fn reply<T: Store<HostState>>(
                     comment.0
                 ),
             })?;
+        let threaded = matches!(answered.kind, CommentKind::ReviewThread { .. });
+        // The real host's replies route answers only a thread's first comment.
+        if threaded && answered.in_reply_to.is_some() {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "{} is a reply inside a review thread, and this host answers only a \
+                     thread's first comment",
+                    comment.0
+                ),
+            });
+        }
         let number = comments.len() + 1;
         let id = CommentId(format!("reply-{}-{number}", change.0));
-        let threaded = matches!(answered.kind, CommentKind::ReviewThread { .. });
         let (kind, text, url, in_reply_to) = if threaded {
             (
                 answered.kind.clone(),

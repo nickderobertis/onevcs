@@ -175,7 +175,8 @@ pub enum EventKind {
     GateRun,
     /// A change request's review feedback was read; carries its URL, how many
     /// comments the read returned, whether nothing was new since the marker it was
-    /// read from, the marker to read from next, and what the host charged for it —
+    /// read from, the digest of the marker to read from next (never the marker, which
+    /// grows with the change request), and what the host charged for it —
     /// `{graphql_points, rest_requests}`, from the responses' own figures.
     ReviewCommentsRead,
     /// A reply to one review comment was posted, or found already posted under its

@@ -217,9 +217,23 @@ pub(crate) fn reply(
         ),
     };
     let field = format!("body={text}");
-    let answer = gh::json(&gh::invoke(&[
-        "api", &path, "--method", "POST", "-f", &field,
-    ])?)?;
+    let posted = gh::invoke(&["api", &path, "--method", "POST", "-f", &field]);
+    // GitHub's replies route answers only a thread's first comment, and refuses any
+    // other as a parent it cannot find. Only a call that skipped the read can address
+    // one, so the refusal says what to do about it rather than what `gh` said.
+    let posted = match posted {
+        Err(refused) if threaded && refused.to_string().contains("Parent comment not found") => {
+            return Err(invalid(format!(
+                "{} is a reply inside a review thread, and GitHub answers only a thread's \
+                 first comment: address that comment — the one in the thread `onevcs change \
+                 comments` reports with no in_reply_to — or drop --verified-absent so the \
+                 thread is read first. Nothing was posted",
+                comment.0
+            )));
+        }
+        other => other?,
+    };
+    let answer = gh::json(&posted)?;
     let read = |name: &str| {
         answer
             .get(name)

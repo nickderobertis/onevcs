@@ -93,6 +93,16 @@ fn replied(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("one JSON object")
 }
 
+/// The digest `review-comments-read` names a marker by: its lower-case hex SHA-256.
+fn digest(marker: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let marker = marker.as_str().expect("a marker");
+    Sha256::digest(marker.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn marker(read: &Value) -> String {
     read["marker"].as_str().expect("a marker").to_owned()
 }
@@ -272,7 +282,7 @@ fn a_first_read_is_every_comment_of_every_kind_in_one_query_and_a_read_from_its_
                 "change_url": CHANGE,
                 "count": read["comments"].as_array().expect("comments").len(),
                 "unchanged": read["unchanged"],
-                "marker": read["marker"],
+                "marker_digest": digest(&read["marker"]),
                 "cost": read["cost"],
             })
         );
@@ -397,11 +407,14 @@ fn a_change_request_past_every_page_size_is_read_whole_and_charged_what_each_pag
     let events = change_events(&world);
     assert_eq!(events[1]["payload"]["cost"]["graphql_points"], 6);
     assert_eq!(events[1]["payload"]["count"], 327);
-    // A marker this long is past the envelope's bound on payload text, so the event
-    // carries it cut and says so; the read itself is where the whole one is.
+    // A marker this long is past the envelope's 4096-byte bound on payload text, and
+    // the event names it whole all the same: by its digest, never cut.
     assert!(charged["marker"].as_str().expect("a marker").len() > 4096);
-    assert_eq!(events[1]["payload"]["truncated"], true);
-    assert_ne!(events[1]["payload"]["marker"], charged["marker"]);
+    for (event, read) in events.iter().zip([&read, &charged]) {
+        assert_eq!(event["payload"]["marker_digest"], digest(&read["marker"]));
+        assert!(event["payload"].get("marker").is_none(), "{event}");
+        assert!(event["payload"].get("truncated").is_none(), "{event}");
+    }
 }
 
 #[test]
@@ -721,10 +734,11 @@ fn a_key_already_answered_posts_nothing_and_a_new_key_posts_again() {
         &["--body", "Elsewhere.", "--json"],
     ));
     assert_eq!(
-        elsewhere["existing"], false,
-        "the key answers that comment, not this one"
+        (elsewhere["id"].as_str(), elsewhere["existing"].clone()),
+        (Some(crashed.as_str()), json!(true)),
+        "a key stands for one reply anywhere in the change request"
     );
-    assert_eq!(posts(&world), 3);
+    assert_eq!(posts(&world), 2);
 
     let posted: Vec<Value> = change_events(&world)
         .into_iter()
@@ -734,9 +748,107 @@ fn a_key_already_answered_posts_nothing_and_a_new_key_posts_again() {
         .iter()
         .map(|event| event["payload"]["existing"].as_bool().expect("a flag"))
         .collect();
-    assert_eq!(existing, [false, true, true, false, true, false]);
+    assert_eq!(existing, [false, true, true, false, true, true]);
     assert_eq!(posted[1]["payload"]["reply"], first["id"]);
     assert_eq!(posted[4]["payload"]["reply"], crashed.as_str());
+}
+
+#[test]
+fn one_key_reused_against_another_comment_returns_the_reply_already_posted() {
+    let (world, host) = reviewed();
+    let line = host.thread(1, "src/lib.rs", Some(3), VIEWER, "Line 3 should say why.");
+    let conversation = host.conversation(1, VIEWER, "Mention the synthetic base.");
+
+    let first = replied(&reply(
+        &world,
+        CHANGE,
+        &line.comment,
+        "k-one",
+        &["--body", "Line 3 now says why.", "--json"],
+    ));
+    let reused = replied(&reply(
+        &world,
+        CHANGE,
+        &conversation,
+        "k-one",
+        &["--body", "Mentioned.", "--json"],
+    ));
+    assert_eq!(first["existing"], false);
+    assert_eq!(
+        reused,
+        json!({"id": first["id"], "url": first["url"], "threaded": true, "existing": true}),
+        "the key already carries a reply in this change request"
+    );
+    assert_eq!(posts(&world), 1, "no second post");
+    assert_eq!(
+        host.count(1),
+        4,
+        "two comments, one reply and the review GitHub opened round it"
+    );
+    let posted: Vec<Value> = change_events(&world)
+        .into_iter()
+        .filter(|event| event["kind"] == "review-reply-posted")
+        .collect();
+    assert_eq!(posted[1]["payload"]["comment"], conversation.as_str());
+    assert_eq!(posted[1]["payload"]["reply"], first["id"]);
+    assert_eq!(posted[1]["payload"]["existing"], true);
+}
+
+#[test]
+fn a_verified_absent_reply_to_a_reply_inside_a_thread_is_refused_by_name_in_one_request() {
+    let (world, host) = reviewed();
+    let line = host.thread(1, "src/lib.rs", Some(3), VIEWER, "Line 3 should say why.");
+    let followed = host.thread_reply(1, &line.thread, VIEWER, "And cite the plan.");
+
+    // GitHub's replies route answers only a thread's first comment, and this host
+    // refuses any other as GitHub does; skipping the read leaves nothing to find the
+    // first comment with, so the one request is refused and said why.
+    let before = host.requests().len();
+    let output = reply(
+        &world,
+        CHANGE,
+        &followed,
+        "k-deep",
+        &["--body", "Cited.", "--verified-absent"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    for said in [
+        format!("{followed} is a reply inside a review thread"),
+        "address that comment".to_owned(),
+        "or drop --verified-absent".to_owned(),
+        "Nothing was posted".to_owned(),
+    ] {
+        assert!(stderr.contains(&said), "{said:?} in {stderr}");
+    }
+    let handed = &host.requests()[before..];
+    assert_eq!(
+        handed.len(),
+        1,
+        "exactly one request, and no read: {handed:#?}"
+    );
+    assert_eq!(
+        handed[0][1],
+        format!("repos/{SLUG}/pulls/1/comments/4238752131/replies")
+    );
+    assert_eq!(host.count(1), 2, "nothing was posted");
+    assert!(
+        change_events_or_none(&world).is_empty(),
+        "a refused reply records nothing"
+    );
+
+    // Addressed at the thread's first comment, or with the read, it is posted.
+    let rooted = replied(&reply(
+        &world,
+        CHANGE,
+        &line.comment,
+        "k-deep",
+        &["--body", "Cited.", "--verified-absent", "--json"],
+    ));
+    assert_eq!(
+        (rooted["threaded"].clone(), rooted["existing"].clone()),
+        (json!(true), json!(false))
+    );
 }
 
 #[test]
@@ -1098,7 +1210,10 @@ fn a_session_names_its_own_change_request_and_records_on_its_own_stream() {
         read_events[0]["labels"]["identity"],
         "github.com/sample-owner/openwidget"
     );
-    assert_eq!(read_events[0]["payload"]["marker"], read["marker"]);
+    assert_eq!(
+        read_events[0]["payload"]["marker_digest"],
+        digest(&read["marker"])
+    );
     assert_eq!(posted_events[0]["payload"]["reply"], answered["id"]);
     assert_eq!(posted_events[0]["phase"], "review");
 

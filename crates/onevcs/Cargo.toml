@@ -112,6 +112,9 @@ predicates = { workspace = true }
 # The journeys read the binary's own NDJSON stream back, which is the surface a
 # consumer meets rather than an internal the suite could reach around.
 serde_json = { workspace = true }
+# The review journeys name a read marker by the digest its event carries, computed the
+# way the event's own contract states it.
+sha2 = { workspace = true }
 # The test implementations of this crate's own two interfaces, so one publication
 # journey can run against them and against Git + GitHub and the two streams be held
 # to each other. A dev-dependency cycle, which Cargo allows and `cargo publish`

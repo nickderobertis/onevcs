@@ -242,7 +242,10 @@ pub fn review_comments(
             "change_url": read.change_url,
             "count": read.comments.len(),
             "unchanged": read.unchanged,
-            "marker": read.marker.0,
+            // A digest rather than the marker: a marker grows with the change request
+            // and the envelope bounds payload text, while a digest is fixed in size and
+            // still says exactly which marker the call returned.
+            "marker_digest": ids::digest(&read.marker.0),
             "cost": {
                 "graphql_points": read.cost.graphql_points,
                 "rest_requests": read.cost.rest_requests,
@@ -291,7 +294,7 @@ pub fn reply_to_comment(providers: &Providers<'_>, request: &ReplyRequest) -> Re
             .reply_to_comment(&addressed.id, comment, &body, key)?
     } else {
         let read = addressed.host.review_comments(&addressed.id, None)?;
-        match keyed_reply(&read.comments, comment, key) {
+        match keyed_reply(&read.comments, key) {
             Some(existing) => existing,
             None => {
                 let target = thread_root(&read, comment)?;
@@ -316,15 +319,16 @@ pub fn reply_to_comment(providers: &Providers<'_>, request: &ReplyRequest) -> Re
     Ok(reply)
 }
 
-/// The reply already on the host that answers `comment` under `key`, if there is one.
-fn keyed_reply(comments: &[ReviewComment], comment: &CommentId, key: &str) -> Option<PostedReply> {
+/// The reply already on the host under `key`, if there is one: anywhere in the change
+/// request and whichever comment it answers, since a key stands for one reply.
+fn keyed_reply(comments: &[ReviewComment], key: &str) -> Option<PostedReply> {
     comments
         .iter()
         .find(|candidate| {
             candidate
                 .reply_marker
                 .as_ref()
-                .is_some_and(|marker| marker.in_reply_to == *comment && marker.key == key)
+                .is_some_and(|marker| marker.key == key)
         })
         .map(|found| PostedReply {
             id: found.id.clone(),

@@ -4788,9 +4788,10 @@ drop all of a solo reviewer's feedback. A marker missing its key, repeating a fi
 carrying a label that is not a token is not one.
 
 **Idempotent posting.** Unless `verified_absent` is set, before posting
-`reply_to_comment` reads the change request's comments for a reply whose marker names
-the same comment and carries the same `key`; when it finds one it posts nothing and
-returns it with `existing: true`. So a caller that lost the answer to an accepted post —
+`reply_to_comment` reads the change request's comments for a reply whose marker
+carries the same `key` — anywhere in the change request, whichever comment it answers,
+since a key stands for one reply *(the manager's ruling on this amendment)*; when it
+finds one it posts nothing and returns it with `existing: true`. So a caller that lost the answer to an accepted post —
 it crashed, or its record was never written — calls again with the same key and gets
 the reply that is already there, never a second one. Calls with the same change request
 and key on one host are serialized: each holds an exclusive lock under `ONEVCS_HOME`,
@@ -4812,7 +4813,12 @@ repos/{owner}/{name}/pulls/{n}/comments/{id}/replies`, `threaded: true`). GitHub
 replies route answers a thread's first comment, so where the call read the change
 request it posts against the first comment of the asked comment's thread — the marker
 still names the comment asked about — and a `verified_absent` call posts against the
-comment it names. A reply to a `Review` or `Conversation` comment posts a new
+comment it names, so it must name a thread's first comment (the one a read reports in
+that thread with no `in_reply_to`): one naming a reply inside a thread is refused by
+name — GitHub refuses it as a parent it cannot find, in that same one request — saying
+to address the thread's first comment or drop `verified_absent`, and nothing is posted
+*(the manager's ruling on this amendment: exactly one request is kept, and this input
+is refused rather than served with a read)*. A reply to a `Review` or `Conversation` comment posts a new
 conversation comment (`POST repos/{owner}/{name}/issues/{n}/comments`) whose first line
 is `Re: <link to the comment it answers>`, `threaded: false`: a review summary has no
 thread a reply can join — the spike found all three host routes refusing it (404 on the
@@ -4829,13 +4835,15 @@ The whole body, marker included, passes the public-remote boundary check
 
 **Events.** Each call records exactly one event, in the Review phase, once the host has
 answered — never for a call that failed, and emitting it never fails the call:
-`review-comments-read` `{change_url, count, unchanged, marker, cost: {graphql_points,
-rest_requests}}` and `review-reply-posted` `{change_url, comment, reply, url, threaded,
+`review-comments-read` `{change_url, count, unchanged, marker_digest, cost:
+{graphql_points, rest_requests}}` and `review-reply-posted` `{change_url, comment, reply, url, threaded,
 key, existing}` — `existing: true` for a call that found the keyed reply and posted
-nothing. `marker` is payload text like any other, so the envelope's bound applies: a
-marker past 4096 bytes — a read of a few hundred comments — is cut and the payload
-carries `"truncated": true`, and the call's own result is where the whole marker is
-read from. A change request named by its session records on that session's stream,
+nothing. The event never carries the marker itself, which grows with the change request:
+`marker_digest` is the lower-case hex SHA-256 of exactly the marker the call returned —
+64 characters whatever the read's size, so the envelope's 4096-byte bound on payload
+text never cuts it, a paged read of several hundred comments included — and the call's
+own result is where the marker is read from *(the manager's ruling on this amendment)*.
+A change request named by its session records on that session's stream,
 labelled with its identity; one named by URL records on a stream of its own,
 `change-<the first twelve hex characters of the SHA-256 of its canonical URL>`,
 labelled `change_url`, which `onevcs events` reads like any other.
