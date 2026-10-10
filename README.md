@@ -92,6 +92,15 @@ verb that lands it, with the origin beside it. The library form is `preserve`,
 answering `Pushed`, `AlreadyOnOrigin`, or `NoRemote`, and `recoverable` is the
 enumeration beside it.
 
+A change that depends on several changes still in review is drafted against a **stack
+base**: `onevcs stack-base widgets --branch stack-base/plan/node --root main --parent
+feature/a --parent feature/c` cuts the branch from `main`, merges each parent into it in
+that order, and pushes it with no change request. Run again, it merges the root's new
+head and each parent's new head forward — never a rebase, never a force — so every
+draft based on it can merge it in turn; a conflict is left in a session on the branch
+(exit `3`) for whoever resolves it, and the same command then finishes the job. The
+library form is `assemble_stack_base`.
+
 A branch that provably holds nothing beyond its base is **retired** — deleted from
 every checkout, pool slot clone, run clone and the origin that holds it, with a
 `branch-retired` record left saying why — and that happens on its own: `session

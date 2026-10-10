@@ -342,7 +342,9 @@ for it. Five things are easy to undo.
   and the reason is written where the flag is: the hook is a gate, and the branch a
   shutdown exists to save is the one a worker was interrupted in the middle of, whose
   tree does not pass it. Running it would refuse the very branch and block for the
-  length of that repository's whole gate on a host that is going away.
+  length of that repository's whole gate on a host that is going away. A stack base
+  (below) is pushed through the same function, for its own reason, and so stays inside
+  that one exception rather than becoming a second.
 - **`branch-preserved` is not `push`.** The one producer of `push` is a publication, so
   a reader counting pushes to find publications must never meet a preservation. Its
   stream is the branch's own session's where a record names one and `preserve-<slug>`
@@ -371,6 +373,33 @@ cwd. The train is deliberately not what it names, even for finished work:
 every identity whose rules do not publish `local-direct`, so it lands none of the
 branches this report is most often read about — the ones a run left in its own
 clone.
+
+## A stack base is the other branch that reaches a remote unpublished
+
+`stack_base.rs` is `onevcs stack-base` and `assemble_stack_base`: a branch cut from a
+root carrying a merge of several parents, which a change depending on several unlanded
+changes is drafted against. The shapes are the stack-base amendment's in
+`docs/contract.md`, which three plan nodes restate. Five things are easy to undo.
+
+- **Every move is forward, and every merge is a merge commit.** `--no-ff` always, the
+  root merged before the parents, a parent already contained never merged again, and
+  the push never forced. Children drafted against the base merge it forward, which
+  stops being true the first time its history is rewritten.
+- **The open does not merge the root; this module does** (`workspace::BaseMerge::Leave`).
+  Every merge a stack base carries has a `Stack-Base` trailer, and the open's own
+  continuation merge would be the one commit without one.
+- **Every origin head is read in the execution checkout, never in the session's
+  clone.** A clone's remote-tracking refs begin as its lender's *local* branches, so
+  reading there made a copy this host merely held look like the origin's — and an
+  assembly that was creating the branch answered `advanced`.
+- **A failed call puts the branch back before the close hands it over.** Otherwise a
+  merge the boundary refused becomes the held copy every later call continues, and is
+  refused forever. A conflict is not a failure: its session is left open over it, and a
+  session holding a staged, uncommitted resolution is left open too.
+- **Readers recognise a stack base from its history alone** (`provenance::stack_base_of`):
+  `recoverable` drops it in both reports, and `status` reports `branch.stack_base` and no
+  landing verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
+  `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier
 
