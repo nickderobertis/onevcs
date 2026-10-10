@@ -107,22 +107,44 @@ class Response:
 
 @dataclass
 class Ledger:
-    """Every GitHub call the harness made, with its allowance deltas."""
+    """Every GitHub call the harness made, with its allowance deltas.
+
+    One token's calls were observed reported against more than one window of the
+    same resource (distinct `X-RateLimit-Reset` values), so a delta is taken against
+    the previous call reported in the *same* window, never across two.
+    """
 
     calls: list[dict[str, Any]] = field(default_factory=list)
-    last_used: dict[str, tuple[int, int]] = field(default_factory=dict)
+    last_used: dict[tuple[str, int], int] = field(default_factory=dict)
 
     def delta(self, headers: dict[str, str]) -> tuple[str | None, int | None]:
         resource = headers.get("x-ratelimit-resource")
         if resource is None or "x-ratelimit-used" not in headers:
             return resource, None
         used = int(headers["x-ratelimit-used"])
-        reset = int(headers.get("x-ratelimit-reset", "0"))
-        previous = self.last_used.get(resource)
-        self.last_used[resource] = (used, reset)
-        if previous is None or previous[1] != reset:
-            return resource, None
-        return resource, used - previous[0]
+        window = (resource, int(headers.get("x-ratelimit-reset", "0")))
+        previous = self.last_used.get(window)
+        self.last_used[window] = used
+        return resource, None if previous is None else used - previous
+
+    def windows(self) -> list[dict[str, Any]]:
+        """Each (resource, reset) window the calls were reported against."""
+        seen: dict[tuple[str, int], list[int]] = {}
+        for call in self.calls:
+            if call["resource"] and call["used"] >= 0:
+                seen.setdefault((call["resource"], call["reset"]), []).append(
+                    call["used"]
+                )
+        return [
+            {
+                "resource": r,
+                "reset": reset,
+                "calls": len(u),
+                "used_min": min(u),
+                "used_max": max(u),
+            }
+            for (r, reset), u in sorted(seen.items())
+        ]
 
 
 class GitHub:
@@ -182,6 +204,7 @@ class GitHub:
             "resource": resource,
             "used": int(response.headers.get("x-ratelimit-used", "-1")),
             "remaining": int(response.headers.get("x-ratelimit-remaining", "-1")),
+            "reset": int(response.headers.get("x-ratelimit-reset", "-1")),
             "used_delta": delta,
             "conditional": any(h.lower().startswith("if-none-match") for h in headers),
         }
@@ -1003,6 +1026,7 @@ def summarise(run: Run) -> dict[str, Any]:
         "timing": timing,
         "calls_by_resource": by_resource,
         "calls_total": len(calls),
+        "rate_limit_windows": run.ledger.windows(),
         "graphql_points_charged": sum(c.get("graphql_cost") or 0 for c in calls),
     }
 
@@ -1113,6 +1137,8 @@ def render_summary(run: Run, results: dict[str, Any]) -> str:
         f" {s['graphql_points_charged']}",
         f"- GET /rate_limit at start answered {results['rate_limit_endpoint_at_start']}"
         f" while the headers read {results['buckets_at_start']}",
+        "",
+        f"- rate-limit windows the calls were reported against: {s['rate_limit_windows']}",
         "",
         "## per-round reads (calls / used deltas / graphql cost / bytes)",
     ]
