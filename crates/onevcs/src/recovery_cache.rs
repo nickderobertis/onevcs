@@ -1011,42 +1011,64 @@ fn sound(root: &Path, store: &Store) -> bool {
         .filter(|line| loose_object(line).is_some())
         .collect();
     let mut whole: BTreeSet<String> = BTreeSet::new();
-    let mut budget = PROVED_PER_READ;
-    let mut objects = OBJECTS_PER_READ;
+    let mut unproved: Vec<&String> = Vec::new();
     let mut sound = true;
     for line in loose {
         if remembered.contains(line) {
             whole.insert(line.clone());
-            continue;
-        }
-        // Once one object is not whole, or this read's share is spent, the store is
-        // unsound for this read; what is already proved is still kept.
-        if !sound {
-            continue;
-        }
-        if objects == 0 {
+        } else if unproved.len() < OBJECTS_PER_READ {
+            unproved.push(line);
+        } else {
+            // This read's share is spent: unsound for this read, and what it proves is
+            // still kept for the next.
             sound = false;
-            continue;
         }
-        objects -= 1;
-        let (relative, length) = loose_object(line).expect("a loose object's line");
-        let path = root.join(relative);
-        // A blob is never read in process, so its header saying it is one is enough;
-        // anything else is read whole, so it has to inflate whole.
-        let safe = match loose_header(&path) {
-            Some(blob) if blob.starts_with(b"blob ") => true,
-            Some(_) if budget > 0 => {
-                budget = budget.saturating_sub(length);
-                inflates_whole(&path)
-            }
-            _ => false,
-        };
-        if !safe {
-            sound = false;
-            continue;
-        }
-        whole.insert(line.clone());
     }
+    // Each object is its own file, so headers are read, and the objects chosen to be
+    // read whole inflated, side by side where there are many; which are chosen is
+    // decided in listing order, exactly as one pass would.
+    let threads = if unproved.len() >= SPREAD_PROOF {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    let path_of = |line: &String| {
+        let (relative, length) = loose_object(line).expect("a loose object's line");
+        (root.join(relative), length)
+    };
+    let headers = crate::vcs::concurrently_on(threads, &unproved, |line| {
+        loose_header(&path_of(line).0).map(|header| header.starts_with(b"blob "))
+    });
+    let mut budget = PROVED_PER_READ;
+    let mut inflated: Vec<&String> = Vec::new();
+    for (line, header) in unproved.iter().zip(&headers) {
+        // A blob is never read in process, so its header saying it is one is enough;
+        // anything else is read whole, so it has to inflate whole. Once one object is
+        // not whole, or this read's share is spent, the store is unsound for this read.
+        match header {
+            Some(true) => {
+                whole.insert((*line).clone());
+            }
+            Some(false) if budget > 0 => {
+                budget = budget.saturating_sub(path_of(line).1);
+                inflated.push(line);
+            }
+            _ => {
+                sound = false;
+                break;
+            }
+        }
+    }
+    let wholes =
+        crate::vcs::concurrently_on(threads, &inflated, |line| inflates_whole(&path_of(line).0));
+    for (line, inflates) in inflated.iter().zip(wholes) {
+        if inflates {
+            whole.insert((*line).clone());
+        } else {
+            sound = false;
+        }
+    }
+
     if whole != remembered {
         if let (Some(path), Ok(body)) = (
             record,
@@ -1415,6 +1437,10 @@ const SPREAD_STORE: usize = 192;
 /// are walked on threads.
 #[cfg(unix)]
 const SPREAD_WORKTREE: usize = 64;
+
+/// How many loose objects a read has to prove before they are proved on threads.
+#[cfg(unix)]
+const SPREAD_PROOF: usize = 64;
 
 /// How deep the attributes walk goes before handing each directory there to a thread
 /// of its own.

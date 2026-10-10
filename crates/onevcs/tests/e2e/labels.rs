@@ -2200,6 +2200,19 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
         })
         .collect();
 
+    // Enough new loose objects beside it that the read proving them again does so on
+    // threads, which must find the damaged one as a single pass would.
+    let extra: Vec<String> = (0..80)
+        .map(|at| {
+            let path = fixture.world.path(format!("extra-{at}.txt"));
+            std::fs::write(&path, format!("extra object {at}\n")).expect("an extra object");
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    let mut hashed = vec!["hash-object", "-w"];
+    hashed.extend(extra.iter().map(String::as_str));
+    fixture.world.git(&fixture.checkout, &hashed);
+
     // Truncated in place: the same inode and mode, half its length.
     for (copy, (bytes, inode, mode)) in copies.iter().zip(&kept) {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o644)).unwrap();
