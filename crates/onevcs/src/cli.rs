@@ -44,8 +44,10 @@ pub enum Command {
     Publish(PublishArgs),
     /// Verify and publish a completed branch no session holds.
     PublishBranch(PublishBranchArgs),
-    /// Read, describe, or ready a session's own change request, and read and answer
-    /// its review feedback.
+    /// Read, describe, or ready a session's own change request.
+    ///
+    /// `comments` and `reply` read and answer a change request's review feedback,
+    /// named by its session or by its URL.
     Change {
         /// Which thing to do to the change request.
         #[command(subcommand)]
