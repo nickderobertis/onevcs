@@ -31,6 +31,7 @@ use sha2::{Digest, Sha256};
 
 /// The process's resident memory in KiB and its thread count, as the kernel reports
 /// them; nothing where it reports neither.
+#[cfg(not(target_vendor = "apple"))]
 fn resources() -> (Option<u64>, Option<u64>) {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |name: &str| {
@@ -41,6 +42,38 @@ fn resources() -> (Option<u64>, Option<u64>) {
             .and_then(|value| value.parse::<u64>().ok())
     };
     (field("VmRSS:"), field("Threads:"))
+}
+
+/// The process's resident memory in KiB and its thread count, as the kernel reports
+/// them; nothing where it reports neither. Apple's kernel has no `/proc`, and answers
+/// both for one process in a single task-information call.
+#[cfg(target_vendor = "apple")]
+fn resources() -> (Option<u64>, Option<u64>) {
+    let Ok(size) = std::ffi::c_int::try_from(std::mem::size_of::<libc::proc_taskinfo>()) else {
+        return (None, None);
+    };
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    // SAFETY: `info` is writable for exactly `size` bytes and is borrowed for the
+    // duration of this call alone; a short read is refused below rather than read.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read != size {
+        return (None, None);
+    }
+    // SAFETY: the call above filled every byte of it, which is what the length it
+    // answered says.
+    let info = unsafe { info.assume_init() };
+    (
+        Some(info.pti_resident_size / 1024),
+        u64::try_from(info.pti_threadnum).ok(),
+    )
 }
 
 /// One timed call, held in a fixed-size record so that keeping it moves nothing the
