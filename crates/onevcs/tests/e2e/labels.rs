@@ -2373,10 +2373,11 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
             .success();
         sessions.push(token);
     }
-    // llmlint: ignore[tests_mirror_real_usage] git's own decoding of an undecodable
-    // listing is the empty one an in-process answer would also give, so the rows are
-    // equal either way; which of the two made the listing is the property, and the
-    // spawned git is the only place a caller can see it.
+    // llmlint: ignore-block[tests_mirror_real_usage] git's own decoding of an
+    // undecodable listing is the empty one an in-process answer would also give, and a
+    // count that agrees changes no row, so the rows are equal either way; which reads
+    // git made is the property, and the spawned git is the only place a caller can see
+    // it. Every answer is also compared with uncached git's through the same command.
     let counting = crate::cost::Counting::installed(world);
     let reads: Vec<(usize, usize, usize)> = sessions
         .iter()
@@ -2450,6 +2451,7 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
     // other one was answered in process.
     assert_eq!(readable.2, 1, "git made only the count: {reads:?}");
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 /// A read that would walk a long history in process is left to git and its proof,
 /// which answers it the next time for a fraction of the walk; a short one is still
