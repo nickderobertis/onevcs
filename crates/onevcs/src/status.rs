@@ -2272,6 +2272,8 @@ pub(crate) mod keyed {
         Preserve,
     }
 
+    /// Every verb, for the stream index that only Unix keeps.
+    #[cfg(unix)]
     pub(crate) const ALL: [Verb; 3] = [Verb::PublishBranch, Verb::Recover, Verb::Preserve];
 
     impl Verb {
@@ -2291,6 +2293,7 @@ pub(crate) mod keyed {
     }
 
     /// Whether `token` is a stream one of the verbs names.
+    #[cfg(unix)]
     pub(crate) fn names(token: &str) -> bool {
         ALL.iter().any(|verb| token.starts_with(verb.prefix()))
     }

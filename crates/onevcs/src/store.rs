@@ -95,6 +95,7 @@ pub struct Normalized {
 /// Whether `identity` is one a registry key could be: a path or the normalized
 /// spelling of an origin, with no surrounding whitespace and no control character.
 /// What a document this crate wrote and later reads back is held to.
+#[cfg(unix)]
 pub(crate) fn is_identity(identity: &str) -> bool {
     !identity.is_empty()
         && identity.trim() == identity
