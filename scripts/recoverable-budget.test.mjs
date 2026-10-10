@@ -143,6 +143,14 @@ test("latency reader reports the slowest in-process call and refuses unrecorded 
     assert.equal(malformed.status, 2);
     assert.match(malformed.stderr, /expected --scale 1\|10 --cold\|--warm/);
     assert.match(malformed.stderr, /next: pass --scale 1 --warm/);
+    // Run outside onebudgetspec it has nowhere to report, and names the recipe that
+    // gives it somewhere.
+    const unwired = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-latency-budget.mjs"), "--scale", "1", "--warm"], {
+      encoding: "utf8", env: { PATH: "" }
+    });
+    assert.equal(unwired.status, 2);
+    assert.match(unwired.stderr, /ONEBUDGETSPEC_RESULT is missing/);
+    assert.match(unwired.stderr, /next: run 'just budgets'/);
     // A stale or missing record is the telemetry's to regenerate, and says so.
     rmSync(join(f.root, "target", "budget-records", "recoverable.json"));
     const stale = run("--scale", "1", "--warm");

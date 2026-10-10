@@ -5,6 +5,8 @@ import { journeyCommand, readRecord } from "./recoverable-budget-record.mjs";
 
 // A command this reader cannot answer is the caller's to fix, not the telemetry's.
 class Usage extends Error {}
+// A reader run outside onebudgetspec has nowhere to report to.
+class Unwired extends Error {}
 
 try {
   const args = process.argv.slice(2);
@@ -23,13 +25,15 @@ try {
   const loads = calls.map(call => call.load1);
   const description = `${mode} in-process launcher Decision, scale ${workload.scale}: slowest of ${calls.length} calls ${slowest.toFixed(1)}ms, load1 ${Math.min(...loads)}-${Math.max(...loads)}`;
   if (!report(slowest / 1000, `invocation ${record.build.run_id}: ${description}`)) {
-    throw new Error("ONEBUDGETSPEC_RESULT is missing; invoke through 'just budgets'");
+    throw new Unwired("ONEBUDGETSPEC_RESULT is missing, so there is nowhere to report to");
   }
 } catch (error) {
-  const usage = error instanceof Usage;
-  const next = usage
+  const usage = error instanceof Usage || error instanceof Unwired;
+  const next = error instanceof Usage
     ? "pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold, as budgets.yaml's latency entries do"
-    : `run '${journeyCommand}' to regenerate complete current-build records`;
+    : error instanceof Unwired
+      ? "run 'just budgets', which runs this reader with the result path to report to"
+      : `run '${journeyCommand}' to regenerate complete current-build records`;
   console.error(`recoverable telemetry: ${error.message}\nnext: ${next}`);
   process.exitCode = usage ? 2 : 1;
 }
