@@ -188,7 +188,7 @@ class GitHub:
             args += ["--input", "-"]
             stdin = json.dumps(body)
         started = time.perf_counter()
-        proc = subprocess.run(  # noqa: S603 - argv is built here, never by a shell
+        proc = subprocess.run(
             args, input=stdin, capture_output=True, text=True, check=False
         )
         seconds = time.perf_counter() - started
@@ -253,12 +253,15 @@ class GitHub:
             for name, r in (("core", core), ("graphql", gql))
         }
 
-    def rate_limit_endpoint(self) -> dict[str, Any]:
-        """`GET /rate_limit`'s own answer, kept only to compare with the headers."""
-        proc = subprocess.run(  # noqa: S603
-            ["gh", "api", "rate_limit"], capture_output=True, text=True, check=True
-        )
-        resources = json.loads(proc.stdout)["resources"]
+    def rate_limit_endpoint(self, phase: str) -> dict[str, Any]:
+        """`GET /rate_limit`'s own answer, kept only to compare with the headers.
+
+        It goes through `call` like every other request, so it is in the ledger and
+        the run's call total, with whatever its headers say it was charged.
+        """
+        resources = self.call(
+            "GET", "rate_limit", phase=phase, label="rate-limit-endpoint"
+        ).json()["resources"]
         return {key: resources[key] for key in ("core", "graphql")}
 
 
@@ -299,7 +302,7 @@ class Git:
         self.env = env
 
     def __call__(self, *args: str) -> str:
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.run(
             ["git", *args],
             cwd=self.checkout,
             env=self.env,
@@ -356,7 +359,7 @@ class Run:
 
     # ---------------------------------------------------------------- step 1
     def build_stack(self) -> None:
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             [
                 "git",
                 "clone",
@@ -813,7 +816,7 @@ class Run:
             *argv: str, cwd: Path | None = None
         ) -> subprocess.CompletedProcess[str]:
             started = time.perf_counter()
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 list(argv),
                 cwd=cwd,
                 env=env,
@@ -943,7 +946,7 @@ class Run:
             except HarnessError as error:
                 deleted[branch] = f"failed: {error}"
         remaining = (
-            subprocess.run(  # noqa: S603
+            subprocess.run(
                 [
                     "git",
                     "ls-remote",
@@ -1204,14 +1207,14 @@ def render_summary(run: Run, results: dict[str, Any]) -> str:
 
 def harness_commit() -> dict[str, Any]:
     here = Path(__file__).resolve().parent
-    commit = subprocess.run(  # noqa: S603
+    commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=here,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.strip()
-    dirty = subprocess.run(  # noqa: S603
+    dirty = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=here,
         capture_output=True,
@@ -1240,12 +1243,15 @@ def main() -> int:
         )
     if shutil.which("gh") is None or shutil.which("onevcs") is None:
         parser.error("gh and onevcs must both be on PATH")
-    out = args.out or Path(tempfile.mkdtemp(prefix="review-loop-"))
+    # On an onepipeline host a dispatch owns ONEPIPELINE_NODE_SCRATCH_DIR, and /tmp is
+    # shared by every dispatch; elsewhere tempfile's default directory is used.
+    scratch = os.environ.get("ONEPIPELINE_NODE_SCRATCH_DIR") or None
+    out = args.out or Path(tempfile.mkdtemp(prefix="review-loop-", dir=scratch))
     out.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix="review-loop-work-"))
+    work = Path(tempfile.mkdtemp(prefix="review-loop-work-", dir=scratch))
     harness = harness_commit()
     run = Run(args.repo, out, work)
-    endpoint_answer = run.gh.rate_limit_endpoint()
+    endpoint_answer = run.gh.rate_limit_endpoint("meter:run")
     start = run.gh.meter("meter:run")
     failure = None
     try:
@@ -1265,7 +1271,7 @@ def main() -> int:
         run.resolve_thread()
         run.read_round("after-resolve", ["B: thread resolved, no comment changed"])
         run.cold_host()
-    except Exception as error:  # noqa: BLE001 - recorded, then cleanup still runs
+    except Exception as error:  # recorded, then cleanup still runs
         failure = f"{type(error).__name__}: {error}"
         print(f"review-loop: {failure}", file=sys.stderr)
     finally:
@@ -1289,7 +1295,7 @@ def main() -> int:
     }
     try:
         results["summary"] = summarise(run)
-    except Exception as error:  # noqa: BLE001 - a failed run still writes what it has
+    except Exception as error:  # a failed run still writes what it has
         results["summary_error"] = f"{type(error).__name__}: {error}"
     (out / "results.json").write_text(json.dumps(results, indent=2, default=str))
     if "summary" in results:
