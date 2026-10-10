@@ -47,8 +47,8 @@ budgets:
     command: [node, scripts/recoverable-latency-budget.mjs, --scale, '10', --warm]
     unit: seconds
     direction: max
-    threshold: 0.4
-    description: Slowest of ten in-process launcher-filtered Decision recoverable_matching calls after one priming call over the unchanged 10x workload, each answering the uncached read's rows. Temporarily relaxed from 0.3 (the 10x warm Stop-hook bound less the guard's own costs) to 0.4, by the manager's ruling after CI measured 0.332 s, while later work closes the remaining 10x warm cost.
+    threshold: 0.5
+    description: Slowest of ten in-process launcher-filtered Decision recoverable_matching calls after one priming call over the unchanged 10x workload, each answering the uncached read's rows. Temporarily relaxed from the design's 0.3 (the 10x warm Stop-hook bound less the guard's own costs) to 0.5, by the manager's ruling, because CI's run-to-run spread on identical hot-path source (0.332 s and 0.434 s) straddled the earlier 0.4, until later work closes the remaining 10x warm cost.
   - id: recoverable-decision-latency-labelled-cold
     measure: reported
     command: [node, scripts/recoverable-latency-budget.mjs, --scale, '1', --cold]
