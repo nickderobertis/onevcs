@@ -248,6 +248,8 @@ struct Model {
     clock: u64,
     legacy: bool,
     charges: VecDeque<u32>,
+    /// A field the next page's conversation connection leaves out.
+    malformed: Option<&'static str>,
     hold: bool,
     held: usize,
     requests: Vec<Vec<String>>,
@@ -268,6 +270,7 @@ impl Model {
             clock: 0,
             legacy: false,
             charges: VecDeque::new(),
+            malformed: None,
             hold: false,
             held: 0,
             requests: Vec::new(),
@@ -421,6 +424,11 @@ impl Model {
                 100,
             );
             pr["comments"] = connection(&pull.conversation[from..end], end, more, Comment::graphql);
+            if let (Some(left_out), Some(page)) =
+                (self.malformed.take(), pr["comments"].as_object_mut())
+            {
+                page.remove(left_out);
+            }
         }
         if call.flag("reviews") {
             let (from, more, end) = window(call.fields.get("reviewsAfter"), pull.reviews.len(), 50);
@@ -704,6 +712,12 @@ impl ReviewHost {
     /// none left is charged one point.
     pub fn charge(&self, points: &[u32]) {
         self.model().charges.extend(points);
+    }
+
+    /// Answer the next page with its conversation connection missing `field` —
+    /// `pageInfo` or `nodes` — as a host answering partially would.
+    pub fn leave_out_of_next_page(&self, field: &'static str) {
+        self.model().malformed = Some(field);
     }
 
     /// Hold every post until [`release_posts`](Self::release_posts).

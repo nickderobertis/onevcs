@@ -1,3 +1,6 @@
+// llmlint: ignore[new_code_lands_in_a_project] AGENTS.md assigns onevcs-testing
+// to onevcs's workspace targets through crateSource (crates/**/*), as its existing
+// sources are owned; a second crate project would duplicate those workspace checks.
 //! A change request's review feedback, read and answered through the real library.
 //!
 //! A consumer reads review comments and replies to them with `onevcs`'s own

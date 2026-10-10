@@ -337,15 +337,23 @@ impl Cursor {
         }
     }
 
-    fn advance(&mut self, connection: &Value) {
+    /// Move past one page, refusing a page that does not say whether another follows
+    /// or where it starts: read as the last page, it would drop every comment after it.
+    fn advance(&mut self, connection: &Value) -> Result<()> {
         self.more = connection
             .pointer("/pageInfo/hasNextPage")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .ok_or_else(|| invalid("GitHub answered a page of the review read without saying whether another follows"))?;
         self.after = connection
             .pointer("/pageInfo/endCursor")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        if self.more && self.after.is_none() {
+            return Err(invalid(
+                "GitHub said another page of the review read follows without saying where it starts",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -429,7 +437,7 @@ impl Pages {
             }
             if threads.more {
                 let connection = connection(pull, "reviewThreads")?;
-                for node in nodes(connection) {
+                for node in nodes(connection)? {
                     let comments_of = connection_of(node, "comments")?;
                     let thread = Thread {
                         id: text(node, "id")?,
@@ -440,41 +448,44 @@ impl Pages {
                             .and_then(|line| u32::try_from(line).ok()),
                         resolved: flag(node, "isResolved")?,
                         outdated: flag(node, "isOutdated")?,
-                        comments: nodes(comments_of).map(Raw::of).collect::<Result<_>>()?,
+                        comments: nodes(comments_of)?
+                            .iter()
+                            .map(Raw::of)
+                            .collect::<Result<_>>()?,
                     };
                     let mut cursor = Cursor::start();
-                    cursor.advance(comments_of);
+                    cursor.advance(comments_of)?;
                     if cursor.more {
                         long.push_back((pages.threads.len(), cursor.after));
                     }
                     pages.threads.push(thread);
                 }
-                threads.advance(connection);
+                threads.advance(connection)?;
             }
             if conversation.more {
                 let connection = connection(pull, "comments")?;
-                for node in nodes(connection) {
+                for node in nodes(connection)? {
                     pages.conversation.push(Raw::of(node)?);
                 }
-                conversation.advance(connection);
+                conversation.advance(connection)?;
             }
             if reviews.more {
                 let connection = connection(pull, "reviews")?;
-                for node in nodes(connection) {
+                for node in nodes(connection)? {
                     let state = text(node, "state")?.to_ascii_lowercase();
                     pages.reviews.push((Raw::of(node)?, state));
                 }
-                reviews.advance(connection);
+                reviews.advance(connection)?;
             }
             if let Some((index, _)) = inner {
                 let continued = data
                     .pointer("/thread/comments")
                     .ok_or_else(|| invalid("GitHub answered a thread's next page without it"))?;
-                for node in nodes(continued) {
+                for node in nodes(continued)? {
                     pages.threads[index].comments.push(Raw::of(node)?);
                 }
                 let mut cursor = Cursor::start();
-                cursor.advance(continued);
+                cursor.advance(continued)?;
                 if cursor.more {
                     long.push_front((index, cursor.after));
                 }
@@ -499,12 +510,13 @@ fn connection_of<'a>(node: &'a Value, name: &str) -> Result<&'a Value> {
     })
 }
 
-fn nodes(connection: &Value) -> impl Iterator<Item = &Value> {
+/// A page's comments, refused when the page carries no list of them rather than read
+/// as a page with none.
+fn nodes(connection: &Value) -> Result<&Vec<Value>> {
     connection
         .get("nodes")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .ok_or_else(|| invalid("GitHub answered a page of the review read without its nodes"))
 }
 
 fn text(node: &Value, name: &str) -> Result<String> {

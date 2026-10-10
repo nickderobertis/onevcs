@@ -958,6 +958,46 @@ fn what_cannot_be_posted_is_refused_and_nothing_reaches_the_host() {
 }
 
 #[test]
+fn a_page_that_does_not_say_what_it_holds_or_whether_more_follows_is_refused() {
+    let (world, host) = reviewed();
+    host.conversation(1, VIEWER, "Mention the synthetic base.");
+    // Read as a finished page, either would drop every comment after it in silence.
+    for (field, said) in [
+        ("pageInfo", "without saying whether another follows"),
+        ("nodes", "without its nodes"),
+    ] {
+        host.leave_out_of_next_page(field);
+        let output = world
+            .onevcs()
+            .args(["change", "comments", CHANGE])
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{field}: {stderr}");
+        assert!(stderr.contains(said), "{said:?} in {stderr}");
+    }
+    assert!(
+        change_events_or_none(&world).is_empty(),
+        "a read that failed records nothing"
+    );
+    assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 1);
+}
+
+/// The events on the change request's own stream, or none where nothing wrote one.
+fn change_events_or_none(world: &World) -> Vec<Value> {
+    let written = std::fs::read_dir(world.home().join("streams")).is_ok_and(|mut entries| {
+        entries.any(|entry| {
+            entry.is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("change-"))
+        })
+    });
+    if written {
+        change_events(world)
+    } else {
+        Vec::new()
+    }
+}
+
+#[test]
 fn a_reply_the_public_boundary_refuses_posts_nothing() {
     let host = Boundary::new("{publication: change-open, approvals: required}");
     host.private("hiddenco/quietharbor", &[]);
