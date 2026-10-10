@@ -4366,7 +4366,11 @@ onevcs stack-base REPO --branch B --root R --parent P1 --parent P2 [--parent P].
   `Conflicted` again; one whose conflicts are all staged and uncommitted is refused as a
   sync conflict naming the commit that concludes it, and the session is left holding it.
 - Every other call closes the session it worked in before answering, the branch handed
-  back to the execution checkout as every close hands one back.
+  back to the execution checkout as every close hands one back. A call that fails once
+  it has begun merging — a boundary refusal, a push the origin declines — first puts the
+  branch back at the commit it found it at, so a merge that never reached the origin is
+  never the copy the next call continues; a branch that copy leaves at a root it has not
+  moved past is still absent, and the next successful call is `Created`.
 
 **What it does not do.** No change request is opened, and the push does not run the
 repository's merge path — it is pushed as `preserve` pushes, without the `pre-push` hook
@@ -4399,9 +4403,11 @@ Event kinds added: `stack-base-assembled`.
 
 **The testing crate follows by needing nothing.** `assemble_stack_base` asks
 `providers.hosting` for the public boundary's visibility read and nothing else, and the
-repository side is git's own, as `preserve`'s is — so a consumer drives it over a real
-on-disk origin with `onevcs-testing`'s hosts, which already answer that read, and its
-existing surface does not move.
+repository side is git's own, as `preserve`'s is: it asks `providers.vcs` nothing, and the
+session it may leave is one of this host's state root. So a consumer drives it over a real
+on-disk origin with `onevcs-testing`'s hosts — which leave that read at the seam's
+default, recorded as unknown and therefore screened like any other unanswered
+destination — and the testing crate's existing surface does not move.
 
 ## Recovery detail and branch tips
 
