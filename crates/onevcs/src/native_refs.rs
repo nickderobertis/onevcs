@@ -35,19 +35,15 @@ thread_local! {
     static CANONICAL: RefCell<HashMap<PathBuf, Option<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
+    // Closed here, inside the read that opened them, so what a read costs its caller
+    // is all of it: nothing it opened outlives it or waits for anything later.
     crate::native_objects::clear();
-    let opened: Vec<Box<dyn Send>> = vec![
-        Box::new(SNAPSHOTS.with(|snapshots| std::mem::take(&mut *snapshots.borrow_mut()))),
-        Box::new(
-            OBJECT_REPOSITORIES
-                .with(|repositories| std::mem::take(&mut *repositories.borrow_mut())),
-        ),
-        Box::new(STORES.with(|stores| std::mem::take(&mut *stores.borrow_mut()))),
-    ];
+    CONFIGURATIONS.with(|configurations| configurations.borrow_mut().clear());
+    SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().clear());
+    OBJECT_REPOSITORIES.with(|repositories| repositories.borrow_mut().clear());
+    STORES.with(|stores| stores.borrow_mut().clear());
     BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
     CANONICAL.with(|canonical| canonical.borrow_mut().clear());
-    CONFIGURATIONS.with(|configurations| configurations.borrow_mut().clear());
-    release(opened);
 }
 /// `std::fs::canonicalize`, resolved once per path within a read.
 ///
@@ -88,30 +84,6 @@ pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
             .insert(path.to_owned(), resolved.clone())
     });
     resolved
-}
-/// Let go of the repositories one read opened, off the read's own path.
-///
-/// Closing a repository unmaps its packs and frees every object it read, which is
-/// work the answer does not wait on: a read that opened hundreds hands them to one
-/// thread that closes them while the caller goes on. Where that thread cannot be
-/// had, they are closed here, as before.
-fn release(opened: Vec<Box<dyn Send>>) {
-    type Batch = Vec<Box<dyn Send>>;
-    static RELEASED: std::sync::OnceLock<Option<std::sync::Mutex<std::sync::mpsc::Sender<Batch>>>> =
-        std::sync::OnceLock::new();
-    let sender = RELEASED.get_or_init(|| {
-        let (sender, received) = std::sync::mpsc::channel::<Batch>();
-        std::thread::Builder::new()
-            .name("onevcs-release".into())
-            .spawn(move || received.into_iter().for_each(drop))
-            .ok()
-            .map(|_| std::sync::Mutex::new(sender))
-    });
-    let unsent = match sender.as_ref().map(|sender| sender.lock()) {
-        Some(Ok(sender)) => sender.send(opened).err().map(|unsent| unsent.0),
-        _ => Some(opened),
-    };
-    drop(unsent);
 }
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
