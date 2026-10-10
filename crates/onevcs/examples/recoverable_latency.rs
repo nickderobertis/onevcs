@@ -32,10 +32,32 @@ fn load1() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// How the timed calls are made.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// One untimed priming call, then every call over unchanged state.
+    Warm,
+    /// Every proof and index cache removed before each call.
+    Cold,
+    /// The caches removed once, under a `GIT_*` override the caller sets.
+    Uncached,
+}
+
 struct Arguments {
     launcher: String,
     calls: usize,
-    mode: String,
+    mode: Mode,
+}
+
+/// A launcher label's value as the label grammar takes one: a non-empty string with
+/// no control character, since a value is printed on one line wherever it is shown.
+fn launcher(value: String) -> Result<String, String> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(format!(
+            "--launcher {value:?} is not a label value: it must be non-empty and hold no control character"
+        ));
+    }
+    Ok(value)
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -48,7 +70,7 @@ fn arguments() -> Result<Arguments, String> {
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
-            "--launcher" => launcher = Some(value),
+            "--launcher" => launcher = Some(self::launcher(value)?),
             "--calls" => {
                 calls = Some(
                     value
@@ -58,8 +80,13 @@ fn arguments() -> Result<Arguments, String> {
                         .ok_or_else(|| format!("--calls {value:?} is not a positive count"))?,
                 )
             }
-            "--mode" if matches!(value.as_str(), "warm" | "cold" | "uncached") => {
-                mode = Some(value)
+            "--mode" => {
+                mode = Some(match value.as_str() {
+                    "warm" => Mode::Warm,
+                    "cold" => Mode::Cold,
+                    "uncached" => Mode::Uncached,
+                    _ => return Err(format!("--mode {value:?} is not warm, cold or uncached")),
+                })
             }
             _ => return Err(format!("unexpected argument {flag} {value}")),
         }
@@ -89,17 +116,17 @@ fn run() -> Result<serde_json::Value, String> {
         Git.recoverable_matching(Scope::All, &selection)
             .map_err(|failure| format!("recoverable_matching failed: {failure}"))
     };
-    match arguments.mode.as_str() {
-        "warm" => {
+    match arguments.mode {
+        Mode::Warm => {
             read()?;
         }
-        "uncached" => clear()?,
-        _ => {}
+        Mode::Uncached => clear()?,
+        Mode::Cold => {}
     }
     let mut samples = Vec::new();
     let mut last = Vec::new();
     for _ in 0..arguments.calls {
-        if arguments.mode == "cold" {
+        if arguments.mode == Mode::Cold {
             clear()?;
         }
         let load = load1();

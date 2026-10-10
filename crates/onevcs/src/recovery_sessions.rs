@@ -13,7 +13,7 @@ mod unix {
 
     use crate::error::{self, Result};
     use crate::session::Selection;
-    use crate::workspace::{self, Record};
+    use crate::workspace::{self, Record, Ref, Token};
 
     /// The shape of the document below. A document of any other is rebuilt.
     const VERSION: u32 = 3;
@@ -26,7 +26,7 @@ mod unix {
     /// file it was read from: its token, its stamp, then its identity, branch, clone,
     /// execution checkout and labels — the values most records share being indexes
     /// into the document's tables.
-    type Entry = (String, Stamp, usize, String, PathBuf, usize, usize);
+    type Entry = (Token, Stamp, usize, Ref, PathBuf, usize, usize);
 
     /// The whole document, held to one digest of its own text: a hint that was
     /// corrupted into another valid one would narrow a selection away from its rows.
@@ -121,7 +121,7 @@ mod unix {
             tables
         }
 
-        fn entry(&mut self, token: &str, stamp: Stamp, record: &Record) -> Entry {
+        fn entry(&mut self, stamp: Stamp, record: &Record) -> Entry {
             let identity = *self
                 .identity_at
                 .entry(record.identity.clone())
@@ -144,10 +144,10 @@ mod unix {
                     self.labels.len() - 1
                 });
             (
-                token.to_owned(),
+                record.token.clone(),
                 stamp,
                 identity,
-                record.branch.to_string(),
+                record.branch.clone(),
                 record.clone.clone(),
                 checkout,
                 labels,
@@ -220,7 +220,7 @@ mod unix {
             .collect();
         let mut known: HashMap<String, Entry> = std::mem::take(&mut index.hints)
             .into_iter()
-            .map(|entry| (entry.0.clone(), entry))
+            .map(|entry| (entry.0.to_string(), entry))
             .collect();
         let remembered = known.len();
         let mut fresh: Vec<Entry> = Vec::with_capacity(listed.len());
@@ -242,10 +242,10 @@ mod unix {
         let mut loaded = HashMap::new();
         for ((token, stamp), record) in changed.into_iter().zip(read) {
             let record = record?;
-            fresh.push(tables.entry(&token, stamp, &record));
+            fresh.push(tables.entry(stamp, &record));
             loaded.insert(token, record);
         }
-        fresh.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        fresh.sort_unstable_by(in_token_order);
         let named = |token: &str| selection.sessions.iter().any(|asked| *asked.0 == *token);
         let labelled: Vec<bool> = tables
             .labels
@@ -264,27 +264,26 @@ mod unix {
                 identities.insert(*identity);
             }
             if (selection.sessions.is_empty() || asked) && labelled[*labels] {
-                branches.insert(branch.as_str());
+                branches.insert(&**branch);
                 checkouts.insert(clone.as_path());
                 checkouts.insert(tables.checkouts[*checkout].as_path());
             }
         }
-        let wanted: Vec<&String> = fresh
+        let wanted: Vec<&str> = fresh
             .iter()
             .filter(|(token, _, identity, branch, clone, _, _)| {
                 named(token)
                     || (identities.contains(identity)
-                        && (branches.contains(branch.as_str())
-                            || checkouts.contains(clone.as_path())))
+                        && (branches.contains(&**branch) || checkouts.contains(clone.as_path())))
             })
-            .map(|(token, ..)| token)
+            .map(|(token, ..)| &**token)
             .collect();
-        let unread: Vec<&String> = wanted
+        let unread: Vec<&str> = wanted
             .iter()
             .copied()
             .filter(|token| !loaded.contains_key(*token))
             .collect();
-        let mut reread: BTreeMap<&String, Result<Record>> = unread
+        let mut reread: BTreeMap<&str, Result<Record>> = unread
             .iter()
             .copied()
             .zip(crate::vcs::concurrently(&unread, |token| {
@@ -304,6 +303,11 @@ mod unix {
             store(&path, &directory, &tables, &fresh);
         }
         Ok(records)
+    }
+
+    /// Two hints in the order their tokens sort, which is the order records are read in.
+    fn in_token_order(left: &Entry, right: &Entry) -> std::cmp::Ordering {
+        (*left.0).cmp(&*right.0)
     }
 
     /// Write the hints with only the table values they still use.

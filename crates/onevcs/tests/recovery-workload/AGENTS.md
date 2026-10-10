@@ -23,8 +23,9 @@ every cache under `cache/recoverable/v1` removed before each) and the journey ho
 every call's rows to an `uncached` read (a `GIT_*` override refuses proofs and
 in-process reads). `scripts/recoverable-latency-budget.mjs` reports the slowest.
 
-`oracle-decision-{1,10}.json` are onevcs 0.43.1's launcher-filtered Decision rows
-(and its cold Git count) over the same fixtures, recorded by running the journey with
+`oracle-decision-{1,10}.json` hold onevcs 0.43.1's launcher-filtered Decision rows
+— by count and the SHA-256 of the normalized rows, so the documents stay small — and
+its cold Git count over the same fixtures, recorded by running the journey with
 `ONEVCS_DECISION_BASELINE_BINARY` naming a 0.43.1 binary and
 `ONEVCS_BASELINE_ORACLE_DIR` naming where to write them; with the binary named, every
 read is also compared live. At the smaller workload the oracle holds each other

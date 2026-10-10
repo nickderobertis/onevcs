@@ -193,7 +193,12 @@ fn decision_reads(fixture: &Fixture, program: Option<&std::ffi::OsStr>) -> Value
             .into_iter()
             .map(|(launcher, all)| {
                 let rows = query_launcher(fixture, &launcher, "decision", all, None, None, program);
-                json!({"launcher": launcher, "all": all, "rows": normalized(&rows, fixture)})
+                // Held by digest: the rows themselves are what any 0.43.1 binary
+                // prints again, and the recorded document stays small.
+                let rows = normalized(&rows, fixture);
+                let count = rows.as_array().map_or(0, Vec::len);
+                let rows = serde_json::to_vec(&rows).expect("rows");
+                json!({"launcher": launcher, "all": all, "rows": count, "sha256": digest(&rows)})
             })
             .collect(),
     )
