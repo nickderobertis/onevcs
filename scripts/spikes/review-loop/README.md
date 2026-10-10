@@ -10,7 +10,8 @@ directly against a disposable repository whose name ends in `-smoke`.
 on `A`, `C`, a pushed synthetic base `S` (main + A + C) and `D` on `S`; posts a line
 comment, a review summary and a conversation comment, and edits one; reads every pull
 request's feedback through REST (with and without `If-None-Match`), GraphQL per pull
-request and GraphQL batched, recording calls, allowance deltas, bytes and wall time;
+request and GraphQL batched over 4 and 10 drafts (and once over 150, the plan's busiest
+hour), recording calls, allowance deltas, bytes and wall time;
 replies with the hidden `onevcs:reply` marker and attempts a threaded reply to the
 review summary; probes whether a 304 is charged; restacks by merge; opens a cold-host
 `onevcs` session on `B` with a fresh `ONEVCS_HOME` and publishes it as a draft; and

@@ -46,6 +46,8 @@ REST_ENDPOINTS = (
     ("reviews", "pulls/{n}/reviews"),
 )
 PROBE_BURST = 20
+BATCH_SIZES = (4, 10)
+WORKLOAD_DRAFTS = 150
 
 PR_FIELDS = """
 fragment Feedback on PullRequest {
@@ -550,15 +552,39 @@ class Run:
             self.payloads.setdefault(name, {})[f"{key}:graphql"] = resp.json()["data"][
                 "repository"
             ]["pullRequest"]
-        self.gh.graphql(
-            batched_query(self.numbers),
-            {"owner": self.gh.owner, "name": self.gh.name},
-            phase=phase,
-            label="graphql-batched",
-            pr="ALL",
-        )
+        for size in BATCH_SIZES:
+            self.read_batched(phase, size)
         entry["reads"] = [c for c in self.ledger.calls if c["phase"] == phase]
         self.rounds.append(entry)
+
+    def read_batched(self, phase: str, size: int) -> dict[str, Any]:
+        """One aliased query over `size` drafts, cycling the stack's four.
+
+        The stack holds four pull requests, so a pass over ten (or a hundred and
+        fifty) reads each of them again under a further alias: GitHub resolves and
+        charges every alias, which is what a query over that many drafts costs.
+        """
+        aliases = {f"{PRS[i % 4]}{i}": self.numbers[PRS[i % 4]] for i in range(size)}
+        resp = self.gh.graphql(
+            batched_query(aliases),
+            {"owner": self.gh.owner, "name": self.gh.name},
+            phase=phase,
+            label=f"graphql-batched-{size}",
+            pr="ALL",
+        )
+        return resp.json()
+
+    def probe_scale(self) -> None:
+        """The workload's whole hour in one query: 150 drafts, once."""
+        payload = self.read_batched("scale", WORKLOAD_DRAFTS)
+        call = self.ledger.calls[-1]
+        self.facts["scale_150"] = {
+            "graphql_cost": call.get("graphql_cost"),
+            "used_delta": call["used_delta"],
+            "seconds": call["seconds"],
+            "bytes": call["bytes"],
+            "errors": payload.get("errors"),
+        }
 
     def probe_304(self) -> None:
         """A burst of conditional reads against a burst of unconditional ones."""
@@ -982,11 +1008,11 @@ def summarise(run: Run) -> dict[str, Any]:
             "batched": [
                 {
                     k: c.get(k)
-                    for k in ("graphql_cost", "used_delta", "bytes", "seconds")
+                    for k in ("label", "graphql_cost", "used_delta", "bytes", "seconds")
                 }
                 for c in calls
                 if c["phase"] == f"read:{r['round']}"
-                and c["label"] == "graphql-batched"
+                and c["label"].startswith("graphql-batched")
             ]
         }
         for r in run.rounds
@@ -1003,7 +1029,7 @@ def summarise(run: Run) -> dict[str, Any]:
         "rest-plain",
         "rest-conditional",
         "graphql-per-pr",
-        "graphql-batched",
+        *(f"graphql-batched-{n}" for n in BATCH_SIZES),
     ):
         for status_kind in ("200", "304"):
             secs = [
@@ -1233,6 +1259,7 @@ def main() -> int:
         run.read_round("after-replies", ["B: thread reply", "D: conversation reply"])
         run.read_round("unchanged-2", [])
         run.probe_304()
+        run.probe_scale()
         run.restack()
         run.read_round("after-restack", ["A, B, D: pushes only, no comment changed"])
         run.resolve_thread()
