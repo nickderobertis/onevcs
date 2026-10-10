@@ -38,8 +38,10 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::git;
+use crate::host::Sha;
 use crate::rules::{RulesFile, TrailerPrefix};
 use crate::session::Provenance;
+use crate::workspace::Ref;
 
 /// The prefix every provenance trailer key carries when nothing configures one.
 pub(crate) const DEFAULT_PREFIX: &str = "Onevcs-";
@@ -150,10 +152,10 @@ impl Trailers {
 /// stood.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StackMerge {
-    /// The branch merged.
-    pub branch: String,
-    /// The commit it was merged at.
-    pub head: String,
+    /// The branch merged, as git's own grammar accepts a branch name.
+    pub branch: Ref,
+    /// The commit it was merged at, a full object id.
+    pub head: Sha,
 }
 
 /// The `Stack-Base` trailer a merge of `branch` at `head` carries.
@@ -163,17 +165,20 @@ pub(crate) fn stack_base_trailer(trailers: &Trailers, branch: &str, head: &str) 
 
 /// The merges a commit message's `Stack-Base` trailers record, in the order written.
 ///
-/// A value that is not `<branch>@<sha>` is not one — the split is at the last `@`,
-/// because a branch name may carry one and a sha cannot.
+/// A commit message is whatever its writer typed, so a trailer is input: a value that
+/// is not `<branch>@<sha>` — a branch git would not accept, or anything but a full
+/// object id after the last `@` (a branch name may carry one, a sha cannot) — is not
+/// one, and is passed over rather than reported as a parent.
 fn stack_merges(message: &str, trailers: &Trailers) -> Vec<StackMerge> {
     message
         .lines()
         .filter_map(|line| line.trim().strip_prefix(trailers.stack_base()))
         .filter_map(|value| {
             let (branch, head) = value.trim().rsplit_once('@')?;
-            (!branch.is_empty() && !head.is_empty()).then(|| StackMerge {
-                branch: branch.to_owned(),
-                head: head.to_owned(),
+            let head = git::ObjectId::parse(head)?;
+            Some(StackMerge {
+                branch: Ref::try_from(branch.to_owned()).ok()?,
+                head: Sha(head.as_str().to_owned()),
             })
         })
         .collect()
@@ -202,7 +207,7 @@ pub(crate) fn stack_base_of<'a>(
         .flat_map(|commit| stack_merges(&commit.message, trailers))
     {
         recorded = true;
-        if merge.branch == root {
+        if *merge.branch == *root {
             continue;
         }
         match parents

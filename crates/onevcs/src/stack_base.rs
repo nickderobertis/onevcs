@@ -84,6 +84,11 @@ pub struct StackBaseRequest {
 /// branch already carrying.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackParent {
+    // llmlint: ignore[invalid_states_unrepresentable] the stack-base amendment in
+    // `docs/contract.md` fixes this field as `String`, and three plan nodes restate that
+    // shape, so a branch-name newtype here would change an interface this crate may not
+    // change alone. Every value it carries is one `assemble` already held to git's
+    // ref-name grammar, or one `status` read back through `Ref`'s own conversion.
     /// The parent branch.
     pub branch: String,
     /// The commit the origin had it at when this assembly read it.
@@ -93,6 +98,9 @@ pub struct StackParent {
 /// What one assembly of a stack base did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackBase {
+    // llmlint: ignore[invalid_states_unrepresentable] fixed as `String` by the same
+    // amendment, for the same reason as `StackParent::branch`; the value is the request's
+    // own branch, which `assemble` refuses unless git's ref-name grammar accepts it.
     /// The stack base branch.
     pub branch: String,
     /// Where the branch stands: what was pushed, what the origin already had, or —
@@ -453,15 +461,16 @@ fn validate(request: &StackBaseRequest) -> Result<()> {
     if request.branch == request.root || request.parents.contains(&request.branch) {
         return Err(error::invalid(format!(
             "stack base {branch:?} is also named as its own root or parent, so it would be \
-             merged into itself; name the stack base's own branch with --branch and what it \
-             merges with --root and --parent",
+             merged into itself and nothing was assembled or pushed; name the stack base's own \
+             branch with --branch and what it merges with --root and --parent",
             branch = request.branch,
         )));
     }
     if request.parents.contains(&request.root) {
         return Err(error::invalid(format!(
-            "{root:?} is named as both the root and a parent; the root is merged first on its \
-             own, so name only the branches above it with --parent",
+            "{root:?} is named as both the root and a parent, so nothing was assembled or \
+             pushed; the root is merged first on its own, so name only the branches above it \
+             with --parent",
             root = request.root,
         )));
     }
@@ -469,7 +478,8 @@ fn validate(request: &StackBaseRequest) -> Result<()> {
     for parent in &request.parents {
         if seen.contains(&parent) {
             return Err(error::invalid(format!(
-                "parent {parent:?} is named twice; each parent is merged once, in the order named"
+                "parent {parent:?} is named twice, so nothing was assembled or pushed; each \
+                 parent is merged once, in the order named"
             )));
         }
         seen.push(parent);

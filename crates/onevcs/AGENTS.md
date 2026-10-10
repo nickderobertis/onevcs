@@ -378,8 +378,8 @@ clone.
 
 `stack_base.rs` is `onevcs stack-base` and `assemble_stack_base`: a branch cut from a
 root carrying a merge of several parents, which a change depending on several unlanded
-changes is drafted against. The shapes are the stack-base amendment's in
-`docs/contract.md`, which three plan nodes restate. Five things are easy to undo.
+changes is drafted against. Three plan nodes restate its shapes, so none of them is
+this crate's to rename alone. Five things are easy to undo.
 
 - **Every move is forward, and every merge is a merge commit.** `--no-ff` always, the
   root merged before the parents, a parent already contained never merged again, and

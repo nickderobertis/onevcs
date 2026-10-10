@@ -392,9 +392,35 @@ fn a_conflict_is_left_in_a_session_and_the_same_request_finishes_the_base_once_i
         String::from_utf8_lossy(&holders.stdout)
     );
 
-    // The worker resolves it in that session and commits, as `git` concludes a merge.
+    // Asked again before anybody resolves it, the same request resumes that session and
+    // answers the same conflict — here as a person reads it, naming the session and
+    // where to resolve it.
+    let again = stack.assemble(&parents, &[]);
+    assert_eq!(again.status.code(), Some(3));
+    let stdout = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        stdout.starts_with("conflicted: stack base") && stdout.contains(&token),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        stderr.contains(&format!("resolve the conflict in {}", worktree.display())),
+        "{stderr}"
+    );
+
+    // Staged and not committed is still a merge in progress: refused as a sync conflict
+    // naming the commit that concludes it, and the session keeps the resolution.
     std::fs::write(worktree.join("shared.txt"), "one and two\n").expect("a resolution");
     world.git(&worktree, &["add", "-A"]);
+    let staged = stack.assemble(&parents, &[]);
+    assert_eq!(staged.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&staged.stderr);
+    assert!(stderr.contains("every conflict staged"), "{stderr}");
+    assert!(stderr.contains("commit --no-edit"), "{stderr}");
+    assert_eq!(world.git(&worktree, &["rev-parse", "MERGE_HEAD"]), two);
+    assert_eq!(stack.tip(BRANCH), None, "nothing was pushed");
+
+    // The worker commits, as `git` concludes a merge.
     world.git(&worktree, &["commit", "-q", "--no-edit"]);
 
     let advanced = stack.assembled(&parents, 0);
@@ -423,7 +449,121 @@ fn a_conflict_is_left_in_a_session_and_the_same_request_finishes_the_base_once_i
                 .to_owned()
         })
         .collect();
-    assert_eq!(recorded, ["conflicted", "advanced"]);
+    assert_eq!(recorded, ["conflicted", "conflicted", "advanced"]);
+}
+
+#[test]
+fn a_request_no_assembly_could_honour_is_refused_with_nothing_opened_or_pushed() {
+    let stack = Stack::new();
+    let world = &stack.world;
+    stack.parent("feature/a", "a.txt", "a\n");
+    stack.parent("feature/c", "c.txt", "c\n");
+    let refusals: [(&str, &str, &[&str], &str); 7] = [
+        (
+            BRANCH,
+            "main",
+            &["feature/a", "feature/nowhere"],
+            "parent \"feature/nowhere\" is not a branch on the origin",
+        ),
+        (
+            BRANCH,
+            "trunk",
+            &["feature/a", "feature/c"],
+            "root \"trunk\" is not a branch on the origin",
+        ),
+        (
+            "stack-base/..bad",
+            "main",
+            &["feature/a", "feature/c"],
+            "is not a valid branch name",
+        ),
+        (
+            BRANCH,
+            "main",
+            &["feature/a", BRANCH],
+            "is also named as its own root or parent",
+        ),
+        (
+            BRANCH,
+            BRANCH,
+            &["feature/a", "feature/c"],
+            "is also named as its own root or parent",
+        ),
+        (
+            BRANCH,
+            "main",
+            &["main", "feature/a"],
+            "named as both the root and a parent",
+        ),
+        (
+            BRANCH,
+            "main",
+            &["feature/a", "feature/a"],
+            "is named twice",
+        ),
+    ];
+    let before = world.git(&stack.origin, &["for-each-ref"]);
+    for (branch, root, parents, says) in refusals {
+        let mut command = world.onevcs();
+        command.args(["stack-base", "stacked", "--branch", branch, "--root", root]);
+        for parent in parents {
+            command.args(["--parent", parent]);
+        }
+        let output = command.output().expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{says}: {stderr}");
+        assert!(stderr.contains(says), "{says}: {stderr}");
+        assert!(
+            stderr.contains("nothing was assembled or pushed"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(world.git(&stack.origin, &["for-each-ref"]), before);
+    assert!(assemblies(world).is_empty(), "a refusal emits nothing");
+    let sessions = std::fs::read_dir(world.sessions_dir())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(sessions, 0, "a refused request opens no session");
+}
+
+#[test]
+fn a_push_the_origin_declines_fails_and_leaves_the_branch_where_it_was() {
+    let stack = Stack::new();
+    let world = &stack.world;
+    stack.parent("feature/a", "a.txt", "a\n");
+    stack.parent("feature/c", "c.txt", "c\n");
+    stack.assembled(&["feature/a", "feature/c"], 0);
+    let first = stack.tip(BRANCH).expect("the stack base");
+    let recorded = assemblies(world).len();
+
+    let a2 = stack.advance("feature/a", "a.txt", "a, reworked\n");
+    world.install_pre_receive(&stack.origin, "exit 1");
+    let output = stack.assemble(&["feature/a", "feature/c"], &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("declined stack base"), "{stderr}");
+    assert!(stderr.contains("never force-pushed"), "{stderr}");
+    assert_eq!(stack.tip(BRANCH).as_deref(), Some(first.as_str()));
+    assert_eq!(
+        assemblies(world).len(),
+        recorded,
+        "a failed call emits nothing"
+    );
+    // The merge that could not be pushed was not handed back as the branch.
+    assert_eq!(
+        world.git(
+            &stack.checkout,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        ),
+        first
+    );
+
+    // Once the origin takes pushes again, the same request makes the same merge.
+    std::fs::remove_file(stack.origin.join("hooks/pre-receive")).expect("the hook goes");
+    let advanced = stack.assembled(&["feature/a", "feature/c"], 0);
+    assert_eq!(advanced["outcome"]["kind"], "advanced", "{advanced}");
+    let second = stack.tip(BRANCH).expect("the stack base");
+    assert_eq!(stack.commit(&second).0, vec![first, a2]);
 }
 
 #[test]

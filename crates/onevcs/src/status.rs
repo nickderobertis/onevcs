@@ -36,7 +36,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
-use crate::host::{ChangeId, CheckSource, CheckState, Hosting, Sha};
+use crate::host::{ChangeId, CheckSource, CheckState, Hosting};
 use crate::landed::{self, Landed};
 use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
@@ -1394,8 +1394,8 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
                 parents: parents
                     .into_iter()
                     .map(|merge| StackParent {
-                        branch: merge.branch,
-                        head: Sha(merge.head),
+                        branch: merge.branch.into(),
+                        head: merge.head,
                     })
                     .collect(),
             });
