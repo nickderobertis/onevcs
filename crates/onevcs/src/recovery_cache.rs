@@ -388,8 +388,9 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
 /// The answer git would give, made in process from the objects it names, where
-/// this is a shape [`crate::native_objects`] reads — fresh rather than reused, and
-/// only inside a context that admits reuse.
+/// this is a shape [`crate::native_objects`] reads and no stored proof answered —
+/// only inside a context that admits reuse, and stored by the caller as git's
+/// answer would be.
 ///
 /// Only over stores whose every loose object is proved safe to read: libgit2 reads
 /// whatever object a walk reaches, and its inflate never returns from a loose object
@@ -534,15 +535,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     {
         return None;
     }
-    let context = context_of(
-        cwd,
-        if matches!(args.first(), Some(&"diff" | &"merge-tree")) {
-            Compared::Content
-        } else {
-            Compared::Objects
-        },
-        borrowing.as_deref(),
-    )?;
+    let context = context_of(cwd, compared(args), borrowing.as_deref())?;
     let key = crate::ids::digest(
         &serde_json::to_string(&(VERSION, &context.digest, cwd, args, env)).ok()?,
     );
@@ -567,6 +560,23 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         objects,
         stores: context.stores,
     })
+}
+
+/// What a reusable read compares. A merge, and a diff that counts lines, read what
+/// files hold; a listing of changed paths and whether any changed compare tree
+/// entries by object id, which no attribute moves.
+fn compared(args: &[&str]) -> Compared {
+    match args.first() {
+        Some(&"merge-tree") => Compared::Content,
+        Some(&"diff")
+            if !(args.contains(&"--name-only") || args.contains(&"--quiet"))
+                || args.contains(&"--shortstat")
+                || args.contains(&"--numstat") =>
+        {
+            Compared::Content
+        }
+        _ => Compared::Objects,
+    }
 }
 
 /// The context of one repository, computed once within a read.

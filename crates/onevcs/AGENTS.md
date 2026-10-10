@@ -600,10 +600,13 @@ minutes. Three things are easy to undo.
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
 read under a concurrent ref writer to the registered warm budgets.
 
-Inside a context that admits reuse, the immutable reads a decision asks most are not
-reused but answered in process (`native_objects.rs`), never stored, and byte for byte
-as git prints them; any shape or answer git could word differently is still git's.
-Three things are easy to undo.
+Inside a context that admits reuse, the immutable reads a decision asks most are
+answered in process (`native_objects.rs`) where no proof answers them yet, byte for
+byte as git prints them, and stored as a proof exactly as git's answer would be; any
+shape or answer git could word differently is still git's. A stored proof is asked
+first because on a real host's checkouts the in-process answer is not the cheap one:
+a count over a long history or a listing of two large trees made a warm read slower
+than 0.43.1's, which read the same answers from proofs. Four things are easy to undo.
 
 - **No store is read in process until every loose object in it is proved safe to
   read** (`recovery_cache::sound`). libgit2's inflate never returns from a loose
@@ -615,11 +618,15 @@ Three things are easy to undo.
   a read added here that opens a blob needs blobs proved whole, which on a real
   host's stores is hundreds of megabytes.
 - **What only a content comparison reads stays out of what is answered in process.**
-  These reads are admitted by the context that compares no content, so the worktree's
-  `.gitattributes` walk — every directory of the checkout — is paid only by the
-  comparisons that still go through the proofs (`merge-tree` and `--shortstat`). Keep
-  those two there: the small proof-cache journeys in `tests/e2e/labels.rs` observe
-  reuse and invalidation through the proofs they store.
+  These reads, and the proofs of a listing of changed paths or of whether any
+  changed, are keyed by the context that compares no content, so the worktree's
+  `.gitattributes` walk — every directory of the checkout, 200 ms on a real one — is
+  paid only by the comparisons that still go through git (`merge-tree`, `--shortstat`
+  and `--numstat`). Keep those there: the small proof-cache journeys in
+  `tests/e2e/labels.rs` observe reuse and invalidation through the proofs they store.
+  And `git::changed_paths` asks `--shortstat` only of a listing that could be
+  incomplete — an empty one, or one whose pipe failed — since a listing that is text
+  at all is the whole listing.
 - **The commit graph is shared per identity within a read, keyed by the store a commit
   was read from.** A commit read from the checkout store every clone borrows answers
   for all of them; one read from a clone's own store answers for that clone only.

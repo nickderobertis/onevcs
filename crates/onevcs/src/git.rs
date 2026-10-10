@@ -208,19 +208,22 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
-    // A read the admitted context lets this process answer from the objects
-    // themselves costs no process and is never stored as a proof, since it is as
-    // cheap to make again as one would be to check; like any read, it is remembered
-    // for the rest of this read.
-    if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
-        reads::remember(args, cwd, env, &output);
-        return Ok(output);
-    }
     let reusable = crate::recovery_cache::query(args, cwd, env);
     if let Some(output) = reusable
         .as_ref()
         .and_then(crate::recovery_cache::Query::read)
     {
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
+    // A read no proof answers yet, which the admitted context lets this process
+    // answer from the objects themselves, costs no process — and is stored as git's
+    // answer would be, because on a real checkout a walk of a long history or a diff
+    // of two large trees costs more to make again than a proof costs to check.
+    if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
+        if let Some(reusable) = reusable {
+            reusable.write(&output);
+        }
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
@@ -3882,6 +3885,13 @@ pub fn changed_paths<'a>(cwd: impl Into<Asked<'a>>, from: &str, to: &str) -> Res
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect();
+    // A listing that arrived whole is text whole or not at all, so one that names a
+    // path names every path; only an empty one, or one whose pipe failed part way,
+    // can be a listing this process could not read, and only those are held to git's
+    // count.
+    if !paths.is_empty() && listed.read_failures.is_empty() {
+        return Ok(paths);
+    }
     let counted = counted_files(cwd, from, to)?;
     if paths.len() != counted {
         return Err(Error::Invalid {

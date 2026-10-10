@@ -1745,9 +1745,23 @@ fn an_unreadable_selected_clone_is_a_finding_and_repairs_cleanly() {
     );
 }
 
-/// The common git directory of every repository the last counted read compared
-/// content in: where the proofs it stored were derived.
-fn proof_stores(fixture: &Fixture, counting: &crate::cost::Counting) -> Vec<std::path::PathBuf> {
+/// The common git directory of every repository a read of `args` compares content
+/// in: where the proofs it stores are derived.
+fn proof_stores(
+    fixture: &Fixture,
+    counting: &crate::cost::Counting,
+    args: &[&str],
+) -> Vec<std::path::PathBuf> {
+    // Asked of a read that reuses and answers nothing itself, so every comparison a
+    // proof could stand in for is one git is seen making, wherever it is made.
+    counting.clear();
+    counting
+        .onevcs(&fixture.world)
+        .args(["recoverable", "--json"])
+        .args(args)
+        .env("GIT_NAMESPACE", "")
+        .assert()
+        .success();
     let mut stores = std::collections::BTreeSet::new();
     for call in counting.calls() {
         let mut words = call.args.split_whitespace();
@@ -1799,10 +1813,10 @@ fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
     let original = answered(&fixture, &args, true);
     assert_eq!(original.0, Some(0), "{original:?}");
     let counting = crate::cost::Counting::installed(&fixture.world);
+    let stores = proof_stores(&fixture, &counting, &args);
     forget_proofs(&fixture);
     let (cold, _) = counted(&fixture, &counting, &args);
     let cold_content = content_comparisons(&counting);
-    let stores = proof_stores(&fixture, &counting);
     let asked = counting.calls();
     let (warm, _) = counted(&fixture, &counting, &args);
     let unreused = counting.calls();
@@ -2052,9 +2066,7 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
     );
     // Proofs are derived in the checkout and in the session's clone alike, so a
     // repository-level key is set in each of them.
-    forget_proofs(&fixture);
-    let _ = counted(&fixture, &counting, &args);
-    let stores = proof_stores(&fixture, &counting);
+    let stores = proof_stores(&fixture, &counting, &args);
     assert!(
         stores.len() > 1,
         "the premise: proofs come from more than one repository"
@@ -2334,8 +2346,10 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
     ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
 )]
 fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
-    // A read answered in process is answered as text. Where what it would print is not
-    // text, git is asked instead, so the answer a caller meets is git's own bytes'.
+    // A read answered in process is answered as text, and kept as a proof the way
+    // git's answer is. Where what it would print is not text, git is asked instead,
+    // so the answer a caller meets is git's own bytes' — and an empty listing, the one
+    // a path git printed undecodably leaves, is the one held to git's count of files.
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
@@ -2364,12 +2378,13 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
     // equal either way; which of the two made the listing is the property, and the
     // spawned git is the only place a caller can see it.
     let counting = crate::cost::Counting::installed(world);
-    let listed: Vec<usize> = sessions
+    let reads: Vec<(usize, usize, usize, usize)> = sessions
         .iter()
         .map(|token| {
             let args = ["--detail", "decision", "--session", token, "--all"];
-            let uncached = world
-                .onevcs()
+            counting.clear();
+            let uncached = counting
+                .onevcs(world)
                 .args(["recoverable", "--json"])
                 .args(args)
                 .env("GIT_NAMESPACE", "")
@@ -2377,6 +2392,12 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
                 .success();
             let uncached: Vec<Value> =
                 serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+            let counted = counting
+                .calls()
+                .iter()
+                .filter(|call| call.args.starts_with("diff --shortstat"))
+                .count();
+            let proofs = world.home().join("cache/recoverable/v1/git");
             let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
             counting.clear();
             let cold = counting
@@ -2389,19 +2410,52 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
                 serde_json::from_slice(&cold.get_output().stdout).expect("cold rows");
             assert_eq!(cold, uncached, "{token}: a cold read answers git's rows");
             assert_eq!(cold.len(), 1, "{token}: the session's branch is listed");
-            counting
-                .calls()
+            let calls = counting.calls();
+            let listed = calls
                 .iter()
                 .filter(|call| call.args.starts_with("diff --name-only --no-renames -z"))
-                .count()
+                .count();
+            let reusable = calls
+                .iter()
+                .filter(|call| {
+                    ["diff ", "merge-tree ", "merge-base ", "rev-list ", "log "]
+                        .iter()
+                        .any(|shape| call.args.starts_with(shape))
+                })
+                .count();
+            let stored = std::fs::read_dir(&proofs).map_or(0, |entries| entries.count());
+            (listed, counted, reusable, stored)
         })
         .collect();
+    let (readable, unreadable) = (reads[0], reads[1]);
     assert_eq!(
-        listed[0], 0,
-        "the premise: a listing that is text is answered in process"
+        readable.0, 0,
+        "the premise: a listing that is text is answered in process: {reads:?}"
     );
     assert!(
-        listed[1] > 0,
-        "a listing that is not text is git's to make: {listed:?}"
+        unreadable.0 > 0,
+        "a listing that is not text is git's to make: {reads:?}"
+    );
+    // Only a listing that could be incomplete is held to git's count of files: the
+    // readable branch's one count is the landing comparison's, which holds its own
+    // listing to the count, and the census's listing of the same branch is not
+    // counted again.
+    assert_eq!(
+        readable.1, 1,
+        "a listing naming every path is not counted again: {reads:?}"
+    );
+    assert!(
+        unreadable.1 > 0,
+        "an empty listing is held to git's count: {reads:?}"
+    );
+    // Git made only that count of the readable branch's reusable reads; every proof
+    // beyond it is an answer made in process and kept for the next read.
+    assert_eq!(
+        readable.2, 1,
+        "the premise: git made only the count: {reads:?}"
+    );
+    assert!(
+        readable.3 > readable.2,
+        "what was answered in process is stored: {reads:?}"
     );
 }

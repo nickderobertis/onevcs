@@ -1045,7 +1045,7 @@ fn a_copy_of_a_branch_already_decided_in_another_checkout_is_not_decided_again()
     }
     let counting = Counting::installed(&fixture.world);
 
-    let (rows, calls, _) = counting.recoverable(&fixture.world, &["--all"]);
+    let (rows, calls) = counting.uncached(&fixture.world, &["--all"]);
     for branch in ["feature/unpublished", "feature/recorded"] {
         let decided = decided_in(&calls, branch);
         assert_eq!(
