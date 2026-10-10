@@ -605,10 +605,20 @@ reused but answered in process (`native_objects.rs`), never stored, and byte for
 as git prints them; any shape or answer git could word differently is still git's.
 Three things are easy to undo.
 
-- **No store is read in process until every loose object in it is proved whole**
-  (`recovery_cache::sound`). libgit2's inflate never returns from a loose object cut
-  short, so one truncated ancestor hangs the read; the proof is remembered per listed
-  object identity and bounded per read, and an unproved store goes to git.
+- **No store is read in process until every loose object in it is proved safe to
+  read** (`recovery_cache::sound`). libgit2's inflate never returns from a loose
+  object cut short, so one truncated ancestor hangs the read. Nothing in process reads
+  a blob — the tree diff compares entries, and every named object's type is read off
+  its header first — so a blob is proved by its header and everything else by
+  inflating whole; the proof is remembered per listed object identity and bounded per
+  read, and an unproved store goes to git and the proofs as before. Keep it that way:
+  a read added here that opens a blob needs blobs proved whole, which on a real
+  host's stores is hundreds of megabytes.
+- **What only a content comparison reads stays out of what is answered in process.**
+  These reads are admitted by the context that compares no content, so the worktree's
+  `.gitattributes` walk — every directory of the checkout — is paid only by the
+  comparisons that still go through the proofs (`merge-tree`, and `--shortstat` where
+  the file count cannot be made in process).
 - **The commit graph is shared per identity within a read, keyed by the store a commit
   was read from.** A commit read from the checkout store every clone borrows answers
   for all of them; one read from a clone's own store answers for that clone only.

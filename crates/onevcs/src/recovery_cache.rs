@@ -171,21 +171,6 @@ pub(crate) struct Query {
 }
 
 impl Query {
-    /// The answer git would give, made in process from the objects it names, where
-    /// this is a shape [`crate::native_objects`] reads — inside the context this
-    /// query was admitted under, and fresh rather than reused.
-    ///
-    /// Only over stores whose every loose object is proved whole: libgit2 reads
-    /// whatever object a walk reaches, and its inflate never returns from a loose
-    /// object cut short, where git refuses one. A store not yet proved is left to
-    /// git and the proofs above, exactly as before.
-    pub(crate) fn native(&self, args: &[&str]) -> Option<git::Output> {
-        if !self.stores.iter().all(|(path, store)| sound(path, store)) {
-            return None;
-        }
-        crate::native_objects::answer(args, &self.repo, self.borrowing.as_deref())
-    }
-
     pub(crate) fn read(&self) -> Option<git::Output> {
         let entry: Entry = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
         if entry.version != VERSION
@@ -392,6 +377,52 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
+/// The answer git would give, made in process from the objects it names, where
+/// this is a shape [`crate::native_objects`] reads — fresh rather than reused, and
+/// only inside a context that admits reuse.
+///
+/// Only over stores whose every loose object is proved safe to read: libgit2 reads
+/// whatever object a walk reaches, and its inflate never returns from a loose object
+/// cut short, where git refuses one. A store not yet proved is left to git and the
+/// proofs below, exactly as before. Admitted by the context that compares no content:
+/// none of these reads compares what a file holds, and the worktree's attributes —
+/// which only a content comparison's context reads, and which only a configured
+/// driver could act on, which no admitted context has — cannot move an answer.
+pub(crate) fn native(
+    args: &[&str],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+) -> Option<git::Output> {
+    if !crate::native_objects::reads(args) {
+        return None;
+    }
+    let (cwd, borrowing) = admitted(cwd?, env)?;
+    crate::native_objects::answer(args, cwd, borrowing)
+}
+
+/// The repository and the store it is lent, where this process may read their
+/// objects itself.
+fn admitted<'a>(
+    cwd: &'a Path,
+    env: &'a [(String, String)],
+) -> Option<(&'a Path, Option<&'a Path>)> {
+    if !ENABLED.with(std::cell::Cell::get) {
+        return None;
+    }
+    let borrowing = match env {
+        [] => None,
+        [(name, path)]
+            if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+                && Path::new(path).is_absolute()
+                && !path.contains([':', '"', '\n']) =>
+        {
+            Some(Path::new(path.as_str()))
+        }
+        _ => return None,
+    };
+    readable_in_process(cwd, borrowing).then_some((cwd, borrowing))
+}
+
 pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Query> {
     if !ENABLED.with(std::cell::Cell::get) {
         return None;
@@ -491,23 +522,11 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     {
         return None;
     }
-    let context = CONTEXTS.with(|contexts| {
-        contexts
-            .borrow_mut()
-            .entry(ContextKey {
-                repo: cwd.to_owned(),
-                content: matches!(args.first(), Some(&"diff" | &"merge-tree")),
-                borrowing: borrowing.clone(),
-            })
-            .or_insert_with(|| {
-                context(
-                    cwd,
-                    matches!(args.first(), Some(&"diff" | &"merge-tree")),
-                    borrowing.as_deref(),
-                )
-            })
-            .clone()
-    })?;
+    let context = context_of(
+        cwd,
+        matches!(args.first(), Some(&"diff" | &"merge-tree")),
+        borrowing.as_deref(),
+    )?;
     let key = crate::ids::digest(
         &serde_json::to_string(&(VERSION, &context.digest, cwd, args, env)).ok()?,
     );
@@ -532,6 +551,59 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         objects,
         stores: context.stores,
     })
+}
+
+/// The context of one repository, computed once within a read.
+///
+/// A store the repository already reads as its own is skipped where it is lent, so
+/// the context lent it is the context lent nothing, digest and stores alike, and is
+/// computed once for both.
+#[cfg(unix)]
+fn context_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+    let borrowing = borrowing.filter(|lent| {
+        !PREFIXES.with(|prefixes| {
+            prefixes
+                .borrow_mut()
+                .entry(repo.to_owned())
+                .or_insert_with(|| prefix(repo))
+                .as_ref()
+                .is_some_and(|(_, stores)| stores.iter().any(|(path, _)| path == lent))
+        })
+    });
+    contexts_of(repo, content, borrowing)
+}
+
+#[cfg(not(unix))]
+fn context_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+    contexts_of(repo, content, borrowing)
+}
+
+fn contexts_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+    CONTEXTS.with(|contexts| {
+        contexts
+            .borrow_mut()
+            .entry(ContextKey {
+                repo: repo.to_owned(),
+                content,
+                borrowing: borrowing.map(Path::to_owned),
+            })
+            .or_insert_with(|| context(repo, content, borrowing))
+            .clone()
+    })
+}
+
+/// Whether a repository, lent `borrowing`, is one whose object stores this process
+/// may read in process: its context admits reuse, and every store it reads is proved
+/// sound. What a reader outside a [`Query`] asks before walking objects itself.
+pub(crate) fn readable_in_process(repo: &Path, borrowing: Option<&Path>) -> bool {
+    enabled()
+        && !has_git_overrides()
+        && context_of(repo, false, borrowing).is_some_and(|context| {
+            context
+                .stores
+                .iter()
+                .all(|(path, store)| sound(path, store))
+        })
 }
 
 /// Conservative guard for ordinary files-backend repositories and linked
@@ -828,6 +900,11 @@ fn read_store(root: &Path) -> Option<Store> {
 #[cfg(unix)]
 const PROVED_PER_READ: u64 = 16 << 20;
 
+/// How many loose objects one store may have proved in one read, by their headers
+/// or whole, for the same reason.
+#[cfg(unix)]
+const OBJECTS_PER_READ: usize = 2048;
+
 /// The shape of a store's record of its loose objects proved whole.
 #[cfg(unix)]
 #[derive(Serialize, Deserialize)]
@@ -875,6 +952,7 @@ fn sound(root: &Path, store: &Store) -> bool {
         .collect();
     let mut whole: BTreeSet<String> = BTreeSet::new();
     let mut budget = PROVED_PER_READ;
+    let mut objects = OBJECTS_PER_READ;
     let mut sound = true;
     for line in loose {
         if remembered.contains(line) {
@@ -886,12 +964,27 @@ fn sound(root: &Path, store: &Store) -> bool {
         if !sound {
             continue;
         }
-        let (relative, length) = loose_object(line).expect("a loose object's line");
-        if budget == 0 || !inflates_whole(&root.join(relative)) {
+        if objects == 0 {
             sound = false;
             continue;
         }
-        budget = budget.saturating_sub(length);
+        objects -= 1;
+        let (relative, length) = loose_object(line).expect("a loose object's line");
+        let path = root.join(relative);
+        // A blob is never read in process, so its header saying it is one is enough;
+        // anything else is read whole, so it has to inflate whole.
+        let safe = match loose_header(&path) {
+            Some(blob) if blob.starts_with(b"blob ") => true,
+            Some(_) if budget > 0 => {
+                budget = budget.saturating_sub(length);
+                inflates_whole(&path)
+            }
+            _ => false,
+        };
+        if !safe {
+            sound = false;
+            continue;
+        }
         whole.insert(line.clone());
     }
     if whole != remembered {
@@ -938,6 +1031,36 @@ fn loose_object(line: &str) -> Option<(&str, u64)> {
 /// returns from, and anything zlib refuses is refused here too.
 #[cfg(unix)]
 fn inflates_whole(path: &Path) -> bool {
+    inflate(path, 1 << 16, |_| true) == Some(true)
+}
+
+/// A loose object's header — its type, a space, its size — read off the start of its
+/// stream and nothing further.
+#[cfg(unix)]
+fn loose_header(path: &Path) -> Option<Vec<u8>> {
+    let mut header = Vec::new();
+    let mut ended = false;
+    inflate(path, 512, |chunk| {
+        for byte in chunk {
+            if *byte == 0 {
+                ended = true;
+                return false;
+            }
+            header.push(*byte);
+            if header.len() > 64 {
+                return false;
+            }
+        }
+        true
+    })?;
+    ended.then_some(header)
+}
+
+/// Inflate the file's stream, handing each piece of output to `more` until it asks
+/// for no more: `Some(true)` where the stream ended whole, `Some(false)` where `more`
+/// stopped it, and nothing where zlib refused it or it ran out first.
+#[cfg(unix)]
+fn inflate(path: &Path, chunk: usize, mut more: impl FnMut(&[u8]) -> bool) -> Option<bool> {
     use std::io::Read;
 
     unsafe extern "C" fn allocate(
@@ -953,10 +1076,10 @@ fn inflates_whole(path: &Path) -> bool {
         unsafe { libc::free(address) }
     }
     let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
+        return None;
     };
-    let mut input = vec![0_u8; 1 << 16];
-    let mut output = vec![0_u8; 1 << 16];
+    let mut input = vec![0_u8; chunk];
+    let mut output = vec![0_u8; chunk];
     let mut stream = libz_sys::z_stream {
         next_in: std::ptr::null_mut(),
         avail_in: 0,
@@ -978,12 +1101,12 @@ fn inflates_whole(path: &Path) -> bool {
     unsafe {
         let size = std::mem::size_of::<libz_sys::z_stream>() as std::ffi::c_int;
         if libz_sys::inflateInit_(&mut stream, libz_sys::zlibVersion(), size) != libz_sys::Z_OK {
-            return false;
+            return None;
         }
-        let whole = loop {
+        let ended = loop {
             if stream.avail_in == 0 {
                 match file.read(&mut input) {
-                    Ok(0) | Err(_) => break false,
+                    Ok(0) | Err(_) => break None,
                     Ok(read) => {
                         stream.next_in = input.as_mut_ptr();
                         stream.avail_in = read as libz_sys::uInt;
@@ -992,15 +1115,20 @@ fn inflates_whole(path: &Path) -> bool {
             }
             stream.next_out = output.as_mut_ptr();
             stream.avail_out = output.len() as libz_sys::uInt;
-            match libz_sys::inflate(&mut stream, libz_sys::Z_NO_FLUSH) {
-                libz_sys::Z_STREAM_END => break true,
+            let status = libz_sys::inflate(&mut stream, libz_sys::Z_NO_FLUSH);
+            let produced = output.len() - stream.avail_out as usize;
+            if produced > 0 && !more(&output[..produced]) {
+                break Some(false);
+            }
+            match status {
+                libz_sys::Z_STREAM_END => break Some(true),
                 libz_sys::Z_OK => {}
                 libz_sys::Z_BUF_ERROR if stream.avail_in == 0 => {}
-                _ => break false,
+                _ => break None,
             }
         };
         libz_sys::inflateEnd(&mut stream);
-        whole
+        ended
     }
 }
 

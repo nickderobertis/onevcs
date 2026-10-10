@@ -482,6 +482,7 @@ pub(crate) fn is_ancestor(
         git2::Oid::from_str(descendant).ok()?,
     ];
     if let Some(answer) = lent(env)
+        .filter(|borrowing| crate::recovery_cache::readable_in_process(at, *borrowing))
         .and_then(|borrowing| crate::native_objects::is_ancestor(at, borrowing, named[0], named[1]))
     {
         return Some(answer);

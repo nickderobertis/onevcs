@@ -10,10 +10,15 @@
 //! bases, a message in another encoding) or a read fails, nothing is answered here
 //! and git is asked, so every refusal and every unusual answer stays git's own.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::git::{Ended, ObjectId, Output};
+
+/// Whether `args` is one of the shapes read here.
+pub(crate) fn reads(args: &[&str]) -> bool {
+    Shape::of(args).is_some()
+}
 
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
@@ -260,12 +265,7 @@ impl<'a> Shape<'a> {
                 let mut out = String::new();
                 for revision in revisions {
                     let peeled = match revision {
-                        Peel::Tree(id) => repository
-                            .find_object(*id, None)
-                            .ok()?
-                            .peel_to_tree()
-                            .ok()?
-                            .id(),
+                        Peel::Tree(id) => tree_of(repository, *id)?,
                         Peel::Commit(id) => commit(repository, *id)?.id(),
                         // A commit with no parent is git's refusal to word, not this.
                         Peel::FirstParent(id) => commit(repository, *id)?.parent_id(0).ok()?,
@@ -400,9 +400,12 @@ mod graph {
 
     type Ancestors = Rc<HashSet<git2::Oid>>;
 
+    /// The longest history listed whole to exclude it from a walk.
+    const ANCESTRY: usize = 4096;
+
     thread_local! {
         static COMMITS: RefCell<HashMap<(Source, git2::Oid), Rc<Parsed>>> = RefCell::new(HashMap::new());
-        static ANCESTORS: RefCell<HashMap<(Source, git2::Oid), Ancestors>> = RefCell::new(HashMap::new());
+        static ANCESTORS: RefCell<HashMap<(Source, git2::Oid), Option<Ancestors>>> = RefCell::new(HashMap::new());
     }
 
     pub(super) fn clear() {
@@ -451,10 +454,7 @@ mod graph {
                         .ok()?
                         .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH);
                     held.then(|| {
-                        repository
-                            .find_commit(id)
-                            .ok()
-                            .and_then(|commit| read.take()?(&commit))
+                        super::commit_only(repository, id).and_then(|commit| read.take()?(&commit))
                     })
                 });
                 if let Some(answer) = held {
@@ -462,7 +462,7 @@ mod graph {
                 }
             }
             crate::native_refs::with_objects(&self.at, self.borrowing.as_deref(), |repository| {
-                read.take()?(&repository.find_commit(id).ok()?)
+                read.take()?(&super::commit_only(repository, id)?)
             })
         }
 
@@ -490,7 +490,7 @@ mod graph {
                         .odb()
                         .ok()?
                         .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH)
-                        .then(|| repository.find_commit(id).ok().map(|commit| parse(&commit)))
+                        .then(|| super::commit_only(repository, id).map(|commit| parse(&commit)))
                 });
                 if let Some(read) = read {
                     let parsed = Rc::new(read?);
@@ -505,7 +505,7 @@ mod graph {
             let parsed = Rc::new(crate::native_refs::with_objects(
                 &self.at,
                 self.borrowing.as_deref(),
-                |repository| Some(parse(&repository.find_commit(id).ok()?)),
+                |repository| Some(parse(&super::commit_only(repository, id)?)),
             )?);
             COMMITS.with(|commits| {
                 commits
@@ -606,23 +606,35 @@ mod graph {
         }
 
         /// Every ancestor of `id`, itself included.
+        ///
+        /// Only a history of at most [`ANCESTRY`] commits is listed here — the whole of
+        /// one is what an exclusion takes — and a longer one is left to libgit2's own
+        /// walk, which stops where the exclusions meet; which it is is remembered.
         fn ancestors(&self, id: git2::Oid) -> Option<Ancestors> {
             let key = (self.own(), id);
             if let Some(known) = ANCESTORS.with(|ancestors| ancestors.borrow().get(&key).cloned()) {
-                return Some(known);
+                return known;
             }
             let mut seen = HashSet::from([id]);
             let mut pending = vec![id];
-            while let Some(next) = pending.pop() {
-                for parent in self.commit(next)?.parents.clone() {
+            let listed = loop {
+                let Some(next) = pending.pop() else {
+                    break Some(Rc::new(seen));
+                };
+                let Some(parsed) = self.commit(next) else {
+                    break None;
+                };
+                for parent in parsed.parents.iter().copied() {
                     if seen.insert(parent) {
                         pending.push(parent);
                     }
                 }
-            }
-            let seen = Rc::new(seen);
-            ANCESTORS.with(|ancestors| ancestors.borrow_mut().insert(key, seen.clone()));
-            Some(seen)
+                if seen.len() > ANCESTRY {
+                    break None;
+                }
+            };
+            ANCESTORS.with(|ancestors| ancestors.borrow_mut().insert(key, listed.clone()));
+            listed
         }
 
         /// The commits reachable from `to` and from none of `from`.
@@ -685,7 +697,13 @@ fn peel(revision: &str) -> Option<Peel> {
 /// The commit an id names, peeling an annotated tag the way git's revision parser
 /// does; anything that is not one is git's to refuse.
 fn commit(repository: &git2::Repository, id: git2::Oid) -> Option<git2::Commit<'_>> {
-    repository.find_object(id, None).ok()?.peel_to_commit().ok()
+    // Asked of the header first, so that what is read whole is a commit or a tag and
+    // never a blob: no blob is read in process.
+    match kind(repository, id)? {
+        git2::ObjectType::Commit => repository.find_commit(id).ok(),
+        git2::ObjectType::Tag => commit(repository, repository.find_tag(id).ok()?.target_id()),
+        _ => None,
+    }
 }
 
 /// What `%B` prints: every byte of the message after the header, as stored — where
@@ -733,35 +751,107 @@ fn linear_range(
 
 /// The paths two trees differ at, in git's order, narrowed to the literal paths
 /// given: a path is named where it is one of them or lies beneath one.
+///
+/// Compared entry by entry, which is what a tree-to-tree diff without renames is:
+/// an entry whose id and mode both match is the same, a tree is descended into, and
+/// every other difference names its path — a file that became a tree, and a tree that
+/// became a file, name the file and every path under the tree. Only trees are read,
+/// never a blob, which is what lets a store be read here once its trees and commits
+/// are proved whole.
 fn changed(
     repository: &git2::Repository,
     a: git2::Oid,
     b: git2::Oid,
     paths: &[&[u8]],
 ) -> Option<BTreeSet<Vec<u8>>> {
-    let tree = |id| repository.find_object(id, None).ok()?.peel_to_tree().ok();
-    let (a, b) = (tree(a)?, tree(b)?);
-    let mut options = git2::DiffOptions::new();
-    options.include_typechange(true).ignore_submodules(false);
-    let diff = repository
-        .diff_tree_to_tree(Some(&a), Some(&b), Some(&mut options))
-        .ok()?;
+    let (a, b) = (tree_of(repository, a)?, tree_of(repository, b)?);
     let mut names = BTreeSet::new();
-    for delta in diff.deltas() {
-        for file in [delta.old_file(), delta.new_file()] {
-            if let Some(path) = file.path_bytes() {
-                let wanted = paths.is_empty()
-                    || paths.iter().any(|spec| {
-                        path == *spec
-                            || (path.starts_with(spec) && path.get(spec.len()) == Some(&b'/'))
-                    });
-                if wanted {
-                    names.insert(path.to_vec());
-                }
-            }
-        }
-    }
+    differ(repository, Some(a), Some(b), &mut Vec::new(), &mut names)?;
+    names.retain(|path: &Vec<u8>| {
+        paths.is_empty()
+            || paths.iter().any(|spec| {
+                path.as_slice() == *spec
+                    || (path.starts_with(spec) && path.get(spec.len()) == Some(&b'/'))
+            })
+    });
     Some(names)
+}
+
+/// A tree entry's mode for a tree.
+const TREE: i32 = 0o040_000;
+
+/// One tree's entries by name: each id and mode.
+type Entries = BTreeMap<Vec<u8>, (git2::Oid, i32)>;
+
+/// Every path under `prefix` at which the trees `old` and `new` differ.
+fn differ(
+    repository: &git2::Repository,
+    old: Option<git2::Oid>,
+    new: Option<git2::Oid>,
+    prefix: &mut Vec<u8>,
+    names: &mut BTreeSet<Vec<u8>>,
+) -> Option<()> {
+    if old == new {
+        return Some(());
+    }
+    let entries = |id: Option<git2::Oid>| -> Option<Entries> {
+        let Some(id) = id else {
+            return Some(BTreeMap::new());
+        };
+        let tree = repository.find_tree(id).ok()?;
+        Some(
+            tree.iter()
+                .map(|entry| (entry.name_bytes().to_vec(), (entry.id(), entry.filemode())))
+                .collect(),
+        )
+    };
+    let (before, after) = (entries(old)?, entries(new)?);
+    let mut named: BTreeSet<&Vec<u8>> = before.keys().collect();
+    named.extend(after.keys());
+    let tree = |entry: Option<&(git2::Oid, i32)>| {
+        entry.and_then(|(id, mode)| (*mode == TREE).then_some(*id))
+    };
+    let file = |entry: Option<&(git2::Oid, i32)>| entry.is_some_and(|(_, mode)| *mode != TREE);
+    for name in named {
+        let (was, is) = (before.get(name), after.get(name));
+        if was == is {
+            continue;
+        }
+        let length = prefix.len();
+        prefix.extend_from_slice(name);
+        if file(was) || file(is) {
+            names.insert(prefix.clone());
+        }
+        if tree(was).is_some() || tree(is).is_some() {
+            prefix.push(b'/');
+            differ(repository, tree(was), tree(is), prefix, names)?;
+        }
+        prefix.truncate(length);
+    }
+    Some(())
+}
+
+/// What an object is, read from its header alone.
+fn kind(repository: &git2::Repository, id: git2::Oid) -> Option<git2::ObjectType> {
+    Some(repository.odb().ok()?.read_header(id).ok()?.1)
+}
+
+/// The commit `id` names where it is one, asked of its header before it is read
+/// whole, so that no blob is ever read in process.
+fn commit_only(repository: &git2::Repository, id: git2::Oid) -> Option<git2::Commit<'_>> {
+    (kind(repository, id)? == git2::ObjectType::Commit)
+        .then(|| repository.find_commit(id).ok())
+        .flatten()
+}
+
+/// The tree a commit, a tree or a tag of one names, reading no blob.
+fn tree_of(repository: &git2::Repository, id: git2::Oid) -> Option<git2::Oid> {
+    match kind(repository, id)? {
+        git2::ObjectType::Tree => Some(id),
+        git2::ObjectType::Commit => Some(repository.find_commit(id).ok()?.tree_id()),
+        git2::ObjectType::Tag => tree_of(repository, repository.find_tag(id).ok()?.target_id()),
+        _ => None,
+    }
 }
 
 fn exited(status: i32, stdout: String) -> Output {
