@@ -1013,10 +1013,22 @@ fn sound(root: &Path, store: &Store) -> bool {
     let mut whole: BTreeSet<String> = BTreeSet::new();
     let mut unproved: Vec<&String> = Vec::new();
     let mut sound = true;
+    // A store this read cannot prove whole is proved only for the reads after it, so
+    // it is given a smaller share: on a host's own checkouts, thousands of loose
+    // objects proved at once cost one read more than the whole of 0.43.1's.
+    let owed = loose
+        .iter()
+        .filter(|line| !remembered.contains(**line))
+        .count();
+    let share = if owed > OBJECTS_PER_READ {
+        OBJECTS_PER_READ / 4
+    } else {
+        OBJECTS_PER_READ
+    };
     for line in loose {
         if remembered.contains(line) {
             whole.insert(line.clone());
-        } else if unproved.len() < OBJECTS_PER_READ {
+        } else if unproved.len() < share {
             unproved.push(line);
         } else {
             // This read's share is spent: unsound for this read, and what it proves is
