@@ -719,3 +719,76 @@ fn full_workload_recovery() {
         .expect("elapsed time includes reader validation and cleanup");
     eprintln!("recovery validated total {}ms", record.total_ms);
 }
+
+/// The timing program refuses what it cannot use — exit 2, naming it — and a read
+/// that fails is exit 1, naming that, so a broken timing run is never a report.
+#[test]
+fn the_latency_program_refuses_what_it_cannot_use() {
+    let program = latency_program();
+    assert!(
+        program.is_file(),
+        "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
+        program.display()
+    );
+    let scratch = tempfile::tempdir().expect("scratch state root");
+    let run = |args: &[&str], home: Option<&Path>| {
+        let mut command = std::process::Command::new(&program);
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", scratch.path())
+            .args(args);
+        if let Some(home) = home {
+            command.env("ONEVCS_HOME", home);
+        }
+        let output = command.output().expect("the timing program runs");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.stdout.is_empty(),
+        )
+    };
+    let home = scratch.path().join("home");
+    for (args, refusal) in [
+        (
+            vec!["--launcher", "x", "--calls", "0", "--mode", "warm"],
+            "is not a positive count",
+        ),
+        (
+            vec!["--launcher", "x", "--calls", "1", "--mode", "hot"],
+            "is not warm, cold or uncached",
+        ),
+        (
+            vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
+            "is not a label value",
+        ),
+        (
+            vec!["--calls", "1", "--mode", "warm"],
+            "--launcher is required",
+        ),
+    ] {
+        let (code, stderr, silent) = run(&args, Some(&home));
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(refusal),
+            "{args:?} names {refusal:?}: {stderr}"
+        );
+        assert!(silent, "{args:?} prints no report");
+    }
+    let (code, stderr, _) = run(&["--launcher", "x", "--calls", "1", "--mode", "warm"], None);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ONEVCS_HOME names no state root"),
+        "{stderr}"
+    );
+    // A state root whose registry is not a document is a read that failed.
+    std::fs::create_dir_all(&home).expect("state root");
+    std::fs::write(home.join("registry.json"), "{broken").expect("broken registry");
+    let (code, stderr, silent) = run(
+        &["--launcher", "x", "--calls", "1", "--mode", "warm"],
+        Some(&home),
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
+    assert!(silent, "a failed read prints no report");
+}

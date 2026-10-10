@@ -16,9 +16,12 @@
 //!   rows are git's own answer to compare every timed call against.
 //!
 //! Prints one JSON document: each call's wall clock, load and rows digest, and the
-//! last call's rows.
+//! last call's rows. Exits 0 having printed it; 2, naming the problem on stderr,
+//! where the arguments or the environment cannot be used; and 1, naming it, where a
+//! read or the caches it clears failed.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -44,20 +47,33 @@ enum Mode {
 }
 
 struct Arguments {
-    launcher: String,
-    calls: usize,
+    launcher: Launcher,
+    calls: NonZeroUsize,
     mode: Mode,
 }
 
 /// A launcher label's value as the label grammar takes one: a non-empty string with
 /// no control character, since a value is printed on one line wherever it is shown.
-fn launcher(value: String) -> Result<String, String> {
-    if value.is_empty() || value.chars().any(char::is_control) {
-        return Err(format!(
-            "--launcher {value:?} is not a label value: it must be non-empty and hold no control character"
-        ));
+/// Made only by [`Launcher::parse`].
+struct Launcher(String);
+
+impl Launcher {
+    fn parse(value: String) -> Result<Self, String> {
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(format!(
+                "--launcher {value:?} is not a label value: it must be non-empty and hold no control character"
+            ));
+        }
+        Ok(Self(value))
     }
-    Ok(value)
+}
+
+/// Why no report was printed, and so which exit code says so.
+enum Failure {
+    /// The arguments or the environment cannot be used: exit 2.
+    Usage(String),
+    /// A read, or clearing the caches before one, failed: exit 1.
+    Read(String),
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -70,14 +86,12 @@ fn arguments() -> Result<Arguments, String> {
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
-            "--launcher" => launcher = Some(self::launcher(value)?),
+            "--launcher" => launcher = Some(Launcher::parse(value)?),
             "--calls" => {
                 calls = Some(
                     value
-                        .parse::<usize>()
-                        .ok()
-                        .filter(|calls| *calls > 0)
-                        .ok_or_else(|| format!("--calls {value:?} is not a positive count"))?,
+                        .parse::<NonZeroUsize>()
+                        .map_err(|_| format!("--calls {value:?} is not a positive count"))?,
                 )
             }
             "--mode" => {
@@ -98,23 +112,28 @@ fn arguments() -> Result<Arguments, String> {
     })
 }
 
-fn run() -> Result<serde_json::Value, String> {
-    let arguments = arguments()?;
-    let home = std::env::var_os("ONEVCS_HOME").ok_or("ONEVCS_HOME names no state root")?;
+fn run() -> Result<serde_json::Value, Failure> {
+    let arguments = arguments().map_err(Failure::Usage)?;
+    let home = std::env::var_os("ONEVCS_HOME")
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| Failure::Usage("ONEVCS_HOME names no state root".to_owned()))?;
     let caches = std::path::Path::new(&home).join("cache/recoverable/v1");
     let clear = || match std::fs::remove_dir_all(&caches) {
         Ok(()) => Ok(()),
         Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(failure) => Err(format!("could not clear {}: {failure}", caches.display())),
+        Err(failure) => Err(Failure::Read(format!(
+            "could not clear {}: {failure}",
+            caches.display()
+        ))),
     };
     let selection = Selection {
         detail: Detail::Decision,
-        labels: BTreeMap::from([("launcher".to_owned(), arguments.launcher.clone())]),
+        labels: BTreeMap::from([("launcher".to_owned(), arguments.launcher.0.clone())]),
         ..Selection::default()
     };
     let read = || {
         Git.recoverable_matching(Scope::All, &selection)
-            .map_err(|failure| format!("recoverable_matching failed: {failure}"))
+            .map_err(|failure| Failure::Read(format!("recoverable_matching failed: {failure}")))
     };
     match arguments.mode {
         Mode::Warm => {
@@ -125,7 +144,7 @@ fn run() -> Result<serde_json::Value, String> {
     }
     let mut samples = Vec::new();
     let mut last = Vec::new();
-    for _ in 0..arguments.calls {
+    for _ in 0..arguments.calls.get() {
         if arguments.mode == Mode::Cold {
             clear()?;
         }
@@ -133,7 +152,8 @@ fn run() -> Result<serde_json::Value, String> {
         let started = Instant::now();
         let rows = read()?;
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let bytes = serde_json::to_vec(&rows).map_err(|failure| failure.to_string())?;
+        let bytes =
+            serde_json::to_vec(&rows).map_err(|failure| Failure::Read(failure.to_string()))?;
         samples.push(serde_json::json!({
             "wall_ms": wall_ms,
             "load1": load,
@@ -151,7 +171,11 @@ fn main() -> ExitCode {
             println!("{report}");
             ExitCode::SUCCESS
         }
-        Err(reason) => {
+        Err(Failure::Usage(reason)) => {
+            eprintln!("recoverable_latency: {reason}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Read(reason)) => {
             eprintln!("recoverable_latency: {reason}");
             ExitCode::FAILURE
         }
