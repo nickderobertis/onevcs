@@ -792,3 +792,99 @@ fn the_latency_program_refuses_what_it_cannot_use() {
     assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
     assert!(silent, "a failed read prints no report");
 }
+
+/// A long-lived caller repeats this read for hours, so one process making it two
+/// hundred times holds its threads and its memory where the first reads left them:
+/// every repository a read opens is closed inside that read, and no work is left
+/// behind for a later one.
+#[test]
+fn repeating_the_read_in_one_process_keeps_memory_and_threads_bounded() {
+    let _exclusive = exclusive();
+    let scratch = std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let root = tempfile::Builder::new()
+        .prefix("recovery-repeated-")
+        .tempdir_in(scratch)
+        .expect("empty disposable host");
+    let fixture = build(root.path(), Scale::One).expect("production-shaped fixture");
+    let program = latency_program();
+    assert!(
+        program.is_file(),
+        "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
+        program.display()
+    );
+    let output = std::process::Command::new(&program)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &fixture.root)
+        .env("ONEVCS_HOME", &fixture.home)
+        .current_dir(&fixture.root)
+        .args([
+            "--launcher",
+            &fixture.launcher,
+            "--calls",
+            "200",
+            "--mode",
+            "warm",
+        ])
+        .output()
+        .expect("the timing program runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("timing report");
+    let verdicts: std::collections::BTreeSet<&str> = report["samples"]
+        .as_array()
+        .expect("samples")
+        .iter()
+        .map(|sample| sample["verdict_sha256"].as_str().expect("verdict"))
+        .collect();
+    assert_eq!(
+        verdicts.len(),
+        1,
+        "every repeated read answers the same rows"
+    );
+    let held: Vec<(u64, u64)> = report["resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .map(|after| {
+            (
+                after["rss_kib"].as_u64().expect("resident memory"),
+                after["threads"].as_u64().expect("thread count"),
+            )
+        })
+        .collect();
+    assert_eq!(held.len(), 200, "every read reported what it left");
+    let threads: std::collections::BTreeSet<u64> =
+        held.iter().map(|(_, threads)| *threads).collect();
+    assert_eq!(
+        threads.len(),
+        1,
+        "no read leaves a thread behind: {threads:?}"
+    );
+    // The first reads settle the allocator; after them, a read that kept anything it
+    // opened would grow the process by what it kept, two hundred times over.
+    let settled = held[..50]
+        .iter()
+        .map(|(rss, _)| *rss)
+        .max()
+        .expect("early reads");
+    let last = held[150..]
+        .iter()
+        .map(|(rss, _)| *rss)
+        .max()
+        .expect("late reads");
+    eprintln!(
+        "200 reads in one process: resident {settled} KiB after the first 50, at most {last} KiB over the last 50; threads {threads:?}"
+    );
+    assert!(
+        last <= settled + 8 * 1024,
+        "resident memory grew with the number of reads: {settled} KiB after 50, {last} KiB by 200"
+    );
+    drop(fixture);
+    root.close().expect("required fixture cleanup");
+}

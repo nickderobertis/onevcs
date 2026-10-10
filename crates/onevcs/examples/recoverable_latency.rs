@@ -15,8 +15,9 @@
 //!   with a `GIT_*` override set, under which no proof is reused or stored, so its
 //!   rows are git's own answer to compare every timed call against.
 //!
-//! Prints one JSON document: each call's wall clock, load and rows digest, and the
-//! last call's rows. Exits 0 having printed it; 2, naming the problem on stderr,
+//! Prints one JSON document: each call's wall clock, load and rows digest, the
+//! process's resident memory and thread count after each call, and the last call's
+//! rows. Exits 0 having printed it; 2, naming the problem on stderr,
 //! where the arguments or the environment cannot be used; and 1, naming it, where a
 //! read or the caches it clears failed.
 
@@ -27,6 +28,20 @@ use std::time::Instant;
 
 use onevcs::{Detail, Git, Scope, Selection, Vcs};
 use sha2::{Digest, Sha256};
+
+/// The process's resident memory in KiB and its thread count, as the kernel reports
+/// them; nothing where it reports neither.
+fn resources() -> serde_json::Value {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    serde_json::json!({ "rss_kib": field("VmRSS:"), "threads": field("Threads:") })
+}
 
 fn load1() -> f64 {
     std::fs::read_to_string("/proc/loadavg")
@@ -143,6 +158,7 @@ fn run() -> Result<serde_json::Value, Failure> {
         Mode::Cold => {}
     }
     let mut samples = Vec::new();
+    let mut held = Vec::new();
     let mut last = Vec::new();
     for _ in 0..arguments.calls.get() {
         if arguments.mode == Mode::Cold {
@@ -161,8 +177,9 @@ fn run() -> Result<serde_json::Value, Failure> {
             "verdict_sha256": format!("{:x}", Sha256::digest(&bytes)),
         }));
         last = rows;
+        held.push(resources());
     }
-    Ok(serde_json::json!({ "samples": samples, "rows": last }))
+    Ok(serde_json::json!({ "samples": samples, "resources": held, "rows": last }))
 }
 
 fn main() -> ExitCode {
