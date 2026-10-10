@@ -2346,10 +2346,10 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
     ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
 )]
 fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
-    // A read answered in process is answered as text, and kept as a proof the way
-    // git's answer is. Where what it would print is not text, git is asked instead,
-    // so the answer a caller meets is git's own bytes' — and an empty listing, the one
-    // a path git printed undecodably leaves, is the one held to git's count of files.
+    // A read answered in process is answered as text. Where what it would print is not
+    // text, git is asked instead, so the answer a caller meets is git's own bytes' —
+    // and an empty listing, the one a path git printed undecodably leaves, is the one
+    // held to git's count of files.
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
@@ -2378,7 +2378,7 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
     // equal either way; which of the two made the listing is the property, and the
     // spawned git is the only place a caller can see it.
     let counting = crate::cost::Counting::installed(world);
-    let reads: Vec<(usize, usize, usize, usize)> = sessions
+    let reads: Vec<(usize, usize, usize)> = sessions
         .iter()
         .map(|token| {
             let args = ["--detail", "decision", "--session", token, "--all"];
@@ -2397,7 +2397,6 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
                 .iter()
                 .filter(|call| call.args.starts_with("diff --shortstat"))
                 .count();
-            let proofs = world.home().join("cache/recoverable/v1/git");
             let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
             counting.clear();
             let cold = counting
@@ -2423,8 +2422,7 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
                         .any(|shape| call.args.starts_with(shape))
                 })
                 .count();
-            let stored = std::fs::read_dir(&proofs).map_or(0, |entries| entries.count());
-            (listed, counted, reusable, stored)
+            (listed, counted, reusable)
         })
         .collect();
     let (readable, unreadable) = (reads[0], reads[1]);
@@ -2448,14 +2446,124 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
         unreadable.1 > 0,
         "an empty listing is held to git's count: {reads:?}"
     );
-    // Git made only that count of the readable branch's reusable reads; every proof
-    // beyond it is an answer made in process and kept for the next read.
+    // And git made only that count of the readable branch's reusable reads: every
+    // other one was answered in process.
+    assert_eq!(readable.2, 1, "git made only the count: {reads:?}");
+}
+
+/// A read that would walk a long history in process is left to git and its proof,
+/// which answers it the next time for a fraction of the walk; a short one is still
+/// answered in process. On a real host's checkouts the walk is what cost a warm read
+/// more than the release before in-process answers did.
+// llmlint: ignore-block[tests_mirror_real_usage] which tier answered a read is the
+// property, and no command reports it: the counting `git` on PATH execs the real one,
+// so the binary is driven unchanged, and every answer is also compared with uncached
+// git's through the same command.
+#[test]
+fn a_read_that_would_walk_a_long_history_is_left_to_its_proof() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let mut sessions = Vec::new();
+    for (branch, commits) in [("feature/short-history", 1), ("feature/long-history", 600)] {
+        let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=walks"]);
+        world.commit_file(&worktree, "walk.txt", "work\n", "feat: the walk's work");
+        // The rest of a long history in one process: commits that change nothing, each
+        // on the one before, so the branch is a single line that many commits long.
+        let mut stream = String::new();
+        for at in 1..commits {
+            let message = format!("chore: step {at}");
+            stream.push_str(&format!(
+                "commit refs/heads/{branch}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n{}",
+                1_700_000_000 + at,
+                message.len(),
+                if at == 1 {
+                    format!("from refs/heads/{branch}^0\n")
+                } else {
+                    String::new()
+                },
+            ));
+        }
+        if !stream.is_empty() {
+            let input = world.path(format!("{token}.fast-import"));
+            std::fs::write(&input, stream).expect("a fast-import stream");
+            let imported = std::process::Command::new("git")
+                .args(["fast-import", "--quiet"])
+                .current_dir(&worktree)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", world.path(""))
+                .stdin(std::fs::File::open(&input).expect("the stream"))
+                .output()
+                .expect("git fast-import runs");
+            assert!(
+                imported.status.success(),
+                "{}",
+                String::from_utf8_lossy(&imported.stderr)
+            );
+        }
+        assert_eq!(
+            world.git(
+                &worktree,
+                &["rev-list", "--count", &format!("origin/main..{branch}")]
+            ),
+            commits.to_string(),
+            "the premise: the branch is {commits} commits past its base"
+        );
+        world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        sessions.push(token);
+    }
+    let counting = crate::cost::Counting::installed(world);
+    let counts: Vec<(usize, usize)> = sessions
+        .iter()
+        .map(|token| {
+            let args = ["--detail", "decision", "--session", token, "--all"];
+            let uncached = world
+                .onevcs()
+                .args(["recoverable", "--json"])
+                .args(args)
+                .env("GIT_NAMESPACE", "")
+                .assert()
+                .success();
+            let uncached: Vec<Value> =
+                serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+            let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
+            let mut walked = Vec::new();
+            for read in ["cold", "warm"] {
+                counting.clear();
+                let rows = counting
+                    .onevcs(world)
+                    .args(["recoverable", "--json"])
+                    .args(args)
+                    .assert()
+                    .success();
+                let rows: Vec<Value> =
+                    serde_json::from_slice(&rows.get_output().stdout).expect("rows");
+                assert_eq!(rows, uncached, "{token}: a {read} read answers git's rows");
+                walked.push(
+                    counting
+                        .calls()
+                        .iter()
+                        .filter(|call| call.args.starts_with("rev-list --count"))
+                        .count(),
+                );
+            }
+            (walked[0], walked[1])
+        })
+        .collect();
+    let (short, long) = (counts[0], counts[1]);
     assert_eq!(
-        readable.2, 1,
-        "the premise: git made only the count: {reads:?}"
+        short,
+        (0, 0),
+        "the premise: a short history is counted in process: {counts:?}"
     );
     assert!(
-        readable.3 > readable.2,
-        "what was answered in process is stored: {reads:?}"
+        long.0 > 0,
+        "a long history is counted by git, not walked here: {counts:?}"
     );
+    assert_eq!(long.1, 0, "and its proof answers the next read: {counts:?}");
 }
+// llmlint: ignore-end[tests_mirror_real_usage]

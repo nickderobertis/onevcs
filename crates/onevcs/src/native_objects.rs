@@ -20,12 +20,43 @@ pub(crate) fn reads(args: &[&str]) -> bool {
     Shape::of(args).is_some()
 }
 
+/// How many objects one answer here may read that this read has not read already.
+///
+/// What a real host's checkouts make expensive is size — a count over a long history,
+/// a listing of two large trees — and those are the reads a stored proof answers in
+/// a fraction of the time. So an answer that would read more than this is not made
+/// here at all, and is left to the proofs and to git.
+const OBJECTS_PER_ANSWER: usize = 512;
+
+thread_local! {
+    static UNSPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// Count one object read for the answer being made, or decline once its allowance is
+/// spent.
+fn spend() -> Option<()> {
+    UNSPENT.with(|unspent| {
+        let left = unspent.get();
+        (left > 0).then(|| unspent.set(left - 1))
+    })
+}
+
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
+    UNSPENT.with(|unspent| unspent.set(OBJECTS_PER_ANSWER));
+    let answered = within_allowance(&shape, repo, borrowing);
+    let spent = UNSPENT.with(|unspent| unspent.replace(usize::MAX)) == 0;
+    answered.filter(|_| !spent)
+}
+
+fn within_allowance(shape: &Shape<'_>, repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let view = graph::View::of(repo, borrowing);
     if let Some(answered) = shape.walked(&view) {
         return Some(answered);
+    }
+    if UNSPENT.with(std::cell::Cell::get) == 0 {
+        return None;
     }
     // A count or a range the graph above declined is a walk of a long history, which
     // libgit2 would make in full each time; its proof, where one is stored, is the
@@ -489,6 +520,7 @@ mod graph {
             if remembered.is_some() {
                 return remembered;
             }
+            super::spend()?;
             let parse = |commit: &git2::Commit<'_>| Parsed {
                 parents: commit.parent_ids().collect(),
                 tree: commit.tree_id(),
@@ -808,6 +840,7 @@ fn differ(
         let Some(id) = id else {
             return Some(BTreeMap::new());
         };
+        spend()?;
         let tree = repository.find_tree(id).ok()?;
         Some(
             tree.iter()

@@ -388,9 +388,8 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
 /// The answer git would give, made in process from the objects it names, where
-/// this is a shape [`crate::native_objects`] reads and no stored proof answered —
-/// only inside a context that admits reuse, and stored by the caller as git's
-/// answer would be.
+/// this is a shape [`crate::native_objects`] reads — fresh rather than reused, and
+/// only inside a context that admits reuse.
 ///
 /// Only over stores whose every loose object is proved safe to read: libgit2 reads
 /// whatever object a walk reaches, and its inflate never returns from a loose object
@@ -914,9 +913,15 @@ fn read_store(root: &Path) -> Option<Store> {
             snapshot(&entry.path(), &mut fixed, true)?;
         }
     }
-    // The fan-out directories are listed side by side: what they hold is a set, so
-    // the order they are read in moves nothing, and a real store is 256 of them.
-    for listed in crate::vcs::concurrently(&fanned, |path| {
+    // The fan-out directories of a store that fills them are listed side by side:
+    // what they hold is a set, so the order they are read in moves nothing. A store of
+    // a few dozen objects is listed faster than threads start.
+    let threads = if fanned.len() >= SPREAD_STORE {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    for listed in crate::vcs::concurrently_on(threads, &fanned, |path| {
         let mut held = BTreeSet::new();
         loose(root, path, &mut held).map(|()| held)
     }) {
@@ -1396,6 +1401,21 @@ fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
     Some(())
 }
 
+/// How many threads list one store's loose objects or one worktree's directories,
+/// where there are enough of them to be worth it.
+#[cfg(unix)]
+const LISTING_THREADS: usize = 4;
+
+/// How many of its 256 fan-out directories a store fills before they are listed on
+/// threads: a store of a few hundred objects fills most of them.
+#[cfg(unix)]
+const SPREAD_STORE: usize = 192;
+
+/// How many directories a worktree has at the depth its walk splits at before they
+/// are walked on threads.
+#[cfg(unix)]
+const SPREAD_WORKTREE: usize = 64;
+
 /// How deep the attributes walk goes before handing each directory there to a thread
 /// of its own.
 #[cfg(unix)]
@@ -1405,8 +1425,8 @@ const ATTRIBUTES_SPLIT: usize = 3;
 ///
 /// Read where a listing names one, rather than asked of every directory: a large
 /// worktree is thousands of directories and a handful of these. The directories
-/// below the first few levels are listed side by side, since what is digested is the
-/// files found and not the order the walk found them in.
+/// below the first few levels are listed side by side where there are many, since
+/// what is digested is the files found and not the order the walk found them in.
 #[cfg(unix)]
 fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
     let mut found = Vec::new();
@@ -1418,7 +1438,12 @@ fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
         }
         level = below;
     }
-    for walked in crate::vcs::concurrently(&level, |directory| {
+    let threads = if level.len() >= SPREAD_WORKTREE {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    for walked in crate::vcs::concurrently_on(threads, &level, |directory| {
         let mut found = Vec::new();
         attributes_below(directory, &mut found).map(|()| found)
     }) {

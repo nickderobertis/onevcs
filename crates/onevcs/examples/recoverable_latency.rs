@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 /// The process's resident memory in KiB and its thread count, as the kernel reports
 /// them; nothing where it reports neither.
-fn resources() -> serde_json::Value {
+fn resources() -> (Option<u64>, Option<u64>) {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |name: &str| {
         status
@@ -40,7 +40,18 @@ fn resources() -> serde_json::Value {
             .and_then(|rest| rest.split_whitespace().next())
             .and_then(|value| value.parse::<u64>().ok())
     };
-    serde_json::json!({ "rss_kib": field("VmRSS:"), "threads": field("Threads:") })
+    (field("VmRSS:"), field("Threads:"))
+}
+
+/// One timed call, held in a fixed-size record so that keeping it moves nothing the
+/// next call's resident memory is measured against.
+struct Sample {
+    wall_ms: f64,
+    load1: f64,
+    rows: usize,
+    verdict: [u8; 32],
+    rss_kib: Option<u64>,
+    threads: Option<u64>,
 }
 
 fn load1() -> f64 {
@@ -166,8 +177,9 @@ fn run() -> Result<serde_json::Value, Failure> {
         Mode::Uncached => clear()?,
         Mode::Cold => {}
     }
-    let mut samples = Vec::new();
-    let mut held = Vec::new();
+    // Reserved whole before the first call, so the report's own records are not part
+    // of what a later call's resident memory reads.
+    let mut samples = Vec::with_capacity(arguments.calls.get());
     let mut last = Vec::new();
     for _ in 0..arguments.calls.get() {
         if arguments.mode == Mode::Cold {
@@ -179,16 +191,41 @@ fn run() -> Result<serde_json::Value, Failure> {
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
         let bytes =
             serde_json::to_vec(&rows).map_err(|failure| Failure::Read(failure.to_string()))?;
-        samples.push(serde_json::json!({
-            "wall_ms": wall_ms,
-            "load1": load,
-            "rows": rows.len(),
-            "verdict_sha256": format!("{:x}", Sha256::digest(&bytes)),
-        }));
+        let verdict = Sha256::digest(&bytes).into();
+        drop(bytes);
         last = rows;
-        held.push(resources());
+        let (rss_kib, threads) = resources();
+        samples.push(Sample {
+            wall_ms,
+            load1: load,
+            rows: last.len(),
+            verdict,
+            rss_kib,
+            threads,
+        });
     }
-    Ok(serde_json::json!({ "samples": samples, "resources": held, "rows": last }))
+    let hex = |digest: &[u8; 32]| {
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    Ok(serde_json::json!({
+        "samples": samples
+            .iter()
+            .map(|sample| serde_json::json!({
+                "wall_ms": sample.wall_ms,
+                "load1": sample.load1,
+                "rows": sample.rows,
+                "verdict_sha256": hex(&sample.verdict),
+            }))
+            .collect::<Vec<_>>(),
+        "resources": samples
+            .iter()
+            .map(|sample| serde_json::json!({ "rss_kib": sample.rss_kib, "threads": sample.threads }))
+            .collect::<Vec<_>>(),
+        "rows": last,
+    }))
 }
 
 fn main() -> ExitCode {

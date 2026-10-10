@@ -600,13 +600,18 @@ minutes. Three things are easy to undo.
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
 read under a concurrent ref writer to the registered warm budgets.
 
-Inside a context that admits reuse, the immutable reads a decision asks most are
-answered in process (`native_objects.rs`) where no proof answers them yet, byte for
-byte as git prints them, and stored as a proof exactly as git's answer would be; any
-shape or answer git could word differently is still git's. A stored proof is asked
-first because on a real host's checkouts the in-process answer is not the cheap one:
-a count over a long history or a listing of two large trees made a warm read slower
-than 0.43.1's, which read the same answers from proofs. Four things are easy to undo.
+Inside a context that admits reuse, the immutable reads a decision asks most are not
+reused but answered in process (`native_objects.rs`), never stored, and byte for byte
+as git prints them; any shape or answer git could word differently is still git's.
+Five things are easy to undo.
+
+- **An answer that would read much is not made in process.** Each may read at most
+  `OBJECTS_PER_ANSWER` commits and trees this read has not read already; past that it
+  is left to the proofs and to git. On a real host's checkouts a count over a long
+  history or a listing of two large trees made a warm read slower than 0.43.1's,
+  which answered the same reads from proofs, and the workload fixture's small
+  repositories never show it — `labels::a_read_that_would_walk_a_long_history_is_left_to_its_proof`
+  is what does.
 
 - **No store is read in process until every loose object in it is proved safe to
   read** (`recovery_cache::sound`). libgit2's inflate never returns from a loose
