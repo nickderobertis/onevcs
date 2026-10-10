@@ -203,18 +203,18 @@ pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<S
 /// Everything here goes through the seam: the session comes from the [`Vcs`](crate::Vcs)
 /// the caller supplied and the host from its [`Hosting`](crate::Hosting), so a session
 /// a supplied implementation opened is addressed exactly as one `Git` opened.
-struct Addressed<'a> {
+pub(crate) struct Addressed<'a> {
     token: &'a SessionToken,
-    record: SessionRecord,
+    pub(crate) record: SessionRecord,
     /// The base the session's publication resolves for it, which is what its change
     /// request targets: the recorded base, or for a stacked session the root once
     /// the root carries the change below.
     base: String,
-    host: Box<dyn RemoteHost>,
+    pub(crate) host: Box<dyn RemoteHost>,
 }
 
 impl<'a> Addressed<'a> {
-    fn of(providers: &Providers<'_>, token: &'a SessionToken) -> Result<Self> {
+    pub(crate) fn of(providers: &Providers<'_>, token: &'a SessionToken) -> Result<Self> {
         let record = providers.vcs.session(token)?;
         // The same question a publication asks of the identity, with the same two
         // answers: a local identity has no host at all, and a hosted one this build
@@ -243,7 +243,7 @@ impl<'a> Addressed<'a> {
     /// The session's change request, or the refusal that there is none — naming the
     /// publication that opens one, because a verb that diagnoses without naming the
     /// command that advances the work leaves a caller to invent one.
-    fn require(&self) -> Result<ChangeRequest> {
+    pub(crate) fn require(&self) -> Result<ChangeRequest> {
         self.find()?.ok_or_else(|| Error::Invalid {
             reason: format!(
                 "session {token} has no open change request from {branch:?} into {base:?} on the \

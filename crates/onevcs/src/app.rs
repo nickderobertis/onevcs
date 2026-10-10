@@ -13,14 +13,14 @@ use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
-    ChangeCommand, ChangeDescribeArgs, ChangeReadyArgs, ChangeShowArgs, Command, EventsArgs,
-    ExportArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
-    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs,
-    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
-    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
-    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StatusArgs,
-    SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReplyArgs,
+    ChangeShowArgs, Command, EventsArgs, ExportArgs, ImportArgs, IntegrateArgs, PoolCommand,
+    PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs,
+    ReclaimArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
+    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
+    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs,
+    RulesApplyArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs,
+    SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -39,6 +39,7 @@ use crate::releases::{
     Acknowledgement, Baseline, DeclarationSource, Probe, ReleaseAnswer, ReleaseMethod,
     ReleaseStatus, ReleaseTarget, RepositoryReleases, TargetName, TargetSource,
 };
+use crate::review::{self, CommentId, CommentKind, ReadMarker, ReplyRequest};
 use crate::session::{
     Holding, Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
 };
@@ -92,6 +93,8 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Show(args) => change_show(args, providers),
             ChangeCommand::Describe(args) => change_describe(args, providers),
             ChangeCommand::Ready(args) => change_ready(args, providers),
+            ChangeCommand::Comments(args) => change_comments(args, providers),
+            ChangeCommand::Reply(args) => change_reply(args, providers),
         },
         Command::Preserve(args) => preserve_branch(args),
         Command::Recover(args) => recover_branch(args, providers),
@@ -1031,6 +1034,124 @@ fn change_ready(args: &ChangeReadyArgs, providers: &Providers<'_>) -> Result<u8>
     let change = crate::ready_change(providers, &SessionToken(args.token.clone()))?;
     print_change(&change, args.json)?;
     Ok(0)
+}
+
+/// Read a change request's review feedback, the way `onevcs change comments`
+/// reports it.
+fn change_comments(args: &ChangeCommentsArgs, providers: &Providers<'_>) -> Result<u8> {
+    let since = args.since.clone().map(ReadMarker);
+    let read =
+        crate::review_comments(providers, &review::change_ref(&args.change), since.as_ref())?;
+    if args.json {
+        println!("{}", serde_json::to_string(&read).map_err(serialization)?);
+        return Ok(0);
+    }
+    println!("change request: {}", read.change_url);
+    println!(
+        "comments: {}{}",
+        read.comments.len(),
+        if read.unchanged {
+            " (nothing new since the marker)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        read.cost.graphql_points, read.cost.rest_requests
+    );
+    for comment in &read.comments {
+        let place = match &comment.kind {
+            CommentKind::ReviewThread {
+                path,
+                line,
+                outdated,
+                resolved,
+                ..
+            } => format!(
+                "thread on {path}{}{}{}",
+                line.map(|line| format!(":{line}")).unwrap_or_default(),
+                if *resolved { ", resolved" } else { "" },
+                if *outdated { ", outdated" } else { "" },
+            ),
+            CommentKind::Review { state } => format!("review, {state}"),
+            _ => "conversation".to_owned(),
+        };
+        let ours = if comment.ours { ", ours" } else { "" };
+        println!();
+        println!("{} — {place}, by {}{ours}", comment.id.0, comment.author);
+        println!("  {}", comment.url);
+        for line in comment.body.lines() {
+            println!("  | {line}");
+        }
+    }
+    println!();
+    println!("marker: {}", read.marker.0);
+    Ok(0)
+}
+
+/// Answer one review comment, the way `onevcs change reply` reports it.
+fn change_reply(args: &ChangeReplyArgs, providers: &Providers<'_>) -> Result<u8> {
+    let body = reply_body(args)?;
+    let reply = crate::reply_to_comment(
+        providers,
+        &ReplyRequest {
+            change: review::change_ref(&args.change),
+            comment: CommentId(args.comment.clone()),
+            body,
+            key: args.key.clone(),
+            label: args.label.clone(),
+            verified_absent: args.verified_absent,
+            term_scope: args.term_scope.scope(),
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string(&reply).map_err(serialization)?);
+        return Ok(0);
+    }
+    println!(
+        "{} {} {}",
+        if reply.existing {
+            "already replied:"
+        } else {
+            "replied:"
+        },
+        reply.url,
+        if reply.threaded {
+            "(in the comment's thread)"
+        } else {
+            "(as a conversation comment linking it)"
+        }
+    );
+    Ok(0)
+}
+
+/// The body `onevcs change reply` was handed, which it must have been, refused by
+/// name when it was not, naming both ways to hand one over.
+fn reply_body(args: &ChangeReplyArgs) -> Result<String> {
+    let prefix = [
+        "onevcs",
+        "change",
+        "reply",
+        args.change.as_str(),
+        "--comment",
+        args.comment.as_str(),
+        "--key",
+        args.key.as_str(),
+    ];
+    explicit_body(&prefix, args.body.as_ref(), args.body_file.as_deref())?.ok_or_else(|| {
+        let keeping = |option: &str, value: &str| {
+            let mut argv = prefix.to_vec();
+            argv.extend([option, value]);
+            guidance::command(argv)
+        };
+        error::invalid(format!(
+            "a reply needs a body, and neither --body nor --body-file names one. Hand it over \
+             as a file — `{}` — or as text: `{}`",
+            keeping("--body-file", "PATH"),
+            keeping("--body", "TEXT"),
+        ))
+    })
 }
 
 /// The body `onevcs change describe` was handed, which it must have been: a

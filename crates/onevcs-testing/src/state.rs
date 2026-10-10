@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
-    ChangeId, ChangeRequest, Check, CheckSource, DraftReason, Error, Identity, Landed,
-    MergeOutcome, Recoverable, Result,
+    ChangeId, ChangeRequest, Check, CheckSource, CommentId, CommentKind, DraftReason, Error,
+    Identity, Landed, MergeOutcome, ReadCost, Recoverable, Result,
 };
 use onevcs::{MergePolicy, Publication, RequiredChecks, Session, SessionRequest, SessionToken};
 
@@ -89,8 +89,11 @@ use crate::store::Checked;
 /// so leaves nothing able to tell "this build wrote no body" from "this document
 /// predates bodies". The two answers differ for exactly the journey this crate
 /// exists to support.
-/// `19` adds the recovery branch tip; older rows default it to `None`.
-pub const STATE_VERSION: u32 = 19;
+/// `19` adds the recovery branch tip; older rows default it to `None`. `20` is the
+/// review feedback a host holds: [`HostState::review_comments`], each change
+/// request's comments of every kind, [`HostState::replies`], every reply this host
+/// posted, and [`HostState::review_charges`], what it charges a read.
+pub const STATE_VERSION: u32 = 20;
 
 /// The oldest document version this build reads.
 ///
@@ -144,7 +147,10 @@ pub const STATE_VERSION: u32 = 19;
 /// said, since that build named no read that failed. `17` to `18` added two fields that
 /// appear only when they hold something, so a version 17 document's checks read as
 /// checks whose completion that build never recorded, and its merges as merges whose
-/// time it never recorded — which is what they were.
+/// time it never recorded — which is what they were. `19` to `20` added three fields
+/// that appear only when they hold something, so a version 19 document reads as a
+/// host whose change requests carry no review feedback and that has posted no reply —
+/// which is what that build could hold.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -445,6 +451,79 @@ pub struct HostState {
     // document is read, and every one this host writes is `events::timestamp`'s.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub merge_times: BTreeMap<ChangeId, String>,
+    /// Each change request's review feedback — review-thread comments, review
+    /// summaries and conversation comments — in the order it was posted.
+    ///
+    /// Both a script and a record: what a journey seeds here is what
+    /// `review_comments` reads, [`Host::add_comment`](crate::Host::add_comment),
+    /// [`Host::edit_comment`](crate::Host::edit_comment) and
+    /// [`Host::set_thread`](crate::Host::set_thread) move it as a reviewer would, and
+    /// every reply `reply_to_comment` posts is written back here beside them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub review_comments: BTreeMap<ChangeId, Vec<HostComment>>,
+    /// Every reply this host posted, in the order it posted them.
+    ///
+    /// The calls themselves, for the reason [`described`](HostState::described) is:
+    /// what a journey about idempotency asks is how many replies were *posted*, and
+    /// the comments a read returns can only say what is there now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Replied>,
+    /// What this host charges for each read of review feedback, one entry a read, in
+    /// order; a read with none left is charged the one GraphQL point a page that
+    /// `spike-review-loop` measured, and no REST request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_charges: Vec<ReadCost>,
+}
+
+/// One comment a host holds on a change request.
+///
+/// What `review_comments` answers a [`ReviewComment`](onevcs::ReviewComment) from:
+/// everything but `ours` and `reply_marker`, which are read out of the body exactly as
+/// the real host's are, and with the one thing a host keeps that a read does not
+/// show — when it last changed.
+// llmlint: ignore[invalid_states_unrepresentable] every text field is what the real host
+// reports as a string and `ReviewComment` carries as one; a seeded comment is the
+// journey's own scenario, and `check` refuses the two things no host could hold — an id
+// held twice, and a reply to a comment the change request does not carry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostComment {
+    /// The host's id for it.
+    pub id: CommentId,
+    /// What kind it is, and — for a thread comment — its thread's flags.
+    pub kind: CommentKind,
+    /// Who wrote it.
+    pub author: String,
+    /// What it says.
+    pub body: String,
+    /// Where a person reads it.
+    pub url: String,
+    /// When it was written.
+    pub created_at: String,
+    /// When it last changed.
+    pub updated_at: String,
+    /// The comment it replies to in its thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<CommentId>,
+    /// When, in this host's own count of changes to the change request's feedback, it
+    /// last changed — what a read marker is compared against. A seeded comment at `0`
+    /// is one every read from a marker has already seen.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// One reply a host posted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replied {
+    /// The change request it was posted on.
+    pub change: ChangeId,
+    /// The comment it was posted against.
+    pub comment: CommentId,
+    /// The idempotency key the call carried.
+    pub key: String,
+    /// The reply's own id.
+    pub reply: CommentId,
+    /// Whether it was posted in the comment's thread.
+    pub threaded: bool,
 }
 
 /// One description a host was handed for a change request after it was opened.
@@ -523,6 +602,9 @@ impl Default for HostState {
             check_sources: None,
             merges: BTreeMap::new(),
             merge_times: BTreeMap::new(),
+            review_comments: BTreeMap::new(),
+            replies: Vec::new(),
+            review_charges: Vec::new(),
         }
     }
 }
@@ -901,6 +983,38 @@ impl Checked for HostState {
             // refused for the same reason — and a body is prose, refused for nothing.
             if let Some(title) = &described.title {
                 titled(title)?;
+            }
+        }
+        // Review feedback is read by the change request it is keyed under, and a reply
+        // names the comment it answers, so a comment on a change nobody opened, an id
+        // held twice, or a reply to a comment that is not there is one no read could
+        // answer as the real host would.
+        for (id, comments) in &self.review_comments {
+            opened_change(self, id, "review feedback")?;
+            let mut held = BTreeSet::new();
+            for comment in comments {
+                if comment.id.0.trim().is_empty() || !held.insert(&comment.id) {
+                    return Err(Error::Invalid {
+                        reason: format!(
+                            "the review feedback seeded for change request {:?} holds the \
+                             comment id {:?} more than once, or an empty one",
+                            id.0, comment.id.0
+                        ),
+                    });
+                }
+            }
+            for comment in comments {
+                if let Some(answered) = &comment.in_reply_to {
+                    if !held.contains(answered) {
+                        return Err(Error::Invalid {
+                            reason: format!(
+                                "comment {:?} on change request {:?} replies to {:?}, which \
+                                 that change request does not carry",
+                                comment.id.0, id.0, answered.0
+                            ),
+                        });
+                    }
+                }
             }
         }
         // A merge time is what `merge_time` answers and what a landing is recorded

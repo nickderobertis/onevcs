@@ -59,6 +59,7 @@
 mod events;
 mod remote;
 mod repository;
+mod review;
 mod state;
 mod store;
 
@@ -67,8 +68,8 @@ pub use repository::{
     FileVcs, MemoryVcs, Repository, DEFAULT_APPROVALS, DEFAULT_BASE, DEFAULT_PUBLICATION,
 };
 pub use state::{
-    Described, HostState, VcsState, DEFAULT_AUTHENTICATED_USER, OLDEST_READABLE_VERSION,
-    STATE_VERSION,
+    Described, HostComment, HostState, Replied, VcsState, DEFAULT_AUTHENTICATED_USER,
+    OLDEST_READABLE_VERSION, STATE_VERSION,
 };
 pub use store::{Checked, FileStore, MemoryStore, Store};
 

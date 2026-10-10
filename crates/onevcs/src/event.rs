@@ -173,6 +173,16 @@ pub enum EventKind {
     /// change request's required checks. Its phase is the gate's, so the producer
     /// stamps it — `integrate` for `pre-push`, `review` for `required-checks`.
     GateRun,
+    /// A change request's review feedback was read; carries its URL, how many
+    /// comments the read returned, whether nothing was new since the marker it was
+    /// read from, the marker to read from next, and what the host charged for it —
+    /// `{graphql_points, rest_requests}`, from the responses' own figures.
+    ReviewCommentsRead,
+    /// A reply to one review comment was posted, or found already posted under its
+    /// key; carries the change request's URL, the comment answered, the reply's id
+    /// and URL, whether it sits in the comment's thread, the key, and whether it was
+    /// already there so nothing was posted.
+    ReviewReplyPosted,
 }
 
 impl EventKind {
@@ -212,6 +222,8 @@ impl EventKind {
             EventKind::BranchSuperseded => "branch-superseded",
             EventKind::BranchRetired => "branch-retired",
             EventKind::GateRun => "gate-run",
+            EventKind::ReviewCommentsRead => "review-comments-read",
+            EventKind::ReviewReplyPosted => "review-reply-posted",
         }
     }
 
@@ -289,7 +301,10 @@ impl PhaseOf for Phase {
             | EventKind::ChecksSettled
             | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
-            | EventKind::ChangeMerged => Phase::Review,
+            | EventKind::ChangeMerged
+            // Reading what reviewers said and answering it is the change being ruled on.
+            | EventKind::ReviewCommentsRead
+            | EventKind::ReviewReplyPosted => Phase::Review,
             EventKind::ReleaseProbed
             | EventKind::ReleaseAcknowledged
             | EventKind::ReleaseObserved => Phase::Release,

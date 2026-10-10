@@ -14,5 +14,6 @@ mod publication;
 mod refs;
 mod repository;
 mod required_contexts;
+mod review;
 mod round_trip;
 mod support;

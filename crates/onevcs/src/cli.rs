@@ -44,7 +44,8 @@ pub enum Command {
     Publish(PublishArgs),
     /// Verify and publish a completed branch no session holds.
     PublishBranch(PublishBranchArgs),
-    /// Read, describe, or ready a session's own change request.
+    /// Read, describe, or ready a session's own change request, and read and answer
+    /// its review feedback.
     Change {
         /// Which thing to do to the change request.
         #[command(subcommand)]
@@ -548,9 +549,11 @@ pub struct PublishArgs {
 
 /// The `onevcs change` subcommands: a session's own change request, after it exists.
 ///
-/// Every one takes a session token and nothing that names a change request: the
-/// change request is the one open from the session's branch into its base, so no
-/// caller ever names a URL.
+/// The three that act on the change request itself take a session token and nothing
+/// that names one: the change request is the one open from the session's branch into
+/// its base, so no caller ever names a URL. The two about its review feedback take a
+/// session token or a change request's URL, because feedback is read and answered by
+/// callers on hosts that never published the change.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ChangeCommand {
     /// Report the session's change request as the host holds it.
@@ -559,6 +562,11 @@ pub enum ChangeCommand {
     Describe(ChangeDescribeArgs),
     /// Mark the session's change request ready for review.
     Ready(ChangeReadyArgs),
+    /// Read a change request's review threads, review summaries and conversation
+    /// comments — every one, or what changed since a marker.
+    Comments(ChangeCommentsArgs),
+    /// Answer one review comment, in its thread where it has one.
+    Reply(ChangeReplyArgs),
 }
 
 /// Arguments for `onevcs change show`.
@@ -595,6 +603,59 @@ pub struct ChangeDescribeArgs {
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
     /// Report the change as it stands after the write as JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Which private repositories the public boundary check derives its terms from.
+    #[command(flatten)]
+    pub term_scope: TermScopeArgs,
+}
+
+/// Arguments for `onevcs change comments`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeCommentsArgs {
+    /// A session token, or a change request's URL.
+    #[arg(value_name = "SESSION|URL")]
+    pub change: String,
+    /// The marker an earlier read answered: read only what changed since it.
+    #[arg(long, value_name = "MARKER")]
+    pub since: Option<String>,
+    /// Report the read as JSON rather than as lines a person reads.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change reply`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeReplyArgs {
+    /// A session token, or a change request's URL.
+    #[arg(value_name = "SESSION|URL")]
+    pub change: String,
+    /// The id of the comment to answer, as `onevcs change comments` reports it.
+    #[arg(long, value_name = "ID")]
+    pub comment: String,
+    /// The idempotency key: a call repeating it posts nothing and reports the reply
+    /// already carrying it.
+    #[arg(long, value_name = "KEY")]
+    pub key: String,
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same pair
+    // `ChangeDescribeArgs` carries, representable together for the same reason —
+    // `app::explicit_body` refuses both, and `app::reply_body` refuses neither, naming
+    // the two ways to hand a body over.
+    /// What the reply says.
+    #[arg(long, value_name = "TEXT")]
+    pub body: Option<String>,
+    /// A file holding what the reply says.
+    #[arg(long, value_name = "PATH")]
+    pub body_file: Option<PathBuf>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// A single token of letters, digits and hyphens written into the reply marker.
+    #[arg(long, value_name = "LABEL")]
+    pub label: Option<String>,
+    /// Post without reading the thread first: the caller has just read it and found
+    /// no reply carrying the key.
+    #[arg(long)]
+    pub verified_absent: bool,
+    /// Report the reply as JSON.
     #[arg(long)]
     pub json: bool,
     /// Which private repositories the public boundary check derives its terms from.

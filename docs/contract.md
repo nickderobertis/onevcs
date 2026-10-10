@@ -1216,7 +1216,8 @@ integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
-             checks-settled gate-run:required-checks
+             checks-settled gate-run:required-checks review-comments-read
+             review-reply-posted
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -4650,6 +4651,208 @@ unscoped check knows no private repository that is not registered on this host u
 declaration names it. Binary contents are not term-checked. Commit identities are not read.
 
 Event kinds added: none.
+
+
+### A change request's review feedback is read, and answered where it was left
+
+Reviewers leave their feedback on the change request, where they review the code, so a
+run reads it from there and answers it there. Both are typed operations over the host,
+re-exported from the crate root, and the change request on the host is the record of
+review state: a consumer derives from the host alone what it has answered and how.
+
+```rust
+/// A change request, named by the session that published it or by its URL.
+pub enum ChangeRef { Session(SessionToken), Url(String) }     // serde: kebab-case
+/// The host's own stable id for a comment (GitHub's node id).
+pub struct CommentId(pub String);                               // serde: transparent
+#[non_exhaustive]
+pub enum CommentKind {                                          // serde: tag "type", kebab-case
+    /// A comment in a review thread on the diff.
+    ReviewThread { thread: String, path: String, line: Option<u32>, outdated: bool, resolved: bool },
+    /// A review's summary body; `state` is the host's word (commented, changes_requested, approved).
+    Review { state: String },
+    /// A top-level conversation comment.
+    Conversation,
+}
+pub struct ReviewComment {
+    pub id: CommentId,
+    pub kind: CommentKind,
+    pub author: String,
+    pub body: String,
+    pub url: String,
+    pub created_at: String,   // RFC 3339
+    pub updated_at: String,   // RFC 3339; differs from created_at once edited
+    pub in_reply_to: Option<CommentId>,
+    /// True for a reply onevcs itself posted (it carries the reply marker).
+    pub ours: bool,
+    /// The reply marker parsed, exactly when `ours`.
+    pub reply_marker: Option<ReplyMarker>,
+}
+pub struct ReplyMarker { pub in_reply_to: CommentId, pub key: String, pub label: Option<String> }
+/// Opaque to callers; carries what the transport needs to read only what changed.
+pub struct ReadMarker(pub String);                              // serde: transparent
+/// What the host charged for one read, from the responses' own allowance figures.
+pub struct ReadCost { pub graphql_points: u32, pub rest_requests: u32 }
+pub struct ReviewRead {
+    pub change_url: String,
+    /// Every comment created or edited after `since` (all of them when `since` is None),
+    /// and every comment whose thread's resolved or outdated flag changed since `since`.
+    pub comments: Vec<ReviewComment>,
+    pub marker: ReadMarker,
+    /// True when nothing new was read since `since`.
+    pub unchanged: bool,
+    pub cost: ReadCost,
+}
+pub fn review_comments(providers: &Providers, change: &ChangeRef, since: Option<&ReadMarker>) -> Result<ReviewRead>;
+
+/// `key` is the caller's idempotency key: calls on one host post at most one reply carrying it.
+/// `label` is written into the marker (`label=<label>`); `verified_absent` skips the read of
+/// the thread before posting, for a caller that has just read it and found no reply with `key`.
+pub struct ReplyRequest {
+    pub change: ChangeRef, pub comment: CommentId, pub body: String, pub key: String,
+    pub label: Option<String>, pub verified_absent: bool,
+    pub term_scope: TermScope,   // #[serde(default)], omitted when Registry
+}
+/// `existing` is true when a reply carrying the key was already on the host and nothing was posted.
+pub struct PostedReply { pub id: CommentId, pub url: String, pub threaded: bool, pub existing: bool }
+pub fn reply_to_comment(providers: &Providers, request: &ReplyRequest) -> Result<PostedReply>;
+
+pub trait RemoteHost {                   // two more defaulted methods:
+    fn review_comments(&self, change: &ChangeId, since: Option<&ReadMarker>) -> Result<ReviewRead> { /* NotImplemented */ }
+    fn reply_to_comment(&self, change: &ChangeId, comment: &CommentId, body: &str, key: &str) -> Result<PostedReply> { /* NotImplemented */ }
+}
+```
+
+An absent `Option` and an unset `verified_absent` are omitted on the wire.
+`ReplyRequest::term_scope` is the manager's ruling on this amendment: every write to a
+public remote carries the same boundary control, so a reply takes the scope `change
+describe` takes, defaulting to every registered private repository.
+
+```
+onevcs change comments <SESSION|URL> [--since <MARKER>] [--json]
+onevcs change reply <SESSION|URL> --comment <ID> --key <KEY> [--body <TEXT> | --body-file <PATH>] [--label <LABEL>] [--verified-absent] [--json] [--term-scope <IDENTITY>]... [--term-scope-empty]
+```
+
+`<SESSION|URL>` is a session token or a change request's URL
+(`https://<host>/<owner>/<name>/pull/<number>`, anything after the number ignored). A
+URL needs no session and no registry, so both verbs work with a fresh `ONEVCS_HOME` on
+a host that has never seen the change; a URL on a host other than `github.com` is
+`Error::NotImplemented`, as a publication to one is. A session names its own open
+change request, the one `onevcs change show` reports. `--json` prints the
+`ReviewRead` or the `PostedReply` as one object; without it, the same fields as lines a
+person reads, the marker last. `--label` and `--verified-absent` are the request's
+fields, on the command line by the manager's ruling.
+
+**Reading** returns every comment created or edited after the marker, and every comment
+whose thread was resolved, unresolved or outdated since it, with the marker to pass
+next time; with no marker it returns every comment. The GitHub transport is the one
+`spike-review-loop` measured as the cheapest per change request that returns thread
+ids, both flags and edits: **one GraphQL query per change request** — `reviewThreads`
+(each thread's `id`, `isResolved`, `isOutdated`, `path`, `line`, and each comment's
+`id`, `databaseId`, author, `body`, `url`, `createdAt`, `updatedAt`, `lastEditedAt` and
+`replyTo`), `comments` and `reviews` — at page sizes of 50 threads × 50 comments, 100
+conversation comments and 50 reviews, following every further page a change request
+needs: each later page asks only for the connections that still have one, and a thread
+of more than 50 comments is continued through `node(id:)` in the same document. It
+costs one GraphQL point a page and no REST request, changed or unchanged. A review
+whose body is empty and whose state is `commented` is not returned: it is the container
+GitHub opens around review-thread comments — one for every thread reply, onevcs's own
+included — and those are read as themselves.
+
+**No conditional read decides `unchanged`.** GraphQL has no conditional request, and a
+REST ETag is no change detector for review state: in the spike, resolving a thread left
+every REST ETag at `304`, while a push that touched no comment turned one into a `200`.
+So onevcs computes `unchanged` and the next marker itself from what the query returned:
+the GitHub marker records each comment's last-seen `updatedAt`/`lastEditedAt` and each
+thread's two flags, and names the change request it was read from — a marker from
+another change request, or one this transport did not write, is refused by name.
+`unchanged` is true exactly when a marker was given and nothing was returned.
+
+**`cost`** reports what the host charged for the read, taken from each response's own
+figures — GraphQL `rateLimit { cost }`, which every page asks for; for a REST call, its
+`X-RateLimit-Used` keyed by resource and reset window — never from `GET /rate_limit`,
+which the spike found reporting a different window from the one the calls were charged
+against. The GitHub read makes no REST call, so its `rest_requests` is `0`.
+
+**The reply marker.** Every reply body `reply_to_comment` posts ends with the hidden
+line `<!-- onevcs:reply in-reply-to=<comment id> key=<key> [label=<label>] -->`, where
+the comment id is the comment asked about and a label is a single token of letters,
+digits and hyphens. Reading sets `ours` on any comment whose last non-empty line is
+such a marker, and on nothing else, and returns it parsed in `reply_marker`, so a
+consumer derives from the host alone which comment revision each of its replies answers
+and how, and never mistakes its own reply for feedback even when the reviewer and the
+token are one account. `ours` is never derived from the author, `authorAssociation` or
+`viewerDidAuthor`: the spike read the reviewer's comment and onevcs's reply back with
+the same login, `OWNER` and `viewerDidAuthor: true`, so a filter on authorship would
+drop all of a solo reviewer's feedback. A marker missing its key, repeating a field, or
+carrying a label that is not a token is not one.
+
+**Idempotent posting.** Unless `verified_absent` is set, before posting
+`reply_to_comment` reads the change request's comments for a reply whose marker names
+the same comment and carries the same `key`; when it finds one it posts nothing and
+returns it with `existing: true`. So a caller that lost the answer to an accepted post —
+it crashed, or its record was never written — calls again with the same key and gets
+the reply that is already there, never a second one. Calls with the same change request
+and key on one host are serialized: each holds an exclusive lock under `ONEVCS_HOME`,
+keyed on the change request's canonical URL and the key, from its read of the replies
+through its post, so two overlapping calls on one host post one reply and the second
+returns it with `existing: true`. **The host offers no conditional create, so two calls
+on different hosts at the same moment are not serialized and could each post.** This
+weaker guarantee is the manager's ruling, under the same best-effort ruling as the
+plan's driver claim, since only two drivers of one project at once would make such
+calls. With `verified_absent` it posts with exactly one request and no read, still under
+the lock, trusting the caller's read; a consumer uses it only right after a read that
+showed no reply carrying the key. An empty body, an empty key, a key carrying
+whitespace or an angle bracket (it could not be written into the marker), a comment id
+of that shape, and a label that is not a single token are refused before the host is
+asked anything.
+
+**Replying** to a `ReviewThread` comment posts in that thread (`POST
+repos/{owner}/{name}/pulls/{n}/comments/{id}/replies`, `threaded: true`). GitHub's
+replies route answers a thread's first comment, so where the call read the change
+request it posts against the first comment of the asked comment's thread — the marker
+still names the comment asked about — and a `verified_absent` call posts against the
+comment it names. A reply to a `Review` or `Conversation` comment posts a new
+conversation comment (`POST repos/{owner}/{name}/issues/{n}/comments`) whose first line
+is `Re: <link to the comment it answers>`, `threaded: false`: a review summary has no
+thread a reply can join — the spike found all three host routes refusing it (404 on the
+replies route, 422 on `in_reply_to`, `NOT_FOUND` from
+`addPullRequestReviewThreadReply`). The route and the number the REST routes address a
+comment by are read out of its node id — GitHub's current ids (`PRRC_`, `IC_`, `PRR_`
+and the URL-safe base64 of a MessagePack `[0, repository id, database id]`) and its
+older ones (the base64 of `<n>:<Type><database id>`) — which is what lets a
+`verified_absent` reply be one request; an id that is neither is refused. A comment id
+the read does not find on the change request is refused. It never resolves a thread.
+The whole body, marker included, passes the public-remote boundary check
+(`ReplyRequest::term_scope`) before anything is posted, and a refusal is the boundary's
+`GateFailed` with nothing posted.
+
+**Events.** Each call records exactly one event, in the Review phase, once the host has
+answered — never for a call that failed, and emitting it never fails the call:
+`review-comments-read` `{change_url, count, unchanged, marker, cost: {graphql_points,
+rest_requests}}` and `review-reply-posted` `{change_url, comment, reply, url, threaded,
+key, existing}` — `existing: true` for a call that found the keyed reply and posted
+nothing. A change request named by its session records on that session's stream,
+labelled with its identity; one named by URL records on a stream of its own,
+`change-<the first twelve hex characters of the SHA-256 of its canonical URL>`,
+labelled `change_url`, which `onevcs events` reads like any other.
+
+**The testing crate follows.** `onevcs-testing`'s host keeps per-change review state:
+`HostState::review_comments` (each change request's `HostComment`s — a `ReviewComment`
+without `ours` and `reply_marker`, which are read out of the body as the real host's
+are, plus the `revision` at which it last changed), `HostState::replies` (every reply
+posted, as `Replied {change, comment, key, reply, threaded}`) and
+`HostState::review_charges` (one `ReadCost` a read, defaulting to the measured one
+GraphQL point and no REST request), so its state document is written at version 20; a
+version 19 document reads as a host holding no review feedback. `Host::add_comment`,
+`Host::edit_comment` and `Host::set_thread` are a reviewer's moves on it. Its read
+marker is its own count of changes to one change request's feedback. The e2e fake `gh`
+world answers exactly the GraphQL query and the two REST reply routes the GitHub
+implementation reaches, with payload shapes taken from the responses `spike-review-loop`
+recorded, and reports the measured charge by default — one GraphQL point a page — through
+`rateLimit { cost }`, seedable per response.
+
+Event kinds added: `review-comments-read`, `review-reply-posted`.
 
 
 ---
