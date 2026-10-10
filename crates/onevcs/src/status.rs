@@ -36,7 +36,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::event::{ArtifactId, EventKind, Line};
 use crate::git::ObjectId;
-use crate::host::{ChangeId, CheckSource, CheckState, Hosting};
+use crate::host::{ChangeId, CheckSource, CheckState, Hosting, Sha};
 use crate::landed::{self, Landed};
 use crate::preserve::{ALREADY_ON_ORIGIN, PUSHED};
 use crate::publish::{self, DraftReason};
@@ -44,6 +44,7 @@ use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
 use crate::session::{Lifecycle, Liveness, OnOrigin, Provenance, SessionHolder};
+use crate::stack_base::StackParent;
 use crate::store::{self, Resolution};
 use crate::workspace::{Ref, Token};
 use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
@@ -126,10 +127,15 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// shape is unchanged; the bump is for a reader that took any `retired` for a landing,
 /// which a discarded branch never is.
 ///
+/// `12` is `branch.stack_base`: the parents a branch `onevcs stack-base` assembled
+/// carries, each at the newest head merged, read off the `Stack-Base` trailers of its
+/// own history. A stack base is never landed itself, so `next` names no landing verb
+/// for one, and a branch that is not a stack base omits the field.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 11;
+pub const REPORT_VERSION: u32 = 12;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -290,6 +296,22 @@ pub struct BranchReport {
     /// is unpublished, and `publication.state` says so beside this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_origin: Option<OnOrigin>,
+    /// What `onevcs stack-base` merged into this branch, where it is a stack base.
+    ///
+    /// Read off the `Stack-Base` trailers of the branch's own history, so it answers on
+    /// a host that never saw the branch assembled. A branch that is not one omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_base: Option<StackBaseReport>,
+}
+
+/// A stack base: a branch merging several parents onto a root, which is drafted
+/// against and never landed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackBaseReport {
+    /// Every parent a stack-base merge brought in, in the order each was first
+    /// merged, at the newest head merged — a parent a later assembly dropped because
+    /// it landed included, since its merge is still in the branch's history.
+    pub parents: Vec<StackParent>,
 }
 
 /// One repository holding the branch, and what that repository is.
@@ -1354,6 +1376,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let mut ahead = None;
     let mut branch_provenance = None;
     let mut change_base = None;
+    let mut stack_base = None;
     // Absent is its own answer: nothing this identity keeps work in holds the branch,
     // so nothing here has seen the history that would decide it.
     let mut verdict = None;
@@ -1366,6 +1389,16 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         // refuse one by name where they are the ones about to act on it.
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
+        stack_base = provenance::stack_base_of(repo, compared, &work.branch, &base, &trailers)?
+            .map(|parents| StackBaseReport {
+                parents: parents
+                    .into_iter()
+                    .map(|merge| StackParent {
+                        branch: merge.branch,
+                        head: Sha(merge.head),
+                    })
+                    .collect(),
+            });
         verdict = Some(decided.clone());
     }
     // A branch nothing holds any more has no copy to decide it from, and one retired
@@ -1457,6 +1490,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         session: session.as_ref(),
         provenance: branch_provenance,
         nobody_has_it: holders.is_empty(),
+        stack_base: stack_base.as_ref(),
     });
 
     Ok(Report {
@@ -1479,6 +1513,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
             ahead,
             provenance: branch_provenance,
             on_origin,
+            stack_base,
         },
         publication: PublicationReport {
             state,
@@ -1709,6 +1744,7 @@ struct Advance<'a> {
     session: Option<&'a SessionReport>,
     provenance: Option<BranchProvenance>,
     nobody_has_it: bool,
+    stack_base: Option<&'a StackBaseReport>,
 }
 
 /// The command that advances this work, or why none applies.
@@ -1727,11 +1763,29 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
         session,
         provenance,
         nobody_has_it,
+        stack_base,
     } = *seen;
     let says = |because: String| NextReport {
         command: None,
         because,
     };
+    // Before every state, because none of them is about a stack base: it is drafted
+    // against and never landed, each parent lands through its own change request, and
+    // a landing verb here would publish every parent's work as one change.
+    if let Some(stack_base) = stack_base {
+        let parents = stack_base
+            .parents
+            .iter()
+            .map(|parent| format!("{}@{}", parent.branch, parent.head.0))
+            .collect::<Vec<_>>();
+        return says(format!(
+            "branch {branch:?} is a stack base: it merges {parents} onto {base} for the changes \
+             drafted against it, and is never landed itself — each parent lands through its own \
+             change request. `onevcs stack-base` advances it",
+            branch = work.branch,
+            parents = guidance::listed(&parents),
+        ));
+    }
     let change = change_url.unwrap_or("the change request");
     match state {
         Landing::Landed => says(format!(
@@ -3567,6 +3621,17 @@ impl Report {
             )),
             None => out.push_str("  on origin: not preserved\n"),
         }
+        if let Some(stack_base) = &self.branch.stack_base {
+            let parents = stack_base
+                .parents
+                .iter()
+                .map(|parent| format!("{}@{}", parent.branch, parent.head.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "  stack base: merges {parents} — drafted against, never landed\n"
+            ));
+        }
         if self.branch.holders.is_empty() {
             out.push_str("  held by: nothing this identity keeps work in\n");
         } else {
@@ -3792,8 +3857,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v11.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v11-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v12.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v12-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {

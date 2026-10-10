@@ -846,6 +846,15 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if withheld && reporting == Reporting::UnpublishedOnly {
                 continue;
             }
+            // A stack base is not preserved work in either report: it merges branches
+            // that are landed by their own change requests and is never landed itself,
+            // so a row for it would hand a landing verb to the one branch nothing should
+            // land. Its own history says what it is — every merge `onevcs stack-base`
+            // writes carries the trailer — and that read is the same log the rows below
+            // read, so recognising it costs this report nothing.
+            if provenance::stack_base_of(asked, &compared, &branch, &base, trailers)?.is_some() {
+                continue;
+            }
             let retirement = classified
                 .entry(branch.clone())
                 .or_insert_with(|| crate::retire::classify_offline(&census, &branch))

@@ -67,6 +67,7 @@ pub(crate) struct Trailers {
     recovered: String,
     change_url: String,
     landed: String,
+    stack_base: String,
 }
 
 impl Default for Trailers {
@@ -85,6 +86,7 @@ impl Trailers {
             recovered: format!("{prefix}Recovered-Incomplete:"),
             change_url: format!("{prefix}Change-Url:"),
             landed: format!("{prefix}Landed-Commit:"),
+            stack_base: format!("{prefix}Stack-Base:"),
         }
     }
 
@@ -130,6 +132,88 @@ impl Trailers {
     pub(crate) fn landed(&self) -> &str {
         &self.landed
     }
+
+    /// Records one merge a stack base was assembled from: the branch it merged and
+    /// the commit that branch stood at, as `<branch>@<sha>`.
+    ///
+    /// On every merge commit `onevcs stack-base` writes, the root's included, so a
+    /// branch carrying one is recognised as a stack base by its own history — on a
+    /// host that never saw it assembled as readily as on the one that did. A stack
+    /// base is never landed itself; it is what changes are drafted against, and a
+    /// reader that took it for unpublished work would hand it a landing verb.
+    pub(crate) fn stack_base(&self) -> &str {
+        &self.stack_base
+    }
+}
+
+/// One merge a stack base records: the branch it brought in, and where that branch
+/// stood.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StackMerge {
+    /// The branch merged.
+    pub branch: String,
+    /// The commit it was merged at.
+    pub head: String,
+}
+
+/// The `Stack-Base` trailer a merge of `branch` at `head` carries.
+pub(crate) fn stack_base_trailer(trailers: &Trailers, branch: &str, head: &str) -> String {
+    format!("{} {branch}@{head}", trailers.stack_base())
+}
+
+/// The merges a commit message's `Stack-Base` trailers record, in the order written.
+///
+/// A value that is not `<branch>@<sha>` is not one — the split is at the last `@`,
+/// because a branch name may carry one and a sha cannot.
+fn stack_merges(message: &str, trailers: &Trailers) -> Vec<StackMerge> {
+    message
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(trailers.stack_base()))
+        .filter_map(|value| {
+            let (branch, head) = value.trim().rsplit_once('@')?;
+            (!branch.is_empty() && !head.is_empty()).then(|| StackMerge {
+                branch: branch.to_owned(),
+                head: head.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// What a branch's base-relative history records of being a stack base: every
+/// branch a `Stack-Base` merge brought in, at the newest head it was merged at, in
+/// the order each was first merged — or `None` where no commit of it carries one.
+///
+/// The root the stack base is cut from is left out by name: its merges record that
+/// the root's own work reached the stack base, and the root is not a parent of it. A
+/// parent a later assembly no longer names — one that landed — is still listed: its
+/// merge is in the history, so it is still a branch this stack base carries.
+pub(crate) fn stack_base_of<'a>(
+    repo: impl Into<git::Asked<'a>>,
+    base: &str,
+    branch: &str,
+    root: &str,
+    trailers: &Trailers,
+) -> Result<Option<Vec<StackMerge>>> {
+    let commits = git::log_messages(repo, base, branch)?;
+    let mut recorded = false;
+    let mut parents: Vec<StackMerge> = Vec::new();
+    for merge in commits
+        .iter()
+        .flat_map(|commit| stack_merges(&commit.message, trailers))
+    {
+        recorded = true;
+        if merge.branch == root {
+            continue;
+        }
+        match parents
+            .iter_mut()
+            .find(|known| known.branch == merge.branch)
+        {
+            Some(known) => known.head = merge.head,
+            None => parents.push(merge),
+        }
+    }
+    Ok(recorded.then_some(parents))
 }
 
 /// Why a prefix cannot spell a git trailer key, when it cannot.

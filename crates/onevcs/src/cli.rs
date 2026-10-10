@@ -52,6 +52,9 @@ pub enum Command {
     },
     /// Put an unpublished branch on its identity's origin, without publishing it.
     Preserve(PreserveArgs),
+    /// Assemble or advance a stack base: a branch cut from a root carrying a merge of
+    /// several parent branches, pushed with no change request.
+    StackBase(StackBaseArgs),
     /// Verify and publish a preserved branch that was left behind.
     Recover(RecoverArgs),
     /// List preserved work that has not been published.
@@ -680,6 +683,36 @@ pub struct PreserveArgs {
     /// Which private repositories the public boundary check derives its terms from.
     #[command(flatten)]
     pub term_scope: TermScopeArgs,
+}
+
+/// Arguments for `onevcs stack-base`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct StackBaseArgs {
+    // llmlint: ignore-block[invalid_states_unrepresentable] this module is the parser
+    // only, and every value here is held where `StackBaseRequest` is read: the repository
+    // by `store::resolve`, which tells its four spellings apart, every branch name by
+    // git's own ref-name grammar, and the parents' count and distinctness before anything
+    // is fetched. Typed as the text the library request takes, because the command is a
+    // rendering of that operation.
+    /// The repository: an identity key, a registered alias, an origin URL, or a path.
+    pub repo: String,
+    /// The stack base branch to assemble, under its full name.
+    #[arg(long, value_name = "B")]
+    pub branch: String,
+    /// The root the branch is cut from and kept level with, e.g. `main`.
+    #[arg(long, value_name = "R")]
+    pub root: String,
+    /// A parent branch to merge; repeatable, at least twice, merged in the order given.
+    #[arg(long = "parent", value_name = "P", required = true)]
+    pub parents: Vec<String>,
+    /// A label to stamp on the session the assembly is made in, as KEY=VALUE;
+    /// repeatable, one value per key, exactly as `session open --label` takes one.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// Answer with the stack base as one JSON object.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs recover`.

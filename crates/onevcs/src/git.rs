@@ -2898,6 +2898,31 @@ pub fn merge_leaving_conflict(cwd: &Path, reference: &str, message: &str) -> Res
     Ok(Integrated::Conflicted(conflict))
 }
 
+/// [`merge_leaving_conflict`], always writing a merge commit: `--no-ff`, so a ref the
+/// branch could fast-forward to is still recorded as merged, under `message`.
+///
+/// What a stack base merges with, because each of its merges carries a trailer naming
+/// what it brought in — and a fast-forward writes no commit for one to be on.
+pub fn merge_commit_leaving_conflict(
+    cwd: &Path,
+    reference: &str,
+    message: &str,
+) -> Result<Integrated> {
+    let merged = run(
+        &["merge", "--no-ff", "--no-edit", "-m", message, reference],
+        Some(cwd),
+    )?;
+    if merged.ok() {
+        return Ok(Integrated::Settled);
+    }
+    let Some(conflict) = conflict_in(cwd)? else {
+        return Err(Error::Invalid {
+            reason: format!("git merge {reference} failed: {}", merged.diagnostic()),
+        });
+    };
+    Ok(Integrated::Conflicted(conflict))
+}
+
 /// A merge a worktree holds in progress: what it is merging, and which of its paths
 /// are still unmerged.
 ///
@@ -3132,6 +3157,11 @@ pub fn push_replacing(
 ///
 /// Never forced, in either spelling: a non-fast-forward push is a refusal for the
 /// caller to report, never a history to replace.
+///
+/// A stack base is pushed through it too, for the reason its own module states: a
+/// stack base lands nothing either, and merges only branches each verified on its
+/// own change request — so this is still the one push that skips the hook, reached
+/// by the two verbs that put a branch on its origin without publishing it.
 pub fn push_preserving(cwd: &Path, branch: &str, remote: &str) -> Result<Pushed> {
     pushed(
         &[

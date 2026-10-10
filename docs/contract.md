@@ -1214,6 +1214,7 @@ development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
+             stack-base-assembled
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks
@@ -4276,6 +4277,131 @@ build never recorded.
 
 Event kinds added: `gate-run`.
 
+
+### A stack base merges several unlanded parents onto a root, and is pushed with no change request
+
+**Recorded as the plan's agreement** (plan `authoring:pr-feedback-rework`, node
+`onevcs-stack`, which owns this contract; `op-stack`, `op-rework` and `op-readjust`
+restate it). A team reviews a large project as a stack of small drafts only if a change
+building on two earlier drafts can be drafted against both of them: drafted against the
+root it lacks their work, and drafted against one of them it shows the other's diff as its
+own. Until this amendment `onevcs` stacked a session on one parent only. A **stack base**
+is the branch such a change is drafted against — cut from a root, carrying a merge of
+several parent branches in a declared order — and owning it here keeps every push a
+remote sees inside the one library that already guarantees base history is never
+rewritten.
+
+```rust
+pub struct StackBaseRequest {
+    /// The identity (normalized origin) or a registered checkout path.
+    pub repo: String,
+    /// The full branch name, e.g. "<host prefix>stack-base/<plan>/<node>".
+    pub branch: String,
+    /// The root base the branch is cut from, e.g. "main".
+    pub root: String,
+    /// The parent branches, merged in this order; at least two.
+    pub parents: Vec<String>,
+    /// Session labels, as `session open --label` takes them.
+    pub labels: BTreeMap<String, String>,
+}
+pub struct StackParent { pub branch: String, pub head: Sha }
+pub struct StackBase {
+    pub branch: String,
+    pub head: Sha,
+    pub parents: Vec<StackParent>,
+    pub outcome: StackBaseOutcome,
+}
+#[non_exhaustive]
+pub enum StackBaseOutcome {
+    Created,
+    Advanced,
+    Unchanged,
+    Conflicted { session: SessionToken, conflict: OpenConflict },
+}
+pub fn assemble_stack_base(providers: &Providers, request: &StackBaseRequest) -> Result<StackBase>;
+```
+
+All five are re-exported from the crate root. `StackParent::head` is the commit the
+origin had that parent at when the call read it; `StackBase::head` is where the branch
+stands — what was pushed, what the origin already had, or, for `Conflicted`, the commit
+the merge left in progress is being made on. The `--json` form serializes the outcome
+with a `kind` of `created`, `advanced`, `unchanged` or `conflicted`, the last carrying
+`session` and `conflict` beside it.
+
+```
+onevcs stack-base REPO --branch B --root R --parent P1 --parent P2 [--parent P]... [--label KEY=VALUE]... [--json]
+```
+
+**What it does.**
+
+- **An absent branch** — nothing on the origin and nothing on this host carries the name
+  — is cut from `origin/<root>`, each `origin/<parent>` is merged into it in order, a
+  merge commit per parent and never a fast-forward, and it is pushed as a new ref:
+  `Created`.
+- **An existing branch**, on the origin or held on this host, first has `origin/<root>`
+  merged where it does not already contain the root's head — so work that landed on the
+  root since, a parent's squash among it, reaches the base before any parent — and then
+  each named parent's current head it does not already contain, in order. That is
+  `Advanced` with a forward-only push, or `Unchanged`, with nothing merged or pushed,
+  when the root's head and every named parent are already contained and the origin
+  already has the branch. Never a rebase and never a force-push, so the base's history
+  is never rewritten and every change drafted against it can merge it forward.
+- **The parent list may shrink between calls.** A parent named by an earlier call and
+  not by this one — because it landed — is never merged again and never unmerged: its
+  earlier merge stays in the history, and its work is now also carried by the root. A
+  newly named parent is merged like any other. `parents` still names at least two
+  branches; a request naming fewer is refused (exit `2`) with nothing opened or pushed.
+  A consumer left with one unlanded parent bases on that parent's branch and stops using
+  the stack base, and one left with none bases on the root. A request naming its own
+  branch as root or parent, the root as a parent, a parent twice, or a name the origin
+  does not carry is refused the same way.
+- **A merge conflict** is left in progress in a session opened on the branch, exactly as
+  `session open` without `--refuse-conflicts` leaves a continuation's: `MERGE_HEAD`, the
+  unmerged entries and git's markers, and the same `OpenConflict` — whose `base_commit`
+  is the head being merged and whose `branch_tip` is where the branch stood before it.
+  The answer is `Conflicted { session, conflict }`, exit `3`, with the session token
+  printed on stdout in both forms; nothing is pushed. A later call with the same request
+  resumes that same session, and once its merge is concluded and committed merges the
+  parents still to merge and pushes: `Advanced`. A merge still unconcluded is
+  `Conflicted` again; one whose conflicts are all staged and uncommitted is refused as a
+  sync conflict naming the commit that concludes it, and the session is left holding it.
+- Every other call closes the session it worked in before answering, the branch handed
+  back to the execution checkout as every close hands one back.
+
+**What it does not do.** No change request is opened, and the push does not run the
+repository's merge path — it is pushed as `preserve` pushes, without the `pre-push` hook
+and never forced, because a stack base only merges branches each verified on its own
+change request. It does pass the public boundary first, against `origin/<root>`, like
+every other write to a remote: a refusal pushes nothing and fails the call naming it. It
+works from the origin alone: on a host whose state root has never seen the branch, the
+origin's copy is continued.
+
+**A stack base says what it is in its own history.** Every merge commit it writes, the
+root's included, carries the trailer `<prefix>Stack-Base: <parent>@<sha>` under the rules
+file's `trailer_prefix` — the merged branch and the commit it was merged at. So
+`recoverable`, in both its default and `--all` forms, does not list a stack base as
+preserved work, and the retirement pass offers it no landing verb and never classifies it
+`superseded-with-changes` — it is kept as `unmerged-unique-commits` while it holds what
+its root does not. `onevcs status` names it: the `--json` report's `version` moves to `12`
+with `branch.stack_base`, `{parents: [{branch, head}]}` — each parent a `Stack-Base`
+merge of the branch's history brought in, at the newest head merged, a dropped parent
+included — and its `next` names no landing verb, because a stack base is drafted against
+and never landed.
+
+Event kinds added: `stack-base-assembled`.
+
+- `stack-base-assembled` — `{branch, root, parents: [{branch, head}], head, outcome}`,
+  where `outcome` is `created`, `advanced`, `unchanged` or `conflicted`. At `integrate`:
+  several branches brought together onto a root, proposing nothing. Exactly one per call
+  that returns a `StackBase`, on the stream of the session the assembly was made in; a
+  call that fails returns its error and emits none. Deliberately not `push`, for the
+  reason `branch-preserved` is not.
+
+**The testing crate follows by needing nothing.** `assemble_stack_base` asks
+`providers.hosting` for the public boundary's visibility read and nothing else, and the
+repository side is git's own, as `preserve`'s is — so a consumer drives it over a real
+on-disk origin with `onevcs-testing`'s hosts, which already answer that read, and its
+existing surface does not move.
 
 ## Recovery detail and branch tips
 

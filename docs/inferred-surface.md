@@ -337,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `11`, and it is deliberately not a migration boundary
+The report's schema version is `12`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -390,6 +390,13 @@ a branch `onevcs reclaim --discard` deleted while it still held work nothing lan
 key moved, and the version moves anyway, because a reader that took any `retired` for a
 landing would read a discarded branch as landed, which it never is — only `retirable`
 reads as landed, and the human `retired:` line says `discarded, its work never landed`.
+Version 12 is `branch.stack_base`: for a branch `onevcs stack-base` assembled, every
+parent a `Stack-Base` merge of its history brought in, each at the newest head merged —
+a parent a later assembly dropped because it landed included, since its merge is still
+history. It is read off the branch's own commits, so a host that never saw the branch
+assembled answers it too; `next` then names no landing verb, because a stack base is
+drafted against and never landed, and the human rendering prints a `stack base:` line.
+Omitted for every other branch.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -405,8 +412,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v11.json` and
-`status-report-v11-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v12.json` and
+`status-report-v12-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in

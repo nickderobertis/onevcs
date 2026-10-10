@@ -347,6 +347,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::BranchSuperseded,
         EventKind::BranchRetired,
         EventKind::GateRun,
+        EventKind::StackBaseAssembled,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -377,7 +378,8 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ReleaseObserved
             | EventKind::BranchSuperseded
             | EventKind::BranchRetired
-            | EventKind::GateRun => {}
+            | EventKind::GateRun
+            | EventKind::StackBaseAssembled => {}
         }
     }
     kinds
@@ -3590,6 +3592,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("change describe", operation!(onevcs::describe_change)),
         ("change ready", operation!(onevcs::ready_change)),
         ("preserve", operation!(onevcs::preserve)),
+        ("stack-base", operation!(onevcs::assemble_stack_base)),
         ("recover", operation!(onevcs::recover)),
         ("recoverable", operation!(<dyn Vcs>::recoverable_matching)),
         ("status", operation!(onevcs::work_status)),
