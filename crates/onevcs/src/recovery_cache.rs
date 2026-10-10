@@ -395,7 +395,9 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 /// whatever object a walk reaches, and its inflate never returns from a loose object
 /// cut short, where git refuses one. A store not yet proved is left to git and the
 /// proofs below, exactly as before. Admitted by the context that compares no content:
-/// none of these reads compares what a file holds, and the worktree's attributes —
+/// none of these reads compares what a file holds — the two diffs compare tree
+/// entries by object id, which is all git compares with no option that reads a
+/// blob — and the worktree's attributes —
 /// which only a content comparison's context reads, and which only a configured
 /// driver could act on, which no admitted context has — cannot move an answer.
 pub(crate) fn native(

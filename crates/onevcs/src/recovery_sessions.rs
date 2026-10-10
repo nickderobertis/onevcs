@@ -18,9 +18,58 @@ mod unix {
     /// The shape of the document below. A document of any other is rebuilt.
     const VERSION: u32 = 3;
 
-    /// A record file's identity and contents, as its metadata says: device, inode,
-    /// length, mode, owner, group, and both timestamps to the nanosecond.
-    type Stamp = (u64, u64, u64, u32, u32, u32, i64, i64, i64, i64);
+    /// A record file's identity and contents, as its metadata says. Written as one
+    /// array in this field order, which keeps a host's worth of hints small.
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(from = "Written", into = "Written")]
+    struct Stamp {
+        device: u64,
+        inode: u64,
+        length: u64,
+        mode: u32,
+        owner: u32,
+        group: u32,
+        modified: (i64, i64),
+        changed: (i64, i64),
+    }
+
+    /// A [`Stamp`] as the document holds it: the timestamps as seconds, then
+    /// nanoseconds.
+    type Written = (u64, u64, u64, u32, u32, u32, i64, i64, i64, i64);
+
+    impl From<Written> for Stamp {
+        fn from(
+            (device, inode, length, mode, owner, group, mtime, mtime_nsec, ctime, ctime_nsec): Written,
+        ) -> Self {
+            Self {
+                device,
+                inode,
+                length,
+                mode,
+                owner,
+                group,
+                modified: (mtime, mtime_nsec),
+                changed: (ctime, ctime_nsec),
+            }
+        }
+    }
+
+    impl From<Stamp> for Written {
+        fn from(stamp: Stamp) -> Self {
+            (
+                stamp.device,
+                stamp.inode,
+                stamp.length,
+                stamp.mode,
+                stamp.owner,
+                stamp.group,
+                stamp.modified.0,
+                stamp.modified.1,
+                stamp.changed.0,
+                stamp.changed.1,
+            )
+        }
+    }
 
     /// What one record says about where a selection's rows are read, held to the
     /// file it was read from: its token, its stamp, then its identity, branch, clone,
@@ -232,19 +281,15 @@ mod unix {
         }
         // Each record is its own file, so they are stamped side by side.
         let stamped = crate::vcs::concurrently(&listed, |(_, entry)| {
-            entry.metadata().ok().map(|metadata| {
-                (
-                    metadata.dev(),
-                    metadata.ino(),
-                    metadata.len(),
-                    metadata.mode(),
-                    metadata.uid(),
-                    metadata.gid(),
-                    metadata.mtime(),
-                    metadata.mtime_nsec(),
-                    metadata.ctime(),
-                    metadata.ctime_nsec(),
-                )
+            entry.metadata().ok().map(|metadata| Stamp {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                length: metadata.len(),
+                mode: metadata.mode(),
+                owner: metadata.uid(),
+                group: metadata.gid(),
+                modified: (metadata.mtime(), metadata.mtime_nsec()),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
             })
         });
         let Some(stamps) = stamped.into_iter().collect::<Option<Vec<Stamp>>>() else {

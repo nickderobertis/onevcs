@@ -209,8 +209,9 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
         return Ok(recalled);
     }
     // A read the admitted context lets this process answer from the objects
-    // themselves costs no process and no stored proof, and is never stored: it is
-    // as cheap to make again as it would be to check.
+    // themselves costs no process and is never stored as a proof, since it is as
+    // cheap to make again as one would be to check; like any read, it is remembered
+    // for the rest of this read.
     if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
         reads::remember(args, cwd, env, &output);
         return Ok(output);
