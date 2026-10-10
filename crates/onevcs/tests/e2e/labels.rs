@@ -738,6 +738,44 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     assert_eq!(compare(), original);
     std::fs::remove_dir(&index).expect("restore cache path");
     assert_eq!(compare(), original);
+    // A shard that is whole by its own digest, but not the one the lookup recorded
+    // for its identity, is a listing the lookup does not stand for: the read lists
+    // the directory again rather than narrowing to what the shard names.
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate writes a
+    // shard the lookup did not record, which is the point: the input under test is
+    // one an interrupted write or another build left, and the real binary reads it.
+    let shards: Vec<_> = std::fs::read_dir(index.with_extension(""))
+        .expect("the selected read must write its identity's shard")
+        .map(|entry| entry.expect("shard").path())
+        .collect();
+    assert!(!shards.is_empty(), "the test must exercise a shard");
+    for shard in &shards {
+        let written = std::fs::read_to_string(shard).expect("shard");
+        let (_, body) = written.split_once('\n').expect("digest line");
+        let mut document: Value = serde_json::from_str(body).expect("shard document");
+        document["branches"] = serde_json::json!({});
+        let body = document.to_string();
+        let digest = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(body.as_bytes()))
+        };
+        std::fs::write(shard, format!("{digest}\n{body}")).expect("stale shard");
+    }
+    assert_eq!(compare(), original);
+    // The selected session's own stream is read by name whatever a shard says, so
+    // the rows alone cannot tell a refused shard from a trusted one; the listing
+    // that refusal falls to is what writes the identity's branches back.
+    for shard in &shards {
+        let written = std::fs::read_to_string(shard).expect("relisted shard");
+        let (_, body) = written.split_once('\n').expect("digest line");
+        let document: Value = serde_json::from_str(body).expect("shard document");
+        assert_eq!(
+            document["branches"][branch].as_array().map(Vec::len),
+            Some(1),
+            "a shard the lookup did not record must be relisted, not read"
+        );
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let cache = fixture.world.home().join("cache/recoverable/v1/git");
     let entries: Vec<_> = std::fs::read_dir(&cache)
