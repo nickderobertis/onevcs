@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use onevcs::{Detail, Git, Scope, Selection, Vcs};
 use sha2::{Digest, Sha256};
@@ -85,6 +85,31 @@ fn resources() -> (Option<u64>, Option<u64>) {
 #[cfg(any(target_vendor = "apple", test))]
 fn task_figures(resident_bytes: u64, threads: i32) -> (Option<u64>, Option<u64>) {
     (Some(resident_bytes / 1024), u64::try_from(threads).ok())
+}
+
+/// How long a read's own threads are given to finish exiting before what is left is
+/// counted. A thread the read has joined can still be counted for a moment after the
+/// join returns — Apple's kernel finishes terminating it after waking the joiner — so
+/// a count taken at once could charge a read with a thread it has already finished
+/// with. A thread the read left running is still counted when this has passed.
+const SETTLING: Duration = Duration::from_millis(50);
+
+/// The figures after a read, with any thread over the `before` count the read began
+/// with given until `settling` declines to wait any longer to exit: resident memory as
+/// last read, and the fewest threads seen. Where the count is back to `before`, or is
+/// not reported, it is taken at once.
+fn settled(
+    before: Option<u64>,
+    mut reading: impl FnMut() -> (Option<u64>, Option<u64>),
+    mut settling: impl FnMut() -> bool,
+) -> (Option<u64>, Option<u64>) {
+    let (mut rss, mut fewest) = reading();
+    while matches!((before, fewest), (Some(before), Some(now)) if now > before) && settling() {
+        let (resident, threads) = reading();
+        rss = resident;
+        fewest = fewest.min(threads).or(fewest);
+    }
+    (rss, fewest)
 }
 
 /// One timed call, held in a fixed-size record so that keeping it moves nothing the
@@ -230,6 +255,7 @@ fn run() -> Result<serde_json::Value, Failure> {
             clear()?;
         }
         let load = load1();
+        let (_, before) = resources();
         let started = Instant::now();
         let rows = read()?;
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -238,7 +264,11 @@ fn run() -> Result<serde_json::Value, Failure> {
         let verdict = Sha256::digest(&bytes).into();
         drop(bytes);
         last = rows;
-        let (rss_kib, threads) = resources();
+        let deadline = Instant::now() + SETTLING;
+        let (rss_kib, threads) = settled(before, resources, || {
+            std::thread::sleep(Duration::from_millis(1));
+            Instant::now() < deadline
+        });
         samples.push(Sample {
             wall_ms,
             load1: load,
@@ -291,7 +321,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{status_figures, task_figures};
+    use super::{settled, status_figures, task_figures};
 
     /// One process's figures, as each kernel reports them: Linux's status text and
     /// Apple's task information for a process resident in 12 MiB with 3 threads.
@@ -313,5 +343,59 @@ mod tests {
         assert_eq!(status_figures(""), (None, None));
         assert_eq!(status_figures("VmRSS:\t unknown kB\n"), (None, None));
         assert_eq!(task_figures(0, -1), (Some(0), None));
+    }
+
+    /// Readings in turn, the last repeated once they run out, and how many waits the
+    /// settling allowed.
+    fn scripted(
+        threads: &[u64],
+        waits: usize,
+    ) -> (
+        impl FnMut() -> (Option<u64>, Option<u64>) + '_,
+        impl FnMut() -> bool,
+    ) {
+        let mut at = 0;
+        let reading = move || {
+            let now = threads[at.min(threads.len() - 1)];
+            at += 1;
+            (Some(100 + now), Some(now))
+        };
+        let mut left = waits;
+        let settling = move || {
+            let more = left > 0;
+            left = left.saturating_sub(1);
+            more
+        };
+        (reading, settling)
+    }
+
+    #[test]
+    fn a_thread_still_exiting_is_not_counted_once_it_has_gone() {
+        let (reading, settling) = scripted(&[2, 2, 1], 10);
+        assert_eq!(settled(Some(1), reading, settling), (Some(101), Some(1)));
+    }
+
+    #[test]
+    fn a_thread_the_read_left_running_is_still_counted() {
+        let (reading, settling) = scripted(&[2], 10);
+        assert_eq!(settled(Some(1), reading, settling), (Some(102), Some(2)));
+    }
+
+    #[test]
+    fn a_count_back_where_it_began_or_unreported_is_taken_at_once() {
+        let (reading, _) = scripted(&[1, 0], 10);
+        assert_eq!(
+            settled(Some(1), reading, || panic!("no wait")),
+            (Some(101), Some(1))
+        );
+        let (reading, _) = scripted(&[3, 0], 10);
+        assert_eq!(
+            settled(None, reading, || panic!("no wait")),
+            (Some(103), Some(3))
+        );
+        assert_eq!(
+            settled(Some(1), || (None, None), || panic!("no wait")),
+            (None, None)
+        );
     }
 }
