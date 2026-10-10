@@ -180,16 +180,24 @@ mod unix {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(_) => return workspace::all(),
         };
-        let mut listed = Vec::new();
+        let mut listed: Vec<(Token, std::fs::DirEntry)> = Vec::new();
         for entry in entries {
             let entry = entry.map_err(error::at("list the session records in", &directory))?;
-            if let Some(token) = entry
+            let Some(name) = entry
                 .file_name()
                 .to_string_lossy()
                 .strip_suffix(".json")
                 .map(str::to_owned)
-            {
-                listed.push((token, entry));
+            else {
+                continue;
+            };
+            // A record's name is its token, held to the spelling one has before it
+            // names anything; one that is not is refused as loading it refuses it.
+            match Token::try_from(name.clone()) {
+                Ok(token) => listed.push((token, entry)),
+                Err(_) => {
+                    workspace::load(&name)?;
+                }
             }
         }
         // Each record is its own file, so they are stamped side by side.
@@ -224,10 +232,10 @@ mod unix {
             .collect();
         let remembered = known.len();
         let mut fresh: Vec<Entry> = Vec::with_capacity(listed.len());
-        let mut changed: Vec<(String, Stamp)> = Vec::new();
+        let mut changed: Vec<(Token, Stamp)> = Vec::new();
         for ((token, _), stamp) in listed.iter().zip(stamps) {
             match known
-                .remove(token)
+                .remove(&**token)
                 .filter(|entry| entry.1 == stamp && well_labelled[entry.6])
             {
                 Some(entry) => fresh.push(entry),
@@ -243,7 +251,7 @@ mod unix {
         for ((token, stamp), record) in changed.into_iter().zip(read) {
             let record = record?;
             fresh.push(tables.entry(stamp, &record));
-            loaded.insert(token, record);
+            loaded.insert(token.to_string(), record);
         }
         fresh.sort_unstable_by(in_token_order);
         let named = |token: &str| selection.sessions.iter().any(|asked| *asked.0 == *token);

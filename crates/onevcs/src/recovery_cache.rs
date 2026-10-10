@@ -17,8 +17,18 @@ use crate::git;
 #[derive(PartialEq, Eq, Hash)]
 struct ContextKey {
     repo: PathBuf,
-    content: bool,
+    compared: Compared,
     borrowing: Option<PathBuf>,
+}
+
+/// What a read compares, which decides what its context has to hold.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Compared {
+    /// Commits and trees by their ids alone.
+    Objects,
+    /// What files hold: a diff or a merge of contents, whose answer the worktree's
+    /// attributes can move.
+    Content,
 }
 
 /// The shape of an entry and of the key it is stored under. An entry of any other
@@ -524,7 +534,11 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     }
     let context = context_of(
         cwd,
-        matches!(args.first(), Some(&"diff" | &"merge-tree")),
+        if matches!(args.first(), Some(&"diff" | &"merge-tree")) {
+            Compared::Content
+        } else {
+            Compared::Objects
+        },
         borrowing.as_deref(),
     )?;
     let key = crate::ids::digest(
@@ -559,7 +573,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// the context lent it is the context lent nothing, digest and stores alike, and is
 /// computed once for both.
 #[cfg(unix)]
-fn context_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+fn context_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
     let borrowing = borrowing.filter(|lent| {
         !PREFIXES.with(|prefixes| {
             prefixes
@@ -570,24 +584,24 @@ fn context_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Co
                 .is_some_and(|(_, stores)| stores.iter().any(|(path, _)| path == lent))
         })
     });
-    contexts_of(repo, content, borrowing)
+    contexts_of(repo, compared, borrowing)
 }
 
 #[cfg(not(unix))]
-fn context_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
-    contexts_of(repo, content, borrowing)
+fn context_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
+    contexts_of(repo, compared, borrowing)
 }
 
-fn contexts_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+fn contexts_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
     CONTEXTS.with(|contexts| {
         contexts
             .borrow_mut()
             .entry(ContextKey {
                 repo: repo.to_owned(),
-                content,
+                compared,
                 borrowing: borrowing.map(Path::to_owned),
             })
-            .or_insert_with(|| context(repo, content, borrowing))
+            .or_insert_with(|| context(repo, compared, borrowing))
             .clone()
     })
 }
@@ -598,7 +612,7 @@ fn contexts_of(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<C
 pub(crate) fn readable_in_process(repo: &Path, borrowing: Option<&Path>) -> bool {
     enabled()
         && !has_git_overrides()
-        && context_of(repo, false, borrowing).is_some_and(|context| {
+        && context_of(repo, Compared::Objects, borrowing).is_some_and(|context| {
             context
                 .stores
                 .iter()
@@ -720,7 +734,7 @@ fn prefix(repo: &Path) -> Option<Prefix> {
 }
 
 #[cfg(unix)]
-fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+fn context(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
     let (mut digest, mut stores) = PREFIXES.with(|prefixes| {
         prefixes
             .borrow_mut()
@@ -733,7 +747,7 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
             object_stores(borrowing, &mut digest, &mut stores)?;
         }
     }
-    if content {
+    if compared == Compared::Content {
         attributes(repo, &mut digest)?;
     }
     for path in [
@@ -1246,7 +1260,7 @@ fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
 }
 
 #[cfg(not(unix))]
-fn context(_repo: &Path, _content: bool, _borrowing: Option<&Path>) -> Option<Context> {
+fn context(_repo: &Path, _compared: Compared, _borrowing: Option<&Path>) -> Option<Context> {
     None
 }
 
