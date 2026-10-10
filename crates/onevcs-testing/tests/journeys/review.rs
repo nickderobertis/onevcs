@@ -292,10 +292,14 @@ fn a_file_backed_host_charges_what_it_was_seeded_with_and_shares_its_feedback_ac
     assert!(!posted.threaded);
 
     // What no host holds is refused rather than answered: a comment the change does not
-    // carry, a marker another host wrote, and a change nobody opened.
+    // carry, a reply inside a thread (the real host answers only a thread's first
+    // comment), a marker another host wrote, and a change nobody opened.
     for refused in [
         reader
             .reply_to_comment(&change(), &CommentId("nowhere".to_owned()), "x", "k")
+            .map(|_| ()),
+        reader
+            .reply_to_comment(&change(), &CommentId("C2".to_owned()), "x", "k")
             .map(|_| ()),
         reader
             .review_comments(&change(), Some(&onevcs::ReadMarker("gh1.e30".to_owned())))
