@@ -78,16 +78,16 @@ struct Arguments {
     mode: Mode,
 }
 
-/// A launcher label's value as the label grammar takes one: a non-empty string with
-/// no control character, since a value is printed on one line wherever it is shown.
+/// A launcher label's value as the label grammar takes one: any one line, the empty
+/// one included, since that is every value `--label launcher=VALUE` can record.
 /// Made only by [`Launcher::parse`].
 struct Launcher(String);
 
 impl Launcher {
     fn parse(value: String) -> Result<Self, String> {
-        if value.is_empty() || value.chars().any(char::is_control) {
+        if value.contains('\n') {
             return Err(format!(
-                "--launcher {value:?} is not a label value: it must be non-empty and hold no control character"
+                "--launcher {value:?} is not a label value: a label's value is one line"
             ));
         }
         Ok(Self(value))
