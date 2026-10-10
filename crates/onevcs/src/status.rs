@@ -2260,21 +2260,6 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
     Ok((streams, listing))
 }
 
-/// Read only selected provenance, from the streams that can be about what was
-/// selected.
-///
-/// A disposable index under `cache/recoverable/v1/` says which streams name which
-/// `(identity, branch)`: a stream's identity and branch are the first ones its
-/// events name, and a stream is only ever appended to, so once a stream has named
-/// both no later event can make it about anything else. The index is held to the
-/// streams directory's own stamp, which moves whenever a stream is created, removed
-/// or renamed over — so while it stands, the streams the index names for the
-/// selected branches, the tokens a selected branch is read under by name, and every
-/// stream that has not yet named both are all the streams that can be about the
-/// selection, and only those are opened. Each is parsed fresh, and kept by what it
-/// says now. Where the directory moved, every stream is listed and held to its own
-/// stamp, as before, and anything changed or new is parsed. Missing, corrupt and
-/// unreadable index documents fall to that same full listing.
 /// The streams the branch-keyed verbs record a branch under: each verb's prefix and
 /// the branch's slug. One spelling for the verbs that write them and every reader
 /// that asks for one by name.
@@ -2290,6 +2275,21 @@ pub(crate) mod keyed {
     }
 }
 
+/// Read only selected provenance, from the streams that can be about what was
+/// selected.
+///
+/// A disposable index under `cache/recoverable/v1/` says which streams name which
+/// `(identity, branch)`: a stream's identity and branch are the first ones its
+/// events name, and a stream is only ever appended to, so once a stream has named
+/// both no later event can make it about anything else. The index is held to the
+/// streams directory's own stamp, which moves whenever a stream is created, removed
+/// or renamed over — so while it stands, the streams the index names for the
+/// selected branches, the tokens a selected branch is read under by name, and every
+/// stream that has not yet named both are all the streams that can be about the
+/// selection, and only those are opened. Each is parsed fresh, and kept by what it
+/// says now. Where the directory moved, every stream is listed and held to its own
+/// stamp, as before, and anything changed or new is parsed. Missing, corrupt and
+/// unreadable index documents fall to that same full listing.
 #[cfg(unix)]
 pub(crate) fn recorded_streams_about(
     wanted: Option<&BTreeSet<(String, String)>>,
