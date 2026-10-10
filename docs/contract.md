@@ -4832,7 +4832,10 @@ answered — never for a call that failed, and emitting it never fails the call:
 `review-comments-read` `{change_url, count, unchanged, marker, cost: {graphql_points,
 rest_requests}}` and `review-reply-posted` `{change_url, comment, reply, url, threaded,
 key, existing}` — `existing: true` for a call that found the keyed reply and posted
-nothing. A change request named by its session records on that session's stream,
+nothing. `marker` is payload text like any other, so the envelope's bound applies: a
+marker past 4096 bytes — a read of a few hundred comments — is cut and the payload
+carries `"truncated": true`, and the call's own result is where the whole marker is
+read from. A change request named by its session records on that session's stream,
 labelled with its identity; one named by URL records on a stream of its own,
 `change-<the first twelve hex characters of the SHA-256 of its canonical URL>`,
 labelled `change_url`, which `onevcs events` reads like any other.

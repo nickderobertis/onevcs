@@ -397,6 +397,11 @@ fn a_change_request_past_every_page_size_is_read_whole_and_charged_what_each_pag
     let events = change_events(&world);
     assert_eq!(events[1]["payload"]["cost"]["graphql_points"], 6);
     assert_eq!(events[1]["payload"]["count"], 327);
+    // A marker this long is past the envelope's bound on payload text, so the event
+    // carries it cut and says so; the read itself is where the whole one is.
+    assert!(charged["marker"].as_str().expect("a marker").len() > 4096);
+    assert_eq!(events[1]["payload"]["truncated"], true);
+    assert_ne!(events[1]["payload"]["marker"], charged["marker"]);
 }
 
 #[test]
