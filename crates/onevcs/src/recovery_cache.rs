@@ -927,12 +927,32 @@ fn sound(root: &Path, store: &Store) -> bool {
     if let Some(known) = SOUND.with(|sound| sound.borrow().get(&asked).copied()) {
         return known;
     }
+    let named = crate::ids::digest(&root.to_string_lossy());
     let record = crate::home::root().ok().map(|home| {
-        home.join("cache/recoverable/v1/stores").join(format!(
-            "{}.whole.json",
-            crate::ids::digest(&root.to_string_lossy())
-        ))
+        home.join("cache/recoverable/v1/stores")
+            .join(format!("{named}.whole.json"))
     });
+    // The generation every loose object was last proved under: a store whose listing
+    // digests the same holds the same loose objects with the same identities, so it is
+    // sound without the proofs being read one by one.
+    let settled = record
+        .as_deref()
+        .map(|path| path.with_file_name(format!("{named}.sound.json")));
+    let proved_generation = settled
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| {
+            let (digest, body) = raw.split_once('\n')?;
+            (crate::ids::digest(body) == digest)
+                .then(|| serde_json::from_str::<Settled>(body).ok())
+                .flatten()
+        })
+        .filter(|settled| settled.version == VERSION && settled.store == root)
+        .map(|settled| settled.generation);
+    if proved_generation.as_deref() == Some(store.generation.as_str()) {
+        SOUND.with(|known| known.borrow_mut().insert(asked, true));
+        return true;
+    }
     let remembered: BTreeSet<String> = record
         .as_deref()
         .and_then(|path| std::fs::read_to_string(path).ok())
@@ -1000,8 +1020,31 @@ fn sound(root: &Path, store: &Store) -> bool {
             replace(&path, &digest, format!("{digest}\n{body}").as_bytes());
         }
     }
+    if sound {
+        if let (Some(path), Ok(body)) = (
+            settled,
+            serde_json::to_string(&Settled {
+                version: VERSION,
+                store: root.to_owned(),
+                generation: store.generation.clone(),
+            }),
+        ) {
+            let digest = crate::ids::digest(&body);
+            replace(&path, &digest, format!("{digest}\n{body}").as_bytes());
+        }
+    }
     SOUND.with(|known| known.borrow_mut().insert(asked, sound));
     sound
+}
+
+/// The generation a store was last proved sound under.
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settled {
+    version: u32,
+    store: PathBuf,
+    generation: String,
 }
 
 #[cfg(not(unix))]

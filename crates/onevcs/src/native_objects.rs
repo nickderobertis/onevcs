@@ -24,10 +24,20 @@ pub(crate) fn reads(args: &[&str]) -> bool {
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
     let view = graph::View::of(repo, borrowing);
-    shape.walked(&view).or_else(|| {
-        crate::native_refs::with_objects_holding(repo, borrowing, &shape.named(), |repository| {
-            shape.answer(repository)
-        })
+    if let Some(answered) = shape.walked(&view) {
+        return Some(answered);
+    }
+    // A count or a range the graph above declined is a walk of a long history, which
+    // libgit2 would make in full each time; its proof, where one is stored, is the
+    // cheaper answer, so those are left to the proofs and to git.
+    if matches!(
+        shape,
+        Shape::Count(..) | Shape::Listed(..) | Shape::Messages(..)
+    ) {
+        return None;
+    }
+    crate::native_refs::with_objects_holding(repo, borrowing, &shape.named(), |repository| {
+        shape.answer(repository)
     })
 }
 
