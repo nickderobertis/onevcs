@@ -247,7 +247,7 @@ impl<'a> Shape<'a> {
                     out.extend_from_slice(body(commit)?);
                     out.extend_from_slice(b"\0\x1e\n");
                 }
-                printed_bytes(out)
+                printed_text(out)
             }
             Self::FirstParents(x) => {
                 let mut current = commit(repository, *x)?;
@@ -269,7 +269,7 @@ impl<'a> Shape<'a> {
                 let commit = commit(repository, *x)?;
                 let mut out = body(&commit)?.to_vec();
                 out.push(b'\n');
-                printed_bytes(out)
+                printed_text(out)
             }
             Self::Peeled(revisions) => {
                 let mut out = String::new();
@@ -298,7 +298,7 @@ impl<'a> Shape<'a> {
                     out.extend_from_slice(&path);
                     out.push(0);
                 }
-                printed_bytes(out)
+                printed_text(out)
             }
             Self::Differs(a, b, paths) => {
                 let differs = !changed(repository, *a, *b, paths)?.is_empty();
@@ -339,7 +339,7 @@ impl Shape<'_> {
                     })?;
                     out.extend_from_slice(b"\0\x1e\n");
                 }
-                printed_bytes(out)
+                printed_text(out)
             }
             Self::FirstParents(x) => {
                 let mut current = (*x, view.commit(*x)?);
@@ -878,7 +878,8 @@ fn printed(stdout: String) -> Option<Output> {
     Some(exited(0, stdout))
 }
 
-/// Git's bytes, read as this crate reads every captured stream.
-fn printed_bytes(stdout: Vec<u8>) -> Option<Output> {
+/// Git's answer as text, or nothing at all where it is not text — the decoding
+/// `git::text` gives every captured stream, so a caller refuses it the same way.
+fn printed_text(stdout: Vec<u8>) -> Option<Output> {
     Some(exited(0, String::from_utf8(stdout).unwrap_or_default()))
 }

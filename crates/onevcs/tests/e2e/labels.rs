@@ -1447,6 +1447,27 @@ fn session_hints_observe_new_labels_and_refuse_changed_unrelated_records() {
     );
     assert_eq!(selected.len(), 1, "a freshly labelled session is seen");
     assert_eq!(selected[0]["session"], new_token);
+    // A hint naming a checkout its document does not hold, under a digest that
+    // matches, is a document rebuilt rather than read.
+    let written = std::fs::read_to_string(&cache).expect("session hints");
+    let (_, body) = written.split_once('\n').expect("digest line");
+    let mut document: Value = serde_json::from_str(body).expect("hints document");
+    for hint in document["hints"].as_array_mut().expect("hints") {
+        hint[5] = Value::from(99);
+    }
+    let body = document.to_string();
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(body.as_bytes()))
+    };
+    std::fs::write(&cache, format!("{digest}\n{body}")).unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected
+    );
     std::fs::write(&cache, "{broken").unwrap();
     assert_eq!(
         recoverable(

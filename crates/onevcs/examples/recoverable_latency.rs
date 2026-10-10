@@ -131,8 +131,17 @@ fn run() -> Result<serde_json::Value, Failure> {
     let arguments = arguments().map_err(Failure::Usage)?;
     let home = std::env::var_os("ONEVCS_HOME")
         .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
         .ok_or_else(|| Failure::Usage("ONEVCS_HOME names no state root".to_owned()))?;
-    let caches = std::path::Path::new(&home).join("cache/recoverable/v1");
+    // Every timed read answers from a state root that already exists, and the caches
+    // this program removes are only ever the ones under it.
+    if !home.is_dir() {
+        return Err(Failure::Usage(format!(
+            "ONEVCS_HOME {} is not a directory: name the state root the reads answer from",
+            home.display()
+        )));
+    }
+    let caches = home.join("cache/recoverable/v1");
     let clear = || match std::fs::remove_dir_all(&caches) {
         Ok(()) => Ok(()),
         Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(()),

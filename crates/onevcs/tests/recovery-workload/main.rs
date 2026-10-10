@@ -781,6 +781,13 @@ fn the_latency_program_refuses_what_it_cannot_use() {
         stderr.contains("ONEVCS_HOME names no state root"),
         "{stderr}"
     );
+    let (code, stderr, silent) = run(
+        &["--launcher", "x", "--calls", "1", "--mode", "cold"],
+        Some(&home),
+    );
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("is not a directory"), "{stderr}");
+    assert!(silent, "a missing state root prints no report");
     // A state root whose registry is not a document is a read that failed.
     std::fs::create_dir_all(&home).expect("state root");
     std::fs::write(home.join("registry.json"), "{broken").expect("broken registry");

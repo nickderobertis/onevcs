@@ -30,8 +30,9 @@ mod unix {
 
     /// The whole document, held to one digest of its own text: a hint that was
     /// corrupted into another valid one would narrow a selection away from its rows.
+    /// Read only through [`Document`], so every hint's indexes name a table value.
     #[derive(Default, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
+    #[serde(try_from = "Document")]
     struct Index {
         version: u32,
         directory: PathBuf,
@@ -39,6 +40,44 @@ mod unix {
         checkouts: Vec<PathBuf>,
         labels: Vec<BTreeMap<String, String>>,
         hints: Vec<Entry>,
+    }
+
+    /// The document as written, before its indexes are held to its tables.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Document {
+        version: u32,
+        directory: PathBuf,
+        identities: Vec<String>,
+        checkouts: Vec<PathBuf>,
+        labels: Vec<BTreeMap<String, String>>,
+        hints: Vec<Entry>,
+    }
+
+    impl TryFrom<Document> for Index {
+        type Error = &'static str;
+
+        fn try_from(document: Document) -> std::result::Result<Self, Self::Error> {
+            let bounded = document
+                .hints
+                .iter()
+                .all(|(_, _, identity, _, _, checkout, labels)| {
+                    *identity < document.identities.len()
+                        && *checkout < document.checkouts.len()
+                        && *labels < document.labels.len()
+                });
+            if !bounded {
+                return Err("a hint names a table value the document does not hold");
+            }
+            Ok(Self {
+                version: document.version,
+                directory: document.directory,
+                identities: document.identities,
+                checkouts: document.checkouts,
+                labels: document.labels,
+                hints: document.hints,
+            })
+        }
     }
 
     impl Index {
@@ -50,16 +89,7 @@ mod unix {
                     return None;
                 }
                 let index: Self = serde_json::from_str(body).ok()?;
-                let bounded = index
-                    .hints
-                    .iter()
-                    .all(|(_, _, identity, _, _, checkout, labels)| {
-                        *identity < index.identities.len()
-                            && *checkout < index.checkouts.len()
-                            && *labels < index.labels.len()
-                    });
-                (index.version == VERSION && index.directory == directory && bounded)
-                    .then_some(index)
+                (index.version == VERSION && index.directory == directory).then_some(index)
             };
             read().unwrap_or_default()
         }
