@@ -515,7 +515,59 @@ pub(crate) fn is_ancestor(
 /// refusal of that kind is read again, a few times, so that a ref moved during the
 /// read costs one more read rather than every ref read of the call going to git.
 fn settled_snapshot(at: &Path) -> Option<Snapshot> {
-    (0..3).find_map(|_| snapshot(at))
+    let mut wait = std::time::Duration::from_millis(2);
+    for _ in 0..5 {
+        if let Some(snapshot) = snapshot(at) {
+            return Some(snapshot);
+        }
+        // A refusal for any other reason is final at once: only refs a writer is
+        // moving now are worth reading again.
+        if !refs_moving(at) {
+            return None;
+        }
+        std::thread::sleep(wait);
+        wait *= 2;
+    }
+    None
+}
+
+/// Whether a writer is moving this repository's refs now: a ref or `packed-refs` lock
+/// is held, or a refs directory or `packed-refs` changed within the last two seconds.
+fn refs_moving(at: &Path) -> bool {
+    fn common(at: &Path) -> Option<PathBuf> {
+        let dot = at.join(".git");
+        if dot.is_dir() {
+            return Some(dot);
+        }
+        let raw = std::fs::read_to_string(&dot).ok()?;
+        let gitdir = at.join(raw.strip_prefix("gitdir: ")?.trim_end());
+        let shared = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        Some(gitdir.join(shared.trim_end()))
+    }
+    fn recent(meta: &std::fs::Metadata) -> bool {
+        meta.modified()
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age < std::time::Duration::from_secs(2))
+    }
+    fn moving(path: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return false;
+        };
+        if std::fs::metadata(path).is_ok_and(|meta| recent(&meta)) {
+            return true;
+        }
+        entries.flatten().any(|entry| {
+            entry.file_name().to_string_lossy().ends_with(".lock")
+                || (entry.file_type().is_ok_and(|kind| kind.is_dir()) && moving(&entry.path()))
+        })
+    }
+    let Some(common) = common(at) else {
+        return false;
+    };
+    common.join("packed-refs.lock").exists()
+        || std::fs::metadata(common.join("packed-refs")).is_ok_and(|meta| recent(&meta))
+        || moving(&common.join("refs"))
 }
 fn snapshot(at: &Path) -> Option<Snapshot> {
     if !Path::new(crate::git::git_program()).is_absolute()
