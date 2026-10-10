@@ -293,12 +293,17 @@ impl Raw {
                 .to_owned(),
             body: text("body")?,
             url: text("url")?,
-            created_at: text("createdAt")?,
-            updated_at: text("updatedAt")?,
-            last_edited_at: node
-                .get("lastEditedAt")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            created_at: moment(text("createdAt")?, "createdAt")?,
+            updated_at: moment(text("updatedAt")?, "updatedAt")?,
+            last_edited_at: match node.get("lastEditedAt") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(at)) => Some(moment(at.clone(), "lastEditedAt")?),
+                Some(other) => {
+                    return Err(invalid(format!(
+                        "GitHub reported a comment's lastEditedAt as {other}, not a moment"
+                    )))
+                }
+            },
             reply_to: node
                 .pointer("/replyTo/id")
                 .and_then(Value::as_str)
@@ -456,10 +461,7 @@ impl Pages {
                     let thread = Thread {
                         id: text(node, "id")?,
                         path: text(node, "path")?,
-                        line: node
-                            .get("line")
-                            .and_then(Value::as_u64)
-                            .and_then(|line| u32::try_from(line).ok()),
+                        line: line_of(node)?,
                         resolved: flag(node, "isResolved")?,
                         outdated: flag(node, "isOutdated")?,
                         comments: nodes(comments_of)?
@@ -505,6 +507,35 @@ impl Pages {
                 }
             }
         }
+    }
+}
+
+/// A moment the host reported, kept in the host's own spelling once it is known to be
+/// the RFC 3339 moment the contract promises a consumer.
+fn moment(spelled: String, field: &str) -> Result<String> {
+    use time::format_description::well_known::Rfc3339;
+    match time::OffsetDateTime::parse(&spelled, &Rfc3339) {
+        Ok(_) => Ok(spelled),
+        Err(_) => Err(invalid(format!(
+            "GitHub reported a comment's {field} as {spelled:?}, which is not an RFC 3339 moment"
+        ))),
+    }
+}
+
+/// The line a thread sits on: `null` where the host no longer places it on one, and a
+/// refusal for anything that is not a line number rather than a thread on no line.
+fn line_of(node: &Value) -> Result<Option<u32>> {
+    match node.get("line") {
+        None | Some(Value::Null) => Ok(None),
+        Some(line) => line
+            .as_u64()
+            .and_then(|line| u32::try_from(line).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "GitHub reported a review thread on line {line}, which is not a line number"
+                ))
+            }),
     }
 }
 

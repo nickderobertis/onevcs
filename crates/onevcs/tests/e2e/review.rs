@@ -1093,11 +1093,41 @@ fn a_page_that_does_not_say_what_it_holds_or_whether_more_follows_is_refused() {
         assert_eq!(output.status.code(), Some(2), "{field}: {stderr}");
         assert!(stderr.contains(said), "{said:?} in {stderr}");
     }
+    // A moment the contract promises is RFC 3339 and a line that is no line number are
+    // refused rather than handed on, or read as a thread on no line.
+    host.thread(1, "src/lib.rs", Some(3), VIEWER, "Why?");
+    for (at, value, said) in [
+        (
+            "/repository/pullRequest/comments/nodes/0/createdAt",
+            json!("yesterday"),
+            "createdAt as \"yesterday\", which is not an RFC 3339 moment",
+        ),
+        (
+            "/repository/pullRequest/reviewThreads/nodes/0/comments/nodes/0/lastEditedAt",
+            json!("soon"),
+            "lastEditedAt as \"soon\"",
+        ),
+        (
+            "/repository/pullRequest/reviewThreads/nodes/0/line",
+            json!(4_294_967_296_u64),
+            "on line 4294967296, which is not a line number",
+        ),
+    ] {
+        host.garble_next_page(at, value);
+        let output = world
+            .onevcs()
+            .args(["change", "comments", CHANGE])
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{at}: {stderr}");
+        assert!(stderr.contains(said), "{said:?} in {stderr}");
+    }
     assert!(
         change_events_or_none(&world).is_empty(),
         "a read that failed records nothing"
     );
-    assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 1);
+    assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 2);
 }
 
 /// The events on the change request's own stream, or none where nothing wrote one.

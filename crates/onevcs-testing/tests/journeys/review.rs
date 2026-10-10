@@ -315,3 +315,31 @@ fn a_file_backed_host_charges_what_it_was_seeded_with_and_shares_its_feedback_ac
         );
     }
 }
+
+#[test]
+fn a_comment_whose_times_are_not_moments_is_refused_whether_added_or_seeded() {
+    let home = Home::new();
+    let path = home.path("host.json");
+    let host = FileHost::seeded(&path, seeded()).expect("a host");
+    let mut undated = comment("I9", CommentKind::Conversation, "When?", None);
+    undated.created_at = "yesterday".to_owned();
+    let refused = host.add_comment(&change(), undated.clone());
+    assert!(
+        matches!(&refused, Err(onevcs::Error::Invalid { reason }) if reason.contains("created_at \"yesterday\"")),
+        "{refused:?}"
+    );
+
+    // Seeded straight into the document, it is refused where the document is read.
+    let mut state = seeded();
+    state
+        .review_comments
+        .get_mut(&change())
+        .expect("seeded feedback")
+        .push(undated);
+    let host = FileHost::seeded(&path, state).expect("written");
+    let read = host.state();
+    assert!(
+        matches!(&read, Err(onevcs::Error::Invalid { reason }) if reason.contains("not an RFC 3339 moment")),
+        "{read:?}"
+    );
+}

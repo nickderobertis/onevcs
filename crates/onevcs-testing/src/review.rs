@@ -157,6 +157,20 @@ pub(crate) fn add<T: Store<HostState>>(
 ) -> Result<()> {
     store.with(|state| {
         opened(state, change)?;
+        // A read hands these on as the RFC 3339 moments the contract promises.
+        for (field, at) in [
+            ("created_at", &comment.created_at),
+            ("updated_at", &comment.updated_at),
+        ] {
+            if events::moment(at).is_none() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "comment {:?} has {field} {at:?}, which is not an RFC 3339 moment",
+                        comment.id.0
+                    ),
+                });
+            }
+        }
         let comments = state.review_comments.entry(change.clone()).or_default();
         if comments.iter().any(|held| held.id == comment.id) {
             return Err(Error::Invalid {

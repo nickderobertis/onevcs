@@ -1004,6 +1004,21 @@ impl Checked for HostState {
                 }
             }
             for comment in comments {
+                // A read hands these on as the RFC 3339 moments the contract promises.
+                for (field, at) in [
+                    ("created_at", &comment.created_at),
+                    ("updated_at", &comment.updated_at),
+                ] {
+                    if events::moment(at).is_none() {
+                        return Err(Error::Invalid {
+                            reason: format!(
+                                "comment {:?} on change request {:?} has {field} {at:?}, which \
+                                 is not an RFC 3339 moment",
+                                comment.id.0, id.0
+                            ),
+                        });
+                    }
+                }
                 if let Some(answered) = &comment.in_reply_to {
                     if !held.contains(answered) {
                         return Err(Error::Invalid {

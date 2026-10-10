@@ -250,6 +250,9 @@ struct Model {
     charges: VecDeque<u32>,
     /// A field the next page's conversation connection leaves out.
     malformed: Option<&'static str>,
+    /// A value the next page carries at a JSON pointer into its `data`, in place of
+    /// what the host holds.
+    garbled: Option<(&'static str, Value)>,
     hold: bool,
     held: usize,
     requests: Vec<Vec<String>>,
@@ -271,6 +274,7 @@ impl Model {
             legacy: false,
             charges: VecDeque::new(),
             malformed: None,
+            garbled: None,
             hold: false,
             held: 0,
             requests: Vec::new(),
@@ -465,6 +469,11 @@ impl Model {
                 "id": thread.node,
                 "comments": connection(&thread.comments[from..end], end, more, thread_comment),
             });
+        }
+        if let Some((at, value)) = self.garbled.take() {
+            if let Some(slot) = data.pointer_mut(at) {
+                *slot = value;
+            }
         }
         (format!("{}\n", json!({"data": data})), String::new(), 0)
     }
@@ -718,6 +727,12 @@ impl ReviewHost {
     /// `pageInfo` or `nodes` — as a host answering partially would.
     pub fn leave_out_of_next_page(&self, field: &'static str) {
         self.model().malformed = Some(field);
+    }
+
+    /// Answer the next page with `value` at JSON pointer `at` into its `data`, as a host
+    /// answering something it should not would.
+    pub fn garble_next_page(&self, at: &'static str, value: Value) {
+        self.model().garbled = Some((at, value));
     }
 
     /// Hold every post until [`release_posts`](Self::release_posts).
