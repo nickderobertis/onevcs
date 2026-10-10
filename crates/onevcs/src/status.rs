@@ -2264,14 +2264,35 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
 /// the branch's slug. One spelling for the verbs that write them and every reader
 /// that asks for one by name.
 pub(crate) mod keyed {
-    pub(crate) const PUBLISH_BRANCH: &str = "publish-branch-";
-    pub(crate) const RECOVER: &str = "recover-";
-    pub(crate) const PRESERVE: &str = "preserve-";
-    pub(crate) const ALL: [&str; 3] = [PUBLISH_BRANCH, RECOVER, PRESERVE];
+    /// A verb that records a branch under a stream of its own.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Verb {
+        PublishBranch,
+        Recover,
+        Preserve,
+    }
 
-    /// The stream the verb `prefix` names records `branch` under.
-    pub(crate) fn stream(prefix: &str, branch: &str) -> String {
-        format!("{prefix}{}", crate::policy::branch_slug(branch))
+    pub(crate) const ALL: [Verb; 3] = [Verb::PublishBranch, Verb::Recover, Verb::Preserve];
+
+    impl Verb {
+        /// What the verb's stream names begin with.
+        pub(crate) fn prefix(self) -> &'static str {
+            match self {
+                Self::PublishBranch => "publish-branch-",
+                Self::Recover => "recover-",
+                Self::Preserve => "preserve-",
+            }
+        }
+
+        /// The stream the verb records `branch` under.
+        pub(crate) fn stream(self, branch: &str) -> String {
+            format!("{}{}", self.prefix(), crate::policy::branch_slug(branch))
+        }
+    }
+
+    /// Whether `token` is a stream one of the verbs names.
+    pub(crate) fn names(token: &str) -> bool {
+        ALL.iter().any(|verb| token.starts_with(verb.prefix()))
     }
 }
 
@@ -2302,8 +2323,8 @@ pub(crate) fn recorded_streams_about(
     // stream's content says: its sessions', and the branch-keyed verbs' spellings.
     let mut named: BTreeSet<String> = BTreeSet::new();
     for (identity, branch) in wanted {
-        named.insert(keyed::stream(keyed::PUBLISH_BRANCH, branch));
-        named.insert(keyed::stream(keyed::RECOVER, branch));
+        named.insert(keyed::Verb::PublishBranch.stream(branch));
+        named.insert(keyed::Verb::Recover.stream(branch));
         named.insert(crate::preserve::preserve_token(branch));
         for record in sessions {
             if record.identity == *identity && *record.branch == **branch {
@@ -2553,9 +2574,6 @@ mod streams_index {
         branches: BTreeMap<Branch, Vec<Stream>>,
     }
 
-    /// The prefixes of the names branch-keyed verbs write their streams under.
-    const KEYED: [&str; 3] = super::keyed::ALL;
-
     fn shard_path(root: &Path, identity: &str) -> PathBuf {
         root.join("streams-index")
             .join(format!("{}.json", crate::ids::digest(identity)))
@@ -2667,7 +2685,7 @@ mod streams_index {
                 .map(|token| token.0.as_str())
                 .collect();
             for token in named {
-                let present = if KEYED.iter().any(|prefix| token.starts_with(prefix)) {
+                let present = if super::keyed::names(token) {
                     self.keyed.contains(token.as_str())
                 } else {
                     held.contains(token.as_str())
@@ -2836,7 +2854,7 @@ mod streams_index {
         lookup.unindexed.sort();
         let mut attributed: BTreeMap<Identity, BTreeMap<Branch, Vec<Stream>>> = BTreeMap::new();
         for (token, entry) in &fresh {
-            if KEYED.iter().any(|prefix| token.0.starts_with(prefix)) {
+            if super::keyed::names(&token.0) {
                 lookup.keyed.insert(token.clone());
             }
             match (&entry.identity, &entry.branch) {
@@ -2855,7 +2873,7 @@ mod streams_index {
             lookup
                 .unindexed
                 .iter()
-                .filter(|token| KEYED.iter().any(|prefix| token.0.starts_with(prefix)))
+                .filter(|token| super::keyed::names(&token.0))
                 .cloned(),
         );
         // Each identity's shard is written only where it is not the one the last
@@ -3192,8 +3210,8 @@ fn relevant_streams<'a>(
 ) -> Vec<&'a Recorded> {
     let named: BTreeSet<String> = [
         session.map(str::to_owned),
-        Some(keyed::stream(keyed::PUBLISH_BRANCH, branch)),
-        Some(keyed::stream(keyed::RECOVER, branch)),
+        Some(keyed::Verb::PublishBranch.stream(branch)),
+        Some(keyed::Verb::Recover.stream(branch)),
         // Named as well as matched by label and payload, so a preservation is found by
         // the one spelling `preserve` writes it under rather than only by what its
         // event happens to carry.

@@ -308,7 +308,7 @@ fn open_stream(resolution: &Resolution, branch: &str) -> Result<Stream> {
 /// Read by `status::relevant_streams` under the same spelling, so the two cannot come
 /// to disagree about where a preservation of one branch was written.
 pub(crate) fn preserve_token(branch: &str) -> String {
-    crate::status::keyed::stream(crate::status::keyed::PRESERVE, branch)
+    crate::status::keyed::Verb::Preserve.stream(branch)
 }
 
 /// The invocation that preserves this branch again, quoted so that running it as
