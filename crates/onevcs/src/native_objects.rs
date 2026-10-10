@@ -878,8 +878,10 @@ fn printed(stdout: String) -> Option<Output> {
     Some(exited(0, stdout))
 }
 
-/// Git's answer as text, or nothing at all where it is not text — the decoding
-/// `git::text` gives every captured stream, so a caller refuses it the same way.
+/// The answer as text; where it is not text there is no answer here, and git is
+/// asked instead, so a caller meets exactly what git's own bytes make of it.
 fn printed_text(stdout: Vec<u8>) -> Option<Output> {
-    Some(exited(0, String::from_utf8(stdout).unwrap_or_default()))
+    String::from_utf8(stdout)
+        .ok()
+        .map(|stdout| exited(0, stdout))
 }

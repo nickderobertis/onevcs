@@ -2325,3 +2325,79 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
         );
     }
 }
+
+// A filename that is not UTF-8 needs a filesystem storing names as bytes; see
+// `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone`.
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
+)]
+fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
+    // A read answered in process is answered as text. Where what it would print is not
+    // text, git is asked instead, so the answer a caller meets is git's own bytes'.
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let mut sessions = Vec::new();
+    for (branch, name) in [
+        ("feature/readable-path", b"engine.txt".to_vec()),
+        ("feature/unreadable-path", b"engine\xff.txt".to_vec()),
+    ] {
+        let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=paths"]);
+        std::fs::write(
+            worktree.join(std::ffi::OsString::from_vec(name)),
+            "the engine\n",
+        )
+        .expect("a file git takes");
+        world.git(&worktree, &["add", "-A"]);
+        world.git(&worktree, &["commit", "-q", "-m", "feat: write the engine"]);
+        world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        sessions.push(token);
+    }
+    let counting = crate::cost::Counting::installed(world);
+    let listed: Vec<usize> = sessions
+        .iter()
+        .map(|token| {
+            let args = ["--detail", "decision", "--session", token, "--all"];
+            let uncached = world
+                .onevcs()
+                .args(["recoverable", "--json"])
+                .args(args)
+                .env("GIT_NAMESPACE", "")
+                .assert()
+                .success();
+            let uncached: Vec<Value> =
+                serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+            let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
+            counting.clear();
+            let cold = counting
+                .onevcs(world)
+                .args(["recoverable", "--json"])
+                .args(args)
+                .assert()
+                .success();
+            let cold: Vec<Value> =
+                serde_json::from_slice(&cold.get_output().stdout).expect("cold rows");
+            assert_eq!(cold, uncached, "{token}: a cold read answers git's rows");
+            assert_eq!(cold.len(), 1, "{token}: the session's branch is listed");
+            counting
+                .calls()
+                .iter()
+                .filter(|call| call.args.starts_with("diff --name-only --no-renames -z"))
+                .count()
+        })
+        .collect();
+    assert_eq!(
+        listed[0], 0,
+        "the premise: a listing that is text is answered in process"
+    );
+    assert!(
+        listed[1] > 0,
+        "a listing that is not text is git's to make: {listed:?}"
+    );
+}
