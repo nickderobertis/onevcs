@@ -71,6 +71,67 @@ mod unix {
         }
     }
 
+    /// An identity a registry key could be, as the document holds one.
+    #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(try_from = "String", into = "String")]
+    struct Identity(String);
+
+    impl Identity {
+        /// The identity a session record this read loaded names.
+        fn recorded(identity: &str) -> Self {
+            Self(identity.to_owned())
+        }
+    }
+
+    impl TryFrom<String> for Identity {
+        type Error = String;
+
+        fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+            if crate::store::is_identity(&value) {
+                Ok(Self(value))
+            } else {
+                Err(format!("{value:?} is not an identity"))
+            }
+        }
+    }
+
+    impl From<Identity> for String {
+        fn from(identity: Identity) -> Self {
+            identity.0
+        }
+    }
+
+    /// A checkout or clone path, as the document holds one: absolute, since every
+    /// path a session record names is.
+    #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(try_from = "PathBuf", into = "PathBuf")]
+    struct Place(PathBuf);
+
+    impl Place {
+        /// A path a session record this read loaded names.
+        fn recorded(path: &Path) -> Self {
+            Self(path.to_owned())
+        }
+    }
+
+    impl TryFrom<PathBuf> for Place {
+        type Error = String;
+
+        fn try_from(value: PathBuf) -> std::result::Result<Self, Self::Error> {
+            if value.is_absolute() {
+                Ok(Self(value))
+            } else {
+                Err(format!("{} is not an absolute path", value.display()))
+            }
+        }
+    }
+
+    impl From<Place> for PathBuf {
+        fn from(place: Place) -> Self {
+            place.0
+        }
+    }
+
     /// Where an identity is in the document's `identities`.
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
     #[serde(transparent)]
@@ -96,14 +157,14 @@ mod unix {
         stamp: Stamp,
         identity: IdentityAt,
         branch: Ref,
-        clone: PathBuf,
+        clone: Place,
         checkout: CheckoutAt,
         labels: LabelsAt,
     }
 
     /// A [`Hint`] as the document holds it, in this field order, which keeps a host's
     /// worth of hints small.
-    type Row = (Token, Stamp, IdentityAt, Ref, PathBuf, CheckoutAt, LabelsAt);
+    type Row = (Token, Stamp, IdentityAt, Ref, Place, CheckoutAt, LabelsAt);
 
     impl From<Row> for Hint {
         fn from((token, stamp, identity, branch, clone, checkout, labels): Row) -> Self {
@@ -135,14 +196,15 @@ mod unix {
 
     /// The whole document, held to one digest of its own text: a hint that was
     /// corrupted into another valid one would narrow a selection away from its rows.
-    /// Read only through [`Document`], so every hint's indexes name a table value.
+    /// Read only through [`Document`], so every hint's indexes name a table value and
+    /// every identity and path in it is one a session record could name.
     #[derive(Default, Serialize, Deserialize)]
     #[serde(try_from = "Document")]
     struct Index {
         version: u32,
         directory: PathBuf,
-        identities: Vec<String>,
-        checkouts: Vec<PathBuf>,
+        identities: Vec<Identity>,
+        checkouts: Vec<Place>,
         labels: Vec<BTreeMap<String, String>>,
         hints: Vec<Hint>,
     }
@@ -153,8 +215,8 @@ mod unix {
     struct Document {
         version: u32,
         directory: PathBuf,
-        identities: Vec<String>,
-        checkouts: Vec<PathBuf>,
+        identities: Vec<Identity>,
+        checkouts: Vec<Place>,
         labels: Vec<BTreeMap<String, String>>,
         hints: Vec<Hint>,
     }
@@ -220,11 +282,11 @@ mod unix {
     /// The hints of one read, every shared value interned once.
     #[derive(Default)]
     struct Tables {
-        identities: Vec<String>,
-        checkouts: Vec<PathBuf>,
+        identities: Vec<Identity>,
+        checkouts: Vec<Place>,
         labels: Vec<BTreeMap<String, String>>,
-        identity_at: HashMap<String, usize>,
-        checkout_at: HashMap<PathBuf, usize>,
+        identity_at: HashMap<Identity, usize>,
+        checkout_at: HashMap<Place, usize>,
         labels_at: HashMap<BTreeMap<String, String>, usize>,
     }
 
@@ -260,16 +322,17 @@ mod unix {
         fn hint(&mut self, stamp: Stamp, record: &Record) -> Hint {
             let identity = *self
                 .identity_at
-                .entry(record.identity.clone())
+                .entry(Identity::recorded(&record.identity))
                 .or_insert_with(|| {
-                    self.identities.push(record.identity.clone());
+                    self.identities.push(Identity::recorded(&record.identity));
                     self.identities.len() - 1
                 });
             let checkout = *self
                 .checkout_at
-                .entry(record.execution_checkout.clone())
+                .entry(Place::recorded(&record.execution_checkout))
                 .or_insert_with(|| {
-                    self.checkouts.push(record.execution_checkout.clone());
+                    self.checkouts
+                        .push(Place::recorded(&record.execution_checkout));
                     self.checkouts.len() - 1
                 });
             let labels = *self
@@ -284,7 +347,7 @@ mod unix {
                 stamp,
                 identity: IdentityAt(identity),
                 branch: record.branch.clone(),
-                clone: record.clone.clone(),
+                clone: Place::recorded(&record.clone),
                 checkout: CheckoutAt(checkout),
                 labels: LabelsAt(labels),
             }
@@ -406,8 +469,8 @@ mod unix {
             }
             if (selection.sessions.is_empty() || asked) && labelled {
                 branches.insert(&*hint.branch);
-                checkouts.insert(hint.clone.as_path());
-                checkouts.insert(tables.checkouts[hint.checkout.0].as_path());
+                checkouts.insert(hint.clone.0.as_path());
+                checkouts.insert(tables.checkouts[hint.checkout.0].0.as_path());
             }
         }
         let wanted: Vec<&str> = fresh
@@ -416,7 +479,7 @@ mod unix {
                 named(&hint.token)
                     || (identities.contains(&hint.identity)
                         && (branches.contains(&*hint.branch)
-                            || checkouts.contains(hint.clone.as_path())))
+                            || checkouts.contains(hint.clone.0.as_path())))
             })
             .map(|hint| &*hint.token)
             .collect();

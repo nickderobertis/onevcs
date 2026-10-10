@@ -80,6 +80,16 @@ pub struct Normalized {
     pub hosted: Option<Hosted>,
 }
 
+/// Whether `identity` is one a registry key could be: a path or the normalized
+/// spelling of an origin, with no surrounding whitespace and no control character.
+/// What a document this crate wrote and later reads back is held to.
+pub(crate) fn is_identity(identity: &str) -> bool {
+    !identity.is_empty()
+        && identity.trim() == identity
+        && !identity.chars().any(char::is_control)
+        && (Path::new(identity).is_absolute() || normalize(identity).key == identity)
+}
+
 /// Normalize an origin URL or a local path into the identity every spelling of it
 /// resolves to.
 ///

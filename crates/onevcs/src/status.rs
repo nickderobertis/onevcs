@@ -2472,13 +2472,7 @@ mod streams_index {
         /// An identity a registry key could be.
         Identity,
         "an identity",
-        |identity| {
-            !identity.is_empty()
-                && identity.trim() == identity
-                && !identity.chars().any(char::is_control)
-                && (Path::new(identity).is_absolute()
-                    || crate::store::normalize(identity).key == identity)
-        }
+        crate::store::is_identity
     );
 
     checked!(
