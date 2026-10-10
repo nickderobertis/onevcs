@@ -766,13 +766,29 @@ fn two_overlapping_replies_with_one_key_post_once() {
             .count()
     };
 
-    // The host holds the first call's post until the second call has started — has
-    // made its own first request of the host — so the two overlap.
+    // The host holds the first call's post until the second call has started and got
+    // as far as it can: waiting for the first, or — were nothing serializing them —
+    // reading the replies and posting its own, which the host holds as well.
     host.hold_posts();
     let first = spawn();
     World::until("the first call's post is held", || host.posts_held() == 1);
+    let handed = host.requests().len();
     let second = spawn();
     World::until("the second call has started", || probes(&world) == 2);
+    let started = std::time::Instant::now();
+    World::until(
+        "the second call waits for the first or goes on past it",
+        || {
+            waiting_on_a_lock(second.id())
+                || host.requests().len() > handed
+                || (!cfg!(target_os = "linux") && started.elapsed().as_secs_f64() > 2.0)
+        },
+    );
+    if host.requests().len() > handed {
+        World::until("the second call's own post is held", || {
+            host.posts_held() == 2
+        });
+    }
     host.release_posts();
 
     let outputs = [first, second].map(|child| child.wait_with_output().expect("it ends"));
@@ -786,6 +802,18 @@ fn two_overlapping_replies_with_one_key_post_once() {
     assert_eq!(answers[0]["id"], answers[1]["id"]);
     assert_eq!(posts(&world), 1, "one reply posted");
     assert_eq!(host.count(1), 2, "the comment and its one reply");
+}
+
+/// Whether process `pid` is queued for a file lock, which Linux reports in
+/// `/proc/locks` as a blocked request (`->`) under the waiter's pid. Elsewhere there is
+/// no portable way to ask, and this answers `false`.
+fn waiting_on_a_lock(pid: u32) -> bool {
+    std::fs::read_to_string("/proc/locks").is_ok_and(|locks| {
+        locks.lines().any(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            words.get(1) == Some(&"->") && words.get(5) == Some(&pid.to_string().as_str())
+        })
+    })
 }
 
 #[test]
