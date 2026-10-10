@@ -683,9 +683,9 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
             .env("GIT_NAMESPACE", "")
             .assert()
             .success();
-        let native: Vec<Value> =
-            serde_json::from_slice(&assert.get_output().stdout).expect("native rows");
-        assert_eq!(cached, native, "cache must agree with native Git");
+        let git_alone: Vec<Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("git-alone rows");
+        assert_eq!(cached, git_alone, "cache must agree with git alone");
         assert_eq!(cached.len(), 1, "the selected branch must stay visible");
         cached
     };
@@ -840,10 +840,10 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     compare();
     let bytes = std::fs::read(&object).unwrap();
     std::fs::write(&object, vec![0u8; bytes.len()]).unwrap();
-    let refused = |native: bool| {
+    let refused = |git_alone: bool| {
         let mut command = fixture.world.onevcs();
         command.args(["recoverable", "--json"]).args(args);
-        if native {
+        if git_alone {
             command.env("GIT_NAMESPACE", "");
         }
         let output = command.output().unwrap();
@@ -1231,14 +1231,14 @@ fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives(
     for copy in &copies {
         std::fs::remove_file(copy).expect("take the root commit away");
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git's answer moves without the root commit"
     );
     let (missing, missing_calls) = counted(&fixture, &counting, &args);
     assert_eq!(
-        missing, native,
+        missing, git_alone,
         "a store that lost an object answers what git answers"
     );
     assert!(
@@ -1287,14 +1287,14 @@ fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives(
     for copy in &copies {
         std::fs::remove_file(copy).expect("take the tip commit away");
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git's answer moves without the tip"
     );
     let (missing, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        missing, native,
+        missing, git_alone,
         "a missing named object answers what git answers"
     );
     for copy in &copies {
@@ -1941,14 +1941,14 @@ fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
         assert_eq!(back, original, "{what}: removing it restores the answer");
     };
     let overlaid = |what: &str| {
-        let native = answered(&fixture, &args, true);
+        let git_alone = answered(&fixture, &args, true);
         let (cached, _) = counted(&fixture, &counting, &args);
-        assert_eq!(cached, native, "{what}: the read is git's");
+        assert_eq!(cached, git_alone, "{what}: the read is git's");
         assert!(
             content_comparisons(&counting) > 0,
             "{what}: no stored proof is reused"
         );
-        native
+        git_alone
     };
     fixture
         .world
@@ -2074,14 +2074,14 @@ fn under_configuration(
     args: &[&str],
 ) -> ((Option<i32>, String), usize, usize) {
     forget_proofs(fixture);
-    let native = answered(fixture, args, true);
+    let git_alone = answered(fixture, args, true);
     let (cold, _) = counted(fixture, counting, args);
     let stored = std::fs::read_dir(fixture.world.home().join("cache/recoverable/v1/git"))
         .map_or(0, |entries| entries.count());
     let (warm, _) = counted(fixture, counting, args);
-    assert_eq!(cold, native, "a cold read is git's");
-    assert_eq!(warm, native, "a warm read is git's");
-    (native, stored, content_comparisons(counting))
+    assert_eq!(cold, git_alone, "a cold read is git's");
+    assert_eq!(warm, git_alone, "a warm read is git's");
+    (git_alone, stored, content_comparisons(counting))
 }
 
 /// Transport and receive-side configuration cannot change a local object-id read, so
@@ -2263,9 +2263,12 @@ fn worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_
         "* diff=fixture\n",
     ] {
         attribute(text);
-        let native = answered(&fixture, &args, true);
+        let git_alone = answered(&fixture, &args, true);
         let (reused, _) = counted(&fixture, &counting, &args);
-        assert_eq!(reused, native, "{text:?}: a reused proof is git's answer");
+        assert_eq!(
+            reused, git_alone,
+            "{text:?}: a reused proof is git's answer"
+        );
         assert_eq!(reused, plain, "{text:?}: no attribute moves the answer");
         assert_eq!(
             listings(&counting),
@@ -2404,14 +2407,14 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
             "the premise: in place"
         );
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git cannot read the truncated ancestor"
     );
     let (cached, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        cached, native,
+        cached, git_alone,
         "a truncated ancestor answers what git answers"
     );
     if let Some(release) = released(&fixture, &args) {
@@ -2435,14 +2438,14 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
     for copy in &copies {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o000)).unwrap();
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git cannot read the ancestor"
     );
     let (cached, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        cached, native,
+        cached, git_alone,
         "an unreadable ancestor answers what git answers"
     );
     if let Some(release) = released(&fixture, &args) {
