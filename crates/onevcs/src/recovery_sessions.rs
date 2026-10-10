@@ -71,11 +71,67 @@ mod unix {
         }
     }
 
+    /// Where an identity is in the document's `identities`.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct IdentityAt(usize);
+
+    /// Where an execution checkout is in the document's `checkouts`.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct CheckoutAt(usize);
+
+    /// Where a set of labels is in the document's `labels`.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct LabelsAt(usize);
+
     /// What one record says about where a selection's rows are read, held to the
-    /// file it was read from: its token, its stamp, then its identity, branch, clone,
-    /// execution checkout and labels — the values most records share being indexes
-    /// into the document's tables.
-    type Entry = (Token, Stamp, usize, Ref, PathBuf, usize, usize);
+    /// file it was read from. The values most records share are places in the
+    /// document's tables, which [`Index`] holds in range wherever it reads one.
+    #[derive(Clone, Serialize, Deserialize)]
+    #[serde(from = "Row", into = "Row")]
+    struct Hint {
+        token: Token,
+        stamp: Stamp,
+        identity: IdentityAt,
+        branch: Ref,
+        clone: PathBuf,
+        checkout: CheckoutAt,
+        labels: LabelsAt,
+    }
+
+    /// A [`Hint`] as the document holds it, in this field order, which keeps a host's
+    /// worth of hints small.
+    type Row = (Token, Stamp, IdentityAt, Ref, PathBuf, CheckoutAt, LabelsAt);
+
+    impl From<Row> for Hint {
+        fn from((token, stamp, identity, branch, clone, checkout, labels): Row) -> Self {
+            Self {
+                token,
+                stamp,
+                identity,
+                branch,
+                clone,
+                checkout,
+                labels,
+            }
+        }
+    }
+
+    impl From<Hint> for Row {
+        fn from(hint: Hint) -> Self {
+            (
+                hint.token,
+                hint.stamp,
+                hint.identity,
+                hint.branch,
+                hint.clone,
+                hint.checkout,
+                hint.labels,
+            )
+        }
+    }
 
     /// The whole document, held to one digest of its own text: a hint that was
     /// corrupted into another valid one would narrow a selection away from its rows.
@@ -88,7 +144,7 @@ mod unix {
         identities: Vec<String>,
         checkouts: Vec<PathBuf>,
         labels: Vec<BTreeMap<String, String>>,
-        hints: Vec<Entry>,
+        hints: Vec<Hint>,
     }
 
     /// The document as written, before its indexes are held to its tables.
@@ -100,21 +156,18 @@ mod unix {
         identities: Vec<String>,
         checkouts: Vec<PathBuf>,
         labels: Vec<BTreeMap<String, String>>,
-        hints: Vec<Entry>,
+        hints: Vec<Hint>,
     }
 
     impl TryFrom<Document> for Index {
         type Error = &'static str;
 
         fn try_from(document: Document) -> std::result::Result<Self, Self::Error> {
-            let bounded = document
-                .hints
-                .iter()
-                .all(|(_, _, identity, _, _, checkout, labels)| {
-                    *identity < document.identities.len()
-                        && *checkout < document.checkouts.len()
-                        && *labels < document.labels.len()
-                });
+            let bounded = document.hints.iter().all(|hint| {
+                hint.identity.0 < document.identities.len()
+                    && hint.checkout.0 < document.checkouts.len()
+                    && hint.labels.0 < document.labels.len()
+            });
             // llmlint: ignore[changed_behavior_has_e2e] reached only by a document no
             // verb writes; `labels::session_hints_observe_new_labels_and_refuse_changed_unrelated_records`
             // writes one under a matching digest and holds the binary's rows to the
@@ -204,7 +257,7 @@ mod unix {
             tables
         }
 
-        fn entry(&mut self, stamp: Stamp, record: &Record) -> Entry {
+        fn hint(&mut self, stamp: Stamp, record: &Record) -> Hint {
             let identity = *self
                 .identity_at
                 .entry(record.identity.clone())
@@ -226,15 +279,15 @@ mod unix {
                     self.labels.push(record.labels.clone());
                     self.labels.len() - 1
                 });
-            (
-                record.token.clone(),
+            Hint {
+                token: record.token.clone(),
                 stamp,
-                identity,
-                record.branch.clone(),
-                record.clone.clone(),
-                checkout,
-                labels,
-            )
+                identity: IdentityAt(identity),
+                branch: record.branch.clone(),
+                clone: record.clone.clone(),
+                checkout: CheckoutAt(checkout),
+                labels: LabelsAt(labels),
+            }
         }
     }
 
@@ -305,17 +358,17 @@ mod unix {
             .iter()
             .map(|labels| crate::label::validate(labels).is_ok())
             .collect();
-        let mut known: HashMap<String, Entry> = std::mem::take(&mut index.hints)
+        let mut known: HashMap<String, Hint> = std::mem::take(&mut index.hints)
             .into_iter()
-            .map(|entry| (entry.0.to_string(), entry))
+            .map(|hint| (hint.token.to_string(), hint))
             .collect();
         let remembered = known.len();
-        let mut fresh: Vec<Entry> = Vec::with_capacity(listed.len());
+        let mut fresh: Vec<Hint> = Vec::with_capacity(listed.len());
         let mut changed: Vec<(Token, Stamp)> = Vec::new();
         for ((token, _), stamp) in listed.iter().zip(stamps) {
             match known
                 .remove(&**token)
-                .filter(|entry| entry.1 == stamp && well_labelled[entry.6])
+                .filter(|hint| hint.stamp == stamp && well_labelled[hint.labels.0])
             {
                 Some(entry) => fresh.push(entry),
                 None => changed.push((token.clone(), stamp)),
@@ -329,7 +382,7 @@ mod unix {
         let mut loaded = HashMap::new();
         for ((token, stamp), record) in changed.into_iter().zip(read) {
             let record = record?;
-            fresh.push(tables.entry(stamp, &record));
+            fresh.push(tables.hint(stamp, &record));
             loaded.insert(token.to_string(), record);
         }
         fresh.sort_unstable_by(in_token_order);
@@ -345,25 +398,27 @@ mod unix {
         let mut identities = BTreeSet::new();
         let mut branches = BTreeSet::new();
         let mut checkouts = BTreeSet::new();
-        for (token, _, identity, branch, clone, checkout, labels) in &fresh {
-            let asked = named(token);
-            if asked || (selection.sessions.is_empty() && labelled[*labels]) {
-                identities.insert(*identity);
+        for hint in &fresh {
+            let asked = named(&hint.token);
+            let labelled = labelled[hint.labels.0];
+            if asked || (selection.sessions.is_empty() && labelled) {
+                identities.insert(hint.identity);
             }
-            if (selection.sessions.is_empty() || asked) && labelled[*labels] {
-                branches.insert(&**branch);
-                checkouts.insert(clone.as_path());
-                checkouts.insert(tables.checkouts[*checkout].as_path());
+            if (selection.sessions.is_empty() || asked) && labelled {
+                branches.insert(&*hint.branch);
+                checkouts.insert(hint.clone.as_path());
+                checkouts.insert(tables.checkouts[hint.checkout.0].as_path());
             }
         }
         let wanted: Vec<&str> = fresh
             .iter()
-            .filter(|(token, _, identity, branch, clone, _, _)| {
-                named(token)
-                    || (identities.contains(identity)
-                        && (branches.contains(&**branch) || checkouts.contains(clone.as_path())))
+            .filter(|hint| {
+                named(&hint.token)
+                    || (identities.contains(&hint.identity)
+                        && (branches.contains(&*hint.branch)
+                            || checkouts.contains(hint.clone.as_path())))
             })
-            .map(|(token, ..)| &**token)
+            .map(|hint| &*hint.token)
             .collect();
         let unread: Vec<&str> = wanted
             .iter()
@@ -393,42 +448,43 @@ mod unix {
     }
 
     /// Two hints in the order their tokens sort, which is the order records are read in.
-    fn in_token_order(left: &Entry, right: &Entry) -> std::cmp::Ordering {
-        (*left.0).cmp(&*right.0)
+    fn in_token_order(left: &Hint, right: &Hint) -> std::cmp::Ordering {
+        (*left.token).cmp(&*right.token)
     }
 
     /// Write the hints with only the table values they still use.
-    fn store(path: &Path, directory: &Path, tables: &Tables, fresh: &[Entry]) {
+    fn store(path: &Path, directory: &Path, tables: &Tables, fresh: &[Hint]) {
         let mut index = Index {
             version: VERSION,
             directory: directory.to_owned(),
             ..Index::default()
         };
-        let mut identities: HashMap<usize, usize> = HashMap::new();
-        let mut checkouts: HashMap<usize, usize> = HashMap::new();
-        let mut labels: HashMap<usize, usize> = HashMap::new();
-        for (token, stamp, identity, branch, clone, checkout, labelled) in fresh {
-            let identity = *identities.entry(*identity).or_insert_with(|| {
-                index.identities.push(tables.identities[*identity].clone());
-                index.identities.len() - 1
+        let mut identities: HashMap<IdentityAt, IdentityAt> = HashMap::new();
+        let mut checkouts: HashMap<CheckoutAt, CheckoutAt> = HashMap::new();
+        let mut labels: HashMap<LabelsAt, LabelsAt> = HashMap::new();
+        for hint in fresh {
+            let identity = *identities.entry(hint.identity).or_insert_with(|| {
+                index
+                    .identities
+                    .push(tables.identities[hint.identity.0].clone());
+                IdentityAt(index.identities.len() - 1)
             });
-            let checkout = *checkouts.entry(*checkout).or_insert_with(|| {
-                index.checkouts.push(tables.checkouts[*checkout].clone());
-                index.checkouts.len() - 1
+            let checkout = *checkouts.entry(hint.checkout).or_insert_with(|| {
+                index
+                    .checkouts
+                    .push(tables.checkouts[hint.checkout.0].clone());
+                CheckoutAt(index.checkouts.len() - 1)
             });
-            let labelled = *labels.entry(*labelled).or_insert_with(|| {
-                index.labels.push(tables.labels[*labelled].clone());
-                index.labels.len() - 1
+            let labelled = *labels.entry(hint.labels).or_insert_with(|| {
+                index.labels.push(tables.labels[hint.labels.0].clone());
+                LabelsAt(index.labels.len() - 1)
             });
-            index.hints.push((
-                token.clone(),
-                *stamp,
+            index.hints.push(Hint {
                 identity,
-                branch.clone(),
-                clone.clone(),
                 checkout,
-                labelled,
-            ));
+                labels: labelled,
+                ..hint.clone()
+            });
         }
         index.write(path);
     }
