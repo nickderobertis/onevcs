@@ -2397,29 +2397,105 @@ mod streams_index {
         }
     }
 
+    /// A string a document here holds, which only a check of its kind makes: read
+    /// back, a value that fails it fails the whole document, which is then rebuilt.
+    macro_rules! checked {
+        ($(#[$doc:meta])* $name:ident, $what:literal, $check:expr) => {
+            $(#[$doc])*
+            #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
+            #[serde(try_from = "String", into = "String")]
+            struct $name(String);
+
+            impl TryFrom<String> for $name {
+                type Error = String;
+
+                fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+                    let check: fn(&str) -> bool = $check;
+                    if check(&value) {
+                        Ok(Self(value))
+                    } else {
+                        Err(format!("{value:?} is not {}", $what))
+                    }
+                }
+            }
+
+            impl From<$name> for String {
+                fn from(value: $name) -> Self {
+                    value.0
+                }
+            }
+
+            impl std::borrow::Borrow<str> for $name {
+                fn borrow(&self) -> &str {
+                    &self.0
+                }
+            }
+        };
+    }
+
+    checked!(
+        /// An identity a registry key could be.
+        Identity,
+        "an identity",
+        |identity| {
+            !identity.is_empty()
+                && identity.trim() == identity
+                && !identity.chars().any(char::is_control)
+                && (Path::new(identity).is_absolute()
+                    || crate::store::normalize(identity).key == identity)
+        }
+    );
+
+    checked!(
+        /// A branch name git would accept.
+        Branch,
+        "a branch name",
+        crate::git::is_valid_branch_name
+    );
+
+    checked!(
+        /// A stream's name: its file under the streams directory, less `.ndjson`.
+        Stream,
+        "a stream name",
+        crate::ids::is_safe_name
+    );
+
     /// What one stream named first, held to the file it was read from.
     #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
     #[serde(deny_unknown_fields)]
     struct Attributed {
         stamp: Stamp,
-        identity: Option<String>,
-        branch: Option<String>,
+        identity: Option<Identity>,
+        branch: Option<Branch>,
     }
 
     impl Attributed {
-        /// What a reader would accept: an identity a registry key could be, and a
-        /// branch git would.
-        fn valid(&self) -> bool {
-            self.identity.as_ref().is_none_or(|identity| {
-                !identity.is_empty()
-                    && identity.trim() == identity
-                    && !identity.chars().any(char::is_control)
-                    && (Path::new(identity).is_absolute()
-                        || crate::store::normalize(identity).key == *identity)
-            }) && self
-                .branch
-                .as_ref()
-                .is_none_or(|branch| crate::git::is_valid_branch_name(branch))
+        /// What a stream named, where a reader would accept it: an identity a registry
+        /// key could be, and a branch git would. Nothing where it named one that is not.
+        fn of(stamp: Stamp, record: &Recorded) -> Option<Self> {
+            Some(Self {
+                stamp,
+                identity: record
+                    .identity
+                    .clone()
+                    .map(Identity::try_from)
+                    .transpose()
+                    .ok()?,
+                branch: record
+                    .branch
+                    .clone()
+                    .map(Branch::try_from)
+                    .transpose()
+                    .ok()?,
+            })
+        }
+
+        fn identity(&self) -> Option<&String> {
+            self.identity.as_ref().map(|identity| &identity.0)
+        }
+
+        fn branch(&self) -> Option<&String> {
+            self.branch.as_ref().map(|branch| &branch.0)
         }
     }
 
@@ -2430,7 +2506,7 @@ mod streams_index {
     struct Stamps {
         version: u32,
         directory: PathBuf,
-        streams: BTreeMap<String, Attributed>,
+        streams: BTreeMap<Stream, Attributed>,
     }
 
     /// What a read narrowed to some branches opens while the directory stands.
@@ -2444,14 +2520,14 @@ mod streams_index {
         pub(super) listed: Option<Listed>,
         /// Each identity's [`Shard`], by the digest of the document it was written
         /// as: a shard of any other listing is not this one's.
-        shards: BTreeMap<String, String>,
+        shards: BTreeMap<Identity, String>,
         /// Every stream a branch-keyed verb writes under a name of its own spelling,
         /// which a read asks for by name.
-        keyed: BTreeSet<String>,
+        keyed: BTreeSet<Stream>,
         /// The streams a later event can still attribute, with what they named.
-        open: BTreeMap<String, Attributed>,
+        open: BTreeMap<Stream, Attributed>,
         /// The streams no stamp or no whole reading stands for, read every time.
-        unindexed: Vec<String>,
+        unindexed: Vec<Stream>,
     }
 
     /// The streams that named one identity and a branch, by the branch.
@@ -2459,8 +2535,8 @@ mod streams_index {
     #[serde(deny_unknown_fields)]
     struct Shard {
         version: u32,
-        identity: String,
-        branches: BTreeMap<String, Vec<String>>,
+        identity: Identity,
+        branches: BTreeMap<Branch, Vec<Stream>>,
     }
 
     /// The prefixes of the names branch-keyed verbs write their streams under.
@@ -2546,11 +2622,11 @@ mod streams_index {
                 if shards.contains_key(identity.as_str()) {
                     continue;
                 }
-                let Some(digest) = self.shards.get(identity) else {
+                let Some(digest) = self.shards.get(identity.as_str()) else {
                     continue;
                 };
                 let (written, shard) = read_shard(&shard_path(root, identity))?;
-                if written != *digest || shard.identity != *identity {
+                if written != *digest || shard.identity.0 != *identity {
                     return None;
                 }
                 shards.insert(identity, shard);
@@ -2559,9 +2635,9 @@ mod streams_index {
             for (identity, branch) in wanted {
                 if let Some(tokens) = shards
                     .get(identity.as_str())
-                    .and_then(|shard| shard.branches.get(branch))
+                    .and_then(|shard| shard.branches.get(branch.as_str()))
                 {
-                    candidates.extend(tokens.iter().map(String::as_str));
+                    candidates.extend(tokens.iter().map(|token| token.0.as_str()));
                 }
             }
             // A token a wanted branch is read under by name is a stream only where
@@ -2574,11 +2650,11 @@ mod streams_index {
                 .flat_map(|shard| shard.branches.values().flatten())
                 .chain(self.open.keys())
                 .chain(&self.unindexed)
-                .map(String::as_str)
+                .map(|token| token.0.as_str())
                 .collect();
             for token in named {
                 let present = if KEYED.iter().any(|prefix| token.starts_with(prefix)) {
-                    self.keyed.contains(token)
+                    self.keyed.contains(token.as_str())
                 } else {
                     held.contains(token.as_str())
                         || (crate::ids::is_safe_name(token)
@@ -2591,13 +2667,14 @@ mod streams_index {
             }
             // Only one that moved since it was listed can name anything new.
             for (token, attributed) in &self.open {
-                let moved = std::fs::symlink_metadata(directory.join(format!("{token}.ndjson")))
-                    .map_or(true, |meta| Stamp::of(&meta) != attributed.stamp);
+                let moved =
+                    std::fs::symlink_metadata(directory.join(format!("{}.ndjson", token.0)))
+                        .map_or(true, |meta| Stamp::of(&meta) != attributed.stamp);
                 if moved {
-                    candidates.insert(token);
+                    candidates.insert(&token.0);
                 }
             }
-            candidates.extend(self.unindexed.iter().map(String::as_str));
+            candidates.extend(self.unindexed.iter().map(|token| token.0.as_str()));
             let candidates: Vec<&str> = candidates
                 .into_iter()
                 .filter(|token| crate::ids::is_safe_name(token))
@@ -2635,7 +2712,7 @@ mod streams_index {
         // fails to match it, and the next read lists it again.
         let settled = listed.settled();
         let stamps_path = root.map(|root| root.join("streams-stamps.json"));
-        let index: BTreeMap<String, Attributed> = stamps_path
+        let index: BTreeMap<Stream, Attributed> = stamps_path
             .as_deref()
             .and_then(read_document::<Stamps>)
             .filter(|stamps| stamps.version == VERSION && stamps.directory == directory)
@@ -2648,8 +2725,8 @@ mod streams_index {
         };
         let mut kept: Vec<Recorded> = Vec::new();
         let mut notes = Vec::new();
-        let mut unindexed: Vec<String> = Vec::new();
-        let mut tokens: Vec<(String, std::fs::Metadata)> = Vec::new();
+        let mut unindexed: Vec<Stream> = Vec::new();
+        let mut tokens: Vec<(Stream, std::fs::Metadata)> = Vec::new();
         for entry in entries {
             let Ok(entry) = entry else {
                 return recorded_streams(&mut Vec::new());
@@ -2667,27 +2744,27 @@ mod streams_index {
             let Some(token) = name.strip_suffix(".ndjson").map(str::to_owned) else {
                 continue;
             };
-            if !crate::ids::is_safe_name(&token) {
+            let Ok(token) = Stream::try_from(token) else {
                 return Err(crate::error::invalid(format!(
                     "event stream filename {name:?} does not name a valid stream token"
                 )));
-            }
+            };
             let Ok(meta) = entry.metadata() else {
                 // Unstattable: read it the way v0.42.0 would, gap and all.
-                kept.push(read_stream(directory, &token, &mut notes));
+                kept.push(read_stream(directory, &token.0, &mut notes));
                 unindexed.push(token);
                 continue;
             };
             tokens.push((token, meta));
         }
         tokens.sort_by(|left, right| left.0.cmp(&right.0));
-        let stamped: Vec<(String, Stamp, Option<Attributed>)> = tokens
+        let stamped: Vec<(Stream, Stamp, Option<Attributed>)> = tokens
             .into_iter()
             .map(|(token, meta)| {
                 let stamp = Stamp::of(&meta);
                 let known = index
                     .get(&token)
-                    .filter(|entry| entry.stamp == stamp && entry.valid())
+                    .filter(|entry| entry.stamp == stamp)
                     .cloned();
                 (token, stamp, known)
             })
@@ -2698,7 +2775,7 @@ mod streams_index {
         let parsed = crate::vcs::concurrently(&stamped, |(token, _, known)| {
             if known
                 .as_ref()
-                .is_some_and(|entry| !about(entry.identity.as_ref(), entry.branch.as_ref(), token))
+                .is_some_and(|entry| !about(entry.identity(), entry.branch(), &token.0))
             {
                 return None;
             }
@@ -2706,11 +2783,11 @@ mod streams_index {
             // these notes only mark a stream as having a gap, as the one `notes` list did
             // before, and `recoverable` has nowhere to report them (see `vcs::collected`).
             let mut gap_notes = Vec::new();
-            let mut record = read_stream(directory, token, &mut gap_notes);
+            let mut record = read_stream(directory, &token.0, &mut gap_notes);
             record.gaps = !gap_notes.is_empty();
             Some(record)
         });
-        let mut fresh: BTreeMap<String, Attributed> = BTreeMap::new();
+        let mut fresh: BTreeMap<Stream, Attributed> = BTreeMap::new();
         for ((token, stamp, known), record) in stamped.into_iter().zip(parsed) {
             if let Some(entry) = &known {
                 fresh.insert(token.clone(), entry.clone());
@@ -2719,18 +2796,14 @@ mod streams_index {
                 continue;
             };
             if known.is_none() {
-                let attributed = Attributed {
-                    stamp,
-                    identity: record.identity.clone(),
-                    branch: record.branch.clone(),
-                };
-                if record.gaps || !attributed.valid() {
-                    unindexed.push(token.clone());
-                } else {
-                    fresh.insert(token.clone(), attributed);
+                match Attributed::of(stamp, &record) {
+                    Some(attributed) if !record.gaps => {
+                        fresh.insert(token.clone(), attributed);
+                    }
+                    _ => unindexed.push(token.clone()),
                 }
             }
-            if about(record.identity.as_ref(), record.branch.as_ref(), &token) {
+            if about(record.identity.as_ref(), record.branch.as_ref(), &token.0) {
                 kept.push(record);
             }
         }
@@ -2747,9 +2820,9 @@ mod streams_index {
             unindexed,
         };
         lookup.unindexed.sort();
-        let mut attributed: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+        let mut attributed: BTreeMap<Identity, BTreeMap<Branch, Vec<Stream>>> = BTreeMap::new();
         for (token, entry) in &fresh {
-            if KEYED.iter().any(|prefix| token.starts_with(prefix)) {
+            if KEYED.iter().any(|prefix| token.0.starts_with(prefix)) {
                 lookup.keyed.insert(token.clone());
             }
             match (&entry.identity, &entry.branch) {
@@ -2768,7 +2841,7 @@ mod streams_index {
             lookup
                 .unindexed
                 .iter()
-                .filter(|token| KEYED.iter().any(|prefix| token.starts_with(prefix)))
+                .filter(|token| KEYED.iter().any(|prefix| token.0.starts_with(prefix)))
                 .cloned(),
         );
         // Each identity's shard is written only where it is not the one the last
@@ -2780,7 +2853,7 @@ mod streams_index {
                 identity: identity.clone(),
                 branches,
             };
-            let path = shard_path(root, &identity);
+            let path = shard_path(root, &identity.0);
             let digest = match previous
                 .as_ref()
                 .and_then(|previous| previous.shards.get(&identity))

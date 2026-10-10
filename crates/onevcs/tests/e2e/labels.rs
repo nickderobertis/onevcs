@@ -1449,6 +1449,9 @@ fn session_hints_observe_new_labels_and_refuse_changed_unrelated_records() {
     assert_eq!(selected[0]["session"], new_token);
     // A hint naming a checkout its document does not hold, under a digest that
     // matches, is a document rebuilt rather than read.
+    // llmlint: ignore[tests_mirror_real_usage] no verb of this crate writes such a
+    // document, which is the point: the input under test is one another build or a
+    // damaged disk left, and the real binary is what reads it.
     let written = std::fs::read_to_string(&cache).expect("session hints");
     let (_, body) = written.split_once('\n').expect("digest line");
     let mut document: Value = serde_json::from_str(body).expect("hints document");

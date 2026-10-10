@@ -115,6 +115,10 @@ mod unix {
                         && *checkout < document.checkouts.len()
                         && *labels < document.labels.len()
                 });
+            // llmlint: ignore[changed_behavior_has_e2e] reached only by a document no
+            // verb writes; `labels::session_hints_observe_new_labels_and_refuse_changed_unrelated_records`
+            // writes one under a matching digest and holds the binary's rows to the
+            // read without it.
             if !bounded {
                 return Err("a hint names a table value the document does not hold");
             }
