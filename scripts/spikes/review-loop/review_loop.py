@@ -112,9 +112,6 @@ class Ledger:
     calls: list[dict[str, Any]] = field(default_factory=list)
     last_used: dict[str, tuple[int, int]] = field(default_factory=dict)
 
-    def seed(self, resource: str, used: int, reset: int) -> None:
-        self.last_used[resource] = (used, reset)
-
     def delta(self, headers: dict[str, str]) -> tuple[str | None, int | None]:
         resource = headers.get("x-ratelimit-resource")
         if resource is None or "x-ratelimit-used" not in headers:
@@ -210,13 +207,46 @@ class GitHub:
             "POST", "graphql", body={"query": query, "variables": variables}, **kwargs
         )
 
-    def rate_limit(self) -> dict[str, Any]:
-        """`GET /rate_limit`, which GitHub does not charge; kept out of the ledger."""
+    def meter(self, phase: str) -> dict[str, dict[str, int]]:
+        """Read each bucket off a charged call's own headers (costs 1 core, 1 point).
+
+        `GET /rate_limit` was observed answering a different window from the one the
+        calls are charged against, so the buckets are read where the charge is made.
+        """
+        core = self.call("GET", f"repos/{self.repo}", phase=phase, label="meter-core")
+        gql = self.graphql(
+            "query { rateLimit { cost used remaining resetAt } }",
+            {},
+            phase=phase,
+            label="meter-graphql",
+        )
+        return {
+            name: {
+                "used": int(r.headers["x-ratelimit-used"]),
+                "reset": int(r.headers["x-ratelimit-reset"]),
+            }
+            for name, r in (("core", core), ("graphql", gql))
+        }
+
+    def rate_limit_endpoint(self) -> dict[str, Any]:
+        """`GET /rate_limit`'s own answer, kept only to compare with the headers."""
         proc = subprocess.run(  # noqa: S603
             ["gh", "api", "rate_limit"], capture_output=True, text=True, check=True
         )
         resources = json.loads(proc.stdout)["resources"]
         return {key: resources[key] for key in ("core", "graphql")}
+
+
+def spent(
+    before: dict[str, dict[str, int]], after: dict[str, dict[str, int]]
+) -> dict[str, int | None]:
+    """Bucket movement between two meter readings; None where the window reset."""
+    return {
+        k: after[k]["used"] - before[k]["used"]
+        if after[k]["reset"] == before[k]["reset"]
+        else None
+        for k in ("core", "graphql")
+    }
 
 
 def parse_include(stdout: str, seconds: float) -> Response:
@@ -520,19 +550,20 @@ class Run:
             ("conditional", (f"If-None-Match: {etag}",)),
             ("unconditional", ()),
         ):
-            before = self.gh.rate_limit()["core"]
+            before = self.gh.meter(f"meter:probe-304:{kind}")["core"]
             phase = f"probe-304:{kind}"
             for _ in range(PROBE_BURST):
                 self.gh.rest(
                     "GET", path, phase=phase, label=kind, pr=key, headers=headers
                 )
-            after = self.gh.rate_limit()["core"]
+            after = self.gh.meter(f"meter:probe-304:{kind}")["core"]
             calls = [c for c in self.ledger.calls if c["phase"] == phase]
             result[kind] = {
                 "statuses": sorted({c["status"] for c in calls}),
                 "core_used_before": before["used"],
                 "core_used_after": after["used"],
-                "core_used_delta": after["used"] - before["used"]
+                # The closing meter's own core read is the one charge not the burst's.
+                "core_used_delta_excluding_meter": after["used"] - before["used"] - 1
                 if after["reset"] == before["reset"]
                 else None,
                 "per_call_header_deltas": [c["used_delta"] for c in calls],
@@ -752,7 +783,7 @@ class Run:
             )
             return proc
 
-        before_rl = self.gh.rate_limit()
+        before = self.gh.meter("meter:cold-host")
         version = run("onevcs", "--version").stdout.strip()
         if home.exists():
             raise HarnessError(f"the cold host's ONEVCS_HOME {home} already exists")
@@ -789,6 +820,9 @@ class Run:
         )
         published = run("onevcs", "publish", session["token"], "--draft")
         shown = run("onevcs", "change", "show", session["token"])
+        session_head = run("git", "rev-parse", "HEAD", cwd=worktree).stdout.strip()
+        closed = run("onevcs", "session", "close", session["token"])
+        after = self.gh.meter("meter:cold-host")
         open_prs = self.gh.rest(
             "GET",
             f"pulls?state=all&head={self.gh.owner}:{self.branches['B']}&per_page=100",
@@ -803,8 +837,6 @@ class Run:
             label="read-B",
             pr="B",
         ).json()
-        closed = run("onevcs", "session", "close", session["token"])
-        after_rl = self.gh.rate_limit()
         self.facts["cold_host"] = {
             "onevcs_version": version,
             "session": session,
@@ -818,6 +850,7 @@ class Run:
             "adopted_existing": [p["number"] for p in open_prs] == [self.numbers["B"]],
             "B_still_draft": pr_b["draft"],
             "B_head_after": pr_b["head"]["sha"],
+            "B_head_is_session_commit": pr_b["head"]["sha"] == session_head,
             "B_files_after": sorted(
                 f["filename"]
                 for f in self.gh.rest(
@@ -828,10 +861,11 @@ class Run:
                     pr="B",
                 ).json()
             ),
-            "allowance_delta_including_onevcs": {
-                k: after_rl[k]["used"] - before_rl[k]["used"]
-                for k in ("core", "graphql")
-                if after_rl[k]["reset"] == before_rl[k]["reset"]
+            # Between the two meters only onevcs (and any other consumer of the
+            # shared token) spent; the closing meter's own charge is subtracted.
+            "allowance_spent_by_onevcs_and_others": {
+                k: (v - 1 if v is not None else None)
+                for k, v in spent(before, after).items()
             },
             "log": log,
         }
@@ -1074,7 +1108,11 @@ def render_summary(run: Run, results: dict[str, Any]) -> str:
         f"- repository: `{run.repo}`",
         f"- harness commit: `{results['harness']['commit']}` (tree clean: {results['harness']['clean']})",
         f"- wall time: {results['wall_seconds']}s; calls: {s['calls_total']} {s['calls_by_resource']}",
-        f"- allowance used (rate_limit before→after, includes other consumers): {results['allowance_delta']}",
+        f"- bucket movement over the run (headers; includes other consumers and onevcs):"
+        f" {results['bucket_movement']}; graphql points the harness was charged:"
+        f" {s['graphql_points_charged']}",
+        f"- GET /rate_limit at start answered {results['rate_limit_endpoint_at_start']}"
+        f" while the headers read {results['buckets_at_start']}",
         "",
         "## per-round reads (calls / used deltas / graphql cost / bytes)",
     ]
@@ -1155,11 +1193,8 @@ def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="review-loop-work-"))
     harness = harness_commit()
     run = Run(args.repo, out, work)
-    start_rl = run.gh.rate_limit()
-    for resource in ("core", "graphql"):
-        run.ledger.seed(
-            resource, start_rl[resource]["used"], start_rl[resource]["reset"]
-        )
+    endpoint_answer = run.gh.rate_limit_endpoint()
+    start = run.gh.meter("meter:run")
     failure = None
     try:
         run.build_stack()
@@ -1182,20 +1217,19 @@ def main() -> int:
         print(f"review-loop: {failure}", file=sys.stderr)
     finally:
         run.cleanup()
-    end_rl = run.gh.rate_limit()
+    end = run.gh.meter("meter:run")
     results: dict[str, Any] = {
         "run_id": run.run_id,
         "repo": run.repo,
         "harness": harness,
         "failure": failure,
         "wall_seconds": round(time.perf_counter() - run.started, 1),
-        "allowance_before": start_rl,
-        "allowance_after": end_rl,
-        "allowance_delta": {
-            k: end_rl[k]["used"] - start_rl[k]["used"]
-            for k in ("core", "graphql")
-            if end_rl[k]["reset"] == start_rl[k]["reset"]
-        },
+        "buckets_at_start": start,
+        "buckets_at_end": end,
+        # Includes every other consumer of the shared token over the run's span,
+        # and the cold-host onevcs process's own calls, which the ledger never sees.
+        "bucket_movement": spent(start, end),
+        "rate_limit_endpoint_at_start": endpoint_answer,
         "facts": run.facts,
         "calls": run.ledger.calls,
         "payloads": run.payloads,
