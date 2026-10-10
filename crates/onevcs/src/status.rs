@@ -2842,6 +2842,12 @@ mod streams_index {
         let mut lookup = Lookup {
             version: VERSION,
             directory: directory.to_owned(),
+            // llmlint: ignore[changed_behavior_has_e2e] no journey can make this guard
+            // decide a row: a stream added after the listing moves the directory's
+            // ctime, which nothing can set back, unless it lands in the same coarse
+            // kernel clock tick as the listing — a race between two processes that a
+            // spawned binary cannot arrange on demand. Every way to reach the index
+            // otherwise is held by the stream-index journeys in `tests/e2e/labels.rs`.
             listed: settled.then_some(*listed),
             shards: BTreeMap::new(),
             keyed: BTreeSet::new(),
