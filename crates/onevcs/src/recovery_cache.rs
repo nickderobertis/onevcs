@@ -896,6 +896,7 @@ fn read_store(root: &Path) -> Option<Store> {
         .ok()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut held = BTreeSet::new();
+    let mut fanned = Vec::new();
     for entry in entries {
         let name = entry.file_name();
         let grows = name.to_str().is_some_and(|name| {
@@ -906,12 +907,20 @@ fn read_store(root: &Path) -> Option<Store> {
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
         });
         if grows && name != "pack" {
-            loose(root, &entry.path(), &mut held)?;
+            fanned.push(entry.path());
         } else if grows {
             growable(root, &entry.path(), &mut held)?;
         } else {
             snapshot(&entry.path(), &mut fixed, true)?;
         }
+    }
+    // The fan-out directories are listed side by side: what they hold is a set, so
+    // the order they are read in moves nothing, and a real store is 256 of them.
+    for listed in crate::vcs::concurrently(&fanned, |path| {
+        let mut held = BTreeSet::new();
+        loose(root, path, &mut held).map(|()| held)
+    }) {
+        held.extend(listed?);
     }
     Some(Store {
         fixed: format!("{:x}", fixed.finalize()),
@@ -1387,25 +1396,71 @@ fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
     Some(())
 }
 
+/// How deep the attributes walk goes before handing each directory there to a thread
+/// of its own.
+#[cfg(unix)]
+const ATTRIBUTES_SPLIT: usize = 3;
+
+/// Every `.gitattributes` file in a worktree, path and content, in path order.
+///
+/// Read where a listing names one, rather than asked of every directory: a large
+/// worktree is thousands of directories and a handful of these. The directories
+/// below the first few levels are listed side by side, since what is digested is the
+/// files found and not the order the walk found them in.
 #[cfg(unix)]
 fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
-    let mut entries = std::fs::read_dir(path)
-        .ok()?
-        .collect::<std::io::Result<Vec<_>>>()
-        .ok()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
+    let mut found = Vec::new();
+    let mut level = vec![path.to_owned()];
+    for _ in 0..ATTRIBUTES_SPLIT {
+        let mut below = Vec::new();
+        for directory in &level {
+            attribute_listing(directory, &mut found, &mut below)?;
+        }
+        level = below;
+    }
+    for walked in crate::vcs::concurrently(&level, |directory| {
+        let mut found = Vec::new();
+        attributes_below(directory, &mut found).map(|()| found)
+    }) {
+        found.extend(walked?);
+    }
+    found.sort();
+    for file in found {
+        optional_file(&file, digest)?;
+    }
+    Some(())
+}
+
+/// Every `.gitattributes` file at or below `directory`.
+#[cfg(unix)]
+fn attributes_below(directory: &Path, found: &mut Vec<PathBuf>) -> Option<()> {
+    let mut below = Vec::new();
+    attribute_listing(directory, found, &mut below)?;
+    for directory in below {
+        attributes_below(&directory, found)?;
+    }
+    Some(())
+}
+
+/// One directory's `.gitattributes` file, where it has one, and the directories in
+/// it, a repository's own `.git` aside.
+#[cfg(unix)]
+fn attribute_listing(
+    directory: &Path,
+    found: &mut Vec<PathBuf>,
+    below: &mut Vec<PathBuf>,
+) -> Option<()> {
+    for entry in std::fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
         if entry.file_name() == ".git" {
             continue;
         }
-        // Read where the listing names one, rather than asked of every directory:
-        // a large worktree is thousands of directories and a handful of these.
         if entry.file_name() == ".gitattributes" {
-            optional_file(&entry.path(), digest)?;
+            found.push(entry.path());
             continue;
         }
         if entry.file_type().ok()?.is_dir() {
-            attributes(&entry.path(), digest)?;
+            below.push(entry.path());
         }
     }
     Some(())
