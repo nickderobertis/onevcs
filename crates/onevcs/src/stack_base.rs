@@ -37,7 +37,7 @@
 //! the same request merges what is left and pushes.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -178,11 +178,27 @@ pub fn assemble(providers: &Providers<'_>, request: &StackBaseRequest) -> Result
     let token = opening.record.token.to_string();
     match assemble_in(providers, request, &resolution, &trailers, opening) {
         Ok(assembled) => Ok(assembled),
-        Err(Failed { error, session }) => {
-            // Nothing was pushed, so nothing reached a remote; the session is let go
-            // rather than left holding a run root nobody is coming back to — unless
-            // what it holds is somebody's resolution, which a close would abort. A
-            // close that fails is said beside the error rather than in place of it.
+        Err(Failed {
+            error,
+            session,
+            rewind,
+        }) => {
+            // Nothing was pushed, so nothing reached a remote, and the branch is put
+            // back where this call found it before the session hands it back: a merge
+            // this call made and could not push — one the public boundary refused among
+            // them — must not become the copy the next call continues. The session is
+            // then let go rather than left holding a run root nobody is coming back to,
+            // unless what it holds is somebody's resolution, which a close would abort.
+            // A close that fails is said beside the error rather than in place of it.
+            if let Some((worktree, start)) = &rewind {
+                git::abort_merge(worktree);
+                if let Err(rewinding) = git::reset_hard(worktree, start) {
+                    eprintln!(
+                        "onevcs: stack base session {token} could not be put back at {start}: \
+                         {rewinding}"
+                    );
+                }
+            }
             if session == Session::Close {
                 if let Err(closing) = workspace::close(&token) {
                     eprintln!("onevcs: stack base session {token} could not be closed: {closing}");
@@ -193,11 +209,13 @@ pub fn assemble(providers: &Providers<'_>, request: &StackBaseRequest) -> Result
     }
 }
 
-/// An assembly that failed once its session was open: the error, and whether the
-/// session is let go.
+/// An assembly that failed once its session was open: the error, whether the session
+/// is let go, and — once this call began merging — the worktree and the commit its
+/// branch is put back at.
 struct Failed {
     error: Error,
     session: Session,
+    rewind: Option<(PathBuf, String)>,
 }
 
 /// What becomes of the session of an assembly that failed.
@@ -231,11 +249,16 @@ fn assemble_in(
         Err(Failed {
             error,
             session: Session::Close,
+            rewind: None,
         })
     };
 
+    // Every head is read where the origin was just fetched — the execution checkout,
+    // whose objects the session's clone borrows — rather than off the clone's own
+    // remote-tracking refs, which begin as that checkout's local branches.
+    let execution = &record.execution_checkout;
     let read = |name: &str| -> Result<String> {
-        git::tip(&clone, &tracking(name))
+        git::tip(execution, &tracking(name))
             .ok_or_else(|| not_on_origin(resolution, name, &request.root))
     };
     let heads = match request
@@ -286,10 +309,24 @@ fn assemble_in(
                     ),
                 },
                 session: Session::Keep,
+                rewind: None,
             })
         }
         Err(error) => return fail(error),
     }
+
+    // Where this call found the branch, which a failure from here on puts it back at.
+    let start = match git::head_sha(&worktree) {
+        Ok(start) => start,
+        Err(error) => return fail(error),
+    };
+    let undo = |error: Error| {
+        Err(Failed {
+            error,
+            session: Session::Close,
+            rewind: Some((worktree.clone(), start.clone())),
+        })
+    };
 
     // The root first, so whatever landed there since — a parent's squash among it —
     // reaches the base before any parent is merged over it; then each parent in the
@@ -298,7 +335,7 @@ fn assemble_in(
         Ok(root) => root,
         Err(error) => return fail(error),
     };
-    let merges = std::iter::once((request.root.clone(), root)).chain(heads);
+    let merges = std::iter::once((request.root.clone(), root.clone())).chain(heads);
     for (name, head) in merges {
         match merge(&worktree, branch, &name, &head, trailers) {
             Ok(None) => {}
@@ -311,22 +348,35 @@ fn assemble_in(
                     conflict,
                 ));
             }
-            Err(error) => return fail(error),
+            Err(error) => return undo(error),
         }
     }
 
     let head = match git::head_sha(&worktree) {
         Ok(head) => head,
-        Err(error) => return fail(error),
+        Err(error) => return undo(error),
     };
-    let on_origin = git::tip(&clone, &tracking(branch));
+    // Read where the heads were, for the same reason: in the clone, a copy this host
+    // merely holds would read as the origin's.
+    let on_origin = git::tip(execution, &tracking(branch));
+    // Absent is a branch nothing carried work on: one this open cut, or a copy an
+    // earlier failed call put back at a root this branch had not moved past, which is
+    // still no stack base anybody can have drafted against.
+    let absent = match (cut, &on_origin) {
+        (true, _) => true,
+        (false, Some(_)) => false,
+        (false, None) => match git::is_ancestor(&worktree, &start, &root) {
+            Ok(behind) => behind,
+            Err(error) => return undo(error),
+        },
+    };
     let outcome = if on_origin.as_deref() == Some(head.as_str()) {
         StackBaseOutcome::Unchanged
     } else {
         if let Err(error) = push(providers, resolution, &clone, request) {
-            return fail(error);
+            return undo(error);
         }
-        match cut {
+        match absent {
             true => StackBaseOutcome::Created,
             false => StackBaseOutcome::Advanced,
         }
