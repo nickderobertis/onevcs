@@ -1003,6 +1003,11 @@ fn what_cannot_be_posted_is_refused_and_nothing_reaches_the_host() {
     // by name; a marker some other read wrote is refused rather than read as none.
     for (change, code, said) in [
         (
+            "http://github.com/acme-corp/widgets/pull/1",
+            2,
+            "neither a session token nor a change request's URL",
+        ),
+        (
             "https://github.com/acme-corp/widgets/issues/1",
             2,
             "neither a session token nor a change request's URL",

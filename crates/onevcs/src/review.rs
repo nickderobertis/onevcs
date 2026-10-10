@@ -564,7 +564,7 @@ impl ChangeUrl {
             ))
         };
         let url = Url::parse(text.trim()).map_err(|_| refused())?;
-        if !matches!(url.scheme(), "https" | "http") {
+        if url.scheme() != "https" {
             return Err(refused());
         }
         let host = url.host_str().ok_or_else(refused)?.to_ascii_lowercase();
