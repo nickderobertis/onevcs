@@ -2275,6 +2275,21 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
 /// says now. Where the directory moved, every stream is listed and held to its own
 /// stamp, as before, and anything changed or new is parsed. Missing, corrupt and
 /// unreadable index documents fall to that same full listing.
+/// The streams the branch-keyed verbs record a branch under: each verb's prefix and
+/// the branch's slug. One spelling for the verbs that write them and every reader
+/// that asks for one by name.
+pub(crate) mod keyed {
+    pub(crate) const PUBLISH_BRANCH: &str = "publish-branch-";
+    pub(crate) const RECOVER: &str = "recover-";
+    pub(crate) const PRESERVE: &str = "preserve-";
+    pub(crate) const ALL: [&str; 3] = [PUBLISH_BRANCH, RECOVER, PRESERVE];
+
+    /// The stream the verb `prefix` names records `branch` under.
+    pub(crate) fn stream(prefix: &str, branch: &str) -> String {
+        format!("{prefix}{}", crate::policy::branch_slug(branch))
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn recorded_streams_about(
     wanted: Option<&BTreeSet<(String, String)>>,
@@ -2287,9 +2302,8 @@ pub(crate) fn recorded_streams_about(
     // stream's content says: its sessions', and the branch-keyed verbs' spellings.
     let mut named: BTreeSet<String> = BTreeSet::new();
     for (identity, branch) in wanted {
-        let slug = policy::branch_slug(branch);
-        named.insert(format!("publish-branch-{slug}"));
-        named.insert(format!("recover-{slug}"));
+        named.insert(keyed::stream(keyed::PUBLISH_BRANCH, branch));
+        named.insert(keyed::stream(keyed::RECOVER, branch));
         named.insert(crate::preserve::preserve_token(branch));
         for record in sessions {
             if record.identity == *identity && *record.branch == **branch {
@@ -2540,7 +2554,7 @@ mod streams_index {
     }
 
     /// The prefixes of the names branch-keyed verbs write their streams under.
-    const KEYED: [&str; 3] = ["publish-branch-", "recover-", "preserve-"];
+    const KEYED: [&str; 3] = super::keyed::ALL;
 
     fn shard_path(root: &Path, identity: &str) -> PathBuf {
         root.join("streams-index")
@@ -3176,11 +3190,10 @@ fn relevant_streams<'a>(
     branch: &str,
     session: Option<&str>,
 ) -> Vec<&'a Recorded> {
-    let slug = policy::branch_slug(branch);
     let named: BTreeSet<String> = [
         session.map(str::to_owned),
-        Some(format!("publish-branch-{slug}")),
-        Some(format!("recover-{slug}")),
+        Some(keyed::stream(keyed::PUBLISH_BRANCH, branch)),
+        Some(keyed::stream(keyed::RECOVER, branch)),
         // Named as well as matched by label and payload, so a preservation is found by
         // the one spelling `preserve` writes it under rather than only by what its
         // event happens to carry.

@@ -33,7 +33,7 @@ use crate::registry::Registry;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::workspace::{self, object};
-use crate::{branch, guidance, policy};
+use crate::{branch, guidance};
 
 /// What to preserve, and where to look for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,7 +308,7 @@ fn open_stream(resolution: &Resolution, branch: &str) -> Result<Stream> {
 /// Read by `status::relevant_streams` under the same spelling, so the two cannot come
 /// to disagree about where a preservation of one branch was written.
 pub(crate) fn preserve_token(branch: &str) -> String {
-    format!("preserve-{}", policy::branch_slug(branch))
+    crate::status::keyed::stream(crate::status::keyed::PRESERVE, branch)
 }
 
 /// The invocation that preserves this branch again, quoted so that running it as

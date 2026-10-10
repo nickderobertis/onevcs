@@ -395,7 +395,7 @@ pub fn publish_branch(
     request: &BranchPublishRequest,
 ) -> Result<PublishOutcome> {
     let registry = store::load()?;
-    let token = format!("publish-branch-{}", policy::branch_slug(&request.branch));
+    let token = crate::status::keyed::stream(crate::status::keyed::PUBLISH_BRANCH, &request.branch);
     let mut stream = Stream::open(&token)?;
     crate::publish_branch::run(
         &registry,
@@ -429,7 +429,7 @@ pub struct RecoverRequest {
 /// refused naming [`publish_branch`].
 pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) -> Result<PublishOutcome> {
     let registry = store::load()?;
-    let token = format!("recover-{}", policy::branch_slug(&request.branch));
+    let token = crate::status::keyed::stream(crate::status::keyed::RECOVER, &request.branch);
     let mut stream = Stream::open(&token)?;
     crate::recover::run(
         &registry,
