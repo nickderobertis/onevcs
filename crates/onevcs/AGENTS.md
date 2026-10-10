@@ -617,8 +617,9 @@ Three things are easy to undo.
 - **What only a content comparison reads stays out of what is answered in process.**
   These reads are admitted by the context that compares no content, so the worktree's
   `.gitattributes` walk — every directory of the checkout — is paid only by the
-  comparisons that still go through the proofs (`merge-tree`, and `--shortstat` where
-  the file count cannot be made in process).
+  comparisons that still go through the proofs (`merge-tree` and `--shortstat`). Keep
+  those two there: the small proof-cache journeys in `tests/e2e/labels.rs` observe
+  reuse and invalidation through the proofs they store.
 - **The commit graph is shared per identity within a read, keyed by the store a commit
   was read from.** A commit read from the checkout store every clone borrows answers
   for all of them; one read from a clone's own store answers for that clone only.
