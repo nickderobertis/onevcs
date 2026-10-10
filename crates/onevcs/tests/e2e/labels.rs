@@ -908,12 +908,12 @@ fn decision_of(token: &str) -> [&str; 5] {
     ["--detail", "decision", "--session", token, "--all"]
 }
 
-/// `recoverable`'s exit code and stdout, read by git alone where `native`: any `GIT_*`
-/// override is a context the proof cache delegates to git.
-fn answered(fixture: &Fixture, args: &[&str], native: bool) -> (Option<i32>, String) {
+/// `recoverable`'s exit code and stdout, read by git alone where `git_alone`: any
+/// `GIT_*` override is a context the proof cache delegates to git.
+fn answered(fixture: &Fixture, args: &[&str], git_alone: bool) -> (Option<i32>, String) {
     let mut command = fixture.world.onevcs();
     command.args(["recoverable", "--json"]).args(args);
-    if native {
+    if git_alone {
         command.env("GIT_NAMESPACE", "");
     }
     let output = command.output().expect("recoverable runs");

@@ -605,8 +605,8 @@ reused but answered in process (`native_objects.rs`), never stored, and byte for
 as git prints them; any shape or answer git could word differently is still git's.
 Five things are easy to undo.
 
-- **An answer that would read much is not made in process.** Each may read at most
-  `OBJECTS_PER_ANSWER` commits and trees this read has not read already; past that it
+- **An answer that would read much is not made in process.** Each reads fewer than
+  `OBJECT_LIMIT` commits and trees this read has not read already; one that reaches it
   is left to the proofs and to git. On a real host's checkouts a count over a long
   history or a listing of two large trees made a warm read slower than 0.43.1's,
   which answered the same reads from proofs, and the workload fixture's small

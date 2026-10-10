@@ -20,13 +20,14 @@ pub(crate) fn reads(args: &[&str]) -> bool {
     Shape::of(args).is_some()
 }
 
-/// How many objects one answer here may read that this read has not read already.
+/// The count of objects, not read already by this read, at which one answer here is
+/// declined: an answer is made here only where it reads fewer than this.
 ///
 /// What a real host's checkouts make expensive is size — a count over a long history,
 /// a listing of two large trees — and those are the reads a stored proof answers in
-/// a fraction of the time. So an answer that would read more than this is not made
-/// here at all, and is left to the proofs and to git.
-const OBJECTS_PER_ANSWER: usize = 512;
+/// a fraction of the time. So an answer that reaches this limit is not made here at
+/// all, and is left to the proofs and to git.
+const OBJECT_LIMIT: usize = 512;
 
 thread_local! {
     static UNSPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
@@ -44,7 +45,7 @@ fn spend() -> Option<()> {
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
-    UNSPENT.with(|unspent| unspent.set(OBJECTS_PER_ANSWER));
+    UNSPENT.with(|unspent| unspent.set(OBJECT_LIMIT));
     let answered = within_allowance(&shape, repo, borrowing);
     let spent = UNSPENT.with(|unspent| unspent.replace(usize::MAX)) == 0;
     answered.filter(|_| !spent)
