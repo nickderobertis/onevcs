@@ -33,7 +33,13 @@ use sha2::{Digest, Sha256};
 /// them; nothing where it reports neither.
 #[cfg(not(target_vendor = "apple"))]
 fn resources() -> (Option<u64>, Option<u64>) {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status_figures(&std::fs::read_to_string("/proc/self/status").unwrap_or_default())
+}
+
+/// Resident memory in KiB and the thread count, read from the text of Linux's
+/// `/proc/<pid>/status`, which reports `VmRSS` in KiB (spelled `kB`).
+#[cfg(any(not(target_vendor = "apple"), test))]
+fn status_figures(status: &str) -> (Option<u64>, Option<u64>) {
     let field = |name: &str| {
         status
             .lines()
@@ -70,10 +76,15 @@ fn resources() -> (Option<u64>, Option<u64>) {
     // SAFETY: the call above filled every byte of it, which is what the length it
     // answered says.
     let info = unsafe { info.assume_init() };
-    (
-        Some(info.pti_resident_size / 1024),
-        u64::try_from(info.pti_threadnum).ok(),
-    )
+    task_figures(info.pti_resident_size, info.pti_threadnum)
+}
+
+/// Resident memory in KiB and the thread count, from Apple's task information: its
+/// resident size is in bytes, and its thread count a signed integer. In the same
+/// units as [`status_figures`] reads Linux's.
+#[cfg(any(target_vendor = "apple", test))]
+fn task_figures(resident_bytes: u64, threads: i32) -> (Option<u64>, Option<u64>) {
+    (Some(resident_bytes / 1024), u64::try_from(threads).ok())
 }
 
 /// One timed call, held in a fixed-size record so that keeping it moves nothing the
@@ -275,5 +286,32 @@ fn main() -> ExitCode {
             eprintln!("recoverable_latency: {reason}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{status_figures, task_figures};
+
+    /// One process's figures, as each kernel reports them: Linux's status text and
+    /// Apple's task information for a process resident in 12 MiB with 3 threads.
+    const STATUS: &str = "Name:\trecoverable_lat\nVmPeak:\t   20480 kB\nVmRSS:\t   12288 kB\nRssAnon:\t    4096 kB\nThreads:\t3\n";
+
+    #[test]
+    fn both_kernels_figures_read_as_the_same_kib_and_threads() {
+        assert_eq!(status_figures(STATUS), (Some(12_288), Some(3)));
+        assert_eq!(task_figures(12 * 1024 * 1024, 3), status_figures(STATUS));
+    }
+
+    #[test]
+    fn a_partial_kib_of_resident_bytes_is_dropped() {
+        assert_eq!(task_figures(12 * 1024 * 1024 + 1023, 3).0, Some(12_288));
+    }
+
+    #[test]
+    fn figures_a_kernel_did_not_report_are_nothing() {
+        assert_eq!(status_figures(""), (None, None));
+        assert_eq!(status_figures("VmRSS:\t unknown kB\n"), (None, None));
+        assert_eq!(task_figures(0, -1), (Some(0), None));
     }
 }
