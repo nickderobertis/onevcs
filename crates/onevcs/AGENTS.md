@@ -629,6 +629,11 @@ Five things are easy to undo.
   paid only by the comparisons that still go through git (`merge-tree`, `--shortstat`
   and `--numstat`). Keep those there: the small proof-cache journeys in
   `tests/e2e/labels.rs` observe reuse and invalidation through the proofs they store.
+  An attribute can move a listing or `--quiet` only through a driver the configuration
+  defines (`diff.<driver>.command` with `trustExitCode`, `textconv`, `diff.external`),
+  and every such key refuses proofs by name;
+  `labels::worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_proof`
+  holds both halves. Admit a `diff.*` key and that reasoning no longer holds.
   And `git::changed_paths` asks `--shortstat` only of a listing that could be
   incomplete — an empty one, or one whose pipe failed — since a listing that is text
   at all is the whole listing.

@@ -2153,6 +2153,145 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
+/// How many times git listed changed paths or asked whether any changed between two
+/// commits: the reads whose proofs the worktree's attributes no longer key.
+fn listings(counting: &crate::cost::Counting) -> usize {
+    counting
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            let words: Vec<_> = call.args.split_whitespace().collect();
+            words.first() == Some(&"diff")
+                && (words.contains(&"--name-only") || words.contains(&"--quiet"))
+                && !words.contains(&"--shortstat")
+                && !words.contains(&"--numstat")
+        })
+        .count()
+}
+
+/// A listing of changed paths and whether any changed compare tree entries by object
+/// id, so no `.gitattributes` entry moves either answer — only a driver the
+/// configuration defines could, and a configured driver refuses every proof. So the
+/// worktree's attributes are not in those proofs' key: each change to them below is
+/// read twice through the stored proofs and answered as git answers it then, and every
+/// change naming a configured driver is git's to answer, never a reused proof's.
+// llmlint: ignore-block[tests_mirror_real_usage] what this journey holds is whether a
+// stored proof stood in for git after an input it no longer keys changed — the
+// Git-execution count the registered recovery budgets measure — and no command reports
+// that. The counting `git` on PATH execs the real one, so the binary is driven
+// unchanged, and every answer it gives is also compared with uncached git's.
+#[test]
+fn worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_proof() {
+    let (fixture, token) = deep_history_session("attributed");
+    let args = decision_of(&token);
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    proof_stores(&fixture, &counting, &args);
+    assert!(
+        listings(&counting) > 0,
+        "the premise: git lists changed paths or asks whether any changed"
+    );
+    let repos: Vec<_> = proof_stores(&fixture, &counting, &args)
+        .iter()
+        .map(|common| common.parent().expect("a checkout").to_path_buf())
+        .collect();
+    assert!(
+        repos.len() > 1,
+        "the premise: proofs come from more than one repository"
+    );
+    let attribute = |text: &str| {
+        for repo in &repos {
+            std::fs::create_dir_all(repo.join("nested")).expect("nested directory");
+            for directory in [repo.clone(), repo.join("nested")] {
+                std::fs::write(directory.join(".gitattributes"), text).expect("attributes");
+            }
+        }
+    };
+    let (plain, stored, _) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(plain.0, Some(0), "{plain:?}");
+    assert!(
+        stored > 0,
+        "the premise: an unattributed read stores proofs"
+    );
+
+    // Every attribute git's tree comparison could consult without a configured driver:
+    // each is read through the proofs the read before it stored, and is git's answer.
+    for text in [
+        "* -diff\n",
+        "* binary\n",
+        "*.txt diff=python\n",
+        "* text eol=crlf\n",
+        "* filter=undefined\n",
+        "* merge=ours -text\n",
+        "* diff=fixture\n",
+    ] {
+        attribute(text);
+        let native = answered(&fixture, &args, true);
+        let (reused, _) = counted(&fixture, &counting, &args);
+        assert_eq!(reused, native, "{text:?}: a reused proof is git's answer");
+        assert_eq!(reused, plain, "{text:?}: no attribute moves the answer");
+        assert_eq!(
+            listings(&counting),
+            0,
+            "{text:?}: the listings are not derived again"
+        );
+    }
+
+    // The one way an attribute could move these answers: a driver the configuration
+    // defines, trusted for its exit code, that calls every pair of files the same. It
+    // refuses proofs at either level, whatever the attributes say, and git answers.
+    let driver = fixture.world.path("same.sh");
+    std::fs::write(&driver, "#!/bin/sh\nexit 0\n").expect("driver");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    let driver = driver.to_str().expect("a UTF-8 path");
+    for keys in [
+        &[
+            ("diff.fixture.command", driver),
+            ("diff.fixture.trustExitCode", "true"),
+        ][..],
+        &[("diff.external", driver), ("diff.trustExitCode", "true")][..],
+        &[("diff.fixture.textconv", "tr a-z A-Z")][..],
+    ] {
+        for global in [true, false] {
+            let scope: &[&str] = if global { &["--global"] } else { &[] };
+            let targets = if global { &repos[..1] } else { &repos[..] };
+            for repo in targets {
+                for (key, value) in keys {
+                    fixture
+                        .world
+                        .git(repo, &[&["config"], scope, &[key, value]].concat());
+                }
+            }
+            for text in ["* diff=fixture\n", "*.txt diff=fixture\n* -diff\n"] {
+                attribute(text);
+                let (refused, stored, _) = under_configuration(&fixture, &counting, &args);
+                assert_eq!(stored, 0, "{keys:?} (global {global}) refuses proof reuse");
+                assert!(
+                    listings(&counting) > 0,
+                    "{keys:?} {text:?}: git lists the changes itself"
+                );
+                // `under_configuration` holds both reads to uncached git's answer.
+                let _ = refused;
+            }
+            for repo in targets {
+                for (key, _) in keys {
+                    fixture
+                        .world
+                        .git(repo, &[&["config"], scope, &["--unset", key]].concat());
+                }
+            }
+        }
+    }
+    attribute("");
+    let (restored, stored, _) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(restored, plain);
+    assert!(
+        stored > 0 && listings(&counting) == 0,
+        "reuse returns with the driver gone"
+    );
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
 /// A loose object is never rewritten by git, but a disk or a person can damage one in
 /// place: the same name and inode, a different size, or no longer readable. A proof
 /// whose walk read such an ancestor names only its endpoints, which still hash, so the
