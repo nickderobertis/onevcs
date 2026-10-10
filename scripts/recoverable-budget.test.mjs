@@ -136,12 +136,18 @@ test("latency reader reports the slowest in-process call and refuses unrecorded 
       assert.ok(readFileSync(join(f.root, "result.json"), "utf8").includes(String(value)), `${args.join(" ")} reports ${value}`);
     }
     const unrecorded = run("--scale", "10", "--cold");
-    assert.equal(unrecorded.status, 1);
-    assert.match(unrecorded.stderr, /no in-process cold calls were recorded at scale 10/);
-    assert.match(unrecorded.stderr, /next: run 'just recoverable-journeys'/);
+    assert.equal(unrecorded.status, 2);
+    assert.match(unrecorded.stderr, /in-process cold calls are recorded at --scale 1 only/);
+    assert.match(unrecorded.stderr, /next: pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold/);
     const malformed = run("--scale", "2", "--warm");
-    assert.equal(malformed.status, 1);
+    assert.equal(malformed.status, 2);
     assert.match(malformed.stderr, /expected --scale 1\|10 --cold\|--warm/);
+    assert.match(malformed.stderr, /next: pass --scale 1 --warm/);
+    // A stale or missing record is the telemetry's to regenerate, and says so.
+    rmSync(join(f.root, "target", "budget-records", "recoverable.json"));
+    const stale = run("--scale", "1", "--warm");
+    assert.equal(stale.status, 1);
+    assert.match(stale.stderr, /next: run 'just recoverable-journeys'/);
   } finally { rmSync(f.root, {recursive:true,force:true}); }
 });
 

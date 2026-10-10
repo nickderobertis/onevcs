@@ -3,14 +3,20 @@
 import { report } from "@onebudgetspec/sdk";
 import { journeyCommand, readRecord } from "./recoverable-budget-record.mjs";
 
+// A command this reader cannot answer is the caller's to fix, not the telemetry's.
+class Usage extends Error {}
+
 try {
   const args = process.argv.slice(2);
   if (!(args.length === 3 && args[0] === "--scale" && ["1", "10"].includes(args[1]) && ["--cold", "--warm"].includes(args[2]))) {
-    throw new Error("expected --scale 1|10 --cold|--warm");
+    throw new Usage(`expected --scale 1|10 --cold|--warm, got ${JSON.stringify(args)}`);
+  }
+  const mode = args[2].slice(2);
+  if (mode === "cold" && args[1] !== "1") {
+    throw new Usage("in-process cold calls are recorded at --scale 1 only");
   }
   const record = readRecord();
   const workload = record.workloads.find(row => row.scale === Number(args[1]));
-  const mode = args[2].slice(2);
   const calls = workload[`in_process_${mode}`];
   if (!calls) throw new Error(`no in-process ${mode} calls were recorded at scale ${workload.scale}`);
   const slowest = Math.max(...calls.map(call => call.wall_ms));
@@ -20,6 +26,10 @@ try {
     throw new Error("ONEBUDGETSPEC_RESULT is missing; invoke through 'just budgets'");
   }
 } catch (error) {
-  console.error(`recoverable telemetry: ${error.message}\nnext: run '${journeyCommand}' to regenerate complete current-build records`);
-  process.exitCode = 1;
+  const usage = error instanceof Usage;
+  const next = usage
+    ? "pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold, as budgets.yaml's latency entries do"
+    : `run '${journeyCommand}' to regenerate complete current-build records`;
+  console.error(`recoverable telemetry: ${error.message}\nnext: ${next}`);
+  process.exitCode = usage ? 2 : 1;
 }
