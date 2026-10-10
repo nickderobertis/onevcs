@@ -2359,6 +2359,10 @@ fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
             .success();
         sessions.push(token);
     }
+    // llmlint: ignore[tests_mirror_real_usage] git's own decoding of an undecodable
+    // listing is the empty one an in-process answer would also give, so the rows are
+    // equal either way; which of the two made the listing is the property, and the
+    // spawned git is the only place a caller can see it.
     let counting = crate::cost::Counting::installed(world);
     let listed: Vec<usize> = sessions
         .iter()
