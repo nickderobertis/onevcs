@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use url::Url;
 
+use crate::boundary::{Surface, TermScope};
 use crate::error::{Error, Result};
 use crate::event::{ArtifactRef, EventKind};
 use crate::host::{ChangeId, ChangeRequest, RemoteHost};
@@ -45,6 +46,11 @@ pub struct ChangeDescription {
     // no shape on it, for the reason `PublishRequest::body` is a plain `String`; an
     // unusable body does not exist.
     pub body: String,
+    /// Which private repositories the public boundary check derives its terms from,
+    /// should the change request's repository be public. Unset is every registered
+    /// private one.
+    #[serde(default, skip_serializing_if = "TermScope::is_registry")]
+    pub term_scope: TermScope,
 }
 
 /// A session's change request, as the host holds it right now.
@@ -109,6 +115,18 @@ pub fn describe_change(
     if let Some(title) = &description.title {
         session.hold_to_repository_policy(title)?;
     }
+    // A description is written to the host as it is, and a drafter's finished text is
+    // exactly what reaches a reviewer: so it is held to the boundary before the write.
+    let mut fields = vec![(Surface::Body, description.body.as_str())];
+    if let Some(title) = &description.title {
+        fields.push((Surface::Title, title));
+    }
+    crate::boundary::evidence::guard_fields(
+        providers.hosting,
+        &session.record.identity,
+        &fields,
+        &description.term_scope,
+    )?;
     session
         .host
         .describe_change(&change, description.title.as_deref(), &description.body)?;

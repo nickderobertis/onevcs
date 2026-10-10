@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::boundary::Visibility;
 use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
 use crate::publish::DraftReason;
@@ -304,6 +305,22 @@ pub trait RemoteHost {
     ) -> Result<()> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::describe_change",
+        })
+    }
+
+    /// Whether the repository is public, as the host says.
+    ///
+    /// Asked at every write that could reach a public destination, because which
+    /// terms a write is checked against depends on it, and recorded in the registry.
+    /// An organisation-internal repository is [`Visibility::Private`]: it is not
+    /// readable by everybody.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal, which is recorded as
+    /// [`Visibility::Unknown`] and treated as private.
+    fn visibility(&self) -> Result<Visibility> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::visibility",
         })
     }
 
@@ -1729,6 +1746,27 @@ impl RemoteHost for GitHub {
             title: read("title")?,
             body: read("body")?,
         })
+    }
+
+    /// One `gh api repos/{owner}/{name}`, reading the two fields GitHub states a
+    /// repository's visibility in. `visibility` is `public`, `private` or `internal`,
+    /// and an internal repository is private to everybody outside its organisation;
+    /// an answer carrying neither field is refused rather than read as either.
+    fn visibility(&self) -> Result<Visibility> {
+        let answer = gh::json(&gh::invoke(&["api", &format!("repos/{}", self.repo)])?)?;
+        match answer.get("visibility").and_then(serde_json::Value::as_str) {
+            Some("public") => return Ok(Visibility::Public),
+            Some("private" | "internal") => return Ok(Visibility::Private),
+            _ => {}
+        }
+        match answer.get("private").and_then(serde_json::Value::as_bool) {
+            Some(true) => Ok(Visibility::Private),
+            Some(false) => Ok(Visibility::Public),
+            None => Err(invalid(format!(
+                "gh api answered about {} without its visibility",
+                self.repo
+            ))),
+        }
     }
 
     /// One `gh pr view`, reading the one field the host decides a draft by.

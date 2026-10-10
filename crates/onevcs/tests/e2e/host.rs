@@ -583,6 +583,13 @@ fn reading_checks_through_actions_asks_for_nothing_that_resolves_a_check_run() {
         reached.remove("user"),
         "the host is asked who is calling: {reached:?}"
     );
+    // …and whether the repository is public, which every fine-grained token may read
+    // (`Metadata: Read`) and which decides whether the publication is held to the
+    // public boundary before anything is pushed.
+    assert!(
+        reached.remove("repos/{owner}/{repo}"),
+        "the host is asked whether the repository is public: {reached:?}"
+    );
     assert_eq!(
         reached,
         CHECK_ENDPOINTS

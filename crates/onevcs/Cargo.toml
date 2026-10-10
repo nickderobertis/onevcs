@@ -3,7 +3,7 @@ name = "onevcs"
 # The one version source in this repository. release-plz maintains it; maturin
 # reads it through `dynamic = ["version"]` and scripts/npm-build.mjs parses it out
 # of this file. Never write a version anywhere else.
-version = "0.43.1"
+version = "0.44.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,7 +18,12 @@ categories = ["command-line-utilities", "development-tools"]
 # release-plz decides this package changed by diffing its **packaged files**
 # against the last release, so a change to the suite or the workspace docs
 # deliberately does not cut a release on its own.
-include = ["src/**/*.rs", "Cargo.toml", "README.md"]
+include = [
+    "src/**/*.rs",
+    "src/boundary/generic-words.txt",
+    "Cargo.toml",
+    "README.md",
+]
 
 [lib]
 name = "onevcs"
@@ -33,10 +38,12 @@ path = "src/main.rs"
 testing = []
 
 [dependencies]
+aho-corasick = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
 fs4 = { workspace = true }
 git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
+icu_normalizer = { workspace = true }
 icu_properties = { workspace = true }
 minijinja = { workspace = true }
 onemessagebus = { workspace = true }

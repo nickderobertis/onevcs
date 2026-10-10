@@ -35,3 +35,11 @@ launcher's rows too, whose unselected sessions span every class.
 launcher read opens, before and after the host grows nine times its other launchers'
 sessions and streams in the same identities; Linux only.
 
+`boundary.rs` is the public boundary's budget journey: it builds
+`onevcs_testing::boundary`'s workload, drives the release binary's `publish-branch`
+and `export` over it, and writes `boundary.json` beside `recoverable.json`, stamped
+with the same invocation, binary and source identity — the wrapper retracts both
+together. The check's phases come from the binary's own `ONEVCS_BOUNDARY_DIAGNOSTICS`
+line and its peak memory from `wait4`; `scripts/boundary-check-budget.mjs` is the only
+reader, and `crates/onevcs/budgets.yaml` the only budget over it. It takes
+`exclusive()` too, so neither workload's clock carries the other's load.

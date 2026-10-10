@@ -95,9 +95,9 @@ not tell you:
   and that is what must be green before pushing.
 - **`just smoke-real` is the one tier neither of them runs.** It is real `git`
   against a real GitHub remote and the real API through the real `gh`, over the
-  scratch repository `nickderobertis/onevcs-smoke`, and it lives in its own test
+  scratch repository the `ONEVCS_SMOKE_REPO` key names, and it lives in its own test
   binary (`crates/onevcs/tests/smoke/`) so the offline tiers' filters exclude it by
-  name. It runs as the uncached `onevcs-smoke:smoke-real` target, from a workflow of
+  name. It runs as the uncached `onevcs-live:smoke-real` target, from a workflow of
   its own (`smoke.yml`). It needs `gh` and a credential and refuses loudly without
   one; it never skips.
 - **The repo-wide verbs delegate to Nx** (`scripts/nx.sh`), which fans the uniform
@@ -109,7 +109,7 @@ not tell you:
   `--workspace` commands twice.
 - **The tests are split into Nx projects by what they read, not by crate**:
   `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract`,
-  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-smoke` outside
+  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` outside
   `check`. A script or workflow change reaches the scripts and contract tiers, not
   the crate's unit tier. `workspace` (the root `project.json`) holds the judged
   tier below and the uncached `msrv` and `deps-check`, outside `check` too.
@@ -279,8 +279,9 @@ not tell you:
 
 `gh-secrets.json` names the secrets a fork or a fresh clone must provision;
 values live in the secret store, never in the tree. One GitHub resource outside
-this repository belongs to it: `nickderobertis/onevcs-smoke`, the scratch
-repository the `smoke` job publishes to and the only one it is allowed to touch.
+this repository belongs to it: the scratch repository the `smoke` job publishes to
+and the only one it is allowed to touch. Its identity is itself one of those
+secrets, `ONEVCS_SMOKE_REPO`, so the tree never names it.
 
 ## Invariants (non-negotiable)
 

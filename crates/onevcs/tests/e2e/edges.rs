@@ -860,6 +860,8 @@ fn a_host_bound_that_cannot_be_read_is_refused_at_the_boundary() {
          default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
+    // A real host answers for a repository it serves, and this one is private.
+    world.host_visibility("acme-corp/bounded", "private");
 
     let assert = world
         .onevcs()
@@ -965,6 +967,8 @@ fn a_host_that_cannot_produce_a_checks_log_records_none_rather_than_its_refusal(
          default: {publication: change-auto, approvals: required}\n",
     );
     world.install_fake_host(&origin);
+    // A real host answers for a repository it serves, and this one is private.
+    world.host_visibility("acme-corp/logless", "private");
     world.host_checks(&[crate::world::Check {
         name: "unreachable",
         status: "completed",
@@ -1598,7 +1602,7 @@ fn a_registry_written_before_this_build_is_read_by_the_resolved_policy_and_never
         &std::fs::read_to_string(world.home().join("registry.json")).expect("a registry"),
     )
     .expect("the registry is JSON");
-    assert_eq!(stored["version"], 6);
+    assert_eq!(stored["version"], 7);
     assert!(
         stored["identities"]["github.com/acme-corp/v2"]
             .get("workflow")
@@ -2567,6 +2571,8 @@ fn a_host_that_accepts_a_merge_and_does_not_perform_it_is_not_reported_as_merged
          default: {publication: change-direct, approvals: none}\n",
     );
     world.install_fake_host(&origin);
+    // A real host answers for a repository it serves, and this one is private.
+    world.host_visibility("acme-corp/unreliable", "private");
     world.install_pre_push(&checkout, "exit 0");
     world.accept_merges_without_performing_them();
 
@@ -2786,7 +2792,8 @@ fn a_host_this_build_does_not_speak_for_is_refused_rather_than_addressed_as_gith
         .stdout(predicate::str::contains("gitlab.com/acme-corp/elsewhere"));
     configure_rules(
         &world,
-        "version: 1\nrules: []\n\
+        // This build cannot ask a GitLab host what it serves, so the operator says.
+        "version: 4\nrules:\n  - match: {owner: acme-corp}\n    visibility: private\n\
          default: {publication: change-open, approvals: required}\n",
     );
     world.install_fake_host(&origin);
@@ -2878,6 +2885,8 @@ fn a_host_that_opens_something_other_than_a_change_request_is_not_followed() {
              default: {publication: change-open, approvals: required}\n",
         );
         world.install_fake_host(&origin);
+        // A real host answers for a repository it serves, and this one is private.
+        world.host_visibility("acme-corp/wrong-url", "private");
         world.answer_malformed(shape);
 
         let assert = world
@@ -2943,6 +2952,8 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
              default: {publication: change-auto, approvals: required}\n",
         );
         world.install_fake_host(&origin);
+        // A real host answers for a repository it serves, and this one is private.
+        world.host_visibility("acme-corp/malformed", "private");
         world.host_checks(&[crate::world::Check {
             name: "gate",
             status: "in_progress",

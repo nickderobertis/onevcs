@@ -49,6 +49,7 @@
 use std::path::Path;
 
 mod app;
+pub mod boundary;
 mod branch;
 pub mod branches;
 mod change;
@@ -57,6 +58,7 @@ mod closing;
 pub mod declaration;
 mod error;
 mod event;
+mod export;
 mod gate_run;
 mod gh;
 mod git;
@@ -93,6 +95,7 @@ pub mod releases;
 mod remainder;
 mod retire;
 pub mod rules;
+mod rules_apply;
 mod session;
 mod status;
 mod store;
@@ -108,6 +111,11 @@ mod vocabulary;
 mod workspace;
 pub mod workspaces;
 
+pub use boundary::{
+    boundary_schema, check_public_output, check_public_output_with_evidence, inspect_repository,
+    repository_boundary, BoundaryInput, BoundaryVerdict, RepositoryBoundary, TermMode, TermRule,
+    TermScope, Visibility,
+};
 pub use change::{ChangeDescription, SessionChange};
 pub use declaration::{
     Declaration, DeclaredTarget, InstructionTemplate, RegistryId, RetiredArtifact,
@@ -116,6 +124,9 @@ pub use error::{Error, Result};
 pub use event::{
     ArtifactId, ArtifactRef, Dimensions, Envelope, EventFilter, EventKind, EventMatcher, Labels,
     MatchFields, Phase, PhaseOf, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
+};
+pub use export::{
+    export, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL, EXPORT_AUTHOR_NAME, EXPORT_SUBJECT,
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description,
@@ -159,6 +170,7 @@ pub use retire::{
     UnknownCause,
 };
 pub use rules::MergePolicy;
+pub use rules_apply::{rules_apply, RulesApplied, RulesApplyRequest};
 pub use session::{
     Detail, HeldBy, Holding, Lifecycle, LineChange, Liveness, NetNegative, OnOrigin, OpenConflict,
     PreservedBranch, Provenance, Recoverable, Scope, Selection, Session, SessionHolder,

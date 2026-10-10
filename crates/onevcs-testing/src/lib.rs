@@ -72,5 +72,7 @@ pub use state::{
 };
 pub use store::{Checked, FileStore, MemoryStore, Store};
 
+/// The public boundary's budget workload, over real Git and the production registry.
+pub mod boundary;
 /// Shared full-size fixtures over real Git and production persistence.
 pub mod recovery;

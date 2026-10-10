@@ -30,7 +30,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use onevcs_current::{BranchPublishRequest, Providers as CurrentProviders, SessionRequest};
+use onevcs_current::{
+    BranchPublishRequest, Providers as CurrentProviders, SessionRequest, TermScope,
+};
 
 /// The program every hosted e2e journey installs as `gh`, byte for byte.
 const FAKE_GH: &str = include_str!("../../crates/onevcs/tests/fixtures/gh");
@@ -259,6 +261,7 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
         title: None,
         body: None,
         policy: None,
+        term_scope: TermScope::default(),
     };
     let red = onevcs_current::publish_branch(&providers, &request);
     assert!(
@@ -270,10 +273,10 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
     assert_eq!(recorded.len(), 1, "the premise: one boundary is recorded");
 
     // Nothing an older build reads has moved: the registry and every session record are
-    // the bytes they were, at the schema versions the base this change started from wrote.
+    // the bytes they were, at the schema versions this build writes.
     let registry_after = std::fs::read(&registry).expect("the registry");
     assert_eq!(registry_after, registry_before, "the registry did not move");
-    assert_eq!(declared_version(&registry_after), 6);
+    assert_eq!(declared_version(&registry_after), 7);
     let sessions_after = files(&sessions);
     assert_eq!(sessions_after, sessions_before, "no session record moved");
     for bytes in sessions_after.values() {

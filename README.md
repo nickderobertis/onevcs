@@ -231,6 +231,36 @@ workspace one of those proofs does not cover — somebody else inside it, or a c
 holding work that neither an origin nor the checkout the branch was read out of
 carries — is kept whole, and the verb says why on stderr.
 
+**Private work may inform public repositories, and public output never names it.**
+Every write to a public destination — `publish`, `publish-branch`, `recover`,
+`preserve`, `integrate --push`, `change describe` — is checked before it reaches the
+remote: its added lines, new paths, every outgoing commit's message against every
+parent, the branch, and the change request's title and body are matched against the
+**terms** of the private repositories this host has registered, and a hit refuses the
+write, naming only *where* it was found. A term is a private repository's
+`owner/name` (anywhere, which covers its URLs), its name and the package names its
+committed manifests declare (whole words — a common word, or a public repository's
+name, narrows to `owner/name`), and its owner where that owner has no public
+repository; a repository may commit a `private-terms.toml` adding terms and narrowing
+or dropping derived ones. A cleanup may remove what its destination already carries
+and nothing is exempt from the rest. Which repositories are public is GitHub's answer,
+recorded in the registry and refreshed at every write, or a rule's `visibility:` —
+unknown is private, and a hosted destination whose visibility cannot be confirmed is
+screened rather than written to unchecked. `--term-scope IDENTITY` (repeatable) narrows the check to the
+repositories a piece of work names, and `--term-scope-empty` to none.
+
+`onevcs export --from REPO --branch REF --directory DIR --to REPO --target-directory
+DIR --branch-name NAME` turns one directory of private work into one new commit on a
+public repository's base — fixed neutral subject and author, nothing of the source's
+history, names or paths — on a local branch, after refusing anything outside that
+directory, a link, a submodule, a binary blob, or a private term. It pushes nothing.
+`onevcs boundary check --destination public --input -` puts any caller's output to the
+same check (exit 0, 1 refused, 2 unavailable), `onevcs boundary inspect --input -
+--json` answers a repository's visibility, and `onevcs boundary schema --json` prints
+both commands' versioned schemas. `onevcs rules apply --base FILE --overlay FILE...`
+composes a tracked rules file with overlays kept outside the checkout and installs the
+result where the registry reads rules.
+
 Everything durable lives under one state root — `ONEVCS_HOME`, otherwise
 `~/.onevcs`.
 
@@ -273,7 +303,7 @@ onevcs --help
 verification that failed, a request that was invalid, and a base that moved under
 it.
 
-![`onevcs --help` in a terminal: the one-line description, the usage line, and the whole command list — register, repos, resolve, session, publish, publish-branch, change, preserve, recover, recoverable, status, import, integrate, sync, sweep, events, artifact, rules, release, pool, retire, reclaim, retire-finished and supersede — each with the one-line summary of what it does, then the global help and version options](docs/screenshots/help.svg)
+![`onevcs --help` in a terminal: the one-line description, the usage line, and the whole command list — register, repos, resolve, session, publish, publish-branch, change, preserve, recover, recoverable, status, import, integrate, sync, sweep, events, artifact, rules, release, pool, retire, reclaim, retire-finished, supersede, boundary and export — each with the one-line summary of what it does, then the global help and version options](docs/screenshots/help.svg)
 
 > Every picture in this README is a real capture of this CLI: the release binary
 > driven against a scratch host of real origins, clones and hooks, with no network

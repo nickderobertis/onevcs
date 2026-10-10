@@ -67,19 +67,25 @@ jobs:
       # Absent or too narrowly scoped, this job fails naming what it could not do,
       # which is the intended behaviour: the alternative is a smoke that passes
       # without talking to GitHub.
-      # llmlint: ignore[least_privilege_grants] the credential this job should hold is a fine-grained PAT on nickderobertis/onevcs-smoke alone with contents and pull-requests write and nothing else; provisioning one is a secret-store change only the operator can make, and RELEASE_PLZ_TOKEN is the token that exists on this repository today and the one named for this job. Swap the reference here once the narrower secret exists.
+      # llmlint: ignore[least_privilege_grants] the credential this job should hold is a fine-grained PAT on the scratch repository alone with contents and pull-requests write and nothing else; provisioning one is a secret-store change only the operator can make, and RELEASE_PLZ_TOKEN is the token that exists on this repository today and the one named for this job. Swap the reference here once the narrower secret exists.
       GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-      # No ONEVCS_SMOKE_REPO: the tier's own default is the scratch repository, and
-      # naming it here again would be a second place for it to be wrong. Set it only
-      # to point a run somewhere else, and only at a name ending `-smoke` — the tier
+      # Which repository is the scratch one is a secret too, ONEVCS_SMOKE_REPO, mapped
+      # into the steps that read it under the same name: the tree names no repository
+      # for this tier, and the tier has no default. It must end in `-smoke` — the tier
       # refuses anything else.
     steps:
       # Before anything is built: a run without the credential is a red X that
       # names it, in seconds, rather than a build that fails at its first journey.
-      - name: Require the scratch repository's credential
+      - name: Require the scratch repository and its credential
+        env:
+          ONEVCS_SMOKE_REPO: ${{ secrets.ONEVCS_SMOKE_REPO }}
         run: |
+          if [ -z "${ONEVCS_SMOKE_REPO:-}" ]; then
+            echo "::error::the smoke tier needs ONEVCS_SMOKE_REPO, the owner/name of its scratch repository — provision it in this repository's secrets" >&2
+            exit 1
+          fi
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::the smoke tier needs RELEASE_PLZ_TOKEN, a token that can push to and merge in nickderobertis/onevcs-smoke — provision it in this repository's secrets" >&2
+            echo "::error::the smoke tier needs RELEASE_PLZ_TOKEN, a token that can push to and merge in the repository ONEVCS_SMOKE_REPO names — provision it in this repository's secrets" >&2
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -94,4 +100,6 @@ jobs:
           tool: nextest
       - uses: ./.github/actions/setup-just
       - name: Real git, a real remote, and the real GitHub API
+        env:
+          ONEVCS_SMOKE_REPO: ${{ secrets.ONEVCS_SMOKE_REPO }}
         run: just smoke-real

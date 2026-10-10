@@ -185,6 +185,23 @@ _compat-format:
 _compat-lint:
     @cargo clippy --manifest-path compat/Cargo.toml --all-targets --locked --quiet -- -D warnings
 
+# The exposure audit's command (`crates/onevcs-exposure-audit`), as its own Nx
+# project: the same bar as the crate's, scoped to that package.
+_audit-bootstrap:
+    @cargo fetch --locked --quiet
+
+_audit-format:
+    @cargo fmt -p onevcs-exposure-audit
+
+_audit-fmt-check:
+    @cargo fmt -p onevcs-exposure-audit -- --check || { echo "formatting drift above — run 'just format'" >&2; exit 1; }
+
+_audit-lint:
+    @cargo clippy -p onevcs-exposure-audit --all-targets --locked --quiet -- -D warnings
+
+_audit-test:
+    @cargo nextest run -p onevcs-exposure-audit --locked --status-level fail
+
 # The offline suite, split into the Nx test tiers that run it. Each is a nextest
 # filterset over the workspace's test binaries, so the split moves no test: the
 # four below select every test but the `smoke` binary's, which needs a GitHub
@@ -235,7 +252,7 @@ _recovery-test:
 _recovery-covered:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" just _cover onevcs-recovery 'binary(recovery-workload)'
-    @node --test scripts/recoverable-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs
 
 # Regenerate validated current-build telemetry without running unrelated journeys.
 recoverable-journeys:
@@ -249,7 +266,7 @@ recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "-
 _recovery-quick:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail {{recovery-no-tests}}
-    @node --test scripts/recoverable-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs
 
 onebudgetspec-version := "0.1.1"
 onebudgetspec-root := justfile_directory() / "target" / "tools" / ("onebudgetspec-" + onebudgetspec-version)
@@ -264,7 +281,7 @@ _ensure-onebudgetspec:
 budgets:
     @[ -x "{{onebudgetspec-root}}/bin/onebudgetspec" ] || [ -x "{{onebudgetspec-root}}/bin/onebudgetspec.exe" ] \
       || { echo "onebudgetspec {{onebudgetspec-version}} is missing; run 'just bootstrap', then retry" >&2; exit 1; }
-    @"{{onebudgetspec-root}}/bin/onebudgetspec" check budgets.yaml
+    @"{{onebudgetspec-root}}/bin/onebudgetspec" check budgets.yaml crates/onevcs/budgets.yaml
 _scripts-e2e-test: (_cover "onevcs-scripts-e2e" scripts-tier)
 _scripts-e2e-test-quick: (_quick scripts-tier)
 _contract-test: (_cover "onevcs-contract" contract-tier)
@@ -295,22 +312,23 @@ test-quick:
 # CI's `smoke` job calls this same recipe, so the journeys are defined once — in
 # the test binary — rather than reimplemented as workflow steps.
 #
-# It needs `gh` and a credential (`gh auth login`, or GH_TOKEN). With neither it
-# fails and names what is missing; it never skips and never falls back to a fake.
-# Set ONEVCS_SMOKE_REPO to publish somewhere other than the default scratch
-# repository; which names it will accept is the tier's own rule, and the tier says
-# so when it refuses one (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
+# It needs `gh`, a credential (`gh auth login`, or GH_TOKEN), and ONEVCS_SMOKE_REPO
+# naming the scratch repository as owner/name — CI maps the secret of that name.
+# Without any of them it fails and names what is missing; it never skips, never
+# falls back to a fake, and has no default repository. Which names it will accept
+# is the tier's own rule, and the tier says so when it refuses one
+# (`tests/smoke/scratch.rs`). `--no-capture`, because its whole
 # value is the evidence it prints, and `--no-fail-fast` because a run costs minutes
 # and a real credential: stopping at the first failure hides how the other journeys
 # fared under the same one, which is the question this tier is asked.
 #
-# It runs as the uncached `onevcs-smoke:smoke-real` target, streamed rather than
+# It runs as the uncached `onevcs-live:smoke-real` target, streamed rather than
 # folded into a summary line, because what it printed is the evidence.
 # Drive both interfaces against real git, a real remote, and the real GitHub API.
 smoke-real:
-    @ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh run onevcs-smoke:smoke-real
+    @ONEVCS_NX_SHOW_OUTPUT=1 bash scripts/nx.sh run onevcs-live:smoke-real
 
-# The `onevcs-smoke:smoke-real` target's body.
+# The `onevcs-live:smoke-real` target's body.
 _smoke-real:
     @cargo nextest run --workspace --locked -E 'binary(smoke)' --no-capture --no-fail-fast \
       --status-level all

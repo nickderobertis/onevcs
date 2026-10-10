@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde::Serialize;
 use url::Url;
 
+use crate::boundary::TermScope;
 use crate::error::{Error, Result};
 use crate::import::Imported;
 use crate::integrate::Outcome as Integration;
@@ -103,6 +104,11 @@ pub struct Registration {
 pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registration> {
     let origin = origin.map(Url::to_string);
     let resolution = store::register(path, origin.as_deref())?;
+    // Whether it is public is recorded as it is registered, so a public repository
+    // stops contributing terms to the boundary check from the start rather than from
+    // its first publication. Best effort: a host that cannot answer leaves it unknown,
+    // which is private, and every write to it asks again.
+    let _ = crate::boundary::visibility::refresh(Providers::real().hosting, &resolution.key);
     // What was registered is the identity and its checkout; how it publishes is the
     // rules file's answer, resolved here so the coverage below is about the merge
     // path the identity will actually take.
@@ -383,6 +389,8 @@ pub struct BranchPublishRequest {
     pub body: Option<String>,
     /// A policy to narrow to; it may only ask for more review than the rules do.
     pub policy: Option<MergePolicy>,
+    /// Which private repositories the public boundary check derives its terms from.
+    pub term_scope: TermScope,
 }
 
 /// Verify and publish a completed branch no session holds.
@@ -404,6 +412,7 @@ pub fn publish_branch(
         request.title.clone(),
         request.body.clone(),
         request.policy,
+        &request.term_scope,
         providers.hosting,
         &mut stream,
     )
@@ -420,6 +429,8 @@ pub struct RecoverRequest {
     pub title: Option<Subject>,
     /// The body of the change request, where one is opened.
     pub body: Option<String>,
+    /// Which private repositories the public boundary check derives its terms from.
+    pub term_scope: TermScope,
 }
 
 /// Verify and publish a preserved branch that a step left behind, attesting it.
@@ -437,6 +448,7 @@ pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) -> Result<Pu
         &request.branch,
         request.title.clone(),
         request.body.clone(),
+        &request.term_scope,
         providers.hosting,
         &mut stream,
     )
@@ -488,6 +500,8 @@ pub struct IntegrateRequest {
     pub branches: Vec<String>,
     /// What becomes of the base the train advanced.
     pub push: BasePush,
+    /// Which private repositories the public boundary check derives its terms from.
+    pub term_scope: TermScope,
 }
 
 /// Merge finished branches into their base, in order.
@@ -505,6 +519,7 @@ pub fn integrate(request: &IntegrateRequest) -> Result<Integration> {
         &resolution,
         &request.branches,
         request.push == BasePush::Push,
+        &request.term_scope,
         &mut stream,
     )
 }

@@ -6,11 +6,11 @@
 //! concurrent registrations are both retained rather than one overwriting the
 //! other.
 //!
-//! A document older than version 5 is migrated **lazily**, on the first read that
+//! A document older than version 7 is migrated **lazily**, on the first read that
 //! needs it: an operator never runs a migration command, and an interrupted one
 //! cannot leave half a document behind.
 //!
-//! A document *newer* than version 5 is read rather than refused. This build takes
+//! A document *newer* than version 7 is read rather than refused. This build takes
 //! the fields it understands, keeps the rest as a [`Remainder`] it writes back
 //! untouched, and never lowers the version it found — so a newer `onevcs` sharing
 //! this state root is degraded by an older one touching its registry, not undone by
@@ -28,6 +28,15 @@ use crate::rules::MergePolicy;
 use crate::{git, home, lock};
 
 /// The version this build writes.
+///
+/// `7` is version 6 with an identity's recorded visibility beside it — `visibility`,
+/// `observation` and `observed_at`, each optional and omitted while it says nothing —
+/// so a version 6 document *is* a version 7 one that has recorded nothing. It is read
+/// as this shape and left exactly as it is, and the first *write* stamps it 7: a read
+/// never rewrites shared host state for a version that changed no key it carries. The
+/// number moved because the shape did — a reader that sees 7 knows an identity may
+/// carry those keys — and every build since version 6 reads a later version as its own
+/// shape and keeps the keys it does not know, so the bump stops none of them.
 ///
 /// `6` is an identity without the `workflow` and `repo_type` that versions 2 through
 /// 5 wrote beside it. Both were inferred at registration from whether the origin
@@ -52,7 +61,10 @@ use crate::{git, home, lock};
 /// does not degrade that build: it stops it, for every verb, on a host whose
 /// operator opted into nothing. Those builds declare `deny_unknown_fields` and
 /// always will, which is why the key was withdrawn rather than made optional.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
+
+/// The oldest version whose document is already this build's shape, read as it is.
+pub const SHAPE_SINCE: u32 = 6;
 
 /// The oldest document this build still migrates.
 pub const OLDEST_VERSION: u32 = 2;
@@ -207,6 +219,9 @@ pub fn update<T>(change: impl FnOnce(&mut Registry) -> Result<T>) -> Result<T> {
         },
     };
     let outcome = change(&mut read.registry)?;
+    // A write is what stamps a version 6 document with this build's version; a newer
+    // one keeps the number it arrived under.
+    read.registry.version = read.registry.version.max(VERSION);
     home::atomic_write(&path, &serialize(&read.registry, &read.carried)?)?;
     Ok(outcome)
 }
@@ -256,11 +271,13 @@ fn migrate(path: &Path, value: Value) -> Result<Read> {
             ),
         })?;
     match version {
-        // This version and every later one. A newer document is read as this shape
+        // Version 6, this version and every later one: 6 is this shape with nothing
+        // recorded about visibility, and is left as it is until something writes. A
+        // newer document is read as this shape
         // rather than refused: refusing it would stop every verb on a host a newer
         // `onevcs` had touched, where reading it costs only the keys this build has
         // no opinion on — which are kept, not dropped.
-        current if current >= u64::from(VERSION) => {
+        current if current >= u64::from(SHAPE_SINCE) => {
             let registry: Registry = serde_json::from_value(value.clone())
                 .map_err(error::at("read the registry at", path))?;
             coherent(path, &registry)?;
@@ -396,7 +413,7 @@ fn legacy(path: &Path, object: &Map<String, Value>, version: u32) -> Result<Regi
         } else {
             NOOP_GATE.to_owned()
         };
-        identities.insert(key.clone(), Identity { origin, gate });
+        identities.insert(key.clone(), Identity::new(origin, gate));
     }
 
     let mut checkouts = BTreeMap::new();
@@ -601,10 +618,7 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
             // rules file's answer, resolved every time it is asked, so a decision
             // an operator changes there is changed everywhere at once rather than
             // frozen into the document at registration.
-            .or_insert_with(|| Identity {
-                origin: normalized.key.clone(),
-                gate: gate.clone(),
-            });
+            .or_insert_with(|| Identity::new(normalized.key.clone(), gate.clone()));
         if let Some(identity) = registry.identities.get_mut(&normalized.key) {
             if identity.gate == NOOP_GATE && gate != NOOP_GATE {
                 identity.gate = gate.clone();

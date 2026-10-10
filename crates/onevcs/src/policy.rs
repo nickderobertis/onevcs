@@ -14,19 +14,21 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::registry::Registry;
-use crate::rules::{Approvals, Drafts, MergePolicy, Policy, RuleMatch, RulesFile};
+use crate::rules::{
+    Approvals, DeclaredVisibility, Drafts, MergePolicy, Policy, RuleMatch, RulesFile,
+};
 use crate::store::{Normalized, Resolution};
 use crate::{home, ids};
 
 /// The version of the rules file this build writes, and the newest it has an
 /// opinion about.
 ///
-/// `2` added `trailer_prefix`. `3` removed `gate:`. Nothing else about the shape
-/// moved, so a file that declares an older version is read as it always was rather
+/// `2` added `trailer_prefix`. `3` removed `gate:`. `4` added a rule's
+/// `visibility:`. Nothing else about the shape moved, so a file that declares an older version is read as it always was rather
 /// than migrated: there is no field to fill in, only ones that are absent or spent.
 /// A file declaring a *later* version is read too, as this shape, since a version
 /// this build has no opinion on is not a reason to stop every verb on the host.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// The oldest version this build still reads.
 pub const OLDEST_VERSION: u32 = 1;
@@ -59,6 +61,14 @@ const GATE_REMOVED_VERSION: u32 = 3;
 /// `trailer_prefix` is at version 1: a key its own version does not have reads one way
 /// here and another wherever that version is trusted.
 const DRAFTS_VERSION: u32 = 3;
+
+/// The version at which a rule may declare `visibility:`.
+///
+/// A bump, where `drafts:` took none, because what the key does is not a lifecycle
+/// an older build may ignore: it is the operator saying a repository is private, and
+/// a file whose declared version predates the key would be read by every build that
+/// trusts the version as saying nothing. So it is refused below version 4, by name.
+const VISIBILITY_VERSION: u32 = 4;
 
 /// The shipped default of `drafts.disabled`: the lifecycle is on.
 pub const DRAFTS_DISABLED_DEFAULT: bool = false;
@@ -113,6 +123,8 @@ pub struct Resolved {
     pub approvals_from: String,
     /// How the draft lifecycle resolved, key by key.
     pub drafts: DraftLifecycle,
+    /// The visibility the matched rule declares, which overrides the host's answer.
+    pub visibility: Option<DeclaredVisibility>,
 }
 
 /// The two `drafts:` keys as one repository resolves them, each with the layer that
@@ -255,13 +267,22 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
     let raw = std::fs::read_to_string(&path).map_err(|e| Error::Invalid {
         reason: format!("cannot read the rules file at {}: {e}", path.display()),
     })?;
+    let file = parse(&path, &raw)?;
+    Ok((file, RulesSource::File(path)))
+}
+
+/// One rules document's text, held to every check a loaded rules file is: the version
+/// it declares, the keys that version has, the shape, and the combinations no policy
+/// can honour. `path` is what a refusal names the document by.
+pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
+    let path = path.to_path_buf();
     let malformed = |e: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
     };
     // The declared version decides whether a `gate:` is a spent key this build drops
     // or a stray one it refuses, and that has to be settled before the shape is
     // enforced: `deny_unknown_fields` gets no say in which version it is reading.
-    let mut document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    let mut document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a file may carry is a fact about the version it declares, so a
     // version this build does not read has to be answered as that rather than as
@@ -285,7 +306,7 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
     refuse_malformed_drafts(&path, &document)?;
     let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
     validate(&path, &file)?;
-    Ok((file, RulesSource::File(path)))
+    Ok(file)
 }
 
 /// The version a document declares, before anything about its shape is enforced.
@@ -448,7 +469,7 @@ fn report_spent_gate(path: &Path, dropped: usize) {
 /// the trailer prefix's spelling twice. A field the declared version does not *yet*
 /// have is such a combination; one a later version took away is dropped before the
 /// shape is read, so it never reaches here.
-fn validate(path: &Path, file: &RulesFile) -> Result<()> {
+pub(crate) fn validate(path: &Path, file: &RulesFile) -> Result<()> {
     if file.version < TRAILER_PREFIX_VERSION && file.trailer_prefix.is_some() {
         return Err(Error::Invalid {
             reason: format!(
@@ -482,6 +503,20 @@ fn validate(path: &Path, file: &RulesFile) -> Result<()> {
                      configure the draft lifecycle",
                     path.display(),
                     file.version
+                ),
+            });
+        }
+    }
+    if file.version < VISIBILITY_VERSION {
+        if let Some(index) = file.rules.iter().position(|rule| rule.visibility.is_some()) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the rules file at {} declares version {} and rule {} names visibility, \
+                     which version {VISIBILITY_VERSION} admits; declare version \
+                     {VISIBILITY_VERSION} to configure it",
+                    path.display(),
+                    file.version,
+                    index + 1
                 ),
             });
         }
@@ -545,6 +580,7 @@ pub fn resolve(
             }),
             publication_from: field_source(&named, rule.publication.is_some()),
             approvals_from: field_source(&named, rule.approvals.is_some()),
+            visibility: rule.visibility,
         };
     }
     Resolved {
@@ -554,6 +590,7 @@ pub fn resolve(
         publication_from: "the default".to_owned(),
         approvals_from: "the default".to_owned(),
         drafts: resolve_drafts(None, file.default.drafts.as_ref()),
+        visibility: None,
     }
 }
 

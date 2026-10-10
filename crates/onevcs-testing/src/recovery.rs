@@ -332,13 +332,9 @@ fn build_identity(
     )?;
     let key = origin.to_string_lossy().into_owned();
     let alias = format!("r{identity}");
-    registry.identities.insert(
-        key.clone(),
-        Identity {
-            origin: key.clone(),
-            gate: "true".into(),
-        },
-    );
+    registry
+        .identities
+        .insert(key.clone(), Identity::new(key.clone(), "true"));
     registry.checkouts.insert(
         alias.clone(),
         Checkout {
