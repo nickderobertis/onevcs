@@ -7178,3 +7178,79 @@ fn the_boundary_operations_answer_what_the_boundary_commands_print() {
     );
     assert!(onevcs::repository_boundary("github.com/otherhold/meadowlark").is_err());
 }
+
+#[test]
+fn a_consumer_assembles_a_stack_base_over_the_testing_hosts_and_opens_nothing_on_them() {
+    // What a consumer of `onevcs-testing` has: its hosts, handed to the library
+    // operation, over a real on-disk origin — the repository side of a stack base is
+    // git's own, as `preserve`'s is, so nothing about it is supplied.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    let elsewhere = world.clone_of(&origin, "elsewhere");
+    let mut heads = Vec::new();
+    for (branch, file) in [("feature/a", "a.txt"), ("feature/c", "c.txt")] {
+        world.git(&elsewhere, &["checkout", "-q", "-B", branch, "origin/main"]);
+        world.commit_file(&elsewhere, file, "work\n", &format!("feat: {branch}"));
+        world.git(&elsewhere, &["push", "-q", "origin", branch]);
+        heads.push(world.git(&elsewhere, &["rev-parse", "HEAD"]));
+    }
+    let vcs = MemoryVcs::new();
+    let host = MemoryHost::new();
+    let providers = Providers {
+        vcs: &vcs,
+        hosting: &host,
+    };
+    let request = onevcs::StackBaseRequest {
+        repo: "hosted".to_owned(),
+        branch: "stack-base/plan/node".to_owned(),
+        root: "main".to_owned(),
+        parents: vec!["feature/a".to_owned(), "feature/c".to_owned()],
+        labels: std::collections::BTreeMap::from([("run".to_owned(), "r1".to_owned())]),
+    };
+
+    let created = onevcs::assemble_stack_base(&providers, &request).expect("it assembles");
+    assert_eq!(created.outcome, onevcs::StackBaseOutcome::Created);
+    assert_eq!(
+        created
+            .parents
+            .iter()
+            .map(|parent| (parent.branch.as_str(), parent.head.0.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("feature/a", heads[0].as_str()),
+            ("feature/c", heads[1].as_str())
+        ]
+    );
+    assert_eq!(
+        world.git(&origin, &["rev-parse", "refs/heads/stack-base/plan/node"]),
+        created.head.0,
+        "the origin carries what the answer names"
+    );
+    let unchanged = onevcs::assemble_stack_base(&providers, &request).expect("it answers");
+    assert_eq!(unchanged.outcome, onevcs::StackBaseOutcome::Unchanged);
+    assert_eq!(unchanged.head, created.head);
+
+    // Neither host was asked to open anything, and the repository side it was handed
+    // was not asked for a session: the one the assembly worked in is this host's own.
+    assert!(
+        host.state().changes.is_empty(),
+        "{:?}",
+        host.state().changes
+    );
+    assert!(vcs.state().sessions.is_empty());
+
+    // …and a request the operation refuses is an error a caller can match on.
+    let refused = onevcs::assemble_stack_base(
+        &providers,
+        &onevcs::StackBaseRequest {
+            parents: vec!["feature/a".to_owned()],
+            ..request
+        },
+    )
+    .expect_err("one parent is no stack base");
+    assert!(
+        matches!(refused, onevcs::Error::Invalid { .. }),
+        "{refused}"
+    );
+}

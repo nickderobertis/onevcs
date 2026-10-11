@@ -921,8 +921,9 @@ mod tests {
             .iter()
             .map(|name| crate::git::local_tip(repo, name))
             .collect::<Vec<_>>();
-        let unpublished = crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new())
-            .map_err(|error| error.to_string());
+        let unpublished =
+            crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new(), |_| None)
+                .map_err(|error| error.to_string());
         let present = tips.iter().flatten().cloned().collect::<Vec<_>>();
         let ancestry = present
             .iter()
@@ -939,7 +940,7 @@ mod tests {
                 baseline
             );
             assert_eq!(
-                crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new())
+                crate::git::unpublished_branches_among(repo, |_| true, &BTreeSet::new(), |_| None)
                     .map_err(|error| error.to_string()),
                 unpublished
             );

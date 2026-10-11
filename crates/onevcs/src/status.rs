@@ -44,6 +44,7 @@ use crate::registry::Registry;
 use crate::releases::TargetName;
 use crate::rules::{Approvals, MergePolicy};
 use crate::session::{Lifecycle, Liveness, OnOrigin, Provenance, SessionHolder};
+use crate::stack_base::StackParent;
 use crate::store::{self, Resolution};
 use crate::workspace::{Ref, Token};
 use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace};
@@ -126,10 +127,19 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// shape is unchanged; the bump is for a reader that took any `retired` for a landing,
 /// which a discarded branch never is.
 ///
+/// `12` is `branch.stack_base`: the parents a branch named in the stack-base namespace
+/// carries, each at the newest head merged, read off the `Stack-Base` trailers of its
+/// own history. A stack base is never landed itself, so `next` names no landing verb
+/// for one, and a branch that is not a stack base omits the field. With it,
+/// `branch.base` became the base the branch is judged against — the one the session
+/// that cut it recorded, as its publication resolves it now, and the root only where no
+/// session recorded one — rather than always the root, so a change drafted on a stack
+/// base, or stacked on the change below, is measured by its own commits.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 11;
+pub const REPORT_VERSION: u32 = 12;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -268,7 +278,9 @@ pub struct SessionReport {
 pub struct BranchReport {
     /// The branch name.
     pub name: Ref,
-    /// The identity's root base, which is what it is compared against.
+    /// The base it is compared against: the one the session that cut it recorded, as
+    /// its publication resolves it now, and the identity's root where no session
+    /// recorded one.
     pub base: Ref,
     /// The change base a preserved commit recorded, for a stacked change.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,6 +302,23 @@ pub struct BranchReport {
     /// is unpublished, and `publication.state` says so beside this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_origin: Option<OnOrigin>,
+    /// What `onevcs stack-base` merged into this branch, where its name makes it a
+    /// stack base.
+    ///
+    /// Read off the `Stack-Base` trailers of the branch's own history, so it answers on
+    /// a host that never saw the branch assembled. A branch that is not one omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_base: Option<StackBaseReport>,
+}
+
+/// A stack base: a branch merging several parents onto a root, which is drafted
+/// against and never landed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackBaseReport {
+    /// Every parent a stack-base merge brought in, in the order each was first
+    /// merged, at the newest head merged — a parent a later assembly dropped because
+    /// it landed included, since its merge is still in the branch's history.
+    pub parents: Vec<StackParent>,
 }
 
 /// One repository holding the branch, and what that repository is.
@@ -969,6 +998,33 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
         .collect()
 }
 
+/// The base a branch is judged against: the one the session answering for it recorded
+/// (`vcs::session_base`) — a stack base, for a change drafted on one — and `root` only
+/// where no session recorded one, or where nothing here can name the one it did.
+///
+/// The rule `recoverable` lists a branch by, so the two reports measure one branch
+/// against one base.
+fn own_base(
+    resolution: &Resolution,
+    root: Ref,
+    answering: &Answering,
+    carrying: &[&Holder],
+) -> Ref {
+    answering
+        .session
+        .as_ref()
+        .map(vcs::session_base)
+        .filter(|own| {
+            *own != root
+                && (vcs::base_commit(&resolution.publication, own).is_some()
+                    || (!carrying.is_empty()
+                        && carrying
+                            .iter()
+                            .all(|holder| vcs::names_a_base(&holder.path, own))))
+        })
+        .unwrap_or(root)
+}
+
 /// What one landing read judges its copies under: where this identity keeps its
 /// authoritative checkout, which object store may be lent, the base and the work, what
 /// this host recorded about it, and the session records read once for the whole
@@ -1212,6 +1268,7 @@ pub(crate) fn landing_of_within(
     let mut told = from_streams(&streams, &work, held_by.as_deref());
     let change_stream = told.change_stream.clone();
     let carrying = carrying(&holders, &answering.superseded);
+    let base = own_base(&resolution, base, &answering, &carrying);
     // Before the tiers are asked, because a landing it records is one tier 1 then
     // answers from — which is what puts a late merge into *this* read rather than
     // into the next one. It takes no host where the caller has none to give.
@@ -1324,6 +1381,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let held_by = session.as_ref().map(|session| session.token.to_string());
     let mut told = from_streams(&streams, &work, held_by.as_deref());
     let carrying = carrying(&holders, &answering.superseded);
+    let base = own_base(&resolution, base, &answering, &carrying);
     // Before the tiers, so a merge the host performed after this host stopped
     // watching is decided *in* this read: it becomes a recorded landing, the word
     // below is the word a record fixes, and the next step is recomputed from it.
@@ -1354,6 +1412,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let mut ahead = None;
     let mut branch_provenance = None;
     let mut change_base = None;
+    let mut stack_base = None;
     // Absent is its own answer: nothing this identity keeps work in holds the branch,
     // so nothing here has seen the history that would decide it.
     let mut verdict = None;
@@ -1366,6 +1425,19 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         // refuse one by name where they are the ones about to act on it.
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
+        if crate::stack_base::is_stack_base(&work.branch) {
+            let parents =
+                provenance::stack_parents(repo, compared, &work.branch, &base, &trailers)?;
+            stack_base = Some(StackBaseReport {
+                parents: parents
+                    .into_iter()
+                    .map(|merge| StackParent {
+                        branch: merge.branch.into(),
+                        head: merge.head,
+                    })
+                    .collect(),
+            });
+        }
         verdict = Some(decided.clone());
     }
     // A branch nothing holds any more has no copy to decide it from, and one retired
@@ -1457,6 +1529,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         session: session.as_ref(),
         provenance: branch_provenance,
         nobody_has_it: holders.is_empty(),
+        stack_base: stack_base.as_ref(),
     });
 
     Ok(Report {
@@ -1479,6 +1552,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
             ahead,
             provenance: branch_provenance,
             on_origin,
+            stack_base,
         },
         publication: PublicationReport {
             state,
@@ -1709,6 +1783,7 @@ struct Advance<'a> {
     session: Option<&'a SessionReport>,
     provenance: Option<BranchProvenance>,
     nobody_has_it: bool,
+    stack_base: Option<&'a StackBaseReport>,
 }
 
 /// The command that advances this work, or why none applies.
@@ -1727,11 +1802,29 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
         session,
         provenance,
         nobody_has_it,
+        stack_base,
     } = *seen;
     let says = |because: String| NextReport {
         command: None,
         because,
     };
+    // Before every state, because none of them is about a stack base: it is drafted
+    // against and never landed, each parent lands through its own change request, and
+    // a landing verb here would publish every parent's work as one change.
+    if let Some(stack_base) = stack_base {
+        let parents = stack_base
+            .parents
+            .iter()
+            .map(|parent| format!("{}@{}", parent.branch, parent.head.0))
+            .collect::<Vec<_>>();
+        return says(format!(
+            "branch {branch:?} is a stack base: it merges {parents} onto {base} for the changes \
+             drafted against it, and is never landed itself — each parent lands through its own \
+             change request. `onevcs stack-base` advances it",
+            branch = work.branch,
+            parents = guidance::listed(&parents),
+        ));
+    }
     let change = change_url.unwrap_or("the change request");
     match state {
         Landing::Landed => says(format!(
@@ -4021,6 +4114,17 @@ impl Report {
             )),
             None => out.push_str("  on origin: not preserved\n"),
         }
+        if let Some(stack_base) = &self.branch.stack_base {
+            let parents = stack_base
+                .parents
+                .iter()
+                .map(|parent| format!("{}@{}", parent.branch, parent.head.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "  stack base: merges {parents} — drafted against, never landed\n"
+            ));
+        }
         if self.branch.holders.is_empty() {
             out.push_str("  held by: nothing this identity keeps work in\n");
         } else {
@@ -4246,8 +4350,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v11.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v11-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v12.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v12-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {

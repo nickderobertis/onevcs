@@ -179,6 +179,12 @@ mod pool;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod preserve;
+// Unix only: it drives real bare origins, real clones, real merges and real `git
+// push`es, real `pre-push` hooks, and the same substituted `gh` as `host.rs` to assert
+// that a stack base opens no change request. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod stack_base;
 // Unix only: its hosted journeys publish through the same substituted `gh` as
 // `host.rs`. Its own header carries the reason in full.
 #[cfg(unix)]

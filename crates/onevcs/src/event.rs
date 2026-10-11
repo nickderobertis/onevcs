@@ -173,6 +173,16 @@ pub enum EventKind {
     /// change request's required checks. Its phase is the gate's, so the producer
     /// stamps it — `integrate` for `pre-push`, `review` for `required-checks`.
     GateRun,
+    /// A stack base was assembled: a branch cut from a root and carrying a merge of
+    /// several parent branches, put on its origin with no change request; carries
+    /// the branch, its root, each parent with the head it was merged at or already
+    /// carried, the branch's head, and whether it was `created`, `advanced`,
+    /// `unchanged` or `conflicted`.
+    ///
+    /// Not [`Push`](EventKind::Push), for the reason
+    /// [`BranchPreserved`](EventKind::BranchPreserved) is not: the one producer of
+    /// `push` is a publication, and a stack base publishes nothing.
+    StackBaseAssembled,
 }
 
 impl EventKind {
@@ -212,6 +222,7 @@ impl EventKind {
             EventKind::BranchSuperseded => "branch-superseded",
             EventKind::BranchRetired => "branch-retired",
             EventKind::GateRun => "gate-run",
+            EventKind::StackBaseAssembled => "stack-base-assembled",
         }
     }
 
@@ -281,6 +292,9 @@ impl PhaseOf for Phase {
             // of it did: the base is what decides both, so both are that work being
             // integrated rather than made or proposed.
             EventKind::BranchSuperseded | EventKind::BranchRetired => Phase::Integrate,
+            // Several branches brought together onto a root, for the changes based on
+            // them: integration of work that is already made, and proposing nothing.
+            EventKind::StackBaseAssembled => Phase::Integrate,
             EventKind::ChangeOpened
             | EventKind::ChangeDrafted
             | EventKind::DraftLifted

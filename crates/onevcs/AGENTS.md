@@ -280,6 +280,12 @@ on the change below it belongs on the root once that change lands, so it replays
 own commits there and retargets — merging instead would replay the change below against
 whatever the base holds of it.
 
+**A branch with no `Change-Base` trailer lands onto the base its session recorded**
+(`branch::prepare`, through `vcs::recorded_base`), where the clone can still name it, and
+onto the root otherwise — the same base `recoverable` and `status` judge it against. A
+closed session's child of a stack base carries no trailer, and landing it onto the root
+opened its change request against `main` with its parents' work as its own diff.
+
 **What makes a publication stacked is its record, never its content.** A branch carrying
 the change below it reads exactly like a branch that wrote those commits itself, so a
 stack inferred from content rewrites branches nobody stacked. Recorded stack state that
@@ -342,7 +348,9 @@ for it. Five things are easy to undo.
   and the reason is written where the flag is: the hook is a gate, and the branch a
   shutdown exists to save is the one a worker was interrupted in the middle of, whose
   tree does not pass it. Running it would refuse the very branch and block for the
-  length of that repository's whole gate on a host that is going away.
+  length of that repository's whole gate on a host that is going away. A stack base
+  (below) is pushed through the same function, for its own reason, and so stays inside
+  that one exception rather than becoming a second.
 - **`branch-preserved` is not `push`.** The one producer of `push` is a publication, so
   a reader counting pushes to find publications must never meet a preservation. Its
   stream is the branch's own session's where a record names one and `preserve-<slug>`
@@ -371,6 +379,44 @@ cwd. The train is deliberately not what it names, even for finished work:
 every identity whose rules do not publish `local-direct`, so it lands none of the
 branches this report is most often read about — the ones a run left in its own
 clone.
+
+## A stack base is the other branch that reaches a remote unpublished
+
+`stack_base.rs` is `onevcs stack-base` and `assemble_stack_base`: a branch cut from a
+root carrying a merge of several parents, which a change depending on several unlanded
+changes is drafted against. Three plan nodes restate its shapes, so none of them is
+this crate's to rename alone. Five things are easy to undo.
+
+- **Every move is forward, and every merge is a merge commit.** `--no-ff` always, the
+  root merged before the parents, a parent already contained never merged again, and
+  the push never forced. Children drafted against the base merge it forward, which
+  stops being true the first time its history is rewritten.
+- **The open does not merge the root; this module does** (`workspace::BaseMerge::Leave`).
+  Every merge a stack base carries has a `Stack-Base` trailer, and the open's own
+  continuation merge would be the one commit without one.
+- **Every origin head is read in the execution checkout, never in the session's
+  clone.** A clone's remote-tracking refs begin as its lender's *local* branches, so
+  reading there made a copy this host merely held look like the origin's — and an
+  assembly that was creating the branch answered `advanced`.
+- **A failed call puts the branch back before the close hands it over.** Otherwise a
+  merge the boundary refused becomes the held copy every later call continues, and is
+  refused forever. A conflict is not a failure: its session is left open over it, and a
+  session holding a staged, uncommitted resolution is left open too.
+- **A stack base is its name, never a shape of history or a host's record**
+  (`stack_base::is_stack_base`: a `stack-base` segment followed by a plan and a node,
+  and `stack-base` refuses any other `--branch`). Its trailers name its parents, read
+  off its first-parent line (`provenance::stack_parents`), and decide nothing else: a
+  change cut from a stack base inherits every one of them and one cut at its head shares
+  its head, and both are ordinary work. A record of the assembly is no better — a host
+  that never saw it assembled has none, and listed the base as unpublished work.
+  `recoverable` drops a stack base in both reports; `status` reports `branch.stack_base`
+  and no landing verb. Every other branch is judged, by both, against the base the
+  session that cut it recorded (`vcs::session_base`, the root where none did) — a held
+  copy of that base counts beside the origin's refs for that branch alone
+  (`unpublished_branches_among`'s `based_on`) — so a child at a stack base's head holds
+  nothing beyond its base, and a blanket "every stack base is a base" would judge a
+  branch against a base nobody cut it on. Retirement keeps it as `unmerged-unique-commits` with no change, because
+  `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier
 

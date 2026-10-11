@@ -1939,10 +1939,12 @@ pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
 
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
-    Ok(unpublished_branches_among(cwd, |_| true, &BTreeSet::new())?
-        .into_iter()
-        .map(|(branch, _)| branch)
-        .collect())
+    Ok(
+        unpublished_branches_among(cwd, |_| true, &BTreeSet::new(), |_| None)?
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .collect(),
+    )
 }
 
 /// The local branches `keep` names that hold commits no `origin` remote-tracking
@@ -1959,10 +1961,15 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// has it, without being counted: `recoverable`'s branches `onevcs preserve` put on
 /// the origin, whose own remote-tracking ref would otherwise make them read as
 /// published. Taken from the same listing, so they cost no process of their own.
+///
+/// `based_on` names the base a branch was cut on, where one was recorded: a local copy of
+/// that base is counted beside the `origin` refs for that branch alone, so a branch
+/// drafted on a base the checkout holds is measured by its own commits.
 pub fn unpublished_branches_among(
     cwd: &Path,
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
+    based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
     let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
     let (heads, origin_tips) = if let Some((heads, origin)) = native {
@@ -1994,6 +2001,7 @@ pub fn unpublished_branches_among(
         }
         (heads, origin_tips)
     };
+    let local: BTreeMap<String, String> = heads.iter().cloned().collect();
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -2006,7 +2014,12 @@ pub fn unpublished_branches_among(
         if origin_tips.contains(&tip) {
             continue;
         }
-        if unpublished_ahead(cwd, &tip, &[])? > 0 {
+        let base = based_on(&branch).and_then(|base| local.get(&base).cloned());
+        if base.as_deref() == Some(tip.as_str()) {
+            continue;
+        }
+        let carried: Vec<&str> = base.iter().map(String::as_str).collect();
+        if unpublished_ahead(cwd, &tip, &carried)? > 0 {
             unpublished.push((branch, tip));
         }
     }
@@ -2281,6 +2294,34 @@ pub fn log_messages<'a>(
             })
         })
         .collect())
+}
+
+/// The commits on `branch`'s first-parent line that `base` does not reach, newest
+/// first.
+///
+/// The commits written *on* a branch, as against those a merge brought into it: what
+/// a stack base reads its own parents off, where every commit of a parent it merged —
+/// one drafted against another stack base among them — is in its history too.
+pub fn first_parent_line<'a>(
+    cwd: impl Into<Asked<'a>>,
+    base: &str,
+    branch: &str,
+) -> Result<Vec<String>> {
+    let cwd = cwd.into();
+    let base_tip = crate::native_refs::tip_with_objects(cwd.at, base, cwd.borrowing).flatten();
+    let branch_tip = crate::native_refs::tip_with_objects(cwd.at, branch, cwd.borrowing).flatten();
+    let base = base_tip.as_deref().unwrap_or(base);
+    let branch = branch_tip.as_deref().unwrap_or(branch);
+    let output = checked_in(
+        cwd,
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("{base}..{branch}"),
+            "--",
+        ],
+    )?;
+    Ok(output.stdout.lines().map(str::to_owned).collect())
 }
 
 /// Whether two refs' trees differ at all.
@@ -2907,6 +2948,31 @@ pub fn merge_leaving_conflict(cwd: &Path, reference: &str, message: &str) -> Res
     Ok(Integrated::Conflicted(conflict))
 }
 
+/// [`merge_leaving_conflict`], always writing a merge commit: `--no-ff`, so a ref the
+/// branch could fast-forward to is still recorded as merged, under `message`.
+///
+/// What a stack base merges with, because each of its merges carries a trailer naming
+/// what it brought in — and a fast-forward writes no commit for one to be on.
+pub fn merge_commit_leaving_conflict(
+    cwd: &Path,
+    reference: &str,
+    message: &str,
+) -> Result<Integrated> {
+    let merged = run(
+        &["merge", "--no-ff", "--no-edit", "-m", message, reference],
+        Some(cwd),
+    )?;
+    if merged.ok() {
+        return Ok(Integrated::Settled);
+    }
+    let Some(conflict) = conflict_in(cwd)? else {
+        return Err(Error::Invalid {
+            reason: format!("git merge {reference} failed: {}", merged.diagnostic()),
+        });
+    };
+    Ok(Integrated::Conflicted(conflict))
+}
+
 /// A merge a worktree holds in progress: what it is merging, and which of its paths
 /// are still unmerged.
 ///
@@ -3141,6 +3207,11 @@ pub fn push_replacing(
 ///
 /// Never forced, in either spelling: a non-fast-forward push is a refusal for the
 /// caller to report, never a history to replace.
+///
+/// A stack base is pushed through it too, for the reason its own module states: a
+/// stack base lands nothing either, and merges only branches each verified on its
+/// own change request — so this is still the one push that skips the hook, reached
+/// by the two verbs that put a branch on its origin without publishing it.
 pub fn push_preserving(cwd: &Path, branch: &str, remote: &str) -> Result<Pushed> {
     pushed(
         &[

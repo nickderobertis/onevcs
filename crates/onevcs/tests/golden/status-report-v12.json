@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "ref": {
     "given": "feature/full",
     "kind": "branch"
@@ -19,7 +19,7 @@
   },
   "branch": {
     "name": "feature/full",
-    "base": "main",
+    "base": "feature/below",
     "change_base": "feature/below",
     "holders": [
       {
@@ -32,7 +32,7 @@
         "session": "s-000000000000"
       }
     ],
-    "ahead": 3,
+    "ahead": 2,
     "provenance": "incomplete-unattested",
     "on_origin": {
       "remote": "<root>/hosted.git",
