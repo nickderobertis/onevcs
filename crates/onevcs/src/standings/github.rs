@@ -42,6 +42,10 @@ use crate::host::{reported_time, ChangeId, Check, Sha};
 use crate::publish::{checks_verdict, Declared};
 use crate::review::{github as review_github, ReadCost, ReadMarker, ReviewRead};
 
+mod pattern;
+
+use pattern::Pattern;
+
 /// What every alias reads of its change request, and whether its base still exists.
 pub(crate) const PULL_FIELDS: &str = "url number state isDraft body baseRefName headRefName \
 headRefOid mergedAt mergeCommit { oid } baseRef { name }";
@@ -543,48 +547,77 @@ impl Declarations {
         Ok(Ok(read))
     }
 
-    /// The one classic rule GitHub applies to `base`, where one does.
+    /// The one classic rule GitHub applies to `base`, where one does, or why which one
+    /// it applies cannot be told.
     ///
     /// GitHub applies exactly one classic rule to a branch, never a union of them: a rule
-    /// naming the branch exactly — a pattern with no `*`, `?` or `]` — over every pattern
-    /// that matches it, and of the rules left the one created first, which `databaseId`
+    /// naming the branch exactly — a pattern with no wildcard — over every pattern that
+    /// matches it, and of the rules left the one created first, which `databaseId`
     /// orders. So an older wildcard rule never adds its contexts to a branch a newer rule
-    /// names exactly.
-    fn classic_on(&self, base: &str) -> Option<&Classic> {
-        let patterned = |rule: &&Classic| rule.pattern.contains(['*', '?', ']']);
-        let exact = self
+    /// names exactly. A pattern this build cannot evaluate, met before any pattern that
+    /// matches, leaves which rule applies unknown.
+    fn classic_on(&self, base: &str) -> std::result::Result<Option<&Classic>, String> {
+        let mut rules: Vec<(&Classic, std::result::Result<Pattern, String>)> = self
             .classic
             .iter()
-            .filter(|rule| !patterned(rule) && rule.pattern == base)
-            .min_by_key(|rule| rule.created);
-        exact.or_else(|| {
-            self.classic
-                .iter()
-                .filter(|rule| patterned(rule) && glob(&rule.pattern, base))
-                .min_by_key(|rule| rule.created)
-        })
+            .map(|rule| (rule, Pattern::parse(&rule.pattern)))
+            .collect();
+        rules.sort_by_key(|(rule, _)| rule.created);
+        let exact = rules.iter().find(|(rule, pattern)| {
+            pattern
+                .as_ref()
+                .is_ok_and(|pattern| pattern.exact() && rule.pattern == base)
+        });
+        if let Some((rule, _)) = exact {
+            return Ok(Some(rule));
+        }
+        for (rule, pattern) in &rules {
+            match pattern {
+                Ok(pattern) if !pattern.exact() && pattern.matches(base) => return Ok(Some(rule)),
+                Ok(_) => {}
+                Err(why) => return Err(why.clone()),
+            }
+        }
+        Ok(None)
     }
 
     /// Every check the declarations require of a merge into `base` — every active ruleset
     /// that applies to it, which GitHub layers, and the one classic rule it applies — and
-    /// nothing, completely, where none of them names one.
+    /// nothing, completely, where none of them names one. A pattern this build cannot
+    /// evaluate, where it could decide what applies, leaves the set unknown.
     fn on(&self, base: &str) -> Declared {
         let reference = format!("refs/heads/{base}");
         let applies = |pattern: &str| match pattern {
-            "~ALL" => true,
-            "~DEFAULT_BRANCH" => self.default_branch.as_deref() == Some(base),
-            spelled => glob(spelled, &reference),
+            "~ALL" => Ok(true),
+            "~DEFAULT_BRANCH" => Ok(self.default_branch.as_deref() == Some(base)),
+            spelled => Pattern::parse(spelled).map(|pattern| pattern.matches(&reference)),
+        };
+        let any = |patterns: &[String]| -> std::result::Result<bool, String> {
+            let mut unevaluable = None;
+            for pattern in patterns {
+                match applies(pattern) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    Err(why) => unevaluable = unevaluable.or(Some(why)),
+                }
+            }
+            unevaluable.map_or(Ok(false), Err)
         };
         let mut names = BTreeSet::new();
         for ruleset in &self.rulesets {
-            if ruleset.include.iter().any(|pattern| applies(pattern))
-                && !ruleset.exclude.iter().any(|pattern| applies(pattern))
-            {
-                names.extend(ruleset.checks.iter().cloned());
+            if ruleset.checks.is_empty() {
+                continue;
+            }
+            match (any(&ruleset.include), any(&ruleset.exclude)) {
+                (Ok(false), _) | (_, Ok(true)) => {}
+                (Ok(true), Ok(false)) => names.extend(ruleset.checks.iter().cloned()),
+                (Err(why), _) | (_, Err(why)) => return Declared::Unknown(why),
             }
         }
-        if let Some(classic) = self.classic_on(base) {
-            names.extend(classic.contexts.iter().cloned());
+        match self.classic_on(base) {
+            Ok(Some(classic)) => names.extend(classic.contexts.iter().cloned()),
+            Ok(None) => {}
+            Err(why) => return Declared::Unknown(why),
         }
         if names.is_empty() {
             Declared::Nothing
@@ -603,29 +636,6 @@ fn nodes<'a>(connection: &'a Value, what: &str) -> Result<&'a Vec<Value>> {
                 "GitHub answered the repository's {what} without its nodes"
             ))
         })
-}
-
-/// Whether `name` matches a GitHub branch pattern: `**` any run of characters, `*` any
-/// run not crossing a `/`, `?` one character not a `/`, and anything else itself.
-fn glob(pattern: &str, name: &str) -> bool {
-    fn matches(pattern: &[char], name: &[char]) -> bool {
-        match pattern {
-            [] => name.is_empty(),
-            ['*', '*', rest @ ..] => (0..=name.len()).any(|at| matches(rest, &name[at..])),
-            ['*', rest @ ..] => (0..=name.len())
-                .take_while(|at| *at == 0 || name[at - 1] != '/')
-                .any(|at| matches(rest, &name[at..])),
-            ['?', rest @ ..] => name
-                .split_first()
-                .is_some_and(|(first, tail)| *first != '/' && matches(rest, tail)),
-            [literal, rest @ ..] => name
-                .split_first()
-                .is_some_and(|(first, tail)| first == literal && matches(rest, tail)),
-        }
-    }
-    let pattern: Vec<char> = pattern.chars().collect();
-    let name: Vec<char> = name.chars().collect();
-    matches(&pattern, &name)
 }
 
 /// Every check the head commit's rollup reports, attached to that commit. A head

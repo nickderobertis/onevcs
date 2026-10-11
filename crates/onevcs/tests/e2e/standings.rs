@@ -842,6 +842,95 @@ fn of_two_overlapping_classic_patterns_the_older_is_the_one_applied() {
 }
 
 #[test]
+fn a_classic_pattern_applies_to_exactly_the_bases_githubs_fnmatch_matches() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    // Each rule's pattern, the check it requires, the base it matches and one it does not
+    // — the one beside the other in each pair differing only where the wildcard decides.
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("release-[0-9]", "class", "release-1", "release-x"),
+        ("hot[!a-c]", "negated", "hotd", "hota"),
+        ("x?y", "one", "x1y", "x/y"),
+        ("team/**", "deep", "team/a/b", "teams/a"),
+    ];
+    let rules: Vec<(&str, &[&str])> = cases
+        .iter()
+        .map(|(pattern, check, _, _)| (*pattern, std::slice::from_ref(check)))
+        .collect();
+    world.host_classic_rules(&rules);
+    let mut drafts = Vec::new();
+    for (at, (_, check, matched, unmatched)) in cases.iter().enumerate() {
+        for (side, base) in [("in", matched), ("out", unmatched)] {
+            world.git(
+                &stack.checkout,
+                &["push", "-q", "origin", &format!("main:{base}")],
+            );
+            let head = format!("feature/{at}-{side}");
+            stack.branch(&head, base, &format!("{at}-{side}.txt"));
+            drafts.push((stack.open(&head, base, true), *check, *base, side == "in"));
+        }
+    }
+
+    let numbers: Vec<usize> = drafts.iter().map(|(number, ..)| *number).collect();
+    let read = stack.standings("main", &numbers);
+    for (number, check, base, matched) in drafts {
+        // No run of any check exists, so a base the rule applies to waits on its check
+        // and one it does not apply to requires nothing at all.
+        let expected = if matched {
+            json!({"verdict": "pending", "waiting": [check]})
+        } else {
+            json!({"verdict": "none-required"})
+        };
+        assert_eq!(standing(&read, number)["checks"], expected, "{base}");
+    }
+}
+
+#[test]
+fn a_classic_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none_required() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:dev"]);
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:release-1"]);
+    // `release-[0-9]` is older and evaluable, so it decides `release-1` before the brace
+    // is reached; for `dev` nothing evaluable matches first, so which rule applies there
+    // is not known — and a required check with no run must not read as nothing required.
+    world.host_classic_rules(&[("release-[0-9]", &["class"]), ("{main,dev}", &["braced"])]);
+    stack.branch("feature/on-dev", "dev", "on-dev.txt");
+    stack.branch("feature/on-release", "release-1", "on-release.txt");
+    let on_dev = stack.open("feature/on-dev", "dev", true);
+    let on_release = stack.open("feature/on-release", "release-1", true);
+
+    let read = stack.standings("main", &[on_dev, on_release]);
+    assert_eq!(
+        standing(&read, on_dev)["checks"],
+        json!({"verdict": "pending", "waiting": []}),
+        "a base whose rule cannot be told waits"
+    );
+    assert_eq!(
+        standing(&read, on_release)["checks"],
+        json!({"verdict": "pending", "waiting": ["class"]}),
+        "an older evaluable match is applied whatever a newer rule spells"
+    );
+}
+
+#[test]
+fn a_ruleset_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none_required() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:dev"]);
+    // A ruleset whose ref condition holds a brace may or may not apply to `dev`.
+    world.host_requires_on("odd{name}", &["braced"]);
+    stack.branch("feature/on-dev", "dev", "on-dev.txt");
+    let on_dev = stack.open("feature/on-dev", "dev", true);
+
+    let read = stack.standings("main", &[on_dev]);
+    assert_eq!(
+        standing(&read, on_dev)["checks"],
+        json!({"verdict": "pending", "waiting": []}),
+    );
+}
+
+#[test]
 fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;

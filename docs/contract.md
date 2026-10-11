@@ -5157,7 +5157,14 @@ a later one, has its required set derived from that one read once and remembered
 the call: the required status checks of every active ruleset that applies to it, which
 GitHub layers, and the required contexts of the one classic protection rule GitHub
 applies to it — a rule naming the branch exactly over any pattern, and of those the one
-created first (its `databaseId`), never a union of every matching rule. No alias reads its base's rules, so drafts sharing a base
+created first (its `databaseId`), never a union of every matching rule. Both kinds of
+pattern are read with GitHub's own semantics, `File.fnmatch` with `FNM_PATHNAME`: `*` and
+`?` never cross a `/`, `**/` is zero or more whole segments and any other `**` crosses
+them, and `[...]` / `[!...]` is one character of a class, never a `/`. A pattern that
+cannot be evaluated so — one holding a brace, an escape, or a class that is empty or never
+closes — where it could decide what applies to a base, leaves that base's required set
+unknown, so a required check with no run reads `Pending` and never `NoneRequired`. No
+alias reads its base's rules, so drafts sharing a base
 never read them again, and no second call is made for them. Each change request's rollup
 contexts are its one connection and the declarations add 27 (25 rulesets of 25 rules,
 and the classic rules), so a query of 50 asks for 77 nodes, which GitHub's published

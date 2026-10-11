@@ -670,10 +670,17 @@ impl Model {
     }
 }
 
-/// Whether `name` matches a GitHub branch pattern — `**` across path segments, `*`
-/// within one, `?` one character — written here apart from the crate's own matcher, so
-/// the fake and the reader cannot share a mistake.
+/// Whether `name` matches a GitHub branch pattern — `File.fnmatch` with `FNM_PATHNAME`:
+/// `**/` zero or more whole segments, any other `**` across them, `*` within one, `?` one
+/// character and `[...]` (or `[!...]`) one of a class, neither ever a `/` — written here
+/// apart from the crate's own matcher, so the fake and the reader cannot share a mistake.
 fn shell_match(pattern: &str, name: &str) -> bool {
+    if let Some(rest) = pattern.strip_prefix("**/") {
+        return shell_match(rest, name)
+            || name
+                .match_indices('/')
+                .any(|(at, _)| shell_match(rest, &name[at + 1..]));
+    }
     if let Some(rest) = pattern.strip_prefix("**") {
         return name
             .char_indices()
@@ -689,13 +696,37 @@ fn shell_match(pattern: &str, name: &str) -> bool {
             .chain([segment])
             .any(|at| shell_match(rest, &name[at..]));
     }
-    let (Some(want), Some(have)) = (pattern.chars().next(), name.chars().next()) else {
-        return pattern.is_empty() && name.is_empty();
+    let Some(have) = name.chars().next() else {
+        return pattern.is_empty();
     };
-    let fits = if want == '?' {
-        have != '/'
+    let (fits, rest) = if let Some(class) = pattern.strip_prefix('[') {
+        let (negated, class) = match class.strip_prefix(['!', '^']) {
+            Some(class) => (true, class),
+            None => (false, class),
+        };
+        let Some((members, rest)) = class.split_once(']') else {
+            return false;
+        };
+        let members: Vec<char> = members.chars().collect();
+        let mut hit = false;
+        let mut at = 0;
+        while at < members.len() {
+            if members.get(at + 1) == Some(&'-') && at + 2 < members.len() {
+                hit |= (members[at]..=members[at + 2]).contains(&have);
+                at += 3;
+            } else {
+                hit |= members[at] == have;
+                at += 1;
+            }
+        }
+        (have != '/' && hit != negated, rest)
+    } else if let Some(rest) = pattern.strip_prefix('?') {
+        (have != '/', rest)
     } else {
-        want == have
+        let Some(want) = pattern.chars().next() else {
+            return false;
+        };
+        (want == have, &pattern[want.len_utf8()..])
     };
-    fits && shell_match(&pattern[want.len_utf8()..], &name[have.len_utf8()..])
+    fits && shell_match(rest, &name[have.len_utf8()..])
 }
