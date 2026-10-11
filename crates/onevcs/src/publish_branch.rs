@@ -76,7 +76,7 @@ pub fn run(
         });
     }
 
-    landing.sync_change_base(stream)?;
+    landing.sync_change_base(stream, hosting)?;
     landing.publish(title, body, term_scope, hosting, stream)
 }
 
@@ -278,6 +278,8 @@ impl Resumed {
             body,
             draft: None,
             drafts: self.resolved.drafts.clone(),
+            base_merge: self.resolved.base_merge.value,
+            checks_wait: self.resolved.checks_wait.clone(),
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,

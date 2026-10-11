@@ -39,6 +39,7 @@ use crate::error::{self, Error, Result};
 use crate::event::EventKind;
 use crate::registry::Registry;
 use crate::remainder::Remainder;
+use crate::rules::BaseMerge as RulesBaseMerge;
 use crate::session::{
     Lifecycle, Liveness, OpenConflict, Session, SessionHolder, SessionRequest, SessionToken,
 };
@@ -1211,7 +1212,8 @@ pub(crate) fn open_with(
     // cut. Never for a generated name: that one is this token's own. Declining only
     // falls through to the ordinary open below, which continues the branch instead.
     if let Some((held, lease)) = resumable(&resolution, pinned.as_ref(), &base, &execution)? {
-        let (record, stream, conflict) = resume(&held, lease, &execution, request)?;
+        let (record, stream, conflict) =
+            resume(registry, &resolution, &held, lease, &execution, request)?;
         return Ok(Opening {
             record,
             stream,
@@ -1331,6 +1333,7 @@ pub(crate) fn open_with(
     let Placing {
         stack_tip,
         conflict,
+        base_merge: base_decision,
     } = match cut_or_continue(&Cut {
         clone: &clone,
         worktree: &worktree,
@@ -1342,6 +1345,8 @@ pub(crate) fn open_with(
         placed,
         on_conflict: OnMerge::asked_by(request),
         base_merge,
+        resolution: &resolution,
+        registry,
     }) {
         Ok(placing) => placing,
         Err(error) => {
@@ -1415,10 +1420,13 @@ pub(crate) fn open_with(
     if let Some(conflict) = &conflict {
         say_conflict(&record, conflict);
     }
-    stream.emit(
-        EventKind::SessionOpened,
-        opened(&record, reuse, created, applied, conflict.as_ref()),
-    );
+    let mut payload = opened(&record, reuse, created, applied, conflict.as_ref());
+    // Written only for a continuation whose base this open decided about, so a session
+    // cut fresh writes the payload it always wrote.
+    if let Some(decision) = &base_decision {
+        payload.insert("base_merge".to_owned(), Value::Object(decision.payload()));
+    }
+    stream.emit(EventKind::SessionOpened, payload);
     drop(lease);
     Ok(Opening {
         record,
@@ -1733,6 +1741,8 @@ fn resumable(
 /// that preserved an interrupted worktree would be a second shape of marker for a
 /// recovery to read.
 fn resume(
+    registry: &Registry,
+    resolution: &Resolution,
     held: &Record,
     lease: lock::Guard,
     execution: &Path,
@@ -1774,14 +1784,91 @@ fn resume(
     // names included.
     let carried = git::carry_remote_refs(execution, &record.clone, &record.base)?;
     note_base(&carried, &record.base, &record.worktree, execution);
+    // A session handed back over the merge it opened with has decided already; the
+    // conflict it carries is what its opening says.
+    let (conflict, base_decision) = match conflict {
+        Some(conflict) => (Some(conflict), None),
+        None => {
+            let (conflict, decision) = merge_resumed_base(registry, resolution, &record, request)?;
+            (conflict, Some(decision))
+        }
+    };
     if let Some(conflict) = &conflict {
         say_conflict(&record, conflict);
     }
-    stream.emit(
-        EventKind::SessionOpened,
-        opened(&record, Reuse::Resumed, false, None, conflict.as_ref()),
-    );
+    let mut payload = opened(&record, Reuse::Resumed, false, None, conflict.as_ref());
+    if let Some(decision) = &base_decision {
+        payload.insert("base_merge".to_owned(), Value::Object(decision.payload()));
+    }
+    stream.emit(EventKind::SessionOpened, payload);
     Ok((record, stream, conflict))
+}
+
+/// Bring a resumed session's moved base into its branch by the identity's
+/// `base_merge`, and answer what was decided so its `session-opened` says so.
+///
+/// Under `on-conflict` a resumption is decided exactly as a continued branch is: the
+/// base is merged — left in progress for the session, or refused for a request that
+/// refuses conflicts — on a conflict or where the host requires an up-to-date branch,
+/// and otherwise the branch stays at its tip. Under `always` a resumption is what it
+/// always was: nothing is merged at open, and the moved base is merged by the
+/// publication's sync, which is what the decision records as `deferred`.
+///
+/// A stacked branch is deferred under either setting, and so is one whose base the
+/// clone cannot name: whether its change below landed — and so whether it is replayed
+/// rather than merged — is the publication's to decide, as it always was.
+fn merge_resumed_base(
+    registry: &Registry,
+    resolution: &Resolution,
+    record: &Record,
+    request: &SessionRequest,
+) -> Result<(Option<OpenConflict>, crate::base_merge::Decision)> {
+    let integrated = integrated_base(&record.clone, &record.base);
+    if record.stack_tip.is_some() || git::tip(&record.clone, &integrated).is_none() {
+        return Ok((
+            None,
+            crate::base_merge::Decision::defer(format!(
+                "{} is a stacked base or one this session's clone does not name, so the \
+                 publication's sync decides whether the branch is merged or replayed",
+                record.base
+            )),
+        ));
+    }
+    let setting = base_merge_for(registry, resolution)?;
+    let decision = decide_base_merge(
+        setting,
+        resolution,
+        &record.worktree,
+        &integrated,
+        &record.base,
+        &record.branch,
+    )?;
+    // `decide` answers `merged` under `always` only for a base that moved; one the
+    // branch already carries is a `skipped` that says so under either setting.
+    if setting == RulesBaseMerge::Always && decision.merges() {
+        return Ok((
+            None,
+            crate::base_merge::Decision::defer(format!(
+                "base_merge is always and a resumed session is not merged at open, so \
+                 {integrated} is merged by the publication's sync"
+            )),
+        ));
+    }
+    let conflict = match decision.merges() {
+        true => integrate(
+            &record.worktree,
+            &integrated,
+            &record.branch,
+            &Carried {
+                checkout: Some(record.worktree.clone()),
+                tip: git::head_sha(&record.worktree)?,
+            },
+            &record.publication_checkout,
+            OnMerge::asked_by(request),
+        )?,
+        false => None,
+    };
+    Ok((conflict, decision))
 }
 
 /// The commit one copy of a continued branch stands at, and where that copy is.
@@ -1995,6 +2082,11 @@ struct Cut<'a> {
     on_conflict: OnMerge,
     /// Whether a continuation is merged with its base at all.
     base_merge: BaseMerge,
+    /// The identity, whose rules decide when a moved base is merged and whose host is
+    /// asked whether it requires an up-to-date branch.
+    resolution: &'a Resolution,
+    /// The rules this host's state root points at, read only for a continuation.
+    registry: &'a Registry,
 }
 
 /// What putting a branch in a session's worktree answers: the stack its record has
@@ -2009,6 +2101,9 @@ struct Placing {
     /// The conflicted merge left in progress, for a continuation whose base
     /// conflicts with it.
     conflict: Option<OpenConflict>,
+    /// What was decided about merging the base into a continuation, and why — `None`
+    /// for a branch cut fresh, or one whose caller writes that merge itself.
+    base_merge: Option<crate::base_merge::Decision>,
 }
 
 /// Put the session's branch in its worktree, and answer the stack its record has to
@@ -2032,6 +2127,8 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         placed,
         on_conflict,
         base_merge,
+        resolution,
+        registry,
     } = *cut;
     let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
@@ -2049,6 +2146,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         return Ok(Placing {
             stack_tip,
             conflict: None,
+            base_merge: None,
         });
     };
 
@@ -2074,8 +2172,19 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
     // argument this session was opened with. A session opened against a base nothing
     // has would publish against nothing, so git's own refusal of the name is
     // the answer.
-    let conflict = match base_merge {
-        BaseMerge::Merge => integrate(
+    let decision = match base_merge {
+        BaseMerge::Merge => Some(decide_base_merge(
+            base_merge_for(registry, resolution)?,
+            resolution,
+            worktree,
+            &integrated,
+            base,
+            branch,
+        )?),
+        BaseMerge::Leave => None,
+    };
+    let conflict = match &decision {
+        Some(decision) if decision.merges() => integrate(
             worktree,
             &integrated,
             branch,
@@ -2083,12 +2192,49 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
             publication,
             on_conflict,
         )?,
-        BaseMerge::Leave => None,
+        _ => None,
     };
     Ok(Placing {
         stack_tip,
         conflict,
+        base_merge: decision,
     })
+}
+
+/// Whether a continued branch is merged with its moved base as it opens, by the
+/// identity's `base_merge` — the same decision a publication's sync makes, through the
+/// same function, so a session and its publication cannot come to disagree about it.
+///
+/// The host is the real one: a session is opened through the repository side alone,
+/// and the only thing asked of the host is whether it requires an up-to-date branch —
+/// a refusal of which merges, as every open before the setting did.
+fn decide_base_merge(
+    setting: RulesBaseMerge,
+    resolution: &Resolution,
+    worktree: &Path,
+    integrated: &str,
+    base: &Ref,
+    branch: &Ref,
+) -> Result<crate::base_merge::Decision> {
+    crate::base_merge::decide(
+        setting,
+        &crate::base_merge::Merging {
+            repo: worktree,
+            integrated,
+            base,
+            branch,
+            identity: &resolution.key,
+            hosting: crate::Providers::real().hosting,
+        },
+    )
+}
+
+/// The identity's resolved `base_merge`.
+fn base_merge_for(registry: &Registry, resolution: &Resolution) -> Result<RulesBaseMerge> {
+    let (file, source) = crate::policy::load(registry)?;
+    Ok(crate::policy::resolve_for(&file, &source, resolution)
+        .base_merge
+        .value)
 }
 
 /// Merge the integration target into the branch this session continues.

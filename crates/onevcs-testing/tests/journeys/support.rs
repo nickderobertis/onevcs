@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
-    BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource, CommentId,
-    CommentKind, DraftReason, FailureKind, HeldBy, Holding, Identity, Landed, LineChange,
-    MergeOutcome, MergePolicy, NetNegative, OnOrigin, OpenConflict, PreservedBranch,
+    ArmedMerge, BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource,
+    CommentId, CommentKind, DraftReason, FailureKind, HeldBy, Holding, Identity, Landed,
+    LineChange, MergeOutcome, MergePolicy, NetNegative, OnOrigin, OpenConflict, PreservedBranch,
     ProtectionSource, Provenance, Publication, PublishOutcome, ReadCost, Recoverable,
     RequiredChecks, Retirement, RetirementClass, Session, SessionToken, Sha, SupersededBy,
     TargetName, Url,
@@ -150,6 +150,7 @@ pub fn full_vcs_state() -> VcsState {
                     kind: FailureKind::PushRejected,
                     reason: "push rejected: the hook found a secret in the diff".to_owned(),
                     retained: None,
+                    armed: None,
                 },
             },
             Publication {
@@ -162,6 +163,7 @@ pub fn full_vcs_state() -> VcsState {
                              https://cli.github.com"
                         .to_owned(),
                     retained: None,
+                    armed: None,
                 },
             },
             // The kind version 16 added: a publication its caller cancelled while it
@@ -176,6 +178,28 @@ pub fn full_vcs_state() -> VcsState {
                              it watched https://github.com/acme-corp/widgets/pull/1"
                         .to_owned(),
                     retained: None,
+                    armed: None,
+                },
+            },
+            // The field version 22 added: a publication whose watch elapsed and left the
+            // host's merge armed.
+            Publication {
+                session: token.clone(),
+                branch: "feature/seeded".to_owned(),
+                policy: MergePolicy::ChangeAuto,
+                outcome: PublishOutcome::Failed {
+                    kind: FailureKind::ChecksUnsettled,
+                    reason: "checks unsettled: the host had not settled its required checks on \
+                             https://github.com/acme-corp/widgets/pull/1. Its merge is armed: \
+                             the host lands https://github.com/acme-corp/widgets/pull/1 once its \
+                             required checks pass, and publishing the session again watches it"
+                        .to_owned(),
+                    retained: None,
+                    armed: Some(ArmedMerge {
+                        change: Url::parse("https://github.com/acme-corp/widgets/pull/1")
+                            .expect("a URL"),
+                        head: "abc123".to_owned(),
+                    }),
                 },
             },
         ],
@@ -501,6 +525,11 @@ pub fn full_host_state() -> HostState {
                 },
             },
         ],
+        // The fields version 22 added: a host requiring an up-to-date branch, a
+        // repository that does not allow auto-merge, and a change whose merge is armed.
+        up_to_date_required: true,
+        allow_auto_merge: false,
+        armed: BTreeSet::from([ChangeId("1".to_owned())]),
     }
 }
 

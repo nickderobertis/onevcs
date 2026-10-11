@@ -51,6 +51,7 @@
 use std::path::Path;
 
 mod app;
+mod base_merge;
 pub mod boundary;
 mod branch;
 pub mod branches;
@@ -158,8 +159,8 @@ pub use pool::{
 pub use preserve::{Preservation, PreserveRequest, Preserved};
 pub use providers::Providers;
 pub use publish::{
-    DraftReason, FailureKind, Publication, PublicationCancellation, PublishOutcome, PublishRequest,
-    Retention, Subject, HOST_PREREQUISITE_MARKER,
+    ArmedMerge, DraftReason, FailureKind, Publication, PublicationCancellation, PublishOutcome,
+    PublishRequest, Retention, Subject, HOST_PREREQUISITE_MARKER,
 };
 pub use registry::Identity;
 pub use releases::{

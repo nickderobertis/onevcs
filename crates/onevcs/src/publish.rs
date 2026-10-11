@@ -416,7 +416,37 @@ pub enum PublishOutcome {
         /// whether it outlived the session is the first thing a caller asks.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retained: Option<Retention>,
+        /// The host's own merge, left armed on the change request, where the wait for
+        /// its checks elapsed with none of them red: set only with
+        /// [`FailureKind::ChecksUnsettled`], and then the change lands on the host's
+        /// clock once its required checks pass, with nobody publishing it again.
+        // llmlint: ignore[invalid_states_unrepresentable] `docs/contract.md` fixes this
+        // field verbatim as an optional `armed` on `Failed`, beside `retained`, and
+        // onepipeline compiles against that shape — splitting the case would change the
+        // agreed surface. The one place that sets it, the elapsed wait's arming, sets
+        // it with `ChecksUnsettled`; every other path passes it through unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        armed: Option<ArmedMerge>,
     },
+}
+
+/// A change request whose merge a publication left armed when its wait for the checks
+/// elapsed: the host merges it once every required check passes, and refuses to while
+/// any is red.
+///
+/// What a caller routing a `checks-unsettled` reads to tell work that will land by
+/// itself from work nothing is carrying any further. A later publication of the same
+/// session at the same head watches the same change request again rather than opening
+/// a second one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArmedMerge {
+    /// The change request armed to merge.
+    pub change: Url,
+    /// The head commit it was armed at.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract fixes this field as
+    // `pub head: String`; every value written here is the commit the publication pushed,
+    // which git's own parser produced.
+    pub head: String,
 }
 
 impl PublishOutcome {
@@ -718,6 +748,8 @@ pub fn run_for_session(
         body: request.body.clone(),
         draft: request.draft.clone(),
         drafts: resolved.drafts.clone(),
+        base_merge: resolved.base_merge.value,
+        checks_wait: resolved.checks_wait.clone(),
         trailers: Vec::new(),
         provenance: provenance::from_rules(&file),
         hosting,
@@ -727,7 +759,35 @@ pub fn run_for_session(
         adopt,
     };
     let branch = record.branch.to_string();
+    // The branch is the only record of the work, so it is handed back to the execution
+    // checkout whatever ended the publication without landing it — the alternative is
+    // a tree that exists only in a run root about to be reclaimed.
+    let failed = |kind: FailureKind, reason: String, armed: Option<ArmedMerge>| {
+        let checkout = record.execution_checkout.clone();
+        let retained = match git::copy_branch(&record.clone, &checkout, &record.branch) {
+            Ok(true) => Retention::HandedBack(checkout),
+            _ => Retention::Refused(checkout),
+        };
+        PublishOutcome::Failed {
+            kind,
+            reason,
+            retained: Some(retained),
+            armed,
+        }
+    };
     let outcome = match run_resolving(&context, &mut stream) {
+        // An ending the publication reached as a value rather than a refusal — a wait
+        // that elapsed with the merge left armed — is still one that did not land, so
+        // the session stays open for the publication that watches it again.
+        Ok((
+            PublishOutcome::Failed {
+                kind,
+                reason,
+                armed,
+                ..
+            },
+            _,
+        )) => failed(kind, reason, armed),
         Ok((outcome, landed)) => {
             // A stacked change the root carried was replayed onto the root, and the
             // record learns that: every later read and publication of this session
@@ -766,21 +826,7 @@ pub fn run_for_session(
             }
             outcome
         }
-        Err(error) => {
-            // The branch is the only record of the work, so it is handed back to the
-            // execution checkout whatever refused it — the alternative is a rejected
-            // tree that exists only in a run root about to be reclaimed.
-            let checkout = record.execution_checkout.clone();
-            let retained = match git::copy_branch(&record.clone, &checkout, &record.branch) {
-                Ok(true) => Retention::HandedBack(checkout),
-                _ => Retention::Refused(checkout),
-            };
-            PublishOutcome::Failed {
-                kind: FailureKind::of(&error),
-                reason: error.to_string(),
-                retained: Some(retained),
-            }
-        }
+        Err(error) => failed(FailureKind::of(&error), error.to_string(), None),
     };
     Ok(Publication {
         session: token.clone(),
@@ -837,6 +883,12 @@ pub struct Context<'a> {
     /// publication opens a draft while its checks run, and whether an early lift
     /// warns.
     pub drafts: policy::DraftLifecycle,
+    /// When a moved base is merged into this branch before it is pushed: always, or
+    /// only where it conflicts or the host requires an up-to-date branch.
+    pub base_merge: crate::rules::BaseMerge,
+    /// How long the watch of the change request's checks lasts, as the identity's
+    /// rules resolve it — before the process-wide override, which the watch asks.
+    pub checks_wait: policy::Decided<crate::rules::WaitSeconds>,
     /// Trailers the publication commit must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which
@@ -1094,6 +1146,8 @@ impl<'a> Context<'a> {
             body: self.body.clone(),
             draft: self.draft.clone(),
             drafts: self.drafts.clone(),
+            base_merge: self.base_merge,
+            checks_wait: self.checks_wait.clone(),
             trailers: self.trailers.clone(),
             provenance: self.provenance.clone(),
             hosting: self.hosting,
@@ -1564,6 +1618,26 @@ fn sync(
     {
         return Ok(());
     }
+    // A stacked branch whose change below landed is replayed whatever the identity
+    // says about merging its base: what moves it is the root now carrying the change
+    // below, and merging instead would replay that change against itself.
+    if replay_from.is_none() {
+        let decision = crate::base_merge::decide(
+            context.base_merge,
+            &crate::base_merge::Merging {
+                repo: &context.worktree,
+                integrated: compared,
+                base: context.target.base(),
+                branch: &context.branch,
+                identity: &context.resolution.key,
+                hosting: context.hosting,
+            },
+        )?;
+        crate::base_merge::record(stream, &context.branch, context.target.base(), &decision);
+        if !decision.merges() {
+            return Ok(());
+        }
+    }
     let mut last: Option<(Reconciliation, git::Conflict)> = None;
     for attempt in 1..=SYNC_ATTEMPTS {
         match reconcile(&context.worktree, compared, &context.branch, replay_from)? {
@@ -2009,7 +2083,7 @@ fn publish_as_change(
     }
     // Every change policy watches its checks now, `change-open` included, so every one
     // is held to the knobs that bound the watch — before anything is pushed.
-    gh::checks_timeout()?;
+    context.checks_wait.effective()?;
     gh::checks_poll()?;
     crate::host::check_source_names_a_source()?;
     if !context.drafts.disabled {
@@ -2290,7 +2364,7 @@ pub(crate) fn resume(
     pushed: &Sha,
     stream: &mut Stream,
 ) -> Result<PublishOutcome> {
-    gh::checks_timeout()?;
+    context.checks_wait.effective()?;
     gh::checks_poll()?;
     crate::host::check_source_names_a_source()?;
     if !context.drafts.disabled {
@@ -2396,6 +2470,7 @@ fn land_opened_change(
         pushed,
         context.drafts.warn_on_early_lift,
         context.cancellation,
+        context.checks_wait.effective()?.value.get(),
     )?;
     let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
     if context.effective == MergePolicy::ChangeOpen {
@@ -2436,37 +2511,62 @@ fn land_opened_change(
     );
 
     let outcome = (|| -> Result<PublishOutcome> {
-        // What is watched, and until when, follows the **merge policy** and nothing
-        // else — least of all anything a repository *calls* its verification. A
-        // change-direct publication asks for the merge itself, so it waits for the
-        // checks the host says block one first; a draft waits for its checks under
-        // either policy, because it is lifted on their verdict and a host will
-        // neither merge a draft nor arm its own merge on one.
-        if (drafted || context.effective == MergePolicy::ChangeDirect)
-            && settle(&mut watcher, stream, drafted)?
-        {
-            lift_draft(host, change, stream)?;
-        }
-        stream.emit(
-            EventKind::MergeQueued,
-            object(json!({
-                "identity": identity,
-                "queue_position": turn.position,
-                "url": change.url.to_string(),
-            })),
-        );
-        let sha = if context.effective == MergePolicy::ChangeAuto {
-            // Arming happens inside the watch, and after its first reading of the
-            // checks: a host that will not say what its checks are is refused with
-            // nothing armed against it, and one loop rather than a read followed by a
-            // watch reports each transition exactly once.
-            watch_the_merge(&mut watcher, stream)?
-        } else {
-            match host.merge(change, context.effective)? {
-                MergeOutcome::Merged(sha) => sha,
-                MergeOutcome::Queued => return Ok(PublishOutcome::Queued(change.url.clone())),
-                MergeOutcome::Open => return Ok(PublishOutcome::ChangeOpen(change.url.clone())),
+        let watched = (|| -> Result<WatchEnded> {
+            // What is watched, and until when, follows the **merge policy** and nothing
+            // else — least of all anything a repository *calls* its verification. A
+            // change-direct publication asks for the merge itself, so it waits for the
+            // checks the host says block one first; a draft waits for its checks under
+            // either policy, because it is lifted on their verdict and a host will
+            // neither merge a draft nor arm its own merge on one.
+            if (drafted || context.effective == MergePolicy::ChangeDirect)
+                && settle(&mut watcher, stream, drafted)?
+            {
+                lift_draft(host, change, stream)?;
             }
+            stream.emit(
+                EventKind::MergeQueued,
+                object(json!({
+                    "identity": identity,
+                    "queue_position": turn.position,
+                    "url": change.url.to_string(),
+                })),
+            );
+            Ok(if context.effective == MergePolicy::ChangeAuto {
+                // Arming happens inside the watch, and after its first reading of the
+                // checks: a host that will not say what its checks are is refused with
+                // nothing armed against it, and one loop rather than a read followed by
+                // a watch reports each transition exactly once.
+                WatchEnded::Landed(watch_the_merge(&mut watcher, stream)?)
+            } else {
+                match merge_or_find_merged(host, change, context.effective)? {
+                    MergeOutcome::Merged(sha) => WatchEnded::Landed(sha),
+                    MergeOutcome::Queued => {
+                        WatchEnded::Ended(PublishOutcome::Queued(change.url.clone()))
+                    }
+                    MergeOutcome::Open => {
+                        WatchEnded::Ended(PublishOutcome::ChangeOpen(change.url.clone()))
+                    }
+                }
+            })
+        })();
+        let sha = match watched {
+            Ok(WatchEnded::Landed(sha)) => sha,
+            Ok(WatchEnded::Ended(outcome)) => return Ok(outcome),
+            // The wait elapsed with no required check red: the change is left armed to
+            // merge itself where the host allows it, rather than stranded as a draft
+            // nothing will lift.
+            Err(Error::ChecksUnsettled { reason }) if watcher.elapsed => {
+                let elapsed = Elapsed {
+                    reason,
+                    already_armed: watcher.armed,
+                    skipped: &watcher.skipped_at_elapse,
+                };
+                match arm_on_elapse(host, change, pushed, stream, elapsed)? {
+                    WatchEnded::Landed(sha) => sha,
+                    WatchEnded::Ended(outcome) => return Ok(outcome),
+                }
+            }
+            Err(other) => return Err(other),
         };
         // When the base received it: the host's own merge time, and nothing where the
         // host cannot say. Never the moment this watch saw the merge, which is only
@@ -2486,6 +2586,145 @@ fn land_opened_change(
     })();
     drop(turn);
     outcome
+}
+
+/// Ask the host to merge the change, and where it refuses, whether it already has.
+///
+/// A change an earlier publication left armed is merged by the host on its own clock,
+/// and that can happen between this publication's checks settling and its asking for
+/// the merge — which the host then refuses, since there is nothing left to merge. So a
+/// refusal is answered by the host's own record of the merge where it has one, and is
+/// the refusal it was otherwise.
+fn merge_or_find_merged(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    policy: MergePolicy,
+) -> Result<MergeOutcome> {
+    match host.merge(change, policy) {
+        Ok(outcome) => Ok(outcome),
+        Err(refused) => match host.merged_at(change) {
+            Ok(Some(sha)) => Ok(MergeOutcome::Merged(sha)),
+            _ => Err(refused),
+        },
+    }
+}
+
+/// What a watch whose bound elapsed leaves for [`arm_on_elapse`] to decide on.
+struct Elapsed<'w> {
+    /// The `checks-unsettled` reason the bound's ending carries.
+    reason: String,
+    /// Whether the watch already armed the host's merge — `change-auto`'s merge watch.
+    already_armed: bool,
+    /// The required checks that had concluded skipped when the bound elapsed.
+    skipped: &'w [String],
+}
+
+/// Where a `change-auto` or `change-direct` watch ended: the host merged the change at
+/// a commit, or the publication ends here without a landing.
+enum WatchEnded {
+    /// The base received the change, at this commit.
+    Landed(Sha),
+    /// The publication ends with this outcome, and nothing landed.
+    Ended(PublishOutcome),
+}
+
+/// What a `change-auto` or `change-direct` publication does when its wait for the
+/// checks elapses with none of the required ones red: leave the change armed to merge
+/// itself once they pass, where the host allows that.
+///
+/// Whether the repository allows auto-merge is asked **before anything is changed**,
+/// so a host that does not allow it — or will not say — is left exactly as the
+/// elapsed wait left it, a draft still a draft, and the refusal names why. One that
+/// does has the draft awaiting its checks lifted (only that draft: a held or
+/// release-awaiting one never reaches a watch) and then its merge armed, in that
+/// order, since a host arms nothing on a draft. A merge `watch_the_merge` already
+/// armed is not asked for again.
+///
+/// The publication ends as the `checks-unsettled` it always did, carrying the
+/// [`ArmedMerge`] and saying the merge is armed, and `merge-armed` is recorded. A host
+/// that merges at the moment it is armed — its checks passed in between — lands it
+/// here, and the publication ends as any landing does.
+///
+/// A change any of whose required checks had concluded **skipped** when the wait
+/// elapsed is never lifted or armed: the host's auto-merge reads a skipped required
+/// check as satisfied, and a repository whose workflow does not run again on the lift
+/// would then merge with that check never run. It is left as it was, and the refusal
+/// names each skipped check.
+fn arm_on_elapse(
+    host: &dyn RemoteHost,
+    change: &ChangeRequest,
+    pushed: &Sha,
+    stream: &mut Stream,
+    elapsed: Elapsed<'_>,
+) -> Result<WatchEnded> {
+    let Elapsed {
+        reason,
+        already_armed,
+        skipped,
+    } = elapsed;
+    if !skipped.is_empty() {
+        return Err(Error::ChecksUnsettled {
+            reason: format!(
+                "{reason}. Required check {skipped} concluded skipped, which the host's \
+                 auto-merge would read as passed, so {url} is {left} — this publication lifted \
+                 nothing and armed no merge for it",
+                skipped = guidance::listed(skipped),
+                url = change.url,
+                left = if already_armed {
+                    "left with the merge its watch had already armed"
+                } else {
+                    "left as it was"
+                },
+            ),
+        });
+    }
+    if !already_armed {
+        match host.allows_auto_merge() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Error::ChecksUnsettled {
+                    reason: format!(
+                        "{reason}. The repository does not allow auto-merge, so {url} is left as \
+                         it was — nothing lifted it or armed its merge; allow auto-merge on the \
+                         repository, or publish the session again once its checks have passed",
+                        url = change.url,
+                    ),
+                })
+            }
+            Err(unread) => {
+                return Err(Error::ChecksUnsettled {
+                    reason: format!(
+                        "{reason}. Whether the repository allows auto-merge could not be read \
+                         ({unread}), so {url} is left as it was — nothing lifted it or armed its \
+                         merge; publish the session again once its checks have passed",
+                        url = change.url,
+                    ),
+                })
+            }
+        }
+        lift_any_draft(host, change, stream)?;
+        if let MergeOutcome::Merged(sha) = host.merge(change, MergePolicy::ChangeAuto)? {
+            return Ok(WatchEnded::Landed(sha));
+        }
+    }
+    stream.emit(
+        EventKind::MergeArmed,
+        object(json!({"url": change.url.to_string(), "head": pushed.0})),
+    );
+    Ok(WatchEnded::Ended(PublishOutcome::Failed {
+        kind: FailureKind::ChecksUnsettled,
+        reason: format!(
+            "{}. Its merge is armed: the host lands {url} once its required checks pass, and \
+             publishing the session again watches it",
+            Error::ChecksUnsettled { reason },
+            url = change.url,
+        ),
+        retained: None,
+        armed: Some(ArmedMerge {
+            change: change.url.clone(),
+            head: pushed.0.clone(),
+        }),
+    }))
 }
 
 /// Whether the change a reasonless publication holds is a draft awaiting its checks,
@@ -3137,6 +3376,15 @@ struct Watcher<'a> {
     /// What the host declares a merge into the base requires — asked once per watch,
     /// by [`Watcher::declared`].
     declaration: Option<Declared>,
+    /// Whether the watch ended because its bound elapsed, which is the one
+    /// `checks-unsettled` a publication answers by arming the host's merge.
+    elapsed: bool,
+    /// Whether the host's own merge has been armed on the change by this watch.
+    armed: bool,
+    /// The required checks that had concluded skipped when the bound elapsed. The
+    /// host's auto-merge reads a skipped required check as satisfied, so a watch that
+    /// elapsed over any is never armed.
+    skipped_at_elapse: Vec<String>,
 }
 
 impl<'a> Watcher<'a> {
@@ -3146,6 +3394,7 @@ impl<'a> Watcher<'a> {
         pushed: &'a Sha,
         warn_on_early_lift: bool,
         cancellation: &'a dyn PublicationCancellation,
+        bound_seconds: f64,
     ) -> Result<Self> {
         Ok(Self {
             warn_on_early_lift,
@@ -3153,7 +3402,7 @@ impl<'a> Watcher<'a> {
             change,
             pushed,
             cancellation,
-            bound: std::time::Duration::from_secs_f64(gh::checks_timeout()?),
+            bound: std::time::Duration::from_secs_f64(bound_seconds),
             poll: std::time::Duration::from_secs_f64(gh::checks_poll()?),
             started: std::time::Instant::now(),
             began: Moment::now(),
@@ -3162,6 +3411,9 @@ impl<'a> Watcher<'a> {
             logs: Vec::new(),
             settled: false,
             declaration: None,
+            elapsed: false,
+            armed: false,
+            skipped_at_elapse: Vec::new(),
         })
     }
 
@@ -3317,6 +3569,8 @@ impl<'a> Watcher<'a> {
         declared: &Declared,
         awaited: &str,
     ) -> Error {
+        self.elapsed = true;
+        self.skipped_at_elapse = skipped_in(standing);
         self.record_gate(stream, gate_run::Ruling::NoVerdict, standing);
         unsettled(
             self.change,
@@ -3709,7 +3963,6 @@ fn settle_after_early_lift(
 /// never read as a conflict.
 fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
     let declared = watcher.declared();
-    let mut armed = false;
     loop {
         let reading = watcher.read(stream)?;
         let declared = declared.given(&reading);
@@ -3723,11 +3976,11 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
                 watcher.record_settled(stream, &standing, declared.unread());
             }
         }
-        if !armed {
+        if !watcher.armed {
             watcher
                 .host
                 .merge(watcher.change, MergePolicy::ChangeAuto)?;
-            armed = true;
+            watcher.armed = true;
         }
         if let Some(sha) = watcher.host.merged_at(watcher.change)? {
             return Ok(sha);

@@ -127,7 +127,20 @@ fn a_declared_gate_with_no_run_holds_a_ready_change_and_is_named_as_having_none(
         );
         assert!(!reason.contains("every required check"), "{reason}");
         assert!(settled.is_empty(), "nothing passed: {settled:?}");
-        assert!(gated.state().merges.is_empty(), "nothing merged");
+        // The bound elapsed with nothing red, so the merge is armed — and the host
+        // holds it rather than landing it while the gate has not passed.
+        assert!(
+            !gated
+                .state()
+                .merges
+                .values()
+                .any(|merge| matches!(merge, onevcs::MergeOutcome::Merged(_))),
+            "nothing merged"
+        );
+        assert!(
+            matches!(&outcome, PublishOutcome::Failed { armed: Some(_), .. }),
+            "{outcome:?}"
+        );
     }
 
     // Once the gate reports success, the change is passed over every declared context.

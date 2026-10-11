@@ -21,6 +21,18 @@
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod accounting;
+// Unix only: publications through the same substituted `gh` as `host.rs`, which holds
+// an armed change and lands it once its checks pass; one journey drives the library in
+// process. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod armed;
+// Unix only: continuations and publications through the same substituted `gh` as
+// `host.rs`, whose branch protection decides whether a moved base is merged. Its own
+// header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod base_merge;
 // Unix only: `change` opens drafts through the same substituted `gh` as `host.rs`
 // and cuts real sessions. Its own header carries the reason in full.
 #[cfg(unix)]

@@ -532,6 +532,36 @@ impl World {
         .expect("a classic branch protection");
     }
 
+    /// Make one of the substituted host's protection sources — `"rulesets"` or
+    /// `"classic"` — require a branch to be up to date with its base before it merges,
+    /// which is GitHub's `strict`. Unset, no source requires it; any other source is
+    /// one the stand-in cannot answer, and is refused here.
+    pub fn host_requires_up_to_date(&self, source: &str) {
+        assert!(
+            matches!(source, "rulesets" | "classic"),
+            "a protection source is `rulesets` or `classic`, not {source:?}"
+        );
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/up-to-date"), source)
+            .expect("a protection source requiring an up-to-date branch");
+    }
+
+    /// Make the substituted repository disallow auto-merge: `gh repo view` says so,
+    /// and arming a change to merge itself is refused, as GitHub refuses it.
+    pub fn disallow_auto_merge(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/auto-merge-unavailable"), "")
+            .expect("a repository that does not allow auto-merge");
+    }
+
+    /// Make the substituted host refuse to say whether the repository allows
+    /// auto-merge, as a credential GitHub will not show the repository to is refused.
+    pub fn refuse_repository_reads(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/refuse-repo-view"), "")
+            .expect("a host that will not describe the repository");
+    }
+
     /// What the substituted host reports once it has been asked for its check
     /// rollup `after` times, so a journey can drive a check that *moves* while a
     /// publication watches it.

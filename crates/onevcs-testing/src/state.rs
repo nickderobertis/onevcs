@@ -98,7 +98,7 @@ use crate::store::Checked;
 /// [`HostState::deleted_branches`], the branches gone from the origin,
 /// [`HostState::head_checks`], each required check's state per head commit, and
 /// [`HostState::ledger`], every call the host answered with what GitHub charges for it.
-pub const STATE_VERSION: u32 = 21;
+pub const STATE_VERSION: u32 = 22;
 
 /// The oldest document version this build reads.
 ///
@@ -158,7 +158,10 @@ pub const STATE_VERSION: u32 = 21;
 /// which is what that build could hold. `20` to `21` added four more of that kind, so a
 /// version 20 document reads as a host on which nobody closed or deleted anything, whose
 /// checks are its change requests' own, and which has answered no call — which is what
-/// that build recorded.
+/// that build recorded. `21` to `22` added three host fields of that kind and one field
+/// of a failed publication, so a version 21 document reads as a host that requires no
+/// up-to-date branch, allows auto-merge and holds no armed merge, and as publications
+/// none of which left a merge armed — which is what that build could do.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -502,6 +505,25 @@ pub struct HostState {
     /// sends — which is what a consumer sums over a whole review round.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ledger: Vec<HostCall>,
+    /// Whether this host requires a branch to be up to date with its base before it
+    /// merges one into it — GitHub branch protection's `strict` — which is what
+    /// `requires_up_to_date` answers. Unset is a host that requires it of no branch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub up_to_date_required: bool,
+    /// Whether the repository lets a change request be armed to merge itself once its
+    /// required checks pass — GitHub's `allow_auto_merge` — which is what
+    /// `allows_auto_merge` answers. Unset is a repository that allows it, so a
+    /// publication whose watch elapses arms the merge; `false` is one that does not,
+    /// so it is left as the elapsed watch left it. Only `false` is written, so allowed
+    /// has the one spelling.
+    #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
+    pub allow_auto_merge: bool,
+    /// The change requests whose own merge is armed — by a `change-auto` publication,
+    /// or by one whose watch elapsed with no required check red. The host lands one
+    /// the moment its required checks are green, whoever asks next: a publication
+    /// watching it, or one asking for its merge again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub armed: BTreeSet<ChangeId>,
 }
 
 /// Every method a ledger entry may name: each `RemoteHost` method this host answers.
@@ -509,6 +531,7 @@ pub struct HostState {
 /// `the_ledger_records_a_call_to_every_method_the_host_interface_declares` holds this
 /// list equal to the trait's own declaration, read out of its source.
 pub(crate) const LEDGER_METHODS: &[&str] = &[
+    "allows_auto_merge",
     "authenticated_user",
     "change_checks",
     "change_description",
@@ -526,6 +549,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "reopen_change",
     "reply_to_comment",
     "required_checks_on",
+    "requires_up_to_date",
     "retarget_change",
     "review_comments",
     "review_standings",
@@ -710,8 +734,25 @@ impl Default for HostState {
             deleted_branches: BTreeSet::new(),
             head_checks: BTreeMap::new(),
             ledger: Vec::new(),
+            up_to_date_required: false,
+            allow_auto_merge: true,
+            armed: BTreeSet::new(),
         }
     }
+}
+
+/// What a host document that says nothing about auto-merge allows: GitHub's default.
+fn allowed() -> bool {
+    true
+}
+
+/// Whether `allow_auto_merge` holds the default, which a written document omits.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_allowed(allow: &bool) -> bool {
+    *allow
 }
 
 /// The identity a session request names, or the reason none of them is it.
@@ -1139,6 +1180,9 @@ impl Checked for HostState {
         }
         for id in &self.closed {
             opened_change(self, id, "a closing")?;
+        }
+        for id in &self.armed {
+            opened_change(self, id, "an armed merge")?;
         }
         for branch in &self.deleted_branches {
             named_branch(branch, "a deleted branch")?;

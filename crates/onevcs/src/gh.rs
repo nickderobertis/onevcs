@@ -18,6 +18,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 use crate::error::{self, Error, Result};
+use crate::rules::WaitSeconds;
 
 /// Names the program that stands in for `gh`.
 pub const PROGRAM_ENV: &str = "ONEVCS_GH";
@@ -162,9 +163,12 @@ pub fn json(raw: &str) -> Result<Value> {
     })
 }
 
-/// The bound on waiting for the host's checks.
-pub fn checks_timeout() -> Result<f64> {
-    seconds(CHECKS_TIMEOUT_ENV, DEFAULT_CHECKS_TIMEOUT_SECONDS)
+/// The process-wide bound on waiting for the host's checks, where one is set.
+///
+/// What overrides every identity's `checks.wait_seconds`; unset, the rules file
+/// decides.
+pub fn checks_timeout_override() -> Result<Option<WaitSeconds>> {
+    wait(CHECKS_TIMEOUT_ENV)
 }
 
 /// How long to wait between asking the host again.
@@ -178,19 +182,24 @@ pub fn draft_grace() -> Result<f64> {
 }
 
 fn seconds(name: &str, default: f64) -> Result<f64> {
+    Ok(wait(name)?.map_or(default, WaitSeconds::get))
+}
+
+/// The wait `name` sets, where it sets one: parsed and validated into the same type a
+/// rules file's `checks.wait_seconds` is, so neither can carry a wait no watch runs to.
+fn wait(name: &str) -> Result<Option<WaitSeconds>> {
     let Some(raw) = std::env::var_os(name) else {
-        return Ok(default);
+        return Ok(None);
     };
     let raw = raw.to_string_lossy().into_owned();
     let value: f64 = raw.trim().parse().map_err(|_| Error::Invalid {
         reason: format!("{name} must be a number of seconds, not {raw:?}"),
     })?;
-    if !value.is_finite() || value <= 0.0 {
-        return Err(Error::Invalid {
-            reason: format!("{name} must be a finite number of seconds above zero, not {raw:?}"),
-        });
-    }
-    Ok(value)
+    WaitSeconds::try_from(value)
+        .map(Some)
+        .map_err(|_| Error::Invalid {
+            reason: format!("{name} must be {}, not {raw:?}", WaitSeconds::RANGE),
+        })
 }
 
 /// The host this implementation speaks for.

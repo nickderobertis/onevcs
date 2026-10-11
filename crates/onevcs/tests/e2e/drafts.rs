@@ -553,10 +553,17 @@ fn a_red_check_on_a_change_open_publication_with_the_lifecycle_off_fails_it_with
 }
 
 #[test]
-fn the_bound_ends_every_change_policy_checks_unsettled_and_leaves_the_draft_standing() {
+fn the_bound_ends_every_change_policy_checks_unsettled_and_leaves_the_draft_standing_where_nothing_is_armed(
+) {
+    // Where the repository does not allow auto-merge — and under `change-open`, which
+    // asks for no merge at all — the bound leaves the draft exactly as it was. A
+    // repository that allows it has the draft lifted and its merge armed (`armed.rs`).
     for rules in [AUTO, DIRECT, OPEN, TEAM] {
         let (world, _origin, session) = scene(rules, "60", "0.5");
-        let host = MemoryHost::seeded(host_with(vec![check("gate", None, true, 1)], None));
+        let host = MemoryHost::seeded(HostState {
+            allow_auto_merge: false,
+            ..host_with(vec![check("gate", None, true, 1)], None)
+        });
 
         let published = publish(&host, &session, &PublishRequest::default());
 

@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v21-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v21-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v22-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v22-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v21.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v21.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v22.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v22.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
@@ -117,6 +117,9 @@ const HOST_OPTIONAL: &[&str] = &[
     "deleted_branches",
     "head_checks",
     "ledger",
+    "up_to_date_required",
+    "allow_auto_merge",
+    "armed",
 ];
 
 #[test]
@@ -235,6 +238,62 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");
     assert_eq!(terse.state().expect("readable").version, STATE_VERSION);
+}
+
+/// The same two scenarios as the build before an elapsed watch could arm a merge
+/// wrote them.
+const HOST_V21: &str = include_str!("../golden/host-state-v21.json");
+const VCS_V21: &str = include_str!("../golden/vcs-state-v21.json");
+
+#[test]
+fn a_version_21_document_reads_as_a_host_that_arms_nothing_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written by the build before a watch that elapsed
+    // could leave a change armed: version 22 is the adding of a host's up-to-date
+    // requirement, its auto-merge setting and the merges it holds armed, and of a failed
+    // publication's armed merge. A version 21 document holds none of them — so it reads
+    // as a host that requires no up-to-date branch, allows auto-merge and holds nothing
+    // armed, and its publications as ones that armed nothing.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    let vcs_path = home.path("vcs.json");
+    assert!(
+        HOST_V21.contains(r#""version": 21"#)
+            && !HOST_V21.contains("armed")
+            && !VCS_V21.contains("armed"),
+        "the previous documents are the ones with nothing armed, or they prove nothing"
+    );
+    std::fs::write(&vcs_path, VCS_V21).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V21).expect("a document a previous build wrote");
+    let vcs = FileVcs::create(&vcs_path).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert!(!state.up_to_date_required);
+    assert!(state.allow_auto_merge);
+    assert!(state.armed.is_empty());
+    let repository = vcs.state().expect("readable");
+    assert!(repository.publications.iter().all(|publication| matches!(
+        &publication.outcome,
+        PublishOutcome::Failed { armed: None, .. }
+            | PublishOutcome::Merged(_)
+            | PublishOutcome::ChangeOpen(_)
+            | PublishOutcome::ChangeDraft(_)
+            | PublishOutcome::ChangeReviewDraft(_)
+            | PublishOutcome::ChangeReviewDraftUnchecked(_)
+            | PublishOutcome::Queued(_)
+            | PublishOutcome::NothingToPublish
+    )));
+    let repo = host.for_repo("acme-corp/widgets").expect("a host");
+    assert!(!repo.requires_up_to_date("main").expect("it answers"));
+    assert!(repo.allows_auto_merge().expect("it answers"));
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && !written.contains("up_to_date_required")
+            && !written.contains("allow_auto_merge")
+            && !written.contains(r#""armed""#),
+        "carried forward at this version, spelling only what it holds: {written}"
+    );
 }
 
 /// The same two scenarios as the build before review feedback wrote them.

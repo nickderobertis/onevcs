@@ -212,6 +212,7 @@ fn assert_cancelled_and_kept(
         kind,
         reason,
         retained,
+        armed: None,
     } = &published.outcome
     else {
         panic!("a cancelled publication fails as cancelled: {published:?}");

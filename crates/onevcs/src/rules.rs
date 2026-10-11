@@ -139,6 +139,15 @@ pub struct Rule {
     /// not asked; unset, the host's answer is recorded. Version 4 and later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<DeclaredVisibility>,
+    /// Whether a moved base is merged into a branch that already exists always, or
+    /// only when it is needed. Unset falls back to the default policy's, and then to
+    /// the value the resolved publication implies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_merge: Option<BaseMerge>,
+    /// How long a publication watches its change request's checks. Each key it leaves
+    /// unset falls back to the default policy's, and then to the shipped default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<Checks>,
 }
 
 /// A repository's visibility as a rule declares it: one of the two answers, never
@@ -193,6 +202,111 @@ pub struct Policy {
     /// How a change request takes the draft lifecycle, where the file says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drafts: Option<Drafts>,
+    /// Whether a moved base is merged into a branch that already exists always, or
+    /// only when it is needed, where the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_merge: Option<BaseMerge>,
+    /// How long a publication watches its change request's checks, where the file
+    /// says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<Checks>,
+}
+
+/// When a moved base is merged into a branch that already exists: a continued branch
+/// at session open, a resumed session, and the sync a publication runs before it
+/// pushes.
+///
+/// Unset on the matched rule and on `default:`, it is derived from the resolved
+/// publication: `local-direct` merges [`Always`](BaseMerge::Always), and every
+/// change-request policy merges only [`OnConflict`](BaseMerge::OnConflict) — a merge
+/// nothing asked for restarts every check the host runs on the branch, and the host's
+/// own merge of the change request brings the base in anyway.
+///
+/// Admitted with **no version bump**, as `drafts:` was: an older build ignores the key
+/// and merges the base as it always did, which is [`Always`](BaseMerge::Always).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaseMerge {
+    /// Merge the base in whenever it moved, which is what every build before this key
+    /// did.
+    Always,
+    /// Merge the base in only when it conflicts with the branch — so the conflict is
+    /// resolved before anything is published — or when the host requires a branch to
+    /// be up to date with its base before it merges. Otherwise the branch stays at its
+    /// tip and no merge commit is made.
+    OnConflict,
+}
+
+/// The `checks:` mapping a rule and `default:` may carry: how a publication watches
+/// its change request's checks.
+///
+/// Like `drafts:`, it **refuses a key it does not know**, by name, where the file is
+/// loaded — a misspelt `wait_second:` read as absent would leave an operator believing
+/// they had set a bound — and an older build ignores the whole block, so no version
+/// bump is owed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checks {
+    /// How long, in seconds, a publication watches the required checks of its change
+    /// request before the wait elapses. `ONEVCS_CHECKS_TIMEOUT_SECONDS` overrides it
+    /// for the whole process; unset here and on `default:`, it is 3600.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<WaitSeconds>,
+}
+
+/// A number of seconds to wait: finite, above zero, and at most a billion (about 31
+/// years).
+///
+/// The check is in the conversion, as [`TrailerPrefix`]'s is, so a rules file naming a
+/// wait no watch could run to does not deserialize at all. Being finite is also what
+/// makes the value [`Eq`]: the one floating-point value that is not equal to itself is
+/// refused here. The ceiling is a chosen one rather than a duration's own limit: it is
+/// what keeps a watch's deadline — now plus the wait — representable on every
+/// platform, so a wait such as `1e300` is refused here rather than reaching that
+/// arithmetic and crashing.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct WaitSeconds(f64);
+
+impl Eq for WaitSeconds {}
+
+impl WaitSeconds {
+    /// The shipped `checks.wait_seconds`: an hour, which is what the watch was bounded
+    /// by before the key existed.
+    pub(crate) const SHIPPED: WaitSeconds = WaitSeconds(crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS);
+
+    /// The longest wait accepted: a billion seconds, about 31 years — far past any
+    /// watch anyone means, and chosen so a watch's deadline is always representable.
+    pub(crate) const MAX_SECONDS: f64 = 1_000_000_000.0;
+
+    /// The accepted range, as every refusal of a wait spells it.
+    pub(crate) const RANGE: &'static str =
+        "a finite number of seconds above zero and at most 1000000000, the ceiling chosen \
+         so a watch's deadline is always representable";
+
+    /// The wait, in seconds.
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for WaitSeconds {
+    type Error = String;
+
+    fn try_from(value: f64) -> std::result::Result<Self, Self::Error> {
+        if value.is_finite() && value > 0.0 && value <= Self::MAX_SECONDS {
+            Ok(WaitSeconds(value))
+        } else {
+            Err(format!("{value} is not a wait: write {}", Self::RANGE))
+        }
+    }
+}
+
+impl From<WaitSeconds> for f64 {
+    fn from(wait: WaitSeconds) -> Self {
+        wait.0
+    }
 }
 
 /// The `drafts:` mapping a rule and `default:` may carry: how a publication's change

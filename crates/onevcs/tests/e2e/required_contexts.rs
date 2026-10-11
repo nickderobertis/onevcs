@@ -197,15 +197,19 @@ fn a_ready_change_whose_declared_gate_never_starts_is_unsettled_naming_it() {
 
     assert!(hosted.world.events_of(&token, "checks-settled").is_empty());
     assert!(hosted.world.events_of(&token, "merge-queued").is_empty());
+    // The one merge asked for is the host's own, armed once the bound elapsed with
+    // nothing red — and the host holds it while the gate has not passed.
     assert!(
         hosted
             .world
             .host_calls()
             .iter()
-            .all(|call| !call.contains("pr merge")),
-        "no merge was asked for: {:?}",
+            .filter(|call| call.contains("pr merge"))
+            .all(|call| call.contains("--auto")),
+        "no merge was asked for but the armed one: {:?}",
         hosted.world.host_calls()
     );
+    assert_eq!(hosted.world.events_of(&token, "merge-armed").len(), 1);
     assert_eq!(hosted.origin_log().len(), 1);
 }
 

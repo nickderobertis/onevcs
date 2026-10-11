@@ -50,3 +50,7 @@ onevcs-current = { package = "onevcs", path = "../crates/onevcs" }
 # the fixture compares field for field rather than reordering it.
 # llmlint: ignore[crates_stay_in_one_cargo_workspace] a project outside the workspace has no workspace dependency table to inherit this from; it restates the workspace's own version and features.
 serde_json = { version = "1", features = ["preserve_order"] }
+# The rules file is YAML, and `tests/rules.rs` reads the contract's own fixture into
+# each release's rules type with the reader every one of those builds uses.
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] a project outside the workspace has no workspace dependency table to inherit this from; it restates the workspace's own version.
+serde_yaml_ng = "0.10"

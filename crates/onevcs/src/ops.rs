@@ -26,7 +26,7 @@ use crate::integrate::Outcome as Integration;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, Subject};
 use crate::registry::Registry;
-use crate::rules::{Approvals, MergePolicy, RuleMatch};
+use crate::rules::{Approvals, BaseMerge, MergePolicy, RuleMatch};
 pub use crate::store::Coverage as MergePathCoverage;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
@@ -60,11 +60,29 @@ pub struct ResolvedPolicy {
     pub warn_on_early_lift: bool,
     /// What decided `warn_on_early_lift`, in the same words.
     pub warn_on_early_lift_from: String,
+    /// When a moved base is merged into a branch that already exists.
+    pub base_merge: BaseMerge,
+    /// What decided `base_merge`: a numbered rule, the default, or the publication it
+    /// was derived from.
+    pub base_merge_from: String,
+    /// How long a publication watches its change request's checks.
+    pub checks_wait: Duration,
+    /// What decided `checks_wait`: `ONEVCS_CHECKS_TIMEOUT_SECONDS`, a numbered rule,
+    /// the default, or the shipped default.
+    pub checks_wait_from: String,
 }
 
 impl ResolvedPolicy {
-    fn of(resolved: &policy::Resolved) -> Self {
-        Self {
+    /// The policy one repository resolved to, with the process-wide check-wait
+    /// override applied — which is why it can fail: a malformed override is refused
+    /// here, as it is before any push.
+    fn of(resolved: &policy::Resolved) -> Result<Self> {
+        let wait = resolved.checks_wait.effective()?;
+        Ok(Self {
+            base_merge: resolved.base_merge.value,
+            base_merge_from: resolved.base_merge.from.clone(),
+            checks_wait: Duration::from_secs_f64(wait.value.get()),
+            checks_wait_from: wait.from,
             publication: resolved.policy.publication,
             publication_from: resolved.publication_from.clone(),
             approvals: resolved.policy.approvals,
@@ -73,7 +91,7 @@ impl ResolvedPolicy {
             drafts_disabled_from: resolved.drafts.disabled_from.clone(),
             warn_on_early_lift: resolved.drafts.warn_on_early_lift,
             warn_on_early_lift_from: resolved.drafts.warn_on_early_lift_from.clone(),
-        }
+        })
     }
 }
 
@@ -125,7 +143,7 @@ pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registrati
         alias: resolution.alias,
         checkout: resolution.publication,
         gate: resolution.identity.gate,
-        policy: ResolvedPolicy::of(&resolved),
+        policy: ResolvedPolicy::of(&resolved)?,
         coverage,
     })
 }
@@ -250,7 +268,7 @@ pub fn repositories(
                 resolved.policy.publication,
             );
             checkout.audit = Some(CheckoutAudit {
-                policy: ResolvedPolicy::of(&resolved),
+                policy: ResolvedPolicy::of(&resolved)?,
                 coverage,
             });
         }
@@ -371,7 +389,7 @@ pub fn resolve_repository(providers: &Providers<'_>, repo: &str) -> Result<Resol
         origin: resolution.identity.origin,
         gate: resolution.identity.gate,
         publication_checkout: resolution.publication,
-        policy: ResolvedPolicy::of(&resolved),
+        policy: ResolvedPolicy::of(&resolved)?,
     })
 }
 
@@ -715,7 +733,7 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
             index: matched.index,
             criteria: matched.criteria.clone(),
         }),
-        policy: ResolvedPolicy::of(&resolved),
+        policy: ResolvedPolicy::of(&resolved)?,
         trailer_prefix: provenance::from_rules(&file).prefix().to_string(),
         trailer_prefix_source: match file.trailer_prefix.is_some() {
             true => TrailerPrefixSource::RulesFile,

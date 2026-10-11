@@ -371,6 +371,15 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                     ),
                 });
             }
+            // A change whose merge this host holds armed lands the moment its required
+            // checks are green, so asking for its merge then is answered with the
+            // landing — the merge the host performed on its own clock.
+            if state.armed.contains(&cr.id)
+                && matches!(state.merges.get(&cr.id), Some(MergeOutcome::Queued))
+                && required_checks_green(state, &cr.id)
+            {
+                return Ok(MergeOutcome::Merged(land(state, cr)));
+            }
             // A seeded outcome is the host's decision and outranks the policy: it is
             // how a journey says "this one is queued behind something" or "this one
             // has already landed".
@@ -389,6 +398,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                         // Native auto-merge: the host holds it and lands it when its
                         // own required checks pass, so nothing merges now.
                         state.merges.insert(cr.id.clone(), MergeOutcome::Queued);
+                        state.armed.insert(cr.id.clone());
                         MergeOutcome::Queued
                     }
                 }
@@ -536,6 +546,20 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::mergeability",
         })
+    }
+
+    /// Whether this host requires an up-to-date branch: [`HostState::up_to_date_required`].
+    /// Charged as the two protection reads the real host makes.
+    fn requires_up_to_date(&self, _base: &str) -> Result<bool> {
+        self.called("requires_up_to_date", &[], landings::rest(2))?;
+        Ok(self.store.snapshot()?.up_to_date_required)
+    }
+
+    /// Whether the repository allows auto-merge: [`HostState::allow_auto_merge`].
+    /// Charged as the one query the real host makes.
+    fn allows_auto_merge(&self) -> Result<bool> {
+        self.called("allows_auto_merge", &[], landings::graphql(1))?;
+        Ok(self.store.snapshot()?.allow_auto_merge)
     }
 
     /// Recorded on the ledger and answered as the trait's default answers: this host
@@ -713,6 +737,7 @@ fn land(state: &mut HostState, cr: &ChangeRequest) -> Sha {
         .merges
         .insert(cr.id.clone(), MergeOutcome::Merged(sha.clone()));
     state.merge_times.insert(cr.id.clone(), events::timestamp());
+    state.armed.remove(&cr.id);
     sha
 }
 
