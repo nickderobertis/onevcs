@@ -267,6 +267,10 @@ pub struct WaitSeconds(f64);
 impl Eq for WaitSeconds {}
 
 impl WaitSeconds {
+    /// The shipped `checks.wait_seconds`: an hour, which is what the watch was bounded
+    /// by before the key existed.
+    pub(crate) const SHIPPED: WaitSeconds = WaitSeconds(crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS);
+
     /// The wait, in seconds.
     #[must_use]
     pub fn get(self) -> f64 {

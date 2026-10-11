@@ -81,7 +81,7 @@ impl ResolvedPolicy {
         Ok(Self {
             base_merge: resolved.base_merge.value,
             base_merge_from: resolved.base_merge.from.clone(),
-            checks_wait: Duration::from_secs_f64(wait.value),
+            checks_wait: Duration::from_secs_f64(wait.value.get()),
             checks_wait_from: wait.from,
             publication: resolved.policy.publication,
             publication_from: resolved.publication_from.clone(),

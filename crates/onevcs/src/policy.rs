@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{
     Approvals, BaseMerge, Checks, DeclaredVisibility, Drafts, MergePolicy, Policy, RuleMatch,
-    RulesFile,
+    RulesFile, WaitSeconds,
 };
 use crate::store::{Normalized, Resolution};
 use crate::{home, ids};
@@ -76,10 +76,6 @@ pub const DRAFTS_DISABLED_DEFAULT: bool = false;
 
 /// The shipped default of `drafts.warn_on_early_lift`: an early lift says so.
 pub const WARN_ON_EARLY_LIFT_DEFAULT: bool = true;
-
-/// The shipped default of `checks.wait_seconds`: an hour, which is what the watch was
-/// bounded by before the key existed.
-pub const CHECKS_WAIT_DEFAULT_SECONDS: f64 = crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS;
 
 /// How much review a publication policy leaves in the path.
 ///
@@ -143,7 +139,7 @@ pub struct Resolved {
     pub base_merge: Decided<BaseMerge>,
     /// How long a publication watches its checks, in seconds, before the process-wide
     /// `ONEVCS_CHECKS_TIMEOUT_SECONDS` is asked, and which layer decided it.
-    pub checks_wait: Decided<f64>,
+    pub checks_wait: Decided<WaitSeconds>,
 }
 
 /// One resolved value, beside the layer that decided it — in the words every
@@ -156,14 +152,14 @@ pub struct Decided<T> {
     pub from: String,
 }
 
-impl Decided<f64> {
+impl Decided<WaitSeconds> {
     /// The wait a watch runs to: the process-wide override where it is set, and this
     /// identity's resolved wait otherwise.
     ///
     /// The override wins because it is how a host or a journey bounds every watch on
     /// the machine at once; it is validated as it always was, so a malformed one is
     /// refused rather than passed over in favour of the rules file.
-    pub fn effective(&self) -> Result<Decided<f64>> {
+    pub fn effective(&self) -> Result<Decided<WaitSeconds>> {
         match crate::gh::checks_timeout_override()? {
             Some(seconds) => Ok(Decided {
                 value: seconds,
@@ -212,21 +208,24 @@ fn resolve_base_merge(
 }
 
 /// Resolve `checks.wait_seconds`: the matched rule's, then the default's, then shipped.
-fn resolve_checks_wait(rule: Option<(&str, &Checks)>, default: Option<&Checks>) -> Decided<f64> {
+fn resolve_checks_wait(
+    rule: Option<(&str, &Checks)>,
+    default: Option<&Checks>,
+) -> Decided<WaitSeconds> {
     if let Some((named, Some(wait))) = rule.map(|(named, checks)| (named, checks.wait_seconds)) {
         return Decided {
-            value: wait.get(),
+            value: wait,
             from: named.to_owned(),
         };
     }
     if let Some(wait) = default.and_then(|checks| checks.wait_seconds) {
         return Decided {
-            value: wait.get(),
+            value: wait,
             from: "the default".to_owned(),
         };
     }
     Decided {
-        value: CHECKS_WAIT_DEFAULT_SECONDS,
+        value: WaitSeconds::SHIPPED,
         from: "the shipped default".to_owned(),
     }
 }

@@ -883,7 +883,7 @@ pub struct Context<'a> {
     pub base_merge: crate::rules::BaseMerge,
     /// How long the watch of the change request's checks lasts, as the identity's
     /// rules resolve it — before the process-wide override, which the watch asks.
-    pub checks_wait: policy::Decided<f64>,
+    pub checks_wait: policy::Decided<crate::rules::WaitSeconds>,
     /// Trailers the publication commit must carry.
     pub trailers: Vec<String>,
     /// The provenance trailer keys this host reads and writes, which decide which
@@ -2465,7 +2465,7 @@ fn land_opened_change(
         pushed,
         context.drafts.warn_on_early_lift,
         context.cancellation,
-        context.checks_wait.effective()?.value,
+        context.checks_wait.effective()?.value.get(),
     )?;
     let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
     if context.effective == MergePolicy::ChangeOpen {
