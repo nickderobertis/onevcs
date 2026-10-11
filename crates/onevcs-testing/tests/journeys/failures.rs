@@ -309,6 +309,27 @@ fn a_seeded_document_holding_a_session_nothing_could_act_on_is_refused() {
     )
     .expect("a written document");
     FileHost::create(&host).expect("a merge time that is a moment reads");
+
+    // The call ledger is what a consumer sums a review round's charge from, so an entry
+    // no call to this host could have written is refused rather than summed.
+    let call = |method: &str, change: &str| {
+        format!(
+            r#"{{{opened}, "ledger": [{{"method": "{method}", "changes": ["{change}"],
+                 "charge": {{"graphql_points": 1, "rest_requests": 0}}}}]}}"#
+        )
+    };
+    for (document, names) in [
+        (call("pull_requests", "1"), "no method this host answers"),
+        (call("change_standings", " "), "with no identifier"),
+    ] {
+        std::fs::write(&host, document).expect("a written document");
+        let refused = FileHost::create(&host)
+            .expect_err("a ledger entry no call could have written")
+            .to_string();
+        assert!(refused.contains(names), "{refused}");
+    }
+    std::fs::write(&host, call("change_standings", "1")).expect("a written document");
+    FileHost::create(&host).expect("a ledger entry a call wrote reads");
 }
 
 #[test]

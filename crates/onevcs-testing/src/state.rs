@@ -504,10 +504,38 @@ pub struct HostState {
     pub ledger: Vec<HostCall>,
 }
 
+/// Every method a ledger entry may name: each `RemoteHost` method this host answers.
+/// `Host::called` refuses to record any other, so a method added to the trait and
+/// answered here fails the ledger journey until it is listed.
+pub(crate) const LEDGER_METHODS: &[&str] = &[
+    "authenticated_user",
+    "change_checks",
+    "change_description",
+    "change_standings",
+    "check_log",
+    "describe_change",
+    "find_changes",
+    "is_draft",
+    "merge",
+    "merge_time",
+    "merged_at",
+    "mergeability",
+    "open_change",
+    "ready_for_review",
+    "reopen_change",
+    "reply_to_comment",
+    "required_checks_on",
+    "retarget_change",
+    "review_comments",
+    "review_standings",
+    "visibility",
+];
+
 /// One host call a host answered, as its ledger records it.
 // llmlint: ignore[invalid_states_unrepresentable] `method` is the name of the
-// `RemoteHost` method that was called, written by this crate alone; a seeded ledger is a
-// journey's own scenario and nothing reads a decision out of the name.
+// `RemoteHost` method that was called; `HostCall::checked` holds it to `LEDGER_METHODS`
+// where the document is read and where a call is recorded, and nothing reads a decision
+// out of the name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostCall {
     /// The `RemoteHost` method called, by its name.
@@ -517,6 +545,34 @@ pub struct HostCall {
     pub changes: Vec<ChangeId>,
     /// What GitHub charges the call the real host sends.
     pub charge: ReadCost,
+}
+
+impl HostCall {
+    /// Refuse an entry no call to this host could have written: a method it does not
+    /// answer, or a change request named by no identifier at all. A change request it
+    /// never opened is not refused — the real host charges a call it then refuses, and
+    /// so the ledger records one.
+    pub(crate) fn checked(&self) -> Result<()> {
+        if !LEDGER_METHODS.contains(&self.method.as_str()) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the call ledger records a call to {:?}, which is no method this host \
+                     answers",
+                    self.method
+                ),
+            });
+        }
+        if self.changes.iter().any(|id| id.0.trim().is_empty()) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the call ledger records a call to {:?} naming a change request with no \
+                     identifier",
+                    self.method
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// One comment a host holds on a change request.
@@ -1085,6 +1141,9 @@ impl Checked for HostState {
         }
         for branch in &self.deleted_branches {
             named_branch(branch, "a deleted branch")?;
+        }
+        for call in &self.ledger {
+            call.checked()?;
         }
         // A merge time is what `merge_time` answers and what a landing is recorded
         // with, so a seeded one that is not a moment is refused here, where the

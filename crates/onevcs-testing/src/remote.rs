@@ -175,12 +175,14 @@ impl<T: Store<HostState>> Host<T> {
 
     /// Record one call this host answered on its ledger.
     fn called(&self, method: &str, changes: &[&ChangeId], charge: ReadCost) -> Result<()> {
+        let call = HostCall {
+            method: method.to_owned(),
+            changes: changes.iter().map(|id| (*id).clone()).collect(),
+            charge,
+        };
+        call.checked()?;
         self.store.with(|state| {
-            state.ledger.push(HostCall {
-                method: method.to_owned(),
-                changes: changes.iter().map(|id| (*id).clone()).collect(),
-                charge,
-            });
+            state.ledger.push(call);
             Ok(())
         })
     }
