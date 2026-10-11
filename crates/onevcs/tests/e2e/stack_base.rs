@@ -207,7 +207,7 @@ fn trailer(prefix: &str, parent: &str, sha: &str) -> String {
 /// Every `stack-base-assembled` event this host recorded, oldest first, read through
 /// `onevcs events` over every stream there is.
 fn assemblies(world: &World) -> Vec<Value> {
-    // llmlint: ignore[tests_mirror_real_usage] no verb lists a host's streams, and an
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb lists a host's streams, and an
     // assembly that answers without a conflict, or fails, hands back no session token
     // — yet what these journeys assert is that a failed call wrote *no* event on any
     // stream. Listing the directory only enumerates the tokens; every event is still
@@ -224,6 +224,7 @@ fn assemblies(world: &World) -> Vec<Value> {
         .collect();
     events.sort_by(|a, b| a["ts"].as_str().cmp(&b["ts"].as_str()));
     events
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }
 
 /// The `{branch, head}` objects a request's parents travel as.
@@ -525,10 +526,16 @@ fn a_request_no_assembly_could_honour_is_refused_with_nothing_opened_or_pushed()
     }
     assert_eq!(world.git(&stack.origin, &["for-each-ref"]), before);
     assert!(assemblies(world).is_empty(), "a refusal emits nothing");
+    // llmlint: ignore-block[tests_mirror_real_usage] the claim is that no session was
+    // ever opened, and the one verb that lists sessions, `session holders`, forgets a
+    // record whose owner has exited and whose run root nothing is in — so its empty
+    // answer could not tell a session opened and let go from none. A session's record
+    // is its open's first write, so an empty directory proves none was ever written.
     let sessions = std::fs::read_dir(world.sessions_dir())
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(sessions, 0, "a refused request opens no session");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }
 
 #[test]
