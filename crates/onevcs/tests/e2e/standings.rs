@@ -852,6 +852,13 @@ fn a_classic_pattern_applies_to_exactly_the_bases_githubs_fnmatch_matches() {
         ("hot[!a-c]", "negated", "hotd", "hota"),
         ("x?y", "one", "x1y", "x/y"),
         ("team/**", "deep", "team/a/b", "teams/a"),
+        (
+            "**/hotfix",
+            "segments",
+            "deploy/eu/hotfix",
+            "deploy/hotfixes",
+        ),
+        ("v[12x]", "members", "vx", "v3"),
     ];
     let rules: Vec<(&str, &[&str])> = cases
         .iter()
@@ -911,6 +918,18 @@ fn a_classic_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none
         json!({"verdict": "pending", "waiting": ["class"]}),
         "an older evaluable match is applied whatever a newer rule spells"
     );
+
+    // An escape, a class never closed and a class holding nothing are each a spelling
+    // this build does not evaluate, so each leaves `dev` waiting rather than free.
+    for spelled in ["de\\v", "dev[", "d[]ev"] {
+        world.host_classic_rules(&[(spelled, &["odd"])]);
+        let read = stack.standings("main", &[on_dev]);
+        assert_eq!(
+            standing(&read, on_dev)["checks"],
+            json!({"verdict": "pending", "waiting": []}),
+            "{spelled}"
+        );
+    }
 }
 
 #[test]
@@ -963,6 +982,25 @@ fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_
             }]))}),
             "requires as \"ci\", which is not a list",
         ),
+        (
+            json!({"rulesets": {"pageInfo": {"hasNextPage": false}}}),
+            "the repository's rulesets without its nodes",
+        ),
+        (
+            json!({"rulesets": page(json!([{
+                "target": "BRANCH",
+                "enforcement": "ACTIVE",
+                "conditions": {"refName": {"include": ["~ALL"], "exclude": []}},
+                "rules": page(json!([{"type": "REQUIRED_STATUS_CHECKS", "parameters": {}}])),
+            }]))}),
+            "a ruleset requires status checks and does not say which",
+        ),
+        (
+            json!({"branchProtectionRules": page(json!([{
+                "pattern": "main", "requiredStatusCheckContexts": ["ci"],
+            }]))}),
+            "without its databaseId",
+        ),
     ];
     for (declarations, says) in malformed {
         world.host_declarations(&declarations);
@@ -971,6 +1009,53 @@ fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_
     assert!(
         standings_events(world).is_empty(),
         "a refused read records nothing"
+    );
+}
+
+#[test]
+fn a_declaration_read_in_part_leaves_a_base_pending_and_one_that_requires_nothing_is_skipped() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let page =
+        |more: bool, nodes: Value| json!({"pageInfo": {"hasNextPage": more}, "nodes": nodes});
+    let ruleset = |enforcement: &str, rules: Value| {
+        json!({
+            "target": "BRANCH",
+            "enforcement": enforcement,
+            "conditions": {"refName": {"include": ["~ALL"], "exclude": []}},
+            "rules": rules,
+        })
+    };
+    let requires_ci = json!([{
+        "type": "REQUIRED_STATUS_CHECKS",
+        "parameters": {"requiredStatusChecks": [{"context": "ci"}]},
+    }]);
+    // More rulesets, or more rules in one, than one page of the read holds: what a merge
+    // into `main` requires is not known whole, so nothing reads as nothing required.
+    for declarations in [
+        json!({"rulesets": page(true, json!([]))}),
+        json!({"rulesets": page(false, json!([ruleset("ACTIVE", page(true, requires_ci.clone()))]))}),
+    ] {
+        world.host_declarations(&declarations);
+        let read = stack.standings("main", &[draft]);
+        assert_eq!(
+            standing(&read, draft)["checks"],
+            json!({"verdict": "pending", "waiting": []}),
+            "{declarations}"
+        );
+    }
+    // A ruleset only evaluated, and an active one whose rules require no status check,
+    // require nothing of a merge — and that is the host's complete answer.
+    world.host_declarations(&json!({"rulesets": page(false, json!([
+        ruleset("EVALUATE", page(false, requires_ci)),
+        ruleset("ACTIVE", page(false, json!([{"type": "DELETION", "parameters": null}]))),
+    ]))}));
+    let read = stack.standings("main", &[draft]);
+    assert_eq!(
+        standing(&read, draft)["checks"],
+        json!({"verdict": "none-required"})
     );
 }
 
