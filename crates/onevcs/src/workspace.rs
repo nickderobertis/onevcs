@@ -1333,7 +1333,7 @@ pub(crate) fn open_with(
     let Placing {
         stack_tip,
         conflict,
-        base_merge: base_merged,
+        base_merge: base_decision,
     } = match cut_or_continue(&Cut {
         clone: &clone,
         worktree: &worktree,
@@ -1423,7 +1423,7 @@ pub(crate) fn open_with(
     let mut payload = opened(&record, reuse, created, applied, conflict.as_ref());
     // Written only for a continuation whose base this open decided about, so a session
     // cut fresh writes the payload it always wrote.
-    if let Some(decision) = &base_merged {
+    if let Some(decision) = &base_decision {
         payload.insert("base_merge".to_owned(), Value::Object(decision.payload()));
     }
     stream.emit(EventKind::SessionOpened, payload);
@@ -1786,7 +1786,7 @@ fn resume(
     note_base(&carried, &record.base, &record.worktree, execution);
     // A session handed back over the merge it opened with has decided already; the
     // conflict it carries is what its opening says.
-    let (conflict, base_merged) = match conflict {
+    let (conflict, base_decision) = match conflict {
         Some(conflict) => (Some(conflict), None),
         None => {
             let (conflict, decision) = merge_resumed_base(registry, resolution, &record, request)?;
@@ -1797,7 +1797,7 @@ fn resume(
         say_conflict(&record, conflict);
     }
     let mut payload = opened(&record, Reuse::Resumed, false, None, conflict.as_ref());
-    if let Some(decision) = &base_merged {
+    if let Some(decision) = &base_decision {
         payload.insert("base_merge".to_owned(), Value::Object(decision.payload()));
     }
     stream.emit(EventKind::SessionOpened, payload);
