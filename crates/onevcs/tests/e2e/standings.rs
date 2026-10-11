@@ -2365,6 +2365,27 @@ fn a_deferred_publication_knows_a_draft_by_this_hosts_newest_record_of_its_head_
         damaged_tip,
         "nothing pushed"
     );
+    // A record that cannot be read at all is refused too, never read as absent.
+    std::fs::remove_file(&record).expect("the damaged record removed");
+    std::fs::create_dir(&record).expect("something unreadable in its place");
+    let output = world
+        .onevcs()
+        .args([
+            "publish",
+            &token,
+            "--defer-checks",
+            "--adopt",
+            &url(personal),
+        ])
+        .output()
+        .expect("the binary runs");
+    refused(&output, 2, "could not be read");
+    assert_eq!(
+        origin_tip(&stack, "feature/person"),
+        damaged_tip,
+        "nothing pushed"
+    );
+    std::fs::remove_dir(&record).expect("the unreadable record removed");
     std::fs::write(&record, kept).expect("the record restored");
 
     // A record naming another branch refuses, with nothing pushed.
@@ -2419,6 +2440,33 @@ fn a_deferred_publication_knows_a_draft_by_this_hosts_newest_record_of_its_head_
         assert_eq!(since(world, before), Vec::<Value>::new(), "{extra:?}");
         assert_eq!(origin_tip(&stack, "feature/mine"), before_tip, "{extra:?}");
     }
+}
+
+#[test]
+fn a_head_this_host_cannot_record_is_said_and_the_read_still_answers() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    // Something that is not a directory where the head records go.
+    std::fs::create_dir_all(world.home()).expect("the state root");
+    std::fs::write(world.home().join("change-heads"), "not a directory").expect("a file");
+    let output = stack.standings_output("main", &[url(draft)], &[]);
+    let read = succeeded(&output);
+    assert_eq!(standing(&read, draft)["head_branch"], "feature/a");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "the head branch read for {} is not recorded",
+            url(draft)
+        )),
+        "{stderr}"
+    );
+    assert_eq!(
+        standings_events(world).len(),
+        1,
+        "the read itself is recorded"
+    );
 }
 
 #[test]
