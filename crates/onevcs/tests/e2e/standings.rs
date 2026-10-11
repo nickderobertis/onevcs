@@ -1528,6 +1528,120 @@ fn a_retarget_of_a_merged_or_closed_change_request_or_onto_a_missing_base_writes
     }
 }
 
+#[test]
+fn a_body_for_a_change_request_already_on_its_base_is_written_alone() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let body = stack.body_file("body", "The a change, described again.");
+
+    // Nothing is left behind by a move that does not move, so nothing is deleted.
+    let refs = stack.origin_refs();
+    let before = world.ledger().len();
+    refused(
+        &stack.retarget(draft, "main", &["--remove-restored-base"]),
+        2,
+        "already targets \"main\", so no base is left behind",
+    );
+    assert!(writes(&since(world, before)).is_empty());
+    assert_eq!(stack.origin_refs(), refs);
+
+    let before = world.ledger().len();
+    let written =
+        succeeded(&stack.retarget(draft, "main", &["--body-file", &body.to_string_lossy()]));
+    assert_eq!(written["outcome"], "unchanged");
+    assert_eq!(
+        (written["from"].as_str(), written["to"].as_str()),
+        (Some("main"), Some("main"))
+    );
+    assert_eq!(writes(&since(world, before)).len(), 1, "the body, alone");
+    assert_eq!(
+        world.change_request_body(draft),
+        "The a change, described again."
+    );
+    assert_eq!(world.change_request(draft)["DRAFT"], "true");
+    let recorded = kinds(&change_events(world, draft), "change-retargeted");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0]["payload"],
+        json!({"change_url": url(draft), "from": "main", "to": "main", "outcome": "unchanged", "body_written": true})
+    );
+}
+
+#[test]
+fn a_restored_base_someone_else_deleted_first_is_reported_after_the_move() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let parent_head = stack.branch("feature/a", "main", "a.txt");
+    stack.branch("feature/b", "feature/a", "b.txt");
+    let parent = stack.open("feature/a", "main", true);
+    let child = stack.open("feature/b", "feature/a", true);
+    world.person_merges(
+        parent,
+        PersonMerge::Squash,
+        MERGED_AT,
+        HeadAfter::Deleted(Dependants::Closed),
+    );
+    succeeded(&stack.reopen(child, &parent_head));
+    // Somebody deletes the restored branch before this host retargets away from it.
+    world.git(&stack.origin, &["update-ref", "-d", "refs/heads/feature/a"]);
+
+    refused(
+        &stack.retarget(child, "main", &["--remove-restored-base"]),
+        2,
+        "the restored base \"feature/a\" is already gone from the origin",
+    );
+    assert_eq!(
+        world.change_request(child)["PR_BASE"],
+        "main",
+        "the move itself was made"
+    );
+}
+
+#[test]
+fn a_reopen_of_a_change_request_that_is_not_closed_or_at_a_commit_nobody_has_writes_nothing() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let parent_head = stack.branch("feature/a", "main", "a.txt");
+    stack.branch("feature/b", "feature/a", "b.txt");
+    stack.branch("feature/open", "main", "open.txt");
+    let parent = stack.open("feature/a", "main", true);
+    let child = stack.open("feature/b", "feature/a", true);
+    let open = stack.open("feature/open", "main", true);
+    world.person_merges(
+        parent,
+        PersonMerge::Squash,
+        MERGED_AT,
+        HeadAfter::Deleted(Dependants::Closed),
+    );
+    let refs = stack.origin_refs();
+
+    let before = world.ledger().len();
+    refused(
+        &stack.reopen(child, "not-a-commit"),
+        2,
+        "\"not-a-commit\" is not a commit id",
+    );
+    refused(&stack.reopen(open, &parent_head), 2, "is open, not closed");
+    refused(
+        &stack.reopen(parent, &parent_head),
+        2,
+        "is merged, not closed",
+    );
+    refused(
+        &stack.reopen(child, &"0123456789abcdef".repeat(3)[..40]),
+        2,
+        "is not a commit",
+    );
+    assert!(writes(&since(world, before)).is_empty());
+    assert_eq!(stack.origin_refs(), refs, "nothing was restored");
+    assert_eq!(world.change_request(child)["CLOSED"], "true");
+    for number in [parent, child, open] {
+        assert!(kinds(&change_events(world, number), "change-reopened").is_empty());
+    }
+}
+
 /// The public boundary fixture's repository, with a private one registered beside it,
 /// and draft 2 (`feature/b`) based on draft 1 (`feature/a`).
 fn boundary_stack() -> (Boundary, ReviewHost) {
