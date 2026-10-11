@@ -101,6 +101,59 @@ fn a_persons_merges_closes_and_moves_are_what_the_standings_report() {
         "nobody can move a change request the host never opened"
     );
     assert!(host.close_unmerged(&ChangeId("99".to_owned())).is_err());
+    // Nobody merges a change request the host never opened, at a moment that is not one,
+    // or one that is no longer open — and nobody reads or moves one it never opened.
+    let nobody = ChangeId("99".to_owned());
+    let refusals = [
+        (
+            host.merge_by_person(&nobody, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept),
+            "was opened on this host",
+        ),
+        (
+            host.merge_by_person(
+                &open_draft.id,
+                PersonMerge::Squash,
+                "yesterday",
+                HeadAfter::Kept,
+            ),
+            "is not an RFC 3339 moment",
+        ),
+        (
+            host.merge_by_person(
+                &squashed.id,
+                PersonMerge::Squash,
+                MERGED_AT,
+                HeadAfter::Kept,
+            ),
+            "is not open, so nobody can merge it",
+        ),
+        (
+            host.merge_by_person(&closed.id, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept),
+            "is not open, so nobody can merge it",
+        ),
+        (
+            remote
+                .change_standings("main", std::slice::from_ref(&nobody))
+                .map(|_| landed.clone()),
+            "so it has no standing",
+        ),
+        (
+            remote
+                .retarget_change(&nobody, "main", None)
+                .map(|_| landed.clone()),
+            "was opened on this host",
+        ),
+        (
+            remote.reopen_change(&nobody).map(|_| landed.clone()),
+            "was opened on this host",
+        ),
+    ];
+    for (refused, says) in refusals {
+        assert!(
+            matches!(&refused, Err(Error::Invalid { reason }) if reason.contains(says)),
+            "{says}: {refused:?}"
+        );
+    }
     host.merge_by_person(
         &parent.id,
         PersonMerge::Squash,
@@ -594,7 +647,7 @@ fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_re
         &other.token,
         &PublishRequest {
             defer_checks: true,
-            adopt: Some(url),
+            adopt: Some(url.clone()),
             ..PublishRequest::default()
         },
     )
@@ -602,6 +655,64 @@ fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_re
     assert!(
         matches!(&refused, Error::Invalid { reason } if reason.contains("feature/held")),
         "{refused:?}"
+    );
+
+    // `--adopt` without deferring, and a draft reason beside a deferral, are each
+    // refused before anything; so is a deferral where nothing holds the change for review.
+    let shapes = [
+        (
+            PublishRequest {
+                adopt: Some(url.clone()),
+                ..PublishRequest::default()
+            },
+            "does not defer its checks",
+        ),
+        (
+            PublishRequest {
+                defer_checks: true,
+                adopt: Some(url.clone()),
+                draft: Some(onevcs::DraftReason::Held {
+                    because: "still being written".to_owned(),
+                }),
+                ..PublishRequest::default()
+            },
+            "a draft reason asks for a different draft",
+        ),
+    ];
+    for (request, says) in shapes {
+        let refused = onevcs::publish(&providers, &again.token, &request)
+            .expect_err("refused before anything");
+        assert!(
+            matches!(&refused, Error::Invalid { reason } if reason.contains(says)),
+            "{says}: {refused:?}"
+        );
+    }
+    let automatic = MemoryVcs::seeded(onevcs_testing::VcsState {
+        policy: Some(MergePolicy::ChangeAuto),
+        ..one_repository()
+    });
+    let landing = session(&automatic, "feature/held");
+    let refused = onevcs::publish(
+        &Providers {
+            vcs: &automatic,
+            hosting: &host,
+        },
+        &landing.token,
+        &PublishRequest {
+            defer_checks: true,
+            adopt: Some(url.clone()),
+            ..PublishRequest::default()
+        },
+    )
+    .expect_err("refused before anything");
+    assert!(
+        matches!(&refused, Error::Invalid { reason } if reason.contains("does not hold this one for review")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        host.ledger().expect("the ledger").len(),
+        before,
+        "no refusal asked the host anything"
     );
     let refused = onevcs::publish(
         &providers,
