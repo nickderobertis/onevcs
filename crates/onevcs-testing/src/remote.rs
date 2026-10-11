@@ -13,13 +13,13 @@ use url::Url;
 
 use onevcs::{
     ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState,
-    Description, Error, Hosting, MergeOutcome, MergePolicy, RemoteHost, RequiredChecks, Result,
-    Sha,
+    CommentId, Description, Error, Hosting, MergeOutcome, MergePolicy, PostedReply, ReadMarker,
+    RemoteHost, RequiredChecks, Result, ReviewRead, Sha,
 };
 
-use crate::events;
-use crate::state::{Described, HostState};
+use crate::state::{Described, HostComment, HostState};
 use crate::store::{FileStore, MemoryStore, Store};
+use crate::{events, review};
 
 /// The host a change request's URL names, matching the one implementation the
 /// crate next door speaks for.
@@ -108,6 +108,35 @@ impl FileHost {
     /// Everything it knows, read back out of its document.
     pub fn state(&self) -> Result<HostState> {
         self.store.snapshot()
+    }
+}
+
+/// A reviewer's moves on a change request's feedback, which no interface method makes:
+/// the real host takes them from people, so a journey takes them here.
+impl<T: Store<HostState>> Host<T> {
+    /// Post one more comment on `change`, as a reviewer would — a review-thread
+    /// comment, a review's summary or a conversation comment, whichever `comment`'s
+    /// kind says. Its `revision` is this host's to set, and is set past every read so
+    /// far.
+    pub fn add_comment(&self, change: &ChangeId, comment: HostComment) -> Result<()> {
+        review::add(&self.store, change, comment)
+    }
+
+    /// Replace a comment's body, as its author editing it would.
+    pub fn edit_comment(&self, change: &ChangeId, comment: &CommentId, body: &str) -> Result<()> {
+        review::edit(&self.store, change, comment, body)
+    }
+
+    /// Set a review thread's two flags, as resolving it, unresolving it, or a push
+    /// moving past its line would. Every comment in the thread changes with it.
+    pub fn set_thread(
+        &self,
+        change: &ChangeId,
+        thread: &str,
+        resolved: bool,
+        outdated: bool,
+    ) -> Result<()> {
+        review::set_thread(&self.store, change, thread, resolved, outdated)
     }
 }
 
@@ -377,6 +406,25 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
             title,
             body: state.bodies.get(&cr.id).cloned().unwrap_or_default(),
         })
+    }
+
+    /// What changed in the change request's review feedback since `since`, by this
+    /// host's own count of changes to it — see `review`.
+    fn review_comments(&self, change: &ChangeId, since: Option<&ReadMarker>) -> Result<ReviewRead> {
+        review::read(&self.store, &self.slug, change, since)
+    }
+
+    /// One reply, posted in the comment's thread where it has one and as a
+    /// conversation comment linking it otherwise, and recorded in
+    /// [`HostState::replies`].
+    fn reply_to_comment(
+        &self,
+        change: &ChangeId,
+        comment: &CommentId,
+        body: &str,
+        key: &str,
+    ) -> Result<PostedReply> {
+        review::reply(&self.store, &self.slug, change, comment, body, key)
     }
 
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {

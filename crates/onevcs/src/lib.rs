@@ -40,8 +40,8 @@
 //! **Every** command is: [`registered_identities`] and [`repositories`] are what
 //! `onevcs repos` prints, [`register_checkout`], [`resolve_repository`],
 //! [`publish_branch`], [`recover`], [`work_status`], [`import_branch`],
-//! [`integrate`], [`sync`], [`sweep`], [`rules_check`], [`read_artifact`] and
-//! [`EventLines`] are the rest, and a command with no such operation fails this
+//! [`integrate`], [`sync`], [`sweep`], [`rules_check`], [`read_artifact`],
+//! [`review_comments`], [`reply_to_comment`] and [`EventLines`] are the rest, and a command with no such operation fails this
 //! crate's own contract suite.
 
 #![warn(missing_docs)]
@@ -93,6 +93,7 @@ mod release;
 pub mod releases;
 mod remainder;
 mod retire;
+mod review;
 pub mod rules;
 mod rules_apply;
 mod session;
@@ -167,6 +168,10 @@ pub use retire::{
     RetireOutcome, RetirePass, RetireRequest, Retired, Retirement, RetirementClass,
     RetirementPassReport, RetirementProof, RetirementQuery, SupersededBy, Supersession,
     UnknownCause,
+};
+pub use review::{
+    reply_to_comment, review_comments, ChangeRef, CommentId, CommentKind, PostedReply, ReadCost,
+    ReadMarker, ReplyMarker, ReplyRequest, ReviewComment, ReviewRead,
 };
 pub use rules::MergePolicy;
 pub use rules_apply::{rules_apply, RulesApplied, RulesApplyRequest};

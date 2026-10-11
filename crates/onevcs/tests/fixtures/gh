@@ -144,6 +144,38 @@ job_log() {
   cat "$source"
 }
 
+# A change request's review feedback — its review threads, review summaries and
+# conversation comments, and the replies posted to them. Its paged GraphQL read, its
+# edits and its thread flags are a model a shell keeps badly, so a journey serves it
+# from its own process (`tests/e2e/review_host.rs`) over two directories here: each
+# call drops its whole argument vector into `review/requests/` and waits for its
+# answer in `review/answers/`. A world serving no review host refuses the call, and a
+# host that never answers is given up on rather than waited on for ever.
+review_host() {
+  local dir="$STATE/review" id waited=0 status
+  if [ ! -d "$dir/requests" ]; then
+    printf 'fake gh: this world serves no review comments\n' >&2
+    exit 1
+  fi
+  id="$$-$RANDOM$RANDOM"
+  printf '%s\0' "$@" >"$dir/requests/.$id"
+  mv "$dir/requests/.$id" "$dir/requests/$id"
+  until [ -f "$dir/answers/$id.status" ]; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 12000 ]; then
+      printf 'fake gh: the review host did not answer\n' >&2
+      exit 1
+    fi
+    sleep 0.01
+  done
+  cat "$dir/answers/$id.out"
+  cat "$dir/answers/$id.err" >&2
+  status="$(cat "$dir/answers/$id.status")"
+  rm -f "$dir/answers/$id.out" "$dir/answers/$id.err" "$dir/answers/$id.status"
+  exit "$status"
+}
+
+ARGUMENTS=("$@")
 command="${1:-}"; shift || true
 
 case "$command" in
@@ -157,6 +189,10 @@ case "$command" in
       printf 'tester\n'
       exit 0
     fi
+    case "$path" in
+      graphql|repos/*/*/pulls/*/comments/*/replies|repos/*/*/issues/*/comments)
+        review_host "${ARGUMENTS[@]}" ;;
+    esac
     # Everything below is GitHub's REST API: the Actions endpoints and the
     # repository's rulesets, which is what a token that may not resolve a check run
     # is left with. `checks-refused` is the credential that may not read those

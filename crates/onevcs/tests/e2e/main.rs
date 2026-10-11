@@ -239,6 +239,15 @@ mod retire;
 // reason in full.
 #[cfg(unix)]
 mod releases;
+// Unix only: its journeys read and answer review feedback through the same substituted
+// `gh` as `host.rs`, whose review routes `review_host.rs` serves from the journey's own
+// process. Each module's own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod review;
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod review_host;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot
 // be shown without handing it one. Everything else in it is real: real bare origins,
 // real clones, a real `git push`, real session records.

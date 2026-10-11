@@ -209,6 +209,32 @@ work is still being made. Seven things are easy to undo.
   no hook to ask and is asked nothing, which is the same rule the testing providers
   publish a requested title under.
 
+## A change request's review feedback, read and answered on the host
+
+`review.rs` is `review_comments` and `reply_to_comment` (`onevcs change comments|reply`),
+addressed by session or by URL; `review/github.rs` is the GitHub transport. The
+amendment in `docs/contract.md` is the surface, and two consumers restate it. Five
+things are easy to undo.
+
+- **`ours` comes from the reply marker and nothing else** — never the author,
+  `authorAssociation` or `viewerDidAuthor`, because the reviewer and the replying
+  credential are often one login. `parse_marker` is the one place it is decided;
+  `onevcs-testing` keeps its own copy, held to this one by its review journey.
+- **No conditional request decides what changed.** The GitHub marker is what the read
+  saw — a digest of each comment's `updatedAt`/`lastEditedAt` and each thread's flags —
+  and is opaque: each transport reads only its own, and refuses another's by name.
+- **The idempotency read and the post are one turn under one lock**, keyed on the
+  canonical URL and the key, so a session-named and a URL-named call of one change
+  request take the same lock. `verified_absent` skips the read, never the lock.
+- **A reply's route is read out of the node id** (`node_id::decode`), which is what
+  makes a `verified_absent` reply one request; GitHub's replies route answers only a
+  thread's first comment, so a call that read posts against that comment.
+- **The fake host is served from the journey's process.** `fixtures/gh` hands the
+  GraphQL read and the two reply routes to `tests/e2e/review_host.rs`, which mints
+  GitHub's own ids (the first of each kind is the id `spike-review-loop` recorded) and
+  refuses any query but the one `review/github.rs` sends. Change the query, change the
+  fake's list of what it must ask for.
+
 ## A branch outlives its session, so a retried session says who continued it
 
 `workspace::Record::retried_by` names the session that continued this one's branch,
