@@ -67,9 +67,16 @@ the change request as a draft and watches the pushed commit's required checks. G
 it to ready — and only then arms or performs the merge, since a host merges no draft —
 except under `change-open` with `approvals: required`, where it stays a draft for its own
 user's review and the publication ends `change-review-draft`. Red, or the bound, leaves it
-a draft. A repository whose CI skips drafts is lifted after a grace window
-(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`) so its checks can run, with one warning line. Lifting is one-way, and `drafts: {disabled: true}` in the rules file opens
-change requests ready, as before:
+a draft. **Run the required checks on drafts**, and the change stays a draft until they
+are green: check results attach to the head commit, so a workflow that runs on drafts needs
+no `ready_for_review` trigger — adding one only starts a second full run on every lift. A
+required check that is absent while anything on the head is still running (an aggregate
+job gated by `needs:`, say) holds the draft rather than lifting it. Only a repository whose
+CI skips its required jobs on drafts is lifted after a grace window
+(`ONEVCS_DRAFT_CHECKS_GRACE_SECONDS`) once nothing on its head is running, with one warning
+line; its workflow then needs `ready_for_review` to run the checks after the lift, at the
+cost of one more run per lift. Lifting is one-way, and `drafts: {disabled: true}` in the
+rules file opens change requests ready, as before:
 
 ```yaml
 default: {publication: change-open, approvals: required, drafts: {warn_on_early_lift: false}}

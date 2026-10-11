@@ -70,8 +70,8 @@ pub use repository::{
     FileVcs, MemoryVcs, Repository, DEFAULT_APPROVALS, DEFAULT_BASE, DEFAULT_PUBLICATION,
 };
 pub use state::{
-    Described, HostCall, HostComment, HostState, Replied, VcsState, DEFAULT_AUTHENTICATED_USER,
-    OLDEST_READABLE_VERSION, STATE_VERSION,
+    ActivityAnswer, Described, HostCall, HostComment, HostState, Replied, VcsState,
+    DEFAULT_AUTHENTICATED_USER, OLDEST_READABLE_VERSION, STATE_VERSION,
 };
 pub use store::{Checked, FileStore, MemoryStore, Store};
 

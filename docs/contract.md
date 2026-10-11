@@ -3665,7 +3665,9 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   has not run. If none of the required checks has run when the grace window
   `ONEVCS_DRAFT_CHECKS_GRACE_SECONDS` elapses — it defaults to **120 seconds**, and is
   validated like `ONEVCS_CHECKS_POLL_SECONDS` and `ONEVCS_CHECKS_TIMEOUT_SECONDS`, a finite
-  number of seconds above zero, before anything is pushed — the draft is lifted,
+  number of seconds above zero, before anything is pushed — and nothing on the pushed head
+  is still running (the condition *A draft is lifted early only when nothing on its head is
+  still running*, below, adds), the draft is lifted,
   `draft-lifted` and `draft-lifted-early` are recorded, one warning line is printed on
   stderr unless `warn_on_early_lift` is false, and the watch goes on. Two further cases
   are **the manager's rulings on this amendment**, accepted as part of C2 rather than read
@@ -3694,9 +3696,12 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   `ChecksUnsettled` with the change ready.
 - **After an early lift**, a draft-era `skipped` is not a verdict: the watch needs a run
   the host attached after the lift, and if none of the required checks has one within the
-  grace window it ends `ChecksUnsettled` with a reason saying the required checks did not
-  re-run after the lift, naming the likely cause — a workflow that does not trigger on
-  `ready_for_review`. It never merges, and never lifts anything, on draft-era skips. Once a
+  grace window, with nothing on the pushed head still running (the same amendment below),
+  it ends `ChecksUnsettled` with a reason saying the required checks did not re-run after
+  the lift, and what to do: run the required checks on drafts, whose results attach to the
+  head commit so a workflow that runs on drafts needs no `ready_for_review` trigger — only a
+  workflow that skips its required jobs on drafts needs that trigger, at one more run per
+  lift. It never merges, and never lifts anything, on draft-era skips. Once a
   post-lift run exists the ordinary rules apply, under which a post-lift `skipped` satisfies
   the watch and is recorded as `passed-with-skipped`, never as passed.
 
@@ -4054,6 +4059,116 @@ later merges, or goes red, by rewriting the host's checks between two publicatio
 one session. Its providers have no base to merge, so `base_merge` has nothing to decide
 there. Its state document is version 22; a version 21 document reads as a host that
 requires no up-to-date branch, allows auto-merge and holds nothing armed.
+
+### A draft is lifted early only when nothing on its head is still running
+
+**Recorded as the manager's ruling for plan node `onevcs-draft-hold`** (the contract fixed
+for the run and restated by `engine-links-draft-hold`, `ui-links-draft-hold` and
+`adopt-draft-hold`). The early lift of the draft lifecycle above read "a required check is
+absent or `skipped` and none is pending" as "this repository's CI skips drafts". A common
+CI shape reads the same way on a repository that skips nothing: the required check is an
+aggregate job gated by `needs:` on the rest of the workflow, and GitHub creates that job's
+check run only once its prerequisites finish, so for most of the run the required check is
+absent while nothing *required* is pending. Every such draft was lifted a few minutes into
+its CI — reading as ready while unverified, and, wherever the workflow also triggered on
+`ready_for_review`, cancelling the running CI and starting it again. The same reading after
+the lift ended a publication `checks-unsettled` while the draft's own run was still going.
+
+**The early lift.** Beyond the conditions above — the grace window elapsed, no required
+check red, pending or without a verdict, and some required check absent or concluded
+`skipped` — a draft is lifted early only when nothing on its pushed head is still running:
+
+- **(a)** no check the host reports about the pushed commit, required or not, has not
+  completed — an Actions job, a check run an external app posted, a commit status still
+  `pending`. This is the host's existing check read and costs no new request;
+- **(b)** only where (a) finds nothing in progress at the moment an early lift would
+  otherwise happen, the watch asks `RemoteHost::head_activity`, and an answer naming work
+  in progress holds the lift for that poll. This closes the gap between the last `needs:`
+  prerequisite finishing and the aggregate's check run appearing. An `Err` — not
+  implemented, refused, unreadable — or an answer about a commit other than the pushed one
+  is no answer: the decision falls back to (a) alone. (b) is never asked on a poll where
+  (a) already shows work in progress, nor before the grace window has elapsed.
+
+A non-empty `head_activity` answer is **reused for up to 300 seconds** from when it was read
+(`DEFAULT_HEAD_ACTIVITY_REUSE_SECONDS`, beside `DEFAULT_DRAFT_GRACE_SECONDS`; it is ten
+polls, so it scales with `ONEVCS_CHECKS_POLL_SECONDS`), and asked again only after that,
+because a workflow run between jobs or an app that keeps its suite open can show work in
+progress with no incomplete check for the whole watch. An empty answer, an `Err`, or an
+answer about another commit is never reused. So a draft-skipping repository is still lifted
+at the grace window as soon as its first read says idle; once work really finishes, an
+early lift or the after-lift ending below may come up to 300 seconds later than per-poll
+reads would give. A lift on green is never held by it: green is decided from the check read
+on every poll. One reused answer serves both decisions of one publication.
+
+**After an early lift**, the "did not re-run" ending also needs nothing in progress on the
+pushed head, by the same (a) and (b) under the same reuse: every check the host reports on
+the head has completed, and `head_activity` does not name work in progress (an `Err` or an
+other-commit answer falls back to (a)). While either shows work in progress the watch goes
+on waiting, bounded as always by the check wait. A required check the still-running
+workflow creates later was absent from the draft-era snapshot, so it is a post-lift run and
+settles the watch by the ordinary rule. With nothing in progress and no post-lift run, the
+ending still fires, with the reworded reason below. A draft-era `skipped` is still never a
+verdict.
+
+**Unchanged.** The grace window, every `drafts:` rules key and every event payload are
+unchanged; no event kind, payload field or rules-file key is added. A repository whose
+required jobs conclude `skipped` on drafts, or where nothing runs at all, is still lifted
+early at the grace window with the same `draft-lifted`/`draft-lifted-early` records and the
+same warning under `drafts.warn_on_early_lift`. A red required check still fails at once, a
+pending required check still never triggers a lift, and the "nothing required" and
+"requirement unreadable" rows, `settle_ready`, and the elapsed wait's arming are as they
+were. **The known limit**: an external app that has posted nothing at all by the grace
+window — no check run, no suite with a check run — with nothing else in progress, is still
+read as draft-skipping.
+
+`RemoteHost` gains one defaulted method and the type it answers, exported from the crate
+root beside `ChangeChecks`. The default is the refusal every additive method has, and a
+watch reads that refusal as no answer, never as "idle":
+
+```rust
+pub trait RemoteHost {                                 // beside reopen_change:
+    fn head_activity(&self, cr: &ChangeRequest) -> Result<HeadActivity>;  // default: NotImplemented
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadActivity {                              // onevcs::HeadActivity, from the crate root
+    pub head: Sha,                 // the commit the host answered about, off its own records
+    pub in_progress: Vec<String>,  // the host's name for each piece of work still in progress
+    pub complete: bool,            // false: only GitHub Actions' workflow runs were consulted
+}
+```
+
+A draft's watch asks it about the change request at the commit it pushed (`cr.head_sha` is
+that commit). `GitHub` answers from two REST reads about that commit:
+`repos/{repo}/actions/runs?head_sha=` — a workflow run is in progress while its `status` is
+anything but `completed` — and `repos/{repo}/commits/{sha}/check-suites` — a suite is in
+progress while it is not `completed` and its `latest_check_runs_count` is above zero. A
+suite with no check run is ignored, because GitHub leaves an installed app's empty `queued`
+suite on every commit for ever. `head` is read off the returned records' own `head_sha`
+(the commit asked about where none is listed). A credential refused the check suites
+answers from the workflow runs with `complete: false`; one refused both is an `Err`.
+
+**The guidance.** Wherever onevcs advises on CI that does not run a draft's required checks
+— the early-lift warning, the after-lift `checks-unsettled` reason, and the lifecycle text
+above — it leads with the fix and offers the trigger only where it helps: *run the required
+checks on drafts*, and onevcs then keeps the change a draft until they are green; check
+results attach to the head commit, so a workflow that runs on drafts needs **no**
+`ready_for_review` trigger, and adding one only starts a second full run on every lift;
+only a workflow that skips its required jobs on drafts needs `ready_for_review` to run them
+after a lift, at the cost of one more run per lift.
+
+Event kinds added: none.
+
+**The testing crate follows.** `onevcs-testing`'s host answers `head_activity` from
+`HostState::head_activity` — per change request, one scripted answer per call, the last
+answering every call after it: work named on the commit asked about (optionally
+incomplete), an answer about another commit, or a refusal — and an unscripted change
+request answers, completely, that nothing is running on the commit it was asked about.
+`HostState::check_readings` and `HostState::check_readings_after_lift` script the checks
+each reading reports in turn, before and after the lift, so a journey drives a watch poll
+by poll on both sides of a lift that happens on a clock. Its repository side holds its one-reading
+watch to the same (a) and (b) at its early lift and its after-lift ending. Its state
+document is version 23; a version 22 document reads as a host whose checks hold still
+between readings and that reports nothing running beyond them.
 
 ### A hook a publication runs finds its repository from where it starts, never from an inherited `GIT_DIR`
 

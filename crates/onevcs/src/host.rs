@@ -482,6 +482,38 @@ pub trait RemoteHost {
             operation: "RemoteHost::reopen_change",
         })
     }
+
+    /// Whether work the host runs on the change request's head commit is still in
+    /// progress: a workflow run, or a check suite that has at least one check run,
+    /// not yet completed. Asked by a draft's watch only when its reported checks
+    /// show nothing incomplete at an early-lift decision or at the after-lift
+    /// "did not re-run" ending. Defaulted to the refusal, as `mergeability`
+    /// is, and a refusal is read as no answer, never as "idle".
+    ///
+    /// The watch asks it about the change request at the commit it pushed, so
+    /// `cr.head_sha` is that commit; an answer whose [`HeadActivity::head`] names
+    /// another commit is read as no answer too.
+    fn head_activity(&self, _cr: &ChangeRequest) -> Result<HeadActivity> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::head_activity",
+        })
+    }
+}
+
+/// What a host says is still running on one commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadActivity {
+    /// The commit the host answered about, read off the host's own records.
+    pub head: Sha,
+    /// The host's name for each piece of work still in progress on it (a workflow
+    /// run's name, an app's check suite); empty when nothing is.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract fixes this field as
+    // the host's own names, carried for a reader and decided on only by emptiness.
+    pub in_progress: Vec<String>,
+    /// Whether every source of such work was consulted. `false` means only GitHub
+    /// Actions' workflow runs were (a credential that cannot read check suites), so an
+    /// external app's work is invisible to this answer.
+    pub complete: bool,
 }
 
 /// Whether a change request can merge into its base, as
@@ -1682,6 +1714,45 @@ fn listed<'a>(
     Ok(entries)
 }
 
+/// Whether a workflow run or a check suite GitHub reported has completed: its
+/// `status` is `completed`. Anything else — `queued`, `in_progress`, `waiting`,
+/// `requested`, `pending`, or no status at all — is work still going.
+fn is_completed(record: &serde_json::Value) -> bool {
+    record
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("completed"))
+}
+
+/// What GitHub calls one workflow run or check suite, off the field `path` names, or
+/// `what` with its id where it names nothing — the name is for a reader, and a record
+/// without one is still work in progress.
+fn named(record: &serde_json::Value, path: &[&str], what: &str) -> String {
+    path.iter()
+        .try_fold(record, |value, field| value.get(field))
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map_or_else(
+            || {
+                let id = record
+                    .get("id")
+                    .map_or_else(String::new, |id| format!(" {id}"));
+                format!("{what}{id}")
+            },
+            str::to_owned,
+        )
+}
+
+/// Whether a REST call failed because GitHub will not let this credential make it —
+/// the 403 it answers a fine-grained token the endpoint's permission was not granted
+/// to — rather than because the call went wrong.
+fn refused_to_this_credential(error: &Error) -> bool {
+    let Error::Invalid { reason } = error else {
+        return false;
+    };
+    reason.contains("(HTTP 403)") || reason.contains("Resource not accessible")
+}
+
 /// The refusal for a credential that can read none of the host's check sources.
 ///
 /// Both refusals, verbatim, and the permission that answers them — because the
@@ -2063,6 +2134,85 @@ impl RemoteHost for GitHub {
                 cr.url
             ))),
         }
+    }
+
+    /// Two REST reads about the commit the caller names: the workflow runs on it, and
+    /// its check suites.
+    ///
+    /// A run counts while its `status` is anything but `completed`; a suite counts
+    /// while it is not `completed` **and** has at least one check run, because GitHub
+    /// leaves an installed app's empty `queued` suite on every commit for ever. A
+    /// credential refused the suites answers from the runs alone, saying so with
+    /// `complete: false`; one refused both reads is the runs' refusal.
+    ///
+    /// The commit asked about is the caller's — a watch names the one it pushed — and
+    /// the commit answered about is read off the records GitHub returned, so a host
+    /// whose records name another commit says so rather than having this build's
+    /// question stamped onto its answer. Reading the change request's head first
+    /// would cost a third request on every read and decide nothing these two do not.
+    fn head_activity(&self, cr: &ChangeRequest) -> Result<HeadActivity> {
+        let sha = commit(&cr.head_sha)?;
+        let runs = self.api(&format!(
+            "repos/{}/actions/runs?head_sha={sha}&per_page={PAGE}",
+            self.repo
+        ))?;
+        let mut answered: Option<Sha> = None;
+        let mut in_progress = Vec::new();
+        let mut about = |record: &serde_json::Value| -> Result<()> {
+            if let Some(head) = reported_sha(record, "head_sha")? {
+                if answered.as_ref().is_some_and(|seen| *seen != head) {
+                    return Err(invalid(format!(
+                        "GitHub answered about the work on {sha} with records naming two \
+                         commits, {} and {}, so which one is running cannot be told",
+                        answered.as_ref().map_or("", |seen| seen.0.as_str()),
+                        head.0
+                    )));
+                }
+                answered = Some(head);
+            }
+            Ok(())
+        };
+        for run in listed(&runs, "workflow_runs", &format!("the commit {sha}"))? {
+            about(run)?;
+            if !is_completed(run) {
+                in_progress.push(named(run, &["name"], "workflow run"));
+            }
+        }
+        let suites = gh::invoke(&[
+            "api",
+            &format!(
+                "repos/{}/commits/{sha}/check-suites?per_page={PAGE}",
+                self.repo
+            ),
+        ]);
+        let complete = match suites {
+            Ok(raw) => {
+                let suites = gh::json(&raw)?;
+                for suite in listed(&suites, "check_suites", &format!("the commit {sha}"))? {
+                    about(suite)?;
+                    let runs = suite
+                        .get("latest_check_runs_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "GitHub reported a check suite on {sha} without saying how many \
+                                 check runs it has: {suite}"
+                            ))
+                        })?;
+                    if runs > 0 && !is_completed(suite) {
+                        in_progress.push(named(suite, &["app", "name"], "check suite"));
+                    }
+                }
+                true
+            }
+            Err(refused) if refused_to_this_credential(&refused) => false,
+            Err(other) => return Err(other),
+        };
+        Ok(HeadActivity {
+            head: answered.unwrap_or_else(|| Sha(sha.to_owned())),
+            in_progress,
+            complete,
+        })
     }
 
     /// One GraphQL query document, paged — see `review::github`.

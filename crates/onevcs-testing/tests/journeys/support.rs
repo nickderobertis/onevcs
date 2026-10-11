@@ -17,7 +17,9 @@ use onevcs::{
     RequiredChecks, Retirement, RetirementClass, Session, SessionToken, Sha, SupersededBy,
     TargetName, Url,
 };
-use onevcs_testing::{Described, HostCall, HostComment, HostState, Replied, VcsState};
+use onevcs_testing::{
+    ActivityAnswer, Described, HostCall, HostComment, HostState, Replied, VcsState,
+};
 
 /// The variable this platform's home directory is spelled in.
 ///
@@ -530,6 +532,56 @@ pub fn full_host_state() -> HostState {
         up_to_date_required: true,
         allow_auto_merge: false,
         armed: BTreeSet::from([ChangeId("1".to_owned())]),
+        // The fields version 23 added: the checks each reading reports in turn, and what
+        // the host answers in turn about the work still running on a head — every kind
+        // of answer, so each one's spelling is in the golden.
+        check_readings: BTreeMap::from([(
+            ChangeId("1".to_owned()),
+            vec![
+                Vec::new(),
+                vec![Check {
+                    name: "gate".to_owned(),
+                    status: "in_progress".to_owned(),
+                    conclusion: None,
+                    required: true,
+                    head: None,
+                    url: None,
+                    started_at: Some("2026-09-30T12:00:00Z".to_owned()),
+                    completed_at: None,
+                }],
+            ],
+        )]),
+        check_readings_after_lift: BTreeMap::from([(
+            ChangeId("1".to_owned()),
+            vec![vec![Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("success".to_owned()),
+                required: true,
+                head: None,
+                url: None,
+                started_at: Some("2026-09-30T12:02:00Z".to_owned()),
+                completed_at: None,
+            }]],
+        )]),
+        head_activity: BTreeMap::from([(
+            ChangeId("1".to_owned()),
+            vec![
+                ActivityAnswer::Head {
+                    in_progress: vec!["ci".to_owned()],
+                    complete: false,
+                },
+                ActivityAnswer::Other {
+                    head: Sha("abc123".to_owned()),
+                    in_progress: vec!["ci".to_owned()],
+                },
+                ActivityAnswer::Refused,
+                ActivityAnswer::Head {
+                    in_progress: Vec::new(),
+                    complete: true,
+                },
+            ],
+        )]),
     }
 }
 

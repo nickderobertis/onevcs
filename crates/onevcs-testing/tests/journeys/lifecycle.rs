@@ -443,7 +443,9 @@ fn a_run_after_the_lift_is_told_from_the_drafts_by_its_start_and_never_by_its_co
 fn a_check_running_after_the_lift_is_never_a_new_run_by_its_status_alone() {
     // The draft's run finished `skipped`; after the lift `gate` is reported running with
     // the draft's start, or with none. Its status moved, and that is no run's identity:
-    // the publication ends saying the checks did not re-run, and merges nothing.
+    // it is never read as a re-run, so nothing settles or lands on it. What it is, is
+    // something still running on the head — so the watch goes on waiting rather than
+    // ending "did not re-run", exactly as next door's does until its bound.
     let draft = check("gate", Some("skipped"), 1);
     for started_at in [Some(started(1)), None] {
         let home = Home::new();
@@ -453,6 +455,41 @@ fn a_check_running_after_the_lift_is_never_a_new_run_by_its_status_alone() {
             ..check("gate", None, 1)
         };
         let host = host(vec![draft.clone()], Some(vec![running]));
+
+        let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+
+        assert!(
+            matches!(
+                &outcome,
+                PublishOutcome::Failed {
+                    kind: FailureKind::ChecksUnsettled,
+                    reason,
+                    ..
+                } if !reason.contains("did not re-run") && reason.contains("\"gate\"")
+            ),
+            "{started_at:?}: {outcome:?}"
+        );
+        assert!(
+            !host
+                .state()
+                .merges
+                .values()
+                .any(|merge| matches!(merge, MergeOutcome::Merged(_))),
+            "{started_at:?}: nothing landed on it"
+        );
+    }
+
+    // Once it is reported completed as the draft's run — the draft's start, or none —
+    // nothing is running and nothing re-ran: the publication ends saying so, and merges
+    // nothing.
+    for started_at in [Some(started(1)), None] {
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+        let finished = Check {
+            started_at: started_at.clone(),
+            ..draft.clone()
+        };
+        let host = host(vec![draft.clone()], Some(vec![finished]));
 
         let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
 

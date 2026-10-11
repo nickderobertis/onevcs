@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v22-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v22-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v23-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v23-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v22.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v22.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v23.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v23.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
@@ -120,6 +120,9 @@ const HOST_OPTIONAL: &[&str] = &[
     "up_to_date_required",
     "allow_auto_merge",
     "armed",
+    "check_readings",
+    "check_readings_after_lift",
+    "head_activity",
 ];
 
 #[test]
@@ -238,6 +241,56 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");
     assert_eq!(terse.state().expect("readable").version, STATE_VERSION);
+}
+
+/// The same two scenarios as the build before a host's checks moved per reading
+/// wrote them.
+const HOST_V22: &str = include_str!("../golden/host-state-v22.json");
+const VCS_V22: &str = include_str!("../golden/vcs-state-v22.json");
+
+#[test]
+fn a_version_22_document_reads_as_a_host_whose_checks_hold_still_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written by the build before a draft's watch read
+    // what is running on a head: version 23 is the adding of the checks each reading
+    // reports in turn and of the host's answers about the work on a head. A version 22
+    // document holds neither — so it reads as a host whose checks are the same at every
+    // reading, and which reports nothing running beyond them.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    let vcs_path = home.path("vcs.json");
+    assert!(
+        HOST_V22.contains(r#""version": 22"#)
+            && !HOST_V22.contains("check_readings")
+            && !HOST_V22.contains("head_activity"),
+        "the previous document is the one with no script, or it proves nothing"
+    );
+    std::fs::write(&vcs_path, VCS_V22).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V22).expect("a document a previous build wrote");
+    FileVcs::create(&vcs_path).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert!(state.check_readings.is_empty());
+    assert!(state.head_activity.is_empty());
+    let repo = host.for_repo("acme-corp/widgets").expect("a host");
+    let change = state
+        .changes
+        .first()
+        .expect("a seeded change request")
+        .clone();
+    let first = repo.change_checks(&change).expect("it answers").checks;
+    let second = repo.change_checks(&change).expect("it answers").checks;
+    assert_eq!(first, second, "the same checks at every reading");
+    let activity = repo.head_activity(&change).expect("it answers");
+    assert_eq!(activity.head, change.head_sha);
+    assert!(activity.in_progress.is_empty() && activity.complete);
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && !written.contains("check_readings")
+            && !written.contains(r#""head_activity": {"#),
+        "carried forward at this version, spelling only what it holds: {written}"
+    );
 }
 
 /// The same two scenarios as the build before an elapsed watch could arm a merge

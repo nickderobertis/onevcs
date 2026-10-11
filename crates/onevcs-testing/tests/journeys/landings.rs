@@ -489,6 +489,7 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let _ = remote.change_description(&change);
     let _ = remote.visibility();
     let _ = remote.mergeability(&change);
+    let _ = remote.head_activity(&change);
     let _ = remote.review_comments(&change.id, None);
     let _ = remote.reply_to_comment(
         &change.id,
@@ -544,6 +545,14 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
         "a mutation, one point"
     );
     assert_eq!(charge("change_checks")[0].changes, vec![change.id.clone()]);
+    assert_eq!(
+        charge("head_activity")[0].charge,
+        ReadCost {
+            graphql_points: 0,
+            rest_requests: 2
+        },
+        "the workflow runs and the check suites on the head"
+    );
     // A person's moves are nobody's call.
     assert!(charge("close_unmerged").is_empty());
     drop(home);

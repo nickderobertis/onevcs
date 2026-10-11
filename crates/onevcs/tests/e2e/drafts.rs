@@ -32,7 +32,7 @@ use onevcs::{
     FailureKind, Git, Hosting, MergeOutcome, MergePolicy, ProtectionSource, Providers, Publication,
     PublishOutcome, PublishRequest, RemoteHost, RequiredChecks, Session,
 };
-use onevcs_testing::{FileHost, HostState, MemoryHost};
+use onevcs_testing::{ActivityAnswer, FileHost, HostState, MemoryHost};
 
 use crate::honesty::inhabit;
 use crate::library::{awaiting_a_release, hosted, origin_tip, stderr_of, worked};
@@ -1033,8 +1033,9 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
     // The draft's `gate` finished `skipped`; after the lift the host reports `gate`
     // running. Its status moved, and that is not a run's identity: with the draft's
     // start, or with none, it is the draft's run as far as anything the host said goes,
-    // so the watch ends saying the checks did not re-run — at the grace window, not at
-    // the bound it would reach waiting on a run it had taken for a new one.
+    // so nothing settles or lands on it. It is work still running on the head, though,
+    // so the watch waits until the host reports it completed — as the draft's run — and
+    // only then ends saying the checks did not re-run.
     let draft = check("gate", Some("skipped"), true, 1);
     for (label, started_at) in [
         ("the draft's own start", Some(started(1))),
@@ -1043,10 +1044,21 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
         let (world, origin, session) = scene(AUTO, "0.3", "5");
         let base = origin_tip(&world, &origin, "main");
         let running = Check {
-            started_at,
+            started_at: started_at.clone(),
             ..check("gate", None, true, 1)
         };
-        let host = MemoryHost::seeded(host_with(vec![draft.clone()], Some(vec![running])));
+        let finished = Check {
+            started_at,
+            ..draft.clone()
+        };
+        let host = MemoryHost::seeded(HostState {
+            checks: BTreeMap::from([(first(), vec![draft.clone()])]),
+            check_readings_after_lift: BTreeMap::from([(
+                first(),
+                [vec![vec![running]; 40], vec![vec![finished]]].concat(),
+            )]),
+            ..HostState::default()
+        });
 
         let published = publish(&host, &session, &PublishRequest::default());
 
@@ -1057,6 +1069,10 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
         assert!(
             reason.contains("did not re-run after its draft was lifted"),
             "{label}: {reason}"
+        );
+        assert!(
+            readings_after_the_lift(&host) > 40,
+            "{label}: the running report held the ending until it completed"
         );
         assert!(host.state().merges.is_empty(), "{label}: nothing merged");
         assert!(
@@ -1083,6 +1099,20 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
         settled[0]["payload"]["skipped"],
         serde_json::json!(["gate"])
     );
+}
+
+/// How many readings of the first change request's checks the host answered after it
+/// was lifted.
+fn readings_after_the_lift(host: &MemoryHost) -> usize {
+    let ledger = host.ledger().expect("the ledger");
+    let lifted = ledger
+        .iter()
+        .position(|call| call.method == "ready_for_review")
+        .expect("the draft was lifted");
+    ledger[lifted..]
+        .iter()
+        .filter(|call| call.method == "change_checks")
+        .count()
 }
 
 fn held() -> DraftReason {
@@ -1876,4 +1906,676 @@ fn a_pending_required_check_never_triggers_an_early_lift() {
         .events_of(&session.token.0, "draft-lifted-early")
         .is_empty());
     assert!(world.events_of(&session.token.0, "draft-lifted").is_empty());
+}
+
+/// The five jobs crozier's required aggregate `gate` is gated on by `needs:`, none of
+/// them required itself.
+const PREREQUISITES: [&str; 5] = ["check", "sdk-env", "install", "package", "live-e2e"];
+
+/// One reading of a repository shaped like crozier's CI: `commitlint` and `llmlint`
+/// passed, the five prerequisites running or `done`, and the aggregate `gate` absent
+/// — GitHub creates its check run only once they finish — or concluded `gate`.
+fn needs_gated(done: bool, gate: Option<&str>) -> Vec<Check> {
+    let mut reading = vec![
+        check("commitlint", Some("success"), true, 1),
+        check("llmlint", Some("success"), true, 1),
+    ];
+    for name in PREREQUISITES {
+        reading.push(check(name, done.then_some("success"), false, 1));
+    }
+    if let Some(conclusion) = gate {
+        reading.push(check("gate", Some(conclusion), true, 2));
+    }
+    reading
+}
+
+/// What crozier's branch protection requires: the aggregate and its two siblings.
+fn needs_gated_requirement() -> Option<RequiredChecks> {
+    Some(RequiredChecks {
+        checks: ["gate", "commitlint", "llmlint"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        unconsulted: BTreeMap::new(),
+    })
+}
+
+/// `reading`, read `polls` times in a row.
+fn polls(polls: usize, reading: &[Check]) -> Vec<Vec<Check>> {
+    vec![reading.to_vec(); polls]
+}
+
+/// A host requiring `required`, whose first change request reports `readings` in turn
+/// while a draft and `after` in turn once lifted, and answers `activity` in turn about
+/// what is running on its head.
+fn scripted(
+    required: Option<RequiredChecks>,
+    readings: Vec<Vec<Check>>,
+    after: Option<Vec<Vec<Check>>>,
+    activity: Vec<ActivityAnswer>,
+) -> MemoryHost {
+    MemoryHost::seeded(HostState {
+        required_checks: required,
+        check_readings: BTreeMap::from([(first(), readings)]),
+        check_readings_after_lift: after
+            .map(|after| BTreeMap::from([(first(), after)]))
+            .unwrap_or_default(),
+        head_activity: if activity.is_empty() {
+            BTreeMap::new()
+        } else {
+            BTreeMap::from([(first(), activity)])
+        },
+        ..HostState::default()
+    })
+}
+
+/// Work the host names in progress on the head, with no check of its own yet.
+fn busy() -> ActivityAnswer {
+    ActivityAnswer::Head {
+        in_progress: vec!["ci".to_owned()],
+        complete: true,
+    }
+}
+
+/// Nothing running on the head, by every source.
+fn idle() -> ActivityAnswer {
+    ActivityAnswer::Head {
+        in_progress: Vec::new(),
+        complete: true,
+    }
+}
+
+/// The methods the host answered, in order.
+fn answered(host: &MemoryHost) -> Vec<String> {
+    host.ledger()
+        .expect("the ledger")
+        .into_iter()
+        .map(|call| call.method)
+        .collect()
+}
+
+/// How many `method` calls the host answered.
+fn calls(host: &MemoryHost, method: &str) -> usize {
+    answered(host)
+        .iter()
+        .filter(|found| *found == method)
+        .count()
+}
+
+/// How many `method` calls the host answered before its first `until` call.
+fn calls_before(host: &MemoryHost, method: &str, until: &str) -> usize {
+    let methods = answered(host);
+    let end = methods
+        .iter()
+        .position(|found| found == until)
+        .unwrap_or_else(|| panic!("{until} was called: {methods:?}"));
+    methods[..end]
+        .iter()
+        .filter(|found| *found == method)
+        .count()
+}
+
+/// That a publication was lifted by green on its draft and landed: `draft-lifted` and no
+/// `draft-lifted-early`, `checks-settled` passed, lifted before the merge was armed.
+fn assert_lifted_by_green(
+    world: &World,
+    session: &Session,
+    host: &MemoryHost,
+    published: &Publication,
+) {
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let kinds = kinds(world, session);
+    assert!(
+        !kinds.contains(&"draft-lifted-early".to_owned()),
+        "never lifted early: {kinds:?}"
+    );
+    assert!(at(&kinds, "checks-settled") < at(&kinds, "draft-lifted"));
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed");
+    let methods = answered(host);
+    let lifted = methods
+        .iter()
+        .position(|method| method == "ready_for_review")
+        .expect("lifted");
+    let merged = methods
+        .iter()
+        .position(|method| method == "merge")
+        .expect("merged");
+    assert!(lifted < merged, "lifted before the merge: {methods:?}");
+}
+
+#[test]
+fn a_needs_gated_aggregate_absent_while_its_prerequisites_run_keeps_the_draft_until_it_passes() {
+    // crozier#495: the required `gate` does not exist while the five jobs it needs run,
+    // and nothing *required* is pending — which read as a repository that skips drafts,
+    // and lifted the draft a few minutes into its CI. Thirty polls of prerequisites
+    // running take three times the grace window; the draft stays a draft through all of
+    // them and is lifted by green once `gate` reports and passes.
+    let (world, _origin, session) = scene(AUTO, "0.2", "20");
+    let host = scripted(
+        needs_gated_requirement(),
+        [
+            polls(30, &needs_gated(false, None)),
+            polls(1, &needs_gated(true, Some("success"))),
+        ]
+        .concat(),
+        None,
+        Vec::new(),
+    );
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+    let published = published.expect("it ran");
+
+    assert_lifted_by_green(&world, &session, &host, &published);
+    assert!(!said.contains("lifted out of its draft"), "{said}");
+    assert_eq!(
+        calls_before(&host, "change_checks", "ready_for_review"),
+        31,
+        "every poll of the prerequisites running held the draft"
+    );
+    assert_eq!(
+        calls(&host, "head_activity"),
+        0,
+        "never asked while a reported check was still running"
+    );
+}
+
+#[test]
+fn a_needs_gated_aggregate_absent_after_its_prerequisites_finish_is_held_while_the_host_names_work()
+{
+    // The gap between the last prerequisite finishing and the aggregate's check run
+    // appearing: every reported check has completed and `gate` is absent, so only the
+    // host's own answer about the head shows the workflow still going.
+    let (world, _origin, session) = scene(AUTO, "0.1", "20");
+    let host = scripted(
+        needs_gated_requirement(),
+        [
+            polls(30, &needs_gated(true, None)),
+            polls(1, &needs_gated(true, Some("success"))),
+        ]
+        .concat(),
+        None,
+        vec![busy()],
+    );
+    let started = Instant::now();
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    let took = started.elapsed();
+    assert_lifted_by_green(&world, &session, &host, &published);
+    let asked = calls(&host, "head_activity");
+    assert!(asked >= 1, "the host was asked about its head");
+    // Reused for ten polls (0.2s at this 0.02s poll), never asked on every poll.
+    let reuses = (took.as_secs_f64() / 0.2).ceil() as usize + 1;
+    assert!(
+        asked <= reuses,
+        "asked {asked} times in {took:?}: at most once per reuse window"
+    );
+}
+
+#[test]
+fn a_commit_status_still_pending_holds_the_draft_as_a_running_job_does() {
+    // An external integration's commit status, required by nothing, still `pending`
+    // while the required aggregate is absent: work in progress on the head, read off the
+    // host's own check read.
+    let status = |state: &str| Check {
+        name: "ci/external".to_owned(),
+        status: state.to_owned(),
+        conclusion: (state == "completed").then(|| "success".to_owned()),
+        required: false,
+        head: None,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    };
+    let (world, _origin, session) = scene(AUTO, "0.1", "20");
+    let done = needs_gated(true, None);
+    let host = scripted(
+        needs_gated_requirement(),
+        [
+            polls(30, &[done.clone(), vec![status("pending")]].concat()),
+            polls(
+                1,
+                &[
+                    needs_gated(true, Some("success")),
+                    vec![status("completed")],
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+        None,
+        Vec::new(),
+    );
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert_lifted_by_green(&world, &session, &host, &published);
+    assert_eq!(calls_before(&host, "change_checks", "ready_for_review"), 31);
+    assert_eq!(calls(&host, "head_activity"), 0);
+}
+
+#[test]
+fn a_draft_whose_required_jobs_were_skipped_with_nothing_running_is_still_lifted_early_and_says_what_to_do(
+) {
+    // The draft-skipping repository: `gate` concluded skipped, nothing else is running,
+    // and the host says nothing is in progress on the head. Lifted at the grace window
+    // exactly as before — and the head is asked about once, at the lift, never during
+    // the window.
+    let (world, _origin, session) = scene(AUTO, "0.4", "20");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![idle()])]),
+        ..skipped_then(Some("success"))
+    });
+    let started = Instant::now();
+    let mut published = None;
+    let said = stderr_of(|| {
+        published = Some(publish(&host, &session, &PublishRequest::default()));
+    });
+    let published = published.expect("it ran");
+
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(400));
+    let early = world.events_of(&session.token.0, "draft-lifted-early");
+    assert_eq!(early.len(), 1, "{early:?}");
+    assert_eq!(early[0]["payload"]["awaited"], serde_json::json!(["gate"]));
+    assert_eq!(early[0]["payload"]["warned"], true);
+    assert_eq!(
+        calls_before(&host, "head_activity", "ready_for_review"),
+        1,
+        "asked once, at the lift, and not on any poll inside the grace window"
+    );
+    // The warning leads with the fix, says why no trigger is needed, and offers the
+    // trigger only for a workflow that skips its required jobs on drafts, at its cost.
+    let warning: Vec<&str> = said
+        .lines()
+        .filter(|line| line.contains("lifted out of its draft"))
+        .collect();
+    assert_eq!(warning.len(), 1, "one line: {said}");
+    let line = warning[0];
+    let fix = line
+        .find("Run the required checks on drafts")
+        .unwrap_or_else(|| panic!("leads with the fix: {line}"));
+    let no_trigger = line
+        .find("a workflow that runs on drafts needs no `ready_for_review` trigger")
+        .unwrap_or_else(|| panic!("says no trigger is needed: {line}"));
+    let only = line
+        .find(
+            "Only a workflow that skips its required jobs on drafts needs `ready_for_review` \
+             to run them after a lift, at the cost of one more run per lift",
+        )
+        .unwrap_or_else(|| panic!("offers the trigger only where it helps: {line}"));
+    assert!(fix < no_trigger && no_trigger < only, "{line}");
+    assert!(
+        line.contains("their results attach to the head commit"),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_head_activity_answer_that_is_refused_or_about_another_commit_decides_as_the_checks_alone() {
+    // The same draft-skipping draft, the host's answer about its head refused, or naming
+    // work on a commit this publication did not push: no answer, so the checks decide
+    // alone — and they say lift.
+    for (label, answer) in [
+        ("refused", ActivityAnswer::Refused),
+        (
+            "about another commit",
+            ActivityAnswer::Other {
+                head: onevcs::Sha("0123456789abcdef0123456789abcdef01234567".to_owned()),
+                in_progress: vec!["ci".to_owned()],
+            },
+        ),
+    ] {
+        let (world, _origin, session) = scene(AUTO, "0.2", "20");
+        let host = MemoryHost::seeded(HostState {
+            head_activity: BTreeMap::from([(first(), vec![answer])]),
+            ..skipped_then(Some("success"))
+        });
+
+        let published = publish(&host, &session, &PublishRequest::default());
+
+        assert!(
+            matches!(published.outcome, PublishOutcome::Merged(_)),
+            "{label}: {published:?}"
+        );
+        let early = world.events_of(&session.token.0, "draft-lifted-early");
+        assert_eq!(early.len(), 1, "{label}: lifted early as before");
+        assert_eq!(
+            calls_before(&host, "head_activity", "ready_for_review"),
+            1,
+            "{label}: asked once, and lifted on that poll"
+        );
+    }
+}
+
+#[test]
+fn a_draft_lifted_early_whose_own_run_is_still_going_settles_green_on_the_aggregate_it_creates_later(
+) {
+    // onebudgetspec#28, with `ready_for_review` removed from its CI: the draft is lifted
+    // early in a gap where every reported check had completed and the host would not
+    // say what was running; its own run then goes on — `test` running — past the
+    // after-lift window, and the aggregate `check` is created only after it and passes.
+    // That is a post-lift run, so the publication settles green rather than ending
+    // `checks-unsettled` while the draft's run is still in progress.
+    let (world, _origin, session) = scene(AUTO, "0.1", "20");
+    let required = Some(RequiredChecks {
+        checks: BTreeSet::from(["check".to_owned()]),
+        unconsulted: BTreeMap::new(),
+    });
+    let lint = |done: bool| check("lint", done.then_some("success"), false, 1);
+    let test = |done: bool| check("test", done.then_some("success"), false, 1);
+    let host = scripted(
+        required,
+        [polls(15, &[lint(false)]), polls(1, &[lint(true)])].concat(),
+        Some(
+            [
+                polls(30, &[lint(true), test(false)]),
+                polls(
+                    1,
+                    &[
+                        lint(true),
+                        test(true),
+                        check("check", Some("success"), true, 3),
+                    ],
+                ),
+            ]
+            .concat(),
+        ),
+        vec![ActivityAnswer::Refused],
+    );
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let early = world.events_of(&session.token.0, "draft-lifted-early");
+    assert_eq!(early[0]["payload"]["awaited"], serde_json::json!(["check"]));
+    let settled = world.events_of(&session.token.0, "checks-settled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed");
+    assert!(
+        readings_after_the_lift(&host) > 30,
+        "the draft's run was waited on past the after-lift window"
+    );
+}
+
+#[test]
+fn after_an_early_lift_work_the_host_names_on_the_head_holds_the_did_not_rerun_ending() {
+    // Every reported check has completed after the lift — the draft-era skip is all
+    // there is — but the host names work in progress on the head, and the aggregate
+    // arrives later and passes. The answer that lifted it (nothing running, or a
+    // refusal) is not reused: the after-lift ending asks afresh, and is held.
+    for (label, at_the_lift) in [("idle", idle()), ("refused", ActivityAnswer::Refused)] {
+        let (world, _origin, session) = scene(AUTO, "0.1", "20");
+        let draft = vec![check("gate", Some("skipped"), true, 1)];
+        let host = scripted(
+            None,
+            polls(1, &draft),
+            Some(
+                [
+                    polls(30, &draft),
+                    polls(1, &[check("gate", Some("success"), true, 2)]),
+                ]
+                .concat(),
+            ),
+            vec![at_the_lift, busy()],
+        );
+
+        let published = publish(&host, &session, &PublishRequest::default());
+
+        assert!(
+            matches!(published.outcome, PublishOutcome::Merged(_)),
+            "{label}: {published:?}"
+        );
+        assert!(
+            calls(&host, "head_activity") >= 2,
+            "{label}: asked again after the lift"
+        );
+        let settled = world.events_of(&session.token.0, "checks-settled");
+        assert_eq!(settled[0]["payload"]["verdict"], "passed", "{label}");
+        // Green after the lift is read on the poll it appears, whatever is cached: the
+        // thirty draft-era readings, the one green one, and the merge watch's first.
+        let methods = answered(&host);
+        let lifted = methods
+            .iter()
+            .position(|method| method == "ready_for_review")
+            .expect("lifted");
+        let merged = methods
+            .iter()
+            .position(|method| method == "merge")
+            .expect("merged");
+        let read = methods[lifted..merged]
+            .iter()
+            .filter(|method| *method == "change_checks")
+            .count();
+        assert!(
+            read <= 32,
+            "{label}: settled on the green poll, read {read}"
+        );
+    }
+}
+
+#[test]
+fn after_an_early_lift_with_nothing_running_and_no_rerun_the_ending_says_what_to_do() {
+    let (world, origin, session) = scene(AUTO, "0.2", "20");
+    let base = origin_tip(&world, &origin, "main");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![idle()])]),
+        ..skipped_then(None)
+    });
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("{published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    for said in [
+        "did not re-run after its draft was lifted",
+        "nothing on it is still running",
+        "Run the required checks on drafts: their results attach to the head commit",
+        "a workflow that runs on drafts needs no `ready_for_review` trigger",
+        "Only a workflow that skips its required jobs on drafts needs `ready_for_review` to \
+         run them after a lift, at the cost of one more run per lift",
+    ] {
+        assert!(reason.contains(said), "{said:?} is not in: {reason}");
+    }
+    assert!(
+        reason.find("Run the required checks on drafts") < reason.find("Only a workflow"),
+        "the fix leads: {reason}"
+    );
+    assert!(
+        calls(&host, "head_activity") >= 2,
+        "asked at the lift and again at the ending"
+    );
+    assert!(host.state().merges.is_empty(), "nothing merged");
+    assert_eq!(origin_tip(&world, &origin, "main"), base);
+}
+
+#[test]
+fn work_the_host_names_with_no_check_incomplete_is_asked_about_once_per_reuse_window() {
+    // An app that keeps its suite open after its runs finish: in progress for the whole
+    // watch, with every reported check completed. Before a lift, the draft is held to
+    // the bound and the host asked at most once per reuse window — ten polls, 0.2s here.
+    let (world, _origin, session) = scene(AUTO, "0.1", "1.2");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![busy()])]),
+        ..skipped_then(None)
+    });
+    let started = Instant::now();
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    let took = started.elapsed().as_secs_f64();
+    let PublishOutcome::Failed { kind, .. } = &published.outcome else {
+        panic!("{published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    assert!(is_draft(&host), "never lifted while the host named work");
+    assert!(world
+        .events_of(&session.token.0, "draft-lifted-early")
+        .is_empty());
+    let asked = calls(&host, "head_activity");
+    let windows = ((took - 0.1) / 0.2).ceil() as usize + 1;
+    assert!(
+        (2..=windows).contains(&asked),
+        "asked {asked} times over {took}s: again after the window, never per poll"
+    );
+    assert!(
+        calls(&host, "change_checks") > 3 * asked,
+        "the checks were read on every poll between"
+    );
+
+    // After a lift: the answer that lifted it was empty, and from then on the host names
+    // work for the rest of the watch, so the "did not re-run" ending is held to the bound
+    // — with the host asked once per window — and the draft-era skip still arms nothing.
+    let (world, _origin, session) = scene(AUTO, "0.1", "1.5");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![idle(), busy()])]),
+        ..skipped_then(None)
+    });
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        armed,
+        ..
+    } = &published.outcome
+    else {
+        panic!("{published:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    assert!(
+        !reason.contains("did not re-run"),
+        "held to the bound: {reason}"
+    );
+    assert!(armed.is_none(), "a draft-era skip arms nothing: {reason}");
+    assert!(host.state().merges.is_empty(), "nothing merged on it");
+    assert_eq!(
+        world
+            .events_of(&session.token.0, "draft-lifted-early")
+            .len(),
+        1
+    );
+    let after = calls(&host, "head_activity") - 1;
+    assert!(
+        (2..=((1.5 - 0.1) / 0.2_f64).ceil() as usize + 1).contains(&after),
+        "asked {after} times after the lift"
+    );
+}
+
+#[test]
+fn once_a_reused_answer_expires_an_empty_read_lifts_on_that_poll() {
+    // Before a lift: work named, reused for a window, then nothing — and the lift comes
+    // on the poll that read it.
+    let (world, _origin, session) = scene(AUTO, "0.1", "20");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![busy(), idle()])]),
+        ..skipped_then(Some("success"))
+    });
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    assert_eq!(
+        world
+            .events_of(&session.token.0, "draft-lifted-early")
+            .len(),
+        1
+    );
+    let methods = answered(&host);
+    let asked: Vec<usize> = methods
+        .iter()
+        .enumerate()
+        .filter(|(_, method)| *method == "head_activity")
+        .map(|(at, _)| at)
+        .collect();
+    let lifted = methods
+        .iter()
+        .position(|method| method == "ready_for_review")
+        .expect("lifted");
+    assert!(asked.len() >= 2, "{methods:?}");
+    let between = methods[asked[0]..asked[1]]
+        .iter()
+        .filter(|method| *method == "change_checks")
+        .count();
+    assert!(
+        between >= 5,
+        "the first answer was reused for its window: {between} readings"
+    );
+    assert!(
+        !methods[asked[1]..lifted].contains(&"change_checks".to_owned()),
+        "lifted on the poll that read nothing running: {methods:?}"
+    );
+
+    // After a lift: the ending follows the same way.
+    let (_world, _origin, session) = scene(AUTO, "0.1", "20");
+    let host = MemoryHost::seeded(HostState {
+        head_activity: BTreeMap::from([(first(), vec![idle(), busy(), idle()])]),
+        ..skipped_then(None)
+    });
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(
+            &published.outcome,
+            PublishOutcome::Failed { kind: FailureKind::ChecksUnsettled, reason, .. }
+                if reason.contains("did not re-run")
+        ),
+        "{published:?}"
+    );
+    let methods = answered(&host);
+    let last = methods
+        .iter()
+        .rposition(|method| method == "head_activity")
+        .expect("asked");
+    assert_eq!(calls(&host, "head_activity"), 3, "{methods:?}");
+    assert!(
+        !methods[last..].contains(&"change_checks".to_owned()),
+        "ended on the poll that read nothing running: {methods:?}"
+    );
+}
+
+#[test]
+fn a_lift_on_green_is_never_held_back_by_a_reused_answer() {
+    // The host names work for the whole watch, so an answer is cached throughout; the
+    // aggregate appears and passes, and the draft is lifted by green on that very poll.
+    let (world, _origin, session) = scene(AUTO, "0.1", "20");
+    let host = scripted(
+        needs_gated_requirement(),
+        [
+            polls(20, &needs_gated(true, None)),
+            polls(1, &needs_gated(true, Some("success"))),
+        ]
+        .concat(),
+        None,
+        vec![busy()],
+    );
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert_lifted_by_green(&world, &session, &host, &published);
+    assert!(calls(&host, "head_activity") >= 1);
+    assert_eq!(
+        calls_before(&host, "change_checks", "ready_for_review"),
+        21,
+        "lifted on the first poll that read the aggregate green"
+    );
 }

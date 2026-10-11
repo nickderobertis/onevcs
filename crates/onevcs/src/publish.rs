@@ -3385,6 +3385,12 @@ struct Watcher<'a> {
     /// host's auto-merge reads a skipped required check as satisfied, so a watch that
     /// elapsed over any is never armed.
     skipped_at_elapse: Vec<String>,
+    /// When the host last answered `head_activity` with work in progress on the pushed
+    /// head, which is reused until [`Watcher::reuse`] has passed since — and only that
+    /// answer: an empty one, a refusal, or one about another commit is asked again.
+    busy_since: Option<std::time::Instant>,
+    /// How long such an answer is reused: [`gh::head_activity_reuse`].
+    reuse: std::time::Duration,
 }
 
 impl<'a> Watcher<'a> {
@@ -3414,7 +3420,49 @@ impl<'a> Watcher<'a> {
             elapsed: false,
             armed: false,
             skipped_at_elapse: Vec::new(),
+            busy_since: None,
+            reuse: std::time::Duration::from_secs_f64(gh::head_activity_reuse()?),
         })
+    }
+
+    /// Whether anything on the pushed head is still running — the one test both of a
+    /// draft's "nothing is coming" decisions are held to: the early lift, and the
+    /// after-lift "did not re-run" ending. Its caller asks only once the grace window
+    /// is over and everything else already says yes.
+    ///
+    /// First, **(a)**: a check the host reports about the pushed head, required or
+    /// not, that has not completed — an Actions job, an app's check run, a commit
+    /// status still `pending`. Only where none has is the host asked, **(b)**, whether
+    /// work on that head is in progress with no check of its own yet: the gap between a
+    /// `needs:`-gated aggregate's prerequisites finishing and its check run appearing,
+    /// which a poll can land in. An answer naming work in progress is reused for
+    /// [`Watcher::reuse`]; a refusal, or an answer about another commit, is no answer,
+    /// and the decision is (a)'s alone.
+    fn still_running(&mut self, reading: &Reading) -> bool {
+        if reading
+            .reported
+            .checks()
+            .iter()
+            .any(|check| !check.settled())
+        {
+            return true;
+        }
+        if self
+            .busy_since
+            .is_some_and(|read| read.elapsed() < self.reuse)
+        {
+            return true;
+        }
+        let at_the_push = ChangeRequest {
+            head_sha: self.pushed.clone(),
+            ..self.change.clone()
+        };
+        let busy = self
+            .host
+            .head_activity(&at_the_push)
+            .is_ok_and(|answer| answer.head == *self.pushed && !answer.in_progress.is_empty());
+        self.busy_since = busy.then(std::time::Instant::now);
+        busy
     }
 
     /// What the host declares it requires before a merge into this change's base:
@@ -3725,10 +3773,13 @@ fn skipped_in(standing: &[Standing<'_>]) -> Vec<String> {
 /// that gates a job on the change not being one reports `skipped` without having
 /// verified anything. So green on a draft is every required check `passed`, and a
 /// draft where the only thing stopping that is checks that have not run — absent, or
-/// skipped — is the draft-skipping repository: once the grace window elapses it is
-/// lifted, `draft-lifted` and `draft-lifted-early` are recorded, one warning line is
-/// printed unless `drafts.warn_on_early_lift` is off, and the watch goes on as
-/// [`settle_after_early_lift`].
+/// skipped — while **nothing on its head is still running** ([`Watcher::still_running`])
+/// is the draft-skipping repository: once the grace window elapses it is lifted,
+/// `draft-lifted` and `draft-lifted-early` are recorded, one warning line is printed
+/// unless `drafts.warn_on_early_lift` is off, and the watch goes on as
+/// [`settle_after_early_lift`]. A required check that is absent because it is an
+/// aggregate gated by `needs:` on jobs still running is the other thing absence looks
+/// like, and that draft is held until the aggregate reports.
 ///
 /// A host that says, completely, that nothing is required is green at once: no grace
 /// window and no warning.
@@ -3789,7 +3840,11 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
             watcher.record_settled(stream, &standing, marked);
             return Ok(true);
         }
-        if grace_elapsed && !running && (!not_run.is_empty() || unseen) {
+        if grace_elapsed
+            && !running
+            && (!not_run.is_empty() || unseen)
+            && !watcher.still_running(&reading)
+        {
             let snapshot = reading.reported.checks().to_vec();
             lift_early(watcher, stream, &not_run, grace)?;
             return settle_after_early_lift(watcher, stream, &declared, &snapshot, grace)
@@ -3808,6 +3863,15 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
     }
 }
 
+/// What to do about CI that does not run a draft's required checks, as the early-lift
+/// warning and the after-lift ending both say it: the fix first, then why it needs no
+/// trigger, then the one case a trigger is for and what it costs.
+const DRAFT_CI: &str = "Run the required checks on drafts: their results attach to the head \
+     commit, so onevcs then keeps the change a draft until they are green, and a workflow that \
+     runs on drafts needs no `ready_for_review` trigger — adding one only starts a second full \
+     run on every lift. Only a workflow that skips its required jobs on drafts needs \
+     `ready_for_review` to run them after a lift, at the cost of one more run per lift";
+
 /// Lift a draft whose required checks had not run on it, and say so.
 fn lift_early(
     watcher: &mut Watcher<'_>,
@@ -3821,9 +3885,10 @@ fn lift_early(
     if warned {
         eprintln!(
             "onevcs: warning: {url} was lifted out of its draft before its required checks ran \
-             on it ({awaited} had not run within {seconds}s), which is what a workflow that \
-             skips drafts looks like. It is watched as a ready change from here; set \
-             `drafts: {{warn_on_early_lift: false}}` in the rules file to silence this",
+             on it ({awaited} had not run within {seconds}s, and nothing on its head was still \
+             running), which is what a workflow that skips drafts looks like. It is watched as \
+             a ready change from here. {DRAFT_CI}. Set `drafts: {{warn_on_early_lift: false}}` \
+             in the rules file to silence this",
             url = change.url,
             awaited = if awaited.is_empty() {
                 "the host named none".to_owned()
@@ -3880,10 +3945,13 @@ fn ran_after_the_lift(check: &Check, snapshot: &[Check]) -> bool {
 /// What was reported while it was a draft is `snapshot`, and a draft-era `skipped` in
 /// it is not a verdict: nothing ran. So the watch needs a run the host attached since
 /// — told from the draft's by [`ran_after_the_lift`] — and where none of the required
-/// checks has one within another grace window, it ends [`Error::ChecksUnsettled`]
-/// saying they did not re-run — never merging, and never lifting anything, on skips
-/// from the draft. Once one has, the ordinary rule applies, under which a skipped
-/// required check from a post-lift run satisfies the watch and is recorded as
+/// checks has one within another grace window, and nothing on the head is still
+/// running ([`Watcher::still_running`]), it ends [`Error::ChecksUnsettled`] saying they
+/// did not re-run — never merging, and never lifting anything, on skips from the draft.
+/// While the draft's own workflow is still going it waits, bounded by the check wait: a
+/// required check that workflow creates later was absent from `snapshot`, so it is a
+/// post-lift run. Once one has appeared, the ordinary rule applies, under which a
+/// skipped required check from a post-lift run satisfies the watch and is recorded as
 /// `passed-with-skipped`.
 fn settle_after_early_lift(
     watcher: &mut Watcher<'_>,
@@ -3921,15 +3989,15 @@ fn settle_after_early_lift(
             watcher.record_settled(stream, &standing, declared.unread());
             return Ok(());
         }
-        if !rerun && lifted.elapsed() >= grace {
+        if !rerun && lifted.elapsed() >= grace && !watcher.still_running(&reading) {
             watcher.record_gate(stream, gate_run::Ruling::NoVerdict, &standing);
             return Err(Error::ChecksUnsettled {
                 reason: format!(
                     "the required checks on {url} did not re-run after its draft was lifted: no \
-                     run the host attached to {commit} after the lift appeared within {seconds}s, \
-                     and the runs from while it was a draft were skipped, which is not a verdict. \
-                     The likely cause is a workflow that does not trigger on `ready_for_review` \
-                     — add it to the workflow's pull_request types, or run the checks by hand",
+                     run the host attached to {commit} after the lift appeared within {seconds}s \
+                     and nothing on it is still running, while the runs from while it was a \
+                     draft were skipped or never started, which is not a verdict. {DRAFT_CI}; \
+                     or run the checks by hand",
                     url = watcher.change.url,
                     commit = watcher.pushed.0,
                     seconds = grace.as_secs_f64(),
@@ -3937,13 +4005,23 @@ fn settle_after_early_lift(
             });
         }
         if watcher.out_of_time() {
-            return Err(watcher.unsettled(
+            let unsettled = watcher.unsettled(
                 stream,
                 &reading,
                 &standing,
                 declared,
                 "settled its required checks on",
-            ));
+            );
+            // A draft-era skip is not a verdict here, and the host's auto-merge would read
+            // one as satisfied — so a required check standing on nothing but one is named
+            // skipped, which leaves the change unarmed rather than merging what never ran.
+            let reported: Vec<&Check> = checks.iter().collect();
+            for name in skipped_in(&standings(&reported, declared)) {
+                if !watcher.skipped_at_elapse.contains(&name) {
+                    watcher.skipped_at_elapse.push(name);
+                }
+            }
+            return Err(unsettled);
         }
         watcher.pause()?;
     }

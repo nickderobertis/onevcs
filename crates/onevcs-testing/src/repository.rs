@@ -1438,7 +1438,7 @@ fn watch(
         settled(emissions, Vec::new(), unread);
         return Ok(Watched::Draft);
     }
-    if running || (not_run.is_empty() && !unseen) {
+    if running || (not_run.is_empty() && !unseen) || still_running(host, change, &checks) {
         return Ok(unsettled(&checks, &standing, &declared));
     }
 
@@ -1451,8 +1451,8 @@ fn watch(
     if warned {
         eprintln!(
             "onevcs: warning: {} was lifted out of its draft before its required checks ran on \
-             it ({}): none had run within {grace}s, which is what a workflow that skips drafts \
-             looks like",
+             it ({}): none had run within {grace}s and nothing on its head was still running, \
+             which is what a workflow that skips drafts looks like. {DRAFT_CI}",
             change.url,
             not_run.join(", ")
         );
@@ -1483,12 +1483,18 @@ fn watch(
             && (standing.is_empty() || standing.iter().any(|(name, _)| *name == check.name))
     });
     if !rerun {
+        // The draft's own workflow still going will attach the check it has not created
+        // yet, so that is a watch still waiting rather than one that ended.
+        let reported: Vec<&Check> = after.iter().collect();
+        if still_running(host, change, &reported) {
+            return Ok(unsettled(&counted, &standing, &declared));
+        }
         return Err(Error::ChecksUnsettled {
             reason: format!(
                 "the required checks on {} did not re-run after its draft was lifted: no run \
-                 the host attached after the lift appeared, and the runs from while it was a \
-                 draft were skipped, which is not a verdict. The likely cause is a workflow that \
-                 does not trigger on `ready_for_review`",
+                 the host attached after the lift appeared and nothing on its head is still \
+                 running, while the runs from while it was a draft were skipped or never \
+                 started, which is not a verdict. {DRAFT_CI}",
                 change.url
             ),
         });
@@ -1503,6 +1509,26 @@ fn watch(
     }
     settled(emissions, skipped(&standing), unread);
     Ok(Watched::Ready)
+}
+
+/// What to do about CI that does not run a draft's required checks, in the words the
+/// crate next door says it in.
+const DRAFT_CI: &str = "Run the required checks on drafts: their results attach to the head \
+     commit, so the change is then kept a draft until they are green, and a workflow that runs \
+     on drafts needs no `ready_for_review` trigger. Only a workflow that skips its required \
+     jobs on drafts needs `ready_for_review` to run them after a lift, at the cost of one more \
+     run per lift";
+
+/// Whether anything on the change's head is still running, by the two readings next
+/// door's watch holds both of a draft's "nothing is coming" decisions to: a check the
+/// host reports that has not completed, and then — only where none has — the host's
+/// own answer about its head. A refusal, or an answer about another commit, is no
+/// answer.
+fn still_running(host: &dyn RemoteHost, change: &ChangeRequest, checks: &[&Check]) -> bool {
+    checks.iter().any(|check| !check.settled())
+        || host
+            .head_activity(change)
+            .is_ok_and(|answer| answer.head == change.head_sha && !answer.in_progress.is_empty())
 }
 
 /// Where one watch ended.
