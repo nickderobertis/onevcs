@@ -88,11 +88,20 @@ fn task_figures(resident_bytes: u64, threads: i32) -> (Option<u64>, Option<u64>)
 }
 
 /// How long a read's own threads are given to finish exiting before what is left is
-/// counted. A thread the read has joined can still be counted for a moment after the
-/// join returns — Apple's kernel finishes terminating it after waking the joiner — so
-/// a count taken at once could charge a read with a thread it has already finished
-/// with. A thread the read left running is still counted when this has passed.
-const SETTLING: Duration = Duration::from_millis(50);
+/// counted. Every thread a read starts is joined before it returns — the scoped
+/// workers of `concurrently` and the pipe readers of each git command, some seventy
+/// a warm read on the 1x fixture — and none is left running. But a joined thread can
+/// still be counted for a moment after the join returns: Apple's libpthread wakes the
+/// joiner (`_pthread_joiner_wake`) before the exiting thread makes the
+/// `__bsdthread_terminate` call that takes it out of its task
+/// (apple-oss-distributions/libpthread `src/pthread.c`, `_pthread_terminate`), and
+/// `pti_threadnum` is that task's `thread_count` (xnu `osfmk/kern/bsd_kern.c`,
+/// `fill_taskprocinfo`). So a count taken at once can charge a read with a thread it
+/// has already finished with. A thread the read left running is still counted once
+/// this has passed; the wait is only ever taken when the count is above the one the
+/// read began with, and is bounded so that a leak fails the journey rather than
+/// stalling it.
+const SETTLING: Duration = Duration::from_millis(500);
 
 /// The figures after a read, with any thread over the `before` count the read began
 /// with given until `settling` declines to wait any longer to exit: resident memory as
