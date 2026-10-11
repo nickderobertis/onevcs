@@ -554,7 +554,7 @@ pub struct PublishArgs {
     pub defer_checks: bool,
     /// The draft change request a `--defer-checks` publication pushes into, by URL.
     // llmlint: ignore[invalid_states_unrepresentable] typed text for the reason given on
-    // `title`: it becomes a `Url` in `app::adopted`, where the refusal names the text the
+    // `title`: it becomes a `Url` in `app::change_url`, where the refusal names the text the
     // operator typed rather than clap's usage text, and `--adopt` without
     // `--defer-checks` is refused by name in the publication, before anything is pushed.
     #[arg(long, value_name = "URL")]
@@ -605,7 +605,7 @@ pub struct ChangeStandingsArgs {
     /// A change request to read, by URL; repeat for each. With `--review`,
     /// `<URL>=<MARKER>` reads its review feedback since that marker.
     // llmlint: ignore[invalid_states_unrepresentable] typed text, parsed into the
-    // request's `Url`s and markers in `app::standing_targets`, where a refusal names the
+    // request's `Url`s and markers in `app::change_standings`, where a refusal names the
     // argument the operator typed rather than clap's usage text.
     #[arg(long = "change", value_name = "URL", required = true)]
     pub changes: Vec<String>,
