@@ -436,3 +436,68 @@ fn the_library_answers_an_armed_ending_with_the_change_and_its_head() {
     .expect("it serializes");
     assert!(unarmed["failed"].get("armed").is_none(), "{unarmed}");
 }
+
+#[test]
+fn publish_branch_and_recover_end_an_elapsed_wait_armed_as_a_session_publication_does() {
+    for verb in ["publish-branch", "recover"] {
+        let hosted = Hosted::new(AUTO);
+        hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+        hosted.world.host_checks(&[running()]);
+        let world = &hosted.world;
+        world.git(
+            &hosted.checkout,
+            &["checkout", "-q", "-b", "feature/keyed", "main"],
+        );
+        world.commit_file(
+            &hosted.checkout,
+            "one.txt",
+            "one\n",
+            "feat: the keyed thing",
+        );
+        if verb == "recover" {
+            world.git(
+                &hosted.checkout,
+                &[
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    &format!(
+                        "chore: preserve work on feature/keyed\n\n{}",
+                        crate::support::documented_trailer(
+                            "Status",
+                            &crate::support::documented_default_prefix()
+                        ),
+                    ),
+                ],
+            );
+        }
+        world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+
+        world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .args([
+                verb,
+                "feature/keyed",
+                "--repo",
+                &hosted.checkout.to_string_lossy(),
+            ])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("Its merge is armed"));
+        let head = hosted
+            .branch_on_origin("feature/keyed")
+            .expect("the branch was pushed");
+        let armed = armed_event(world, &format!("{verb}-feature-keyed"));
+        assert_eq!(armed["head"], head.as_str(), "{verb}");
+        assert!(asked(world, "pr ready 1"), "{verb}: lifted");
+        assert_eq!(hosted.origin_log().len(), 1, "{verb}: nothing landed yet");
+        assert!(
+            world
+                .git(&hosted.checkout, &["branch", "--list", "feature/keyed"])
+                .contains("feature/keyed"),
+            "{verb}: the branch is kept where it was found"
+        );
+    }
+}

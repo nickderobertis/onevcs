@@ -530,3 +530,126 @@ fn a_malformed_base_merge_or_checks_block_is_refused_by_name() {
             .stderr(predicate::str::contains(said));
     }
 }
+
+/// A branch in the registered checkout itself, one commit ahead of `main` — and, for
+/// `recover`, carrying the unattested incomplete-step marker that verb lands — with the
+/// base then moved on the origin, touching `base_file`.
+fn keyed_branch(hosted: &Hosted, branch: &str, verb: &str, base_file: &str, base_says: &str) {
+    let world = &hosted.world;
+    let checkout = &hosted.checkout;
+    world.git(checkout, &["checkout", "-q", "-b", branch, "main"]);
+    world.commit_file(
+        checkout,
+        "branch.txt",
+        "the branch's work\n",
+        "feat: the branch's work",
+    );
+    if verb == "recover" {
+        world.git(
+            checkout,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!(
+                    "chore: preserve work on {branch}\n\n{}",
+                    crate::support::documented_trailer(
+                        "Status",
+                        &crate::support::documented_default_prefix()
+                    ),
+                ),
+            ],
+        );
+    }
+    world.git(checkout, &["checkout", "-q", "main"]);
+    move_base(hosted, base_file, base_says, "elsewhere");
+}
+
+#[test]
+fn publish_branch_and_recover_leave_a_cleanly_merging_branch_at_its_tip_under_on_conflict() {
+    for verb in ["publish-branch", "recover"] {
+        let hosted = Hosted::new(AUTO);
+        green(&hosted.world);
+        hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+        keyed_branch(
+            &hosted,
+            "feature/keyed",
+            verb,
+            "base.txt",
+            "the base moved\n",
+        );
+
+        hosted
+            .world
+            .onevcs()
+            .args([
+                verb,
+                "feature/keyed",
+                "--repo",
+                &hosted.checkout.to_string_lossy(),
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("merged at"));
+
+        let decisions = published_decisions(&hosted.world, &format!("{verb}-feature-keyed"));
+        assert!(!decisions.is_empty(), "{verb}: the decision is recorded");
+        for decision in &decisions {
+            assert_eq!(decision["decision"], "skipped", "{verb}: {decisions:?}");
+            assert_eq!(decision["branch"], "feature/keyed");
+            assert_eq!(decision["base"], "main");
+        }
+        assert_eq!(
+            hosted
+                .world
+                .git(&hosted.origin, &["rev-list", "--merges", "feature/keyed"]),
+            "",
+            "{verb}: no merge commit was made on the branch"
+        );
+        for (file, says) in [
+            ("branch.txt", "the branch's work"),
+            ("base.txt", "the base moved"),
+        ] {
+            assert_eq!(
+                hosted
+                    .world
+                    .git(&hosted.origin, &["show", &format!("main:{file}")]),
+                says,
+                "{verb}: the host's merge brought the two together"
+            );
+        }
+    }
+}
+
+#[test]
+fn publish_branch_still_merges_a_conflicting_base_under_on_conflict_and_refuses_the_conflict() {
+    let hosted = Hosted::new(AUTO);
+    hosted.world.install_pre_push(&hosted.checkout, "exit 0");
+    keyed_branch(
+        &hosted,
+        "feature/keyed",
+        "publish-branch",
+        "branch.txt",
+        "the base's own branch.txt\n",
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "feature/keyed",
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("conflicts with \"feature/keyed\""));
+    let decisions = published_decisions(&hosted.world, "publish-branch-feature-keyed");
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["decision"], "merged");
+    assert!(decisions[0]["because"]
+        .as_str()
+        .is_some_and(|because| because.contains("conflicts with the branch")));
+}
