@@ -547,7 +547,7 @@ impl Landing {
                 },
             )?;
             crate::base_merge::record(stream, &self.branch, &self.change_base, &decision);
-            if !decision.merge {
+            if !decision.merges() {
                 return Ok(());
             }
         }

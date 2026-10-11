@@ -1629,7 +1629,7 @@ fn sync(
             },
         )?;
         crate::base_merge::record(stream, &context.branch, context.target.base(), &decision);
-        if !decision.merge {
+        if !decision.merges() {
             return Ok(());
         }
     }

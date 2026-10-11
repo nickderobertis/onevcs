@@ -34,11 +34,31 @@ use crate::host::Hosting;
 use crate::rules::BaseMerge;
 use crate::stream::Stream;
 
+/// Whether a branch's moved base is merged into it — the two words every record of
+/// the decision spells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// The base is merged in, as every build before the setting merged it.
+    Merged,
+    /// The branch stays at its tip, and no merge commit is made.
+    Skipped,
+}
+
+impl Verdict {
+    /// How the payload spells it.
+    fn spell(self) -> &'static str {
+        match self {
+            Verdict::Merged => "merged",
+            Verdict::Skipped => "skipped",
+        }
+    }
+}
+
 /// What was decided about one branch's base, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Decision {
-    /// Whether the base is to be merged into the branch.
-    pub merge: bool,
+    /// Whether the base is merged into the branch.
+    pub verdict: Verdict,
     /// Why, in a sentence a reader of the event acts on.
     pub because: String,
 }
@@ -46,23 +66,28 @@ pub(crate) struct Decision {
 impl Decision {
     fn merge(because: impl Into<String>) -> Self {
         Self {
-            merge: true,
+            verdict: Verdict::Merged,
             because: because.into(),
         }
     }
 
     fn skip(because: impl Into<String>) -> Self {
         Self {
-            merge: false,
+            verdict: Verdict::Skipped,
             because: because.into(),
         }
+    }
+
+    /// Whether the caller goes on to merge the base.
+    pub(crate) fn merges(&self) -> bool {
+        self.verdict == Verdict::Merged
     }
 
     /// The object every record of the decision carries: `decision` (`merged` or
     /// `skipped`) and `because`.
     pub(crate) fn payload(&self) -> Map<String, Value> {
         let Value::Object(payload) = json!({
-            "decision": if self.merge { "merged" } else { "skipped" },
+            "decision": self.verdict.spell(),
             "because": self.because,
         }) else {
             unreachable!("a JSON object literal is an object")

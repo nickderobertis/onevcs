@@ -2103,7 +2103,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         BaseMerge::Leave => None,
     };
     let conflict = match &decision {
-        Some(decision) if decision.merge => integrate(
+        Some(decision) if decision.merges() => integrate(
             worktree,
             &integrated,
             branch,
