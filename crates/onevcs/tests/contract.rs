@@ -9003,3 +9003,58 @@ fn a_version_7_registry_round_trips_its_recorded_visibility_and_omits_what_it_ne
         "what was recorded comes back, and nothing unrecorded is written"
     );
 }
+
+#[test]
+fn the_standings_host_methods_default_to_the_refusal_for_a_seam_with_no_body() {
+    // All four are defaulted, so the seam stays additive — and to the refusal this
+    // repository reserves for a seam with no body, never to an answer: a host never
+    // taught to read where change requests stand has not read that none of them moved,
+    // and one never taught to move a change request has not moved it.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeId("42".to_owned());
+    let refused = |answer: Result<(), Error>, method: &str| {
+        assert!(
+            matches!(&answer, Err(Error::NotImplemented { operation }) if operation.contains(method)),
+            "{method} answered {answer:?} rather than the refusal for a seam with no body"
+        );
+    };
+    refused(
+        Earlier
+            .change_standings("main", std::slice::from_ref(&change))
+            .map(drop),
+        "change_standings",
+    );
+    refused(
+        Earlier
+            .review_standings("main", &[(change.clone(), None)])
+            .map(drop),
+        "review_standings",
+    );
+    refused(
+        Earlier
+            .retarget_change(&change, "main", Some("a body"))
+            .map(drop),
+        "retarget_change",
+    );
+    refused(Earlier.reopen_change(&change).map(drop), "reopen_change");
+}
