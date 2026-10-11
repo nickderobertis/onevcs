@@ -658,7 +658,16 @@ fn publish_branch_still_merges_a_conflicting_base_under_on_conflict_and_refuses_
 fn a_continued_branch_that_already_carries_its_base_merges_nothing_and_says_so() {
     // The base has not moved past the branch, so there is nothing to merge whatever
     // `base_merge` says — and the record says why rather than leaving it to be inferred.
-    let hosted = Hosted::new(AUTO);
+    for policy in [
+        AUTO,
+        "{publication: change-auto, approvals: none, base_merge: always}",
+    ] {
+        carries_its_base(policy);
+    }
+}
+
+fn carries_its_base(policy: &str) {
+    let hosted = Hosted::new(policy);
     let world = &hosted.world;
     world.git(&hosted.checkout, &["checkout", "-q", "-b", BRANCH, "main"]);
     world.commit_file(
@@ -673,11 +682,15 @@ fn a_continued_branch_that_already_carries_its_base_merges_nothing_and_says_so()
     world.git(&hosted.checkout, &["branch", "-q", "-D", BRANCH]);
 
     let (token, worktree, _) = open(&hosted, &[]);
-    assert_eq!(world.git(&worktree, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        world.git(&worktree, &["rev-parse", "HEAD"]),
+        tip,
+        "{policy}: no merge commit"
+    );
     let decision = opened_decision(world, &token);
-    assert_eq!(decision["decision"], "skipped", "{decision}");
+    assert_eq!(decision["decision"], "skipped", "{policy}: {decision}");
     assert_eq!(
         decision["because"], "the branch already carries origin/main",
-        "{decision}"
+        "{policy}: {decision}"
     );
 }

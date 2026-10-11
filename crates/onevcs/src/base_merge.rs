@@ -130,13 +130,16 @@ pub(crate) struct Merging<'a> {
 /// answer, which merges.
 pub(crate) fn decide(setting: BaseMerge, asked: &Merging<'_>) -> Result<Decision> {
     let base = asked.integrated;
+    // Asked first, under either setting: a base the branch already carries has nothing
+    // to merge, and recording `merged` for a merge that changes nothing would read as a
+    // merge commit that is not there.
+    if git::is_ancestor(asked.repo, base, asked.branch)? {
+        return Ok(Decision::skip(format!("the branch already carries {base}")));
+    }
     if setting == BaseMerge::Always {
         return Ok(Decision::merge(format!(
             "base_merge is always, so {base} is merged whenever it moved"
         )));
-    }
-    if git::is_ancestor(asked.repo, base, asked.branch)? {
-        return Ok(Decision::skip(format!("the branch already carries {base}")));
     }
     if git::merge_would_conflict(asked.repo, base, asked.branch)? {
         return Ok(Decision::merge(format!(

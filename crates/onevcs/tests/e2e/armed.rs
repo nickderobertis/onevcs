@@ -561,3 +561,44 @@ fn a_ready_change_auto_merge_armed_by_its_watch_ends_marked_armed_when_the_wait_
     );
     assert_eq!(hosted.origin_log().len(), 1, "nothing landed yet");
 }
+
+#[test]
+fn a_merge_armed_by_the_watch_ends_unmarked_when_a_required_check_was_skipped() {
+    // The ready `change-auto` watch armed the host's merge on its first reading, before
+    // anything elapsed; a required check skipped when the wait elapses means the ending
+    // claims no armed merge of its own, asks the host for nothing further, and says
+    // that the merge its watch armed stands.
+    let hosted = Hosted::new(
+        "{publication: change-auto, approvals: none, drafts: {disabled: true}}",
+    );
+    hosted.world.host_checks(&[
+        running(),
+        Check {
+            name: "lint",
+            status: "completed",
+            conclusion: Some("skipped"),
+            required: true,
+        },
+    ]);
+    let token = hosted.change("feature/armed-skipped", "feat: the armed skipped thing");
+
+    publish(&hosted, &token)
+        .code(1)
+        .stderr(predicate::str::contains("\\"lint\\""))
+        .stderr(predicate::str::contains(
+            "left with the merge its watch had already armed",
+        ))
+        .stderr(predicate::str::contains("Its merge is armed").not());
+    assert!(hosted.world.events_of(&token, "merge-armed").is_empty());
+    let calls = hosted.world.host_calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.starts_with("pr merge 1"))
+            .count(),
+        1,
+        "only the watch's own arming: {calls:?}"
+    );
+    assert!(!asked(&hosted.world, "repo view") && !asked(&hosted.world, "pr ready"));
+}
+
