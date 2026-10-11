@@ -15,7 +15,8 @@
 //!   with a `GIT_*` override set, under which no proof is reused or stored, so its
 //!   rows are git's own answer to compare every timed call against.
 //!
-//! Prints one JSON document: each call's wall clock, load and rows digest, the
+//! Prints one JSON document: each call's wall clock (through the wait for its threads
+//! to leave the count, see `SETTLING`), load and rows digest, the
 //! process's resident memory and thread count after each call, and the last call's
 //! rows. Exits 0 having printed it; 2, naming the problem on stderr,
 //! where the arguments or the environment cannot be used; and 1, naming it, where a
@@ -267,17 +268,20 @@ fn run() -> Result<serde_json::Value, Failure> {
         let (_, before) = resources();
         let started = Instant::now();
         let rows = read()?;
+        // Timed through the settling as well, so that a sample is never shorter than
+        // the time until the read's threads are gone; where nothing is left exiting
+        // it is one more reading of the figures.
+        let deadline = Instant::now() + SETTLING;
+        let (rss_kib, threads) = settled(before, resources, || {
+            std::thread::sleep(Duration::from_millis(1));
+            Instant::now() < deadline
+        });
         let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
         let bytes =
             serde_json::to_vec(&rows).map_err(|failure| Failure::Read(failure.to_string()))?;
         let verdict = Sha256::digest(&bytes).into();
         drop(bytes);
         last = rows;
-        let deadline = Instant::now() + SETTLING;
-        let (rss_kib, threads) = settled(before, resources, || {
-            std::thread::sleep(Duration::from_millis(1));
-            Instant::now() < deadline
-        });
         samples.push(Sample {
             wall_ms,
             load1: load,
