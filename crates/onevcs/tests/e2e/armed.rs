@@ -522,3 +522,42 @@ fn publish_branch_and_recover_end_an_elapsed_wait_armed_as_a_session_publication
         );
     }
 }
+
+#[test]
+fn a_ready_change_auto_merge_armed_by_its_watch_ends_marked_armed_when_the_wait_elapses() {
+    // With the draft lifecycle off the change opens ready and `change-auto`'s watch arms
+    // the host's merge on its first reading; when the wait then elapses, that merge is
+    // the armed one — it is not asked for again, nothing is lifted, and the ending says
+    // so.
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: none, drafts: {disabled: true}}");
+    hosted.world.host_checks(&[running()]);
+    let token = hosted.change("feature/ready-armed", "feat: the ready thing");
+
+    publish(&hosted, &token)
+        .code(1)
+        .stderr(predicate::str::contains("checks unsettled"))
+        .stderr(predicate::str::contains("Its merge is armed"));
+    let head = hosted
+        .branch_on_origin("feature/ready-armed")
+        .expect("the branch was pushed");
+    assert_eq!(armed_event(&hosted.world, &token)["head"], head.as_str());
+    let calls = hosted.world.host_calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.starts_with("pr merge 1") && call.contains("--auto"))
+            .count(),
+        1,
+        "armed once, by the watch: {calls:?}"
+    );
+    assert!(
+        !asked(&hosted.world, "pr ready"),
+        "nothing to lift: {calls:?}"
+    );
+    assert!(
+        !asked(&hosted.world, "repo view"),
+        "an armed merge is not asked about again: {calls:?}"
+    );
+    assert_eq!(hosted.origin_log().len(), 1, "nothing landed yet");
+}

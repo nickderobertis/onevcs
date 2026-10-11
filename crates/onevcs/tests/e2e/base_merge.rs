@@ -653,3 +653,31 @@ fn publish_branch_still_merges_a_conflicting_base_under_on_conflict_and_refuses_
         .as_str()
         .is_some_and(|because| because.contains("conflicts with the branch")));
 }
+
+#[test]
+fn a_continued_branch_that_already_carries_its_base_merges_nothing_and_says_so() {
+    // The base has not moved past the branch, so there is nothing to merge whatever
+    // `base_merge` says — and the record says why rather than leaving it to be inferred.
+    let hosted = Hosted::new(AUTO);
+    let world = &hosted.world;
+    world.git(&hosted.checkout, &["checkout", "-q", "-b", BRANCH, "main"]);
+    world.commit_file(
+        &hosted.checkout,
+        "branch.txt",
+        "the branch's work\n",
+        "feat: the branch's work",
+    );
+    world.git(&hosted.checkout, &["push", "-q", "origin", BRANCH]);
+    let tip = world.git(&hosted.checkout, &["rev-parse", BRANCH]);
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+    world.git(&hosted.checkout, &["branch", "-q", "-D", BRANCH]);
+
+    let (token, worktree, _) = open(&hosted, &[]);
+    assert_eq!(world.git(&worktree, &["rev-parse", "HEAD"]), tip);
+    let decision = opened_decision(world, &token);
+    assert_eq!(decision["decision"], "skipped", "{decision}");
+    assert_eq!(
+        decision["because"], "the branch already carries origin/main",
+        "{decision}"
+    );
+}
