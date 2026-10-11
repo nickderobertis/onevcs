@@ -1,0 +1,186 @@
+{
+  "version": 20,
+  "authenticated_user": "seeded-user",
+  "changes": [
+    {
+      "id": "1",
+      "url": "https://github.com/acme-corp/widgets/pull/1",
+      "head_sha": "def456",
+      "base": "main"
+    },
+    {
+      "id": "2",
+      "url": "https://github.com/acme-corp/widgets/pull/2",
+      "head_sha": "789abc",
+      "base": "main"
+    }
+  ],
+  "heads": {
+    "1": "feature/seeded",
+    "2": "feature/drafted"
+  },
+  "titles": {
+    "1": "feat: the seeded change",
+    "2": "feat: the drafted change"
+  },
+  "bodies": {
+    "1": "The body the caller drafted.\n"
+  },
+  "checks": {
+    "1": [
+      {
+        "name": "gate",
+        "status": "completed",
+        "conclusion": "success",
+        "required": true,
+        "head": "def456",
+        "url": "https://github.com/acme-corp/widgets/runs/7",
+        "started_at": "2026-10-05T11:58:00Z",
+        "completed_at": "2026-10-05T11:59:30Z"
+      },
+      {
+        "name": "coverage",
+        "status": "in_progress",
+        "conclusion": null,
+        "required": false
+      }
+    ]
+  },
+  "check_logs": {
+    "1": {
+      "gate": "everything passed\n"
+    }
+  },
+  "drafts": {
+    "2": {
+      "kind": "awaiting-release",
+      "awaiting": "github.com/acme-corp/widgets",
+      "target": "crate",
+      "reference": "feature/the-pinned-branch",
+      "because": "the dependency is pinned to a branch until its release arrives"
+    }
+  },
+  "made_ready": [
+    "2"
+  ],
+  "awaiting_checks": [
+    "1"
+  ],
+  "checks_after_lift": {
+    "1": [
+      {
+        "name": "gate",
+        "status": "completed",
+        "conclusion": "skipped",
+        "required": true,
+        "url": "https://github.com/acme-corp/widgets/runs/8"
+      }
+    ]
+  },
+  "required_checks": {
+    "checks": [
+      "gate"
+    ],
+    "unconsulted": {
+      "branch-protection": "Resource not accessible by personal access token (HTTP 403)"
+    }
+  },
+  "described": [
+    {
+      "id": "2",
+      "title": "feat: the drafted change, described",
+      "body": "## What\n\nThe body the closeout wrote.\n"
+    }
+  ],
+  "check_sources": [
+    "actions",
+    "branch-rules"
+  ],
+  "merges": {
+    "1": {
+      "merged": "abc123"
+    }
+  },
+  "merge_times": {
+    "1": "2026-10-05T12:00:00.000Z"
+  },
+  "review_comments": {
+    "1": [
+      {
+        "id": "PRRC_kwDOT1Igdc78pjmC",
+        "kind": {
+          "type": "review-thread",
+          "thread": "PRRT_kwDOT1Igdc6rGrsV",
+          "path": "src/lib.rs",
+          "line": 3,
+          "outdated": false,
+          "resolved": true
+        },
+        "author": "reviewer",
+        "body": "Line 3 should say why.",
+        "url": "https://github.com/acme-corp/widgets/pull/1#discussion_r1",
+        "created_at": "2026-10-05T12:00:00Z",
+        "updated_at": "2026-10-05T12:01:00Z",
+        "revision": 1
+      },
+      {
+        "id": "reply-1-2",
+        "kind": {
+          "type": "review-thread",
+          "thread": "PRRT_kwDOT1Igdc6rGrsV",
+          "path": "src/lib.rs",
+          "line": 3,
+          "outdated": false,
+          "resolved": true
+        },
+        "author": "onevcs-testing",
+        "body": "Done.\n\n<!-- onevcs:reply in-reply-to=PRRC_kwDOT1Igdc78pjmC key=k1 label=addressed -->",
+        "url": "https://github.com/acme-corp/widgets/pull/1#discussion_reply-1-2",
+        "created_at": "2026-10-05T12:02:00Z",
+        "updated_at": "2026-10-05T12:02:00Z",
+        "in_reply_to": "PRRC_kwDOT1Igdc78pjmC",
+        "revision": 2
+      },
+      {
+        "id": "PRR_kwDOT1Igdc8AAAABRqcSaA",
+        "kind": {
+          "type": "review",
+          "state": "changes_requested"
+        },
+        "author": "reviewer",
+        "body": "The change needs a rationale.",
+        "url": "https://github.com/acme-corp/widgets/pull/1#pullrequestreview-1",
+        "created_at": "2026-10-05T12:00:00Z",
+        "updated_at": "2026-10-05T12:00:00Z",
+        "revision": 0
+      },
+      {
+        "id": "IC_kwDOT1Igdc8AAAABa6OLZQ",
+        "kind": {
+          "type": "conversation"
+        },
+        "author": "reviewer",
+        "body": "Mention the base.",
+        "url": "https://github.com/acme-corp/widgets/pull/1#issuecomment-1",
+        "created_at": "2026-10-05T12:00:00Z",
+        "updated_at": "2026-10-05T12:00:00Z",
+        "revision": 0
+      }
+    ]
+  },
+  "replies": [
+    {
+      "change": "1",
+      "comment": "PRRC_kwDOT1Igdc78pjmC",
+      "key": "k1",
+      "reply": "reply-1-2",
+      "threaded": true
+    }
+  ],
+  "review_charges": [
+    {
+      "graphql_points": 3,
+      "rest_requests": 0
+    }
+  ]
+}

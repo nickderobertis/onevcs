@@ -10,13 +10,14 @@ use std::path::PathBuf;
 
 use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
-    BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource, DraftReason,
-    FailureKind, HeldBy, Holding, Identity, Landed, LineChange, MergeOutcome, MergePolicy,
-    NetNegative, OnOrigin, OpenConflict, PreservedBranch, ProtectionSource, Provenance,
-    Publication, PublishOutcome, Recoverable, RequiredChecks, Retirement, RetirementClass, Session,
-    SessionToken, Sha, SupersededBy, TargetName, Url,
+    BranchHolder, BranchHolderKind, ChangeId, ChangeRequest, Check, CheckSource, CommentId,
+    CommentKind, DraftReason, FailureKind, HeldBy, Holding, Identity, Landed, LineChange,
+    MergeOutcome, MergePolicy, NetNegative, OnOrigin, OpenConflict, PreservedBranch,
+    ProtectionSource, Provenance, Publication, PublishOutcome, ReadCost, Recoverable,
+    RequiredChecks, Retirement, RetirementClass, Session, SessionToken, Sha, SupersededBy,
+    TargetName, Url,
 };
-use onevcs_testing::{Described, HostState, VcsState};
+use onevcs_testing::{Described, HostComment, HostState, Replied, VcsState};
 
 /// The variable this platform's home directory is spelled in.
 ///
@@ -383,7 +384,88 @@ pub fn full_host_state() -> HostState {
                 .collect(),
         ),
         merges,
-        merge_times: BTreeMap::from([(id, "2026-10-05T12:00:00.000Z".to_owned())]),
+        merge_times: BTreeMap::from([(id.clone(), "2026-10-05T12:00:00.000Z".to_owned())]),
+        // One comment of each kind, a reply onevcs posted in the thread, and the record
+        // of posting it — because the document has to hold every shape a read answers
+        // from, a thread's flags and a reply's link included.
+        review_comments: BTreeMap::from([(
+            id.clone(),
+            vec![
+                HostComment {
+                    id: CommentId("PRRC_kwDOT1Igdc78pjmC".to_owned()),
+                    kind: CommentKind::ReviewThread {
+                        thread: "PRRT_kwDOT1Igdc6rGrsV".to_owned(),
+                        path: "src/lib.rs".to_owned(),
+                        line: Some(3),
+                        outdated: false,
+                        resolved: true,
+                    },
+                    author: "reviewer".to_owned(),
+                    body: "Line 3 should say why.".to_owned(),
+                    url: "https://github.com/acme-corp/widgets/pull/1#discussion_r1".to_owned(),
+                    created_at: "2026-10-05T12:00:00Z".to_owned(),
+                    updated_at: "2026-10-05T12:01:00Z".to_owned(),
+                    in_reply_to: None,
+                    revision: 1,
+                },
+                HostComment {
+                    id: CommentId("reply-1-2".to_owned()),
+                    kind: CommentKind::ReviewThread {
+                        thread: "PRRT_kwDOT1Igdc6rGrsV".to_owned(),
+                        path: "src/lib.rs".to_owned(),
+                        line: Some(3),
+                        outdated: false,
+                        resolved: true,
+                    },
+                    author: "onevcs-testing".to_owned(),
+                    body: "Done.\n\n<!-- onevcs:reply in-reply-to=PRRC_kwDOT1Igdc78pjmC \
+                           key=k1 label=addressed -->"
+                        .to_owned(),
+                    url: "https://github.com/acme-corp/widgets/pull/1#discussion_reply-1-2"
+                        .to_owned(),
+                    created_at: "2026-10-05T12:02:00Z".to_owned(),
+                    updated_at: "2026-10-05T12:02:00Z".to_owned(),
+                    in_reply_to: Some(CommentId("PRRC_kwDOT1Igdc78pjmC".to_owned())),
+                    revision: 2,
+                },
+                HostComment {
+                    id: CommentId("PRR_kwDOT1Igdc8AAAABRqcSaA".to_owned()),
+                    kind: CommentKind::Review {
+                        state: "changes_requested".to_owned(),
+                    },
+                    author: "reviewer".to_owned(),
+                    body: "The change needs a rationale.".to_owned(),
+                    url: "https://github.com/acme-corp/widgets/pull/1#pullrequestreview-1"
+                        .to_owned(),
+                    created_at: "2026-10-05T12:00:00Z".to_owned(),
+                    updated_at: "2026-10-05T12:00:00Z".to_owned(),
+                    in_reply_to: None,
+                    revision: 0,
+                },
+                HostComment {
+                    id: CommentId("IC_kwDOT1Igdc8AAAABa6OLZQ".to_owned()),
+                    kind: CommentKind::Conversation,
+                    author: "reviewer".to_owned(),
+                    body: "Mention the base.".to_owned(),
+                    url: "https://github.com/acme-corp/widgets/pull/1#issuecomment-1".to_owned(),
+                    created_at: "2026-10-05T12:00:00Z".to_owned(),
+                    updated_at: "2026-10-05T12:00:00Z".to_owned(),
+                    in_reply_to: None,
+                    revision: 0,
+                },
+            ],
+        )]),
+        replies: vec![Replied {
+            change: id,
+            comment: CommentId("PRRC_kwDOT1Igdc78pjmC".to_owned()),
+            key: "k1".to_owned(),
+            reply: CommentId("reply-1-2".to_owned()),
+            threaded: true,
+        }],
+        review_charges: vec![ReadCost {
+            graphql_points: 3,
+            rest_requests: 0,
+        }],
     }
 }
 

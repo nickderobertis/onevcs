@@ -12,8 +12,9 @@ use crate::boundary::Visibility;
 use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
 use crate::publish::DraftReason;
+use crate::review::{CommentId, PostedReply, ReadMarker, ReviewRead};
 use crate::rules::MergePolicy;
-use crate::{gh, git, stream};
+use crate::{gh, git, review, stream};
 
 /// What `gh pr checks` exits with when a check it has just reported has not
 /// settled. The rollup it printed is still the answer, so this status is read
@@ -336,6 +337,49 @@ pub trait RemoteHost {
     fn change_description(&self, _cr: &ChangeRequest) -> Result<Description> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::change_description",
+        })
+    }
+
+    /// A change request's review feedback: every review-thread comment, review
+    /// summary and conversation comment created or edited after `since` (all of them
+    /// when `since` is `None`), and every comment whose thread was resolved,
+    /// unresolved or outdated since it, with the marker to pass next time.
+    ///
+    /// What [`review_comments`](crate::review_comments) asks. `ours` and
+    /// `reply_marker` are set from the reply marker in a comment's body and from
+    /// nothing else, and the marker is the implementation's own to spell.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn review_comments(
+        &self,
+        _change: &ChangeId,
+        _since: Option<&ReadMarker>,
+    ) -> Result<ReviewRead> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::review_comments",
+        })
+    }
+
+    /// Post `body` as a reply to `comment`: in its thread where it is in one, and
+    /// otherwise as a new conversation comment whose first line links it. Never
+    /// resolves a thread.
+    ///
+    /// `body` is the whole of what is posted, the reply marker already its last line,
+    /// and `key` is the idempotency key that marker carries, handed over for an
+    /// implementation that keeps a record of its own. Finding a reply already
+    /// carrying `key` is [`reply_to_comment`](crate::reply_to_comment)'s, under its
+    /// lock, so this posts.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn reply_to_comment(
+        &self,
+        _change: &ChangeId,
+        _comment: &CommentId,
+        _body: &str,
+        _key: &str,
+    ) -> Result<PostedReply> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::reply_to_comment",
         })
     }
 }
@@ -1846,6 +1890,22 @@ impl RemoteHost for GitHub {
                 cr.url
             ))),
         }
+    }
+
+    /// One GraphQL query document, paged — see `review::github`.
+    fn review_comments(&self, change: &ChangeId, since: Option<&ReadMarker>) -> Result<ReviewRead> {
+        review::github::read(&self.repo, change, since)
+    }
+
+    /// One REST request — see `review::github`.
+    fn reply_to_comment(
+        &self,
+        change: &ChangeId,
+        comment: &CommentId,
+        body: &str,
+        _key: &str,
+    ) -> Result<PostedReply> {
+        review::github::reply(&self.repo, change, comment, body)
     }
 
     fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {

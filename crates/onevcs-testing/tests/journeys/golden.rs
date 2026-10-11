@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v19-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v19-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v20-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v20-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v19.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v19.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v20.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v20.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
@@ -110,6 +110,9 @@ const HOST_OPTIONAL: &[&str] = &[
     "check_sources",
     "merges",
     "merge_times",
+    "review_comments",
+    "replies",
+    "review_charges",
 ];
 
 #[test]
@@ -228,6 +231,59 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");
     assert_eq!(terse.state().expect("readable").version, STATE_VERSION);
+}
+
+/// The same two scenarios as the build before review feedback wrote them.
+const HOST_V19: &str = include_str!("../golden/host-state-v19.json");
+const VCS_V19: &str = include_str!("../golden/vcs-state-v19.json");
+
+#[test]
+fn a_version_19_document_reads_as_a_host_holding_no_review_feedback_and_is_written_back_at_this_one(
+) {
+    // A consumer's checked-in scenario, written by the build before review feedback:
+    // version 20 is the adding of it, and a version 19 document holds none — which is
+    // what that build could hold. So its change requests read as carrying no comment,
+    // and the next write declares this version and spells what it now holds.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    assert!(
+        HOST_V19.contains(r#""version": 19"#) && !HOST_V19.contains("review_comments"),
+        "the previous document is the one with no review feedback, or it proves nothing"
+    );
+    std::fs::write(home.path("vcs.json"), VCS_V19).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V19).expect("a document a previous build wrote");
+    FileVcs::create(home.path("vcs.json")).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert!(state.review_comments.is_empty() && state.replies.is_empty());
+
+    let change = state.changes[0].id.clone();
+    let repo = host.for_repo("acme-corp/widgets").expect("a host");
+    let read = repo.review_comments(&change, None).expect("the host reads");
+    assert!(read.comments.is_empty() && !read.unchanged, "{read:?}");
+    host.add_comment(
+        &change,
+        onevcs_testing::HostComment {
+            id: onevcs::CommentId("I1".to_owned()),
+            kind: onevcs::CommentKind::Conversation,
+            author: "reviewer".to_owned(),
+            body: "After the bump.".to_owned(),
+            url: "https://github.com/acme-corp/widgets/pull/1#issuecomment-1".to_owned(),
+            created_at: "2026-10-10T00:00:00Z".to_owned(),
+            updated_at: "2026-10-10T00:00:00Z".to_owned(),
+            in_reply_to: None,
+            revision: 0,
+        },
+    )
+    .expect("a comment is added");
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && written.contains("review_comments")
+            && !written.contains(r#""replies""#),
+        "carried forward at this version, spelling only what it holds: {written}"
+    );
 }
 
 #[test]

@@ -347,6 +347,8 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::BranchSuperseded,
         EventKind::BranchRetired,
         EventKind::GateRun,
+        EventKind::ReviewCommentsRead,
+        EventKind::ReviewReplyPosted,
         EventKind::StackBaseAssembled,
     ];
     for kind in &kinds {
@@ -379,6 +381,8 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::BranchSuperseded
             | EventKind::BranchRetired
             | EventKind::GateRun
+            | EventKind::ReviewCommentsRead
+            | EventKind::ReviewReplyPosted
             | EventKind::StackBaseAssembled => {}
         }
     }
@@ -3590,6 +3594,8 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("publish-branch", operation!(onevcs::publish_branch)),
         ("change show", operation!(onevcs::session_change)),
         ("change describe", operation!(onevcs::describe_change)),
+        ("change comments", operation!(onevcs::review_comments)),
+        ("change reply", operation!(onevcs::reply_to_comment)),
         ("change ready", operation!(onevcs::ready_change)),
         ("preserve", operation!(onevcs::preserve)),
         ("stack-base", operation!(onevcs::assemble_stack_base)),
