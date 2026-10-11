@@ -396,14 +396,17 @@ this crate's to rename alone. Five things are easy to undo.
   merge the boundary refused becomes the held copy every later call continues, and is
   refused forever. A conflict is not a failure: its session is left open over it, and a
   session holding a staged, uncommitted resolution is left open too.
-- **A stack base is the ref the verb recorded, never a shape of history**
-  (`status::stack_bases`, read off `stack-base-assembled`). Its trailers name its
-  parents, read off its first-parent line (`provenance::stack_parents`), and decide
-  nothing else: a change cut from a stack base inherits every one of them, and one cut at
-  its very head shares its head too, and both are ordinary work — classifying by content
-  took each out of `recoverable` with no landing offered anywhere. `recoverable` drops a
-  stack base in both reports, and `status` reports `branch.stack_base` and no landing
-  verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
+- **A stack base is its name, never a shape of history or a host's record**
+  (`stack_base::is_stack_base`: a `stack-base` segment followed by a plan and a node,
+  and `stack-base` refuses any other `--branch`). Its trailers name its parents, read
+  off its first-parent line (`provenance::stack_parents`), and decide nothing else: a
+  change cut from a stack base inherits every one of them and one cut at its head shares
+  its head, and both are ordinary work. A record of the assembly is no better — a host
+  that never saw it assembled has none, and listed the base as unpublished work.
+  `recoverable` drops a stack base in both reports and counts a held one as a base
+  beside the origin's refs (`unpublished_branches_among`'s `based`), so a child at its
+  head holds nothing beyond its base; `status` reports `branch.stack_base` and no
+  landing verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
   `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier

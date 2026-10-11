@@ -4380,15 +4380,21 @@ every other write to a remote: a refusal pushes nothing and fails the call namin
 works from the origin alone: on a host whose state root has never seen the branch, the
 origin's copy is continued.
 
-**A stack base is the ref the verb recorded, never a shape of history.** Every merge
+**A stack base is a name, never a shape of history.** Every merge
 commit it writes, the root's included, carries the trailer
 `<prefix>Stack-Base: <parent>@<sha>` under the rules file's `trailer_prefix` — the merged
 branch and the commit it was merged at — and its parents are read back off the merges of
-its own first-parent line. What makes a branch a stack base is its identity alone: the
-branch of that identity a `stack-base-assembled` event on this host records the verb
-assembling. Never its commit content — not a trailer reached through ancestry, and not a
-head it shares with a stack base — so any other branch cut from or merging a stack base,
-one at its very head included, is ordinary work that `recoverable` lists with its landing guidance. So
+its own first-parent line. What makes a branch a stack base is its name alone: a
+`stack-base` path segment followed by at least two more, the plan and the node —
+`<host prefix>stack-base/<plan>/<node>` — and the verb refuses (exit `2`) a `--branch`
+outside that namespace with nothing opened or pushed, so every branch it writes is one.
+Never its commit content, its ancestry, a head it shares with a stack base, or this
+host's record of an assembly, so every host — one that never saw it assembled included —
+classifies one ref one way. Every other branch is ordinary, judged against its own base:
+a stack base the checkout holds counts as a base beside the origin's own refs, so a
+change cut from one with commits of its own is listed by `recoverable` with its landing
+guidance, and one at its very head holds nothing beyond its base and is reported as any
+such branch is — not listed. So
 `recoverable`, in both its default and `--all` forms, does not list a stack base as
 preserved work, and the retirement pass offers it no landing verb and never classifies it
 `superseded-with-changes` — it is kept as `unmerged-unique-commits` while it holds what
