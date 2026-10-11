@@ -1,8 +1,8 @@
 //! Whether a moved base is merged into a branch that already exists.
 //!
 //! Asked wherever this crate proactively brings a base into a branch it did not just
-//! cut: a continued branch at session open, and the sync a publication runs before it
-//! pushes. Under [`BaseMerge::Always`] the answer is always to merge, which is every
+//! cut: a continued branch at session open, a resumed session, and the sync a
+//! publication runs before it pushes. Under [`BaseMerge::Always`] the answer is always to merge, which is every
 //! build before the rules file could say otherwise. Under [`BaseMerge::OnConflict`] the
 //! base is merged only where leaving it out would cost something:
 //!
@@ -42,6 +42,10 @@ pub(crate) enum Verdict {
     Merged,
     /// The branch stays at its tip, and no merge commit is made.
     Skipped,
+    /// Nothing is merged here, and the base is left to the publication's sync to
+    /// decide about — what a resumed session records where it was never merged at
+    /// open.
+    Deferred,
 }
 
 impl Verdict {
@@ -50,6 +54,7 @@ impl Verdict {
         match self {
             Verdict::Merged => "merged",
             Verdict::Skipped => "skipped",
+            Verdict::Deferred => "deferred",
         }
     }
 }
@@ -78,13 +83,21 @@ impl Decision {
         }
     }
 
+    /// Nothing merged here, and the base left to the publication's sync.
+    pub(crate) fn defer(because: impl Into<String>) -> Self {
+        Self {
+            verdict: Verdict::Deferred,
+            because: because.into(),
+        }
+    }
+
     /// Whether the caller goes on to merge the base.
     pub(crate) fn merges(&self) -> bool {
         self.verdict == Verdict::Merged
     }
 
-    /// The object every record of the decision carries: `decision` (`merged` or
-    /// `skipped`) and `because`.
+    /// The object every record of the decision carries: `decision` (`merged`,
+    /// `skipped`, or `deferred`) and `because`.
     pub(crate) fn payload(&self) -> Map<String, Value> {
         let Value::Object(payload) = json!({
             "decision": self.verdict.spell(),

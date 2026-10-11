@@ -307,6 +307,112 @@ fn on_conflict_merges_the_base_where_the_host_requires_an_up_to_date_branch() {
 }
 
 #[test]
+fn on_conflict_leaves_a_resumed_session_at_its_tip_over_a_cleanly_merging_moved_base() {
+    // A run that stopped is resumed by opening its branch again, and its base has
+    // usually moved in between: the resumed session is brought level by the same
+    // decision a continued branch is, so a base that merges cleanly is left out.
+    let hosted = Hosted::new(AUTO);
+    let (token, worktree, _) = open(&hosted, &[]);
+    hosted.world.commit_file(
+        &worktree,
+        "branch.txt",
+        "the branch's work\n",
+        "feat: the branch's work",
+    );
+    let worked = hosted.world.git(&worktree, &["rev-parse", "HEAD"]);
+    move_base(&hosted, "base.txt", "the base moved\n", "elsewhere");
+
+    let (resumed, tree, printed) = open(&hosted, &[]);
+    assert_eq!(resumed, token, "the premise: the session was resumed");
+    assert_eq!(tree, worktree);
+    assert!(printed.get("conflict").is_none(), "{printed}");
+    assert_eq!(
+        hosted.world.git(&worktree, &["rev-parse", "HEAD"]),
+        worked,
+        "the resumed session stays at its own tip, with no merge commit"
+    );
+    assert_eq!(
+        hosted
+            .world
+            .git(&worktree, &["rev-list", "--count", "HEAD..origin/main"]),
+        "1",
+        "the premise: the base the session resumed over had moved"
+    );
+    assert!(
+        !worktree.join("base.txt").exists(),
+        "the base's work is not in the session's tree"
+    );
+
+    let opened = hosted.world.events_of(&token, "session-opened");
+    assert_eq!(opened.len(), 2, "the open and the resumption: {opened:?}");
+    assert_eq!(opened[1]["payload"]["reused"], true, "{}", opened[1]);
+    let decision = &opened[1]["payload"]["base_merge"];
+    assert_eq!(decision["decision"], "skipped", "{decision}");
+    assert!(
+        decision["because"]
+            .as_str()
+            .is_some_and(|because| because.contains("merges cleanly")
+                && because.contains("does not require an up-to-date branch")),
+        "{decision}"
+    );
+}
+
+#[test]
+fn always_leaves_a_resumed_sessions_moved_base_to_its_publication_and_says_so() {
+    // A resumption was never merged at open, and under `always` it still is not: the
+    // publication's sync merges the moved base, and the opening records that deferral.
+    let hosted = Hosted::new("{publication: change-auto, approvals: none, base_merge: always}");
+    green(&hosted.world);
+    let (token, worktree, _) = open(&hosted, &[]);
+    hosted.world.commit_file(
+        &worktree,
+        "branch.txt",
+        "the branch's work\n",
+        "feat: the branch's work",
+    );
+    let worked = hosted.world.git(&worktree, &["rev-parse", "HEAD"]);
+    move_base(&hosted, "base.txt", "the base moved\n", "elsewhere");
+
+    let (resumed, _, _) = open(&hosted, &[]);
+    assert_eq!(resumed, token, "the premise: the session was resumed");
+    assert_eq!(
+        hosted.world.git(&worktree, &["rev-parse", "HEAD"]),
+        worked,
+        "nothing is merged at open"
+    );
+    let opened = hosted.world.events_of(&token, "session-opened");
+    assert_eq!(opened.len(), 2, "the open and the resumption: {opened:?}");
+    assert_eq!(opened[1]["payload"]["reused"], true, "{}", opened[1]);
+    let decision = &opened[1]["payload"]["base_merge"];
+    assert_eq!(decision["decision"], "deferred", "{decision}");
+    assert!(
+        decision["because"]
+            .as_str()
+            .is_some_and(|because| because.contains("base_merge is always")
+                && because.contains("merged by the publication's sync")),
+        "{decision}"
+    );
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let decisions = published_decisions(&hosted.world, &token);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["decision"], "merged", "{decisions:?}");
+    let pushed = hosted
+        .branch_on_origin(BRANCH)
+        .expect("the branch was pushed");
+    assert_eq!(
+        parents(&hosted.world, &hosted.origin, &pushed).len(),
+        2,
+        "the publication's sync merged the base the resumption deferred"
+    );
+}
+
+#[test]
 fn always_merges_the_moved_base_as_every_build_before_the_setting_did() {
     let hosted = Hosted::new("{publication: change-auto, approvals: none, base_merge: always}");
     let tip = moved_under(&hosted, "base.txt", "the base moved\n");
