@@ -207,6 +207,11 @@ fn trailer(prefix: &str, parent: &str, sha: &str) -> String {
 /// Every `stack-base-assembled` event this host recorded, oldest first, read through
 /// `onevcs events` over every stream there is.
 fn assemblies(world: &World) -> Vec<Value> {
+    // llmlint: ignore[tests_mirror_real_usage] no verb lists a host's streams, and an
+    // assembly that answers without a conflict, or fails, hands back no session token
+    // — yet what these journeys assert is that a failed call wrote *no* event on any
+    // stream. Listing the directory only enumerates the tokens; every event is still
+    // read through the real `onevcs events`.
     let Ok(streams) = std::fs::read_dir(world.home().join("streams")) else {
         return Vec::new();
     };
