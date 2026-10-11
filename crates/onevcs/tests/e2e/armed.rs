@@ -568,9 +568,8 @@ fn a_merge_armed_by_the_watch_ends_unmarked_when_a_required_check_was_skipped() 
     // anything elapsed; a required check skipped when the wait elapses means the ending
     // claims no armed merge of its own, asks the host for nothing further, and says
     // that the merge its watch armed stands.
-    let hosted = Hosted::new(
-        "{publication: change-auto, approvals: none, drafts: {disabled: true}}",
-    );
+    let hosted =
+        Hosted::new("{publication: change-auto, approvals: none, drafts: {disabled: true}}");
     hosted.world.host_checks(&[
         running(),
         Check {
@@ -584,7 +583,7 @@ fn a_merge_armed_by_the_watch_ends_unmarked_when_a_required_check_was_skipped() 
 
     publish(&hosted, &token)
         .code(1)
-        .stderr(predicate::str::contains("\\"lint\\""))
+        .stderr(predicate::str::contains("\"lint\""))
         .stderr(predicate::str::contains(
             "left with the merge its watch had already armed",
         ))
@@ -601,4 +600,3 @@ fn a_merge_armed_by_the_watch_ends_unmarked_when_a_required_check_was_skipped() 
     );
     assert!(!asked(&hosted.world, "repo view") && !asked(&hosted.world, "pr ready"));
 }
-
