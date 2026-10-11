@@ -33,7 +33,8 @@ host already holds one, and really merged under the policy. The **repository** s
 is not, and none of it is claimed — there is no origin to fetch, no tree to run a
 gate in, nothing to push, and no lock to queue behind, so a publication here emits
 `change-opened`, `change-drafted`, `draft-lifted`, `draft-lifted-early`,
-`draft-kept-for-review`, `checks-settled`, `change-merged`, and `merge-completed` and
+`draft-kept-for-review`, `checks-settled`, `merge-armed`, `change-merged`, and
+`merge-completed` and
 never `fetch`, `gate-started`, `gate-verdict`, `push`, `lock-wait`, `lock-acquired`, or
 `merge-queued`. What it records before a failure stays recorded, as it does next
 door. Two more things it cannot read, and states instead of inventing: the policy

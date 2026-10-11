@@ -430,6 +430,7 @@ fn a_publication_the_seam_cannot_serve_is_an_outcome_with_a_kind_on_it() {
         kind,
         reason,
         retained,
+        ..
     } = &published.outcome
     else {
         panic!("an identity with no host cannot publish a change request: {published:?}");

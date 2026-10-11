@@ -523,7 +523,9 @@ impl Landing {
     /// Bring the branch level with the change base before anything is verified.
     ///
     /// Through [`publish::reconcile`], so this verb and `publish` cannot come to sync
-    /// a branch differently.
+    /// a branch differently — and, for a branch that is not replayed, only where the
+    /// identity's `base_merge` says so, decided and recorded through the same function
+    /// a session's publication asks.
     ///
     /// A conflict here is deterministic — the same two trees conflict on every re-run
     /// — so the refusal names what would change the answer, where the branch is, and
@@ -531,7 +533,24 @@ impl Landing {
     /// salvaged with raw `git` and `gh`. A recorded change base that is not a branch,
     /// or that no ref resolves, never reaches this: `prepare` refuses it there, where
     /// the record is read, rather than letting the root stand in for it.
-    pub fn sync_change_base(&self, stream: &mut Stream) -> Result<()> {
+    pub fn sync_change_base(&self, stream: &mut Stream, hosting: &dyn Hosting) -> Result<()> {
+        if self.stack_replay.is_none() {
+            let decision = crate::base_merge::decide(
+                self.resolved.base_merge.value,
+                &crate::base_merge::Merging {
+                    repo: &self.worktree,
+                    integrated: &self.compared_change_base,
+                    base: &self.change_base,
+                    branch: &self.branch,
+                    identity: &self.resolution.key,
+                    hosting,
+                },
+            )?;
+            crate::base_merge::record(stream, &self.branch, &self.change_base, &decision);
+            if !decision.merge {
+                return Ok(());
+            }
+        }
         let reconciled = publish::reconcile(
             &self.worktree,
             &self.compared_change_base,
@@ -631,6 +650,8 @@ impl Landing {
             // same one a session's publication takes, through the same `publish::run`.
             draft: None,
             drafts: self.resolved.drafts.clone(),
+            base_merge: self.resolved.base_merge.value,
+            checks_wait: self.resolved.checks_wait.clone(),
             trailers: Vec::new(),
             provenance: self.trailers.clone(),
             hosting,
@@ -640,7 +661,7 @@ impl Landing {
             adopt: None,
         };
         let outcome = publish::run(&context, stream);
-        if outcome.is_err() {
+        if matches!(outcome, Err(_) | Ok(PublishOutcome::Failed { .. })) {
             let _ = git::copy_branch(&context.repo, &self.source, &self.branch);
         }
         outcome

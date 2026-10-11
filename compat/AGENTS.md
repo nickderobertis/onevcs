@@ -30,7 +30,7 @@ before a producer writes a new kind.
 Pin the version **exactly**. What is proved is a property of *that* build, and a
 range that quietly moved would change what was proved without anyone deciding to.
 
-It makes five claims now, against three released builds, and each is the build the
+It makes six claims now, against three released builds, and each is the build the
 claim is about:
 
 - `tests/released.rs` holds **0.13.0** — a build from before an envelope carried
@@ -82,6 +82,13 @@ claim is about:
   included byte for byte — a boundary exists only once a change request is open, and
   that program is the host every hosted journey here publishes against. It is POSIX
   shell, so this journey is Unix-only, as every hosted e2e journey is.
+- `tests/rules.rs` holds **all three** to reading a rules file that carries
+  `base_merge:` and `checks:` — the amendment's own fixture in `docs/contract.md` —
+  exactly as they read the same file without them: each release's `RulesFile` reads
+  the two documents to equal values, and 0.32.2's and 0.40.1's `rules_check` answer a
+  state root this build registered identically either way. That is the whole case for
+  admitting both keys with no rules-file version bump, so it is proved against the
+  builds already in the field rather than asserted.
 
 The 0.32.2 and 0.40.1 claims need this build to *write* what is read, so it is linked
 too, from the path beside it, as `onevcs-current`: each journey writes with it and
@@ -102,8 +109,10 @@ twice. Moving this directory into `crates/` is therefore not a tidy-up.
 The cost of being outside is exact and worth stating: `cargo deny` and `cargo
 machete` are `--workspace`, so nothing here is licence-audited, advisory-audited,
 or checked for unused dependencies. Its dependencies are three published builds of
-this crate (0.40.1, 0.32.2 and 0.13.0), this crate itself by path, and `serde_json`;
-adding another means saying so here. Four packages named `onevcs` resolve in this
+this crate (0.40.1, 0.32.2 and 0.13.0), this crate itself by path, `serde_json`, and
+`serde_yaml_ng` — the YAML reader every one of those builds reads a rules file with,
+which `tests/rules.rs` hands the contract's fixture to; adding another means saying so
+here. Four packages named `onevcs` resolve in this
 graph — 0.40.1 twice while this crate is still at that version, once from crates.io
 and once by path, which cargo keys apart by source —
 which is harmless *here* — nothing runs `--package onevcs` against this manifest —

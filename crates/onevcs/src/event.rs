@@ -205,6 +205,14 @@ pub enum EventKind {
     /// A closed change request was reopened over its restored base; carries its URL,
     /// the base branch restored on the origin, and the commit it was restored at.
     ChangeReopened,
+    /// A publication decided whether to merge its moved base into the branch before
+    /// pushing it; carries the branch, the base, the `decision` (`merged` or
+    /// `skipped`) and `because`.
+    BaseMerge,
+    /// A publication whose wait for the checks elapsed with none of them red left the
+    /// host's own merge armed on its change request, so it lands once the checks pass;
+    /// carries the change request's URL and the head commit armed.
+    MergeArmed,
 }
 
 impl EventKind {
@@ -250,6 +258,8 @@ impl EventKind {
             EventKind::ChangeStandingsRead => "change-standings-read",
             EventKind::ChangeRetargeted => "change-retargeted",
             EventKind::ChangeReopened => "change-reopened",
+            EventKind::BaseMerge => "base-merge",
+            EventKind::MergeArmed => "merge-armed",
         }
     }
 
@@ -315,6 +325,9 @@ impl PhaseOf for Phase {
             EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
                 Phase::Integrate
             }
+            // Bringing the base into the branch, or deciding not to, is the step a sync
+            // conflict is met at: the work being brought level with what it lands on.
+            EventKind::BaseMerge => Phase::Integrate,
             // What became of a branch once its work reached the base, or once a retry
             // of it did: the base is what decides both, so both are that work being
             // integrated rather than made or proposed.
@@ -331,6 +344,9 @@ impl PhaseOf for Phase {
             | EventKind::ChangeDescribed
             | EventKind::ChangeCheck
             | EventKind::ChangeMerged
+            // The host's merge of the change request, armed to happen once its checks
+            // pass: the change being ruled on, as `change-merged` is.
+            | EventKind::MergeArmed
             // Reading what reviewers said and answering it is the change being ruled on.
             | EventKind::ReviewCommentsRead
             | EventKind::ReviewReplyPosted

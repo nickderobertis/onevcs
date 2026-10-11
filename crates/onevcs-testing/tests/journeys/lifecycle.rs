@@ -169,10 +169,22 @@ fn every_green_row_of_the_table_is_driven_through_these_providers() {
 }
 
 #[test]
-fn red_and_the_bound_leave_the_draft_standing_under_every_change_policy() {
-    for (reading, failure) in [
-        (check("gate", Some("failure"), 1), FailureKind::ChecksFailed),
-        (check("gate", None, 1), FailureKind::ChecksUnsettled),
+fn red_and_the_bound_leave_the_draft_standing_where_no_merge_is_armed() {
+    // A red check leaves the draft standing under every change policy. The bound does
+    // too wherever no merge is asked for — `change-open` — or where the repository
+    // does not allow one to be armed; under `change-auto` and `change-direct` on a host
+    // that allows it, an elapsed bound arms the merge instead (`armed.rs`).
+    for (reading, failure, allow) in [
+        (
+            check("gate", Some("failure"), 1),
+            FailureKind::ChecksFailed,
+            None,
+        ),
+        (
+            check("gate", None, 1),
+            FailureKind::ChecksUnsettled,
+            Some(false),
+        ),
     ] {
         for (policy, approvals) in [
             (MergePolicy::ChangeAuto, Approvals::None),
@@ -182,18 +194,41 @@ fn red_and_the_bound_leave_the_draft_standing_under_every_change_policy() {
         ] {
             let home = Home::new();
             let vcs = repository(policy, approvals, None);
-            let host = host(vec![reading.clone()], None);
+            let host = MemoryHost::seeded(HostState {
+                checks: BTreeMap::from([(first(), vec![reading.clone()])]),
+                allow_auto_merge: allow,
+                ..HostState::default()
+            });
 
             let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
 
             assert!(
-                matches!(&outcome, PublishOutcome::Failed { kind, reason, .. }
+                matches!(&outcome, PublishOutcome::Failed { kind, reason, armed: None, .. }
                     if *kind == failure && reason.contains("\"gate\"")),
                 "{policy:?}: {outcome:?}"
             );
             assert!(draft_standing(&host), "{policy:?}: still a draft");
             assert!(host.state().merges.is_empty());
         }
+    }
+    // `change-open` arms nothing even where the repository would allow it.
+    for approvals in [Approvals::None, Approvals::Required] {
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeOpen, approvals, None);
+        let host = host(vec![check("gate", None, 1)], None);
+        let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+        assert!(
+            matches!(
+                &outcome,
+                PublishOutcome::Failed {
+                    kind: FailureKind::ChecksUnsettled,
+                    armed: None,
+                    ..
+                }
+            ),
+            "{approvals:?}: {outcome:?}"
+        );
+        assert!(draft_standing(&host), "{approvals:?}: still a draft");
     }
 }
 

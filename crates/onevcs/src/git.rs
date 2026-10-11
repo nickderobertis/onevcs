@@ -2914,6 +2914,28 @@ pub fn worktree_prune(cwd: &Path) -> Result<()> {
     run(&["worktree", "prune", "--expire", "now"], Some(cwd)).map(|_| ())
 }
 
+/// Whether merging `base` into `branch` would conflict, asked without touching either
+/// or any worktree.
+///
+/// `merge-tree --write-tree` performs the merge in the object store alone, so a branch
+/// whose identity merges its base only on a conflict can ask before deciding to merge
+/// at all. The tree it writes is unreferenced and left to git's own collection.
+pub fn merge_would_conflict(cwd: &Path, base: &str, branch: &str) -> Result<bool> {
+    let merged = run(&["merge-tree", "--write-tree", base, branch], Some(cwd))?;
+    match merged.status {
+        0 => Ok(false),
+        // `merge-tree` uses one for a merge with conflicts, which is the answer asked
+        // for rather than a failed invocation.
+        1 => Ok(true),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git merge-tree --write-tree {base} {branch} failed: {}",
+                merged.diagnostic()
+            ),
+        }),
+    }
+}
+
 /// Merge a ref into the checked-out branch, reporting a conflict rather than
 /// raising one.
 ///

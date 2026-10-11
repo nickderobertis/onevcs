@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::registry::Registry;
 use crate::rules::{
-    Approvals, DeclaredVisibility, Drafts, MergePolicy, Policy, RuleMatch, RulesFile,
+    Approvals, BaseMerge, Checks, DeclaredVisibility, Drafts, MergePolicy, Policy, RuleMatch,
+    RulesFile,
 };
 use crate::store::{Normalized, Resolution};
 use crate::{home, ids};
@@ -76,6 +77,10 @@ pub const DRAFTS_DISABLED_DEFAULT: bool = false;
 /// The shipped default of `drafts.warn_on_early_lift`: an early lift says so.
 pub const WARN_ON_EARLY_LIFT_DEFAULT: bool = true;
 
+/// The shipped default of `checks.wait_seconds`: an hour, which is what the watch was
+/// bounded by before the key existed.
+pub const CHECKS_WAIT_DEFAULT_SECONDS: f64 = crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS;
+
 /// How much review a publication policy leaves in the path.
 ///
 /// Ordered, because narrowing is defined by it: a higher rank is more review, and
@@ -96,6 +101,14 @@ pub fn spell(policy: MergePolicy) -> &'static str {
         MergePolicy::ChangeOpen => "change-open",
         MergePolicy::ChangeAuto => "change-auto",
         MergePolicy::ChangeDirect => "change-direct",
+    }
+}
+
+/// How a base-merge value is spelled in the rules file and by `rules check`.
+pub fn spell_base_merge(base_merge: BaseMerge) -> &'static str {
+    match base_merge {
+        BaseMerge::Always => "always",
+        BaseMerge::OnConflict => "on-conflict",
     }
 }
 
@@ -125,6 +138,97 @@ pub struct Resolved {
     pub drafts: DraftLifecycle,
     /// The visibility the matched rule declares, which overrides the host's answer.
     pub visibility: Option<DeclaredVisibility>,
+    /// When a moved base is merged into a branch that already exists, and which layer
+    /// decided it.
+    pub base_merge: Decided<BaseMerge>,
+    /// How long a publication watches its checks, in seconds, before the process-wide
+    /// `ONEVCS_CHECKS_TIMEOUT_SECONDS` is asked, and which layer decided it.
+    pub checks_wait: Decided<f64>,
+}
+
+/// One resolved value, beside the layer that decided it — in the words every
+/// `(from …)` line of `onevcs rules check` uses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decided<T> {
+    /// The value.
+    pub value: T,
+    /// Which layer decided it.
+    pub from: String,
+}
+
+impl Decided<f64> {
+    /// The wait a watch runs to: the process-wide override where it is set, and this
+    /// identity's resolved wait otherwise.
+    ///
+    /// The override wins because it is how a host or a journey bounds every watch on
+    /// the machine at once; it is validated as it always was, so a malformed one is
+    /// refused rather than passed over in favour of the rules file.
+    pub fn effective(&self) -> Result<Decided<f64>> {
+        match crate::gh::checks_timeout_override()? {
+            Some(seconds) => Ok(Decided {
+                value: seconds,
+                from: crate::gh::CHECKS_TIMEOUT_ENV.to_owned(),
+            }),
+            None => Ok(self.clone()),
+        }
+    }
+}
+
+/// The base-merge value a publication implies where no layer of the file sets one:
+/// a branch landed locally is merged with its base as it always was, and a change
+/// request is merged with its base only when it has to be.
+pub(crate) fn derived_base_merge(publication: MergePolicy) -> BaseMerge {
+    match publication {
+        MergePolicy::LocalDirect => BaseMerge::Always,
+        MergePolicy::ChangeOpen | MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => {
+            BaseMerge::OnConflict
+        }
+    }
+}
+
+/// Resolve `base_merge`: the matched rule's, then the default's, then what the
+/// resolved publication implies.
+fn resolve_base_merge(
+    rule: Option<(&str, Option<BaseMerge>)>,
+    default: Option<BaseMerge>,
+    publication: MergePolicy,
+) -> Decided<BaseMerge> {
+    if let Some((named, Some(value))) = rule {
+        return Decided {
+            value,
+            from: named.to_owned(),
+        };
+    }
+    if let Some(value) = default {
+        return Decided {
+            value,
+            from: "the default".to_owned(),
+        };
+    }
+    Decided {
+        value: derived_base_merge(publication),
+        from: format!("publication {}", spell(publication)),
+    }
+}
+
+/// Resolve `checks.wait_seconds`: the matched rule's, then the default's, then shipped.
+fn resolve_checks_wait(rule: Option<(&str, &Checks)>, default: Option<&Checks>) -> Decided<f64> {
+    if let Some((named, Some(wait))) = rule.map(|(named, checks)| (named, checks.wait_seconds)) {
+        return Decided {
+            value: wait.get(),
+            from: named.to_owned(),
+        };
+    }
+    if let Some(wait) = default.and_then(|checks| checks.wait_seconds) {
+        return Decided {
+            value: wait.get(),
+            from: "the default".to_owned(),
+        };
+    }
+    Decided {
+        value: CHECKS_WAIT_DEFAULT_SECONDS,
+        from: "the shipped default".to_owned(),
+    }
 }
 
 /// The two `drafts:` keys as one repository resolves them, each with the layer that
@@ -241,6 +345,8 @@ pub fn built_in_default() -> Policy {
         publication: MergePolicy::ChangeOpen,
         approvals: Approvals::Required,
         drafts: None,
+        base_merge: None,
+        checks: None,
     }
 }
 
@@ -304,6 +410,8 @@ pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
         }
     }
     refuse_malformed_drafts(&path, &document)?;
+    refuse_malformed_base_merge(&path, &document)?;
+    refuse_malformed_checks(&path, &document)?;
     let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
     validate(&path, &file)?;
     Ok(file)
@@ -438,6 +546,94 @@ fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Resu
     Ok(())
 }
 
+/// Every place the schema puts a policy key — `default:` and each rule — with the
+/// value it holds there, named the way a refusal names it.
+fn policy_keys<'d>(
+    document: &'d serde_yaml_ng::Value,
+    key: &str,
+) -> Vec<(String, &'d serde_yaml_ng::Value)> {
+    let mut found = Vec::new();
+    if let Some(value) = document.get("default").and_then(|policy| policy.get(key)) {
+        found.push(("default".to_owned(), value));
+    }
+    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get("rules") {
+        for (index, rule) in rules.iter().enumerate() {
+            if let Some(value) = rule.get(key) {
+                found.push((format!("rule {}", index + 1), value));
+            }
+        }
+    }
+    found
+}
+
+/// One YAML value as an operator wrote it, for a refusal to quote.
+fn spelled(value: &serde_yaml_ng::Value) -> String {
+    serde_yaml_ng::to_string(value)
+        .map(|spelled| spelled.trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// Refuse, naming where it is, a `base_merge:` that is not one of its two values.
+///
+/// The shape refuses it too, but in words that name neither the rule nor the key.
+fn refuse_malformed_base_merge(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+    for (where_, value) in policy_keys(document, "base_merge") {
+        if serde_yaml_ng::from_value::<BaseMerge>(value.clone()).is_err() {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the rules file at {} is malformed: {where_} base_merge: {} is not a base \
+                     merge; write always or on-conflict",
+                    path.display(),
+                    spelled(value)
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Refuse, naming the key and where it is, a `checks:` that is not a mapping of the
+/// keys [`Checks`] has, each holding a wait.
+fn refuse_malformed_checks(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+    let refused = |where_: &str, what: String| Error::Invalid {
+        reason: format!(
+            "the rules file at {} is malformed: {where_} checks: {what}",
+            path.display()
+        ),
+    };
+    for (where_, checks) in policy_keys(document, "checks") {
+        let serde_yaml_ng::Value::Mapping(fields) = checks else {
+            return Err(refused(&where_, "is not a mapping".to_owned()));
+        };
+        for (key, value) in fields {
+            let mut alone = serde_yaml_ng::Mapping::new();
+            alone.insert(key.clone(), value.clone());
+            let Err(said) =
+                serde_yaml_ng::from_value::<Checks>(serde_yaml_ng::Value::Mapping(alone))
+            else {
+                continue;
+            };
+            let key = spelled(key);
+            // The one key the type has takes a wait, so a key it refused is either one
+            // it does not have — its own refusal lists the ones it does — or that wait
+            // spelled as something no watch can run to.
+            return Err(refused(
+                &where_,
+                if key == "wait_seconds" {
+                    format!(
+                        "wait_seconds is {}, which is not a wait; write a finite number of \
+                         seconds above zero",
+                        spelled(value)
+                    )
+                } else {
+                    format!("names {key:?}, which it does not have: {said}")
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Say, naming the file, that a rules file still names what no longer verifies.
 ///
 /// One line per load, and no `onevcs` command reads the rules file twice — so this
@@ -563,12 +759,24 @@ pub fn resolve(
             continue;
         }
         let named = format!("rule {}", index + 1);
+        let publication = rule.publication.unwrap_or(file.default.publication);
         return Resolved {
             policy: Policy {
-                publication: rule.publication.unwrap_or(file.default.publication),
+                publication,
                 approvals: rule.approvals.unwrap_or(file.default.approvals),
                 drafts: rule.drafts.or(file.default.drafts),
+                base_merge: rule.base_merge.or(file.default.base_merge),
+                checks: rule.checks.or(file.default.checks),
             },
+            base_merge: resolve_base_merge(
+                Some((named.as_str(), rule.base_merge)),
+                file.default.base_merge,
+                publication,
+            ),
+            checks_wait: resolve_checks_wait(
+                rule.checks.as_ref().map(|checks| (named.as_str(), checks)),
+                file.default.checks.as_ref(),
+            ),
             drafts: resolve_drafts(
                 rule.drafts.as_ref().map(|drafts| (named.as_str(), drafts)),
                 file.default.drafts.as_ref(),
@@ -591,6 +799,8 @@ pub fn resolve(
         approvals_from: "the default".to_owned(),
         drafts: resolve_drafts(None, file.default.drafts.as_ref()),
         visibility: None,
+        base_merge: resolve_base_merge(None, file.default.base_merge, file.default.publication),
+        checks_wait: resolve_checks_wait(None, file.default.checks.as_ref()),
     }
 }
 

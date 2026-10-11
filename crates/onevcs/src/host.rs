@@ -287,6 +287,41 @@ pub trait RemoteHost {
         })
     }
 
+    /// Whether the host requires a branch to be up to date with `base` before it
+    /// merges a change request into it — GitHub branch protection's `strict`.
+    ///
+    /// What a branch whose identity merges its base `on-conflict` asks before leaving
+    /// a moved base out of it: a host that requires an up-to-date branch would refuse
+    /// to merge one that is not, so the base is merged in after all. Read from the
+    /// same protection sources [`required_checks_on`](RemoteHost::required_checks_on)
+    /// reads; `true` where any of them requires it, `false` only where every source
+    /// was read and none does.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is. A caller
+    /// reads any refusal as "could not be read" and merges the base, which is what
+    /// every build before this method did.
+    fn requires_up_to_date(&self, _base: &str) -> Result<bool> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::requires_up_to_date",
+        })
+    }
+
+    /// Whether the repository lets a change request be armed to merge itself once its
+    /// required checks pass — GitHub's `allow_auto_merge`.
+    ///
+    /// What a `change-auto` or `change-direct` publication asks, **before it changes
+    /// anything**, when its wait for the checks elapses with none of them red: a host
+    /// that allows it has the draft lifted and its merge armed, so the change lands on
+    /// the host's clock once the checks pass; one that does not is left as it was.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is. A caller
+    /// reads any refusal as "not allowed" and changes nothing.
+    fn allows_auto_merge(&self) -> Result<bool> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::allows_auto_merge",
+        })
+    }
+
     /// Replace a change request's description: its body, and its title when one is
     /// given.
     ///
@@ -1282,6 +1317,79 @@ impl GitHub {
         Ok(Ok(names))
     }
 
+    /// Whether the repository's rulesets require a branch to be up to date with `base`
+    /// before a merge into it: any `required_status_checks` rule on it whose
+    /// `strict_required_status_checks_policy` is set.
+    ///
+    /// A rule that does not say is refused rather than read as `false`, for the reason
+    /// a rule that will not name its checks is: it is the difference between a merge
+    /// the host would take and one it would refuse.
+    fn ruled_up_to_date(&self, base: &str) -> Result<bool> {
+        addressable_branch(base, "the base branch")?;
+        let value = self.api(&format!(
+            "repos/{}/rules/branches/{}",
+            self.repo,
+            path_segment(base)
+        ))?;
+        let rules = value.as_array().ok_or_else(|| {
+            invalid(format!(
+                "the rules on {}'s base branch {base:?} came back as something that is not a \
+                 list of them, so whether it requires an up-to-date branch cannot be read from \
+                 it: {value}",
+                self.repo
+            ))
+        })?;
+        let mut strict = false;
+        for rule in rules {
+            if rule.get("type").and_then(|value| value.as_str()) != Some("required_status_checks") {
+                continue;
+            }
+            strict |= rule
+                .get("parameters")
+                .and_then(|parameters| parameters.get("strict_required_status_checks_policy"))
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "a required-status-checks rule on {}'s base branch {base:?} does not say \
+                         whether it requires an up-to-date branch: {rule}",
+                        self.repo
+                    ))
+                })?;
+        }
+        Ok(strict)
+    }
+
+    /// Whether classic branch protection on `base` requires an up-to-date branch, or
+    /// why the host would not say — the same three answers
+    /// [`classic_protection`](GitHub::classic_protection) tells apart.
+    fn classic_up_to_date(&self, base: &str) -> Result<std::result::Result<bool, String>> {
+        addressable_branch(base, "the base branch")?;
+        let path = format!(
+            "repos/{}/branches/{}/protection/required_status_checks",
+            self.repo,
+            path_segment(base)
+        );
+        let answer = gh::attempt(&["api", &path])?;
+        if answer.code != Some(0) {
+            if answer.stderr.contains(NOT_PROTECTED) {
+                return Ok(Ok(false));
+            }
+            return Ok(Err(answer.detail()));
+        }
+        let value = gh::json(&answer.stdout)?;
+        value
+            .get("strict")
+            .and_then(serde_json::Value::as_bool)
+            .map(Ok)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "the classic branch protection on {}'s {base:?} came back without saying \
+                     whether it requires an up-to-date branch: {value}",
+                    self.repo
+                ))
+            })
+    }
+
     /// The log of the Actions job one check ran in, addressed by the job's id.
     ///
     /// The id comes from the same listing the checks did, so the name matched here
@@ -2023,6 +2131,44 @@ impl RemoteHost for GitHub {
             }
         }
         Ok(answer)
+    }
+
+    fn requires_up_to_date(&self, base: &str) -> Result<bool> {
+        // The two sources `required_checks_on` reads, in the same order and with the
+        // same weight: either one requiring it is the answer, and "neither does" is an
+        // answer only once both were read.
+        if self.ruled_up_to_date(base)? {
+            return Ok(true);
+        }
+        match self.classic_up_to_date(base)? {
+            Ok(strict) => Ok(strict),
+            Err(refusal) => Err(invalid(format!(
+                "whether {}'s {base:?} requires an up-to-date branch could not be read from \
+                 classic branch protection: {refusal}",
+                self.repo
+            ))),
+        }
+    }
+
+    /// One `gh repo view`, reading the one field GitHub decides it by.
+    fn allows_auto_merge(&self) -> Result<bool> {
+        let answer = gh::json(&gh::invoke(&[
+            "repo",
+            "view",
+            &self.repo,
+            "--json",
+            "autoMergeAllowed",
+        ])?)?;
+        answer
+            .get("autoMergeAllowed")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh repo view answered about {} without saying whether it allows auto-merge: \
+                     {answer}",
+                    self.repo
+                ))
+            })
     }
 }
 

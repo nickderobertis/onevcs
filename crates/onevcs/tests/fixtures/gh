@@ -53,7 +53,7 @@ if [ "$delegated" = "0" ]; then
     *) [ -n "$ledger_repo" ] && ledger_changes="[\"https://github.com/$ledger_repo/pull/$ledger_number\"]" ;;
   esac
   case "${1:-}" in
-    pr) ledger_points=1; ledger_rest=0 ;;
+    pr|repo) ledger_points=1; ledger_rest=0 ;;
     *) ledger_points=0; ledger_rest=1 ;;
   esac
   printf '{"method":"%s %s","changes":%s,"graphql_points":%s,"rest_requests":%s}\n' \
@@ -61,6 +61,16 @@ if [ "$delegated" = "0" ]; then
 fi
 
 ORIGIN="$(cat "$STATE/origin")"
+# Whether a protection source requires a branch to be up to date with its base before
+# it merges — GitHub's `strict`. `up-to-date` names the one source that says so,
+# `rulesets` or `classic`; a world that says nothing requires it of no branch.
+strict_in() {
+  if [ "$(cat "$STATE/up-to-date" 2>/dev/null || printf '')" = "$1" ]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
 CHECKS="$STATE/checks.rows"
 # A repository's checks move while something is watching them, which is the whole
 # premise of watching. This world says so by writing a second rollup and the number
@@ -345,7 +355,7 @@ case "$command" in
           contexts="$contexts$separator\"$context\""
           separator=","
         done <"$STATE/classic-protection"
-        printf '{"strict":false,"contexts":[%s],"checks":[]}\n' "$contexts"
+        printf '{"strict":%s,"contexts":[%s],"checks":[]}\n' "$(strict_in classic)" "$contexts"
         exit 0 ;;
       */rules/branches/*)
         # A base whose requirement a journey stated names exactly that, which may be
@@ -362,7 +372,7 @@ case "$command" in
             printf '[]\n'
             exit 0
           fi
-          printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[%s]}}]\n' "$contexts"
+          printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":%s,"required_status_checks":[%s]}}]\n' "$(strict_in rulesets)" "$contexts"
           exit 0
         fi
         case "$malformed" in
@@ -381,13 +391,13 @@ case "$command" in
           contexts="$contexts$separator{\"context\":\"$name\",\"integration_id\":15368}"
           separator=","
         done <"$CHECKS" 2>/dev/null || true
-        if [ -z "$contexts" ]; then
+        if [ -z "$contexts" ] && [ "$(strict_in rulesets)" = "false" ]; then
           # A repository with no ruleset requiring anything, which is what the
           # scratch repository the real tier runs against answers.
           printf '[]\n'
           exit 0
         fi
-        printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[%s]}}]\n' "$contexts"
+        printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":%s,"required_status_checks":[%s]}}]\n' "$(strict_in rulesets)" "$contexts"
         exit 0 ;;
     esac
     printf 'fake gh: unsupported api path %s\n' "$path" >&2
@@ -406,6 +416,23 @@ case "$command" in
       esac
     done
     job_log "$job"
+    exit 0
+    ;;
+  repo)
+    # `gh repo view --json autoMergeAllowed`: whether the repository lets a change be
+    # armed to merge itself once its checks pass. The same world file that makes the
+    # arming itself refused says no here, so the two answers cannot disagree.
+    if [ "${1:-}" != "view" ]; then
+      printf 'fake gh: unsupported repo subcommand %s\n' "${1:-}" >&2
+      exit 1
+    fi
+    if [ -f "$STATE/refuse-repo-view" ]; then
+      printf 'GraphQL: Resource not accessible by personal access token (repository)\n' >&2
+      exit 1
+    fi
+    allowed=true
+    [ ! -f "$STATE/auto-merge-unavailable" ] || allowed=false
+    printf '{"autoMergeAllowed":%s}\n' "$allowed"
     exit 0
     ;;
   pr) ;;
@@ -479,7 +506,7 @@ rollup() {
 }
 
 verdict() {
-  local name status conclusion required total settled red
+  local name status conclusion required total settled red context
   total=0; settled=0; red=0
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
@@ -492,8 +519,18 @@ verdict() {
       *) red=1 ;;
     esac
   done <"$CHECKS" 2>/dev/null || true
-  if [ "$red" = "1" ]; then printf 'red'
-  elif [ "$total" -gt 0 ] && [ "$total" = "$settled" ]; then printf 'green'
+  if [ "$red" = "1" ]; then printf 'red'; return; fi
+  # A context classic branch protection requires holds the merge until a run of it
+  # has passed, whether or not anything has reported one — GitHub merges nothing past
+  # a required check that never started.
+  if [ -f "$STATE/classic-protection" ]; then
+    while IFS= read -r context; do
+      [ -n "$context" ] || continue
+      grep -q "^$context|completed|\(success\|skipped\|neutral\)|" "$CHECKS" 2>/dev/null \
+        || { printf 'pending'; return; }
+    done <"$STATE/classic-protection"
+  fi
+  if [ "$total" -gt 0 ] && [ "$total" = "$settled" ]; then printf 'green'
   else printf 'pending'; fi
 }
 

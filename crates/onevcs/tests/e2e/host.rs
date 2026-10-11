@@ -1461,7 +1461,10 @@ fn a_branch_that_left_its_recorded_stack_behind_is_merged_rather_than_replayed()
     // carry is not a thing to attempt on a guess, so the sync is the merge it has
     // always been and the review is opened where the record says — even though the
     // change below has landed and a branch that still carried its commits would move.
-    let hosted = Hosted::new(REVIEWED);
+    // The identity merges its base `always`, so that merge is taken whether or not the
+    // two conflict; under `on-conflict` the clean merge is left out, and the branch is
+    // still not replayed.
+    let hosted = Hosted::new("{publication: change-open, approvals: required, base_merge: always}");
     let (token, worktree) = hosted_stack(&hosted, "feature/left-behind");
     squash_the_change_below(&hosted, false);
     hosted.world.git(&worktree, &["fetch", "-q", "origin"]);

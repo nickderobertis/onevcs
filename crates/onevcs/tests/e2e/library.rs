@@ -1170,6 +1170,7 @@ fn a_publication_the_repositorys_subject_policy_refuses_says_so_and_says_where_t
         kind,
         reason,
         retained,
+        armed: None,
     } = &published.outcome
     else {
         panic!("a hook that turns the subject down must fail the publication: {published:?}");

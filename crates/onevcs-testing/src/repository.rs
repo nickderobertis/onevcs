@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 
 use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
-    ChangeRequest, ChangeSpec, Check, CheckState, DraftReason, Error, EventKind, FailureKind,
-    HeldBy, Holding, Hosting, Identity, Landed, Lifecycle, MergeOutcome, MergePolicy,
+    ArmedMerge, ChangeRequest, ChangeSpec, Check, CheckState, DraftReason, Error, EventKind,
+    FailureKind, HeldBy, Holding, Hosting, Identity, Landed, Lifecycle, MergeOutcome, MergePolicy,
     PreservedBranch, Provenance, Publication, PublishOutcome, PublishRequest, Recoverable,
     RemoteHost, Result, Scope, Session, SessionRecord, SessionRequest, SessionToken, Sha, Vcs,
 };
@@ -934,7 +934,28 @@ fn publish_as_change(
     // through; one still running, or declared and not started, arms it, and the
     // host's hold is what the outcome reports.
     let still_draft = if drafted || policy != MergePolicy::ChangeAuto {
-        watch(host.as_ref(), publishing, &change, drafted, emissions)?
+        match watch(host.as_ref(), publishing, &change, drafted, emissions)? {
+            Watched::Draft => true,
+            Watched::Ready => false,
+            // A merge is armed in place of the elapsed wait's refusal where the policy
+            // asks for one and the host allows it, as next door.
+            Watched::Elapsed {
+                error,
+                skipped_on_draft,
+            } => {
+                return match policy {
+                    MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => arm_on_elapse(
+                        host.as_ref(),
+                        publishing,
+                        &change,
+                        emissions,
+                        error,
+                        &skipped_on_draft,
+                    ),
+                    MergePolicy::ChangeOpen | MergePolicy::LocalDirect => Err(error),
+                };
+            }
+        }
     } else {
         let answered = host.change_checks(&change)?;
         let checks: Vec<&Check> = answered.checks.iter().collect();
@@ -979,38 +1000,120 @@ fn publish_as_change(
         return Ok(PublishOutcome::ChangeOpen(change.url.clone()));
     }
     Ok(match host.merge(&change, policy)? {
-        MergeOutcome::Merged(sha) => {
-            // When the host says the base received it, as `onevcs`'s own record of a
-            // landing carries it. Where the host cannot say there is no landing commit
-            // in this world to read a time from either, so the record says nobody can
-            // time it rather than claim the moment this provider saw the merge.
-            let landed_at = host
-                .merge_time(&change)
-                .ok()
-                .flatten()
-                .and_then(|spelled| events::moment(&spelled));
-            emissions.push(publishing.emission(
-                EventKind::ChangeMerged,
-                json!({
-                    "url": change.url.to_string(),
-                    "sha": sha.0,
-                    "landed_at": landed_at,
-                    "landing": sha.0,
-                }),
-            ));
-            emissions.push(publishing.emission(
-                EventKind::MergeCompleted,
-                json!({
-                    "identity": publishing.identity,
-                    "sha": sha.0,
-                    "landed_at": landed_at,
-                    "landing": sha.0,
-                }),
-            ));
-            PublishOutcome::Merged(sha)
-        }
+        MergeOutcome::Merged(sha) => merged(host.as_ref(), publishing, &change, emissions, &sha),
         MergeOutcome::Queued => PublishOutcome::Queued(change.url.clone()),
         MergeOutcome::Open => PublishOutcome::ChangeOpen(change.url.clone()),
+    })
+}
+
+/// Record a merge the host performed, and answer it as the publication's outcome.
+fn merged(
+    host: &dyn RemoteHost,
+    publishing: &Publishing<'_>,
+    change: &ChangeRequest,
+    emissions: &mut Vec<Emission>,
+    sha: &Sha,
+) -> PublishOutcome {
+    // When the host says the base received it, as `onevcs`'s own record of a
+    // landing carries it. Where the host cannot say there is no landing commit
+    // in this world to read a time from either, so the record says nobody can
+    // time it rather than claim the moment this provider saw the merge.
+    let landed_at = host
+        .merge_time(change)
+        .ok()
+        .flatten()
+        .and_then(|spelled| events::moment(&spelled));
+    emissions.push(publishing.emission(
+        EventKind::ChangeMerged,
+        json!({
+            "url": change.url.to_string(),
+            "sha": sha.0,
+            "landed_at": landed_at,
+            "landing": sha.0,
+        }),
+    ));
+    emissions.push(publishing.emission(
+        EventKind::MergeCompleted,
+        json!({
+            "identity": publishing.identity,
+            "sha": sha.0,
+            "landed_at": landed_at,
+            "landing": sha.0,
+        }),
+    ));
+    PublishOutcome::Merged(sha.clone())
+}
+
+/// What a `change-auto` or `change-direct` publication does when its watch elapses
+/// with no required check red, as next door: ask the host whether it allows
+/// auto-merge before changing anything, and where it does, lift the draft awaiting its
+/// checks and arm the host's merge, record `merge-armed`, and end `checks-unsettled`
+/// carrying the [`ArmedMerge`]. A host that does not allow it — or will not say — is
+/// left as the elapsed watch left it, and the refusal says why.
+fn arm_on_elapse(
+    host: &dyn RemoteHost,
+    publishing: &Publishing<'_>,
+    change: &ChangeRequest,
+    emissions: &mut Vec<Emission>,
+    elapsed: Error,
+    skipped_on_draft: &[String],
+) -> Result<PublishOutcome> {
+    let Error::ChecksUnsettled { reason } = elapsed else {
+        return Err(elapsed);
+    };
+    let unarmed = |why: String| Error::ChecksUnsettled {
+        reason: format!(
+            "{reason}. {why}, so {url} is left as it was — nothing lifted it or armed its merge",
+            url = change.url
+        ),
+    };
+    if !skipped_on_draft.is_empty() {
+        return Err(unarmed(format!(
+            "{} concluded skipped on the draft, which is not a verdict",
+            skipped_on_draft.join(", ")
+        )));
+    }
+    match host.allows_auto_merge() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(unarmed(
+                "The repository does not allow auto-merge".to_owned(),
+            ))
+        }
+        Err(unread) => {
+            return Err(unarmed(format!(
+                "Whether the repository allows auto-merge could not be read ({unread})"
+            )))
+        }
+    }
+    let is_draft = match host.is_draft(change) {
+        Ok(draft) => draft,
+        Err(Error::NotImplemented { .. }) => false,
+        Err(unreadable) => return Err(unreadable),
+    };
+    if is_draft {
+        lift(host, publishing, change, emissions)?;
+    }
+    if let MergeOutcome::Merged(sha) = host.merge(change, MergePolicy::ChangeAuto)? {
+        return Ok(merged(host, publishing, change, emissions, &sha));
+    }
+    emissions.push(publishing.emission(
+        EventKind::MergeArmed,
+        json!({"url": change.url.to_string(), "head": change.head_sha.0}),
+    ));
+    Ok(PublishOutcome::Failed {
+        kind: FailureKind::ChecksUnsettled,
+        reason: format!(
+            "{}. Its merge is armed: the host lands {url} once its required checks pass, and \
+             publishing the session again watches it",
+            Error::ChecksUnsettled { reason },
+            url = change.url,
+        ),
+        retained: None,
+        armed: Some(ArmedMerge {
+            change: change.url.clone(),
+            head: change.head_sha.0.clone(),
+        }),
     })
 }
 
@@ -1254,8 +1357,7 @@ fn record_settled(
     emissions.push(publishing.emission(EventKind::ChecksSettled, payload));
 }
 
-/// The watch, one reading per phase: `Ok(true)` is green on a draft still standing,
-/// `Ok(false)` green on a ready change. See [`publish_as_change`] for what a reading
+/// The watch, one reading per phase. See [`publish_as_change`] for what a reading
 /// stands for.
 fn watch(
     host: &dyn RemoteHost,
@@ -1263,19 +1365,23 @@ fn watch(
     change: &ChangeRequest,
     drafted: bool,
     emissions: &mut Vec<Emission>,
-) -> Result<bool> {
+) -> Result<Watched> {
     let settled = |emissions: &mut Vec<Emission>, skipped: Vec<String>, unread: Option<&str>| {
         record_settled(publishing, change, emissions, skipped, unread);
     };
-    let unsettled = |checks: &[&Check],
-                     standing: &[(String, Option<CheckState>)],
-                     declared: &Declared| Error::ChecksUnsettled {
-        reason: format!(
-            "the host had not settled its required checks on {}; {}",
-            change.url,
-            unsettled_named(checks, standing, declared)
-        ),
-    };
+    let unsettled =
+        |checks: &[&Check], standing: &[(String, Option<CheckState>)], declared: &Declared| {
+            Watched::Elapsed {
+                error: Error::ChecksUnsettled {
+                    reason: format!(
+                        "the host had not settled its required checks on {}; {}",
+                        change.url,
+                        unsettled_named(checks, standing, declared)
+                    ),
+                },
+                skipped_on_draft: Vec::new(),
+            }
+        };
     let answered = host.change_checks(change)?;
     let complete = answered.complete();
     let checks: Vec<&Check> = answered.checks.iter().collect();
@@ -1289,16 +1395,16 @@ fn watch(
             return Err(failed);
         }
         if !through(&standing, &declared) {
-            return Err(unsettled(&checks, &standing, &declared));
+            return Ok(unsettled(&checks, &standing, &declared));
         }
         settled(emissions, skipped(&standing), unread);
-        return Ok(false);
+        return Ok(Watched::Ready);
     }
 
     // The draft: a skipped required check has not run.
     if matches!(declared, Declared::Nothing) {
         settled(emissions, Vec::new(), None);
-        return Ok(true);
+        return Ok(Watched::Draft);
     }
     let standing = standings(&checks, &declared);
     if let Some(failed) = red(&checks, &standing) {
@@ -1310,7 +1416,7 @@ fn watch(
             .all(|(_, state)| *state == Some(CheckState::Passed))
     {
         settled(emissions, Vec::new(), unread);
-        return Ok(true);
+        return Ok(Watched::Draft);
     }
     let not_run: Vec<String> = standing
         .iter()
@@ -1330,10 +1436,18 @@ fn watch(
             .all(|check| check.state() != CheckState::Skipped)
     {
         settled(emissions, Vec::new(), unread);
-        return Ok(true);
+        return Ok(Watched::Draft);
     }
     if running || (not_run.is_empty() && !unseen) {
-        return Err(unsettled(&checks, &standing, &declared));
+        // Over a draft, so a required check skipped on it is one that did not run —
+        // which a merge armed here would read as passed, as next door refuses to.
+        return Ok(match unsettled(&checks, &standing, &declared) {
+            Watched::Elapsed { error, .. } => Watched::Elapsed {
+                error,
+                skipped_on_draft: skipped(&standing),
+            },
+            other => other,
+        });
     }
 
     // The grace window elapsed with nothing required run: lift early, say so, and read
@@ -1393,10 +1507,27 @@ fn watch(
         .iter()
         .all(|(_, state)| matches!(state, Some(CheckState::Passed | CheckState::Skipped)))
     {
-        return Err(unsettled(&counted, &standing, &declared));
+        return Ok(unsettled(&counted, &standing, &declared));
     }
     settled(emissions, skipped(&standing), unread);
-    Ok(false)
+    Ok(Watched::Ready)
+}
+
+/// Where one watch ended.
+enum Watched {
+    /// Green on a draft still standing, for the caller to lift or keep.
+    Draft,
+    /// Green on a ready change.
+    Ready,
+    /// The reading had not settled, which is the bound elapsing here; the error is the
+    /// `checks-unsettled` it ends as unless the merge is armed instead.
+    Elapsed {
+        /// The `checks-unsettled` the bound ends as.
+        error: Error,
+        /// The required checks skipped on a draft the bound elapsed over, which keep
+        /// its merge from being armed.
+        skipped_on_draft: Vec<String>,
+    },
 }
 
 /// Whether `check` is a run the host attached after the lift rather than the draft's
@@ -1500,6 +1631,7 @@ fn failed(error: &Error) -> PublishOutcome {
         // A provider has no execution checkout, so there is nowhere a branch could
         // have been handed back to and nothing to report about one.
         retained: None,
+        armed: None,
     }
 }
 

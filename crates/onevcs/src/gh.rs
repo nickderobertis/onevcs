@@ -167,6 +167,17 @@ pub fn checks_timeout() -> Result<f64> {
     seconds(CHECKS_TIMEOUT_ENV, DEFAULT_CHECKS_TIMEOUT_SECONDS)
 }
 
+/// The process-wide bound on waiting for the host's checks, where one is set.
+///
+/// What overrides every identity's `checks.wait_seconds`; unset, the rules file
+/// decides. Validated exactly as [`checks_timeout`] validates it.
+pub fn checks_timeout_override() -> Result<Option<f64>> {
+    match std::env::var_os(CHECKS_TIMEOUT_ENV) {
+        None => Ok(None),
+        Some(_) => checks_timeout().map(Some),
+    }
+}
+
 /// How long to wait between asking the host again.
 pub fn checks_poll() -> Result<f64> {
     seconds(CHECKS_POLL_ENV, DEFAULT_CHECKS_POLL_SECONDS)

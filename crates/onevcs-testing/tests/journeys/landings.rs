@@ -483,6 +483,8 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let _ = remote.ready_for_review(&change);
     let _ = remote.is_draft(&change);
     let _ = remote.required_checks_on("main");
+    let _ = remote.requires_up_to_date("main");
+    let _ = remote.allows_auto_merge();
     let _ = remote.describe_change(&change, Some("feat: one"), "Why it is.");
     let _ = remote.change_description(&change);
     let _ = remote.visibility();

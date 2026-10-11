@@ -645,6 +645,22 @@ fn print_drafts(resolved: &ResolvedPolicy) {
     );
 }
 
+/// When a moved base is merged into an existing branch, and how long a publication
+/// watches its checks, as `onevcs rules check` reports them — each with the layer that
+/// decided it.
+fn print_base_merge_and_wait(resolved: &ResolvedPolicy) {
+    println!(
+        "base merge: {} (from {})",
+        policy::spell_base_merge(resolved.base_merge),
+        resolved.base_merge_from
+    );
+    println!(
+        "checks wait: {} s (from {})",
+        resolved.checks_wait.as_secs_f64(),
+        resolved.checks_wait_from
+    );
+}
+
 fn spell_approvals(approvals: crate::rules::Approvals) -> &'static str {
     match approvals {
         crate::rules::Approvals::Required => "required",
@@ -924,6 +940,7 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
         kind,
         reason,
         retained,
+        ..
     } = &publication.outcome
     else {
         println!("{}", publication.outcome.describe());
@@ -1434,6 +1451,13 @@ fn print_change(change: &SessionChange, json: bool) -> Result<()> {
 /// refusal, so a caller that drives one can read the other.
 fn report_publication(outcome: Result<PublishOutcome>) -> Result<u8> {
     match outcome {
+        // An ending reached as a value rather than a refusal — a wait that elapsed with
+        // the merge left armed — still did not land, and says so where every failure
+        // does, under its own kind's code.
+        Ok(PublishOutcome::Failed { kind, reason, .. }) => {
+            eprintln!("onevcs: {reason}");
+            Ok(kind.exit_code())
+        }
         Ok(outcome) => {
             println!("{}", outcome.describe());
             Ok(0)
@@ -2267,6 +2291,7 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
     }
     print_policy("", &checked.policy);
     print_drafts(&checked.policy);
+    print_base_merge_and_wait(&checked.policy);
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.
     println!(

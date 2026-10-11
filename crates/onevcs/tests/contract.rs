@@ -34,15 +34,17 @@ use onevcs::releases::{
     ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
     SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
-use onevcs::rules::{Approvals, Drafts, Policy, Rule, RuleMatch, RulesFile};
+use onevcs::rules::{
+    Approvals, BaseMerge, Checks, Drafts, Policy, Rule, RuleMatch, RulesFile, WaitSeconds,
+};
 use onevcs::workspaces::{MaintenanceCommand, WorkspaceDefault, WorkspacesFile};
 use onevcs::{
-    ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId, ChangeRequest,
-    ChangeSpec, Check, CheckSource, CheckState, Description, Dimensions, DraftReason, Envelope,
-    Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub, HeldBy, Holding,
-    IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence, Lifecycle, LineChange,
-    Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome, MergePolicy,
-    NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
+    ArmedMerge, ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId,
+    ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description, Dimensions,
+    DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
+    HeldBy, Holding, IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence,
+    Lifecycle, LineChange, Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome,
+    MergePolicy, NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
     ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
     SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
@@ -353,6 +355,8 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeStandingsRead,
         EventKind::ChangeRetargeted,
         EventKind::ChangeReopened,
+        EventKind::BaseMerge,
+        EventKind::MergeArmed,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -389,7 +393,9 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::StackBaseAssembled
             | EventKind::ChangeStandingsRead
             | EventKind::ChangeRetargeted
-            | EventKind::ChangeReopened => {}
+            | EventKind::ChangeReopened
+            | EventKind::BaseMerge
+            | EventKind::MergeArmed => {}
         }
     }
     kinds
@@ -782,6 +788,8 @@ fn the_rules_fixture_round_trips() {
                 approvals: Some(Approvals::Required),
                 drafts: None,
                 visibility: None,
+                base_merge: None,
+                checks: None,
             },
             Rule {
                 r#match: RuleMatch {
@@ -793,6 +801,8 @@ fn the_rules_fixture_round_trips() {
                 approvals: None,
                 drafts: None,
                 visibility: None,
+                base_merge: None,
+                checks: None,
             },
         ]
     );
@@ -802,6 +812,8 @@ fn the_rules_fixture_round_trips() {
             publication: MergePolicy::ChangeOpen,
             approvals: Approvals::Required,
             drafts: None,
+            base_merge: None,
+            checks: None,
         }
     );
 
@@ -5400,6 +5412,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
             kind: FailureKind::Gate,
             reason: "the repository's commit-msg hook turned the subject down".to_owned(),
             retained: Some(Retention::HandedBack(PathBuf::from("/home/agent/onevcs"))),
+            armed: None,
         },
     ];
     outcomes
@@ -8901,6 +8914,8 @@ fn the_rules_version_4_fixture_round_trips_with_a_declared_visibility() {
             approvals: None,
             drafts: None,
             visibility: None,
+            base_merge: None,
+            checks: None,
         }],
         default: rules.default.clone(),
     };
@@ -9057,4 +9072,184 @@ fn the_standings_host_methods_default_to_the_refusal_for_a_seam_with_no_body() {
         "retarget_change",
     );
     refused(Earlier.reopen_change(&change).map(drop), "reopen_change");
+}
+
+#[test]
+fn the_base_merge_and_check_wait_amendment_declares_its_surface() {
+    // What the engine's link compiles against and this host's adoption writes: the two
+    // rules-file keys, the resolution `rules check` renders, the host's two reads, and
+    // the armed ending — each as the amendment declares it.
+    let declared = amendment_declaring("pub enum BaseMerge");
+    for line in [
+        "pub enum BaseMerge { Always, OnConflict }",
+        "#[serde(deny_unknown_fields)]",
+        "pub struct Checks { pub wait_seconds: Option<WaitSeconds> }",
+        "pub struct WaitSeconds(f64);",
+        "Rule     pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>",
+        "Policy   pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>",
+        "pub base_merge: BaseMerge,     pub base_merge_from: String,",
+        "pub checks_wait: Duration,     pub checks_wait_from: String,",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let host = amendment_declaring("fn requires_up_to_date");
+    for line in [
+        "fn requires_up_to_date(&self, base: &str) -> Result<bool>;",
+        "fn allows_auto_merge(&self) -> Result<bool>;",
+    ] {
+        assert!(
+            host.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    let armed = amendment_declaring("pub struct ArmedMerge");
+    assert!(
+        armed.contains("armed: Option<ArmedMerge>,")
+            && armed.contains("pub struct ArmedMerge { pub change: Url, pub head: String }"),
+        "{armed}"
+    );
+
+    // The fixture reads as the types declare it, at a version that predates both keys —
+    // there is no bump — and writes back what it read.
+    let fixture = amendment_yaml_spelling("base_merge: on-conflict");
+    let file: RulesFile = serde_yaml_ng::from_str(&format!("version: 3\n{fixture}"))
+        .expect("the amendment's fixture is a rules file at version 3");
+    assert_eq!(file.rules[0].base_merge, Some(BaseMerge::OnConflict));
+    assert_eq!(
+        file.rules[0]
+            .checks
+            .and_then(|checks| checks.wait_seconds)
+            .map(WaitSeconds::get),
+        Some(7200.0)
+    );
+    assert_eq!(file.default.base_merge, Some(BaseMerge::Always));
+    assert_eq!(
+        file.default
+            .checks
+            .and_then(|checks| checks.wait_seconds)
+            .map(WaitSeconds::get),
+        Some(3600.0)
+    );
+    let plain: RulesFile = serde_yaml_ng::from_str(
+        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
+    )
+    .expect("a plain rules file");
+    let written = serde_yaml_ng::to_string(&plain).expect("it writes");
+    assert!(
+        !written.contains("base_merge") && !written.contains("checks"),
+        "a file naming neither writes neither back: {written}"
+    );
+    assert_eq!(
+        serde_yaml_ng::to_string(&BaseMerge::OnConflict)
+            .expect("it writes")
+            .trim(),
+        "on-conflict"
+    );
+    assert!(
+        serde_yaml_ng::from_str::<Checks>("{wait_second: 60}").is_err(),
+        "an unknown key inside checks is refused"
+    );
+    for refused in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            WaitSeconds::try_from(refused).is_err(),
+            "{refused} is no wait"
+        );
+    }
+    assert_eq!(WaitSeconds::try_from(0.5).map(WaitSeconds::get), Ok(0.5));
+
+    // The resolution `rules check` renders, field for field.
+    let resolved = |policy: &onevcs::ResolvedPolicy| {
+        let onevcs::ResolvedPolicy {
+            base_merge,
+            base_merge_from,
+            checks_wait,
+            checks_wait_from,
+            ..
+        } = policy;
+        (
+            *base_merge,
+            base_merge_from.clone(),
+            *checks_wait,
+            checks_wait_from.clone(),
+        )
+    };
+    let _: fn(&onevcs::ResolvedPolicy) -> (BaseMerge, String, std::time::Duration, String) =
+        resolved;
+
+    // The host's two reads are defaulted to the refusal, so a host written before them
+    // compiles, and a caller reads that refusal as "cannot be read".
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    assert!(matches!(
+        Earlier.requires_up_to_date("main"),
+        Err(Error::NotImplemented { .. })
+    ));
+    assert!(matches!(
+        Earlier.allows_auto_merge(),
+        Err(Error::NotImplemented { .. })
+    ));
+
+    // The armed ending travels with its change and head, and is omitted where nothing
+    // was armed — so an outcome an earlier build serialized reads unchanged.
+    let url =
+        Url::parse("https://github.com/nickderobertis/printobserver/pull/178").expect("a URL");
+    let ended = PublishOutcome::Failed {
+        kind: FailureKind::ChecksUnsettled,
+        reason: "checks unsettled: … Its merge is armed".to_owned(),
+        retained: None,
+        armed: Some(ArmedMerge {
+            change: url.clone(),
+            head: "0f1e2d3".to_owned(),
+        }),
+    };
+    let written = serde_json::to_value(&ended).expect("an outcome serializes");
+    assert_eq!(
+        written["failed"]["armed"],
+        json!({"change": url.to_string(), "head": "0f1e2d3"})
+    );
+    assert_eq!(
+        serde_json::from_value::<PublishOutcome>(written).expect("it reads back"),
+        ended
+    );
+    let earlier = json!({"failed": {"kind": "checks-unsettled", "reason": "the bound"}});
+    assert!(matches!(
+        serde_json::from_value::<PublishOutcome>(earlier).expect("an earlier outcome reads"),
+        PublishOutcome::Failed { armed: None, .. }
+    ));
+
+    let text = regions().0;
+    for stated in [
+        "optional keys, with **no** rules-file `version` bump",
+        "under `on-conflict` the base is merged\nonly where",
+        "Where\nthat requirement cannot be read, the base is merged",
+        "asked\nbefore anything is changed",
+        "**A draft whose required checks concluded\n`skipped` on it is not armed**",
+    ] {
+        assert!(
+            text.contains(stated),
+            "the amendment no longer states: {stated}"
+        );
+    }
 }

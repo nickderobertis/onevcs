@@ -1214,12 +1214,12 @@ development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
-             stack-base-assembled
+             stack-base-assembled base-merge
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
              review-reply-posted change-standings-read change-retargeted
-             change-reopened
+             change-reopened merge-armed
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -3876,6 +3876,167 @@ session on a slot. A registered checkout is the operator's own and is never touc
 `conflict: None` and accept `refuse_conflicts`: a provider has no base to merge into a
 continued branch, so every session it opens opens clean and its `session-opened` never
 carries the key. A consumer proving the conflicted open drives the real `onevcs`.
+
+### A moved base is merged only where it is needed, and a check wait that elapses leaves the merge armed
+
+**Recorded as the manager's ruling for plan node `onevcs-base-merge-and-wait`** (the
+contract fixed for the run and shared with the engine's link and this host's adoption).
+On `change-auto` repositories finished, green change requests sat unmerged for hours:
+every continuation after the base moved merged it in and restarted a CI run no branch
+protection asked for, and a check wait of an hour gave up on a draft that then had
+nothing to lift or merge it, even after every check passed. Two settings, per identity
+in the rules file, end both. This changes the default merge behaviour of every
+change-request policy and widens `PublishOutcome::Failed`, so it is released as a
+breaking change.
+
+**The rules file.** A rule (`Rule`) and `default:` (`Policy`) may each carry two
+optional keys, with **no** rules-file `version` bump: the rules file declares no
+`deny_unknown_fields`, so an older onevcs (0.13.0 and later) sharing the host ignores
+both and behaves as it always did — merging the base, and waiting the process-wide
+bound — which `compat/tests/rules.rs` proves against released builds.
+
+```yaml
+rules:
+  - match: {host: github.com, owner: nickderobertis, name: printobserver}
+    publication: change-auto
+    approvals: none
+    base_merge: on-conflict      # optional: always | on-conflict
+    checks:                      # optional mapping; unknown keys inside are refused, as in `drafts:`
+      wait_seconds: 7200         # optional; a finite number > 0
+default:
+  publication: change-open
+  approvals: required
+  base_merge: always             # optional
+  checks: {wait_seconds: 3600}   # optional
+```
+
+- `base_merge` resolves the matched rule's, then `default:`'s, then is derived from the
+  resolved publication: `local-direct` → `always`; `change-open`, `change-auto`,
+  `change-direct` → `on-conflict`. A value that is neither is refused by name.
+- `checks.wait_seconds` resolves `ONEVCS_CHECKS_TIMEOUT_SECONDS` (the process-wide
+  override, unchanged) → the matched rule's → `default:`'s → 3600. It is the bound the
+  whole watch of a change request's checks holds, and it is validated before the push,
+  as the environment's bound is. An unknown key inside `checks:`, a `checks:` that is
+  not a mapping, and a wait that is not a finite number above zero are refused by name
+  where the file is loaded.
+- `onevcs rules check <repo>` prints two more lines, each with its source in the
+  existing `(from …)` form; the `publication:` line is unchanged byte for byte, because
+  onepipeline's `src/destination.rs` reads it:
+
+```text
+base merge: on-conflict (from publication change-auto)
+checks wait: 7200 s (from rule 1)
+```
+
+The source of `base merge:` is `rule N`, `the default`, or `publication <policy>` where
+it was derived; that of `checks wait:` is `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `rule N`,
+`the default`, or `the shipped default`.
+
+```rust
+// onevcs::rules
+#[serde(rename_all = "kebab-case")]
+pub enum BaseMerge { Always, OnConflict }
+#[serde(deny_unknown_fields)]
+pub struct Checks { pub wait_seconds: Option<WaitSeconds> }
+pub struct WaitSeconds(f64);        // TryFrom<f64>: finite and above zero; `get()` reads it
+//   Rule     pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>   // omitted when absent
+//   Policy   pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>   // omitted when absent
+
+// onevcs::ResolvedPolicy gains, each beside the layer that decided it:
+//   pub base_merge: BaseMerge,     pub base_merge_from: String,
+//   pub checks_wait: Duration,     pub checks_wait_from: String,
+```
+
+**`on-conflict`.** Wherever onevcs proactively merges a moved base into a branch that
+already exists — a continued branch at session open, and a publication's sync before it
+pushes, `publish-branch` and `recover` included — under `on-conflict` the base is merged
+only where (a) `git merge-tree --write-tree <integrated base> <branch tip>` reports a
+conflict, and the merge then happens exactly as before: left in progress for the session
+under the default, refused `SyncConflict` under `refuse_conflicts`; or (b) the host
+requires a branch to be up to date before it merges — GitHub branch protection's
+`strict`, read from the rulesets' `strict_required_status_checks_policy` and classic
+protection's `strict`, the two sources the declared required checks are read from. Where
+that requirement cannot be read, the base is merged, which is the direction that behaves
+as before. Otherwise the branch stays at its tip and no merge commit is made. A branch
+that already carries its base merges nothing either way. `always` is the behaviour of
+every earlier build. A stacked branch whose change below landed is replayed onto the
+root as before, whatever `base_merge` says. A resumed session merges no base, as before.
+
+The decision and its reason are recorded: `session-opened` gains `base_merge` —
+`{decision: "merged" | "skipped", because}` — written only for a continued branch, so a
+session cut fresh writes the payload it always wrote; and a publication's sync records
+the new `base-merge` event, `{branch, base, decision, because}`, in the `integrate`
+phase, before it pushes.
+
+`RemoteHost` gains a defaulted method; its default is the refusal every additive method
+has, which a caller reads as "cannot be read" and merges:
+
+```rust
+pub trait RemoteHost {                                   // beside required_checks_on:
+    fn requires_up_to_date(&self, base: &str) -> Result<bool>;   // default: NotImplemented
+    fn allows_auto_merge(&self) -> Result<bool>;                 // default: NotImplemented
+}
+```
+
+**A check wait that elapses leaves the merge armed.** Under `change-auto` and
+`change-direct`, when the wait for the checks elapses with no required check red, and
+the change request is still a draft awaiting its checks or is ready and unarmed: if the
+repository allows auto-merge — `allows_auto_merge`, GitHub's `autoMergeAllowed`, asked
+before anything is changed — onevcs lifts the draft (`gh pr ready`) and arms the host's
+merge (`gh pr merge --squash --auto`), which merges only once every required check
+passes; records `merge-armed`, `{url, head}`, in the `review` phase; and ends the
+publication as the `checks-unsettled` it always was, now marked armed, its reason saying
+the merge is armed and lands once the checks pass. A merge `change-auto`'s watch had
+already armed is not asked for again, and that ending is marked armed too. A repository
+that does not allow auto-merge, or will not say, ends as before — the draft kept,
+nothing armed — with the reason naming that. A draft held for a `DraftReason` is never
+watched and so never lifted; `change-open` asks for no merge and is unchanged, so a draft
+kept for review is never lifted either. **A draft whose required checks concluded
+`skipped` on it is not armed**: a skip on a draft is a workflow that did not run, and a
+host told to merge once its checks pass reads a skip as passed, so arming it would be
+the merge on draft-era skips the draft lifecycle never makes; it ends as before, the
+reason naming the skipped checks. That supersedes, for `change-auto` and
+`change-direct` only, the "bound elapsed | any | stay a draft → `ChecksUnsettled`" row
+of the draft lifecycle's table.
+
+```rust
+pub enum PublishOutcome {                // one variant gains one field:
+    Failed {
+        kind: FailureKind,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained: Option<Retention>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        armed: Option<ArmedMerge>,       // set only with kind: FailureKind::ChecksUnsettled
+    },
+    // …every other variant unchanged
+}
+pub struct ArmedMerge { pub change: Url, pub head: String }   // onevcs::ArmedMerge, from the crate root
+```
+
+A later publication of the same session at the same head re-enters the watch over the
+armed change rather than opening a second one: it ends `Merged` once the host lands it,
+`checks-failed` if a required check goes red, or armed `checks-unsettled` again. The
+session record stays open on an armed ending, as on every ending that did not land, and
+the branch is handed back as before. A landing the host performs after the watch ended
+is recorded by the existing late-merge reconciliation (`status`, `release status`, and
+the next publication), as before. On the command line an armed ending exits `1` with its
+reason on stderr, as every `checks-unsettled` does, `publish-branch` and `recover`
+included.
+
+Event kinds added: `base-merge`, `merge-armed`.
+
+**The testing crate follows.** `onevcs-testing`'s host models all of it:
+`HostState::up_to_date_required` answers `requires_up_to_date`,
+`HostState::allow_auto_merge` (unset is allowed) answers `allows_auto_merge`, and
+`HostState::armed` holds the change requests whose merge is armed, each of which the host
+lands once its required checks are green — when a publication watches it, or asks for its
+merge again. Its repository side arms on an elapsed watch exactly as above — a reading
+that has not settled is the bound elapsing — so a consumer drives an armed change that
+later merges, or goes red, by rewriting the host's checks between two publications of
+one session. Its providers have no base to merge, so `base_merge` has nothing to decide
+there. Its state document is version 22; a version 21 document reads as a host that
+requires no up-to-date branch, allows auto-merge and holds nothing armed.
 
 ### A hook a publication runs finds its repository from where it starts, never from an inherited `GIT_DIR`
 
