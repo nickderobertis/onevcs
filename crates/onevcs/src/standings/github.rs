@@ -38,7 +38,7 @@ use super::{
 };
 use crate::error::{invalid, Result};
 use crate::gh;
-use crate::host::{reported_time, ChangeId, Check, Sha};
+use crate::host::{reported_time, reported_url, ChangeId, Check, Sha};
 use crate::publish::{checks_verdict, Declared};
 use crate::review::{github as review_github, ReadCost, ReadMarker, ReviewRead};
 
@@ -487,29 +487,28 @@ impl Declarations {
                     .ok_or_else(|| {
                         invalid("a ruleset requires status checks and does not say which")
                     })?;
-                checks.extend(
-                    required
-                        .iter()
-                        .filter_map(|check| check.get("context").and_then(Value::as_str))
-                        .map(str::to_owned),
-                );
+                for check in required {
+                    let context =
+                        check
+                            .get("context")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                invalid(format!(
+                            "a ruleset requires a status check GitHub did not name: {check}"
+                        ))
+                            })?;
+                    checks.push(context.to_owned());
+                }
             }
-            let patterns = |key: &str| -> Vec<String> {
-                ruleset
-                    .pointer(&format!("/conditions/refName/{key}"))
-                    .and_then(Value::as_array)
-                    .map(|listed| {
-                        listed
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default()
+            let patterns = |key: &str| {
+                texts(
+                    ruleset.pointer(&format!("/conditions/refName/{key}")),
+                    &format!("a ruleset's {key} ref patterns"),
+                )
             };
             read.rulesets.push(Ruleset {
-                include: patterns("include"),
-                exclude: patterns("exclude"),
+                include: patterns("include")?,
+                exclude: patterns("exclude")?,
                 checks,
             });
         }
@@ -518,17 +517,10 @@ impl Declarations {
                 .get("pattern")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("GitHub answered a protection rule without its pattern"))?;
-            let contexts = rule
-                .get("requiredStatusCheckContexts")
-                .and_then(Value::as_array)
-                .map(|listed| {
-                    listed
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
+            let contexts = texts(
+                rule.get("requiredStatusCheckContexts"),
+                &format!("the contexts the protection rule for {pattern:?} requires"),
+            )?;
             let created = rule
                 .get("databaseId")
                 .and_then(Value::as_i64)
@@ -627,6 +619,31 @@ impl Declarations {
     }
 }
 
+/// A list of strings GitHub answered — absent or `null` being none — refused where it
+/// is anything else or holds anything else, because a required context or a ref pattern
+/// dropped here is a requirement nothing then waits on.
+fn texts(listed: Option<&Value>, what: &str) -> Result<Vec<String>> {
+    let entries = match listed {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries,
+        Some(other) => {
+            return Err(invalid(format!(
+                "GitHub answered {what} as {other}, which is not a list"
+            )))
+        }
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            entry.as_str().map(str::to_owned).ok_or_else(|| {
+                invalid(format!(
+                    "GitHub answered {what} with {entry}, which is not a name"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn nodes<'a>(connection: &'a Value, what: &str) -> Result<&'a Vec<Value>> {
     connection
         .get("nodes")
@@ -693,9 +710,8 @@ fn rollup(pull: &Value, number: u64, head: &Sha) -> Result<Vec<Check>> {
                 conclusion,
                 required,
                 head: Some(head.clone()),
-                url: field("detailsUrl")
-                    .or_else(|| field("targetUrl"))
-                    .and_then(|url| Url::parse(url).ok()),
+                url: reported_url(context, "detailsUrl")
+                    .or_else(|| reported_url(context, "targetUrl")),
                 started_at: reported_time(context, "startedAt"),
                 completed_at: reported_time(context, "completedAt"),
             })

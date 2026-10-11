@@ -319,6 +319,14 @@ impl Model {
             for (key, value) in self.declarations() {
                 repository.insert(key, value);
             }
+            // A journey's own answer for a declaration, in place of the derived one —
+            // which is how a malformed host answer is served.
+            let stated = self.state.join("declarations.json");
+            if let Ok(text) = std::fs::read_to_string(stated) {
+                let stated: serde_json::Map<String, Value> =
+                    serde_json::from_str(&text).expect("a journey's declarations");
+                repository.extend(stated);
+            }
         }
         for (at, number) in aliased_numbers(query).into_iter().enumerate() {
             let Some(node) = self.standing(number, reviews) else {

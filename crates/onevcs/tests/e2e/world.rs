@@ -866,6 +866,15 @@ impl World {
             .expect("a base's requirement");
     }
 
+    /// Answer the standings read's declarations (`rulesets`, `branchProtectionRules`,
+    /// `defaultBranchRef`) with `stated`'s keys in place of the derived ones — how a
+    /// journey serves a host answer GitHub's schema would not.
+    pub fn host_declarations(&self, stated: &serde_json::Value) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/declarations.json"), stated.to_string())
+            .expect("the host's declarations");
+    }
+
     /// The substituted host's classic branch-protection rules, oldest first: each a
     /// branch pattern GitHub's own grammar spells (`main`, `release/*`, `**`) and the
     /// contexts it requires. GitHub applies exactly one of them to a branch.

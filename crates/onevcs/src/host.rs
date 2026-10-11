@@ -1528,7 +1528,7 @@ fn reported_sha(value: &serde_json::Value, field: &str) -> Result<Option<Sha>> {
 /// A URL that will not parse is `None` rather than a refusal: this is the address a
 /// refusal hands over so somebody can go and look, and failing a publication over a
 /// link would put the check's verdict behind a formatting complaint.
-fn reported_url(entry: &serde_json::Value, field: &str) -> Option<Url> {
+pub(crate) fn reported_url(entry: &serde_json::Value, field: &str) -> Option<Url> {
     entry
         .get(field)
         .and_then(|value| value.as_str())

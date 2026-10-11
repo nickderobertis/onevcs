@@ -931,6 +931,50 @@ fn a_ruleset_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none
 }
 
 #[test]
+fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_dropped() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let page = |nodes: Value| json!({"pageInfo": {"hasNextPage": false}, "nodes": nodes});
+    let ruleset = |include: Value, checks: Value| {
+        json!({
+            "target": "BRANCH",
+            "enforcement": "ACTIVE",
+            "conditions": {"refName": {"include": include, "exclude": []}},
+            "rules": page(json!([{
+                "type": "REQUIRED_STATUS_CHECKS",
+                "parameters": {"requiredStatusChecks": checks},
+            }])),
+        })
+    };
+    let malformed = [
+        (
+            json!({"rulesets": page(json!([ruleset(json!(["~ALL"]), json!([{"context": 7}]))]))}),
+            "a ruleset requires a status check GitHub did not name",
+        ),
+        (
+            json!({"rulesets": page(json!([ruleset(json!([7]), json!([{"context": "ci"}]))]))}),
+            "a ruleset's include ref patterns with 7, which is not a name",
+        ),
+        (
+            json!({"branchProtectionRules": page(json!([{
+                "databaseId": 1, "pattern": "main", "requiredStatusCheckContexts": "ci",
+            }]))}),
+            "requires as \"ci\", which is not a list",
+        ),
+    ];
+    for (declarations, says) in malformed {
+        world.host_declarations(&declarations);
+        refused(&stack.standings_output("main", &[url(draft)], &[]), 2, says);
+    }
+    assert!(
+        standings_events(world).is_empty(),
+        "a refused read records nothing"
+    );
+}
+
+#[test]
 fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
