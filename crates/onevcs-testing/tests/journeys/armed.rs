@@ -320,3 +320,39 @@ fn the_host_answers_whether_it_requires_an_up_to_date_branch_and_allows_auto_mer
     assert!(repo.requires_up_to_date("main").expect("it answers"));
     assert!(!repo.allows_auto_merge().expect("it answers"));
 }
+
+#[test]
+fn a_ready_change_auto_publication_holds_its_merge_armed_and_lands_once_the_checks_pass() {
+    // With the lifecycle off, `change-auto` opens ready and arms the host's own merge
+    // without watching first, as next door: the host holds it armed, and the next
+    // publication of the session lands it once its required checks are green.
+    let home = Home::new();
+    let host = host(&home, vec![gate(None)], HostState::default());
+    let vcs = MemoryVcs::seeded(VcsState {
+        policy: Some(MergePolicy::ChangeAuto),
+        approvals: Some(onevcs::rules::Approvals::None),
+        drafts: Some(onevcs::rules::Drafts {
+            disabled: Some(true),
+            warn_on_early_lift: None,
+        }),
+        ..one_repository()
+    });
+    let token = session(&vcs);
+
+    let outcome = publish(&vcs, &token, &host);
+    assert!(matches!(outcome, PublishOutcome::Queued(_)), "{outcome:?}");
+    let state = host.state().expect("readable");
+    assert!(
+        state.armed.contains(&first()),
+        "the host holds the merge armed"
+    );
+    assert!(state.made_ready.is_empty(), "nothing was a draft to lift");
+
+    checks_now(&home, &host, vec![gate(Some("success"))]);
+    let outcome = publish(&vcs, &token, &host);
+    assert!(matches!(outcome, PublishOutcome::Merged(_)), "{outcome:?}");
+    assert!(
+        host.state().expect("readable").armed.is_empty(),
+        "a landed change is no longer held armed"
+    );
+}
