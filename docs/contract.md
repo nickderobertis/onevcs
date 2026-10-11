@@ -3917,10 +3917,11 @@ default:
   override, unchanged) → the matched rule's → `default:`'s → 3600. It is the bound the
   whole watch of a change request's checks holds, and it is validated before the push,
   as the environment's bound is. An unknown key inside `checks:`, a `checks:` that is
-  not a mapping, and a wait that is not a finite number above zero and at most
-  1000000000 (about 31 years — past it a finite number is no duration a watch can run
-  to) are refused by name where the file is loaded, naming the key and that range. The
-  same range bounds `ONEVCS_CHECKS_TIMEOUT_SECONDS`, which is refused naming itself.
+  not a mapping, and a wait outside the accepted range are refused by name where the
+  file is loaded, naming the key and that range. The accepted range is greater than 0
+  and at most 1,000,000,000 seconds (about 31 years): a ceiling chosen so a watch's
+  deadline, now plus the wait, is always representable. The same range bounds
+  `ONEVCS_CHECKS_TIMEOUT_SECONDS`, which is refused naming itself.
 - `onevcs rules check <repo>` prints two more lines, each with its source in the
   existing `(from …)` form; the `publication:` line is unchanged byte for byte, because
   onepipeline's `src/destination.rs` reads it:

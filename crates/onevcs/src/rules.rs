@@ -260,9 +260,10 @@ pub struct Checks {
 /// The check is in the conversion, as [`TrailerPrefix`]'s is, so a rules file naming a
 /// wait no watch could run to does not deserialize at all. Being finite is also what
 /// makes the value [`Eq`]: the one floating-point value that is not equal to itself is
-/// refused here. The ceiling is what keeps the wait a duration: a finite number past
-/// it, such as `1e300`, is no duration at all, and a watch bounded by one would reach
-/// the conversion and crash rather than be refused.
+/// refused here. The ceiling is a chosen one rather than a duration's own limit: it is
+/// what keeps a watch's deadline — now plus the wait — representable on every
+/// platform, so a wait such as `1e300` is refused here rather than reaching that
+/// arithmetic and crashing.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct WaitSeconds(f64);
@@ -275,12 +276,13 @@ impl WaitSeconds {
     pub(crate) const SHIPPED: WaitSeconds = WaitSeconds(crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS);
 
     /// The longest wait accepted: a billion seconds, about 31 years — far past any
-    /// watch anyone means, and well inside what a duration and a clock can hold.
+    /// watch anyone means, and chosen so a watch's deadline is always representable.
     pub(crate) const MAX_SECONDS: f64 = 1_000_000_000.0;
 
     /// The accepted range, as every refusal of a wait spells it.
     pub(crate) const RANGE: &'static str =
-        "a finite number of seconds above zero and at most 1000000000";
+        "a finite number of seconds above zero and at most 1000000000, the ceiling chosen \
+         so a watch's deadline is always representable";
 
     /// The wait, in seconds.
     #[must_use]

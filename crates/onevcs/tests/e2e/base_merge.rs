@@ -530,10 +530,10 @@ fn a_malformed_base_merge_or_checks_block_is_refused_by_name() {
 }
 
 #[test]
-fn a_wait_too_long_to_be_a_duration_is_refused_by_name_on_every_verb_that_reads_it() {
-    // Finite and above zero, and still no duration: `1e300` seconds converted for the
-    // watch would crash every verb that read it rather than be refused with its
-    // neighbours. Each is driven, and none may panic.
+fn a_wait_past_the_ceiling_is_refused_by_name_on_every_verb_that_reads_it() {
+    // Finite and above zero, and still past the ceiling chosen so a watch's deadline is
+    // always representable: before it, `1e300` seconds crashed every verb that read it
+    // rather than being refused with its neighbours. Each is driven, and none may panic.
     let hosted = Hosted::new(AUTO);
     let world = &hosted.world;
     green(world);
