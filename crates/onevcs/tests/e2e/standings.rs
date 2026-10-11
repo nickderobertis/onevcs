@@ -1480,6 +1480,80 @@ fn a_deferred_publication_knows_a_draft_by_this_hosts_newest_record_of_its_head_
 }
 
 #[test]
+fn a_deferred_publication_is_held_to_the_public_boundary_and_still_asks_the_host_nothing() {
+    let host = Boundary::new(HELD_FOR_REVIEW);
+    host.private("hiddenco/quietharbor", &[]);
+    let world = &host.world;
+    let _reviews = world.serve_reviews("sample-owner/openwidget");
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "openwidget",
+            "--branch",
+            "feature/deferred",
+        ])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    let (token, worktree) = (token_of(&opened.stdout), worktree_of(&opened.stdout));
+    world.commit_file(
+        &worktree,
+        "generic.md",
+        "a generic example\n",
+        "docs: a generic example",
+    );
+    // The held draft's publication asks the host, and records the repository public.
+    let held = world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        held.status.success(),
+        "{}",
+        String::from_utf8_lossy(&held.stderr)
+    );
+    let change = "https://github.com/sample-owner/openwidget/pull/1";
+    world.commit_file(
+        &worktree,
+        "port.md",
+        "Ported from quietharbor.\n",
+        "docs: the port",
+    );
+    let tip = world.git(&host.origin, &["rev-parse", "refs/heads/feature/deferred"]);
+
+    let before = world.ledger().len();
+    let output = world
+        .onevcs()
+        .args(["publish", &token, "--defer-checks", "--adopt", change])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("public output carries a term of a private repository"),
+        "{stderr}"
+    );
+    crate::boundary::assert_neutral(&stderr);
+    assert_eq!(
+        since(world, before),
+        Vec::<Value>::new(),
+        "the check read the visibility this host recorded, and asked the host nothing"
+    );
+    assert_eq!(
+        world.git(&host.origin, &["rev-parse", "refs/heads/feature/deferred"]),
+        tip,
+        "nothing was pushed"
+    );
+}
+
+#[test]
 fn deferring_checks_under_a_policy_that_does_not_hold_the_change_for_review_pushes_nothing() {
     let stack = Stack::new("{publication: change-auto, approvals: none}");
     let world = &stack.world;

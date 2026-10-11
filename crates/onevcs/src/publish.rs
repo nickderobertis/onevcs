@@ -100,12 +100,19 @@ pub struct PublishRequest {
     /// approvals are required — and only with `adopt`; refused otherwise, with nothing
     /// pushed. Defaulted and omitted when false, so a request written before it reads
     /// and writes as it did.
+    // llmlint: ignore[invalid_states_unrepresentable] the landings amendment in
+    // `docs/contract.md` fixes this field and `adopt` verbatim as `bool` and
+    // `Option<Url>` on a struct consumers build with literals — a sum type would change
+    // the agreed surface. Every combination they can spell that is not a deferred
+    // publication is refused by name in `deferred`, before anything is pushed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub defer_checks: bool,
     /// The change request a [`defer_checks`](PublishRequest::defer_checks) publication
     /// pushes into, which is never looked up on the host: its head branch is read from
     /// this host's own newest record of it — a standings read that saw its head, or the
     /// `change-opened` a publication wrote — and must be the session's branch.
+    // llmlint: ignore[invalid_states_unrepresentable] fixed verbatim by the landings
+    // amendment beside `defer_checks`; `deferred` refuses `adopt` without it by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopt: Option<Url>,
 }
