@@ -3991,13 +3991,20 @@ already armed is not asked for again, and that ending is marked armed too. A rep
 that does not allow auto-merge, or will not say, ends as before — the draft kept,
 nothing armed — with the reason naming that. A draft held for a `DraftReason` is never
 watched and so never lifted; `change-open` asks for no merge and is unchanged, so a draft
-kept for review is never lifted either. **A draft whose required checks concluded
-`skipped` on it is not armed**: a skip on a draft is a workflow that did not run, and a
-host told to merge once its checks pass reads a skip as passed, so arming it would be
-the merge on draft-era skips the draft lifecycle never makes; it ends as before, the
-reason naming the skipped checks. That supersedes, for `change-auto` and
+kept for review is never lifted either. That supersedes, for `change-auto` and
 `change-direct` only, the "bound elapsed | any | stay a draft → `ChecksUnsettled`" row
 of the draft lifecycle's table.
+
+**The exception: a skipped required check** (the manager's ruling for this node). When
+the wait elapses and **any** required check has concluded `skipped` — on a draft or on a
+ready change — the change request is neither lifted nor armed: the host's auto-merge
+reads a skipped required check as satisfied, and a repository whose workflow does not
+run again on the lift (printobserver's does not) would merge with that check never run.
+The publication ends `checks-unsettled` as before, **without** `armed` and with no
+`merge-armed`, and its reason names each skipped required check. Where `change-auto`'s
+merge watch had already armed the host's merge before the wait elapsed, nothing further
+is asked of the host, the ending carries no `armed`, and the reason says the merge that
+watch armed stands.
 
 ```rust
 pub enum PublishOutcome {                // one variant gains one field:

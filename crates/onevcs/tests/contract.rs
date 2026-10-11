@@ -9245,7 +9245,9 @@ fn the_base_merge_and_check_wait_amendment_declares_its_surface() {
         "under `on-conflict` the base is merged\nonly where",
         "Where\nthat requirement cannot be read, the base is merged",
         "asked\nbefore anything is changed",
-        "**A draft whose required checks concluded\n`skipped` on it is not armed**",
+        "**The exception: a skipped required check**",
+        "When\nthe wait elapses and **any** required check has concluded `skipped`",
+        "The publication ends `checks-unsettled` as before, **without** `armed`",
     ] {
         assert!(
             text.contains(stated),

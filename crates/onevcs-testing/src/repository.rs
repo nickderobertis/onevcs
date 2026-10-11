@@ -939,10 +939,7 @@ fn publish_as_change(
             Watched::Ready => false,
             // A merge is armed in place of the elapsed wait's refusal where the policy
             // asks for one and the host allows it, as next door.
-            Watched::Elapsed {
-                error,
-                skipped_on_draft,
-            } => {
+            Watched::Elapsed { error, skipped } => {
                 return match policy {
                     MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => arm_on_elapse(
                         host.as_ref(),
@@ -950,7 +947,7 @@ fn publish_as_change(
                         &change,
                         emissions,
                         error,
-                        &skipped_on_draft,
+                        &skipped,
                     ),
                     MergePolicy::ChangeOpen | MergePolicy::LocalDirect => Err(error),
                 };
@@ -1056,7 +1053,7 @@ fn arm_on_elapse(
     change: &ChangeRequest,
     emissions: &mut Vec<Emission>,
     elapsed: Error,
-    skipped_on_draft: &[String],
+    skipped: &[String],
 ) -> Result<PublishOutcome> {
     let Error::ChecksUnsettled { reason } = elapsed else {
         return Err(elapsed);
@@ -1067,10 +1064,13 @@ fn arm_on_elapse(
             url = change.url
         ),
     };
-    if !skipped_on_draft.is_empty() {
+    // A skipped required check is one the host's auto-merge reads as satisfied, so a
+    // merge armed over one could land with it never run, as next door refuses to.
+    if !skipped.is_empty() {
         return Err(unarmed(format!(
-            "{} concluded skipped on the draft, which is not a verdict",
-            skipped_on_draft.join(", ")
+            "Required check {} concluded skipped, which the host's auto-merge would read as \
+             passed",
+            skipped.join(", ")
         )));
     }
     match host.allows_auto_merge() {
@@ -1379,7 +1379,7 @@ fn watch(
                         unsettled_named(checks, standing, declared)
                     ),
                 },
-                skipped_on_draft: Vec::new(),
+                skipped: skipped(standing),
             }
         };
     let answered = host.change_checks(change)?;
@@ -1439,15 +1439,7 @@ fn watch(
         return Ok(Watched::Draft);
     }
     if running || (not_run.is_empty() && !unseen) {
-        // Over a draft, so a required check skipped on it is one that did not run —
-        // which a merge armed here would read as passed, as next door refuses to.
-        return Ok(match unsettled(&checks, &standing, &declared) {
-            Watched::Elapsed { error, .. } => Watched::Elapsed {
-                error,
-                skipped_on_draft: skipped(&standing),
-            },
-            other => other,
-        });
+        return Ok(unsettled(&checks, &standing, &declared));
     }
 
     // The grace window elapsed with nothing required run: lift early, say so, and read
@@ -1524,9 +1516,9 @@ enum Watched {
     Elapsed {
         /// The `checks-unsettled` the bound ends as.
         error: Error,
-        /// The required checks skipped on a draft the bound elapsed over, which keep
-        /// its merge from being armed.
-        skipped_on_draft: Vec<String>,
+        /// The required checks that had concluded skipped when the bound elapsed,
+        /// which keep its merge from being armed.
+        skipped: Vec<String>,
     },
 }
 

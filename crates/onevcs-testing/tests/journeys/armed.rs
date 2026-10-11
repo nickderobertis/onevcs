@@ -226,22 +226,47 @@ fn a_repository_that_does_not_allow_auto_merge_is_left_as_the_watch_left_it() {
 }
 
 #[test]
-fn a_draft_whose_required_check_was_skipped_on_it_is_never_armed() {
-    let home = Home::new();
-    let mut skipped = gate(Some("skipped"));
-    skipped.name = "lint".to_owned();
-    let host = host(&home, vec![gate(None), skipped], HostState::default());
-    let vcs = repository(MergePolicy::ChangeAuto);
-    let token = session(&vcs);
+fn an_elapsed_watch_over_a_skipped_required_check_lifts_and_arms_nothing() {
+    // On a draft, and on a ready change under the policy that watches one.
+    for (policy, drafts) in [
+        (MergePolicy::ChangeAuto, None),
+        (
+            MergePolicy::ChangeDirect,
+            Some(onevcs::rules::Drafts {
+                disabled: Some(true),
+                warn_on_early_lift: None,
+            }),
+        ),
+    ] {
+        let home = Home::new();
+        let mut skipped = gate(Some("skipped"));
+        skipped.name = "lint".to_owned();
+        let host = host(&home, vec![gate(None), skipped], HostState::default());
+        let vcs = MemoryVcs::seeded(VcsState {
+            policy: Some(policy),
+            approvals: Some(onevcs::rules::Approvals::None),
+            drafts,
+            ..one_repository()
+        });
+        let token = session(&vcs);
 
-    let outcome = publish(&vcs, &token, &host);
-    assert!(
-        matches!(&outcome, PublishOutcome::Failed { kind: FailureKind::ChecksUnsettled, reason, armed: None, .. }
-            if reason.contains("lint concluded skipped on the draft")),
-        "{outcome:?}"
-    );
-    let state = host.state().expect("readable");
-    assert!(state.armed.is_empty() && !state.made_ready.contains(&first()));
+        let outcome = publish(&vcs, &token, &host);
+        assert!(
+            matches!(&outcome, PublishOutcome::Failed { kind: FailureKind::ChecksUnsettled, reason, armed: None, .. }
+                if reason.contains("Required check lint concluded skipped")),
+            "{policy:?}: {outcome:?}"
+        );
+        let state = host.state().expect("readable");
+        assert!(state.armed.is_empty(), "{policy:?}");
+        assert!(state.merges.is_empty(), "{policy:?}");
+        assert!(
+            !state
+                .ledger
+                .iter()
+                .any(|call| call.method == "ready_for_review" || call.method == "merge"),
+            "{policy:?}: nothing lifted or armed"
+        );
+    }
 }
 
 #[test]

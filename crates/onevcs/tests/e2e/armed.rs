@@ -277,35 +277,56 @@ fn a_repository_that_does_not_allow_auto_merge_keeps_the_draft_unarmed_and_says_
 }
 
 #[test]
-fn a_draft_whose_required_check_was_skipped_on_it_is_never_armed() {
-    // A skip on a draft is a workflow that did not run, and a host told to merge once
-    // its checks pass reads a skip as passed — so an elapsed wait over one arms nothing.
-    let hosted = Hosted::new(AUTO);
-    hosted.world.host_checks(&[
-        running(),
-        Check {
-            name: "lint",
+fn an_elapsed_wait_over_a_skipped_required_check_lifts_and_arms_nothing() {
+    // The host's auto-merge reads a skipped required check as satisfied, and a
+    // repository whose workflow does not run again on the lift would merge with it never
+    // run — so a wait that elapses over one, on a draft or on a ready change, under
+    // either policy that merges, is left exactly as it was and names every skipped check.
+    for policy in [
+        AUTO,
+        DIRECT,
+        "{publication: change-direct, approvals: none, drafts: {disabled: true}}",
+    ] {
+        let hosted = Hosted::new(policy);
+        let skipped = |name| Check {
+            name,
             status: "completed",
             conclusion: Some("skipped"),
             required: true,
-        },
-    ]);
-    let token = hosted.change("feature/skipped", "feat: the skipped thing");
+        };
+        hosted
+            .world
+            .host_checks(&[running(), skipped("lint"), skipped("docs")]);
+        let token = hosted.change("feature/skipped", "feat: the skipped thing");
 
-    hosted
-        .world
-        .onevcs()
-        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
-        .env("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", "600")
-        .args(["publish", &token])
-        .assert()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "\"lint\" concluded skipped on the draft, which is not a verdict",
-        ))
-        .stderr(predicate::str::contains("Its merge is armed").not());
-    assert!(hosted.world.events_of(&token, "merge-armed").is_empty());
-    assert!(!asked(&hosted.world, "pr ready") && !asked(&hosted.world, "pr merge"));
+        hosted
+            .world
+            .onevcs()
+            .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+            .env("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", "600")
+            .args(["publish", &token])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("checks unsettled"))
+            .stderr(predicate::str::contains("\"lint\""))
+            .stderr(predicate::str::contains("\"docs\""))
+            .stderr(predicate::str::contains(
+                "concluded skipped, which the host's auto-merge would read as passed",
+            ))
+            .stderr(predicate::str::contains(
+                "lifted nothing and armed no merge",
+            ))
+            .stderr(predicate::str::contains("Its merge is armed").not());
+        assert!(
+            hosted.world.events_of(&token, "merge-armed").is_empty(),
+            "{policy}"
+        );
+        assert!(
+            !asked(&hosted.world, "pr ready") && !asked(&hosted.world, "pr merge"),
+            "{policy}: nothing was lifted or armed: {:?}",
+            hosted.world.host_calls()
+        );
+    }
 }
 
 #[test]

@@ -2554,7 +2554,7 @@ fn land_opened_change(
                 let elapsed = Elapsed {
                     reason,
                     already_armed: watcher.armed,
-                    skipped_on_draft: &watcher.skipped_on_draft,
+                    skipped: &watcher.skipped_at_elapse,
                 };
                 match arm_on_elapse(host, change, pushed, stream, elapsed)? {
                     WatchEnded::Landed(sha) => sha,
@@ -2610,8 +2610,8 @@ struct Elapsed<'w> {
     reason: String,
     /// Whether the watch already armed the host's merge — `change-auto`'s merge watch.
     already_armed: bool,
-    /// The required checks that concluded skipped on a draft the bound elapsed over.
-    skipped_on_draft: &'w [String],
+    /// The required checks that had concluded skipped when the bound elapsed.
+    skipped: &'w [String],
 }
 
 /// Where a `change-auto` or `change-direct` watch ended: the host merged the change at
@@ -2640,10 +2640,11 @@ enum WatchEnded {
 /// that merges at the moment it is armed — its checks passed in between — lands it
 /// here, and the publication ends as any landing does.
 ///
-/// A draft whose required checks concluded **skipped** on it is never armed: a skip on
-/// a draft is a workflow that did not run, and a host told to merge once its checks
-/// pass reads a skip as passed — the merge on draft-era skips the lifecycle exists to
-/// never make. It is left as it was, and the refusal names the skipped checks.
+/// A change any of whose required checks had concluded **skipped** when the wait
+/// elapsed is never lifted or armed: the host's auto-merge reads a skipped required
+/// check as satisfied, and a repository whose workflow does not run again on the lift
+/// would then merge with that check never run. It is left as it was, and the refusal
+/// names each skipped check.
 fn arm_on_elapse(
     host: &dyn RemoteHost,
     change: &ChangeRequest,
@@ -2654,16 +2655,21 @@ fn arm_on_elapse(
     let Elapsed {
         reason,
         already_armed,
-        skipped_on_draft,
+        skipped,
     } = elapsed;
-    if !skipped_on_draft.is_empty() {
+    if !skipped.is_empty() {
         return Err(Error::ChecksUnsettled {
             reason: format!(
-                "{reason}. {skipped} concluded skipped on the draft, which is not a verdict, so \
-                 {url} is left as it was — nothing lifted it or armed its merge, since the host \
-                 would read a skip as passed",
-                skipped = guidance::listed(skipped_on_draft),
+                "{reason}. Required check {skipped} concluded skipped, which the host's \
+                 auto-merge would read as passed, so {url} is {left} — this publication lifted \
+                 nothing and armed no merge for it",
+                skipped = guidance::listed(skipped),
                 url = change.url,
+                left = if already_armed {
+                    "left with the merge its watch had already armed"
+                } else {
+                    "left as it was"
+                },
             ),
         });
     }
@@ -3370,11 +3376,10 @@ struct Watcher<'a> {
     elapsed: bool,
     /// Whether the host's own merge has been armed on the change by this watch.
     armed: bool,
-    /// The required checks that had concluded skipped on the draft when the bound
-    /// elapsed over it. A draft-era skip is not a verdict, and a host told to merge once
-    /// its checks pass reads one as passed — so a watch that elapsed over any is never
-    /// armed.
-    skipped_on_draft: Vec<String>,
+    /// The required checks that had concluded skipped when the bound elapsed. The
+    /// host's auto-merge reads a skipped required check as satisfied, so a watch that
+    /// elapsed over any is never armed.
+    skipped_at_elapse: Vec<String>,
 }
 
 impl<'a> Watcher<'a> {
@@ -3403,7 +3408,7 @@ impl<'a> Watcher<'a> {
             declaration: None,
             elapsed: false,
             armed: false,
-            skipped_on_draft: Vec::new(),
+            skipped_at_elapse: Vec::new(),
         })
     }
 
@@ -3560,6 +3565,7 @@ impl<'a> Watcher<'a> {
         awaited: &str,
     ) -> Error {
         self.elapsed = true;
+        self.skipped_at_elapse = skipped_in(standing);
         self.record_gate(stream, gate_run::Ruling::NoVerdict, standing);
         unsettled(
             self.change,
@@ -3785,7 +3791,6 @@ fn settle_draft(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<bool> 
                 .map(|()| false);
         }
         if watcher.out_of_time() {
-            watcher.skipped_on_draft = skipped_in(&standing);
             return Err(watcher.unsettled(
                 stream,
                 &reading,
