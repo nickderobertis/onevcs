@@ -1512,6 +1512,34 @@ fn a_deferred_publication_knows_a_draft_by_this_hosts_newest_record_of_its_head_
         world.git(&worktree, &["rev-parse", "HEAD"])
     );
 
+    // A head record this build did not write is refused by name, never read as absent.
+    let record = world.home().join(format!(
+        "change-heads/{}.json",
+        short_digest(&url(personal))
+    ));
+    let kept = std::fs::read_to_string(&record).expect("the standings read's record");
+    std::fs::write(&record, "not a head record").expect("a damaged record");
+    let damaged_tip = origin_tip(&stack, "feature/person");
+    world.commit_file(&worktree, "after.txt", "after\n", "feat: after the damage");
+    let output = world
+        .onevcs()
+        .args([
+            "publish",
+            &token,
+            "--defer-checks",
+            "--adopt",
+            &url(personal),
+        ])
+        .output()
+        .expect("the binary runs");
+    refused(&output, 2, "is not one this build writes");
+    assert_eq!(
+        origin_tip(&stack, "feature/person"),
+        damaged_tip,
+        "nothing pushed"
+    );
+    std::fs::write(&record, kept).expect("the record restored");
+
     // A record naming another branch refuses, with nothing pushed.
     stack.branch("feature/other", "main", "other.txt");
     let other = stack.open("feature/other", "main", true);

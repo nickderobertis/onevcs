@@ -935,12 +935,25 @@ pub(crate) fn recorded_head(url: &Url) -> Result<Option<String>> {
     let mut candidates: Vec<(String, String)> = status::opened_heads(url.as_str())?;
     let path = heads_dir()?.join(format!("{}.json", ids::short_digest(url.as_str())));
     match std::fs::read_to_string(&path) {
+        // A record that is not what this crate writes is refused by name, never read as
+        // no record: a deferred publication decides whose change request it pushes into
+        // from it, and "could not read" must not become "nothing recorded".
         Ok(text) => {
-            if let Ok(record) = serde_json::from_str::<HeadRecord>(&text) {
-                if record.url == url.as_str() && ids::is_timestamp(&record.at) {
-                    candidates.push((record.at, record.head_branch));
-                }
-            }
+            let record = serde_json::from_str::<HeadRecord>(&text)
+                .ok()
+                .filter(|record| {
+                    record.url == url.as_str()
+                        && ids::is_timestamp(&record.at)
+                        && Ref::try_from(record.head_branch.clone()).is_ok()
+                })
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "the head record at {} is not one this build writes for {url}; remove \
+                         it, and a standings read of {url} writes it again",
+                        path.display()
+                    ))
+                })?;
+            candidates.push((record.at, record.head_branch));
         }
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {}
         Err(failure) => {
