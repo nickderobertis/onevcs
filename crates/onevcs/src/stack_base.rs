@@ -19,11 +19,11 @@
 //! named by an earlier call and not by this one is neither merged again nor unmerged.
 //!
 //! **Every merge commit carries a `Stack-Base` trailer** naming what it merged and
-//! where that stood (`provenance::stack_base_trailer`), under the rules file's prefix.
-//! That is how `recoverable`, `status` and the retirement pass tell a stack base from
-//! unpublished work — from the branch's own head and first-parent line, so a host that
-//! never saw it assembled reads it the same way, and a change cut from it, which
-//! inherits every one of those merges, is not mistaken for one.
+//! where that stood (`provenance::stack_base_trailer`), under the rules file's prefix,
+//! which is where `status` reads a stack base's parents back from. What makes a branch
+//! a stack base is not that trailer but the `stack-base-assembled` record this module
+//! writes of the ref: a change cut from a stack base inherits every one of its merges,
+//! and one cut at its head shares that head, and each is still ordinary work.
 //!
 //! **Nothing here is a publication.** No change request is opened, and the push skips
 //! the repository's own `pre-push` hook (`git::push_preserving`): a stack base merges

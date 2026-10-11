@@ -4380,21 +4380,23 @@ every other write to a remote: a refusal pushes nothing and fails the call namin
 works from the origin alone: on a host whose state root has never seen the branch, the
 origin's copy is continued.
 
-**A stack base says what it is in its own history.** Every merge commit it writes, the
-root's included, carries the trailer `<prefix>Stack-Base: <parent>@<sha>` under the rules
-file's `trailer_prefix` — the merged branch and the commit it was merged at. A branch is
-a stack base only where its own head is such a merge, and its parents are read off the
-merges of its own first-parent line — never off a trailer that reached it through
-ancestry, so a change cut from a stack base, or merging one forward, stays ordinary work
-that `recoverable` lists with its landing guidance. So
+**A stack base is the ref the verb recorded, never a shape of history.** Every merge
+commit it writes, the root's included, carries the trailer
+`<prefix>Stack-Base: <parent>@<sha>` under the rules file's `trailer_prefix` — the merged
+branch and the commit it was merged at — and its parents are read back off the merges of
+its own first-parent line. What makes a branch a stack base is its identity alone: the
+branch of that identity a `stack-base-assembled` event on this host records the verb
+assembling. Never its commit content — not a trailer reached through ancestry, and not a
+head it shares with a stack base — so any other branch cut from or merging a stack base,
+one at its very head included, is ordinary work that `recoverable` lists with its landing guidance. So
 `recoverable`, in both its default and `--all` forms, does not list a stack base as
 preserved work, and the retirement pass offers it no landing verb and never classifies it
 `superseded-with-changes` — it is kept as `unmerged-unique-commits` while it holds what
 its root does not. `onevcs status` names it: the `--json` report's `version` moves to `12`
 with `branch.stack_base`, `{parents: [{branch, head}]}` — each parent a `Stack-Base`
-merge of the branch's history brought in, at the newest head merged, a dropped parent
-included — and its `next` names no landing verb, because a stack base is drafted against
-and never landed.
+merge of the branch's first-parent line brought in, at the newest head merged, a dropped
+parent included — and its `next` names no landing verb, because a stack base is drafted
+against and never landed.
 
 Event kinds added: `stack-base-assembled`.
 

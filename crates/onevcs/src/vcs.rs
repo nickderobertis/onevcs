@@ -720,6 +720,9 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
     // once per identity: see `reported_branches` for why the listing below needs
     // them.
     let preserved_here = crate::status::preserved_branches(streams, identity);
+    // The branches `onevcs stack-base` recorded assembling for this identity, read
+    // once per identity for the same reason.
+    let stack_bases_here = crate::status::stack_bases(streams, identity);
     // What each branch is for the question of whether it may be deleted, read from the
     // same records and local refs this report reads and nothing else — no host, no
     // fetch — and decided once per branch, since the answer is about every copy of it.
@@ -849,11 +852,10 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // A stack base is not preserved work in either report: it merges branches
             // that are landed by their own change requests and is never landed itself,
             // so a row for it would hand a landing verb to the one branch nothing should
-            // land. Its own head says what it is — every merge `onevcs stack-base`
-            // writes carries the trailer — and never a merge it merely inherited, so a
-            // change cut from a stack base is still listed. That read is the same log
-            // the rows below read, so recognising it costs this report nothing.
-            if provenance::stack_base_of(asked, &compared, &branch, &base, trailers)?.is_some() {
+            // land. Which branches are stack bases is the verb's own record of the refs
+            // it assembled, never what a branch's commits carry, so a change cut from a
+            // stack base — even one at its very head — is still listed.
+            if stack_bases_here.contains(&branch) {
                 continue;
             }
             let retirement = classified

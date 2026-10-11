@@ -1389,8 +1389,10 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         // refuse one by name where they are the ones about to act on it.
         change_base = provenance::recorded_change_base(repo, compared, &work.branch, &trailers)?
             .and_then(|recorded| Ref::try_from(recorded).ok());
-        stack_base = provenance::stack_base_of(repo, compared, &work.branch, &base, &trailers)?
-            .map(|parents| StackBaseReport {
+        if stack_bases(&streams, &work.identity).contains(&*work.branch) {
+            let parents =
+                provenance::stack_parents(repo, compared, &work.branch, &base, &trailers)?;
+            stack_base = Some(StackBaseReport {
                 parents: parents
                     .into_iter()
                     .map(|merge| StackParent {
@@ -1399,6 +1401,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
                     })
                     .collect(),
             });
+        }
         verdict = Some(decided.clone());
     }
     // A branch nothing holds any more has no copy to decide it from, and one retired
@@ -2017,6 +2020,10 @@ pub(crate) struct Recorded {
     superseded: Vec<Stamped<crate::retire::SupersessionRecord>>,
     /// The newest `branch-retired` this stream recorded.
     retired: Option<Stamped<crate::retire::RetiredRecord>>,
+    /// The branch a `stack-base-assembled` on this stream records `onevcs stack-base`
+    /// assembling, whatever the outcome — the record that makes that branch of this
+    /// stream's identity a stack base, and the only thing that does.
+    stack_base: Option<Ref>,
     /// Whether some of the stream could not be read — the file, or a line of it — so
     /// what it recorded is not all here.
     gaps: bool,
@@ -2552,6 +2559,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         pushed_heads: Vec::new(),
         superseded: Vec::new(),
         retired: None,
+        stack_base: None,
         gaps: false,
     };
     let path = directory.join(format!("{token}.ndjson"));
@@ -2789,6 +2797,14 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     record.retired = Some(Stamped { at, value: read });
                 }
             }
+            // The verb's own record of the ref it assembled, which is what makes that
+            // branch a stack base: through `Ref`, because the name goes on to be
+            // compared with branches handed to git.
+            EventKind::StackBaseAssembled => {
+                if let Some(branch) = field("branch").and_then(|name| Ref::try_from(name).ok()) {
+                    record.stack_base = Some(branch);
+                }
+            }
             _ => {}
         }
     }
@@ -2902,6 +2918,24 @@ pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeS
         .filter(|record| record.identity.as_deref() == Some(identity))
         .filter_map(|record| record.on_origin.as_ref())
         .map(|stamped| stamped.value.branch.to_string())
+        .collect()
+}
+
+/// Every branch of one identity this host's streams record `onevcs stack-base`
+/// assembling.
+///
+/// A branch is a stack base by this record and nothing else — never by what its
+/// commits carry. A change cut from a stack base, or merging one forward, inherits
+/// every `Stack-Base` merge of it, and one cut at its very head shares its head too;
+/// each is still ordinary work that lands through its own change request, and a
+/// reader that classified it by content would take it out of `recoverable` with no
+/// landing offered anywhere.
+pub(crate) fn stack_bases(streams: &[Recorded], identity: &str) -> BTreeSet<String> {
+    streams
+        .iter()
+        .filter(|record| record.identity.as_deref() == Some(identity))
+        .filter_map(|record| record.stack_base.as_ref())
+        .map(ToString::to_string)
         .collect()
 }
 

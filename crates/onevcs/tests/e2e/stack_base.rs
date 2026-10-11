@@ -893,55 +893,90 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
     stack.assembled(&["feature/a", "feature/c"], 0);
     let checkout = stack.checkout.to_string_lossy().into_owned();
 
-    // A change drafted against the stack base: cut from it, with work of its own. Every
-    // `Stack-Base` merge of the base is in its history, and none of them is its own.
+    // Two changes drafted against the stack base. One is cut from it with work of its
+    // own: every `Stack-Base` merge of the base is in its history, and none is its own.
+    // The other is cut at the base's very head and holds nothing else, so its head *is*
+    // the base's newest `Stack-Base` merge — the same commit, under another name.
     world.git(
         &stack.checkout,
         &["checkout", "-q", "-b", "feature/child", BRANCH],
     );
     world.commit_file(&stack.checkout, "child.txt", "child\n", "feat: the child");
+    world.git(
+        &stack.checkout,
+        &["checkout", "-q", "-b", "feature/twin", BRANCH],
+    );
+    world.git(&stack.checkout, &["checkout", "-q", "main"]);
+    let base_head = world.git(&stack.checkout, &["rev-parse", BRANCH]);
+    assert_eq!(
+        world.git(&stack.checkout, &["rev-parse", "feature/twin"]),
+        base_head,
+        "the twin shares the stack base's head"
+    );
 
-    // The listing `recoverable` gives a branch it would land, and what `status` says.
-    let listed = |when: &str| {
+    // What `recoverable` lists for a branch, and what `status` says of it: each is an
+    // ordinary branch holding commits its base lacks, so each is listed with the
+    // landing guidance every such branch gets, and neither is reported a stack base.
+    let ordinary = |branch: &str, when: &str| {
+        for extra in [&[][..], &["--all"][..]] {
+            let assert = world
+                .onevcs()
+                .args(["recoverable", "--repo", &checkout, "--json"])
+                .args(extra)
+                .assert()
+                .success();
+            let rows: Vec<Value> =
+                serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
+            let row = rows
+                .iter()
+                .find(|row| row["branch"]["branch"] == branch)
+                .unwrap_or_else(|| panic!("{when} {extra:?}: {branch} is listed: {rows:#?}"));
+            assert_eq!(
+                row["recover_command"][1], "publish-branch",
+                "{when} {extra:?}: {row:#}"
+            );
+            assert!(
+                rows.iter().all(|row| row["branch"]["branch"] != BRANCH),
+                "{when} {extra:?}: the stack base itself is still not listed: {rows:#?}"
+            );
+        }
         let assert = world
             .onevcs()
-            .args(["recoverable", "--repo", &checkout, "--json"])
-            .assert()
-            .success();
-        let rows: Vec<Value> =
-            serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
-        let child = rows
-            .iter()
-            .find(|row| row["branch"]["branch"] == "feature/child")
-            .unwrap_or_else(|| panic!("{when}: the child is listed: {rows:#?}"));
-        assert_eq!(
-            child["recover_command"][1], "publish-branch",
-            "{when}: {child:#}"
-        );
-        assert!(
-            rows.iter().all(|row| row["branch"]["branch"] != BRANCH),
-            "{when}: the stack base itself is still not listed: {rows:#?}"
-        );
-        let assert = world
-            .onevcs()
-            .args(["status", "feature/child", "--json"])
+            .args(["status", branch, "--json"])
             .assert()
             .success();
         let report: Value =
             serde_json::from_slice(&assert.get_output().stdout).expect("one object");
         assert!(
             report["branch"].get("stack_base").is_none(),
-            "{when}: {report:#}"
+            "{when}: {branch}: {report:#}"
+        );
+        let command = report["next"]["command"].as_str().unwrap_or_default();
+        assert!(
+            command.starts_with(&format!("onevcs publish-branch {branch} ")),
+            "{when}: {branch} is offered a landing: {report:#}"
         );
         let because = report["next"]["because"].as_str().unwrap_or_default();
-        assert!(!because.contains("stack base"), "{when}: {report:#}");
+        assert!(
+            !because.contains("stack base"),
+            "{when}: {branch}: {report:#}"
+        );
     };
-    listed("cut from the stack base");
+    ordinary("feature/child", "cut from the stack base");
+    ordinary("feature/twin", "cut at the stack base's head");
 
-    // The base advances after review, and the change merges it forward — its head is
+    // The stack base itself, at that same head, is still one.
+    let assert = world
+        .onevcs()
+        .args(["status", BRANCH, "--json"])
+        .assert()
+        .success();
+    let report: Value = serde_json::from_slice(&assert.get_output().stdout).expect("one object");
+    assert!(report["branch"]["stack_base"].is_object(), "{report:#}");
+
+    // The base advances after review, and the child merges it forward — its head is
     // now a merge whose history carries the base's newest `Stack-Base` merge too.
     stack.advance("feature/a", "a.txt", "a, reworked\n");
-    world.git(&stack.checkout, &["checkout", "-q", "main"]);
     stack.assembled(&["feature/a", "feature/c"], 0);
     world.git(&stack.checkout, &["checkout", "-q", "feature/child"]);
     world.git(&stack.checkout, &["fetch", "-q", "origin"]);
@@ -956,5 +991,8 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
         ],
     );
     world.git(&stack.checkout, &["checkout", "-q", "main"]);
-    listed("after merging the advanced stack base forward");
+    ordinary(
+        "feature/child",
+        "after merging the advanced stack base forward",
+    );
 }

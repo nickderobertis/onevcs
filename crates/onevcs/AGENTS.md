@@ -396,12 +396,14 @@ this crate's to rename alone. Five things are easy to undo.
   merge the boundary refused becomes the held copy every later call continues, and is
   refused forever. A conflict is not a failure: its session is left open over it, and a
   session holding a staged, uncommitted resolution is left open too.
-- **Readers recognise a stack base from its own head alone** (`provenance::stack_base_of`):
-  the head must be a `Stack-Base` merge, and its parents are read off its first-parent
-  line only. A change cut from a stack base, or merging one forward, inherits every one
-  of those trailers and is still ordinary work — reading ancestry took it out of
-  `recoverable` with no landing offered anywhere. `recoverable` drops a stack base in
-  both reports, and `status` reports `branch.stack_base` and no landing verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
+- **A stack base is the ref the verb recorded, never a shape of history**
+  (`status::stack_bases`, read off `stack-base-assembled`). Its trailers name its
+  parents, read off its first-parent line (`provenance::stack_parents`), and decide
+  nothing else: a change cut from a stack base inherits every one of them, and one cut at
+  its very head shares its head too, and both are ordinary work — classifying by content
+  took each out of `recoverable` with no landing offered anywhere. `recoverable` drops a
+  stack base in both reports, and `status` reports `branch.stack_base` and no landing
+  verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
   `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier

@@ -391,13 +391,13 @@ key moved, and the version moves anyway, because a reader that took any `retired
 landing would read a discarded branch as landed, which it never is — only `retirable`
 reads as landed, and the human `retired:` line says `discarded, its work never landed`.
 Version 12 is `branch.stack_base`: for a branch `onevcs stack-base` assembled, every
-parent a `Stack-Base` merge of its history brought in, each at the newest head merged —
+parent a `Stack-Base` merge on its first-parent line brought in, each at the newest head
+merged —
 a parent a later assembly dropped because it landed included, since its merge is still
-history. It is read off the branch's own commits — its head must be a `Stack-Base` merge,
-and only the merges of its first-parent line name parents, so a branch cut from a stack
-base is never reported as one — and a host that never saw the branch assembled answers
-it too; `next` then names no landing verb, because a stack base is
-drafted against and never landed, and the human rendering prints a `stack base:` line.
+history. Whether a branch is one is this host's record of the verb assembling it — a
+`stack-base-assembled` event naming that identity and branch — never its commits, so a
+branch cut from a stack base, or standing at its very head, is never reported as one.
+`next` then names no landing verb, because a stack base is drafted against and never landed, and the human rendering prints a `stack base:` line.
 Omitted for every other branch.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
