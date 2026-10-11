@@ -1129,25 +1129,32 @@ fn deferred(
         (true, Some(adopt)) => (true, adopt),
         (true, None) => {
             return Err(crate::error::invalid(format!(
-                "--defer-checks publishes into a draft that is already open, and names no host                  call to find it with: name it with --adopt <URL>. Nothing was pushed; `{}`                  publishes and watches the checks instead",
+                "--defer-checks publishes into a draft that is already open, and names no host \
+                 call to find it with: name it with --adopt <URL>. Nothing was pushed; `{}` \
+                 publishes and watches the checks instead",
                 guidance::command(["onevcs", "publish", token])
             )))
         }
         (false, Some(adopt)) => {
             return Err(crate::error::invalid(format!(
-                "--adopt {adopt} is the draft a --defer-checks publication pushes into, and this                  publication does not defer its checks: add --defer-checks, or drop --adopt.                  Nothing was pushed"
+                "--adopt {adopt} is the draft a --defer-checks publication pushes into, and this \
+                 publication does not defer its checks: add --defer-checks, or drop --adopt. \
+                 Nothing was pushed"
             )))
         }
     };
     debug_assert!(defer);
     if request.draft.is_some() {
         return Err(crate::error::invalid(
-            "--defer-checks pushes into a draft held for its user's review, and a draft reason              asks for a different draft: drop one of them. Nothing was pushed",
+            "--defer-checks pushes into a draft held for its user's review, and a draft reason \
+             asks for a different draft: drop one of them. Nothing was pushed",
         ));
     }
     if policy::GreenDraft::of(effective, resolved.approvals) != policy::GreenDraft::KeepForReview {
         return Err(crate::error::invalid(format!(
-            "--defer-checks is for a change request held for review — a change-open identity              whose approvals are required — and {identity} publishes {} here, so its checks are              what decides it. Nothing was pushed; `{}` publishes and watches them",
+            "--defer-checks is for a change request held for review — a change-open identity \
+             whose approvals are required — and {identity} publishes {} here, so its checks are \
+             what decides it. Nothing was pushed; `{}` publishes and watches them",
             policy::spell(effective),
             guidance::command(["onevcs", "publish", token])
         )));
@@ -1155,20 +1162,26 @@ fn deferred(
     let named = crate::review::ChangeUrl::parse(adopt.as_str())?;
     if named.identity != identity {
         return Err(crate::error::invalid(format!(
-            "{adopt} is a change request of {}, and session {token} publishes to {identity}.              Nothing was pushed",
+            "{adopt} is a change request of {}, and session {token} publishes to {identity}. \
+             Nothing was pushed",
             named.identity
         )));
     }
     match crate::standings::recorded_head(adopt)? {
         Some(head) if head == *record.branch => Ok(Some(adopt.clone())),
         Some(head) => Err(crate::error::invalid(format!(
-            "{adopt} carries {head:?} by this host's newest record of it, and session {token}              is on {:?}, so it is not this session's change request. Nothing was pushed",
+            "{adopt} carries {head:?} by this host's newest record of it, and session {token} \
+             is on {:?}, so it is not this session's change request. Nothing was pushed",
             record.branch
         ))),
         None => Err(Error::UnrecordedChangeHead {
             change: adopt.to_string(),
             reason: format!(
-                "this host holds no record of which branch {adopt} carries — no standings read                  that saw its head and no change request this host opened — and a                  --defer-checks publication asks the host nothing, so it cannot tell whether it                  is session {token}'s. Nothing was pushed: read it with `onevcs change                  standings`, or publish with `{}`, which reads the host",
+                "this host holds no record of which branch {adopt} carries — no standings read \
+                 that saw its head and no change request this host opened — and a \
+                 --defer-checks publication asks the host nothing, so it cannot tell whether it \
+                 is session {token}'s. Nothing was pushed: read it with `onevcs change \
+                 standings`, or publish with `{}`, which reads the host",
                 guidance::command(["onevcs", "publish", token])
             ),
         }),

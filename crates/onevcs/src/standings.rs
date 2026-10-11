@@ -10,7 +10,7 @@
 //!   required checks' verdict — in **one GraphQL query per 50**, and records a merge
 //!   into the root as the landing it is, whoever merged it.
 //! - [`review_standings`] is the same read carrying each change request's review
-//!   threads, comments and reviews, in one aliased query per repository, each change's
+//!   threads, comments and reviews, in one aliased query per 150 of them, each change's
 //!   [`ReviewRead`] computed exactly as [`review_comments`](crate::review_comments)
 //!   computes it from the same marker.
 //! - [`retarget_change`] moves a change request to another base, writing its
@@ -238,7 +238,7 @@ pub struct ReviewStandings {
 }
 
 /// Read where every named change request stands **and** its review feedback, in one
-/// aliased query per repository.
+/// aliased query per 150 change requests.
 ///
 /// The library form of `onevcs change standings --review`. Each change's
 /// [`ReviewRead`] is the one [`review_comments`](crate::review_comments) computes from

@@ -1814,6 +1814,44 @@ fn a_deferred_publication_knows_a_draft_by_this_hosts_newest_record_of_its_head_
         .expect("the binary runs");
     refused(&output, 2, "name it with --adopt <URL>");
     assert_eq!(origin_tip(&stack, "feature/mine"), before_tip);
+
+    // --adopt without --defer-checks defers nothing, and a draft reason asks for another
+    // draft than the one adopted: each is refused with nothing pushed or asked.
+    let other_url = url(other);
+    for (extra, says) in [
+        (
+            vec!["--adopt", other_url.as_str()],
+            "this publication does not defer its checks",
+        ),
+        (
+            vec!["--defer-checks", "--adopt", other_url.as_str(), "--draft"],
+            "a draft reason asks for a different draft",
+        ),
+    ] {
+        let before = world.ledger().len();
+        let output = world
+            .onevcs()
+            .args(["publish", &token])
+            .args(&extra)
+            .output()
+            .expect("the binary runs");
+        refused(&output, 2, says);
+        assert_eq!(since(world, before), Vec::<Value>::new(), "{extra:?}");
+        assert_eq!(origin_tip(&stack, "feature/mine"), before_tip, "{extra:?}");
+    }
+}
+
+#[test]
+fn a_review_marker_without_review_is_refused_before_the_host_is_asked() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let before = world.ledger().len();
+    let output = stack.standings_output("main", &[format!("{}=m1", url(draft))], &[]);
+    refused(&output, 2, "names a review marker");
+    assert!(since(world, before).is_empty());
+    assert!(standings_events(world).is_empty());
 }
 
 #[test]
