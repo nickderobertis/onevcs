@@ -505,8 +505,9 @@ pub struct HostState {
 }
 
 /// Every method a ledger entry may name: each `RemoteHost` method this host answers.
-/// `Host::called` refuses to record any other, so a method added to the trait and
-/// answered here fails the ledger journey until it is listed.
+/// `Host::called` refuses to record any other, and
+/// `the_ledger_records_a_call_to_every_method_the_host_interface_declares` holds this
+/// list equal to the trait's own declaration, read out of its source.
 pub(crate) const LEDGER_METHODS: &[&str] = &[
     "authenticated_user",
     "change_checks",

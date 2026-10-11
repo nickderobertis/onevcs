@@ -459,6 +459,9 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let called: BTreeSet<String> = called.into_iter().map(str::to_owned).collect();
     assert!(declared.len() >= 21, "the trait was read: {declared:?}");
     assert_eq!(called, declared, "{ledger:#?}");
+    // And the methods a ledger entry may name, which a persisted ledger is read against,
+    // are that same list — no more, so a stale name is not read back as a call.
+    assert_eq!(ledger_methods(), declared);
     let charge = |method: &str| -> Vec<&HostCall> {
         ledger.iter().filter(|call| call.method == method).collect()
     };
@@ -666,5 +669,26 @@ fn remote_host_methods() -> BTreeSet<String> {
         .lines()
         .filter_map(|line| line.strip_prefix("    fn "))
         .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.to_owned()))
+        .collect()
+}
+
+/// The methods `HostCall::checked` admits, read out of `LEDGER_METHODS` in this crate's
+/// own source: every string literal between its declaration and the slice's close.
+fn ledger_methods() -> BTreeSet<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the list's source at {} is readable: {e}", path.display()));
+    let listed = source
+        .split_once("pub(crate) const LEDGER_METHODS: &[&str] = &[\n")
+        .expect("state.rs declares LEDGER_METHODS")
+        .1
+        .split_once("\n];\n")
+        .expect("the list ends")
+        .0;
+    listed
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"'))
+        .filter_map(|rest| rest.strip_suffix("\","))
+        .map(str::to_owned)
         .collect()
 }
