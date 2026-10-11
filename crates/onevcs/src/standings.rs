@@ -403,14 +403,18 @@ pub fn retarget_change(providers: &Providers<'_>, request: &RetargetRequest) -> 
             repository.key
         )));
     }
+    // Every write is held to the public boundary before the host is asked to make it,
+    // a base-only move included: the base it names is written to the change request.
+    let mut fields = vec![(Surface::Branch, base.as_str())];
     if let Some(body) = &request.body {
-        crate::boundary::evidence::guard_fields(
-            providers.hosting,
-            &repository.key,
-            &[(Surface::Body, body.as_str())],
-            &TermScope::default(),
-        )?;
+        fields.push((Surface::Body, body.as_str()));
     }
+    crate::boundary::evidence::guard_fields(
+        providers.hosting,
+        &repository.key,
+        &fields,
+        &TermScope::default(),
+    )?;
     add(
         &mut cost,
         repository

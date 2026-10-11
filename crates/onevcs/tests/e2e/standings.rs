@@ -1011,12 +1011,13 @@ fn a_retarget_of_a_merged_or_closed_change_request_or_onto_a_missing_base_writes
     }
 }
 
-#[test]
-fn a_retarget_whose_body_the_public_boundary_refuses_writes_nothing() {
+/// The public boundary fixture's repository, with a private one registered beside it,
+/// and draft 2 (`feature/b`) based on draft 1 (`feature/a`).
+fn boundary_stack() -> (Boundary, ReviewHost) {
     let host = Boundary::new(HELD_FOR_REVIEW);
     host.private("hiddenco/quietharbor", &[]);
     let world = &host.world;
-    let _reviews = world.serve_reviews("sample-owner/openwidget");
+    let reviews = world.serve_reviews("sample-owner/openwidget");
     for (name, from) in [("feature/a", "main"), ("feature/b", "feature/a")] {
         world.git(&host.public, &["fetch", "-q", "origin"]);
         world.git(
@@ -1062,6 +1063,13 @@ fn a_retarget_whose_body_the_public_boundary_refuses_writes_nothing() {
         "b",
         "--draft",
     ]);
+    (host, reviews)
+}
+
+#[test]
+fn a_retarget_whose_body_the_public_boundary_refuses_writes_nothing() {
+    let (host, _reviews) = boundary_stack();
+    let world = &host.world;
     let body = world.path("body.md");
     std::fs::write(&body, "Ported from quietharbor.").expect("a body file");
     let change = "https://github.com/sample-owner/openwidget/pull/2";
@@ -1090,6 +1098,56 @@ fn a_retarget_whose_body_the_public_boundary_refuses_writes_nothing() {
     assert!(writes(&since(world, before)).is_empty());
     assert_eq!(world.change_request(2)["PR_BASE"], "feature/a");
     assert_eq!(world.change_request_body(2), "b");
+}
+
+#[test]
+fn a_base_only_retarget_the_public_boundary_refuses_writes_nothing() {
+    let (host, _reviews) = boundary_stack();
+    let world = &host.world;
+    // A branch the origin holds whose name carries the private repository's term.
+    world.git(
+        &host.public,
+        &["push", "-q", "origin", "main:port/quietharbor"],
+    );
+    let change = "https://github.com/sample-owner/openwidget/pull/2";
+
+    let before = world.ledger().len();
+    let output = world
+        .onevcs()
+        .args(["change", "retarget", change, "--base", "port/quietharbor"])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("public output carries a term of a private repository in its branch name"),
+        "{stderr}"
+    );
+    crate::boundary::assert_neutral(&stderr);
+    assert!(
+        writes(&since(world, before)).is_empty(),
+        "{:#?}",
+        since(world, before)
+    );
+    assert_eq!(world.change_request(2)["PR_BASE"], "feature/a");
+    assert_eq!(world.change_request_body(2), "b");
+    assert!(
+        kinds(
+            &stream_events(world, &format!("change-{}", short_digest(change))),
+            "change-retargeted"
+        )
+        .is_empty(),
+        "a refused call records nothing"
+    );
+
+    // A neutral base passes the same check and is written.
+    let moved = world
+        .onevcs()
+        .args(["change", "retarget", change, "--base", "main", "--json"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(succeeded(&moved)["outcome"], "retargeted");
+    assert_eq!(world.change_request(2)["PR_BASE"], "main");
 }
 
 #[test]
