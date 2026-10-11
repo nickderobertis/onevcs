@@ -139,10 +139,10 @@ impl Trailers {
     /// the commit that branch stood at, as `<branch>@<sha>`.
     ///
     /// On every merge commit `onevcs stack-base` writes, the root's included, so a
-    /// branch whose own head is one is recognised as a stack base — on a
-    /// host that never saw it assembled as readily as on the one that did. A stack
-    /// base is never landed itself; it is what changes are drafted against, and a
-    /// reader that took it for unpublished work would hand it a landing verb.
+    /// stack base's parents can be read back off its own first-parent line. It does
+    /// not make a branch a stack base: that is the verb's `stack-base-assembled` record
+    /// of the ref, because a change cut from a stack base carries every one of these
+    /// merges too and is still ordinary work.
     pub(crate) fn stack_base(&self) -> &str {
         &self.stack_base
     }
