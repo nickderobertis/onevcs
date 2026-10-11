@@ -254,8 +254,8 @@ pub struct Checks {
     pub wait_seconds: Option<WaitSeconds>,
 }
 
-/// A number of seconds to wait: finite, above zero, and at most
-/// [`WaitSeconds::MAX_SECONDS`].
+/// A number of seconds to wait: finite, above zero, and at most a billion (about 31
+/// years).
 ///
 /// The check is in the conversion, as [`TrailerPrefix`]'s is, so a rules file naming a
 /// wait no watch could run to does not deserialize at all. Being finite is also what
