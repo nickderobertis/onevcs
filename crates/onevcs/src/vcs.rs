@@ -15,7 +15,7 @@ use crate::session::{
     SessionToken,
 };
 use crate::stream::Stream;
-use crate::workspace::{self, object};
+use crate::workspace::{self, object, Ref};
 use crate::{git, label, lock, provenance, publish, publishing, store};
 
 use serde_json::json;
@@ -771,11 +771,16 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         // refs, which is a process per branch per checkout that a filtered read
         // has no reason to spend — and the ones `onevcs preserve` put on the
         // origin are listed whatever those refs say: see `reported_branches`.
-        let listed = reported_branches(&repo, &preserved_here, |branch| {
-            narrowed
-                .as_ref()
-                .is_none_or(|only| only.wants(identity, branch))
-        })?;
+        let listed = reported_branches(
+            &repo,
+            &preserved_here,
+            |branch| {
+                narrowed
+                    .as_ref()
+                    .is_none_or(|only| only.wants(identity, branch))
+            },
+            |branch| recorded_base(sessions, identity, branch).map(|base| base.to_string()),
+        )?;
         for (branch, tip) in listed {
             let key = (identity.to_owned(), branch.clone());
             if seen.contains(&key) {
@@ -798,6 +803,21 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if !decided.insert((identity.to_owned(), branch.clone(), tip.clone())) {
                 continue;
             }
+            // Judged against the base the session that cut it recorded — a stack base,
+            // for a change drafted on one — and against the root only where no session
+            // recorded one, or where this checkout cannot name the one it did: the rule
+            // `onevcs status` judges the same branch by.
+            let own_base = recorded_base(sessions, identity, &branch)
+                .map(|recorded| recorded.to_string())
+                .filter(|recorded| *recorded != base && names_a_base(&repo, recorded));
+            let (base, current, compared) = match own_base {
+                Some(own) => {
+                    let current = base_commit(&publication, &own);
+                    let compared = judged_against(asked, &own, current.as_ref());
+                    (own, current, compared)
+                }
+                None => (base.clone(), current.clone(), compared.clone()),
+            };
             // Unpublished by ref is not the same as unfinished: publication
             // squashes, so a branch that landed is never an ancestor of the base
             // afterwards. What answers the question is what the base's own history
@@ -844,6 +864,15 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // reads as "paste this".
             let withheld = verdict.is_landed();
             if withheld && reporting == Reporting::UnpublishedOnly {
+                continue;
+            }
+            // A stack base is not preserved work in either report: it merges branches
+            // that are landed by their own change requests and is never landed itself,
+            // so a row for it would hand a landing verb to the one branch nothing should
+            // land. Which branches are stack bases is their name, never what a branch's
+            // commits carry or what this host recorded assembling, so every host reads
+            // one ref one way and a change cut from a stack base is judged as itself.
+            if crate::stack_base::is_stack_base(&branch) {
                 continue;
             }
             let retirement = classified
@@ -914,8 +943,20 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
 /// processes (or, for `status`, a stream file to parse) and a host with more items
 /// than cores gains nothing from starting them all at once.
 pub(crate) fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    concurrently_on(usize::MAX, items, work)
+}
+
+/// [`concurrently`] on at most `most` threads, for work that is many small reads of
+/// one filesystem: past a few threads it goes no faster, and each thread a call
+/// starts gives the allocator an arena of its own that a long-lived caller keeps.
+pub(crate) fn concurrently_on<T: Sync, R: Send>(
+    most: usize,
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
+        .min(most)
         .min(items.len());
     if workers <= 1 {
         return items.iter().map(&work).collect();
@@ -1176,8 +1217,46 @@ fn reported_branches(
     repo: &Path,
     preserved: &BTreeSet<String>,
     keep: impl Fn(&str) -> bool,
+    based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
-    git::unpublished_branches_among(repo, keep, preserved)
+    // A branch's base is the one its session recorded, so a copy of that base the
+    // checkout holds counts as published for that branch beside the origin's own refs:
+    // a child a session cut at a stack base's head holds nothing beyond its base, exactly
+    // as a branch at an origin ref does, and one with commits of its own is still listed.
+    git::unpublished_branches_among(repo, keep, preserved, based_on)
+}
+
+/// The base the session that cut `branch` recorded, read off the newest record naming
+/// it ([`latest_session`]) by [`session_base`]. `None` where no session recorded the
+/// branch, whose base is the root.
+pub(crate) fn recorded_base(
+    sessions: &[workspace::Record],
+    identity: &str,
+    branch: &str,
+) -> Option<Ref> {
+    latest_session(sessions, identity, branch).map(session_base)
+}
+
+/// The base one session recorded for its branch, as its publication resolves it now.
+///
+/// Through [`publish::standing_target`] — the read-side resolution, which asks the
+/// remote nothing — so a stacked session whose change below has landed answers the
+/// root it publishes onto. Where that cannot be resolved from the clone, the name the
+/// record wrote answers.
+pub(crate) fn session_base(record: &workspace::Record) -> Ref {
+    match publish::standing_target(record) {
+        Ok(target) => target.base().clone(),
+        Err(_) => record
+            .change_base
+            .clone()
+            .unwrap_or_else(|| record.base.clone()),
+    }
+}
+
+/// Whether `repo` holds `base` under either name [`base_ref`] would compare against.
+pub(crate) fn names_a_base(repo: &Path, base: &str) -> bool {
+    git::ref_exists(repo, &format!("refs/remotes/origin/{base}"))
+        || git::ref_exists(repo, &format!("refs/heads/{base}"))
 }
 
 /// Whether this copy of a branch belongs to a session something superseded.

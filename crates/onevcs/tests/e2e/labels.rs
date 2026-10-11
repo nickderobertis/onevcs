@@ -683,9 +683,9 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
             .env("GIT_NAMESPACE", "")
             .assert()
             .success();
-        let native: Vec<Value> =
-            serde_json::from_slice(&assert.get_output().stdout).expect("native rows");
-        assert_eq!(cached, native, "cache must agree with native Git");
+        let git_alone: Vec<Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("git-alone rows");
+        assert_eq!(cached, git_alone, "cache must agree with git alone");
         assert_eq!(cached.len(), 1, "the selected branch must stay visible");
         cached
     };
@@ -738,6 +738,44 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     assert_eq!(compare(), original);
     std::fs::remove_dir(&index).expect("restore cache path");
     assert_eq!(compare(), original);
+    // A shard that is whole by its own digest, but not the one the lookup recorded
+    // for its identity, is a listing the lookup does not stand for: the read lists
+    // the directory again rather than narrowing to what the shard names.
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate writes a
+    // shard the lookup did not record, which is the point: the input under test is
+    // one an interrupted write or another build left, and the real binary reads it.
+    let shards: Vec<_> = std::fs::read_dir(index.with_extension(""))
+        .expect("the selected read must write its identity's shard")
+        .map(|entry| entry.expect("shard").path())
+        .collect();
+    assert!(!shards.is_empty(), "the test must exercise a shard");
+    for shard in &shards {
+        let written = std::fs::read_to_string(shard).expect("shard");
+        let (_, body) = written.split_once('\n').expect("digest line");
+        let mut document: Value = serde_json::from_str(body).expect("shard document");
+        document["branches"] = serde_json::json!({});
+        let body = document.to_string();
+        let digest = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(body.as_bytes()))
+        };
+        std::fs::write(shard, format!("{digest}\n{body}")).expect("stale shard");
+    }
+    assert_eq!(compare(), original);
+    // The selected session's own stream is read by name whatever a shard says, so
+    // the rows alone cannot tell a refused shard from a trusted one; the listing
+    // that refusal falls to is what writes the identity's branches back.
+    for shard in &shards {
+        let written = std::fs::read_to_string(shard).expect("relisted shard");
+        let (_, body) = written.split_once('\n').expect("digest line");
+        let document: Value = serde_json::from_str(body).expect("shard document");
+        assert_eq!(
+            document["branches"][branch].as_array().map(Vec::len),
+            Some(1),
+            "a shard the lookup did not record must be relisted, not read"
+        );
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     let cache = fixture.world.home().join("cache/recoverable/v1/git");
     let entries: Vec<_> = std::fs::read_dir(&cache)
@@ -802,10 +840,10 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
     compare();
     let bytes = std::fs::read(&object).unwrap();
     std::fs::write(&object, vec![0u8; bytes.len()]).unwrap();
-    let refused = |native: bool| {
+    let refused = |git_alone: bool| {
         let mut command = fixture.world.onevcs();
         command.args(["recoverable", "--json"]).args(args);
-        if native {
+        if git_alone {
             command.env("GIT_NAMESPACE", "");
         }
         let output = command.output().unwrap();
@@ -870,12 +908,12 @@ fn decision_of(token: &str) -> [&str; 5] {
     ["--detail", "decision", "--session", token, "--all"]
 }
 
-/// `recoverable`'s exit code and stdout, read by git alone where `native`: any `GIT_*`
-/// override is a context the proof cache delegates to git.
-fn answered(fixture: &Fixture, args: &[&str], native: bool) -> (Option<i32>, String) {
+/// `recoverable`'s exit code and stdout, read by git alone where `git_alone`: any
+/// `GIT_*` override is a context the proof cache delegates to git.
+fn answered(fixture: &Fixture, args: &[&str], git_alone: bool) -> (Option<i32>, String) {
     let mut command = fixture.world.onevcs();
     command.args(["recoverable", "--json"]).args(args);
-    if native {
+    if git_alone {
         command.env("GIT_NAMESPACE", "");
     }
     let output = command.output().expect("recoverable runs");
@@ -907,6 +945,32 @@ fn counted(
         ),
         counting.calls().len(),
     )
+}
+
+/// The same read made by a released `onevcs` a caller names in
+/// `ONEVCS_DECISION_BASELINE_BINARY`, under this host's environment, where one is named.
+fn released(fixture: &Fixture, args: &[&str]) -> Option<(Option<i32>, String)> {
+    let program = std::env::var_os("ONEVCS_DECISION_BASELINE_BINARY")?;
+    let template = fixture.world.onevcs_std();
+    let mut command = std::process::Command::new(program);
+    command.env_clear();
+    if let Some(directory) = template.get_current_dir() {
+        command.current_dir(directory);
+    }
+    for (name, value) in template.get_envs() {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    let output = command
+        .args(["recoverable", "--json"])
+        .args(args)
+        .output()
+        .expect("the released recoverable runs");
+    Some((
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    ))
 }
 
 fn forget_proofs(fixture: &Fixture) {
@@ -1167,14 +1231,14 @@ fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives(
     for copy in &copies {
         std::fs::remove_file(copy).expect("take the root commit away");
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git's answer moves without the root commit"
     );
     let (missing, missing_calls) = counted(&fixture, &counting, &args);
     assert_eq!(
-        missing, native,
+        missing, git_alone,
         "a store that lost an object answers what git answers"
     );
     assert!(
@@ -1223,14 +1287,14 @@ fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives(
     for copy in &copies {
         std::fs::remove_file(copy).expect("take the tip commit away");
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git's answer moves without the tip"
     );
     let (missing, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        missing, native,
+        missing, git_alone,
         "a missing named object answers what git answers"
     );
     for copy in &copies {
@@ -1421,6 +1485,31 @@ fn session_hints_observe_new_labels_and_refuse_changed_unrelated_records() {
     );
     assert_eq!(selected.len(), 1, "a freshly labelled session is seen");
     assert_eq!(selected[0]["session"], new_token);
+    // A hint naming a checkout its document does not hold, under a digest that
+    // matches, is a document rebuilt rather than read.
+    // llmlint: ignore-block[tests_mirror_real_usage] no verb of this crate writes such
+    // a document, which is the point: the input under test is one another build or a
+    // damaged disk left, and the real binary is what reads it.
+    let written = std::fs::read_to_string(&cache).expect("session hints");
+    let (_, body) = written.split_once('\n').expect("digest line");
+    let mut document: Value = serde_json::from_str(body).expect("hints document");
+    for hint in document["hints"].as_array_mut().expect("hints") {
+        hint[5] = Value::from(99);
+    }
+    let body = document.to_string();
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(body.as_bytes()))
+    };
+    std::fs::write(&cache, format!("{digest}\n{body}")).unwrap();
+    assert_eq!(
+        recoverable(
+            &fixture,
+            &["--detail", "decision", "--label", "launcher=second"]
+        ),
+        selected
+    );
+    // llmlint: ignore-end[tests_mirror_real_usage]
     std::fs::write(&cache, "{broken").unwrap();
     assert_eq!(
         recoverable(
@@ -1698,9 +1787,23 @@ fn an_unreadable_selected_clone_is_a_finding_and_repairs_cleanly() {
     );
 }
 
-/// The common git directory of every repository the last counted read compared
-/// content in: where the proofs it stored were derived.
-fn proof_stores(fixture: &Fixture, counting: &crate::cost::Counting) -> Vec<std::path::PathBuf> {
+/// The common git directory of every repository a read of `args` compares content
+/// in: where the proofs it stores are derived.
+fn proof_stores(
+    fixture: &Fixture,
+    counting: &crate::cost::Counting,
+    args: &[&str],
+) -> Vec<std::path::PathBuf> {
+    // Asked of a read that reuses and answers nothing itself, so every comparison a
+    // proof could stand in for is one git is seen making, wherever it is made.
+    counting.clear();
+    counting
+        .onevcs(&fixture.world)
+        .args(["recoverable", "--json"])
+        .args(args)
+        .env("GIT_NAMESPACE", "")
+        .assert()
+        .success();
     let mut stores = std::collections::BTreeSet::new();
     for call in counting.calls() {
         let mut words = call.args.split_whitespace();
@@ -1752,10 +1855,10 @@ fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
     let original = answered(&fixture, &args, true);
     assert_eq!(original.0, Some(0), "{original:?}");
     let counting = crate::cost::Counting::installed(&fixture.world);
+    let stores = proof_stores(&fixture, &counting, &args);
     forget_proofs(&fixture);
     let (cold, _) = counted(&fixture, &counting, &args);
     let cold_content = content_comparisons(&counting);
-    let stores = proof_stores(&fixture, &counting);
     let asked = counting.calls();
     let (warm, _) = counted(&fixture, &counting, &args);
     let unreused = counting.calls();
@@ -1838,14 +1941,14 @@ fn ordinary_ref_churn_keeps_proofs_and_graph_overlays_still_refuse_them() {
         assert_eq!(back, original, "{what}: removing it restores the answer");
     };
     let overlaid = |what: &str| {
-        let native = answered(&fixture, &args, true);
+        let git_alone = answered(&fixture, &args, true);
         let (cached, _) = counted(&fixture, &counting, &args);
-        assert_eq!(cached, native, "{what}: the read is git's");
+        assert_eq!(cached, git_alone, "{what}: the read is git's");
         assert!(
             content_comparisons(&counting) > 0,
             "{what}: no stored proof is reused"
         );
-        native
+        git_alone
     };
     fixture
         .world
@@ -1971,14 +2074,14 @@ fn under_configuration(
     args: &[&str],
 ) -> ((Option<i32>, String), usize, usize) {
     forget_proofs(fixture);
-    let native = answered(fixture, args, true);
+    let git_alone = answered(fixture, args, true);
     let (cold, _) = counted(fixture, counting, args);
     let stored = std::fs::read_dir(fixture.world.home().join("cache/recoverable/v1/git"))
         .map_or(0, |entries| entries.count());
     let (warm, _) = counted(fixture, counting, args);
-    assert_eq!(cold, native, "a cold read is git's");
-    assert_eq!(warm, native, "a warm read is git's");
-    (native, stored, content_comparisons(counting))
+    assert_eq!(cold, git_alone, "a cold read is git's");
+    assert_eq!(warm, git_alone, "a warm read is git's");
+    (git_alone, stored, content_comparisons(counting))
 }
 
 /// Transport and receive-side configuration cannot change a local object-id read, so
@@ -2005,9 +2108,7 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
     );
     // Proofs are derived in the checkout and in the session's clone alike, so a
     // repository-level key is set in each of them.
-    forget_proofs(&fixture);
-    let _ = counted(&fixture, &counting, &args);
-    let stores = proof_stores(&fixture, &counting);
+    let stores = proof_stores(&fixture, &counting, &args);
     assert!(
         stores.len() > 1,
         "the premise: proofs come from more than one repository"
@@ -2090,6 +2191,148 @@ fn transport_and_receive_configuration_keep_proofs_and_other_keys_still_refuse_t
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
+/// How many times git listed changed paths or asked whether any changed between two
+/// commits: the reads whose proofs the worktree's attributes no longer key.
+fn listings(counting: &crate::cost::Counting) -> usize {
+    counting
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            let words: Vec<_> = call.args.split_whitespace().collect();
+            words.first() == Some(&"diff")
+                && (words.contains(&"--name-only") || words.contains(&"--quiet"))
+                && !words.contains(&"--shortstat")
+                && !words.contains(&"--numstat")
+        })
+        .count()
+}
+
+/// A listing of changed paths and whether any changed compare tree entries by object
+/// id, so no `.gitattributes` entry moves either answer — only a driver the
+/// configuration defines could, and a configured driver refuses every proof. So the
+/// worktree's attributes are not in those proofs' key: each change to them below is
+/// read twice through the stored proofs and answered as git answers it then, and every
+/// change naming a configured driver is git's to answer, never a reused proof's.
+// llmlint: ignore-block[tests_mirror_real_usage] what this journey holds is whether a
+// stored proof stood in for git after an input it no longer keys changed — the
+// Git-execution count the registered recovery budgets measure — and no command reports
+// that. The counting `git` on PATH execs the real one, so the binary is driven
+// unchanged, and every answer it gives is also compared with uncached git's.
+#[test]
+fn worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_proof() {
+    let (fixture, token) = deep_history_session("attributed");
+    let args = decision_of(&token);
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    proof_stores(&fixture, &counting, &args);
+    assert!(
+        listings(&counting) > 0,
+        "the premise: git lists changed paths or asks whether any changed"
+    );
+    let repos: Vec<_> = proof_stores(&fixture, &counting, &args)
+        .iter()
+        .map(|common| common.parent().expect("a checkout").to_path_buf())
+        .collect();
+    assert!(
+        repos.len() > 1,
+        "the premise: proofs come from more than one repository"
+    );
+    let attribute = |text: &str| {
+        for repo in &repos {
+            std::fs::create_dir_all(repo.join("nested")).expect("nested directory");
+            for directory in [repo.clone(), repo.join("nested")] {
+                std::fs::write(directory.join(".gitattributes"), text).expect("attributes");
+            }
+        }
+    };
+    let (plain, stored, _) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(plain.0, Some(0), "{plain:?}");
+    assert!(
+        stored > 0,
+        "the premise: an unattributed read stores proofs"
+    );
+
+    // Every attribute git's tree comparison could consult without a configured driver:
+    // each is read through the proofs the read before it stored, and is git's answer.
+    for text in [
+        "* -diff\n",
+        "* binary\n",
+        "*.txt diff=python\n",
+        "* text eol=crlf\n",
+        "* filter=undefined\n",
+        "* merge=ours -text\n",
+        "* diff=fixture\n",
+    ] {
+        attribute(text);
+        let git_alone = answered(&fixture, &args, true);
+        let (reused, _) = counted(&fixture, &counting, &args);
+        assert_eq!(
+            reused, git_alone,
+            "{text:?}: a reused proof is git's answer"
+        );
+        assert_eq!(reused, plain, "{text:?}: no attribute moves the answer");
+        assert_eq!(
+            listings(&counting),
+            0,
+            "{text:?}: the listings are not derived again"
+        );
+    }
+
+    // The one way an attribute could move these answers: a driver the configuration
+    // defines, trusted for its exit code, that calls every pair of files the same. It
+    // refuses proofs at either level, whatever the attributes say, and git answers.
+    let driver = fixture.world.path("same.sh");
+    std::fs::write(&driver, "#!/bin/sh\nexit 0\n").expect("driver");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    let driver = driver.to_str().expect("a UTF-8 path");
+    for keys in [
+        &[
+            ("diff.fixture.command", driver),
+            ("diff.fixture.trustExitCode", "true"),
+        ][..],
+        &[("diff.external", driver), ("diff.trustExitCode", "true")][..],
+        &[("diff.fixture.textconv", "tr a-z A-Z")][..],
+    ] {
+        for global in [true, false] {
+            let scope: &[&str] = if global { &["--global"] } else { &[] };
+            let targets = if global { &repos[..1] } else { &repos[..] };
+            for repo in targets {
+                for (key, value) in keys {
+                    fixture
+                        .world
+                        .git(repo, &[&["config"], scope, &[key, value]].concat());
+                }
+            }
+            for text in ["* diff=fixture\n", "*.txt diff=fixture\n* -diff\n"] {
+                attribute(text);
+                let (refused, stored, _) = under_configuration(&fixture, &counting, &args);
+                assert_eq!(stored, 0, "{keys:?} (global {global}) refuses proof reuse");
+                assert!(
+                    listings(&counting) > 0,
+                    "{keys:?} {text:?}: git lists the changes itself"
+                );
+                // `under_configuration` holds both reads to uncached git's answer.
+                let _ = refused;
+            }
+            for repo in targets {
+                for (key, _) in keys {
+                    fixture
+                        .world
+                        .git(repo, &[&["config"], scope, &["--unset", key]].concat());
+                }
+            }
+        }
+    }
+    attribute("");
+    let (restored, stored, _) = under_configuration(&fixture, &counting, &args);
+    assert_eq!(restored, plain);
+    assert!(
+        stored > 0 && listings(&counting) == 0,
+        "reuse returns with the driver gone"
+    );
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
 /// A loose object is never rewritten by git, but a disk or a person can damage one in
 /// place: the same name and inode, a different size, or no longer readable. A proof
 /// whose walk read such an ancestor names only its endpoints, which still hash, so the
@@ -2137,6 +2380,19 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
         })
         .collect();
 
+    // Enough new loose objects beside it that the read proving them again does so on
+    // threads, which must find the damaged one as a single pass would.
+    let extra: Vec<String> = (0..80)
+        .map(|at| {
+            let path = fixture.world.path(format!("extra-{at}.txt"));
+            std::fs::write(&path, format!("extra object {at}\n")).expect("an extra object");
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    let mut hashed = vec!["hash-object", "-w"];
+    hashed.extend(extra.iter().map(String::as_str));
+    fixture.world.git(&fixture.checkout, &hashed);
+
     // Truncated in place: the same inode and mode, half its length.
     for (copy, (bytes, inode, mode)) in copies.iter().zip(&kept) {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -2151,16 +2407,22 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
             "the premise: in place"
         );
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git cannot read the truncated ancestor"
     );
     let (cached, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        cached, native,
+        cached, git_alone,
         "a truncated ancestor answers what git answers"
     );
+    if let Some(release) = released(&fixture, &args) {
+        assert_eq!(
+            cached, release,
+            "a truncated ancestor answers what the release answers"
+        );
+    }
 
     // Restored, then made unreadable: the same inode and size, another mode.
     for (copy, (bytes, _, mode)) in copies.iter().zip(&kept) {
@@ -2176,16 +2438,22 @@ fn an_ancestor_damaged_in_place_is_never_answered_from_a_proof() {
     for copy in &copies {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(0o000)).unwrap();
     }
-    let native = answered(&fixture, &args, true);
+    let git_alone = answered(&fixture, &args, true);
     assert_ne!(
-        native, original,
+        git_alone, original,
         "the premise: git cannot read the ancestor"
     );
     let (cached, _) = counted(&fixture, &counting, &args);
     assert_eq!(
-        cached, native,
+        cached, git_alone,
         "an unreadable ancestor answers what git answers"
     );
+    if let Some(release) = released(&fixture, &args) {
+        assert_eq!(
+            cached, release,
+            "an unreadable ancestor answers what the release answers"
+        );
+    }
     for (copy, (_, _, mode)) in copies.iter().zip(&kept) {
         std::fs::set_permissions(copy, std::fs::Permissions::from_mode(*mode)).unwrap();
     }
@@ -2266,3 +2534,235 @@ fn a_filtered_read_with_no_stream_index_reads_streams_as_the_whole_host_read_doe
         );
     }
 }
+
+// A filename that is not UTF-8 needs a filesystem storing names as bytes; see
+// `a_stack_whose_paths_this_process_cannot_read_is_answered_by_content_alone`.
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "the fixture needs a filesystem that stores a path as bytes; this one enforces UTF-8 names"
+)]
+fn a_listing_this_process_cannot_read_as_text_is_left_to_git() {
+    // A read answered in process is answered as text. Where what it would print is not
+    // text, git is asked instead, so the answer a caller meets is git's own bytes' —
+    // and an empty listing, the one a path git printed undecodably leaves, is the one
+    // held to git's count of files.
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let mut sessions = Vec::new();
+    for (branch, name) in [
+        ("feature/readable-path", b"engine.txt".to_vec()),
+        ("feature/unreadable-path", b"engine\xff.txt".to_vec()),
+    ] {
+        let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=paths"]);
+        std::fs::write(
+            worktree.join(std::ffi::OsString::from_vec(name)),
+            "the engine\n",
+        )
+        .expect("a file git takes");
+        world.git(&worktree, &["add", "-A"]);
+        world.git(&worktree, &["commit", "-q", "-m", "feat: write the engine"]);
+        world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        sessions.push(token);
+    }
+    // llmlint: ignore-block[tests_mirror_real_usage] git's own decoding of an
+    // undecodable listing is the empty one an in-process answer would also give, and a
+    // count that agrees changes no row, so the rows are equal either way; which reads
+    // git made is the property, and the spawned git is the only place a caller can see
+    // it. Every answer is also compared with uncached git's through the same command.
+    let counting = crate::cost::Counting::installed(world);
+    let reads: Vec<(usize, usize, usize)> = sessions
+        .iter()
+        .map(|token| {
+            let args = ["--detail", "decision", "--session", token, "--all"];
+            counting.clear();
+            let uncached = counting
+                .onevcs(world)
+                .args(["recoverable", "--json"])
+                .args(args)
+                .env("GIT_NAMESPACE", "")
+                .assert()
+                .success();
+            let uncached: Vec<Value> =
+                serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+            let counted = counting
+                .calls()
+                .iter()
+                .filter(|call| call.args.starts_with("diff --shortstat"))
+                .count();
+            let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
+            counting.clear();
+            let cold = counting
+                .onevcs(world)
+                .args(["recoverable", "--json"])
+                .args(args)
+                .assert()
+                .success();
+            let cold: Vec<Value> =
+                serde_json::from_slice(&cold.get_output().stdout).expect("cold rows");
+            assert_eq!(cold, uncached, "{token}: a cold read answers git's rows");
+            assert_eq!(cold.len(), 1, "{token}: the session's branch is listed");
+            let calls = counting.calls();
+            let listed = calls
+                .iter()
+                .filter(|call| call.args.starts_with("diff --name-only --no-renames -z"))
+                .count();
+            let reusable = calls
+                .iter()
+                .filter(|call| {
+                    ["diff ", "merge-tree ", "merge-base ", "rev-list ", "log "]
+                        .iter()
+                        .any(|shape| call.args.starts_with(shape))
+                })
+                .count();
+            (listed, counted, reusable)
+        })
+        .collect();
+    let (readable, unreadable) = (reads[0], reads[1]);
+    assert_eq!(
+        readable.0, 0,
+        "the premise: a listing that is text is answered in process: {reads:?}"
+    );
+    assert!(
+        unreadable.0 > 0,
+        "a listing that is not text is git's to make: {reads:?}"
+    );
+    // Only a listing that could be incomplete is held to git's count of files: the
+    // readable branch's one count is the landing comparison's, which holds its own
+    // listing to the count, and the census's listing of the same branch is not
+    // counted again.
+    assert_eq!(
+        readable.1, 1,
+        "a listing naming every path is not counted again: {reads:?}"
+    );
+    assert!(
+        unreadable.1 > 0,
+        "an empty listing is held to git's count: {reads:?}"
+    );
+    // And git made only that count of the readable branch's reusable reads: every
+    // other one was answered in process.
+    assert_eq!(readable.2, 1, "git made only the count: {reads:?}");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
+/// A read that would walk a long history in process is left to git and its proof,
+/// which answers it the next time for a fraction of the walk; a short one is still
+/// answered in process. On a real host's checkouts the walk is what cost a warm read
+/// more than the release before in-process answers did.
+// llmlint: ignore-block[tests_mirror_real_usage] which tier answered a read is the
+// property, and no command reports it: the counting `git` on PATH execs the real one,
+// so the binary is driven unchanged, and every answer is also compared with uncached
+// git's through the same command.
+#[test]
+fn a_read_that_would_walk_a_long_history_is_left_to_its_proof() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let mut sessions = Vec::new();
+    for (branch, commits) in [("feature/short-history", 1), ("feature/long-history", 600)] {
+        let (token, worktree) = fixture.open(&["--branch", branch, "--label", "launcher=walks"]);
+        world.commit_file(&worktree, "walk.txt", "work\n", "feat: the walk's work");
+        // The rest of a long history in one process: commits that change nothing, each
+        // on the one before, so the branch is a single line that many commits long.
+        let mut stream = String::new();
+        for at in 1..commits {
+            let message = format!("chore: step {at}");
+            stream.push_str(&format!(
+                "commit refs/heads/{branch}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n{}",
+                1_700_000_000 + at,
+                message.len(),
+                if at == 1 {
+                    format!("from refs/heads/{branch}^0\n")
+                } else {
+                    String::new()
+                },
+            ));
+        }
+        if !stream.is_empty() {
+            let input = world.path(format!("{token}.fast-import"));
+            std::fs::write(&input, stream).expect("a fast-import stream");
+            let imported = std::process::Command::new("git")
+                .args(["fast-import", "--quiet"])
+                .current_dir(&worktree)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", world.path(""))
+                .stdin(std::fs::File::open(&input).expect("the stream"))
+                .output()
+                .expect("git fast-import runs");
+            assert!(
+                imported.status.success(),
+                "{}",
+                String::from_utf8_lossy(&imported.stderr)
+            );
+        }
+        assert_eq!(
+            world.git(
+                &worktree,
+                &["rev-list", "--count", &format!("origin/main..{branch}")]
+            ),
+            commits.to_string(),
+            "the premise: the branch is {commits} commits past its base"
+        );
+        world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        sessions.push(token);
+    }
+    let counting = crate::cost::Counting::installed(world);
+    let counts: Vec<(usize, usize)> = sessions
+        .iter()
+        .map(|token| {
+            let args = ["--detail", "decision", "--session", token, "--all"];
+            let uncached = world
+                .onevcs()
+                .args(["recoverable", "--json"])
+                .args(args)
+                .env("GIT_NAMESPACE", "")
+                .assert()
+                .success();
+            let uncached: Vec<Value> =
+                serde_json::from_slice(&uncached.get_output().stdout).expect("uncached rows");
+            let _ = std::fs::remove_dir_all(world.home().join("cache/recoverable"));
+            let mut walked = Vec::new();
+            for read in ["cold", "warm"] {
+                counting.clear();
+                let rows = counting
+                    .onevcs(world)
+                    .args(["recoverable", "--json"])
+                    .args(args)
+                    .assert()
+                    .success();
+                let rows: Vec<Value> =
+                    serde_json::from_slice(&rows.get_output().stdout).expect("rows");
+                assert_eq!(rows, uncached, "{token}: a {read} read answers git's rows");
+                walked.push(
+                    counting
+                        .calls()
+                        .iter()
+                        .filter(|call| call.args.starts_with("rev-list --count"))
+                        .count(),
+                );
+            }
+            (walked[0], walked[1])
+        })
+        .collect();
+    let (short, long) = (counts[0], counts[1]);
+    assert_eq!(
+        short,
+        (0, 0),
+        "the premise: a short history is counted in process: {counts:?}"
+    );
+    assert!(
+        long.0 > 0,
+        "a long history is counted by git, not walked here: {counts:?}"
+    );
+    assert_eq!(long.1, 0, "and its proof answers the next read: {counts:?}");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]

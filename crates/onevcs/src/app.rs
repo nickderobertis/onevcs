@@ -20,7 +20,8 @@ use crate::cli::{
     ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
     ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs,
     RulesApplyArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs,
-    SessionOpenArgs, SessionTokenArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    SessionOpenArgs, SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs,
+    SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -43,6 +44,7 @@ use crate::review::{self, CommentId, CommentKind, ReadMarker, ReplyRequest};
 use crate::session::{
     Holding, Lifecycle, Provenance, Scope, Selection, SessionHolder, SessionRequest, SessionToken,
 };
+use crate::stack_base::StackBaseOutcome;
 use crate::store;
 use crate::{git, guidance, label, lock, policy, publish};
 
@@ -97,6 +99,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Reply(args) => change_reply(args, providers),
         },
         Command::Preserve(args) => preserve_branch(args),
+        Command::StackBase(args) => stack_base(args, providers),
         Command::Recover(args) => recover_branch(args, providers),
         Command::Recoverable(args) => recoverable(args, providers),
         Command::Status(args) => report_status(args, providers),
@@ -1324,6 +1327,81 @@ fn preserve_branch(args: &PreserveArgs) -> Result<u8> {
         ),
     }
     Ok(0)
+}
+
+/// Render what `onevcs stack-base` did, which is [`crate::assemble_stack_base`]'s
+/// answer.
+///
+/// A conflict exits `3`, as every conflict this crate leaves for somebody does, and
+/// names the session holding it — on stdout in both forms, because the token is what
+/// the caller acts on next.
+fn stack_base(args: &StackBaseArgs, providers: &Providers<'_>) -> Result<u8> {
+    let assembled = crate::assemble_stack_base(
+        providers,
+        &crate::StackBaseRequest {
+            repo: args.repo.clone(),
+            branch: args.branch.clone(),
+            root: args.root.clone(),
+            parents: args.parents.clone(),
+            labels: label::parse_all(&args.label)?,
+        },
+    )?;
+    let code = match assembled.outcome {
+        StackBaseOutcome::Conflicted { .. } => 3,
+        _ => 0,
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&assembled).map_err(serialization)?
+        );
+        return Ok(code);
+    }
+    let branch = &assembled.branch;
+    let head = &assembled.head.0;
+    let parents = assembled
+        .parents
+        .iter()
+        .map(|parent| format!("{}@{}", parent.branch, parent.head.0))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match &assembled.outcome {
+        StackBaseOutcome::Created => println!(
+            "created: stack base {branch:?} at {head}, cut from {root} and merging {parents}; \
+             pushed with no change request",
+            root = args.root,
+        ),
+        StackBaseOutcome::Advanced => println!(
+            "advanced: stack base {branch:?} at {head}, carrying {root} and {parents}; pushed \
+             forward-only with no change request",
+            root = args.root,
+        ),
+        StackBaseOutcome::Unchanged => println!(
+            "unchanged: stack base {branch:?} at {head} already carries {root} and {parents}; \
+             nothing was merged or pushed",
+            root = args.root,
+        ),
+        StackBaseOutcome::Conflicted { session, conflict } => {
+            println!(
+                "conflicted: stack base {branch:?} stopped merging {merging} on {paths}; session \
+                 {token} holds the merge in progress and nothing was pushed",
+                merging = conflict.base_commit,
+                paths = guidance::listed(&conflict.paths),
+                token = session.0,
+            );
+            // Through the seam, so a session record that cannot be read is a line
+            // missing from the guidance rather than a failure of an assembly that
+            // answered.
+            if let Ok(record) = providers.vcs.session(session) {
+                eprintln!(
+                    "onevcs: resolve the conflict in {worktree}, commit it, and run this command \
+                     again to merge what is left and push",
+                    worktree = record.session.worktree.display(),
+                );
+            }
+        }
+    }
+    Ok(code)
 }
 
 /// An optional field of [`crate::Preserved`], where a rendering needs the value in it.

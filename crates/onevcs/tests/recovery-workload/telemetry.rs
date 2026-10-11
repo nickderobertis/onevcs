@@ -21,6 +21,16 @@ pub(super) struct Sample {
     pub verdict_sha256: String,
 }
 
+/// One in-process `recoverable_matching` call, timed inside the process making it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Call {
+    pub wall_ms: f64,
+    pub load1: f64,
+    pub rows: usize,
+    pub verdict_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Workload {
@@ -32,6 +42,14 @@ pub(super) struct Workload {
     pub cold_git: usize,
     pub warm_git: usize,
     pub counted_verdict_sha256: String,
+    /// The rows of an in-process call no proof was reused or stored by.
+    pub uncached_verdict_sha256: String,
+    /// Ten in-process calls after one priming call, over unchanged state.
+    pub in_process_warm: [Call; 10],
+    /// Ten in-process calls, every proof and index cache cleared before each; taken
+    /// at the smaller workload only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_process_cold: Option<[Call; 10]>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

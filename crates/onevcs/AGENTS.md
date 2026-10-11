@@ -306,6 +306,12 @@ on the change below it belongs on the root once that change lands, so it replays
 own commits there and retargets — merging instead would replay the change below against
 whatever the base holds of it.
 
+**A branch with no `Change-Base` trailer lands onto the base its session recorded**
+(`branch::prepare`, through `vcs::recorded_base`), where the clone can still name it, and
+onto the root otherwise — the same base `recoverable` and `status` judge it against. A
+closed session's child of a stack base carries no trailer, and landing it onto the root
+opened its change request against `main` with its parents' work as its own diff.
+
 **What makes a publication stacked is its record, never its content.** A branch carrying
 the change below it reads exactly like a branch that wrote those commits itself, so a
 stack inferred from content rewrites branches nobody stacked. Recorded stack state that
@@ -368,7 +374,9 @@ for it. Five things are easy to undo.
   and the reason is written where the flag is: the hook is a gate, and the branch a
   shutdown exists to save is the one a worker was interrupted in the middle of, whose
   tree does not pass it. Running it would refuse the very branch and block for the
-  length of that repository's whole gate on a host that is going away.
+  length of that repository's whole gate on a host that is going away. A stack base
+  (below) is pushed through the same function, for its own reason, and so stays inside
+  that one exception rather than becoming a second.
 - **`branch-preserved` is not `push`.** The one producer of `push` is a publication, so
   a reader counting pushes to find publications must never meet a preservation. Its
   stream is the branch's own session's where a record names one and `preserve-<slug>`
@@ -397,6 +405,44 @@ cwd. The train is deliberately not what it names, even for finished work:
 every identity whose rules do not publish `local-direct`, so it lands none of the
 branches this report is most often read about — the ones a run left in its own
 clone.
+
+## A stack base is the other branch that reaches a remote unpublished
+
+`stack_base.rs` is `onevcs stack-base` and `assemble_stack_base`: a branch cut from a
+root carrying a merge of several parents, which a change depending on several unlanded
+changes is drafted against. Three plan nodes restate its shapes, so none of them is
+this crate's to rename alone. Five things are easy to undo.
+
+- **Every move is forward, and every merge is a merge commit.** `--no-ff` always, the
+  root merged before the parents, a parent already contained never merged again, and
+  the push never forced. Children drafted against the base merge it forward, which
+  stops being true the first time its history is rewritten.
+- **The open does not merge the root; this module does** (`workspace::BaseMerge::Leave`).
+  Every merge a stack base carries has a `Stack-Base` trailer, and the open's own
+  continuation merge would be the one commit without one.
+- **Every origin head is read in the execution checkout, never in the session's
+  clone.** A clone's remote-tracking refs begin as its lender's *local* branches, so
+  reading there made a copy this host merely held look like the origin's — and an
+  assembly that was creating the branch answered `advanced`.
+- **A failed call puts the branch back before the close hands it over.** Otherwise a
+  merge the boundary refused becomes the held copy every later call continues, and is
+  refused forever. A conflict is not a failure: its session is left open over it, and a
+  session holding a staged, uncommitted resolution is left open too.
+- **A stack base is its name, never a shape of history or a host's record**
+  (`stack_base::is_stack_base`: a `stack-base` segment followed by a plan and a node,
+  and `stack-base` refuses any other `--branch`). Its trailers name its parents, read
+  off its first-parent line (`provenance::stack_parents`), and decide nothing else: a
+  change cut from a stack base inherits every one of them and one cut at its head shares
+  its head, and both are ordinary work. A record of the assembly is no better — a host
+  that never saw it assembled has none, and listed the base as unpublished work.
+  `recoverable` drops a stack base in both reports; `status` reports `branch.stack_base`
+  and no landing verb. Every other branch is judged, by both, against the base the
+  session that cut it recorded (`vcs::session_base`, the root where none did) — a held
+  copy of that base counts beside the origin's refs for that branch alone
+  (`unpublished_branches_among`'s `based_on`) — so a child at a stack base's head holds
+  nothing beyond its base, and a blanket "every stack base is a base" would judge a
+  branch against a base nobody cut it on. Retirement keeps it as `unmerged-unique-commits` with no change, because
+  `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier
 
@@ -625,6 +671,53 @@ minutes. Three things are easy to undo.
 `tests/e2e/labels.rs` drives ref churn, each overlay and the configuration categories
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
 read under a concurrent ref writer to the registered warm budgets.
+
+Inside a context that admits reuse, the immutable reads a decision asks most are not
+reused but answered in process (`native_objects.rs`), never stored, and byte for byte
+as git prints them; any shape or answer git could word differently is still git's.
+Five things are easy to undo.
+
+- **An answer that would read much is not made in process.** Each reads fewer than
+  `OBJECT_LIMIT` commits and trees this read has not read already; one that reaches it
+  is left to the proofs and to git. On a real host's checkouts a count over a long
+  history or a listing of two large trees made a warm read slower than 0.43.1's,
+  which answered the same reads from proofs, and the workload fixture's small
+  repositories never show it — `labels::a_read_that_would_walk_a_long_history_is_left_to_its_proof`
+  is what does.
+
+- **No store is read in process until every loose object in it is proved safe to
+  read** (`recovery_cache::sound`). libgit2's inflate never returns from a loose
+  object cut short, so one truncated ancestor hangs the read. Nothing in process reads
+  a blob — the tree diff compares entries, and every named object's type is read off
+  its header first — so a blob is proved by its header and everything else by
+  inflating whole; the proof is remembered per listed object identity and bounded per
+  read, and an unproved store goes to git and the proofs as before. Keep it that way:
+  a read added here that opens a blob needs blobs proved whole, which on a real
+  host's stores is hundreds of megabytes.
+- **What only a content comparison reads stays out of what is answered in process.**
+  These reads, and the proofs of a listing of changed paths or of whether any
+  changed, are keyed by the context that compares no content, so the worktree's
+  `.gitattributes` walk — every directory of the checkout, 200 ms on a real one — is
+  paid only by the comparisons that still go through git (`merge-tree`, `--shortstat`
+  and `--numstat`). Keep those there: the small proof-cache journeys in
+  `tests/e2e/labels.rs` observe reuse and invalidation through the proofs they store.
+  An attribute can move a listing or `--quiet` only through a driver the configuration
+  defines (`diff.<driver>.command` with `trustExitCode`, `textconv`, `diff.external`),
+  and every such key refuses proofs by name;
+  `labels::worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_proof`
+  holds both halves. Admit a `diff.*` key and that reasoning no longer holds.
+  And `git::changed_paths` asks `--shortstat` only of a listing that could be
+  incomplete — an empty one, or one whose pipe failed — since a listing that is text
+  at all is the whole listing.
+- **The commit graph is shared per identity within a read, keyed by the store a commit
+  was read from.** A commit read from the checkout store every clone borrows answers
+  for all of them; one read from a clone's own store answers for that clone only.
+  Ancestry and a single unstale merge-base candidate are exact whatever the walk
+  order; anything else goes to libgit2 and then git.
+- **A journey that counts spawned git as its instrument counts an uncached read**
+  (`GIT_NAMESPACE=` refuses proofs and in-process answers): with in-process answers a
+  warm or cold read may spawn nothing, which proves nothing about which tier a branch
+  reached.
 
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 

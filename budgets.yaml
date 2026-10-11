@@ -5,7 +5,7 @@ budgets:
     command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '1', --cold]
     unit: executions
     direction: max
-    threshold: 726
+    threshold: 110
     description: Measured cold launcher Decision Git executable budget; separate counting calls from the full-workload journey.
   - id: recoverable-git-executions-warm
     measure: reported
@@ -19,7 +19,7 @@ budgets:
     command: [node, scripts/recoverable-git-count-budget.mjs, --scale, '10', --cold]
     unit: executions
     direction: max
-    threshold: 7295
+    threshold: 1100
     description: Measured cold launcher Decision Git executable budget at the larger unchanged workload.
   - id: recoverable-git-executions-warm-10x
     measure: reported
@@ -35,3 +35,24 @@ budgets:
     direction: max
     threshold: 180
     description: Estimated full journey budget from empty fixture roots through both preparations, correctness validation, timed and counting calls, priming, cache clears and cleanup.
+  - id: recoverable-decision-latency-labelled-warm
+    measure: reported
+    command: [node, scripts/recoverable-latency-budget.mjs, --scale, '1', --warm]
+    unit: seconds
+    direction: max
+    threshold: 0.12
+    description: Slowest of ten in-process launcher-filtered Decision recoverable_matching calls after one priming call over the unchanged 1x workload, each answering the uncached read's rows; the warm Stop-hook bound less the guard's own process start and unwatched check.
+  - id: recoverable-decision-latency-labelled-warm-10x
+    measure: reported
+    command: [node, scripts/recoverable-latency-budget.mjs, --scale, '10', --warm]
+    unit: seconds
+    direction: max
+    threshold: 0.5
+    description: Slowest of ten in-process launcher-filtered Decision recoverable_matching calls after one priming call over the unchanged 10x workload, each answering the uncached read's rows. Temporarily relaxed from the design's 0.3 (the 10x warm Stop-hook bound less the guard's own costs) to 0.5, by the manager's ruling, because CI's run-to-run spread on identical hot-path source (0.332 s and 0.434 s) straddled the earlier 0.4, until later work closes the remaining 10x warm cost.
+  - id: recoverable-decision-latency-labelled-cold
+    measure: reported
+    command: [node, scripts/recoverable-latency-budget.mjs, --scale, '1', --cold]
+    unit: seconds
+    direction: max
+    threshold: 0.4
+    description: Slowest of ten in-process launcher-filtered Decision recoverable_matching calls over the 1x workload with every proof and index cache cleared before each, each answering the uncached read's rows; the cold Stop-hook ruling less the guard's own costs.

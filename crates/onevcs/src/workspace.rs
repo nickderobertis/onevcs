@@ -1108,6 +1108,42 @@ pub fn open(
     registry: &Registry,
     request: &SessionRequest,
 ) -> Result<(Record, Stream, Option<OpenConflict>)> {
+    open_with(registry, request, BaseMerge::Merge)
+        .map(|opening| (opening.record, opening.stream, opening.conflict))
+}
+
+/// What a continued branch's open does about the base it is merged with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseMerge {
+    /// Merge it in, as every session's open does.
+    Merge,
+    /// Leave the branch exactly as it was found, for the one caller that writes that
+    /// merge itself: a stack base, every merge commit of which carries a trailer
+    /// naming what it merged, so a merge written here without one would be the one
+    /// commit of the branch nothing recognises.
+    Leave,
+}
+
+/// One opened session, and whether it was cut for this request.
+pub(crate) struct Opening {
+    /// The record the session was opened under.
+    pub record: Record,
+    /// Its own event stream, labelled with its identity.
+    pub stream: Stream,
+    /// The conflicted merge it opened with, as [`open`] answers it.
+    pub conflict: Option<OpenConflict>,
+    /// Whether the branch was cut fresh rather than continued or resumed: a name
+    /// nothing on this host or its origin carried.
+    pub cut: bool,
+}
+
+/// [`open`], with what a continued branch's open does about its base chosen by the
+/// caller.
+pub(crate) fn open_with(
+    registry: &Registry,
+    request: &SessionRequest,
+    base_merge: BaseMerge,
+) -> Result<Opening> {
     let resolution = store::resolve(registry, &request.repo)?;
     let execution =
         execution_checkout(registry, &resolution, request.execution_checkout.as_deref())?;
@@ -1175,7 +1211,13 @@ pub fn open(
     // cut. Never for a generated name: that one is this token's own. Declining only
     // falls through to the ordinary open below, which continues the branch instead.
     if let Some((held, lease)) = resumable(&resolution, pinned.as_ref(), &base, &execution)? {
-        return resume(&held, lease, &execution, request);
+        let (record, stream, conflict) = resume(&held, lease, &execution, request)?;
+        return Ok(Opening {
+            record,
+            stream,
+            conflict,
+            cut: false,
+        });
     }
 
     let token = ids::session_token();
@@ -1299,6 +1341,7 @@ pub fn open(
         publication: &resolution.publication,
         placed,
         on_conflict: OnMerge::asked_by(request),
+        base_merge,
     }) {
         Ok(placing) => placing,
         Err(error) => {
@@ -1377,7 +1420,12 @@ pub fn open(
         opened(&record, reuse, created, applied, conflict.as_ref()),
     );
     drop(lease);
-    Ok((record, stream, conflict))
+    Ok(Opening {
+        record,
+        stream,
+        conflict,
+        cut: reuse == Reuse::Cut,
+    })
 }
 
 /// The one line a session opened over a conflicted merge says on stderr, beside the
@@ -1945,6 +1993,8 @@ struct Cut<'a> {
     placed: Placed,
     /// What a continuation whose base conflicts with it does with the merge.
     on_conflict: OnMerge,
+    /// Whether a continuation is merged with its base at all.
+    base_merge: BaseMerge,
 }
 
 /// What putting a branch in a session's worktree answers: the stack its record has
@@ -1981,6 +2031,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         publication,
         placed,
         on_conflict,
+        base_merge,
     } = *cut;
     let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
@@ -2023,14 +2074,17 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
     // argument this session was opened with. A session opened against a base nothing
     // has would publish against nothing, so git's own refusal of the name is
     // the answer.
-    let conflict = integrate(
-        worktree,
-        &integrated,
-        branch,
-        &opened,
-        publication,
-        on_conflict,
-    )?;
+    let conflict = match base_merge {
+        BaseMerge::Merge => integrate(
+            worktree,
+            &integrated,
+            branch,
+            &opened,
+            publication,
+            on_conflict,
+        )?,
+        BaseMerge::Leave => None,
+    };
     Ok(Placing {
         stack_tip,
         conflict,

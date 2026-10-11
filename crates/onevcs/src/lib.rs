@@ -72,6 +72,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod native_objects;
 mod native_refs;
 mod ops;
 mod policy;
@@ -97,6 +98,7 @@ mod review;
 pub mod rules;
 mod rules_apply;
 mod session;
+mod stack_base;
 mod status;
 mod store;
 mod stream;
@@ -180,6 +182,7 @@ pub use session::{
     PreservedBranch, Provenance, Recoverable, Scope, Selection, Session, SessionHolder,
     SessionRecord, SessionRequest, SessionToken,
 };
+pub use stack_base::{StackBase, StackBaseOutcome, StackBaseRequest, StackParent};
 pub use stream::{EventLine, EventLines, EventStream};
 pub use sweep::Report as SweepReport;
 pub use vcs::{Git, Vcs};
@@ -348,6 +351,40 @@ pub fn session_holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// [`pool_maintain`], which are free functions for the same reason.
 pub fn preserve(request: &PreserveRequest) -> Result<Preserved> {
     preserve::run(&store::load()?, request)
+}
+
+/// Assemble, advance, or confirm a synthetic stack base, and push what moved.
+///
+/// The library form of `onevcs stack-base`. A stack base is a branch cut from
+/// `root` carrying a merge of each of `parents`, in order — what a change depending
+/// on several changes still in review is drafted against. A branch nothing carries is
+/// cut from the origin's `root` and merged with each parent's head
+/// ([`StackBaseOutcome::Created`]); one that exists — on the origin or held on this
+/// host — has the root's new head merged first and then each parent head it does not
+/// carry ([`StackBaseOutcome::Advanced`]), or is left as it is when it carries them
+/// all ([`StackBaseOutcome::Unchanged`]). Every merge is a merge commit carrying a
+/// `Stack-Base` trailer, and every push is forward-only: never a rebase, never a
+/// force, so a change drafted against it can always merge it forward.
+///
+/// A merge that conflicts is left in progress in a session opened on the branch —
+/// [`StackBaseOutcome::Conflicted`], exactly the [`OpenConflict`] `session open`
+/// leaves — and once that session commits it, the same request merges what is left
+/// and pushes.
+///
+/// No change request is opened and the repository's merge path is not run — a stack
+/// base merges branches each verified on its own change request — but the push is
+/// held to the public boundary like every other write to a remote. The host is asked
+/// through `providers.hosting` for that and nothing else; the repository side is
+/// git's own, as [`preserve`]'s is, and the session it may leave is a session of this
+/// host's state root.
+///
+/// Every call that answers emits one `stack-base-assembled` event on that session's
+/// stream; a call that fails emits none.
+pub fn assemble_stack_base(
+    providers: &Providers<'_>,
+    request: &StackBaseRequest,
+) -> Result<StackBase> {
+    stack_base::assemble(providers, request)
 }
 
 /// Every preserved-but-unpublished branch in scope, and what would land each.
