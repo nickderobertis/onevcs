@@ -637,6 +637,7 @@ impl Landing {
             cancellation: &publish::NeverCancelled,
             built: publish::Built::InWorkspace,
             term_scope: term_scope.clone(),
+            adopt: None,
         };
         let outcome = publish::run(&context, stream);
         if outcome.is_err() {

@@ -24,6 +24,42 @@ if [ "$allow_escapes" = "1" ] && [ -f "$STATE/no-escape-flag" ]; then
   exit 1
 fi
 
+# The call ledger: every call this host answers, in order, with the change requests it
+# names and what GitHub charges for it — one JSON object a line. The calls answered by
+# the review host (below) are written there, with the charge that host computes; every
+# other call is written here. `gh pr` subcommands are GraphQL on the real host, one point
+# each; `gh api` paths and `gh run` are REST requests, one each.
+delegated=0
+if [ "${1:-}" = "api" ]; then
+  case "${2:-}" in
+    graphql|repos/*/*/pulls/*|repos/*/*/issues/*/comments) delegated=1 ;;
+  esac
+fi
+if [ "$delegated" = "0" ]; then
+  ledger_repo=""; ledger_number=""
+  previous=""
+  for argument in "$@"; do
+    [ "$previous" = "--repo" ] && ledger_repo="$argument"
+    previous="$argument"
+  done
+  if [ "${1:-}" = "pr" ]; then
+    case "${2:-}" in
+      view|merge|checks|ready|edit) ledger_number="${3:-}" ;;
+    esac
+  fi
+  ledger_changes="[]"
+  case "$ledger_number" in
+    ""|*[!0-9]*) ;;
+    *) [ -n "$ledger_repo" ] && ledger_changes="[\"https://github.com/$ledger_repo/pull/$ledger_number\"]" ;;
+  esac
+  case "${1:-}" in
+    pr) ledger_points=1; ledger_rest=0 ;;
+    *) ledger_points=0; ledger_rest=1 ;;
+  esac
+  printf '{"method":"%s %s","changes":%s,"graphql_points":%s,"rest_requests":%s}\n' \
+    "${1:-}" "${2:-}" "$ledger_changes" "$ledger_points" "$ledger_rest" >>"$STATE/ledger.ndjson"
+fi
+
 ORIGIN="$(cat "$STATE/origin")"
 CHECKS="$STATE/checks.rows"
 # A repository's checks move while something is watching them, which is the whole
@@ -114,6 +150,18 @@ readable_rollup() {
   esac
 }
 
+# The rows one head commit's checks are rendered from: its own, where a journey seeded
+# checks for that commit, and otherwise the repository's — so a host can carry several
+# change requests whose heads stand differently, and a world that says nothing per head
+# is the one it always was.
+rows_for() {
+  if [ -n "${1:-}" ] && [ -f "$STATE/checks/$1.rows" ]; then
+    printf '%s' "$STATE/checks/$1.rows"
+  else
+    printf '%s' "$CHECKS"
+  fi
+}
+
 # One job's log, addressed by the job's **id** — the id a row has in this world,
 # which is what both `gh run view --job` and the Actions API answer to.
 #
@@ -190,7 +238,7 @@ case "$command" in
       exit 0
     fi
     case "$path" in
-      graphql|repos/*/*/pulls/*/comments/*/replies|repos/*/*/issues/*/comments)
+      graphql|repos/*/*/pulls/*|repos/*/*/issues/*/comments)
         review_host "${ARGUMENTS[@]}" ;;
     esac
     # Everything below is GitHub's REST API: the Actions endpoints and the
@@ -300,6 +348,23 @@ case "$command" in
         printf '{"strict":false,"contexts":[%s],"checks":[]}\n' "$contexts"
         exit 0 ;;
       */rules/branches/*)
+        # A base whose requirement a journey stated names exactly that, which may be
+        # nothing at all; every other base requires what the repository's rows mark.
+        ruled="${path##*/rules/branches/}"
+        if [ -f "$STATE/required/$ruled" ]; then
+          contexts=""; separator=""
+          while IFS= read -r context; do
+            [ -n "$context" ] || continue
+            contexts="$contexts$separator{\"context\":\"$context\",\"integration_id\":15368}"
+            separator=","
+          done <"$STATE/required/$ruled"
+          if [ -z "$contexts" ]; then
+            printf '[]\n'
+            exit 0
+          fi
+          printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[%s]}}]\n' "$contexts"
+          exit 0
+        fi
         case "$malformed" in
           actions-only-rules-not-a-list)
             printf '{"rules":[]}\n'
@@ -395,7 +460,7 @@ done
 # `pr checks --required`, below.
 rollup() {
   printf '['
-  local separator="" name status conclusion required entry completed row=0
+  local separator="" name status conclusion required entry completed row=0 rows="${1:-$CHECKS}"
   while IFS='|' read -r name status conclusion required; do
     [ -n "$name" ] || continue
     row=$((row + 1))
@@ -409,7 +474,7 @@ rollup() {
     printf '%s{"__typename":"CheckRun","name":"%s","status":"%s","conclusion":%s,"detailsUrl":"https://github.com/%s/actions/runs/1/job/%s","startedAt":"%s","completedAt":"%s"}' \
       "$separator" "$name" "$status" "$entry" "$repo" "$row" "$STARTED" "$completed"
     separator=","
-  done <"$CHECKS" 2>/dev/null || true
+  done <"$rows" 2>/dev/null || true
   printf ']'
 }
 
@@ -523,6 +588,7 @@ case "$subcommand" in
     # Where `gh` reports whether a check blocks the merge, and where each check
     # ran. `gh pr view`'s rollup says neither, which is why this is a second call.
     . "$STATE/pr-$number.env"
+    CHECKS="$(rows_for "$PR_HEAD_SHA")"
     # It resolves the same check runs the rollup does, so a credential refused
     # there is refused here — this command is not a second way in.
     readable_rollup || refused_graphql
@@ -643,6 +709,7 @@ case "$subcommand" in
   view)
     . "$STATE/pr-$number.env"
     PR_HEAD_SHA="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")"
+    CHECKS="$(rows_for "$PR_HEAD_SHA")"
     # A host that answers with a head that is not a commit hash at all. The rollup
     # is rendered from this same field, so what a check is attached to arrives
     # malformed here and nowhere else on that path.

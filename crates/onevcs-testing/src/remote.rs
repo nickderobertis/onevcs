@@ -12,12 +12,14 @@ use std::path::PathBuf;
 use url::Url;
 
 use onevcs::{
-    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState,
-    CommentId, Description, Error, Hosting, MergeOutcome, MergePolicy, PostedReply, ReadMarker,
-    RemoteHost, RequiredChecks, Result, ReviewRead, Sha,
+    ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, ChangeStandings, Check,
+    CheckSource, CheckState, CommentId, Description, Error, Hosting, MergeOutcome, MergePolicy,
+    Mergeability, PostedReply, ReadCost, ReadMarker, RemoteHost, RequiredChecks, Result,
+    ReviewRead, ReviewStandings, Sha, Visibility,
 };
 
-use crate::state::{Described, HostComment, HostState};
+use crate::landings::{self, HeadAfter, PersonMerge};
+use crate::state::{Described, HostCall, HostComment, HostState};
 use crate::store::{FileStore, MemoryStore, Store};
 use crate::{events, review};
 
@@ -111,6 +113,81 @@ impl FileHost {
     }
 }
 
+/// A person's moves on a stack of change requests, which no interface method makes: the
+/// real host takes them from people — a merge on its page, a branch deleted, a change
+/// request closed or moved — so a journey takes them here.
+impl<T: Store<HostState>> Host<T> {
+    /// A person merges `change` on the host into the base it targets now — `how` a squash
+    /// or a merge commit — at `at`, an RFC 3339 moment on the host's clock, and then keeps
+    /// or deletes its head as `head` says: a deleted head closes or retargets every open
+    /// change request based on it. Answers the commit the base reached. Nothing is
+    /// written to the ledger: nobody on this host made a call.
+    pub fn merge_by_person(
+        &self,
+        change: &ChangeId,
+        how: PersonMerge,
+        at: &str,
+        head: HeadAfter,
+    ) -> Result<Sha> {
+        self.store
+            .with(|state| landings::merge_by_person(state, change, how, at, head))
+    }
+
+    /// A person closes `change` on the host without merging it.
+    pub fn close_unmerged(&self, change: &ChangeId) -> Result<()> {
+        self.store.with(|state| {
+            if !state.changes.iter().any(|held| held.id == *change) {
+                return Err(Error::Invalid {
+                    reason: format!("no change request {:?} was opened on this host", change.0),
+                });
+            }
+            state.closed.insert(change.clone());
+            Ok(())
+        })
+    }
+
+    /// A person moves `change` onto `base` on the host.
+    pub fn retarget_by_person(&self, change: &ChangeId, base: &str) -> Result<()> {
+        crate::state::named_branch(base, "the base branch")?;
+        self.store.with(|state| {
+            if !state.changes.iter().any(|held| held.id == *change) {
+                return Err(Error::Invalid {
+                    reason: format!("no change request {:?} was opened on this host", change.0),
+                });
+            }
+            landings::retarget_in(state, change, base);
+            Ok(())
+        })
+    }
+
+    /// Each check's state on one head commit, in place of the change request's own.
+    pub fn set_head_checks(&self, head: &Sha, checks: Vec<Check>) -> Result<()> {
+        self.store.with(|state| {
+            state.head_checks.insert(head.clone(), checks);
+            Ok(())
+        })
+    }
+
+    /// Every host call this host answered, in order, with what GitHub charges for it.
+    pub fn ledger(&self) -> Result<Vec<HostCall>> {
+        Ok(self.store.snapshot()?.ledger)
+    }
+
+    /// Record one call this host answered on its ledger.
+    fn called(&self, method: &str, changes: &[&ChangeId], charge: ReadCost) -> Result<()> {
+        let call = HostCall {
+            method: method.to_owned(),
+            changes: changes.iter().map(|id| (*id).clone()).collect(),
+            charge,
+        };
+        call.checked()?;
+        self.store.with(|state| {
+            state.ledger.push(call);
+            Ok(())
+        })
+    }
+}
+
 /// A reviewer's moves on a change request's feedback, which no interface method makes:
 /// the real host takes them from people, so a journey takes them here.
 impl<T: Store<HostState>> Host<T> {
@@ -151,6 +228,7 @@ impl<T: Store<HostState> + Clone + std::fmt::Debug + Send + Sync + 'static> Host
 
 impl<T: Store<HostState>> RemoteHost for Host<T> {
     fn authenticated_user(&self) -> Result<String> {
+        self.called("authenticated_user", &[], landings::rest(1))?;
         let login = self.store.snapshot()?.authenticated_user;
         if login.trim().is_empty() {
             return Err(Error::Invalid {
@@ -161,6 +239,8 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
+        // One `gh pr create` and the `gh pr view` that reads its head.
+        self.called("open_change", &[], landings::graphql(2))?;
         addressable(&req.head, "the head branch")?;
         addressable(&req.base, "the base branch")?;
         // The same refusal the real host makes: a change request whose title names
@@ -213,6 +293,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn find_changes(&self, head: &str, base: &str) -> Result<Vec<ChangeRequest>> {
+        self.called("find_changes", &[], landings::graphql(1))?;
         addressable(head, "the head branch")?;
         addressable(base, "the base branch")?;
         let state = self.store.snapshot()?;
@@ -231,6 +312,8 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn change_checks(&self, cr: &ChangeRequest) -> Result<ChangeChecks> {
+        // The rollup and `gh pr checks --required`: two queries.
+        self.called("change_checks", &[&cr.id], landings::graphql(2))?;
         let state = self.store.snapshot()?;
         let sources = state.check_sources.clone().unwrap_or_else(complete_sources);
         // The same refusal the real implementation makes when its credential can
@@ -253,6 +336,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
+        self.called("check_log", &[&cr.id], landings::rest(1))?;
         let log = self
             .store
             .snapshot()?
@@ -265,6 +349,13 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
+        // Asked to land, the real host is one merge mutation and one read of the merge;
+        // under a policy that lands nothing it is asked nothing, and charges nothing.
+        let charge = match policy {
+            MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => landings::graphql(2),
+            MergePolicy::LocalDirect | MergePolicy::ChangeOpen => ReadCost::default(),
+        };
+        self.called("merge", &[&cr.id], charge)?;
         self.store.with(|state| {
             // What GitHub answers: a draft can be neither merged nor armed to merge
             // itself (`Pull Request is still a draft`), so a publication that asked
@@ -315,6 +406,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// is already what this asks for, so it succeeds — the caller wanted it ready,
     /// and it is.
     fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
+        self.called("ready_for_review", &[&cr.id], landings::graphql(1))?;
         self.store.with(|state| {
             state.made_ready.push(cr.id.clone());
             Ok(())
@@ -328,12 +420,15 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     // — "this host would not say" — is the `Err` arm rather than a value inside it, and the
     // reason is recorded on the declaration in the crate next door.
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
+        self.called("is_draft", &[&cr.id], landings::graphql(1))?;
         Ok(drafted(&self.store.snapshot()?, &cr.id))
     }
 
     /// What the repository requires before a merge into `base`: the seeded answer,
     /// or — unset — exactly the checks seeded as required, completely.
     fn required_checks_on(&self, _base: &str) -> Result<RequiredChecks> {
+        // The rulesets and classic protection: two REST requests.
+        self.called("required_checks_on", &[], landings::rest(2))?;
         let state = self.store.snapshot()?;
         if let Some(seeded) = state.required_checks {
             return Ok(seeded);
@@ -361,6 +456,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// refuses one; a body is prose, and an empty one is a description a caller may
     /// mean.
     fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()> {
+        self.called("describe_change", &[&cr.id], landings::graphql(1))?;
         if let Some(title) = title {
             crate::state::titled(title)?;
         }
@@ -391,6 +487,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// described with, and the body — empty where it was opened with none and never
     /// described since, which is what the real host answers for one.
     fn change_description(&self, cr: &ChangeRequest) -> Result<Description> {
+        self.called("change_description", &[&cr.id], landings::graphql(1))?;
         let state = self.store.snapshot()?;
         let title = state
             .titles
@@ -411,7 +508,10 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// What changed in the change request's review feedback since `since`, by this
     /// host's own count of changes to it — see `review`.
     fn review_comments(&self, change: &ChangeId, since: Option<&ReadMarker>) -> Result<ReviewRead> {
-        review::read(&self.store, change, since)
+        let read = review::read(&self.store, change, since);
+        let charge = read.as_ref().map_or(landings::graphql(1), |read| read.cost);
+        self.called("review_comments", &[change], charge)?;
+        read
     }
 
     /// One reply, posted in the comment's thread where it has one and as a
@@ -424,10 +524,154 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         body: &str,
         key: &str,
     ) -> Result<PostedReply> {
+        self.called("reply_to_comment", &[change], landings::rest(1))?;
         review::reply(&self.store, change, comment, body, key)
     }
 
+    /// Recorded on the ledger and answered as the trait's default answers: this host
+    /// holds no mergeability, and a publication reads the refusal as a host that said
+    /// nothing, which is no conflict — so it watches as it always did here.
+    fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability> {
+        self.called("mergeability", &[&cr.id], landings::graphql(1))?;
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::mergeability",
+        })
+    }
+
+    /// Recorded on the ledger and answered as the trait's default answers: this host
+    /// holds no visibility, so the boundary records it unknown and screens every write,
+    /// as it always did here.
+    fn visibility(&self) -> Result<Visibility> {
+        self.called("visibility", &[], landings::rest(1))?;
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::visibility",
+        })
+    }
+
+    /// Where each change request stands, one per change request asked about — see
+    /// `landings`. Charged as the real host's one query per 50.
+    fn change_standings(&self, root: &str, changes: &[ChangeId]) -> Result<ChangeStandings> {
+        let cost = landings::standings_charge(changes.len());
+        let named: Vec<&ChangeId> = changes.iter().collect();
+        self.called("change_standings", &named, cost)?;
+        let state = self.store.snapshot()?;
+        Ok(ChangeStandings {
+            standings: changes
+                .iter()
+                .map(|id| landings::standing(&state, root, id))
+                .collect::<Result<_>>()?,
+            cost,
+        })
+    }
+
+    /// Each change request's standing and its review feedback since its marker, in one
+    /// read charged as the real host's one aliased query per 150.
+    fn review_standings(
+        &self,
+        root: &str,
+        changes: &[(ChangeId, Option<ReadMarker>)],
+    ) -> Result<ReviewStandings> {
+        let cost = landings::review_charge(changes.len());
+        let named: Vec<&ChangeId> = changes.iter().map(|(id, _)| id).collect();
+        self.called("review_standings", &named, cost)?;
+        self.store.with(|state| {
+            let mut standings = Vec::with_capacity(changes.len());
+            let mut reads = Vec::with_capacity(changes.len());
+            for (id, since) in changes {
+                standings.push(landings::standing(state, root, id)?);
+                reads.push(review::read_in(state, id, since.as_ref(), false)?);
+            }
+            Ok(ReviewStandings {
+                standings,
+                reads,
+                cost,
+            })
+        })
+    }
+
+    /// Move a change request onto `base`, writing `body` with it — refused, as the real
+    /// host refuses, for one that is merged or closed and for a base the origin no
+    /// longer has. Its draft state never changes. One REST request.
+    fn retarget_change(
+        &self,
+        change: &ChangeId,
+        base: &str,
+        body: Option<&str>,
+    ) -> Result<ReadCost> {
+        self.called("retarget_change", &[change], landings::rest(1))?;
+        addressable(base, "the base branch")?;
+        self.store.with(|state| {
+            let opened = state
+                .changes
+                .iter()
+                .find(|held| held.id == *change)
+                .cloned()
+                .ok_or_else(|| Error::Invalid {
+                    reason: format!("no change request {:?} was opened on this host", change.0),
+                })?;
+            if matches!(state.merges.get(change), Some(MergeOutcome::Merged(_))) {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "Cannot change the base branch of a merged pull request: {}",
+                        opened.url
+                    ),
+                });
+            }
+            if state.closed.contains(change) {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "Cannot change the base branch of a closed pull request: {}",
+                        opened.url
+                    ),
+                });
+            }
+            if state.deleted_branches.contains(base) {
+                return Err(Error::Invalid {
+                    reason: format!("Proposed base branch '{base}' was not found"),
+                });
+            }
+            landings::retarget_in(state, change, base);
+            if let Some(body) = body {
+                state.bodies.insert(change.clone(), body.to_owned());
+            }
+            Ok(landings::rest(1))
+        })
+    }
+
+    /// Reopen a closed change request, as the draft it was — refused, as the real host
+    /// refuses, for one that is not closed and for one whose base is still gone. One REST
+    /// request.
+    fn reopen_change(&self, change: &ChangeId) -> Result<ReadCost> {
+        self.called("reopen_change", &[change], landings::rest(1))?;
+        self.store.with(|state| {
+            let opened = state
+                .changes
+                .iter()
+                .find(|held| held.id == *change)
+                .cloned()
+                .ok_or_else(|| Error::Invalid {
+                    reason: format!("no change request {:?} was opened on this host", change.0),
+                })?;
+            if !state.closed.contains(change) {
+                return Err(Error::Invalid {
+                    reason: format!("{} is not closed, so its state cannot change", opened.url),
+                });
+            }
+            if state.deleted_branches.contains(&opened.base) {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the base branch of {} was deleted, so it cannot be reopened",
+                        opened.url
+                    ),
+                });
+            }
+            state.closed.remove(change);
+            Ok(landings::rest(1))
+        })
+    }
+
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
+        self.called("merge_time", &[&cr.id], landings::graphql(1))?;
         let state = self.store.snapshot()?;
         // Only a change this host holds as merged has a merge time: a seeded time on
         // a change still open is a scenario that says nothing has merged yet.
@@ -438,6 +682,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
+        self.called("merged_at", &[&cr.id], landings::graphql(1))?;
         self.store.with(|state| {
             // Native auto-merge, modelled rather than skipped: a change this host is
             // holding lands the moment its own required checks are green, on the
@@ -511,14 +756,14 @@ fn required_checks_green(state: &HostState, id: &ChangeId) -> bool {
 
 /// Whether this host holds a change request as a draft: opened as one, for a reason
 /// or while its checks run, and not lifted since.
-fn drafted(state: &HostState, id: &ChangeId) -> bool {
+pub(crate) fn drafted(state: &HostState, id: &ChangeId) -> bool {
     (state.drafts.contains_key(id) || state.awaiting_checks.contains(id))
         && !state.made_ready.contains(id)
 }
 
 /// The checks the host reports on a change request right now: the ones registered
 /// after a lift, once it has been lifted and some are seeded, otherwise its own.
-fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
+pub(crate) fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
     if state.made_ready.contains(id) {
         if let Some(after) = state.checks_after_lift.get(id) {
             return after.clone();

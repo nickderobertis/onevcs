@@ -194,6 +194,17 @@ pub enum EventKind {
     /// [`BranchPreserved`](EventKind::BranchPreserved) is not: the one producer of
     /// `push` is a publication, and a stack base publishes nothing.
     StackBaseAssembled,
+    /// Where a batch of one repository's change requests stand was read; carries the
+    /// repository, how many were read, the change requests whose landing the read
+    /// recorded, and what the host charged, `{graphql_points, rest_requests}`.
+    ChangeStandingsRead,
+    /// A change request was moved onto another base, or found on it already; carries
+    /// its URL, the base it left and the one it targets, whether it moved
+    /// (`retargeted` or `unchanged`), and whether a description was written with it.
+    ChangeRetargeted,
+    /// A closed change request was reopened over its restored base; carries its URL,
+    /// the base branch restored on the origin, and the commit it was restored at.
+    ChangeReopened,
 }
 
 impl EventKind {
@@ -236,6 +247,9 @@ impl EventKind {
             EventKind::ReviewCommentsRead => "review-comments-read",
             EventKind::ReviewReplyPosted => "review-reply-posted",
             EventKind::StackBaseAssembled => "stack-base-assembled",
+            EventKind::ChangeStandingsRead => "change-standings-read",
+            EventKind::ChangeRetargeted => "change-retargeted",
+            EventKind::ChangeReopened => "change-reopened",
         }
     }
 
@@ -319,7 +333,13 @@ impl PhaseOf for Phase {
             | EventKind::ChangeMerged
             // Reading what reviewers said and answering it is the change being ruled on.
             | EventKind::ReviewCommentsRead
-            | EventKind::ReviewReplyPosted => Phase::Review,
+            | EventKind::ReviewReplyPosted
+            // Where each change request under review stands, and the moves that keep a
+            // stack of them true to the host — a base changed, a closed draft reopened:
+            // the change being ruled on, as the host reads and writes it.
+            | EventKind::ChangeStandingsRead
+            | EventKind::ChangeRetargeted
+            | EventKind::ChangeReopened => Phase::Review,
             EventKind::ReleaseProbed
             | EventKind::ReleaseAcknowledged
             | EventKind::ReleaseObserved => Phase::Release,

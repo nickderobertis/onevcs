@@ -32,6 +32,9 @@ use serde_json::{json, Value};
 
 use crate::world::World;
 
+#[path = "standings_host.rs"]
+mod standings;
+
 /// The repository database id every node id carries: the one `spike-review-loop`'s
 /// scratch repository has, so the first id of each kind minted here is the id the
 /// spike recorded from the real host.
@@ -61,8 +64,8 @@ impl World {
             std::fs::create_dir_all(dir.join(sub)).expect("a review host directory");
         }
         let shared = Arc::new(Shared {
+            model: Mutex::new(Model::new(slug, self.path("gh-state"))),
             dir,
-            model: Mutex::new(Model::new(slug)),
             released: Condvar::new(),
             stop: AtomicBool::new(false),
         });
@@ -138,17 +141,30 @@ fn answer(shared: &Shared, args: &[String]) -> (String, String, i32) {
     model.requests.push(args.to_vec());
     let call = Call::parse(args);
     if call.path == "graphql" {
-        return model.graphql(&call);
+        let answered = model.graphql(&call);
+        model.ledger(&call);
+        return answered;
+    }
+    if call.method.as_deref() == Some("PATCH") {
+        let answered = model.patched(&call);
+        model.ledger(&call);
+        return answered;
     }
     if call.method.as_deref() != Some("POST") {
-        return refused(&format!("fake gh: {} answers POST only here", call.path));
+        model.ledger(&call);
+        return refused(&format!(
+            "fake gh: {} answers POST and PATCH only here",
+            call.path
+        ));
     }
     model.held += 1;
     while model.hold && !shared.stop.load(Ordering::SeqCst) {
         model = shared.released.wait(model).expect("the review model");
     }
     model.held -= 1;
-    model.posted(&call)
+    let answered = model.posted(&call);
+    model.ledger(&call);
+    answered
 }
 
 fn refused(message: &str) -> (String, String, i32) {
@@ -242,6 +258,14 @@ struct Pull {
 
 struct Model {
     slug: String,
+    /// The substituted host's state directory, where `fixtures/gh` keeps each change
+    /// request's record — which the standings read and the two `PATCH` routes answer
+    /// from and write to, so they and every `gh pr` call agree about one change request.
+    state: PathBuf,
+    /// What the GraphQL call being answered was charged, for the ledger line written
+    /// once it is answered; a call that leaves it unset is charged by GitHub's published
+    /// rule over its query.
+    charged: Option<u32>,
     pulls: BTreeMap<u64, Pull>,
     /// The next database id of each kind of node.
     next: BTreeMap<&'static str, u64>,
@@ -263,9 +287,11 @@ struct Model {
 }
 
 impl Model {
-    fn new(slug: &str) -> Self {
+    fn new(slug: &str, state: PathBuf) -> Self {
         Self {
             slug: slug.to_owned(),
+            state,
+            charged: None,
             pulls: BTreeMap::new(),
             // The first id of each kind is the one `spike-review-loop` recorded.
             next: BTreeMap::from([
@@ -368,9 +394,12 @@ impl Model {
             .find(|comment| comment.node == node)
     }
 
-    /// One page of the review read.
+    /// One page of the review read, or one standings query.
     fn graphql(&mut self, call: &Call) -> (String, String, i32) {
         let query = call.fields.get("query").cloned().unwrap_or_default();
+        if query.contains("statusCheckRollup") {
+            return self.standings(call, &query);
+        }
         for wanted in [
             "rateLimit { cost }",
             "reviewThreads(first: 50, after: $threadsAfter)",
@@ -403,6 +432,7 @@ impl Model {
             ));
         }
         let cost = self.charges.pop_front().unwrap_or(1);
+        self.charged = Some(cost);
         let page = self.page(number);
         let pull = &self.pulls[&number];
         let mut pr = json!({"url": page});

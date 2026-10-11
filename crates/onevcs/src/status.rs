@@ -3296,6 +3296,49 @@ fn text(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The landing this host's streams record for one branch of one identity — the
+/// commit, where one is — and the stream that recorded its change request being opened,
+/// newest first.
+///
+/// What a standings read asks before it records a landing it found on the host, through
+/// the same reading every landing tier reads, so a landing already recorded — by the
+/// publication that merged it, a late-merge reconciliation, or an earlier read — is not
+/// written twice, and one recorded here lands on the stream a session already keeps.
+pub(crate) fn landing_record(
+    identity: &str,
+    branch: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    let mut notes = Vec::new();
+    let streams = recorded_streams(&mut notes)?;
+    let work = Work {
+        identity: identity.to_owned(),
+        branch: Ref::try_from(branch.to_owned()).map_err(|reason| Error::Invalid {
+            reason: format!("the host reports a change request carrying {reason}"),
+        })?,
+    };
+    let told = from_streams(&streams, &work, None);
+    Ok((
+        told.recorded
+            .landing
+            .as_ref()
+            .map(|landing| landing.as_str().to_owned()),
+        told.change_stream,
+    ))
+}
+
+/// Every branch this host's `change-opened` records say the change request at `url`
+/// carries, each with when it was recorded.
+pub(crate) fn opened_heads(url: &str) -> Result<Vec<(String, String)>> {
+    let mut notes = Vec::new();
+    Ok(recorded_streams(&mut notes)?
+        .into_iter()
+        .filter_map(|record| {
+            let opened = record.opened.filter(|opened| opened.value.url == url)?;
+            Some((String::from(opened.at), record.branch?))
+        })
+        .collect())
+}
+
 /// The streams that recorded this work: the session's own, and the deterministic
 /// ones the two branch-keyed verbs write.
 fn relevant_streams<'a>(

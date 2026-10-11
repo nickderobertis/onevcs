@@ -1668,6 +1668,8 @@ fn a_drafted_publication_reports_why_it_is_held_and_a_lifted_one_reports_no_draf
             body: None,
             draft: Some(held_for_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -1888,6 +1890,8 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
             body: None,
             draft: Some(held_for_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");

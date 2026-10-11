@@ -350,6 +350,9 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ReviewCommentsRead,
         EventKind::ReviewReplyPosted,
         EventKind::StackBaseAssembled,
+        EventKind::ChangeStandingsRead,
+        EventKind::ChangeRetargeted,
+        EventKind::ChangeReopened,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -383,7 +386,10 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::GateRun
             | EventKind::ReviewCommentsRead
             | EventKind::ReviewReplyPosted
-            | EventKind::StackBaseAssembled => {}
+            | EventKind::StackBaseAssembled
+            | EventKind::ChangeStandingsRead
+            | EventKind::ChangeRetargeted
+            | EventKind::ChangeReopened => {}
         }
     }
     kinds
@@ -3086,6 +3092,8 @@ fn the_amendment_declares_the_types_the_widened_seam_gained() {
         draft: None,
         // …and the one the public-boundary amendment added, for the same reason.
         term_scope: TermScope::Registry,
+        defer_checks: false,
+        adopt: None,
     };
     let publication = Publication {
         session: record.session.token.clone(),
@@ -3177,6 +3185,10 @@ fn the_inferred_surface_row_lists_the_fields_publish_request_actually_has() {
             because: "the pin moves when the release lands".to_owned(),
         }),
         term_scope: TermScope::Identities(vec!["github.com/hiddenco/quietharbor".to_owned()]),
+        defer_checks: true,
+        adopt: Some(
+            Url::parse("https://github.com/acme-corp/widgets/pull/7").expect("a change request"),
+        ),
     };
     let serialized = serde_json::to_value(&request).expect("a request serializes");
     let fields: BTreeSet<String> = serialized
@@ -3320,6 +3332,9 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
         .into_iter()
         .chain(backticked_on_line("`onevcs publish` takes a draft as"))
         .chain(backticked_on_line("`onevcs publish` takes a term scope as"))
+        .chain(backticked_on_line(
+            "`onevcs publish` takes deferred checks as",
+        ))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(
@@ -3596,6 +3611,9 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("change describe", operation!(onevcs::describe_change)),
         ("change comments", operation!(onevcs::review_comments)),
         ("change reply", operation!(onevcs::reply_to_comment)),
+        ("change standings", operation!(onevcs::change_standings)),
+        ("change retarget", operation!(onevcs::retarget_change)),
+        ("change reopen", operation!(onevcs::reopen_change)),
         ("change ready", operation!(onevcs::ready_change)),
         ("preserve", operation!(onevcs::preserve)),
         ("stack-base", operation!(onevcs::assemble_stack_base)),
@@ -5375,6 +5393,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
         PublishOutcome::ChangeOpen(url.clone()),
         PublishOutcome::ChangeDraft(url.clone()),
         PublishOutcome::ChangeReviewDraft(url.clone()),
+        PublishOutcome::ChangeReviewDraftUnchecked(url.clone()),
         PublishOutcome::Queued(url),
         PublishOutcome::NothingToPublish,
         PublishOutcome::Failed {
@@ -5391,6 +5410,7 @@ fn all_publish_outcomes() -> Vec<&'static str> {
             PublishOutcome::ChangeOpen(_) => "ChangeOpen",
             PublishOutcome::ChangeDraft(_) => "ChangeDraft",
             PublishOutcome::ChangeReviewDraft(_) => "ChangeReviewDraft",
+            PublishOutcome::ChangeReviewDraftUnchecked(_) => "ChangeReviewDraftUnchecked",
             PublishOutcome::Queued(_) => "Queued",
             PublishOutcome::NothingToPublish => "NothingToPublish",
             PublishOutcome::Failed { .. } => "Failed",
@@ -8982,4 +9002,59 @@ fn a_version_7_registry_round_trips_its_recorded_visibility_and_omits_what_it_ne
         observed,
         "what was recorded comes back, and nothing unrecorded is written"
     );
+}
+
+#[test]
+fn the_standings_host_methods_default_to_the_refusal_for_a_seam_with_no_body() {
+    // All four are defaulted, so the seam stays additive — and to the refusal this
+    // repository reserves for a seam with no body, never to an answer: a host never
+    // taught to read where change requests stand has not read that none of them moved,
+    // and one never taught to move a change request has not moved it.
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeId("42".to_owned());
+    let refused = |answer: Result<(), Error>, method: &str| {
+        assert!(
+            matches!(&answer, Err(Error::NotImplemented { operation }) if operation.contains(method)),
+            "{method} answered {answer:?} rather than the refusal for a seam with no body"
+        );
+    };
+    refused(
+        Earlier
+            .change_standings("main", std::slice::from_ref(&change))
+            .map(drop),
+        "change_standings",
+    );
+    refused(
+        Earlier
+            .review_standings("main", &[(change.clone(), None)])
+            .map(drop),
+        "review_standings",
+    );
+    refused(
+        Earlier
+            .retarget_change(&change, "main", Some("a body"))
+            .map(drop),
+        "retarget_change",
+    );
+    refused(Earlier.reopen_change(&change).map(drop), "reopen_change");
 }

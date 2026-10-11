@@ -254,6 +254,13 @@ mod review;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod review_host;
+// Unix only: where a stack of drafts stands, and the moves that keep it true to the
+// host, driven through the same substituted `gh` and `review_host.rs` as `review`, with
+// a person's merges done in real git against the real bare origin. Its own header
+// carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod standings;
 // `seam` proves each command reaches the implementation it was *handed*, which cannot
 // be shown without handing it one. Everything else in it is real: real bare origins,
 // real clones, a real `git push`, real session records.

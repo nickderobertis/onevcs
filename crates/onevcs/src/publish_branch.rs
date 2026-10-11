@@ -284,6 +284,7 @@ impl Resumed {
             cancellation: &publish::NeverCancelled,
             built: publish::Built::Resumed,
             term_scope: term_scope.clone(),
+            adopt: None,
         };
         publish::resume(
             &context,

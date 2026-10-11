@@ -846,6 +846,215 @@ impl World {
             .map_or(recorded.clone(), str::to_owned)
     }
 
+    /// The checks the substituted host reports on one head commit, in place of the
+    /// repository's: what a host carrying several change requests whose heads stand
+    /// differently reports for each. The same rows as [`host_checks`](Self::host_checks).
+    pub fn host_checks_on(&self, head: &str, checks: &[Check]) {
+        std::fs::create_dir_all(self.path("gh-state/checks")).expect("a per-head checks directory");
+        self.write_rows(&format!("gh-state/checks/{head}.rows"), checks);
+    }
+
+    /// What the substituted host declares a merge into `base` requires — exactly these
+    /// names, which may be none — in place of the rows it marks required.
+    pub fn host_requires_on(&self, base: &str, names: &[&str]) {
+        std::fs::create_dir_all(self.path("gh-state/required")).expect("a requirements directory");
+        let mut listed = names.join("\n");
+        if !listed.is_empty() {
+            listed.push('\n');
+        }
+        std::fs::write(self.path(format!("gh-state/required/{base}")), listed)
+            .expect("a base's requirement");
+    }
+
+    /// Answer the standings read's declarations (`rulesets`, `branchProtectionRules`,
+    /// `defaultBranchRef`) with `stated`'s keys in place of the derived ones — how a
+    /// journey serves a host answer GitHub's schema would not.
+    pub fn host_declarations(&self, stated: &serde_json::Value) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/declarations.json"), stated.to_string())
+            .expect("the host's declarations");
+    }
+
+    /// Answer the standings read's alias for change request `number` with `stated`'s
+    /// keys in place of the derived ones — how a journey serves a change request the
+    /// host describes in a way GitHub's schema would not, or with checks of a kind the
+    /// world's rows do not spell. `null` answers that key as `null`.
+    pub fn host_pull_answer(&self, number: usize, stated: &serde_json::Value) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path(format!("gh-state/pull-{number}.json")),
+            stated.to_string(),
+        )
+        .expect("the host's answer for one change request");
+    }
+
+    /// The substituted host's classic branch-protection rules, oldest first: each a
+    /// branch pattern GitHub's own grammar spells (`main`, `release/*`, `**`) and the
+    /// contexts it requires. GitHub applies exactly one of them to a branch.
+    pub fn host_classic_rules(&self, rules: &[(&str, &[&str])]) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        let listed: String = rules
+            .iter()
+            .map(|(pattern, contexts)| format!("{pattern}|{}\n", contexts.join(",")))
+            .collect();
+        std::fs::write(self.path("gh-state/classic-rules"), listed)
+            .expect("the host's classic protection rules");
+    }
+
+    /// Every call the substituted host answered, in order, as the host's call ledger
+    /// records it: `{method, changes, graphql_points, rest_requests}` — what GitHub
+    /// charges for each.
+    pub fn ledger(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.path("gh-state/ledger.ndjson"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("every ledger line is one JSON object"))
+            .collect()
+    }
+
+    /// One change request's record as the substituted host keeps it — `PR_BASE`,
+    /// `PR_STATE`, `PR_HEAD_SHA` and the rest — with whether it is closed and a draft.
+    pub fn change_request(&self, number: usize) -> std::collections::BTreeMap<String, String> {
+        let text = std::fs::read_to_string(self.path(format!("gh-state/pr-{number}.env")))
+            .unwrap_or_else(|e| panic!("the host holds change request {number}: {e}"));
+        let mut record: std::collections::BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_owned(), value.trim_matches('\'').to_owned()))
+            .collect();
+        let closed = self.path(format!("gh-state/closed-{number}")).exists();
+        let ready = self.path(format!("gh-state/ready-{number}")).exists();
+        let draft = record.get("PR_DRAFT").map(String::as_str) == Some("1") && !ready;
+        record.insert("CLOSED".to_owned(), closed.to_string());
+        record.insert("DRAFT".to_owned(), draft.to_string());
+        record
+    }
+
+    /// A person merges change request `number` on the host, into whatever base it
+    /// targets at that moment — `how` a squash or a merge commit, with real git against
+    /// the real bare origin — at `at` on GitHub's clock, and then keeps or deletes its
+    /// head branch as `head` says. Answers the commit the base reached.
+    ///
+    /// No publication armed it and nothing of this crate's is asked: the host performs
+    /// it, which is the merge a standings read has to find.
+    pub fn person_merges(
+        &self,
+        number: usize,
+        how: PersonMerge,
+        at: &str,
+        head: HeadAfter,
+    ) -> String {
+        let record = self.change_request(number);
+        let base = record["PR_BASE"].clone();
+        let branch = record["PR_HEAD"].clone();
+        let work = self.path(format!("person-merge-{number}"));
+        let origin = std::fs::read_to_string(self.path("gh-state/origin")).expect("the origin");
+        self.git(
+            &self.root,
+            &["clone", "-q", origin.trim(), &work.to_string_lossy()],
+        );
+        self.git(&work, &["checkout", "-q", &base]);
+        let title = std::fs::read_to_string(self.path(format!("gh-state/pr-{number}.title")))
+            .unwrap_or_default();
+        match how {
+            PersonMerge::Squash => {
+                self.git(
+                    &work,
+                    &["merge", "-q", "--squash", &format!("origin/{branch}")],
+                );
+                self.git(
+                    &work,
+                    &[
+                        "commit",
+                        "-q",
+                        "-m",
+                        &format!("{} (#{number})", title.trim()),
+                    ],
+                );
+            }
+            PersonMerge::MergeCommit => {
+                self.git(
+                    &work,
+                    &[
+                        "merge",
+                        "-q",
+                        "--no-ff",
+                        &format!("origin/{branch}"),
+                        "-m",
+                        &format!("Merge pull request #{number} from {branch}"),
+                    ],
+                );
+            }
+        }
+        self.git(&work, &["push", "-q", "origin", &base]);
+        let commit = self.git(&work, &["rev-parse", "HEAD"]);
+        self.rewrite_change_request(
+            number,
+            &[
+                ("PR_STATE", "MERGED"),
+                ("PR_MERGE_COMMIT", &commit),
+                ("PR_MERGED_AT", at),
+            ],
+        );
+        if let HeadAfter::Deleted(dependants) = head {
+            self.git(&work, &["push", "-q", "origin", "--delete", &branch]);
+            for entry in std::fs::read_dir(self.path("gh-state")).expect("the host's state") {
+                let name = entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned();
+                let Some(other) = name
+                    .strip_prefix("pr-")
+                    .and_then(|rest| rest.strip_suffix(".env"))
+                    .and_then(|digits| digits.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                let dependant = self.change_request(other);
+                if dependant["PR_STATE"] != "OPEN" || dependant["CLOSED"] == "true" {
+                    continue;
+                }
+                if dependant["PR_BASE"] != branch {
+                    continue;
+                }
+                match dependants {
+                    Dependants::Closed => self.close_change_request(other),
+                    Dependants::Retargeted => {
+                        self.rewrite_change_request(other, &[("PR_BASE", &base)])
+                    }
+                }
+            }
+        }
+        std::fs::remove_dir_all(&work).expect("the person's clone is disposable");
+        commit
+    }
+
+    /// A person retargets change request `number` onto `base` on the host.
+    pub fn person_retargets(&self, number: usize, base: &str) {
+        self.rewrite_change_request(number, &[("PR_BASE", base)]);
+    }
+
+    fn rewrite_change_request(&self, number: usize, fields: &[(&str, &str)]) {
+        let path = self.path(format!("gh-state/pr-{number}.env"));
+        let text = std::fs::read_to_string(&path).expect("a change request's record");
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|line| {
+                !fields
+                    .iter()
+                    .any(|(key, _)| line.starts_with(&format!("{key}=")))
+            })
+            .map(str::to_owned)
+            .collect();
+        for (key, value) in fields {
+            lines.push(format!("{key}='{value}'"));
+        }
+        std::fs::write(&path, format!("{}\n", lines.join("\n")))
+            .expect("a change request's record");
+    }
+
     /// Every call the substituted host has been asked to make, in order.
     ///
     /// What a journey about a credential's *reach* asserts over. Whether a build
@@ -897,6 +1106,37 @@ fn write_script(path: &Path, contents: &str) {
         .permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(path, permissions).expect("an executable script");
+}
+
+/// How a person merges a change request on the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonMerge {
+    /// One squash commit on the base, its subject the title and the change request's
+    /// number, as GitHub writes one.
+    Squash,
+    /// A merge commit of the head into the base.
+    MergeCommit,
+}
+
+/// What becomes of a merged change request's head branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadAfter {
+    /// It stays on the origin.
+    Kept,
+    /// It is deleted through the refs API, and every open change request based on it
+    /// meets what `Dependants` says.
+    Deleted(Dependants),
+}
+
+/// What deleting a merged change request's head branch does to the change requests
+/// based on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dependants {
+    /// They are closed — what GitHub did when `spike-quota-round` deleted a parent's
+    /// branch through the refs API.
+    Closed,
+    /// They are retargeted onto the merged one's base.
+    Retargeted,
 }
 
 /// One check the substituted host reports.

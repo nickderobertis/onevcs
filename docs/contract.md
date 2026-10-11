@@ -205,8 +205,8 @@ pub struct PublishRequest { pub policy: Option<MergePolicy>, pub title: Option<S
 pub struct Subject(String);                  // TryFrom<String>: a title that can be one
 pub struct Publication { pub session: SessionToken, pub branch: String,
                          pub policy: MergePolicy, pub outcome: PublishOutcome }
-pub enum PublishOutcome {                    // widened by the draft and draft-lifecycle amendments
-    Merged(Sha), ChangeOpen(Url), ChangeDraft(Url), ChangeReviewDraft(Url), Queued(Url), NothingToPublish,
+pub enum PublishOutcome {                    // widened by the draft, draft-lifecycle and landings amendments
+    Merged(Sha), ChangeOpen(Url), ChangeDraft(Url), ChangeReviewDraft(Url), ChangeReviewDraftUnchecked(Url), Queued(Url), NothingToPublish,
     Failed { kind: FailureKind, reason: String, retained: Option<Retention> },
 }
 pub enum FailureKind { Gate, Invalid, SyncConflict, NotImplemented }  // 1 | 2 | 3 | 70
@@ -1218,7 +1218,8 @@ integrate    merge-queued merge-completed sync-conflict push:any-other-branch
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
-             review-reply-posted
+             review-reply-posted change-standings-read change-retargeted
+             change-reopened
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -5012,6 +5013,291 @@ recorded, and reports the measured charge by default — one GraphQL point a pag
 `rateLimit { cost }`, seedable per response.
 
 Event kinds added: `review-comments-read`, `review-reply-posted`.
+
+### Where each change request stands, read in one batch; a draft moved, and one the host closed, reopened
+
+A team merges the bottom of a stack of review drafts on the host while the rest are
+still in review, and only the host knows that happened. These operations read where
+every draft stands in one query, record a person's merge into the root as the landing
+it is, move a change request onto another base, and recover a draft the host closed
+when its base branch was deleted — at a small, fixed share of the one GitHub token a
+host shares. All are typed operations re-exported from the crate root. `ReadCost`,
+`ReadMarker` and `ReviewRead` are the review amendment's, reused as they stand.
+
+```rust
+pub struct ChangeStandingsRequest {
+    /// The identity (normalized origin) or a registered checkout path.
+    pub repo: String,
+    /// The root base: a change request merged into it is a landing.
+    pub root: String,
+    /// The change requests to read, by URL, all of that repository; any number.
+    pub changes: Vec<Url>,
+}
+pub struct ChangeStanding {
+    pub url: Url,
+    /// The description as the host holds it, so a caller can rewrite one part of it.
+    pub body: String,
+    /// The branch the change request targets now, as the host reports it.
+    pub base: String,
+    pub head_branch: String,
+    pub head: Sha,
+    pub draft: bool,
+    pub state: ChangeState,
+    /// The required checks' verdict on `head`.
+    pub checks: ChecksVerdict,
+}
+#[non_exhaustive]
+pub enum ChangeState {                                   // serde: tag "state", kebab-case
+    Open,
+    /// `landing` is true exactly when `into` is the request's `root`; `merged_at` is the
+    /// host's RFC 3339 merge time, None where it gave none (omitted when None).
+    Merged { into: String, commit: Sha, landing: bool, merged_at: Option<String> },
+    /// `base_deleted` is true when the branch it targets no longer exists on the origin.
+    Closed { base_deleted: bool },
+}
+#[non_exhaustive]
+pub enum ChecksVerdict {                                 // serde: tag "verdict", kebab-case
+    Pending { waiting: Vec<String> },
+    Passed,
+    PassedWithSkipped { skipped: Vec<String> },
+    Failed { failed: Vec<String> },
+    NoneRequired,
+}
+pub struct ChangeStandings { pub standings: Vec<ChangeStanding>, pub cost: ReadCost }
+pub fn change_standings(providers: &Providers, request: &ChangeStandingsRequest) -> Result<ChangeStandings>;
+
+pub struct ReviewTarget { pub change: Url, pub since: Option<ReadMarker> }   // since omitted when None
+pub struct ReviewStandingsRequest { pub repo: String, pub root: String, pub changes: Vec<ReviewTarget> }
+pub struct ReviewStandings {
+    pub standings: Vec<ChangeStanding>,
+    pub reads: Vec<ReviewRead>,
+    pub cost: ReadCost,
+}
+pub fn review_standings(providers: &Providers, request: &ReviewStandingsRequest) -> Result<ReviewStandings>;
+
+pub struct RetargetRequest {
+    pub repo: String,
+    pub change: Url,
+    pub base: String,
+    /// A description written in the same request as the base change.
+    pub body: Option<String>,                            // omitted when None
+    /// Delete the previous base branch after the move — only one `reopen_change` restored.
+    pub remove_restored_base: bool,                      // omitted when false
+}
+pub struct Retargeted {
+    pub change: Url,
+    pub from: String,
+    pub to: String,
+    pub outcome: RetargetOutcome,
+    pub cost: ReadCost,
+}
+#[non_exhaustive]
+pub enum RetargetOutcome { Retargeted, Unchanged }       // serde: kebab-case
+pub fn retarget_change(providers: &Providers, request: &RetargetRequest) -> Result<Retargeted>;
+
+pub struct ReopenRequest { pub repo: String, pub change: Url, pub restore_base_at: Sha }
+pub struct Reopened { pub change: Url, pub restored_base: String, pub cost: ReadCost }
+pub fn reopen_change(providers: &Providers, request: &ReopenRequest) -> Result<Reopened>;
+
+pub struct PublishRequest {              // two more fields, both #[serde(default)], omitted when unset:
+    pub defer_checks: bool,
+    pub adopt: Option<Url>,
+}
+pub enum PublishOutcome {                // one more ending:
+    ChangeReviewDraftUnchecked(Url),
+}
+#[non_exhaustive]
+pub enum Error {                         // one more kind, rendered and exiting as `Invalid`:
+    UnrecordedChangeHead { change: String, reason: String },
+}
+
+pub trait RemoteHost {                   // four more defaulted methods, each answering NotImplemented:
+    fn change_standings(&self, root: &str, changes: &[ChangeId]) -> Result<ChangeStandings>;
+    fn review_standings(&self, root: &str, changes: &[(ChangeId, Option<ReadMarker>)]) -> Result<ReviewStandings>;
+    fn retarget_change(&self, change: &ChangeId, base: &str, body: Option<&str>) -> Result<ReadCost>;
+    fn reopen_change(&self, change: &ChangeId) -> Result<ReadCost>;
+}
+```
+
+`ChangeState::Merged::merged_at` is the manager's ruling on this amendment: a landing a
+standings read finds is recorded with the host's merge time, and the batched query is
+the only read that makes, so the time travels on the standing. `Error::UnrecordedChangeHead`
+is the manager's ruling too (see **Deferred checks**). `PublishOutcome` gains a variant and
+`PublishRequest` two fields; neither type is `#[non_exhaustive]`, so a consumer matching
+the one or building the other with a struct literal adds them — the manager accepted that
+break for this release.
+
+```
+onevcs change standings <REPO> --root <R> --change <URL> [--change <URL>]... [--review] [--json]
+onevcs change retarget <URL> --base <B> [--body-file <PATH>] [--remove-restored-base] [--repo <R>] [--json]
+onevcs change reopen <URL> --restore-base-at <SHA> [--repo <R>] [--json]
+onevcs publish <SESSION> --defer-checks --adopt <URL>
+```
+
+`onevcs publish` takes deferred checks as `--defer-checks` and `--adopt`, beside the options the earlier amendments gave it.
+
+`--review` runs `review_standings`, and each change request is then named
+`--change <URL>` or `--change <URL>=<MARKER>`, the marker an earlier read handed back; a
+marker without `--review` is refused. `retarget` and `reopen` act in the repository
+`--repo` names, or the one the URL names. `--json` prints the operation's value as one
+object; without it, one line per change request a person reads, and the cost.
+
+**One query per 50 change requests.** `change_standings` reads every named change request
+through one aliased GraphQL query per 50 of them — each an alias of `repository {
+pullRequest(number:) }` carrying its state, merge commit and time, base and head ref,
+head oid, draft flag and body, its head commit's status-check rollup with each context's
+`isRequired` for that change request, and whether its base ref still exists — never a
+REST request and never a call per change request, and reports `cost` from each
+response's own `rateLimit.cost`. **Each distinct base's required set is read at most
+once per call:** the first query of a call also reads the repository's declarations —
+its active branch rulesets with the refs each applies to (`~ALL`, `~DEFAULT_BRANCH` and
+`refs/heads/` patterns, include and exclude) and its classic protection rules with their
+branch patterns — and every base a change request of the call targets, in that batch or
+a later one, has its required set derived from that one read once and remembered for
+the call: the required status checks of every active ruleset that applies to it, which
+GitHub layers, and the required contexts of the one classic protection rule GitHub
+applies to it — a rule naming the branch exactly over any pattern, and of those the one
+created first (its `databaseId`), never a union of every matching rule. Both kinds of
+pattern are read with GitHub's own semantics, `File.fnmatch` with `FNM_PATHNAME`: `*` and
+`?` never cross a `/`, `**/` is zero or more whole segments and any other `**` crosses
+them, and `[...]` / `[!...]` is one character of a class, never a `/`. A pattern that
+cannot be evaluated so — one holding a brace, an escape, or a class that is empty or never
+closes — where it could decide what applies to a base, leaves that base's required set
+unknown, so a required check with no run reads `Pending` and never `NoneRequired`. No
+alias reads its base's rules, so drafts sharing a base
+never read them again, and no second call is made for them. Each change request's rollup
+contexts are its one connection and the declarations add 27 (25 rulesets of 25 rules,
+and the classic rules), so a query of 50 asks for 77 nodes, which GitHub's published
+rule charges one point. A base the origin no longer holds has no declaration to apply,
+so its verdict is read off the rollup's own marking, and declarations holding more than
+one page are read as unknown rather than as a whole answer. The standings come back one
+per change request asked about, in the order asked; every URL must be one of the
+repository `repo` names, and one that is not is refused before the host is asked.
+
+**The review read rides the same query.** `review_standings` reads every named change
+request's standing *and* its review threads, comments and reviews in one aliased GraphQL
+query per 150 change requests — each alias also carrying the review amendment's three
+connections at its page sizes (50 threads × 50 comments, 100 conversation comments, 50
+reviews) — and computes each change's `ReviewRead` through the review transport's own
+computation from the same marker, so its comments, `unchanged`, `ours` and next marker
+are exactly what `review_comments` answers. A change request whose feedback has a
+further page is read whole through the review amendment's paged query instead, at that
+read's own cost, so nothing is answered from part of it. Each `ReviewRead`'s own `cost`
+is zero for a change answered from the batched query — the batch's charge is the whole
+read's `cost` — and that paged read's charge for one that was not. `spike-quota-round`
+measured the aliased review query at 6 points over 10 drafts and 3 over 5 (GitHub's
+published rule over its 54 connections a change request and the declarations' 27: 5.67
+and 2.97, rounded), and
+the standings-only query at 1 point up to at least 10 drafts.
+
+**The verdict reads as a publication's watch reads.** One classifier decides both: the
+watch's own reading of a ready change's standing (`publish::checks_verdict`), applied
+to the same rollup against the same declaration. A declared context with no run yet is
+`Pending` naming it, `skipped` is never read as passed (`PassedWithSkipped`, naming it),
+`cancelled` and `stale` are no verdict (`Pending`, naming them), a failure is `Failed`
+naming the checks, and a base that requires nothing, by the host's complete answer, is
+`NoneRequired`. A head branch that is gone has no rollup to read, so its checks read as
+none.
+
+**A landing is recorded.** A change request reported merged into `root` has its landing
+written exactly as `publish::reconcile_late_merge` writes one: the publication checkout
+fast-forwarded, the release baselines captured under the existing rules, and a
+`change-merged` record carrying the host's merge time (`merged_at`) — whether or not this
+host asked the host to land it and whether or not its registry holds a session for its
+branch. The record goes on the stream that recorded the change request being opened
+where this host has one, and otherwise on the change request's own stream,
+`change-<the first twelve hex characters of the SHA-256 of its URL>`, labelled with the
+identity and naming the branch — so `landing_status` then answers `yes` decided by the
+recorded landing, and release correlation reads it. A landing already recorded for that
+branch at the same commit is not written again. A change request merged into any other
+branch records nothing.
+
+**Retarget.** `retarget_change` reads the change request's standing, and is refused,
+with nothing written, for a merged or closed change request and for a `base` the origin
+does not hold (asked of the origin itself, through the publication checkout). It changes
+the base on the host and writes `body` in the same request when given — one `PATCH` of
+the pull request — and answers `Retargeted`; it writes nothing when the change request
+already targets `base` and no `body` is given (`Unchanged`), and with a `body` writes the
+body alone (`Unchanged`). The body passes the public-remote boundary check before
+anything is written. It never changes the draft state: the standing is read again after
+the write, and a draft state that changed — or a base other than the one asked for — is
+an error. With `remove_restored_base`, it deletes the previous base branch after the move
+(`git push --delete`, leased on the tip it read), and is refused when that branch is not
+one `reopen_change` restored on this change request — a `change-reopened` on its own
+stream naming it — or when the change request already targets `base`, so no base is left
+behind. `cost` is the reads of the change request and the write; the boundary check's own
+read of the repository's visibility is the boundary's, as it is for every write.
+
+**Recovery of a draft the host closed.** Deleting a merged parent's branch through
+GitHub's refs API **closes** the drafts based on it rather than retargeting them, and a
+closed change request's base cannot be changed (`spike-quota-round`). `reopen_change`
+reads the change request's standing and is refused, with nothing written, unless it is
+closed and its base branch is gone from the origin; it pushes `restore_base_at` to the
+deleted base branch's name — through the boundary check, leased so that a branch created
+meanwhile is not replaced, fetching the commit by id first where the checkout does not
+hold it — reopens the change request (one `PATCH` of its state), reads its standing
+again, and is an error unless it is open and still a draft where it was one. It returns
+the restored branch, which the caller then retargets away from with
+`remove_restored_base`. The restoring push is the third that skips the `pre-push` hook,
+inside `preserve`'s exception: it lands nothing, and the commit was already on the
+origin. `spike-quota-round` measured it on GitHub at 2 REST requests beyond the pushes,
+the draft ending open, a draft, and its diff its own.
+
+**Deferred checks.** A publication with `defer_checks` and `adopt` of a change request
+held for review — a `change-open` identity whose approvals are required — pushes, adopts
+the change request `adopt` names without listing the host's change requests (never a
+second), keeps it a draft, and returns `ChangeReviewDraftUnchecked(url)` with **no host
+API call at all**: no lookup, no description write, no check watch, no lift. Its verdict
+is read later through `change_standings` or `review_standings`. It records the push and
+a `change-opened` naming the adopted change request, less the author only the host could
+say, and no check-watch event. Because it asks the host nothing, which branch `adopt`
+carries is read from this host's own newest record of it — a standings or
+review-standings read that saw its head (kept under `$ONEVCS_HOME/change-heads/`, not
+only in an event) or a `change-opened` a publication here wrote — *(the manager's ruling
+on this amendment)*: it proceeds when that record names the session's branch, is refused
+with nothing pushed (`Error::Invalid`) when it names another branch, and is refused with
+nothing pushed as `Error::UnrecordedChangeHead` when this host holds no record, so a
+caller can tell that from a mismatch and fall back to a standings read or a checked
+publication. `defer_checks` without `adopt`, `adopt` without `defer_checks`, either with a
+draft reason, under any other policy, or with an `adopt` of another repository is refused
+with nothing pushed. Its push still passes the public-remote boundary check first, and
+because it asks the host nothing the check reads the destination's visibility as this
+host last recorded it — a rule's, or the host's answer at an earlier write — rather than
+probing the host, and screens a hosted destination with no recorded answer. A
+publication without either is unchanged.
+
+**Events.** Each `change_standings` or `review_standings` call that returns emits one
+`change-standings-read` `{repo, count, landed: [url], cost: {graphql_points,
+rest_requests}}` on the repository's stream, `standings-<the first twelve hex characters
+of the SHA-256 of its identity>`, labelled with the identity — `landed` naming the change
+requests whose landing this call recorded. `review_standings` also emits one
+`review-comments-read` per change request on its own stream, exactly as `review_comments`
+records one for a change request named by URL. Each `retarget_change` call that returns
+emits one `change-retargeted` `{change_url, from, to, outcome, body_written}`, and each
+`reopen_change` call that returns one `change-reopened` `{change_url, restored_base, at}`,
+both on the change request's own stream labelled with its URL and identity. A call that
+fails emits none, and emitting never fails a call. All three are in the Review phase,
+beside the review amendment's.
+
+**The testing crate follows.** `onevcs-testing`'s host answers the four methods and
+writes its state at version 21: `HostState::closed` (change requests closed unmerged),
+`HostState::deleted_branches` (branches gone from the origin), `HostState::head_checks`
+(each required check's state per head commit) and `HostState::ledger` — every host call
+it answers, in order, as `HostCall {method, changes, charge}`, covering every method
+`RemoteHost` declares, the review and reply methods included. A person's moves on it are
+`Host::merge_by_person` (squash or merge commit, into the base the change request targets
+at that moment, its head then kept or deleted — and when deleted, every open change
+request based on it closed or retargeted onto the merged one's base), `Host::close_unmerged`,
+`Host::retarget_by_person` and `Host::set_head_checks`. A charge is what GitHub charges
+the call the real host sends: the standings query and the aliased review-and-standings
+query by GitHub's published rule over their connections, the first of a call carrying
+the declarations (one point per standings query of up to 50; 6 points over ten drafts and 3 over five for the review query, as
+`spike-quota-round` measured), the per-change review read one point a page (as
+`spike-review-loop` measured), a mutation one point, a REST request one, a conditional
+request answered 304 nothing. The e2e fake `gh` world answers the same query and the two
+`PATCH` routes, and keeps the same ledger of every call it answers.
+
+Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopened`.
 
 
 ---

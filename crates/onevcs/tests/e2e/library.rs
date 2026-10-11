@@ -414,6 +414,8 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             body: None,
             draft: None,
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -436,6 +438,8 @@ fn a_publication_through_the_providers_narrows_the_policy_and_refuses_to_widen_i
             body: None,
             draft: None,
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect_err("a widening is refused rather than published");
@@ -474,6 +478,60 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     let opened = world.events_of(&session.token.0, "change-opened");
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0]["payload"]["url"], url.to_string());
+}
+
+#[test]
+fn a_deferred_publication_this_host_has_no_record_of_the_draft_for_is_its_own_refusal() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/deferred");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the deferred thing",
+    );
+    let adopt = onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7").expect("a URL");
+
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            defer_checks: true,
+            adopt: Some(adopt.clone()),
+            ..PublishRequest::default()
+        },
+    )
+    .expect_err("a draft nothing here records the head of is refused before the push");
+    // Its own kind, so a caller falls back on exactly this — and the CLI still reads it
+    // as invalid input, exit 2.
+    assert!(
+        matches!(&refused, onevcs::Error::UnrecordedChangeHead { change, .. } if *change == adopt.to_string()),
+        "{refused:?}"
+    );
+    assert_eq!(FailureKind::of(&refused).exit_code(), 2);
+    assert!(
+        refused.to_string().starts_with("invalid input:"),
+        "{refused}"
+    );
+    assert!(
+        world.ledger().is_empty(),
+        "no host call: {:#?}",
+        world.ledger()
+    );
+    assert!(
+        world
+            .git_raw(
+                &origin,
+                &["rev-parse", "--verify", "refs/heads/feature/deferred"]
+            )
+            .status
+            .code()
+            != Some(0),
+        "nothing was pushed"
+    );
 }
 
 /// A registered hosted repository publishing under `rules`, with a session on it
@@ -930,6 +988,8 @@ fn a_title_that_could_not_be_a_subject_is_refused_where_the_request_is_built() {
         body: Some("## Why\n\nBecause the reviewer has to read something.\n".to_owned()),
         draft: None,
         term_scope: Default::default(),
+        defer_checks: false,
+        adopt: None,
     };
     let json = serde_json::to_string(&request).expect("a request serializes");
     assert_eq!(
@@ -977,6 +1037,8 @@ fn a_requested_title_is_the_one_the_change_request_is_opened_under() {
             body: None,
             draft: None,
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -1023,6 +1085,8 @@ fn a_requested_body_is_what_the_change_request_is_opened_with_verbatim() {
             body: Some(DRAFTED.to_owned()),
             draft: None,
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3078,6 +3142,8 @@ fn a_publication_opens_a_draft_carrying_its_reason_and_a_later_one_lifts_it() {
             body: Some(DRAFTED.to_owned()),
             draft: Some(reason.clone()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3246,6 +3312,8 @@ fn a_draft_is_merged_by_nothing_under_any_policy_this_crate_publishes_under() {
                 body: None,
                 draft: Some(awaiting_a_release()),
                 term_scope: Default::default(),
+                defer_checks: false,
+                adopt: None,
             },
         )
         .expect("the publication runs");
@@ -3298,6 +3366,8 @@ fn a_local_direct_publication_refuses_a_draft_by_name_before_anything_is_pushed(
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3343,6 +3413,8 @@ fn a_publication_that_asks_for_no_draft_opens_an_ordinary_change_request() {
             body: Some(DRAFTED.to_owned()),
             draft: None,
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3429,6 +3501,8 @@ fn a_draft_reason_that_would_not_render_as_itself_is_refused_where_it_arrives() 
                 body: None,
                 draft: Some(unusable),
                 term_scope: Default::default(),
+                defer_checks: false,
+                adopt: None,
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -3504,6 +3578,8 @@ fn a_host_that_will_not_say_whether_it_drafted_the_change_is_not_read_as_having_
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3538,6 +3614,8 @@ fn the_real_host_is_asked_for_a_draft_and_asked_to_lift_it() {
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3619,6 +3697,8 @@ fn a_real_host_that_will_not_say_whether_it_drafted_the_change_is_a_refusal() {
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -3652,6 +3732,8 @@ fn a_host_that_declines_to_lift_the_draft_leaves_the_publication_saying_so() {
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3714,6 +3796,8 @@ fn a_branch_keyed_verb_lifts_the_draft_the_session_that_cut_the_branch_opened() 
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3793,6 +3877,8 @@ fn a_real_host_that_will_not_say_during_a_lift_stops_the_publication() {
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -3945,6 +4031,8 @@ fn a_change_request_already_open_for_review_is_not_put_back_into_a_draft() {
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -4046,6 +4134,8 @@ fn a_host_that_takes_the_draft_request_and_opens_an_ordinary_change_is_refused()
             body: None,
             draft: Some(awaiting_a_release()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs and reports what stopped it");
@@ -4674,6 +4764,8 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
             body: Some(DRAFTED.to_owned()),
             draft: Some(reason.clone()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -4735,6 +4827,8 @@ fn a_session_holds_its_own_draft_republishes_it_and_lifts_it_by_landing() {
             body: None,
             draft: Some(reason.clone()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the second publication runs");
@@ -4801,6 +4895,8 @@ fn a_draft_of_either_kind_is_refused_under_local_direct_before_anything_is_pushe
                 body: None,
                 draft: Some(reason.clone()),
                 term_scope: Default::default(),
+                defer_checks: false,
+                adopt: None,
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -4856,6 +4952,8 @@ fn a_draft_of_either_kind_is_refused_over_a_change_request_already_open_for_revi
                 body: None,
                 draft: Some(reason.clone()),
                 term_scope: Default::default(),
+                defer_checks: false,
+                adopt: None,
             },
         )
         .expect("the publication runs and reports what stopped it");
@@ -4950,6 +5048,8 @@ fn a_session_reads_describes_and_readies_its_own_change_request() {
             body: None,
             draft: Some(held_by_the_session()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -5104,6 +5204,8 @@ fn a_described_title_is_held_to_the_repositorys_own_commit_msg_hook() {
             body: None,
             draft: Some(held_by_the_session()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");
@@ -5202,6 +5304,8 @@ fn a_consumer_drives_a_whole_closeout_against_the_providers() {
             body: None,
             draft: Some(held_by_the_session()),
             term_scope: Default::default(),
+            defer_checks: false,
+            adopt: None,
         },
     )
     .expect("the publication runs");

@@ -29,7 +29,19 @@ pub(crate) fn read<T: Store<HostState>>(
     change: &ChangeId,
     since: Option<&ReadMarker>,
 ) -> Result<ReviewRead> {
-    store.with(|state| {
+    store.with(|state| read_in(state, change, since, true))
+}
+
+/// [`read`] over a state already in hand. `charged` is whether this read is a call of
+/// its own — charged what the host charges a read — or one change request of a batched
+/// read, whose charge is the batch's, and so is charged nothing here.
+pub(crate) fn read_in(
+    state: &mut HostState,
+    change: &ChangeId,
+    since: Option<&ReadMarker>,
+    charged: bool,
+) -> Result<ReviewRead> {
+    {
         let change_url = change_url(state, change)?;
         let from = since
             .map(|marker| revision_of(marker, change))
@@ -49,7 +61,9 @@ pub(crate) fn read<T: Store<HostState>>(
             .map(|comment| comment.revision)
             .max()
             .unwrap_or(0);
-        let cost = if state.review_charges.is_empty() {
+        let cost = if !charged {
+            ReadCost::default()
+        } else if state.review_charges.is_empty() {
             ReadCost {
                 graphql_points: 1,
                 rest_requests: 0,
@@ -64,7 +78,7 @@ pub(crate) fn read<T: Store<HostState>>(
             marker: ReadMarker(format!("{MARKER_PREFIX}{}.{latest}", change.0)),
             cost,
         })
-    })
+    }
 }
 
 /// Post `body` against `comment`: in its thread where it is in one, and otherwise as a

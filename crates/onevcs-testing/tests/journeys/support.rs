@@ -17,7 +17,7 @@ use onevcs::{
     RequiredChecks, Retirement, RetirementClass, Session, SessionToken, Sha, SupersededBy,
     TargetName, Url,
 };
-use onevcs_testing::{Described, HostComment, HostState, Replied, VcsState};
+use onevcs_testing::{Described, HostCall, HostComment, HostState, Replied, VcsState};
 
 /// The variable this platform's home directory is spelled in.
 ///
@@ -466,6 +466,41 @@ pub fn full_host_state() -> HostState {
             graphql_points: 3,
             rest_requests: 0,
         }],
+        // The fields version 21 added: a change request closed unmerged, a branch gone
+        // from the origin, one head commit's own checks, and the calls the host answered.
+        closed: BTreeSet::from([ChangeId("2".to_owned())]),
+        deleted_branches: BTreeSet::from(["feature/gone".to_owned()]),
+        head_checks: BTreeMap::from([(
+            Sha("fed789".to_owned()),
+            vec![Check {
+                name: "gate".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some("skipped".to_owned()),
+                required: true,
+                head: Some(Sha("fed789".to_owned())),
+                url: None,
+                started_at: None,
+                completed_at: None,
+            }],
+        )]),
+        ledger: vec![
+            HostCall {
+                method: "change_standings".to_owned(),
+                changes: vec![ChangeId("1".to_owned()), ChangeId("2".to_owned())],
+                charge: ReadCost {
+                    graphql_points: 1,
+                    rest_requests: 0,
+                },
+            },
+            HostCall {
+                method: "authenticated_user".to_owned(),
+                changes: Vec::new(),
+                charge: ReadCost {
+                    graphql_points: 0,
+                    rest_requests: 1,
+                },
+            },
+        ],
     }
 }
 

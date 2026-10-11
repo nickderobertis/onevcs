@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use onevcs::rules::{Approvals, Drafts};
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, CommentId, CommentKind, DraftReason, Error,
-    Identity, Landed, MergeOutcome, ReadCost, Recoverable, Result,
+    Identity, Landed, MergeOutcome, ReadCost, Recoverable, Result, Sha,
 };
 use onevcs::{MergePolicy, Publication, RequiredChecks, Session, SessionRequest, SessionToken};
 
@@ -92,8 +92,13 @@ use crate::store::Checked;
 /// `19` adds the recovery branch tip; older rows default it to `None`. `20` is the
 /// review feedback a host holds: [`HostState::review_comments`], each change
 /// request's comments of every kind, [`HostState::replies`], every reply this host
-/// posted, and [`HostState::review_charges`], what it charges a read.
-pub const STATE_VERSION: u32 = 20;
+/// posted, and [`HostState::review_charges`], what it charges a read. `21` is what a
+/// stack of drafts needs from a host while people merge some of them on it:
+/// [`HostState::closed`], the change requests closed without merging,
+/// [`HostState::deleted_branches`], the branches gone from the origin,
+/// [`HostState::head_checks`], each required check's state per head commit, and
+/// [`HostState::ledger`], every call the host answered with what GitHub charges for it.
+pub const STATE_VERSION: u32 = 21;
 
 /// The oldest document version this build reads.
 ///
@@ -150,7 +155,10 @@ pub const STATE_VERSION: u32 = 20;
 /// time it never recorded — which is what they were. `19` to `20` added three fields
 /// that appear only when they hold something, so a version 19 document reads as a
 /// host whose change requests carry no review feedback and that has posted no reply —
-/// which is what that build could hold.
+/// which is what that build could hold. `20` to `21` added four more of that kind, so a
+/// version 20 document reads as a host on which nobody closed or deleted anything, whose
+/// checks are its change requests' own, and which has answered no call — which is what
+/// that build recorded.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -473,6 +481,99 @@ pub struct HostState {
     /// `spike-review-loop` measured, and no REST request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_charges: Vec<ReadCost>,
+    /// The change requests closed without merging — by a person on the host, or because
+    /// the branch they target was deleted from under them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub closed: BTreeSet<ChangeId>,
+    /// The branches gone from the origin: a merged change request's head a person
+    /// deleted. A closed change request targeting one reads `base_deleted`, and nothing
+    /// is retargeted onto one.
+    // llmlint: ignore[invalid_states_unrepresentable] branch names, as `heads` holds them;
+    // each is held to git's grammar in `check`, where the document is read.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub deleted_branches: BTreeSet<String>,
+    /// Each check's state on one head commit, in place of the change request's own
+    /// [`checks`](HostState::checks): what a host reports for a head pushed since, and
+    /// how a journey gives each change request of a stack its own verdict.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub head_checks: BTreeMap<Sha, Vec<Check>>,
+    /// Every host call this host answered, in the order it answered them: the method,
+    /// the change requests it names and what GitHub charges the call the real host
+    /// sends — which is what a consumer sums over a whole review round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ledger: Vec<HostCall>,
+}
+
+/// Every method a ledger entry may name: each `RemoteHost` method this host answers.
+/// `Host::called` refuses to record any other, and
+/// `the_ledger_records_a_call_to_every_method_the_host_interface_declares` holds this
+/// list equal to the trait's own declaration, read out of its source.
+pub(crate) const LEDGER_METHODS: &[&str] = &[
+    "authenticated_user",
+    "change_checks",
+    "change_description",
+    "change_standings",
+    "check_log",
+    "describe_change",
+    "find_changes",
+    "is_draft",
+    "merge",
+    "merge_time",
+    "merged_at",
+    "mergeability",
+    "open_change",
+    "ready_for_review",
+    "reopen_change",
+    "reply_to_comment",
+    "required_checks_on",
+    "retarget_change",
+    "review_comments",
+    "review_standings",
+    "visibility",
+];
+
+/// One host call a host answered, as its ledger records it.
+// llmlint: ignore[invalid_states_unrepresentable] `method` is the name of the
+// `RemoteHost` method that was called; `HostCall::checked` holds it to `LEDGER_METHODS`
+// where the document is read and where a call is recorded, and nothing reads a decision
+// out of the name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostCall {
+    /// The `RemoteHost` method called, by its name.
+    pub method: String,
+    /// The change requests the call names, in the order it names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<ChangeId>,
+    /// What GitHub charges the call the real host sends.
+    pub charge: ReadCost,
+}
+
+impl HostCall {
+    /// Refuse an entry no call to this host could have written: a method it does not
+    /// answer, or a change request named by no identifier at all. A change request it
+    /// never opened is not refused — the real host charges a call it then refuses, and
+    /// so the ledger records one.
+    pub(crate) fn checked(&self) -> Result<()> {
+        if !LEDGER_METHODS.contains(&self.method.as_str()) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the call ledger records a call to {:?}, which is no method this host \
+                     answers",
+                    self.method
+                ),
+            });
+        }
+        if self.changes.iter().any(|id| id.0.trim().is_empty()) {
+            return Err(Error::Invalid {
+                reason: format!(
+                    "the call ledger records a call to {:?} naming a change request with no \
+                     identifier",
+                    self.method
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// One comment a host holds on a change request.
@@ -605,6 +706,10 @@ impl Default for HostState {
             review_comments: BTreeMap::new(),
             replies: Vec::new(),
             review_charges: Vec::new(),
+            closed: BTreeSet::new(),
+            deleted_branches: BTreeSet::new(),
+            head_checks: BTreeMap::new(),
+            ledger: Vec::new(),
         }
     }
 }
@@ -1031,6 +1136,15 @@ impl Checked for HostState {
                     }
                 }
             }
+        }
+        for id in &self.closed {
+            opened_change(self, id, "a closing")?;
+        }
+        for branch in &self.deleted_branches {
+            named_branch(branch, "a deleted branch")?;
+        }
+        for call in &self.ledger {
+            call.checked()?;
         }
         // A merge time is what `merge_time` answers and what a landing is recorded
         // with, so a seeded one that is not a moment is refused here, where the

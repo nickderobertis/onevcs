@@ -41,8 +41,10 @@
 //! `onevcs repos` prints, [`register_checkout`], [`resolve_repository`],
 //! [`publish_branch`], [`recover`], [`work_status`], [`import_branch`],
 //! [`integrate`], [`sync`], [`sweep`], [`rules_check`], [`read_artifact`],
-//! [`review_comments`], [`reply_to_comment`] and [`EventLines`] are the rest, and a command with no such operation fails this
-//! crate's own contract suite.
+//! [`review_comments`], [`reply_to_comment`], [`change_standings`],
+//! [`review_standings`], [`retarget_change`], [`reopen_change`] and [`EventLines`] are
+//! the rest, and a command with no such operation fails this crate's own contract
+//! suite.
 
 #![warn(missing_docs)]
 
@@ -99,6 +101,7 @@ pub mod rules;
 mod rules_apply;
 mod session;
 mod stack_base;
+mod standings;
 mod status;
 mod store;
 mod stream;
@@ -183,6 +186,12 @@ pub use session::{
     SessionRecord, SessionRequest, SessionToken,
 };
 pub use stack_base::{StackBase, StackBaseOutcome, StackBaseRequest, StackParent};
+pub use standings::{
+    change_standings, reopen_change, retarget_change, review_standings, ChangeStanding,
+    ChangeStandings, ChangeStandingsRequest, ChangeState, ChecksVerdict, ReopenRequest, Reopened,
+    RetargetOutcome, RetargetRequest, Retargeted, ReviewStandings, ReviewStandingsRequest,
+    ReviewTarget,
+};
 pub use stream::{EventLine, EventLines, EventStream};
 pub use sweep::Report as SweepReport;
 pub use vcs::{Git, Vcs};

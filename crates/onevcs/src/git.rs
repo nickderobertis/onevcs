@@ -3226,6 +3226,36 @@ pub fn push_preserving(cwd: &Path, branch: &str, remote: &str) -> Result<Pushed>
     )
 }
 
+/// Put a branch the origin no longer has back at `commit`, **without running the
+/// repository's own `pre-push` hook**, and only while the origin still has no branch
+/// of that name.
+///
+/// The third verb that puts a branch on its origin without publishing it, and it stays
+/// inside [`push_preserving`]'s exception for that verb's reason: restoring a merged
+/// parent's deleted branch at the head it already had lands nothing and proposes
+/// nothing — it exists so the drafts the deletion closed can be reopened and moved off
+/// it — and the commit it names was already on the origin before the deletion. The
+/// empty lease is what refuses it where somebody created the branch again meanwhile.
+pub fn restore_remote_branch(
+    cwd: &Path,
+    remote: &str,
+    branch: &str,
+    commit: &str,
+) -> Result<Pushed> {
+    pushed(
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            &format!("--force-with-lease=refs/heads/{branch}:"),
+            remote,
+            &format!("{commit}:refs/heads/{branch}"),
+        ],
+        cwd,
+        &[],
+    )
+}
+
 /// One `git push`, read as what git reported rather than as the prose beside it.
 ///
 /// Shared by every push above so that the two answers — every ref taken, or some ref
@@ -4063,6 +4093,23 @@ pub fn delete_remote_branch(
         cwd,
         &[],
     )
+}
+
+/// Fetch one commit, by its id, from a remote into this repository's object store,
+/// moving no ref but `FETCH_HEAD`, and answer whether it is here now.
+///
+/// A host that serves a commit by id serves one any of its refs reaches — on GitHub, a
+/// merged change request's own `refs/pull/*` keeps its last head after its branch is
+/// deleted — and one that will not is answered `false`, never an error, so the caller
+/// says what it could not restore.
+pub fn fetch_commit(cwd: &Path, remote: &str, commit: &str) -> Result<bool> {
+    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
+    let fetched = run(
+        &["fetch", "--no-tags", "--refmap=", remote, commit],
+        Some(cwd),
+    )?
+    .ok();
+    Ok(fetched && has_commit(cwd, &Sha(commit.to_owned())))
 }
 
 /// Fetch one branch of a remote into this repository's object store without moving

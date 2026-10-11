@@ -57,18 +57,20 @@
 #![warn(missing_docs)]
 
 mod events;
+mod landings;
 mod remote;
 mod repository;
 mod review;
 mod state;
 mod store;
 
+pub use landings::{Dependants, HeadAfter, PersonMerge};
 pub use remote::{FileHost, Host, MemoryHost, DEFAULT_HOST, DEFAULT_SLUG};
 pub use repository::{
     FileVcs, MemoryVcs, Repository, DEFAULT_APPROVALS, DEFAULT_BASE, DEFAULT_PUBLICATION,
 };
 pub use state::{
-    Described, HostComment, HostState, Replied, VcsState, DEFAULT_AUTHENTICATED_USER,
+    Described, HostCall, HostComment, HostState, Replied, VcsState, DEFAULT_AUTHENTICATED_USER,
     OLDEST_READABLE_VERSION, STATE_VERSION,
 };
 pub use store::{Checked, FileStore, MemoryStore, Store};

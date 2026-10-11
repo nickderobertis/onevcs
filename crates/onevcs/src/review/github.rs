@@ -77,11 +77,18 @@ pub(crate) fn read(
         .ok_or_else(|| invalid(format!("{repo:?} does not name one repository")))?;
     let number = digits(&number.0)?;
     let pages = Pages::fetch(owner, name, number)?;
-    let change_url = pages.url.clone().ok_or_else(|| {
-        invalid(format!(
-            "GitHub answered about pull request {number} of {repo} without its URL"
-        ))
-    })?;
+    answer(&pages, since, &format!("pull request {number} of {repo}"))
+}
+
+/// What one read found, from every page of it: each comment that changed since
+/// `since`, the next marker, and whether nothing did — the one computation a paged
+/// read and a review-and-standings read both answer through. `about` names the change
+/// request for a refusal.
+pub(crate) fn answer(pages: &Pages, since: Option<&ReadMarker>, about: &str) -> Result<ReviewRead> {
+    let change_url = pages
+        .url
+        .clone()
+        .ok_or_else(|| invalid(format!("GitHub answered about {about} without its URL")))?;
     let seen = since
         .map(|marker| Seen::decode(marker, &change_url))
         .transpose()?;
@@ -255,12 +262,52 @@ pub(crate) fn reply(
 }
 
 /// A change request number, which is all the routes and the query take.
-fn digits(number: &str) -> Result<u64> {
+pub(crate) fn digits(number: &str) -> Result<u64> {
     number
         .parse()
         .ok()
         .filter(|_| number.chars().all(|c| c.is_ascii_digit()))
         .ok_or_else(|| invalid(format!("{number:?} is not a pull request number")))
+}
+
+/// One change request's review feedback as the first page of a review-and-standings
+/// query reported it, or `None` where a connection of it has a further page — which
+/// the caller then reads whole, through [`read`], rather than answer from a part.
+///
+/// `pull` is the change request's node, carrying the three connections at the page
+/// sizes [`QUERY`] asks for.
+pub(crate) fn first_page(pull: &Value) -> Result<Option<Pages>> {
+    let mut pages = Pages {
+        url: pull.get("url").and_then(Value::as_str).map(str::to_owned),
+        ..Pages::default()
+    };
+    let threads = connection(pull, "reviewThreads")?;
+    for node in nodes(threads)? {
+        let comments_of = connection_of(node, "comments")?;
+        let mut cursor = Cursor::start();
+        cursor.advance(comments_of)?;
+        if cursor.more {
+            return Ok(None);
+        }
+        pages.threads.push(Thread::of(node, comments_of)?);
+    }
+    let conversation = connection(pull, "comments")?;
+    for node in nodes(conversation)? {
+        pages.conversation.push(Raw::of(node)?);
+    }
+    let reviews = connection(pull, "reviews")?;
+    for node in nodes(reviews)? {
+        let state = text(node, "state")?.to_ascii_lowercase();
+        pages.reviews.push((Raw::of(node)?, state));
+    }
+    for paged in [threads, conversation, reviews] {
+        let mut cursor = Cursor::start();
+        cursor.advance(paged)?;
+        if cursor.more {
+            return Ok(None);
+        }
+    }
+    Ok(Some(pages))
 }
 
 /// One comment as a page reported it.
@@ -332,9 +379,26 @@ struct Thread {
     comments: Vec<Raw>,
 }
 
+impl Thread {
+    /// One thread as a page reported it, with the comments on that page.
+    fn of(node: &Value, comments_of: &Value) -> Result<Self> {
+        Ok(Thread {
+            id: text(node, "id")?,
+            path: text(node, "path")?,
+            line: line_of(node)?,
+            resolved: flag(node, "isResolved")?,
+            outdated: flag(node, "isOutdated")?,
+            comments: nodes(comments_of)?
+                .iter()
+                .map(Raw::of)
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
 /// Every page of one read, joined.
 #[derive(Default)]
-struct Pages {
+pub(crate) struct Pages {
     url: Option<String>,
     threads: Vec<Thread>,
     conversation: Vec<Raw>,
@@ -458,17 +522,7 @@ impl Pages {
                 let connection = connection(pull, "reviewThreads")?;
                 for node in nodes(connection)? {
                     let comments_of = connection_of(node, "comments")?;
-                    let thread = Thread {
-                        id: text(node, "id")?,
-                        path: text(node, "path")?,
-                        line: line_of(node)?,
-                        resolved: flag(node, "isResolved")?,
-                        outdated: flag(node, "isOutdated")?,
-                        comments: nodes(comments_of)?
-                            .iter()
-                            .map(Raw::of)
-                            .collect::<Result<_>>()?,
-                    };
+                    let thread = Thread::of(node, comments_of)?;
                     let mut cursor = Cursor::start();
                     cursor.advance(comments_of)?;
                     if cursor.more {
