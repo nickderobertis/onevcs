@@ -511,6 +511,15 @@ impl Model {
             "baseRef": base_ref,
             "headRef": head_ref,
         });
+        // A journey's own answer for this change request, in place of the derived
+        // fields — which is how a malformed host answer is served.
+        if let Ok(text) = std::fs::read_to_string(self.state.join(format!("pull-{number}.json"))) {
+            let stated: serde_json::Map<String, Value> =
+                serde_json::from_str(&text).expect("a journey's answer for a change request");
+            for (key, value) in stated {
+                node[key] = value;
+            }
+        }
         if reviews {
             let empty = super::Pull::default();
             let pull = self.pulls.get(&number).unwrap_or(&empty);

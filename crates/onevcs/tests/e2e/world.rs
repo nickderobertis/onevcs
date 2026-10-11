@@ -875,6 +875,19 @@ impl World {
             .expect("the host's declarations");
     }
 
+    /// Answer the standings read's alias for change request `number` with `stated`'s
+    /// keys in place of the derived ones — how a journey serves a change request the
+    /// host describes in a way GitHub's schema would not, or with checks of a kind the
+    /// world's rows do not spell. `null` answers that key as `null`.
+    pub fn host_pull_answer(&self, number: usize, stated: &serde_json::Value) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path(format!("gh-state/pull-{number}.json")),
+            stated.to_string(),
+        )
+        .expect("the host's answer for one change request");
+    }
+
     /// The substituted host's classic branch-protection rules, oldest first: each a
     /// branch pattern GitHub's own grammar spells (`main`, `release/*`, `**`) and the
     /// contexts it requires. GitHub applies exactly one of them to a branch.

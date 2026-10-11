@@ -1059,6 +1059,109 @@ fn a_declaration_read_in_part_leaves_a_base_pending_and_one_that_requires_nothin
     );
 }
 
+/// A rollup holding the one context `context` describes.
+fn rollup_of(context: Value) -> Value {
+    json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [context]}}}}})
+}
+
+#[test]
+fn a_status_context_reads_by_its_state_as_a_check_run_reads_by_its_conclusion() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.host_requires_on("main", &["legacy-ci"]);
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    for (state, verdict) in [
+        ("SUCCESS", json!({"verdict": "passed"})),
+        (
+            "FAILURE",
+            json!({"verdict": "failed", "failed": ["legacy-ci"]}),
+        ),
+        (
+            "ERROR",
+            json!({"verdict": "failed", "failed": ["legacy-ci"]}),
+        ),
+        (
+            "PENDING",
+            json!({"verdict": "pending", "waiting": ["legacy-ci"]}),
+        ),
+    ] {
+        world.host_pull_answer(
+            draft,
+            &rollup_of(json!({
+                "__typename": "StatusContext",
+                "context": "legacy-ci",
+                "state": state,
+                "targetUrl": "https://ci.example/legacy/1",
+                "createdAt": "2026-09-30T12:00:00Z",
+                "isRequired": true,
+            })),
+        );
+        let read = stack.standings("main", &[draft]);
+        assert_eq!(standing(&read, draft)["checks"], verdict, "{state}");
+    }
+}
+
+#[test]
+fn a_change_request_the_host_describes_incompletely_is_refused_and_records_nothing() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let run = |without: &str| {
+        let mut context = json!({
+            "__typename": "CheckRun",
+            "name": "ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "isRequired": true,
+        });
+        context.as_object_mut().expect("an object").remove(without);
+        rollup_of(context)
+    };
+    let malformed = [
+        (json!({"url": "not a url"}), "which is not one"),
+        (json!({"url": null}), "without its url"),
+        (
+            json!({"headRefOid": ""}),
+            "without the commit its head is at",
+        ),
+        (
+            json!({"isDraft": null}),
+            "without saying whether it is a draft",
+        ),
+        (
+            json!({"state": "QUEUED"}),
+            "which is none of OPEN, MERGED or CLOSED",
+        ),
+        (
+            json!({"state": "MERGED", "mergeCommit": null}),
+            "merged without naming the commit it merged as",
+        ),
+        (run("isRequired"), "without its isRequired"),
+        (run("name"), "without its name"),
+        (run("status"), "without its status"),
+        (
+            rollup_of(
+                json!({"__typename": "StatusContext", "state": "SUCCESS", "isRequired": true}),
+            ),
+            "without its context",
+        ),
+        (
+            rollup_of(json!({"__typename": "StatusContext", "context": "ci", "isRequired": true})),
+            "without its state",
+        ),
+    ];
+    for (answer, says) in malformed {
+        world.host_pull_answer(draft, &answer);
+        refused(&stack.standings_output("main", &[url(draft)], &[]), 2, says);
+    }
+    assert!(
+        standings_events(world).is_empty(),
+        "a refused read records nothing"
+    );
+}
+
 #[test]
 fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads() {
     let stack = Stack::new(HELD_FOR_REVIEW);
