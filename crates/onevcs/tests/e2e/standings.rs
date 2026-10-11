@@ -616,6 +616,30 @@ fn each_verdict_reads_as_the_publication_watch_reads_the_same_rollup() {
         "the watch and the standings read agree"
     );
 
+    // And a person reading them without --json reads each verdict in words.
+    let mut command = world.onevcs();
+    command.args(["change", "standings", IDENTITY, "--root", "main"]);
+    for number in 1..=6 {
+        command.args(["--change", &url(number)]);
+    }
+    let lines: Vec<String> = said(&command.output().expect("the binary runs"))
+        .lines()
+        .filter(|line| line.starts_with("https://"))
+        .map(str::to_owned)
+        .collect();
+    let words = [
+        "checks pending (\"ci\")",
+        "checks passed",
+        "checks passed with skipped (\"ci\")",
+        "checks failed (\"ci\")",
+        "checks pending (\"ci\")",
+        "checks none required",
+    ];
+    assert_eq!(lines.len(), words.len(), "{lines:#?}");
+    for (line, word) in lines.iter().zip(words) {
+        assert!(line.ends_with(word), "{line:?} reads {word:?}");
+    }
+
     // `onevcs-testing` mirrors the classifier for consumers' suites: the same six
     // rollups, read through its host, give the real classifier's answer for each.
     assert_eq!(
@@ -1509,9 +1533,22 @@ fn a_retarget_of_a_merged_or_closed_change_request_or_onto_a_missing_base_writes
         "holds no branch \"feature/nowhere\"",
     );
     refused(
-        &stack.retarget(child, "main", &["--remove-restored-base"]),
+        &stack.retarget(
+            child,
+            "main",
+            &["--remove-restored-base", "--repo", IDENTITY],
+        ),
         2,
         "is not a base `onevcs change reopen` restored",
+    );
+    refused(
+        &world
+            .onevcs()
+            .args(["change", "retarget", "pull/2", "--base", "main"])
+            .output()
+            .expect("the binary runs"),
+        2,
+        "\"pull/2\" is not a change request's URL",
     );
     assert!(
         writes(&since(world, before)).is_empty(),
@@ -1520,6 +1557,26 @@ fn a_retarget_of_a_merged_or_closed_change_request_or_onto_a_missing_base_writes
     );
     assert_eq!(stack.origin_refs(), refs, "nothing was deleted or pushed");
     assert_eq!(world.change_request(child)["PR_BASE"], "feature/a");
+    let read = said(
+        &world
+            .onevcs()
+            .args(["change", "standings", IDENTITY, "--root", "release"])
+            .args(["--change", &url(merged), "--change", &url(closed)])
+            .output()
+            .expect("the binary runs"),
+    );
+    assert!(
+        read.contains(&format!("{} — merged into main at ", url(merged))),
+        "{read}"
+    );
+    assert!(
+        !read.contains("(a landing)"),
+        "main is not the root asked about: {read}"
+    );
+    assert!(
+        read.contains(&format!("{} — closed; base main", url(closed))),
+        "{read}"
+    );
     for number in [parent, child, merged, closed] {
         assert!(
             kinds(&change_events(world, number), "change-retargeted").is_empty(),
