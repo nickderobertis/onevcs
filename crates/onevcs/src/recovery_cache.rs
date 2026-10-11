@@ -17,8 +17,18 @@ use crate::git;
 #[derive(PartialEq, Eq, Hash)]
 struct ContextKey {
     repo: PathBuf,
-    content: bool,
+    compared: Compared,
     borrowing: Option<PathBuf>,
+}
+
+/// What a read compares, which decides what its context has to hold.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Compared {
+    /// Commits and trees by their ids alone.
+    Objects,
+    /// What files hold: a diff or a merge of contents, whose answer the worktree's
+    /// attributes can move.
+    Content,
 }
 
 /// The shape of an entry and of the key it is stored under. An entry of any other
@@ -60,7 +70,17 @@ thread_local! {
     static COVERED: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
     /// Generations this process has already recorded a listing for.
     static LISTED: RefCell<HashSet<(PathBuf, String)>> = RefCell::new(HashSet::new());
+    /// Generations this process has asked whether every loose object is whole, and
+    /// the answer.
+    static SOUND: RefCell<HashMap<(PathBuf, String), bool>> = RefCell::new(HashMap::new());
+    /// Each repository's shared context prefix, within one read.
+    #[cfg(unix)]
+    static PREFIXES: RefCell<HashMap<PathBuf, Option<Prefix>>> = RefCell::new(HashMap::new());
 }
+
+/// A context's digest so far, and the stores it reads.
+#[cfg(unix)]
+type Prefix = (Sha256, Vec<(PathBuf, Store)>);
 
 pub(crate) fn scope<T>(read: impl FnOnce() -> T) -> T {
     struct Reset(bool);
@@ -96,6 +116,9 @@ pub(crate) fn clear() {
     STORES.with(|stores| stores.borrow_mut().clear());
     COVERED.with(|covered| covered.borrow_mut().clear());
     LISTED.with(|listed| listed.borrow_mut().clear());
+    SOUND.with(|sound| sound.borrow_mut().clear());
+    #[cfg(unix)]
+    PREFIXES.with(|prefixes| prefixes.borrow_mut().clear());
 }
 
 /// An immutable Git query's successful bytes, bound to its full context and argv.
@@ -364,6 +387,54 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
+/// The answer git would give, made in process from the objects it names, where
+/// this is a shape [`crate::native_objects`] reads — fresh rather than reused, and
+/// only inside a context that admits reuse.
+///
+/// Only over stores whose every loose object is proved safe to read: libgit2 reads
+/// whatever object a walk reaches, and its inflate never returns from a loose object
+/// cut short, where git refuses one. A store not yet proved is left to git and the
+/// proofs below, exactly as before. Admitted by the context that compares no content:
+/// none of these reads compares what a file holds — the two diffs compare tree
+/// entries by object id, which is all git compares with no option that reads a
+/// blob — and the worktree's attributes —
+/// which only a content comparison's context reads, and which only a configured
+/// driver could act on, which no admitted context has — cannot move an answer.
+pub(crate) fn native(
+    args: &[&str],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+) -> Option<git::Output> {
+    if !crate::native_objects::reads(args) {
+        return None;
+    }
+    let (cwd, borrowing) = admitted(cwd?, env)?;
+    crate::native_objects::answer(args, cwd, borrowing)
+}
+
+/// The repository and the store it is lent, where this process may read their
+/// objects itself.
+fn admitted<'a>(
+    cwd: &'a Path,
+    env: &'a [(String, String)],
+) -> Option<(&'a Path, Option<&'a Path>)> {
+    if !ENABLED.with(std::cell::Cell::get) {
+        return None;
+    }
+    let borrowing = match env {
+        [] => None,
+        [(name, path)]
+            if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+                && Path::new(path).is_absolute()
+                && !path.contains([':', '"', '\n']) =>
+        {
+            Some(Path::new(path.as_str()))
+        }
+        _ => return None,
+    };
+    readable_in_process(cwd, borrowing).then_some((cwd, borrowing))
+}
+
 pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Query> {
     if !ENABLED.with(std::cell::Cell::get) {
         return None;
@@ -463,23 +534,7 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     {
         return None;
     }
-    let context = CONTEXTS.with(|contexts| {
-        contexts
-            .borrow_mut()
-            .entry(ContextKey {
-                repo: cwd.to_owned(),
-                content: matches!(args.first(), Some(&"diff" | &"merge-tree")),
-                borrowing: borrowing.clone(),
-            })
-            .or_insert_with(|| {
-                context(
-                    cwd,
-                    matches!(args.first(), Some(&"diff" | &"merge-tree")),
-                    borrowing.as_deref(),
-                )
-            })
-            .clone()
-    })?;
+    let context = context_of(cwd, compared(args), borrowing.as_deref())?;
     let key = crate::ids::digest(
         &serde_json::to_string(&(VERSION, &context.digest, cwd, args, env)).ok()?,
     );
@@ -506,6 +561,76 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
     })
 }
 
+/// What a reusable read compares. A merge, and a diff that counts lines, read what
+/// files hold; a listing of changed paths and whether any changed compare tree
+/// entries by object id, which no attribute moves.
+fn compared(args: &[&str]) -> Compared {
+    match args.first() {
+        Some(&"merge-tree") => Compared::Content,
+        Some(&"diff")
+            if !(args.contains(&"--name-only") || args.contains(&"--quiet"))
+                || args.contains(&"--shortstat")
+                || args.contains(&"--numstat") =>
+        {
+            Compared::Content
+        }
+        _ => Compared::Objects,
+    }
+}
+
+/// The context of one repository, computed once within a read.
+///
+/// A store the repository already reads as its own is skipped where it is lent, so
+/// the context lent it is the context lent nothing, digest and stores alike, and is
+/// computed once for both.
+#[cfg(unix)]
+fn context_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
+    let borrowing = borrowing.filter(|lent| {
+        !PREFIXES.with(|prefixes| {
+            prefixes
+                .borrow_mut()
+                .entry(repo.to_owned())
+                .or_insert_with(|| prefix(repo))
+                .as_ref()
+                .is_some_and(|(_, stores)| stores.iter().any(|(path, _)| path == lent))
+        })
+    });
+    contexts_of(repo, compared, borrowing)
+}
+
+#[cfg(not(unix))]
+fn context_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
+    contexts_of(repo, compared, borrowing)
+}
+
+fn contexts_of(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
+    CONTEXTS.with(|contexts| {
+        contexts
+            .borrow_mut()
+            .entry(ContextKey {
+                repo: repo.to_owned(),
+                compared,
+                borrowing: borrowing.map(Path::to_owned),
+            })
+            .or_insert_with(|| context(repo, compared, borrowing))
+            .clone()
+    })
+}
+
+/// Whether a repository, lent `borrowing`, is one whose object stores this process
+/// may read in process: its context admits reuse, and every store it reads is proved
+/// sound. What a reader outside a [`Query`] asks before walking objects itself.
+pub(crate) fn readable_in_process(repo: &Path, borrowing: Option<&Path>) -> bool {
+    enabled()
+        && !has_git_overrides()
+        && context_of(repo, Compared::Objects, borrowing).is_some_and(|context| {
+            context
+                .stores
+                .iter()
+                .all(|(path, store)| sound(path, store))
+        })
+}
+
 /// Conservative guard for ordinary files-backend repositories and linked
 /// worktrees with local alternates. Graph overlays and external attributes
 /// delegate; ordinary refs, pseudorefs and linked-worktree metadata are not
@@ -515,7 +640,12 @@ pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// directly named objects by content hash. Unreadable inputs prevent reuse rather
 /// than hide work.
 #[cfg(unix)]
-fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Context> {
+/// Everything a repository's contexts share, whatever store it is lent and whether
+/// content is compared: its layout, configuration, Git program, directory and its
+/// own object stores, digested in that order. Read once per repository within a
+/// read, and continued for each context asked of it.
+#[cfg(unix)]
+fn prefix(repo: &Path) -> Option<Prefix> {
     let (directory, common) = crate::native_refs::layout(repo).or_else(|| {
         let directory = repo.join(".git");
         directory.is_dir().then(|| (directory.clone(), directory))
@@ -611,12 +741,24 @@ fn context(repo: &Path, content: bool, borrowing: Option<&Path>) -> Option<Conte
     }
     let mut stores = Vec::new();
     object_stores(&common.join("objects"), &mut digest, &mut stores)?;
+    Some((digest, stores))
+}
+
+#[cfg(unix)]
+fn context(repo: &Path, compared: Compared, borrowing: Option<&Path>) -> Option<Context> {
+    let (mut digest, mut stores) = PREFIXES.with(|prefixes| {
+        prefixes
+            .borrow_mut()
+            .entry(repo.to_owned())
+            .or_insert_with(|| prefix(repo))
+            .clone()
+    })?;
     if let Some(borrowing) = borrowing {
         if !stores.iter().any(|(path, _)| path == borrowing) {
             object_stores(borrowing, &mut digest, &mut stores)?;
         }
     }
-    if content {
+    if compared == Compared::Content {
         attributes(repo, &mut digest)?;
     }
     for path in [
@@ -705,7 +847,7 @@ fn object_stores(
     digest: &mut Sha256,
     visited: &mut Vec<(PathBuf, Store)>,
 ) -> Option<()> {
-    let canonical = std::fs::canonicalize(path).ok()?;
+    let canonical = crate::native_refs::canonical(path)?;
     if canonical != path || visited.iter().any(|(seen, _)| *seen == canonical) {
         return None;
     }
@@ -753,6 +895,7 @@ fn read_store(root: &Path) -> Option<Store> {
         .ok()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut held = BTreeSet::new();
+    let mut fanned = Vec::new();
     for entry in entries {
         let name = entry.file_name();
         let grows = name.to_str().is_some_and(|name| {
@@ -763,18 +906,347 @@ fn read_store(root: &Path) -> Option<Store> {
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
         });
         if grows && name != "pack" {
-            loose(root, &entry.path(), &mut held)?;
+            fanned.push(entry.path());
         } else if grows {
             growable(root, &entry.path(), &mut held)?;
         } else {
             snapshot(&entry.path(), &mut fixed, true)?;
         }
     }
+    // The fan-out directories of a store that fills them are listed side by side:
+    // what they hold is a set, so the order they are read in moves nothing. A store of
+    // a few dozen objects is listed faster than threads start.
+    let threads = if fanned.len() >= SPREAD_STORE {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    for listed in crate::vcs::concurrently_on(threads, &fanned, |path| {
+        let mut held = BTreeSet::new();
+        loose(root, path, &mut held).map(|()| held)
+    }) {
+        held.extend(listed?);
+    }
     Some(Store {
         fixed: format!("{:x}", fixed.finalize()),
         generation: generation_of(held.iter()),
         held: Rc::new(held),
     })
+}
+
+/// How many bytes of loose objects one store may have proved whole in one read.
+/// What is proved is remembered, so a store with more than this is proved over
+/// several reads, and answered by git and its proofs until it is.
+#[cfg(unix)]
+const PROVED_PER_READ: u64 = 16 << 20;
+
+/// How many loose objects one store may have proved in one read, by their headers
+/// or whole, for the same reason.
+#[cfg(unix)]
+const OBJECTS_PER_READ: usize = 2048;
+
+/// The shape of a store's record of its loose objects proved whole.
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Proved {
+    version: u32,
+    store: PathBuf,
+    whole: BTreeSet<String>,
+}
+
+/// Whether every loose object `store` holds inflates to a whole stream.
+///
+/// Each is proved once for the identity its listing line holds it to — device,
+/// inode, owner, size and mode — and that line is what is remembered, so an object
+/// truncated or made unreadable in place is a line nothing proved and is read again.
+/// A store holding one that is not whole is unsound for as long as it holds it.
+#[cfg(unix)]
+fn sound(root: &Path, store: &Store) -> bool {
+    let asked = (root.to_owned(), store.generation.clone());
+    if let Some(known) = SOUND.with(|sound| sound.borrow().get(&asked).copied()) {
+        return known;
+    }
+    let named = crate::ids::digest(&root.to_string_lossy());
+    let record = crate::home::root().ok().map(|home| {
+        home.join("cache/recoverable/v1/stores")
+            .join(format!("{named}.whole.json"))
+    });
+    // The generation every loose object was last proved under: a store whose listing
+    // digests the same holds the same loose objects with the same identities, so it is
+    // sound without the proofs being read one by one.
+    let settled = record
+        .as_deref()
+        .map(|path| path.with_file_name(format!("{named}.sound.json")));
+    let proved_generation = settled
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| {
+            let (digest, body) = raw.split_once('\n')?;
+            (crate::ids::digest(body) == digest)
+                .then(|| serde_json::from_str::<Settled>(body).ok())
+                .flatten()
+        })
+        .filter(|settled| settled.version == VERSION && settled.store == root)
+        .map(|settled| settled.generation);
+    if proved_generation.as_deref() == Some(store.generation.as_str()) {
+        SOUND.with(|known| known.borrow_mut().insert(asked, true));
+        return true;
+    }
+    let remembered: BTreeSet<String> = record
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| {
+            let (digest, body) = raw.split_once('\n')?;
+            (crate::ids::digest(body) == digest)
+                .then(|| serde_json::from_str::<Proved>(body).ok())
+                .flatten()
+        })
+        .filter(|proved| proved.version == VERSION && proved.store == root)
+        .map(|proved| proved.whole)
+        .unwrap_or_default();
+    let loose: BTreeSet<&String> = store
+        .held
+        .iter()
+        .filter(|line| loose_object(line).is_some())
+        .collect();
+    let mut whole: BTreeSet<String> = BTreeSet::new();
+    let mut unproved: Vec<&String> = Vec::new();
+    let mut sound = true;
+    // A store this read cannot prove whole is proved only for the reads after it, so
+    // it is given a smaller share: on a host's own checkouts, thousands of loose
+    // objects proved at once cost one read more than the whole of 0.43.1's.
+    let owed = loose
+        .iter()
+        .filter(|line| !remembered.contains(**line))
+        .count();
+    let share = if owed > OBJECTS_PER_READ {
+        OBJECTS_PER_READ / 4
+    } else {
+        OBJECTS_PER_READ
+    };
+    for line in loose {
+        if remembered.contains(line) {
+            whole.insert(line.clone());
+        } else if unproved.len() < share {
+            unproved.push(line);
+        } else {
+            // This read's share is spent: unsound for this read, and what it proves is
+            // still kept for the next.
+            sound = false;
+        }
+    }
+    // Each object is its own file, so headers are read, and the objects chosen to be
+    // read whole inflated, side by side where there are many; which are chosen is
+    // decided in listing order, exactly as one pass would.
+    let threads = if unproved.len() >= SPREAD_PROOF {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    let path_of = |line: &String| {
+        let (relative, length) = loose_object(line).expect("a loose object's line");
+        (root.join(relative), length)
+    };
+    let headers = crate::vcs::concurrently_on(threads, &unproved, |line| {
+        loose_header(&path_of(line).0).map(|header| header.starts_with(b"blob "))
+    });
+    let mut budget = PROVED_PER_READ;
+    let mut inflated: Vec<&String> = Vec::new();
+    for (line, header) in unproved.iter().zip(&headers) {
+        // A blob is never read in process, so its header saying it is one is enough;
+        // anything else is read whole, so it has to inflate whole. Once one object is
+        // not whole, or this read's share is spent, the store is unsound for this read.
+        match header {
+            Some(true) => {
+                whole.insert((*line).clone());
+            }
+            Some(false) if budget > 0 => {
+                budget = budget.saturating_sub(path_of(line).1);
+                inflated.push(line);
+            }
+            _ => {
+                sound = false;
+                break;
+            }
+        }
+    }
+    let wholes =
+        crate::vcs::concurrently_on(threads, &inflated, |line| inflates_whole(&path_of(line).0));
+    for (line, inflates) in inflated.iter().zip(wholes) {
+        if inflates {
+            whole.insert((*line).clone());
+        } else {
+            sound = false;
+        }
+    }
+
+    if whole != remembered {
+        if let (Some(path), Ok(body)) = (
+            record,
+            serde_json::to_string(&Proved {
+                version: VERSION,
+                store: root.to_owned(),
+                whole,
+            }),
+        ) {
+            let digest = crate::ids::digest(&body);
+            replace(&path, &digest, format!("{digest}\n{body}").as_bytes());
+        }
+    }
+    if sound {
+        if let (Some(path), Ok(body)) = (
+            settled,
+            serde_json::to_string(&Settled {
+                version: VERSION,
+                store: root.to_owned(),
+                generation: store.generation.clone(),
+            }),
+        ) {
+            let digest = crate::ids::digest(&body);
+            replace(&path, &digest, format!("{digest}\n{body}").as_bytes());
+        }
+    }
+    SOUND.with(|known| known.borrow_mut().insert(asked, sound));
+    sound
+}
+
+/// The generation a store was last proved sound under.
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settled {
+    version: u32,
+    store: PathBuf,
+    generation: String,
+}
+
+#[cfg(not(unix))]
+fn sound(_root: &Path, _store: &Store) -> bool {
+    false
+}
+
+/// A loose object's path and size, where a listing line names one: a fan-out
+/// directory's two hex digits and the rest of a SHA-1 name.
+#[cfg(unix)]
+fn loose_object(line: &str) -> Option<(&str, u64)> {
+    let mut fields = line.split('\0');
+    let relative = fields.next()?;
+    let (fan, rest) = relative.split_once('/')?;
+    let named = fan.len() == 2
+        && rest.len() == 38
+        && relative
+            .bytes()
+            .filter(|byte| *byte != b'/')
+            .all(|byte| byte.is_ascii_hexdigit());
+    let length = fields.nth(4)?.parse().ok()?;
+    named.then_some((relative, length))
+}
+
+/// Whether the file is one zlib stream that ends, read through the zlib libgit2
+/// links. A stream that runs out of input before its end is the shape libgit2 never
+/// returns from, and anything zlib refuses is refused here too.
+#[cfg(unix)]
+fn inflates_whole(path: &Path) -> bool {
+    inflate(path, 1 << 16, |_| true) == Some(true)
+}
+
+/// A loose object's header — its type, a space, its size — read off the start of its
+/// stream and nothing further.
+#[cfg(unix)]
+fn loose_header(path: &Path) -> Option<Vec<u8>> {
+    let mut header = Vec::new();
+    let mut ended = false;
+    inflate(path, 512, |chunk| {
+        for byte in chunk {
+            if *byte == 0 {
+                ended = true;
+                return false;
+            }
+            header.push(*byte);
+            if header.len() > 64 {
+                return false;
+            }
+        }
+        true
+    })?;
+    ended.then_some(header)
+}
+
+/// Inflate the file's stream, handing each piece of output to `more` until it asks
+/// for no more: `Some(true)` where the stream ended whole, `Some(false)` where `more`
+/// stopped it, and nothing where zlib refused it or it ran out first.
+#[cfg(unix)]
+fn inflate(path: &Path, chunk: usize, mut more: impl FnMut(&[u8]) -> bool) -> Option<bool> {
+    use std::io::Read;
+
+    unsafe extern "C" fn allocate(
+        _: libz_sys::voidpf,
+        items: libz_sys::uInt,
+        size: libz_sys::uInt,
+    ) -> libz_sys::voidpf {
+        // SAFETY: zlib's allocator contract, met by the C allocator.
+        unsafe { libc::calloc(items as usize, size as usize) }
+    }
+    unsafe extern "C" fn release(_: libz_sys::voidpf, address: libz_sys::voidpf) {
+        // SAFETY: frees only what `allocate` returned to zlib.
+        unsafe { libc::free(address) }
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return None;
+    };
+    let mut input = vec![0_u8; chunk];
+    let mut output = vec![0_u8; chunk];
+    let mut stream = libz_sys::z_stream {
+        next_in: std::ptr::null_mut(),
+        avail_in: 0,
+        total_in: 0,
+        next_out: std::ptr::null_mut(),
+        avail_out: 0,
+        total_out: 0,
+        msg: std::ptr::null_mut(),
+        state: std::ptr::null_mut(),
+        zalloc: allocate,
+        zfree: release,
+        opaque: std::ptr::null_mut(),
+        data_type: 0,
+        adler: 0,
+        reserved: 0,
+    };
+    // SAFETY: the stream is initialised before use and ended exactly once; every
+    // pointer handed to zlib is into a buffer that outlives the call using it.
+    unsafe {
+        let size = std::mem::size_of::<libz_sys::z_stream>() as std::ffi::c_int;
+        if libz_sys::inflateInit_(&mut stream, libz_sys::zlibVersion(), size) != libz_sys::Z_OK {
+            return None;
+        }
+        let ended = loop {
+            if stream.avail_in == 0 {
+                match file.read(&mut input) {
+                    Ok(0) | Err(_) => break None,
+                    Ok(read) => {
+                        stream.next_in = input.as_mut_ptr();
+                        stream.avail_in = read as libz_sys::uInt;
+                    }
+                }
+            }
+            stream.next_out = output.as_mut_ptr();
+            stream.avail_out = output.len() as libz_sys::uInt;
+            let status = libz_sys::inflate(&mut stream, libz_sys::Z_NO_FLUSH);
+            let produced = output.len() - stream.avail_out as usize;
+            if produced > 0 && !more(&output[..produced]) {
+                break Some(false);
+            }
+            match status {
+                libz_sys::Z_STREAM_END => break Some(true),
+                libz_sys::Z_OK => {}
+                libz_sys::Z_BUF_ERROR if stream.avail_in == 0 => {}
+                _ => break None,
+            }
+        };
+        libz_sys::inflateEnd(&mut stream);
+        ended
+    }
 }
 
 /// One path a store generation lists, with the identity it is held to.
@@ -848,7 +1320,7 @@ fn loose(root: &Path, path: &Path, held: &mut BTreeSet<String>) -> Option<()> {
 }
 
 #[cfg(not(unix))]
-fn context(_repo: &Path, _content: bool, _borrowing: Option<&Path>) -> Option<Context> {
+fn context(_repo: &Path, _compared: Compared, _borrowing: Option<&Path>) -> Option<Context> {
     None
 }
 
@@ -963,25 +1435,95 @@ fn directory_identity(path: &Path, digest: &mut Sha256) -> Option<()> {
     Some(())
 }
 
+/// How many threads list one store's loose objects or one worktree's directories,
+/// where there are enough of them to be worth it.
+#[cfg(unix)]
+const LISTING_THREADS: usize = 4;
+
+/// How many of its 256 fan-out directories a store fills before they are listed on
+/// threads: a store of a few hundred objects fills most of them.
+#[cfg(unix)]
+const SPREAD_STORE: usize = 192;
+
+/// How many directories a worktree has at the depth its walk splits at before they
+/// are walked on threads.
+#[cfg(unix)]
+const SPREAD_WORKTREE: usize = 64;
+
+/// How many loose objects a read has to prove before they are proved on threads.
+#[cfg(unix)]
+const SPREAD_PROOF: usize = 64;
+
+/// How deep the attributes walk goes before handing each directory there to a thread
+/// of its own.
+#[cfg(unix)]
+const ATTRIBUTES_SPLIT: usize = 3;
+
+/// Every `.gitattributes` file in a worktree, path and content, in path order.
+///
+/// Read where a listing names one, rather than asked of every directory: a large
+/// worktree is thousands of directories and a handful of these. The directories
+/// below the first few levels are listed side by side where there are many, since
+/// what is digested is the files found and not the order the walk found them in.
 #[cfg(unix)]
 fn attributes(path: &Path, digest: &mut Sha256) -> Option<()> {
-    let mut entries = std::fs::read_dir(path)
-        .ok()?
-        .collect::<std::io::Result<Vec<_>>>()
-        .ok()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
+    let mut found = Vec::new();
+    let mut level = vec![path.to_owned()];
+    for _ in 0..ATTRIBUTES_SPLIT {
+        let mut below = Vec::new();
+        for directory in &level {
+            attribute_listing(directory, &mut found, &mut below)?;
+        }
+        level = below;
+    }
+    let threads = if level.len() >= SPREAD_WORKTREE {
+        LISTING_THREADS
+    } else {
+        1
+    };
+    for walked in crate::vcs::concurrently_on(threads, &level, |directory| {
+        let mut found = Vec::new();
+        attributes_below(directory, &mut found).map(|()| found)
+    }) {
+        found.extend(walked?);
+    }
+    found.sort();
+    for file in found {
+        optional_file(&file, digest)?;
+    }
+    Some(())
+}
+
+/// Every `.gitattributes` file at or below `directory`.
+#[cfg(unix)]
+fn attributes_below(directory: &Path, found: &mut Vec<PathBuf>) -> Option<()> {
+    let mut below = Vec::new();
+    attribute_listing(directory, found, &mut below)?;
+    for directory in below {
+        attributes_below(&directory, found)?;
+    }
+    Some(())
+}
+
+/// One directory's `.gitattributes` file, where it has one, and the directories in
+/// it, a repository's own `.git` aside.
+#[cfg(unix)]
+fn attribute_listing(
+    directory: &Path,
+    found: &mut Vec<PathBuf>,
+    below: &mut Vec<PathBuf>,
+) -> Option<()> {
+    for entry in std::fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
         if entry.file_name() == ".git" {
             continue;
         }
-        // Read where the listing names one, rather than asked of every directory:
-        // a large worktree is thousands of directories and a handful of these.
         if entry.file_name() == ".gitattributes" {
-            optional_file(&entry.path(), digest)?;
+            found.push(entry.path());
             continue;
         }
         if entry.file_type().ok()?.is_dir() {
-            attributes(&entry.path(), digest)?;
+            below.push(entry.path());
         }
     }
     Some(())

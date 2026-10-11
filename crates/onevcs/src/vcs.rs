@@ -914,8 +914,20 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
 /// processes (or, for `status`, a stream file to parse) and a host with more items
 /// than cores gains nothing from starting them all at once.
 pub(crate) fn concurrently<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    concurrently_on(usize::MAX, items, work)
+}
+
+/// [`concurrently`] on at most `most` threads, for work that is many small reads of
+/// one filesystem: past a few threads it goes no faster, and each thread a call
+/// starts gives the allocator an arena of its own that a long-lived caller keeps.
+pub(crate) fn concurrently_on<T: Sync, R: Send>(
+    most: usize,
+    items: &[T],
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
+        .min(most)
         .min(items.len());
     if workers <= 1 {
         return items.iter().map(&work).collect();

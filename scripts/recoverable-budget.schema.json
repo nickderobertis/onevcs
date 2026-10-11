@@ -122,6 +122,31 @@
         },
         "counted_verdict_sha256": {
           "type": "string"
+        },
+        "uncached_verdict_sha256": {
+          "description": "The rows of an in-process call no proof was reused or stored by.",
+          "type": "string"
+        },
+        "in_process_warm": {
+          "description": "Ten in-process calls after one priming call, over unchanged state.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Call"
+          },
+          "minItems": 10,
+          "maxItems": 10
+        },
+        "in_process_cold": {
+          "description": "Ten in-process calls, every proof and index cache cleared before each; taken\nat the smaller workload only.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Call"
+          },
+          "minItems": 10,
+          "maxItems": 10
         }
       },
       "additionalProperties": false,
@@ -133,7 +158,9 @@
         "warm",
         "cold_git",
         "warm_git",
-        "counted_verdict_sha256"
+        "counted_verdict_sha256",
+        "uncached_verdict_sha256",
+        "in_process_warm"
       ]
     },
     "Sample": {
@@ -143,6 +170,35 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "load1": {
+          "type": "number",
+          "format": "double"
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "verdict_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "load1",
+        "rows",
+        "verdict_sha256"
+      ]
+    },
+    "Call": {
+      "description": "One in-process `recoverable_matching` call, timed inside the process making it.",
+      "type": "object",
+      "properties": {
+        "wall_ms": {
+          "type": "number",
+          "format": "double"
         },
         "load1": {
           "type": "number",

@@ -72,6 +72,7 @@ mod label;
 mod landed;
 mod lock;
 mod merge_path;
+mod native_objects;
 mod native_refs;
 mod ops;
 mod policy;
