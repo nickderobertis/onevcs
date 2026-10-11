@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0](https://github.com/nickderobertis/onevcs/compare/v0.44.1...v0.45.0) - 2026-10-11
+
+### Added
+
+- *(stack)* assemble a synthetic stack base from several unlanded parent branches ([#361](https://github.com/nickderobertis/onevcs/pull/361))
+
+### Performance
+
+- *(recoverable)* scope a labelled decision read to the sessions it selects and cut its cold git spawns ([#356](https://github.com/nickderobertis/onevcs/pull/356))
+
 ## [0.44.1](https://github.com/nickderobertis/onevcs/compare/v0.44.0...v0.44.1) - 2026-10-09
 
 ### Fixed
