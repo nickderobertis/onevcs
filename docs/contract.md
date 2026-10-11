@@ -3951,8 +3951,8 @@ pub struct WaitSeconds(f64);        // TryFrom<f64>: finite, above zero, at most
 ```
 
 **`on-conflict`.** Wherever onevcs proactively merges a moved base into a branch that
-already exists — a continued branch at session open, and a publication's sync before it
-pushes, `publish-branch` and `recover` included — under `on-conflict` the base is merged
+already exists — a continued branch at session open, a resumed session, and a
+publication's sync before it pushes, `publish-branch` and `recover` included — under `on-conflict` the base is merged
 only where (a) `git merge-tree --write-tree <integrated base> <branch tip>` reports a
 conflict, and the merge then happens exactly as before: left in progress for the session
 under the default, refused `SyncConflict` under `refuse_conflicts`; or (b) the host
@@ -3963,11 +3963,18 @@ that requirement cannot be read, the base is merged, which is the direction that
 as before. Otherwise the branch stays at its tip and no merge commit is made. A branch
 that already carries its base merges nothing either way. `always` is the behaviour of
 every earlier build. A stacked branch whose change below landed is replayed onto the
-root as before, whatever `base_merge` says. A resumed session merges no base, as before.
+root as before, whatever `base_merge` says. A resumed session is decided under
+`on-conflict` exactly as a continued branch is; under `always` it merges nothing at open,
+as before, and the moved base is merged by the publication's sync — the decision it
+records is `deferred`. A resumed stacked branch, or one whose base its clone does not
+name, is `deferred` under either setting, because whether it is merged or replayed is the
+publication's to decide.
 
 The decision and its reason are recorded: `session-opened` gains `base_merge` —
-`{decision: "merged" | "skipped", because}` — written only for a continued branch, so a
-session cut fresh writes the payload it always wrote; and a publication's sync records
+`{decision: "merged" | "skipped" | "deferred", because}` — written for a continued
+branch and a resumed session (`deferred` only for a resumed one), never for a session
+handed back over the merge it opened with, so a session cut fresh writes the payload it
+always wrote; and a publication's sync records
 the new `base-merge` event, `{branch, base, decision, because}`, in the `integrate`
 phase, before it pushes.
 
