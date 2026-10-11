@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "description": "The record `crates/onevcs/scripts/draft-early-lift-budget.mjs` reads, and nothing\nelse writes.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
+    },
+    "scale": {
+      "description": "How much faster than real time the watches ran.",
+      "type": "number",
+      "format": "double"
+    },
+    "poll_seconds": {
+      "description": "The real watch the scaled one stands for, in seconds.",
+      "type": "number",
+      "format": "double"
+    },
+    "grace_seconds": {
+      "type": "number",
+      "format": "double"
+    },
+    "wait_seconds": {
+      "type": "number",
+      "format": "double"
+    },
+    "reuse_seconds": {
+      "type": "number",
+      "format": "double"
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Scenario"
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "load1": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "scale",
+    "poll_seconds",
+    "grace_seconds",
+    "wait_seconds",
+    "reuse_seconds",
+    "scenarios",
+    "load1"
+  ],
+  "$defs": {
+    "Build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ]
+    },
+    "Scenario": {
+      "description": "What one scenario's watch asked of GitHub, off the stand-in's call log.",
+      "type": "object",
+      "properties": {
+        "shape": {
+          "$ref": "#/$defs/Shape"
+        },
+        "outcome": {
+          "description": "How the publication ended: `merged` or `checks-unsettled`.",
+          "type": "string"
+        },
+        "lifted_early": {
+          "type": "boolean"
+        },
+        "polls": {
+          "description": "Readings of the check rollup, one a poll.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "check_read_requests": {
+          "description": "The requests those readings took: the rollup and the required set, each poll.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "watch_requests": {
+          "description": "Every request the publication made, from opening its change request to its end.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "activity_reads": {
+          "description": "`head_activity` reads the host was asked.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reused_reads": {
+          "description": "Polls whose decision would have asked, answered instead by a reused answer.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "activity_requests": {
+          "description": "The requests those reads took — the workflow runs and the check suites.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wall_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shape",
+        "outcome",
+        "lifted_early",
+        "polls",
+        "check_read_requests",
+        "watch_requests",
+        "activity_reads",
+        "reused_reads",
+        "activity_requests",
+        "wall_ms"
+      ]
+    },
+    "Shape": {
+      "description": "The four workloads the budget names.",
+      "oneOf": [
+        {
+          "description": "(i) The aggregate absent while its prerequisites run, then a gap after they\nfinish with the workflow run still going, then the aggregate passing.",
+          "type": "string",
+          "const": "needs-gated"
+        },
+        {
+          "description": "(ii) A required check skipped on the draft and a run in progress with no\nincomplete check from the grace window on, then one empty answer that lifts it,\nthen no post-lift run and work in progress again on the same head to the bound.",
+          "type": "string",
+          "const": "two-phase"
+        },
+        {
+          "description": "(iii) Required jobs skipped and nothing in progress, lifted at the grace window.",
+          "type": "string",
+          "const": "draft-skipping"
+        },
+        {
+          "description": "(iv) Work in progress with no incomplete check for the whole watch, never lifted.",
+          "type": "string",
+          "const": "never-idle"
+        }
+      ]
+    }
+  },
+  "x-workload": {
+    "scale": 60.0,
+    "poll_seconds": 30.0,
+    "grace_seconds": 120.0,
+    "wait_seconds": 3600.0,
+    "reuse_seconds": 300.0,
+    "shapes": [
+      "needs-gated",
+      "two-phase",
+      "draft-skipping",
+      "never-idle"
+    ]
+  }
+}

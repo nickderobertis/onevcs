@@ -80,6 +80,7 @@
         "{workspaceRoot}/scripts/recoverable*.mjs",
         "{workspaceRoot}/scripts/boundary-check-budget.schema.json",
         "{workspaceRoot}/scripts/boundary-check-budget*.mjs",
+        "{projectRoot}/scripts/draft-early-lift-budget*",
         "{projectRoot}/budgets.yaml",
         "{workspaceRoot}/scripts/recoverable-budget.schema.json",
         "sharedGlobals",
