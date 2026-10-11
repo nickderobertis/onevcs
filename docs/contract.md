@@ -4382,7 +4382,11 @@ origin's copy is continued.
 
 **A stack base says what it is in its own history.** Every merge commit it writes, the
 root's included, carries the trailer `<prefix>Stack-Base: <parent>@<sha>` under the rules
-file's `trailer_prefix` — the merged branch and the commit it was merged at. So
+file's `trailer_prefix` — the merged branch and the commit it was merged at. A branch is
+a stack base only where its own head is such a merge, and its parents are read off the
+merges of its own first-parent line — never off a trailer that reached it through
+ancestry, so a change cut from a stack base, or merging one forward, stays ordinary work
+that `recoverable` lists with its landing guidance. So
 `recoverable`, in both its default and `--all` forms, does not list a stack base as
 preserved work, and the retirement pass offers it no landing verb and never classifies it
 `superseded-with-changes` — it is kept as `unmerged-unique-commits` while it holds what

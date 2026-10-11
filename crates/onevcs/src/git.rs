@@ -2274,6 +2274,34 @@ pub fn log_messages<'a>(
         .collect())
 }
 
+/// The commits on `branch`'s first-parent line that `base` does not reach, newest
+/// first.
+///
+/// The commits written *on* a branch, as against those a merge brought into it: what
+/// a stack base reads its own parents off, where every commit of a parent it merged —
+/// one drafted against another stack base among them — is in its history too.
+pub fn first_parent_line<'a>(
+    cwd: impl Into<Asked<'a>>,
+    base: &str,
+    branch: &str,
+) -> Result<Vec<String>> {
+    let cwd = cwd.into();
+    let base_tip = crate::native_refs::tip_with_objects(cwd.at, base, cwd.borrowing).flatten();
+    let branch_tip = crate::native_refs::tip_with_objects(cwd.at, branch, cwd.borrowing).flatten();
+    let base = base_tip.as_deref().unwrap_or(base);
+    let branch = branch_tip.as_deref().unwrap_or(branch);
+    let output = checked_in(
+        cwd,
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("{base}..{branch}"),
+            "--",
+        ],
+    )?;
+    Ok(output.stdout.lines().map(str::to_owned).collect())
+}
+
 /// Whether two refs' trees differ at all.
 ///
 /// The question "does the base already carry this content" cannot be answered by

@@ -139,7 +139,7 @@ impl Trailers {
     /// the commit that branch stood at, as `<branch>@<sha>`.
     ///
     /// On every merge commit `onevcs stack-base` writes, the root's included, so a
-    /// branch carrying one is recognised as a stack base by its own history — on a
+    /// branch whose own head is one is recognised as a stack base — on a
     /// host that never saw it assembled as readily as on the one that did. A stack
     /// base is never landed itself; it is what changes are drafted against, and a
     /// reader that took it for unpublished work would hand it a landing verb.
@@ -184,9 +184,17 @@ fn stack_merges(message: &str, trailers: &Trailers) -> Vec<StackMerge> {
         .collect()
 }
 
-/// What a branch's base-relative history records of being a stack base: every
-/// branch a `Stack-Base` merge brought in, at the newest head it was merged at, in
-/// the order each was first merged — or `None` where no commit of it carries one.
+/// What a branch records of being a stack base itself: every branch a `Stack-Base`
+/// merge on its own first-parent line brought in, at the newest head it was merged
+/// at, in the order each was first merged — or `None` where the branch is not one.
+///
+/// A branch is one only where its own head is a `Stack-Base` merge, and only the
+/// merges on its first-parent line — the commits `onevcs stack-base` wrote on it — are
+/// read for its parents. Never by a trailer that reached it through ancestry: a change
+/// cut from a stack base, or merging one forward, carries every one of the base's
+/// merges in its history, and it is still ordinary work that lands through its own
+/// change request — reading it as a stack base would take it out of `recoverable` and
+/// leave it nothing that offers it a landing.
 ///
 /// The root the stack base is cut from is left out by name: its merges record that
 /// the root's own work reached the stack base, and the root is not a parent of it. A
@@ -199,14 +207,24 @@ pub(crate) fn stack_base_of<'a>(
     root: &str,
     trailers: &Trailers,
 ) -> Result<Option<Vec<StackMerge>>> {
+    let repo = repo.into();
     let commits = git::log_messages(repo, base, branch)?;
-    let mut recorded = false;
+    // Oldest first, so the branch's own head — the one commit no other in the range
+    // descends from, which git lists before every other — is the last. Every other
+    // branch is answered from that one log, which the rows beside this read anyway.
+    let Some(head) = commits.last() else {
+        return Ok(None);
+    };
+    if stack_merges(&head.message, trailers).is_empty() {
+        return Ok(None);
+    }
+    let line = git::first_parent_line(repo, base, branch)?;
     let mut parents: Vec<StackMerge> = Vec::new();
     for merge in commits
         .iter()
+        .filter(|commit| line.contains(&commit.sha))
         .flat_map(|commit| stack_merges(&commit.message, trailers))
     {
-        recorded = true;
         if *merge.branch == *root {
             continue;
         }
@@ -218,7 +236,7 @@ pub(crate) fn stack_base_of<'a>(
             None => parents.push(merge),
         }
     }
-    Ok(recorded.then_some(parents))
+    Ok(Some(parents))
 }
 
 /// Why a prefix cannot spell a git trailer key, when it cannot.
