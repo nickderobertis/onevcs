@@ -253,6 +253,10 @@ struct Model {
     /// A value the next page carries at a JSON pointer into its `data`, in place of
     /// what the host holds.
     garbled: Option<(&'static str, Value)>,
+    /// A JSON pointer into the next page's whole answer whose value it leaves out.
+    stripped: Option<&'static str>,
+    /// A field the next post's answer leaves out.
+    unsaid: Option<&'static str>,
     hold: bool,
     held: usize,
     requests: Vec<Vec<String>>,
@@ -275,6 +279,8 @@ impl Model {
             charges: VecDeque::new(),
             malformed: None,
             garbled: None,
+            stripped: None,
+            unsaid: None,
             hold: false,
             held: 0,
             requests: Vec::new(),
@@ -475,7 +481,11 @@ impl Model {
                 *slot = value;
             }
         }
-        (format!("{}\n", json!({"data": data})), String::new(), 0)
+        let mut answer = json!({"data": data});
+        if let Some(at) = self.stripped.take() {
+            leave_out(&mut answer, at);
+        }
+        (format!("{answer}\n"), String::new(), 0)
     }
 
     /// One of the two REST reply routes.
@@ -511,7 +521,7 @@ impl Model {
                     comment: container.clone(),
                     state: "COMMENTED".to_owned(),
                 });
-                let answer = json!({
+                let mut answer = json!({
                     "url": format!("https://api.github.com/repos/{}/pulls/comments/{}", self.slug, reply.database),
                     "pull_request_review_id": container.database,
                     "id": reply.database,
@@ -529,7 +539,7 @@ impl Model {
                     "user": {"login": VIEWER},
                     "subject_type": "line",
                 });
-                (format!("{answer}\n"), String::new(), 0)
+                self.said(&mut answer)
             }
             (["repos", _, _, "issues", _, "comments"], Some(number)) => {
                 if !self.pulls.contains_key(&number) {
@@ -537,7 +547,7 @@ impl Model {
                 }
                 let comment = self.comment("IC", number, VIEWER, &body);
                 self.pull(number).conversation.push(comment.clone());
-                let answer = json!({
+                let mut answer = json!({
                     "url": format!("https://api.github.com/repos/{}/issues/comments/{}", self.slug, comment.database),
                     "html_url": comment.url,
                     "issue_url": format!("https://api.github.com/repos/{}/issues/{number}", self.slug),
@@ -549,9 +559,26 @@ impl Model {
                     "body": comment.body,
                     "author_association": "OWNER",
                 });
-                (format!("{answer}\n"), String::new(), 0)
+                self.said(&mut answer)
             }
             _ => refused(&format!("fake gh: no review route {}", call.path)),
+        }
+    }
+
+    /// A post's answer, less the field the next one leaves out.
+    fn said(&mut self, answer: &mut Value) -> (String, String, i32) {
+        if let (Some(field), Some(fields)) = (self.unsaid.take(), answer.as_object_mut()) {
+            fields.remove(field);
+        }
+        (format!("{answer}\n"), String::new(), 0)
+    }
+}
+
+/// Remove the value at JSON pointer `at`, where there is one.
+fn leave_out(answer: &mut Value, at: &str) {
+    if let Some((parent, name)) = at.rsplit_once('/') {
+        if let Some(fields) = answer.pointer_mut(parent).and_then(Value::as_object_mut) {
+            fields.remove(name);
         }
     }
 }
@@ -733,6 +760,17 @@ impl ReviewHost {
     /// answering something it should not would.
     pub fn garble_next_page(&self, at: &'static str, value: Value) {
         self.model().garbled = Some((at, value));
+    }
+
+    /// Answer the next page without the value at JSON pointer `at` into its whole
+    /// answer — `/data` included — as a host answering partially would.
+    pub fn strip_next_page(&self, at: &'static str) {
+        self.model().stripped = Some(at);
+    }
+
+    /// Answer the next post without its `field`, as a host answering partially would.
+    pub fn strip_next_post(&self, field: &'static str) {
+        self.model().unsaid = Some(field);
     }
 
     /// Hold every post until [`release_posts`](Self::release_posts).

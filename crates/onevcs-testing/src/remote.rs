@@ -411,7 +411,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
     /// What changed in the change request's review feedback since `since`, by this
     /// host's own count of changes to it — see `review`.
     fn review_comments(&self, change: &ChangeId, since: Option<&ReadMarker>) -> Result<ReviewRead> {
-        review::read(&self.store, &self.slug, change, since)
+        review::read(&self.store, change, since)
     }
 
     /// One reply, posted in the comment's thread where it has one and as a
@@ -424,7 +424,7 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         body: &str,
         key: &str,
     ) -> Result<PostedReply> {
-        review::reply(&self.store, &self.slug, change, comment, body, key)
+        review::reply(&self.store, change, comment, body, key)
     }
 
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {

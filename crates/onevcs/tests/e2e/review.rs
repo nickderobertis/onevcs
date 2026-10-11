@@ -1012,6 +1012,11 @@ fn what_cannot_be_posted_is_refused_and_nothing_reaches_the_host() {
             2,
             "neither a session token nor a change request's URL",
         ),
+        (
+            "https://github.com/acme-corp/widgets/pull/1x",
+            2,
+            "neither a session token nor a change request's URL",
+        ),
         ("s-nobody", 2, "s-nobody"),
         (
             "https://gitlab.com/acme-corp/widgets/pull/1",
@@ -1128,6 +1133,222 @@ fn a_page_that_does_not_say_what_it_holds_or_whether_more_follows_is_refused() {
         "a read that failed records nothing"
     );
     assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 2);
+}
+
+#[test]
+fn a_page_or_a_post_that_leaves_out_what_it_owes_is_refused_by_name() {
+    let (world, host) = reviewed();
+    host.thread(1, "src/lib.rs", Some(3), VIEWER, "Why?");
+    host.conversation(1, VIEWER, "Mention the synthetic base.");
+    host.review(1, "COMMENTED", VIEWER, "A few notes.");
+    // Every part of a page the read takes its answer from is asked for, and a page
+    // without it is refused naming what is missing rather than read as empty.
+    for (at, said) in [
+        ("/data", "answered the review read with no data"),
+        ("/data/rateLimit/cost", "without what it charged for it"),
+        (
+            "/data/repository/pullRequest",
+            "holds no pull request 1 in acme-corp/widgets",
+        ),
+        (
+            "/data/repository/pullRequest/url",
+            "about pull request 1 of acme-corp/widgets without its URL",
+        ),
+        (
+            "/data/repository/pullRequest/reviewThreads",
+            "answered the review read without its reviewThreads",
+        ),
+        (
+            "/data/repository/pullRequest/reviewThreads/nodes/0/comments",
+            "a review thread without its comments",
+        ),
+        (
+            "/data/repository/pullRequest/reviewThreads/nodes/0/path",
+            "a review thread without its path",
+        ),
+        (
+            "/data/repository/pullRequest/reviewThreads/nodes/0/isResolved",
+            "a review thread without its isResolved",
+        ),
+    ] {
+        host.strip_next_page(at);
+        let output = world
+            .onevcs()
+            .args(["change", "comments", CHANGE])
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{at}: {stderr}");
+        assert!(stderr.contains(said), "{said:?} in {stderr}");
+    }
+    // A page saying another follows without where it starts, and an edit time that is
+    // not a string at all, are refused rather than read as the last page or no edit.
+    for (at, value, said) in [
+        (
+            "/repository/pullRequest/comments/pageInfo",
+            json!({"hasNextPage": true}),
+            "another page of the review read follows without saying where it starts",
+        ),
+        (
+            "/repository/pullRequest/comments/nodes/0/lastEditedAt",
+            json!(5),
+            "lastEditedAt as 5, not a moment",
+        ),
+    ] {
+        host.garble_next_page(at, value);
+        let output = world
+            .onevcs()
+            .args(["change", "comments", CHANGE])
+            .output()
+            .expect("the binary runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{at}: {stderr}");
+        assert!(stderr.contains(said), "{said:?} in {stderr}");
+    }
+    assert!(
+        change_events_or_none(&world).is_empty(),
+        "a read that failed records nothing"
+    );
+    assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 3);
+
+    // A post the host accepted but whose answer leaves out the reply's id or its page
+    // is refused naming the field — and the reply it did post is what the same key
+    // answers next time, so a caller that retries gets it rather than a second one.
+    let conversation = host.conversation(1, VIEWER, "And the plan.");
+    for (field, key) in [("node_id", "k-id"), ("html_url", "k-url")] {
+        host.strip_next_post(field);
+        let output = reply(&world, CHANGE, &conversation, key, &["--body", "Done."]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{field}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "GitHub accepted the reply to {conversation} without saying its {field}"
+            )),
+            "{field} in {stderr}"
+        );
+        let posted = posts(&world);
+        let again = replied(&reply(
+            &world,
+            CHANGE,
+            &conversation,
+            key,
+            &["--body", "Done.", "--json"],
+        ));
+        assert_eq!(again["existing"], true, "{again}");
+        assert_eq!(posts(&world), posted, "the retry posted nothing");
+    }
+}
+
+#[test]
+fn a_verified_absent_reply_is_routed_by_every_spelling_of_a_node_id_and_refused_by_none() {
+    let (world, host) = reviewed();
+    // Each names review comment `<id>` of the recorded repository; the host holds none
+    // of them, so each is refused there — after one post to the route the id names.
+    for (id, database) in [
+        // A database id a MessagePack byte or two wide…
+        ("PRRC_kwDOT1IgdczI", 200),
+        ("PRRC_kwDOT1Igdc2cQA", 40000),
+        // …and one spelled in either base64 alphabet.
+        ("PRRC_kwDOT1Igdc0-_A", 16124),
+        ("PRRC_kwDOT1Igdc0+/A", 16124),
+    ] {
+        let before = host.requests().len();
+        let output = reply(
+            &world,
+            CHANGE,
+            id,
+            "k",
+            &["--body", "Done.", "--verified-absent"],
+        );
+        assert!(!output.status.success(), "{id}");
+        let handed = &host.requests()[before..];
+        assert_eq!(handed.len(), 1, "{id}: {handed:#?}");
+        assert_eq!(
+            handed[0][1],
+            format!("repos/{SLUG}/pulls/1/comments/{database}/replies"),
+            "{id}"
+        );
+    }
+    // What is not a node id GitHub issues is refused before anything is asked.
+    let before = host.requests().len();
+    for id in [
+        // An unknown type prefix;
+        "XX_kwDOT1IgdczI",
+        // a MessagePack array of two, and a format version other than 0;
+        "PRRC_kgDOT1IgdQU",
+        "PRRC_kwHOT1IgdQU",
+        // an id no unsigned integer spells, and one cut short;
+        "PRRC_kwDOT1IgddAF",
+        "PRRC_kwDOT1Igdc4AAQ",
+        // and a symbol neither base64 alphabet has.
+        "PRRC_kwDO*1IgdczI",
+    ] {
+        let output = reply(
+            &world,
+            CHANGE,
+            id,
+            "k",
+            &["--body", "Done.", "--verified-absent"],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{id}: {stderr}");
+        assert!(
+            stderr.contains("is not the id of a GitHub comment"),
+            "{id}: {stderr}"
+        );
+    }
+    assert_eq!(host.requests().len(), before, "{:#?}", host.requests());
+}
+
+#[test]
+fn only_a_marker_this_build_can_read_whole_makes_a_comment_ours() {
+    let (world, host) = reviewed();
+    let mark = |fields: &str| format!("Done.\n\n<!-- onevcs:reply {fields} -->");
+    // A field a later build writes is passed over, and the reply is still ours…
+    let later = host.conversation(1, VIEWER, &mark("in-reply-to=IC_a key=k1 since=v2"));
+    // …while an empty value, a field written twice and a label that is not a token
+    // leave no marker this build can trust, so the comment is the reviewer's.
+    let refused = [
+        host.conversation(1, VIEWER, &mark("in-reply-to=IC_a key=")),
+        host.conversation(1, VIEWER, &mark("in-reply-to=IC_a key=k1 key=k2")),
+        host.conversation(1, VIEWER, &mark("in-reply-to=IC_a key=k1 label=a_b")),
+    ];
+    let read = comments(&world, CHANGE, None);
+    let ours = find(&read, &later);
+    assert_eq!(ours["ours"], true, "{ours}");
+    assert_eq!(
+        ours["reply_marker"],
+        json!({"in_reply_to": "IC_a", "key": "k1"})
+    );
+    for id in &refused {
+        let theirs = find(&read, id);
+        assert_eq!(theirs["ours"], false, "{theirs}");
+        assert_eq!(theirs["reply_marker"], Value::Null, "{theirs}");
+    }
+}
+
+#[test]
+fn a_read_whose_record_cannot_be_written_still_answers_and_says_so() {
+    let (world, host) = reviewed();
+    host.conversation(1, VIEWER, "Mention the synthetic base.");
+    // A file where the streams directory belongs: no stream can be opened.
+    std::fs::create_dir_all(world.home()).expect("a state root");
+    std::fs::write(world.home().join("streams"), "").expect("a file in the way");
+    let output = world
+        .onevcs()
+        .args(["change", "comments", CHANGE, "--json"])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let read: Value = serde_json::from_slice(&output.stdout).expect("a read");
+    assert_eq!(ids(&read).len(), 1);
+    assert!(
+        stderr.contains(&format!(
+            "onevcs: warning: what was done on {CHANGE} is not recorded"
+        )),
+        "{stderr}"
+    );
 }
 
 /// The events on the change request's own stream, or none where nothing wrote one.

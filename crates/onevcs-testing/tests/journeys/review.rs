@@ -343,3 +343,73 @@ fn a_comment_whose_times_are_not_moments_is_refused_whether_added_or_seeded() {
         "{read:?}"
     );
 }
+
+#[test]
+fn the_double_refuses_what_it_does_not_hold_and_reads_a_marker_as_onevcs_does() {
+    let host = MemoryHost::seeded(seeded());
+    let unopened = ChangeId("8".to_owned());
+    // What the host does not hold is refused naming it, rather than added or moved.
+    for (refused, said) in [
+        (
+            host.add_comment(
+                &change(),
+                comment("C1", CommentKind::Conversation, "Again.", None),
+            ),
+            "already carries a comment \"C1\"",
+        ),
+        (
+            host.edit_comment(&unopened, &CommentId("I1".to_owned()), "Edited."),
+            "\"8\" carries no review feedback",
+        ),
+        (
+            host.edit_comment(&change(), &CommentId("nowhere".to_owned()), "Edited."),
+            "carries no comment \"nowhere\" to edit",
+        ),
+        (
+            host.set_thread(&unopened, "T1", true, false),
+            "\"8\" carries no review feedback",
+        ),
+    ] {
+        assert!(
+            matches!(&refused, Err(onevcs::Error::Invalid { reason }) if reason.contains(said)),
+            "{said:?}: {refused:?}"
+        );
+    }
+
+    // A field a later build writes is passed over and the reply is still ours; an
+    // empty value, a field written twice and a label that is not a token are not.
+    let mark = |fields: &str| format!("Done.\n\n<!-- onevcs:reply {fields} -->");
+    for (id, fields) in [
+        ("M1", "in-reply-to=C1 key=k1 since=v2"),
+        ("M2", "in-reply-to=C1 key="),
+        ("M3", "in-reply-to=C1 key=k1 key=k2"),
+        ("M4", "in-reply-to=C1 key=k1 label=a_b"),
+    ] {
+        host.add_comment(
+            &change(),
+            comment(id, CommentKind::Conversation, &mark(fields), None),
+        )
+        .expect("added");
+    }
+    let read = host
+        .for_repo("acme-corp/widgets")
+        .expect("a host")
+        .review_comments(&change(), None)
+        .expect("reads");
+    let ours: Vec<&str> = read
+        .comments
+        .iter()
+        .filter(|comment| comment.ours)
+        .map(|comment| comment.id.0.as_str())
+        .collect();
+    assert_eq!(ours, ["M1"]);
+    let marker = read.comments[4].reply_marker.as_ref().expect("parsed");
+    assert_eq!(
+        (
+            marker.in_reply_to.0.as_str(),
+            marker.key.as_str(),
+            &marker.label
+        ),
+        ("C1", "k1", &None)
+    );
+}

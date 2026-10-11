@@ -12,8 +12,8 @@
 //! real transport keeps by comparing what it saw.
 
 use onevcs::{
-    ChangeId, CommentId, CommentKind, Error, PostedReply, ReadCost, ReadMarker, ReplyMarker,
-    Result, ReviewComment, ReviewRead,
+    ChangeId, ChangeRequest, CommentId, CommentKind, Error, PostedReply, ReadCost, ReadMarker,
+    ReplyMarker, Result, ReviewComment, ReviewRead,
 };
 
 use crate::events;
@@ -26,12 +26,11 @@ const MARKER_PREFIX: &str = "testing.";
 /// Every comment changed since `since`, and the marker to read from next.
 pub(crate) fn read<T: Store<HostState>>(
     store: &T,
-    slug: &str,
     change: &ChangeId,
     since: Option<&ReadMarker>,
 ) -> Result<ReviewRead> {
     store.with(|state| {
-        let change_url = change_url(state, slug, change)?;
+        let change_url = change_url(state, change)?;
         let from = since
             .map(|marker| revision_of(marker, change))
             .transpose()?;
@@ -72,14 +71,13 @@ pub(crate) fn read<T: Store<HostState>>(
 /// conversation comment whose first line links it.
 pub(crate) fn reply<T: Store<HostState>>(
     store: &T,
-    slug: &str,
     change: &ChangeId,
     comment: &CommentId,
     body: &str,
     key: &str,
 ) -> Result<PostedReply> {
     store.with(|state| {
-        let change_url = change_url(state, slug, change)?;
+        let change_url = change_url(state, change)?;
         let login = state.authenticated_user.clone();
         let comments = state.review_comments.entry(change.clone()).or_default();
         let answered = comments
@@ -335,27 +333,20 @@ fn revision_of(marker: &ReadMarker, change: &ChangeId) -> Result<u64> {
         })
 }
 
-fn opened(state: &HostState, change: &ChangeId) -> Result<()> {
-    if state.changes.iter().any(|held| held.id == *change) {
-        return Ok(());
-    }
-    Err(Error::Invalid {
-        reason: format!(
-            "no change request {:?} was opened on this host, so it carries no review feedback",
-            change.0
-        ),
-    })
-}
-
-/// Where the change request is read, as the host addresses it.
-fn change_url(state: &HostState, slug: &str, change: &ChangeId) -> Result<String> {
-    opened(state, change)?;
-    Ok(state
+fn opened<'a>(state: &'a HostState, change: &ChangeId) -> Result<&'a ChangeRequest> {
+    state
         .changes
         .iter()
         .find(|held| held.id == *change)
-        .map_or_else(
-            || format!("https://{}/{slug}/pull/{}", crate::DEFAULT_HOST, change.0),
-            |held| held.url.to_string(),
-        ))
+        .ok_or_else(|| Error::Invalid {
+            reason: format!(
+                "no change request {:?} was opened on this host, so it carries no review feedback",
+                change.0
+            ),
+        })
+}
+
+/// Where the change request is read, as the host addresses it.
+fn change_url(state: &HostState, change: &ChangeId) -> Result<String> {
+    Ok(opened(state, change)?.url.to_string())
 }
