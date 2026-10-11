@@ -81,6 +81,34 @@ pub fn screens_writes(hosting: &dyn Hosting, key: &str) -> Result<bool> {
     Ok(visibility.effective() == Visibility::Public || (hosted && !answered))
 }
 
+/// Whether a write to `key` that may ask the host nothing must be screened — a
+/// publication that defers its checks.
+///
+/// [`screens_writes`] without the probe: a rule's declared visibility decides
+/// outright, and otherwise the answer the host last gave, as this host recorded it at
+/// an earlier write. An identity with no recorded answer — never asked, or a probe that
+/// failed — is screened whenever it is hosted, which is the direction a write that
+/// could reach a public repository is never let through in.
+pub fn screens_writes_unasked(key: &str) -> Result<bool> {
+    let registry = store::load()?;
+    let (file, source) = policy::load(&registry)?;
+    let checkout = checkout_of(&registry, key)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    if let Some(declared) = declared(&file, &source, key, &checkout) {
+        return Ok(declared.effective() == Visibility::Public);
+    }
+    let hosted = store::normalize(key).hosted.is_some();
+    Ok(match registry.identities.get(key) {
+        Some(identity)
+            if !identity.observation.is_unknown() && !identity.visibility.is_unknown() =>
+        {
+            identity.visibility.effective() == Visibility::Public
+        }
+        _ => hosted,
+    })
+}
+
 /// The refreshed visibility, and whether a rule or the host answered it.
 fn refreshed(hosting: &dyn Hosting, key: &str) -> Result<(Visibility, bool)> {
     let registry = store::load()?;

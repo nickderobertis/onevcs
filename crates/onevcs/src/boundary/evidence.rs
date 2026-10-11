@@ -32,6 +32,22 @@ pub fn guard_publication(
     settle(screened.verdict, screened.evidence)
 }
 
+/// [`guard_publication`] for a write that may ask the host nothing — a publication that
+/// defers its checks: the destination's visibility is the one this host last recorded
+/// rather than a fresh probe, and a hosted destination with none recorded is screened.
+pub fn guard_publication_unasked(
+    destination: &str,
+    outgoing: &Outgoing<'_>,
+    scope: &TermScope,
+) -> Result<()> {
+    if !visibility::screens_writes_unasked(destination)? {
+        return Ok(());
+    }
+    let screened = screen::screen(outgoing, scope);
+    diagnostics::record("publication", &screened.verdict, &screened.phases);
+    settle(screened.verdict, screened.evidence)
+}
+
 /// Refresh the destination's visibility and, unless it is verified not public, screen
 /// short fields that are written without a commit: a change request's title and body.
 pub fn guard_fields(

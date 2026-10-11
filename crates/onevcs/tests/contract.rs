@@ -3332,7 +3332,9 @@ fn the_amendment_names_every_option_publish_takes_that_the_approved_usage_does_n
         .into_iter()
         .chain(backticked_on_line("`onevcs publish` takes a draft as"))
         .chain(backticked_on_line("`onevcs publish` takes a term scope as"))
-        .chain(backticked_on_line("`onevcs publish` takes deferred checks as"))
+        .chain(backticked_on_line(
+            "`onevcs publish` takes deferred checks as",
+        ))
         .filter_map(|span| span.strip_prefix("--").map(str::to_owned))
         .collect();
     assert_eq!(

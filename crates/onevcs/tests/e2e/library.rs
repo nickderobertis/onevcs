@@ -480,6 +480,60 @@ fn a_publication_through_git_and_github_answers_the_same_typed_outcome() {
     assert_eq!(opened[0]["payload"]["url"], url.to_string());
 }
 
+#[test]
+fn a_deferred_publication_this_host_has_no_record_of_the_draft_for_is_its_own_refusal() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, REVIEWED);
+    world.install_fake_host(&origin);
+    let session = open(&Git, "feature/deferred");
+    world.commit_file(
+        &session.worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the deferred thing",
+    );
+    let adopt = onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/7").expect("a URL");
+
+    let refused = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest {
+            defer_checks: true,
+            adopt: Some(adopt.clone()),
+            ..PublishRequest::default()
+        },
+    )
+    .expect_err("a draft nothing here records the head of is refused before the push");
+    // Its own kind, so a caller falls back on exactly this — and the CLI still reads it
+    // as invalid input, exit 2.
+    assert!(
+        matches!(&refused, onevcs::Error::UnrecordedChangeHead { change, .. } if *change == adopt.to_string()),
+        "{refused:?}"
+    );
+    assert_eq!(FailureKind::of(&refused).exit_code(), 2);
+    assert!(
+        refused.to_string().starts_with("invalid input:"),
+        "{refused}"
+    );
+    assert!(
+        world.ledger().is_empty(),
+        "no host call: {:#?}",
+        world.ledger()
+    );
+    assert!(
+        world
+            .git_raw(
+                &origin,
+                &["rev-parse", "--verify", "refs/heads/feature/deferred"]
+            )
+            .status
+            .code()
+            != Some(0),
+        "nothing was pushed"
+    );
+}
+
 /// A registered hosted repository publishing under `rules`, with a session on it
 /// carrying one commit — the setup every failure journey below shares.
 ///

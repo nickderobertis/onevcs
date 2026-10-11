@@ -1293,6 +1293,15 @@ fn hold_to_the_boundary(context: &Context<'_>, compared: &str, title: Option<&st
         title,
         body: context.body.as_deref(),
     };
+    // A publication that defers its checks asks the host nothing, its visibility
+    // included: the answer this host last recorded stands for it.
+    if context.adopt.is_some() {
+        return crate::boundary::evidence::guard_publication_unasked(
+            &context.resolution.key,
+            &outgoing,
+            &context.term_scope,
+        );
+    }
     crate::boundary::evidence::guard_publication(
         context.hosting,
         &context.resolution.key,
