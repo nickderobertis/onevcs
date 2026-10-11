@@ -188,8 +188,8 @@ fn stack_merges(message: &str, trailers: &Trailers) -> Vec<StackMerge> {
 /// first-parent line brought in, at the newest head it was merged at, in the order
 /// each was first merged.
 ///
-/// Asked only of a branch already known to be a stack base — which is decided by the
-/// verb's own record of the ref (`status::stack_bases`), never by these trailers — and
+/// Asked only of a branch already known to be a stack base — which is decided by its
+/// name (`stack_base::is_stack_base`), never by these trailers — and
 /// read off the first-parent line because those are the merges `onevcs stack-base`
 /// wrote *on* it: a parent it merged that was itself drafted against another stack
 /// base carries that base's merges too, and they are not this one's parents.

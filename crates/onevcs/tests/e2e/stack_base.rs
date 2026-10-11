@@ -464,7 +464,13 @@ fn a_request_no_assembly_could_honour_is_refused_with_nothing_opened_or_pushed()
     let world = &stack.world;
     stack.parent("feature/a", "a.txt", "a\n");
     stack.parent("feature/c", "c.txt", "c\n");
-    let refusals: [(&str, &str, &[&str], &str); 7] = [
+    let refusals: [(&str, &str, &[&str], &str); 8] = [
+        (
+            "feature/base",
+            "main",
+            &["feature/a", "feature/c"],
+            "is not in the stack-base namespace",
+        ),
         (
             BRANCH,
             "main",
@@ -921,9 +927,13 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
         "the twin shares the stack base's head"
     );
 
-    // What `recoverable` lists for a branch, and what `status` says of it: each is an
-    // ordinary branch holding commits its base lacks, so each is listed with the
-    // landing guidance every such branch gets, and neither is reported a stack base.
+    // A branch at the root's own head holds nothing beyond its base: what `recoverable`
+    // answers for any branch with no work beyond its base is to list nothing for it.
+    world.git(&stack.checkout, &["branch", "feature/idle", "origin/main"]);
+
+    // What `recoverable` lists for a branch, and what `status` says of it: the child is
+    // an ordinary branch holding commits its base lacks, so it is listed with the
+    // landing guidance every such branch gets, and is not reported a stack base.
     let ordinary = |branch: &str, when: &str| {
         for extra in [&[][..], &["--all"][..]] {
             let assert = world
@@ -970,7 +980,38 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
         );
     };
     ordinary("feature/child", "cut from the stack base");
-    ordinary("feature/twin", "cut at the stack base's head");
+
+    // The twin is judged against its own base — the stack base, not the root — and holds
+    // nothing beyond it, so it is reported exactly as the branch at the root's head is:
+    // listed by neither report. It is still not a stack base, because its name is not.
+    for extra in [&[][..], &["--all"][..]] {
+        let assert = world
+            .onevcs()
+            .args(["recoverable", "--repo", &checkout, "--json"])
+            .args(extra)
+            .assert()
+            .success();
+        let rows: Vec<Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
+        for quiet in ["feature/twin", "feature/idle"] {
+            assert!(
+                rows.iter().all(|row| row["branch"]["branch"] != quiet),
+                "{extra:?}: {quiet} holds no work beyond its base: {rows:#?}"
+            );
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row["branch"]["branch"] == "feature/child"),
+            "{extra:?}: {rows:#?}"
+        );
+    }
+    let assert = world
+        .onevcs()
+        .args(["status", "feature/twin", "--json"])
+        .assert()
+        .success();
+    let report: Value = serde_json::from_slice(&assert.get_output().stdout).expect("one object");
+    assert!(report["branch"].get("stack_base").is_none(), "{report:#}");
 
     // The stack base itself, at that same head, is still one.
     let assert = world
@@ -1002,4 +1043,100 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
         "feature/child",
         "after merging the advanced stack base forward",
     );
+}
+
+#[test]
+fn a_host_holding_no_record_of_the_assembly_classifies_the_stack_base_by_its_name() {
+    let stack = Stack::new();
+    let a = stack.parent("feature/a", "a.txt", "a\n");
+    let c = stack.parent("feature/c", "c.txt", "c\n");
+    stack.assembled(&["feature/a", "feature/c"], 0);
+
+    // Another host, with a state root of its own: no session, no stream, no record of
+    // any assembly. Its checkout tracks the root alone, and takes the stack base as a
+    // local branch with no remote-tracking ref beside it — so nothing on this host but
+    // the branch's name says what it is, and by ancestry it is unpublished work.
+    let other = World::new();
+    let checkout = other.path("other-host");
+    other.git(
+        &other.path(""),
+        &[
+            "clone",
+            "-q",
+            "--single-branch",
+            "--branch",
+            "main",
+            &stack.origin.to_string_lossy(),
+            &checkout.to_string_lossy(),
+        ],
+    );
+    other.git(
+        &checkout,
+        &["fetch", "-q", "origin", &format!("{BRANCH}:{BRANCH}")],
+    );
+    assert!(other
+        .git(
+            &checkout,
+            &["for-each-ref", &format!("refs/remotes/origin/{BRANCH}")]
+        )
+        .is_empty());
+    other.git(&checkout, &["checkout", "-q", "-b", "feature/plain"]);
+    other.commit_file(&checkout, "plain.txt", "plain\n", "feat: a plain change");
+    other.git(&checkout, &["checkout", "-q", "main"]);
+    other
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/stacked.git",
+        ])
+        .assert()
+        .success();
+    assert!(
+        assemblies(&other).is_empty(),
+        "this host recorded no assembly"
+    );
+    let repo = checkout.to_string_lossy().into_owned();
+
+    for extra in [&[][..], &["--all"][..]] {
+        let assert = other
+            .onevcs()
+            .args(["recoverable", "--repo", &repo, "--json"])
+            .args(extra)
+            .assert()
+            .success();
+        let rows: Vec<Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
+        let branches: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| row["branch"]["branch"].as_str())
+            .collect();
+        assert!(branches.contains(&"feature/plain"), "{extra:?}: {rows:#?}");
+        assert!(!branches.contains(&BRANCH), "{extra:?}: {rows:#?}");
+    }
+
+    let assert = other
+        .onevcs()
+        .args(["status", BRANCH, "--json"])
+        .assert()
+        .success();
+    let report: Value = serde_json::from_slice(&assert.get_output().stdout).expect("one object");
+    assert_eq!(
+        report["branch"]["stack_base"]["parents"],
+        parents_of(&[("feature/a", &a), ("feature/c", &c)]),
+        "{report:#}"
+    );
+    assert!(report["next"].get("command").is_none(), "{report:#}");
+
+    let assert = other
+        .onevcs()
+        .args(["retire-finished", "--repo", &repo, "--dry-run"])
+        .assert()
+        .success();
+    let rendered = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    for line in rendered.lines().filter(|line| line.contains(BRANCH)) {
+        assert!(!line.contains("superseded"), "{line}");
+        assert!(!line.contains("publish-branch"), "{line}");
+    }
 }

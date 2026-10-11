@@ -1930,10 +1930,12 @@ pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
 
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
-    Ok(unpublished_branches_among(cwd, |_| true, &BTreeSet::new())?
-        .into_iter()
-        .map(|(branch, _)| branch)
-        .collect())
+    Ok(
+        unpublished_branches_among(cwd, |_| true, &BTreeSet::new(), |_| false)?
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .collect(),
+    )
 }
 
 /// The local branches `keep` names that hold commits no `origin` remote-tracking
@@ -1950,10 +1952,14 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// has it, without being counted: `recoverable`'s branches `onevcs preserve` put on
 /// the origin, whose own remote-tracking ref would otherwise make them read as
 /// published. Taken from the same listing, so they cost no process of their own.
+///
+/// A local branch `based` names is a base beside the `origin` refs: what it reaches is
+/// counted as published, so a branch drafted on it is measured by its own commits.
 pub fn unpublished_branches_among(
     cwd: &Path,
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
+    based: impl Fn(&str) -> bool,
 ) -> Result<Vec<(String, String)>> {
     let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
     let (heads, origin_tips) = if let Some((heads, origin)) = native {
@@ -1985,6 +1991,12 @@ pub fn unpublished_branches_among(
         }
         (heads, origin_tips)
     };
+    let bases: Vec<String> = heads
+        .iter()
+        .filter(|(branch, _)| based(branch))
+        .map(|(_, tip)| tip.clone())
+        .collect();
+    let carried: Vec<&str> = bases.iter().map(String::as_str).collect();
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -1994,10 +2006,10 @@ pub fn unpublished_branches_among(
             unpublished.push((branch, tip));
             continue;
         }
-        if origin_tips.contains(&tip) {
+        if origin_tips.contains(&tip) || bases.contains(&tip) {
             continue;
         }
-        if unpublished_ahead(cwd, &tip, &[])? > 0 {
+        if unpublished_ahead(cwd, &tip, &carried)? > 0 {
             unpublished.push((branch, tip));
         }
     }

@@ -21,9 +21,10 @@
 //! **Every merge commit carries a `Stack-Base` trailer** naming what it merged and
 //! where that stood (`provenance::stack_base_trailer`), under the rules file's prefix,
 //! which is where `status` reads a stack base's parents back from. What makes a branch
-//! a stack base is not that trailer but the `stack-base-assembled` record this module
-//! writes of the ref: a change cut from a stack base inherits every one of its merges,
-//! and one cut at its head shares that head, and each is still ordinary work.
+//! a stack base is not that trailer but its name ([`is_stack_base`]): a change cut from
+//! a stack base inherits every one of its merges, and one cut at its head shares that
+//! head, and each is still ordinary work — and a host that never saw the base assembled
+//! holds no record of it, yet reads the same ref the same way.
 //!
 //! **Nothing here is a publication.** No change request is opened, and the push skips
 //! the repository's own `pre-push` hook (`git::push_preserving`): a stack base merges
@@ -156,6 +157,30 @@ impl StackBaseOutcome {
 
 /// The remote a stack base is read from and pushed to, which is the only one it knows.
 const ORIGIN: &str = "origin";
+
+/// The path segment that opens the stack-base namespace: a stack base is named
+/// `<host prefix>stack-base/<plan>/<node>`.
+const NAMESPACE: &str = "stack-base";
+
+/// Whether `branch` is a stack base, decided from its name and nothing else.
+///
+/// A name is one where a `stack-base` segment is followed by at least two more — the
+/// plan and the node — whatever host prefix stands before it. Never from commit content,
+/// ancestry, a shared head or this host's record of an assembly: a change cut from a
+/// stack base inherits every one of its merges and one cut at its head shares that
+/// head, and a host that never saw the base assembled holds no record of it, so each of
+/// those would classify one ref two ways. `assemble` refuses a branch this does not
+/// accept, so every branch the verb writes is one this answers `true` for.
+pub(crate) fn is_stack_base(branch: &str) -> bool {
+    let segments: Vec<&str> = branch.split('/').collect();
+    segments
+        .iter()
+        .position(|segment| *segment == NAMESPACE)
+        .is_some_and(|at| {
+            let rest = &segments[at + 1..];
+            rest.len() >= 2 && rest.iter().all(|segment| !segment.is_empty())
+        })
+}
 
 /// Assemble, advance, or confirm one stack base, and push what moved.
 ///
@@ -458,6 +483,14 @@ fn validate(request: &StackBaseRequest) -> Result<()> {
                 "{name:?} is not a valid branch name, so nothing was assembled or pushed"
             )));
         }
+    }
+    if !is_stack_base(&request.branch) {
+        return Err(error::invalid(format!(
+            "{branch:?} is not in the stack-base namespace, so nothing was assembled or \
+             pushed; name the branch `<host prefix>{NAMESPACE}/<plan>/<node>`, which is how \
+             every host recognises a stack base and offers it no landing",
+            branch = request.branch,
+        )));
     }
     if request.branch == request.root || request.parents.contains(&request.branch) {
         return Err(error::invalid(format!(
