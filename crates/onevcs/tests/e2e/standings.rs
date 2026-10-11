@@ -700,6 +700,27 @@ fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads(
         read["cost"],
         json!({"graphql_points": 6, "rest_requests": 0})
     );
+    // One `review-comments-read` per draft, as a read of it by URL records one, beside
+    // the one `change-standings-read`.
+    let recorded = kinds(&change_events(world, numbers[0]), "review-comments-read");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["phase"], "review");
+    assert_eq!(recorded[0]["payload"]["change_url"], url(numbers[0]));
+    assert_eq!(
+        recorded[0]["payload"]["count"], 4,
+        "a thread of two, a review, a comment"
+    );
+    assert_eq!(recorded[0]["payload"]["unchanged"], false);
+    assert_eq!(
+        recorded[0]["payload"]["cost"],
+        json!({"graphql_points": 0, "rest_requests": 0})
+    );
+    let read_events = kinds(&standings_events(world), "change-standings-read");
+    assert_eq!(read_events.len(), 1);
+    assert_eq!(
+        read_events[0]["payload"],
+        json!({"repo": IDENTITY, "count": 10, "landed": [], "cost": read["cost"]})
+    );
 
     let without_cost = |value: &Value| {
         let mut value = value.clone();
@@ -1062,6 +1083,8 @@ fn a_draft_closed_by_its_parents_deletion_is_reopened_and_moved_off_the_restored
         recorded[0]["payload"],
         json!({"change_url": url(child), "restored_base": "feature/a", "at": parent_head})
     );
+    assert_eq!(recorded[0]["phase"], "review");
+    assert_eq!(recorded[0]["labels"]["identity"], IDENTITY);
 
     // The root carries the parent now: merge it in, push, and move off the restored base.
     let checkout = &stack.checkout;

@@ -59,6 +59,24 @@ whichever call wrote it — which is what lets a consumer drive a whole closeout
 (`session_change` → `describe_change` → `publish`) against these hosts and read
 back what it wrote.
 
+## A person's moves, and the ledger of every call
+
+The host keeps `HostState::ledger`: every `RemoteHost` method it answers writes one
+`HostCall` — the method, the change requests it names, and what GitHub charges the call
+the real host sends (`landings.rs` holds the charges). **A method added to `RemoteHost`
+records itself here and joins the list in
+`the_ledger_records_a_call_to_every_method_the_host_interface_declares`**, which calls each
+one and holds the ledger to naming exactly that list — a consumer sums the ledger over a
+whole review round, and a method missing from it is a cost nobody sees. `mergeability` and
+`visibility` are implemented only to be recorded: they answer the trait's default
+refusal, which is what this host always answered.
+
+What people do on the host — merging (`merge_by_person`), deleting a merged head and
+closing or retargeting what was based on it, closing unmerged, retargeting — are
+`Host` methods rather than trait methods, and write nothing to the ledger: nobody on
+this host made a call. The verdict a standing carries mirrors `onevcs`'s private
+`publish::checks_verdict`; change one and change the other.
+
 ## One behaviour, two stores
 
 `MemoryVcs` / `FileVcs` and `MemoryHost` / `FileHost` are type aliases over one

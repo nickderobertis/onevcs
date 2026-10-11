@@ -5208,7 +5208,8 @@ an error. With `remove_restored_base`, it deletes the previous base branch after
 (`git push --delete`, leased on the tip it read), and is refused when that branch is not
 one `reopen_change` restored on this change request — a `change-reopened` on its own
 stream naming it — or when the change request already targets `base`, so no base is left
-behind.
+behind. `cost` is the reads of the change request and the write; the boundary check's own
+read of the repository's visibility is the boundary's, as it is for every write.
 
 **Recovery of a draft the host closed.** Deleting a merged parent's branch through
 GitHub's refs API **closes** the drafts based on it rather than retargeting them, and a
@@ -5242,7 +5243,11 @@ nothing pushed as `Error::UnrecordedChangeHead` when this host holds no record, 
 caller can tell that from a mismatch and fall back to a standings read or a checked
 publication. `defer_checks` without `adopt`, `adopt` without `defer_checks`, either with a
 draft reason, under any other policy, or with an `adopt` of another repository is refused
-with nothing pushed. A publication without either is unchanged.
+with nothing pushed. Its push still passes the public-remote boundary check first, and
+because it asks the host nothing the check reads the destination's visibility as this
+host last recorded it — a rule's, or the host's answer at an earlier write — rather than
+probing the host, and screens a hosted destination with no recorded answer. A
+publication without either is unchanged.
 
 **Events.** Each `change_standings` or `review_standings` call that returns emits one
 `change-standings-read` `{repo, count, landed: [url], cost: {graphql_points,

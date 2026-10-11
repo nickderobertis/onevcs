@@ -235,6 +235,49 @@ things are easy to undo.
   refuses any query but the one `review/github.rs` sends. Change the query, change the
   fake's list of what it must ask for.
 
+## Where a stack of drafts stands, and the moves that keep it true to the host
+
+`standings.rs` is `change_standings`, `review_standings`, `retarget_change` and
+`reopen_change` (`onevcs change standings|retarget|reopen`); `standings/github.rs` is the
+GitHub transport. The amendment in `docs/contract.md` is the surface, and `op-readjust`
+restates it. Six things are easy to undo.
+
+- **One query per 50, and the required set rides in it.** Each alias reads its base
+  ref's rulesets and classic protection beside its rollup, so no read is made per base
+  or per change request; a `required_checks_on` call added here breaks the one-query
+  journey and the measured cost. The fake charges by GitHub's published rule over the
+  query text (`standings_host.rs`'s `cost_of`), so a query that grows a connection is
+  charged for it there too — re-check the measured figures (1 a query of up to 50; 6
+  over ten and 3 over five with reviews) after changing one.
+- **The verdict is the watch's, through one function.** `publish::checks_verdict` is
+  what a standing is classified by and what `settle_ready` decides through. A second
+  classifier in this crate is the drift the criterion forbids; `onevcs-testing` keeps a
+  mirror, held to the e2e journey's answers by its own.
+- **A landing found on the host is a late merge recorded.** `release::reconcile_landing`
+  writes it, on `LandingStream::Opened` where a stream here opened the change request and
+  on `Own` — the change request's own stream, labelled with the identity, the record
+  naming the branch — otherwise. That label and that field are what make the landing
+  tiers read it as the branch's; drop either and `landing_status` answers from content.
+  A landing at the same commit already recorded is not written again.
+- **What a read saw of each head is kept** under `$ONEVCS_HOME/change-heads/`, because a
+  publication with `defer_checks` asks the host nothing and reads its draft's head branch
+  from this host's newest record (that file or a `change-opened`). No record is
+  `Error::UnrecordedChangeHead`, its own kind by the manager's ruling. Its boundary check
+  reads the visibility this host last recorded (`guard_publication_unasked`) rather than
+  probing — the one write that does, and only because it may make no call at all.
+- **Retarget and reopen read the standing before and after they write**, and refuse a
+  draft state that changed: the write's answer is not trusted to say so. A base's
+  existence is asked of the origin through the publication checkout, never of the host.
+- **The restoring push is inside `preserve`'s `--no-verify` exception**
+  (`git::restore_remote_branch`), leased on the branch not existing, and
+  `remove_restored_base` deletes only a base a `change-reopened` on that change
+  request's own stream names.
+
+The fake host answers the standings query and the two `PATCH` routes from
+`review_host.rs` (`standings_host.rs`), out of the same `pr-<n>.env` records
+`fixtures/gh` keeps, and both write `gh-state/ledger.ndjson` — the call ledger a journey
+slices around one call to assert it made exactly the calls it should.
+
 ## A branch outlives its session, so a retried session says who continued it
 
 `workspace::Record::retried_by` names the session that continued this one's branch,
