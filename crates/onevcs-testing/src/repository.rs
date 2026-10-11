@@ -426,6 +426,37 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     emissions,
                 )
             };
+            // A publication that defers its checks asks the host nothing: everything it
+            // decides is decided here, from what this provider holds, and it is refused
+            // whole — before anything is recorded — exactly where the real one refuses.
+            if request.defer_checks || request.adopt.is_some() {
+                let approvals = state.approvals.unwrap_or(DEFAULT_APPROVALS);
+                let adopt = deferred(
+                    state, &session, &identity, request, policy, approvals, token,
+                )?;
+                let number = adopt
+                    .path_segments()
+                    .and_then(|mut segments| segments.nth(3))
+                    .unwrap_or_default()
+                    .to_owned();
+                let emission = Emission {
+                    stream: token.0.clone(),
+                    identity: Some(identity.clone()),
+                    kind: EventKind::ChangeOpened,
+                    payload: object(json!({
+                        "url": adopt.to_string(),
+                        "host": "github",
+                        "id": number,
+                        "base": session.base,
+                    })),
+                };
+                let (publication, emissions) = published(
+                    PublishOutcome::ChangeReviewDraftUnchecked(adopt),
+                    vec![emission],
+                );
+                state.publications.push(publication.clone());
+                return Ok((publication, emissions));
+            }
             // A session that has already landed has nothing the base does not carry,
             // which is what the real implementation reports for the same reason. One
             // whose change request is merely open or queued has *not* landed, and
@@ -590,6 +621,88 @@ fn slug(identity: &str) -> Option<String> {
         return None;
     }
     Some(format!("{owner}/{name}"))
+}
+
+/// The draft a deferred publication pushes into, held to what the real implementation
+/// holds it to: `adopt` named, no draft reason, a policy that keeps the change request
+/// for review, a change request of the session's repository, and this provider's newest
+/// record of it — a publication of it, which is the record a repository side keeps here
+/// — naming the session's branch. With no record at all the refusal is
+/// [`Error::UnrecordedChangeHead`], as there. A standings read's record is the real
+/// state root's, which a provider does not read.
+fn deferred(
+    state: &VcsState,
+    session: &Session,
+    identity: &str,
+    request: &PublishRequest,
+    policy: MergePolicy,
+    approvals: Approvals,
+    token: &SessionToken,
+) -> Result<url::Url> {
+    let refused = |reason: String| Error::Invalid { reason };
+    let adopt = match (request.defer_checks, &request.adopt) {
+        (true, Some(adopt)) => adopt,
+        (true, None) => {
+            return Err(refused(
+                "--defer-checks publishes into a draft that is already open: name it with \
+                 --adopt <URL>. Nothing was pushed"
+                    .to_owned(),
+            ))
+        }
+        (false, _) => {
+            return Err(refused(
+                "--adopt names the draft a --defer-checks publication pushes into, and this \
+                 publication does not defer its checks. Nothing was pushed"
+                    .to_owned(),
+            ))
+        }
+    };
+    if request.draft.is_some() {
+        return Err(refused(
+            "--defer-checks pushes into a draft held for review, and a draft reason asks for a \
+             different draft. Nothing was pushed"
+                .to_owned(),
+        ));
+    }
+    if policy != MergePolicy::ChangeOpen || approvals != Approvals::Required {
+        return Err(refused(format!(
+            "--defer-checks is for a change request held for review — a change-open identity \
+             whose approvals are required — and {identity} does not hold this one for review. \
+             Nothing was pushed"
+        )));
+    }
+    let expected = slug(identity).map(|slug| format!("https://{DEFAULT_HOST}/{slug}/pull/"));
+    if !expected.is_some_and(|prefix| adopt.as_str().starts_with(&prefix)) {
+        return Err(refused(format!(
+            "{adopt} is not a change request of {identity}. Nothing was pushed"
+        )));
+    }
+    let recorded = state.publications.iter().rev().find_map(|earlier| {
+        let carried = match &earlier.outcome {
+            PublishOutcome::ChangeOpen(url)
+            | PublishOutcome::ChangeDraft(url)
+            | PublishOutcome::ChangeReviewDraft(url)
+            | PublishOutcome::ChangeReviewDraftUnchecked(url)
+            | PublishOutcome::Queued(url) => Some(url),
+            _ => None,
+        };
+        (carried == Some(adopt)).then(|| earlier.branch.clone())
+    });
+    match recorded {
+        Some(branch) if branch == session.branch => Ok(adopt.clone()),
+        Some(branch) => Err(refused(format!(
+            "{adopt} carries {branch:?} by this provider's newest record of it, and session {} \
+             is on {:?}. Nothing was pushed",
+            token.0, session.branch
+        ))),
+        None => Err(Error::UnrecordedChangeHead {
+            change: adopt.to_string(),
+            reason: format!(
+                "this provider holds no record of which branch {adopt} carries, and a \
+                 --defer-checks publication asks the host nothing. Nothing was pushed"
+            ),
+        }),
+    }
 }
 
 /// Record that a `local-direct` publication landed — record, and nothing more.

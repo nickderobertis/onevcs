@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v20-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v20-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v21-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v21-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v20.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v20.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v21.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v21.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
@@ -113,6 +113,10 @@ const HOST_OPTIONAL: &[&str] = &[
     "review_comments",
     "replies",
     "review_charges",
+    "closed",
+    "deleted_branches",
+    "head_checks",
+    "ledger",
 ];
 
 #[test]
@@ -234,6 +238,51 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
 }
 
 /// The same two scenarios as the build before review feedback wrote them.
+const HOST_V20: &str = include_str!("../golden/host-state-v20.json");
+const VCS_V20: &str = include_str!("../golden/vcs-state-v20.json");
+
+#[test]
+fn a_version_20_document_reads_as_a_host_nobody_closed_anything_on_and_is_written_back_at_this_one()
+{
+    // A consumer's checked-in scenario, written by the build before a stack's landings:
+    // version 21 is the adding of a host's closings, deleted branches, per-head checks
+    // and call ledger, and a version 20 document holds none of them — which is what that
+    // build recorded. So it reads as a host on which nothing was closed or deleted and
+    // which has answered no call, and the next write declares this version.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    assert!(
+        HOST_V20.contains(r#""version": 20"#) && !HOST_V20.contains("ledger"),
+        "the previous document is the one with no ledger, or it proves nothing"
+    );
+    std::fs::write(home.path("vcs.json"), VCS_V20).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V20).expect("a document a previous build wrote");
+    FileVcs::create(home.path("vcs.json")).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    assert!(
+        state.closed.is_empty()
+            && state.deleted_branches.is_empty()
+            && state.head_checks.is_empty()
+            && state.ledger.is_empty()
+    );
+    let change = state.changes[0].id.clone();
+    let read = host
+        .for_repo("acme-corp/widgets")
+        .expect("a host")
+        .change_standings("main", std::slice::from_ref(&change))
+        .expect("the host reads");
+    assert_eq!(read.standings.len(), 1);
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && written.contains(r#""ledger""#)
+            && !written.contains(r#""closed""#),
+        "carried forward at this version, spelling only what it holds: {written}"
+    );
+}
+
 const HOST_V19: &str = include_str!("../golden/host-state-v19.json");
 const VCS_V19: &str = include_str!("../golden/vcs-state-v19.json");
 
