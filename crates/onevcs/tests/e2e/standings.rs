@@ -1025,6 +1025,14 @@ fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_
             }]))}),
             "without its databaseId",
         ),
+        (
+            json!({"rulesets": null}),
+            "without the repository's rulesets",
+        ),
+        (
+            json!({"branchProtectionRules": null}),
+            "without its branch protection rules",
+        ),
     ];
     for (declarations, says) in malformed {
         world.host_declarations(&declarations);
@@ -1075,7 +1083,9 @@ fn a_declaration_read_in_part_leaves_a_base_pending_and_one_that_requires_nothin
     world.host_declarations(&json!({"rulesets": page(false, json!([
         ruleset("EVALUATE", page(false, requires_ci)),
         ruleset("ACTIVE", page(false, json!([{"type": "DELETION", "parameters": null}]))),
-    ]))}));
+    ])), "branchProtectionRules": page(false, json!([{
+        "databaseId": 1, "pattern": "main", "requiredStatusCheckContexts": null,
+    }]))}));
     let read = stack.standings("main", &[draft]);
     assert_eq!(
         standing(&read, draft)["checks"],
@@ -1146,6 +1156,10 @@ fn a_change_request_the_host_describes_incompletely_is_refused_and_records_nothi
     let malformed = [
         (json!({"url": "not a url"}), "which is not one"),
         (json!({"url": null}), "without its url"),
+        (
+            json!({"url": url(9)}),
+            "where 1 were asked about, or not in the order asked",
+        ),
         (
             json!({"headRefOid": ""}),
             "without the commit its head is at",
@@ -1697,6 +1711,169 @@ fn a_reopen_of_a_change_request_that_is_not_closed_or_at_a_commit_nobody_has_wri
     for number in [parent, child, open] {
         assert!(kinds(&change_events(world, number), "change-reopened").is_empty());
     }
+}
+
+/// Make the substituted host misbehave in the way `flag` names (`standings_host.rs`).
+fn host_misbehaves(world: &World, flag: &str) {
+    std::fs::write(world.path(format!("gh-state/{flag}")), "").expect("a host flag");
+}
+
+fn host_behaves(world: &World, flag: &str) {
+    std::fs::remove_file(world.path(format!("gh-state/{flag}"))).expect("a host flag");
+}
+
+#[test]
+fn a_host_that_answers_a_move_or_a_reopen_other_than_as_asked_is_refused() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    stack.branch("feature/b", "feature/a", "b.txt");
+    stack.open("feature/a", "main", true);
+    let child = stack.open("feature/b", "feature/a", true);
+
+    // A move the host answers by marking the draft ready is refused: this crate never
+    // changes a change request's draft state.
+    host_misbehaves(world, "patch-readies");
+    refused(
+        &stack.retarget(child, "main", &[]),
+        2,
+        "answered it ready for review where it was a draft",
+    );
+    host_behaves(world, "patch-readies");
+    std::fs::remove_file(world.path(format!("gh-state/ready-{child}"))).expect("the ready mark");
+    // A move the host answers with some other base is refused as it is answered.
+    host_misbehaves(world, "patch-misreports-base");
+    refused(
+        &stack.retarget(child, "feature/a", &[]),
+        2,
+        "and answered its base as Some(\"elsewhere\")",
+    );
+    host_behaves(world, "patch-misreports-base");
+    assert!(
+        kinds(&change_events(world, child), "change-retargeted").is_empty(),
+        "a call that fails records nothing"
+    );
+
+    // A draft its parent's deletion closed, reopened by a host that says it did not, says
+    // it did and did not, and does but marks it ready: each is refused.
+    let parent_head = stack.branch("feature/c", "main", "c.txt");
+    stack.branch("feature/d", "feature/c", "d.txt");
+    let parent = stack.open("feature/c", "main", true);
+    let closed = stack.open("feature/d", "feature/c", true);
+    world.person_merges(
+        parent,
+        PersonMerge::Squash,
+        MERGED_AT,
+        HeadAfter::Deleted(Dependants::Closed),
+    );
+    for (flag, says) in [
+        (
+            "reopen-ignored",
+            "and answered its state as Some(\"closed\")",
+        ),
+        ("reopen-misreported", "and still reports it closed"),
+        ("patch-readies", "ready for review where it was a draft"),
+    ] {
+        host_misbehaves(world, flag);
+        refused(&stack.reopen(closed, &parent_head), 2, says);
+        host_behaves(world, flag);
+        // The restored base stays restored, as the refusal says; take it away again.
+        world.git(&stack.origin, &["update-ref", "-d", "refs/heads/feature/c"]);
+    }
+    assert!(kinds(&change_events(world, closed), "change-reopened").is_empty());
+}
+
+#[test]
+fn an_origin_that_declines_a_restore_or_a_deletion_is_reported_as_declined() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let parent_head = stack.branch("feature/a", "main", "a.txt");
+    stack.branch("feature/b", "feature/a", "b.txt");
+    let parent = stack.open("feature/a", "main", true);
+    let child = stack.open("feature/b", "feature/a", true);
+    world.person_merges(
+        parent,
+        PersonMerge::Squash,
+        MERGED_AT,
+        HeadAfter::Deleted(Dependants::Closed),
+    );
+    // The origin declines every push while a file beside it says so.
+    let declining = stack.origin.join("declining");
+    let hook = stack.origin.join("hooks/pre-receive");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nif [ -e '{}' ]; then echo 'declined by policy' >&2; exit 1; fi\n",
+            declining.display()
+        ),
+    )
+    .expect("a pre-receive hook");
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("an executable hook");
+
+    std::fs::write(&declining, "").expect("the origin declines");
+    let before = world.ledger().len();
+    refused(
+        &stack.reopen(child, &parent_head),
+        1,
+        "declined restoring \"feature/a\"",
+    );
+    assert!(
+        writes(&since(world, before)).is_empty(),
+        "nothing was reopened"
+    );
+    assert_eq!(world.change_request(child)["CLOSED"], "true");
+
+    std::fs::remove_file(&declining).expect("the origin accepts");
+    succeeded(&stack.reopen(child, &parent_head));
+    std::fs::write(&declining, "").expect("the origin declines");
+    refused(
+        &stack.retarget(child, "main", &["--remove-restored-base"]),
+        1,
+        "the origin declined to delete the restored base \"feature/a\"",
+    );
+    assert!(
+        stack.origin_refs().contains("refs/heads/feature/a "),
+        "the restored base stays"
+    );
+}
+
+#[test]
+fn an_origin_that_will_not_list_its_branches_stops_a_retarget_before_it_writes() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    let away = stack.origin.with_extension("away");
+    std::fs::rename(&stack.origin, &away).expect("the origin moves away");
+    let before = world.ledger().len();
+    let output = stack.retarget(draft, "release", &[]);
+    std::fs::rename(&away, &stack.origin).expect("the origin comes back");
+    refused(&output, 2, "would not list its branches");
+    assert!(writes(&since(world, before)).is_empty());
+}
+
+#[test]
+fn a_standings_answer_without_its_data_or_its_charge_is_refused() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/a", "main", "a.txt");
+    let draft = stack.open("feature/a", "main", true);
+    for (answer, says) in [
+        (json!({}), "answered the standings read with no data"),
+        (
+            json!({"data": {"repository": {}}}),
+            "without what it charged for it",
+        ),
+    ] {
+        std::fs::write(
+            world.path("gh-state/standings-answer.json"),
+            answer.to_string(),
+        )
+        .expect("the host's answer");
+        refused(&stack.standings_output("main", &[url(draft)], &[]), 2, says);
+    }
+    assert!(standings_events(world).is_empty());
 }
 
 /// The public boundary fixture's repository, with a private one registered beside it,

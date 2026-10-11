@@ -299,6 +299,11 @@ impl Model {
         let reviews = query.contains("reviewThreads(first: 50)");
         let cost = cost_of(query);
         self.charged = Some(cost);
+        // A journey's own answer for the whole query — how an answer GitHub's schema
+        // would not give is served.
+        if let Ok(text) = std::fs::read_to_string(self.state.join("standings-answer.json")) {
+            return (text, String::new(), 0);
+        }
         let mut repository = serde_json::Map::new();
         // The repository's declarations, where the query asks for them — which the first
         // query of a call does, and no other.
@@ -325,7 +330,14 @@ impl Model {
             if let Ok(text) = std::fs::read_to_string(stated) {
                 let stated: serde_json::Map<String, Value> =
                     serde_json::from_str(&text).expect("a journey's declarations");
-                repository.extend(stated);
+                // `null` leaves the key out of the answer altogether.
+                for (key, value) in stated {
+                    if value.is_null() {
+                        repository.remove(&key);
+                    } else {
+                        repository.insert(key, value);
+                    }
+                }
             }
         }
         for (at, number) in aliased_numbers(query).into_iter().enumerate() {
@@ -585,7 +597,11 @@ impl Model {
                      it cannot be reopened (HTTP 422)",
                 );
             }
-            let _ = std::fs::remove_file(self.state.join(format!("closed-{number}")));
+            // A host that accepts a reopen and leaves it closed, answering that it did
+            // (`reopen-ignored`) or that it reopened it (`reopen-misreported`).
+            if !self.flag("reopen-ignored") && !self.flag("reopen-misreported") {
+                let _ = std::fs::remove_file(self.state.join(format!("closed-{number}")));
+            }
         }
         if let Some(base) = call.fields.get("base") {
             if merged {
@@ -614,9 +630,21 @@ impl Model {
             )
             .expect("a change request's body");
         }
+        // A host that marks what it moves or reopens ready for review.
+        if self.flag("patch-readies") {
+            std::fs::write(self.state.join(format!("ready-{number}")), "")
+                .expect("a change request's ready mark");
+        }
         let record = self.record(number).expect("a change request's record");
         let field = |key: &str| record.get(key).cloned().unwrap_or_default();
-        let open = !self.flag(&format!("closed-{number}")) && !merged;
+        let open =
+            (!self.flag(&format!("closed-{number}")) || self.flag("reopen-misreported")) && !merged;
+        // A host that answers a base other than the one it holds.
+        let base = if self.flag("patch-misreports-base") {
+            "elsewhere".to_owned()
+        } else {
+            field("PR_BASE")
+        };
         let answer = json!({
             "number": number,
             "html_url": field("PR_URL"),
@@ -624,7 +652,7 @@ impl Model {
             "draft": field("PR_DRAFT") == "1" && !self.flag(&format!("ready-{number}")),
             "merged": merged,
             "body": self.body_of(number),
-            "base": {"ref": field("PR_BASE")},
+            "base": {"ref": base},
             "head": {"ref": field("PR_HEAD"), "sha": field("PR_HEAD_SHA")},
         });
         (format!("{answer}\n"), String::new(), 0)
