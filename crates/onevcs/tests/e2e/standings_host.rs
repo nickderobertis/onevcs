@@ -247,8 +247,7 @@ impl Model {
         for wanted in [
             "rateLimit { cost }",
             "isDraft body baseRefName headRefName headRefOid mergedAt mergeCommit { oid }",
-            "requiredStatusChecks { context }",
-            "branchProtectionRule { requiredStatusCheckContexts }",
+            "baseRef { name }",
             "statusCheckRollup { contexts(first: 100)",
             "isRequired(pullRequestNumber: ",
         ] {
@@ -262,6 +261,26 @@ impl Model {
         let cost = cost_of(query);
         self.charged = Some(cost);
         let mut repository = serde_json::Map::new();
+        // The repository's declarations, where the query asks for them — which the first
+        // query of a call does, and no other.
+        if query.contains("rulesets(first: ") {
+            for wanted in [
+                "defaultBranchRef { name }",
+                "refName { include exclude }",
+                "requiredStatusChecks { context }",
+                "branchProtectionRules(first: 100)",
+                "pattern requiredStatusCheckContexts",
+            ] {
+                if !query.contains(wanted) {
+                    return refused(&format!(
+                        "fake gh: the declarations read does not ask for {wanted:?}"
+                    ));
+                }
+            }
+            for (key, value) in self.declarations() {
+                repository.insert(key, value);
+            }
+        }
         for (at, number) in aliased_numbers(query).into_iter().enumerate() {
             let Some(node) = self.standing(number, reviews) else {
                 return refused(&format!(
@@ -274,6 +293,89 @@ impl Model {
         let answer = json!({"data": {"rateLimit": {"cost": cost}, "repository": repository}});
         let _ = call;
         (format!("{answer}\n"), String::new(), 0)
+    }
+
+    /// The repository's declarations as the first query of a call reads them: one
+    /// ruleset per base a journey stated a requirement for, one applying to every other
+    /// branch with what the repository's rows mark required, and classic protection
+    /// applying to every branch where the world declares some — exactly what
+    /// [`required_on`](Self::required_on) answers for each base.
+    fn declarations(&self) -> Vec<(String, Value)> {
+        let ruleset = |include: Vec<String>, exclude: Vec<String>, checks: Vec<String>| {
+            let rules = if checks.is_empty() {
+                Vec::new()
+            } else {
+                vec![json!({
+                    "type": "REQUIRED_STATUS_CHECKS",
+                    "parameters": {"requiredStatusChecks": checks
+                        .iter()
+                        .map(|context| json!({"context": context}))
+                        .collect::<Vec<_>>()},
+                })]
+            };
+            json!({
+                "target": "BRANCH",
+                "enforcement": "ACTIVE",
+                "conditions": {"refName": {"include": include, "exclude": exclude}},
+                "rules": {"pageInfo": {"hasNextPage": false}, "nodes": rules},
+            })
+        };
+        let stated: Vec<String> = std::fs::read_dir(self.state.join("required"))
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut rulesets: Vec<Value> = stated
+            .iter()
+            .map(|base| {
+                ruleset(
+                    vec![format!("refs/heads/{base}")],
+                    Vec::new(),
+                    self.required_on(base),
+                )
+            })
+            .collect();
+        let marked: Vec<String> = rows_in(&self.state.join("checks.rows"))
+            .into_iter()
+            .filter(|row| row.required)
+            .map(|row| row.name)
+            .collect();
+        rulesets.push(ruleset(
+            vec!["~ALL".to_owned()],
+            stated
+                .iter()
+                .map(|base| format!("refs/heads/{base}"))
+                .collect(),
+            marked,
+        ));
+        let classic = self.state.join("classic-protection");
+        let protection: Vec<Value> = if classic.is_file() {
+            vec![json!({
+                "pattern": "**",
+                "requiredStatusCheckContexts": std::fs::read_to_string(classic)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>(),
+            })]
+        } else {
+            Vec::new()
+        };
+        vec![
+            ("defaultBranchRef".to_owned(), json!({"name": "main"})),
+            (
+                "rulesets".to_owned(),
+                json!({"pageInfo": {"hasNextPage": false}, "nodes": rulesets}),
+            ),
+            (
+                "branchProtectionRules".to_owned(),
+                json!({"pageInfo": {"hasNextPage": false}, "nodes": protection}),
+            ),
+        ]
     }
 
     /// One change request as an alias of the standings query answers it.
@@ -297,29 +399,7 @@ impl Model {
         };
         let required: BTreeSet<String> = self.required_on(&base).into_iter().collect();
         let base_ref = if self.holds(&base) {
-            let classic = self.state.join("classic-protection");
-            let protection = if classic.is_file() {
-                json!({"requiredStatusCheckContexts": std::fs::read_to_string(classic)
-                    .unwrap_or_default()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>()})
-            } else {
-                Value::Null
-            };
-            let rules = if required.is_empty() {
-                Vec::new()
-            } else {
-                vec![json!({
-                    "type": "REQUIRED_STATUS_CHECKS",
-                    "parameters": {"requiredStatusChecks": required
-                        .iter()
-                        .map(|context| json!({"context": context}))
-                        .collect::<Vec<_>>()},
-                })]
-            };
-            json!({"name": base, "rules": {"nodes": rules}, "branchProtectionRule": protection})
+            json!({"name": base})
         } else {
             Value::Null
         };

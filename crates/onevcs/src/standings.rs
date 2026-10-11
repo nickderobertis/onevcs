@@ -58,8 +58,8 @@ use crate::{git, home, ids, publish, release, review, status, store};
 pub(crate) mod github;
 
 /// How many change requests one standings query reads: GitHub's published cost rule
-/// charges a query whose connections ask for at most 100 nodes one point, and each
-/// change request's rollup and its base's rules are two connections.
+/// charges a query whose connections ask for under 150 nodes one point, and 50 rollups
+/// with the repository's declarations beside them are 77.
 pub(crate) const STANDINGS_BATCH: usize = 50;
 
 /// How many change requests one review-and-standings query reads: the most

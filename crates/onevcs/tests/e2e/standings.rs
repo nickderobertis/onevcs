@@ -646,6 +646,79 @@ fn a_hundred_and_twenty_change_requests_are_three_queries_and_no_rest_request() 
 }
 
 #[test]
+fn drafts_sharing_a_base_read_its_required_set_once_per_call_across_batches() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:release"]);
+    let on_main = stack.branch("feature/on-main", "main", "on-main.txt");
+    let on_release = stack.branch("feature/on-release", "release", "on-release.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_requires_on("release", &[]);
+    world.host_checks_on(&on_main, &[check("ci", "success", true)]);
+    world.host_checks_on(&on_release, &[check("lint", "success", false)]);
+    // Alternating, so every batch — the third, of ten, included — carries both bases.
+    let numbers: Vec<usize> = (0..110)
+        .map(|at| match at % 2 {
+            0 => stack.open("feature/on-main", "main", true),
+            _ => stack.open("feature/on-release", "release", true),
+        })
+        .collect();
+
+    let calls_before = world.host_calls().len();
+    let before = world.ledger().len();
+    let read = stack.standings("main", &numbers);
+    let ledger = since(world, before);
+    let methods: Vec<&str> = ledger
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(methods, ["graphql standings"; 3], "{ledger:#?}");
+    assert_eq!(read["cost"], charged(&ledger));
+    assert_eq!(
+        read["cost"],
+        json!({"graphql_points": 3, "rest_requests": 0})
+    );
+
+    // What the three queries asked: the repository's declarations once, in the first,
+    // and never a base's rules under any alias.
+    let queries: Vec<String> = world
+        .host_calls()
+        .into_iter()
+        .skip(calls_before)
+        .filter(|call| call.starts_with("api graphql") && call.contains("statusCheckRollup"))
+        .collect();
+    assert_eq!(queries.len(), 3);
+    let counted = |needle: &str| -> Vec<usize> {
+        queries
+            .iter()
+            .map(|query| query.matches(needle).count())
+            .collect()
+    };
+    assert_eq!(counted("rulesets(first: "), [1, 0, 0]);
+    assert_eq!(counted("branchProtectionRules(first: "), [1, 0, 0]);
+    assert_eq!(
+        counted("rules(first: "),
+        [1, 0, 0],
+        "a ruleset's rules, once"
+    );
+    assert_eq!(counted("branchProtectionRule {"), [0, 0, 0]);
+    assert_eq!(counted("baseRef { name }"), [50, 50, 10]);
+
+    // And every draft's verdict is its base's, the third batch's as much as the first's.
+    for (at, number) in numbers.iter().enumerate() {
+        let expected = match at % 2 {
+            0 => json!({"verdict": "passed"}),
+            _ => json!({"verdict": "none-required"}),
+        };
+        assert_eq!(
+            standing(&read, *number)["checks"],
+            expected,
+            "draft {number}"
+        );
+    }
+}
+
+#[test]
 fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;

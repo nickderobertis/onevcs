@@ -4,12 +4,19 @@
 //! **One query per 50 change requests.** Each change request is one alias of
 //! `repository { pullRequest(number:) }`, carrying its state, merge commit and time,
 //! base and head ref, head oid, draft flag and body; its head commit's status-check
-//! rollup, each context saying whether it is required for that change request; and its
-//! base ref's rulesets and classic protection, which is what the host declares a merge
-//! into that base requires — read with the change request, so no second call is made
-//! for it and the verdict of a base the origin no longer has is read off the rollup's
-//! own marking. Two connections a change request — the rollup's contexts and the base's
-//! rules — is 100 per 50, which GitHub's published rule charges one point.
+//! rollup, each context saying whether it is required for that change request; and
+//! whether its base ref still exists.
+//!
+//! **Each distinct base's required set is read once per call.** The first query of a
+//! call also reads the repository's declarations — its rulesets with the refs each
+//! applies to, and its classic branch-protection rules with their patterns — and every
+//! base any change request of the call targets, in that batch or a later one, has its
+//! required set derived from that one read, once, and remembered for the call. So drafts
+//! sharing a base never read its rules again, and no second call is made for them. A
+//! base the origin no longer has has no declaration to apply, so its verdict is read off
+//! the rollup's own marking. One connection a change request — the rollup's contexts —
+//! and the declarations' 27 (25 rulesets of 25 rules each, and the classic rules) keep a
+//! query of 50 at 77 requests, which GitHub's published rule charges one point.
 //!
 //! **The review read rides the same query.** With reviews asked for, each alias also
 //! carries the three connections `review::github` reads — threads, conversation
@@ -20,6 +27,8 @@
 //!
 //! **What a read cost is read off the responses themselves**, as every GraphQL read in
 //! this crate is: each query asks for `rateLimit { cost }`.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 use url::Url;
@@ -33,11 +42,19 @@ use crate::host::{reported_time, ChangeId, Check, Sha};
 use crate::publish::{checks_verdict, Declared};
 use crate::review::{github as review_github, ReadCost, ReadMarker, ReviewRead};
 
-/// What every alias reads of its change request and of its base.
+/// What every alias reads of its change request, and whether its base still exists.
 pub(crate) const PULL_FIELDS: &str = "url number state isDraft body baseRefName headRefName \
-headRefOid mergedAt mergeCommit { oid } baseRef { name rules(first: 25) { nodes { type \
-parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } \
-branchProtectionRule { requiredStatusCheckContexts } }";
+headRefOid mergedAt mergeCommit { oid } baseRef { name }";
+
+/// What the host declares a merge into any of its branches requires, read once per call
+/// at the repository: its rulesets with the refs each applies to, and its classic
+/// protection rules with the branch patterns each applies to.
+pub(crate) const DECLARATION_FIELDS: &str = "defaultBranchRef { name } rulesets(first: 25, \
+includeParents: true) { pageInfo { hasNextPage } nodes { target enforcement conditions { \
+refName { include exclude } } rules(first: 25) { pageInfo { hasNextPage } nodes { type \
+parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } } \
+branchProtectionRules(first: 100) { pageInfo { hasNextPage } nodes { pattern \
+requiredStatusCheckContexts } }";
 
 /// The three review connections each alias reads with reviews asked for, at the page
 /// sizes `review::github::QUERY` reads them at.
@@ -62,12 +79,17 @@ fn rollup_fields(number: u64) -> String {
     )
 }
 
-/// The one query document a batch is: one alias per change request, `c<index>`.
-pub(crate) fn query(numbers: &[u64], reviews: bool) -> String {
+/// The one query document a batch is: one alias per change request, `c<index>`, and —
+/// for the first batch of a call — the repository's declarations.
+pub(crate) fn query(numbers: &[u64], reviews: bool, declarations: bool) -> String {
     let mut text = String::from(
         "query($owner: String!, $name: String!) { rateLimit { cost } repository(owner: $owner, \
          name: $name) {",
     );
+    if declarations {
+        text.push(' ');
+        text.push_str(DECLARATION_FIELDS);
+    }
     for (at, number) in numbers.iter().enumerate() {
         text.push_str(&format!(
             " c{at}: pullRequest(number: {number}) {{ {PULL_FIELDS} {}{} }}",
@@ -95,11 +117,20 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
         .collect::<Result<Vec<u64>>>()?;
     let mut standings = Vec::with_capacity(numbers.len());
     let mut cost = ReadCost::default();
-    for batch in numbers.chunks(STANDINGS_BATCH) {
-        let (data, points) = ask(repo, batch, false)?;
+    let mut required = Required::default();
+    for (index, batch) in numbers.chunks(STANDINGS_BATCH).enumerate() {
+        let (data, points) = ask(repo, batch, false, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
+        if index == 0 {
+            required.declared(&data)?;
+        }
         for (at, number) in batch.iter().enumerate() {
-            standings.push(standing(pull_of(&data, at, *number, repo)?, root, *number)?);
+            standings.push(standing(
+                pull_of(&data, at, *number, repo)?,
+                root,
+                *number,
+                &mut required,
+            )?);
         }
     }
     Ok(ChangeStandings { standings, cost })
@@ -119,15 +150,20 @@ pub(crate) fn read_with_reviews(
     let mut standings = Vec::with_capacity(numbers.len());
     let mut reads: Vec<ReviewRead> = Vec::with_capacity(numbers.len());
     let mut cost = ReadCost::default();
-    for (batch, targets) in numbers
+    let mut required = Required::default();
+    for (index, (batch, targets)) in numbers
         .chunks(REVIEW_BATCH)
         .zip(changes.chunks(REVIEW_BATCH))
+        .enumerate()
     {
-        let (data, points) = ask(repo, batch, true)?;
+        let (data, points) = ask(repo, batch, true, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
+        if index == 0 {
+            required.declared(&data)?;
+        }
         for (at, (number, (change, since))) in batch.iter().zip(targets).enumerate() {
             let pull = pull_of(&data, at, *number, repo)?;
-            standings.push(standing(pull, root, *number)?);
+            standings.push(standing(pull, root, *number, &mut required)?);
             let about = format!("pull request {number} of {repo}");
             let read = match review_github::first_page(pull)? {
                 Some(pages) => review_github::answer(&pages, since.as_ref(), &about)?,
@@ -207,7 +243,7 @@ pub(crate) fn reopen(repo: &str, change: &ChangeId) -> Result<ReadCost> {
 }
 
 /// One query of one batch, answered: its `data`, and what GitHub charged for it.
-fn ask(repo: &str, numbers: &[u64], reviews: bool) -> Result<(Value, u32)> {
+fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result<(Value, u32)> {
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| invalid(format!("{repo:?} does not name one repository")))?;
@@ -215,7 +251,7 @@ fn ask(repo: &str, numbers: &[u64], reviews: bool) -> Result<(Value, u32)> {
         "api",
         "graphql",
         "-f",
-        &format!("query={}", query(numbers, reviews)),
+        &format!("query={}", query(numbers, reviews, declarations)),
         "-f",
         &format!("owner={owner}"),
         "-f",
@@ -243,7 +279,12 @@ fn pull_of<'a>(data: &'a Value, at: usize, number: u64, repo: &str) -> Result<&'
 }
 
 /// One change request's standing, read out of its alias.
-fn standing(pull: &Value, root: &str, number: u64) -> Result<ChangeStanding> {
+fn standing(
+    pull: &Value,
+    root: &str,
+    number: u64,
+    required: &mut Required,
+) -> Result<ChangeStanding> {
     let text = |name: &str| -> Result<String> {
         pull.get(name)
             .and_then(Value::as_str)
@@ -305,7 +346,7 @@ fn standing(pull: &Value, root: &str, number: u64) -> Result<ChangeStanding> {
         }
     };
     let declared = match base_ref {
-        Some(found) => declared(found, number)?,
+        Some(_) => required.on(&base),
         None => Declared::Unknown(format!(
             "{base:?} is gone from the origin, so what a merge into it requires cannot be read"
         )),
@@ -324,48 +365,225 @@ fn standing(pull: &Value, root: &str, number: u64) -> Result<ChangeStanding> {
     })
 }
 
-/// What the host declares a merge into this base requires: every check its rulesets
-/// and its classic protection name, and nothing — completely — where neither names one.
-fn declared(base_ref: &Value, number: u64) -> Result<Declared> {
-    let rules = base_ref
-        .pointer("/rules/nodes")
+/// What the host declares, read once per call, and each base's required set derived
+/// from it — once per distinct base, and remembered for every later batch of the call.
+#[derive(Default)]
+struct Required {
+    /// The repository's declarations, or why they could not be read whole.
+    declarations: Option<std::result::Result<Declarations, String>>,
+    /// Each base's required set, once derived.
+    bases: BTreeMap<String, Declared>,
+}
+
+/// The repository's active branch rulesets and classic protection rules.
+struct Declarations {
+    default_branch: Option<String>,
+    rulesets: Vec<Ruleset>,
+    /// Each classic protection rule's branch pattern and the contexts it requires.
+    classic: Vec<(String, Vec<String>)>,
+}
+
+/// One active branch ruleset: the refs it applies to, and the checks it requires.
+struct Ruleset {
+    include: Vec<String>,
+    exclude: Vec<String>,
+    checks: Vec<String>,
+}
+
+impl Required {
+    /// Read the declarations out of the first query's answer.
+    fn declared(&mut self, data: &Value) -> Result<()> {
+        self.declarations = Some(Declarations::read(data)?);
+        Ok(())
+    }
+
+    /// What a merge into `base` requires: derived from the declarations the first time
+    /// `base` is asked about, and answered from that afterwards.
+    fn on(&mut self, base: &str) -> Declared {
+        if let Some(known) = self.bases.get(base) {
+            return known.clone();
+        }
+        let derived = match &self.declarations {
+            Some(Ok(declarations)) => declarations.on(base),
+            Some(Err(why)) => Declared::Unknown(why.clone()),
+            None => Declared::Unknown(
+                "the repository's declarations were not read on this call".to_owned(),
+            ),
+        };
+        self.bases.insert(base.to_owned(), derived.clone());
+        derived
+    }
+}
+
+impl Declarations {
+    /// The declarations the first query carried, or — where either source holds more
+    /// than one page — why what they require cannot be read whole.
+    fn read(data: &Value) -> Result<std::result::Result<Self, String>> {
+        let repository = data
+            .get("repository")
+            .ok_or_else(|| invalid("GitHub answered the standings read without its repository"))?;
+        let more = |connection: &Value| {
+            connection
+                .pointer("/pageInfo/hasNextPage")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        };
+        let rulesets = repository.get("rulesets").ok_or_else(|| {
+            invalid("GitHub answered the standings read without the repository's rulesets")
+        })?;
+        let classic = repository.get("branchProtectionRules").ok_or_else(|| {
+            invalid("GitHub answered the standings read without its branch protection rules")
+        })?;
+        if more(rulesets) || more(classic) {
+            return Ok(Err(
+                "the repository holds more rulesets or protection rules than one page of the \
+                 read, so what a merge into a base requires cannot be read whole"
+                    .to_owned(),
+            ));
+        }
+        let mut read = Declarations {
+            default_branch: repository
+                .pointer("/defaultBranchRef/name")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            rulesets: Vec::new(),
+            classic: Vec::new(),
+        };
+        for ruleset in nodes(rulesets, "rulesets")? {
+            let word = |name: &str| ruleset.get(name).and_then(Value::as_str);
+            if word("target") != Some("BRANCH") || word("enforcement") != Some("ACTIVE") {
+                continue;
+            }
+            let rules = ruleset
+                .get("rules")
+                .ok_or_else(|| invalid("GitHub answered a ruleset without its rules"))?;
+            if more(rules) {
+                return Ok(Err(
+                    "a ruleset holds more rules than one page of the read, so what a merge \
+                     into a base requires cannot be read whole"
+                        .to_owned(),
+                ));
+            }
+            let mut checks = Vec::new();
+            for rule in nodes(rules, "rules")? {
+                if rule.get("type").and_then(Value::as_str) != Some("REQUIRED_STATUS_CHECKS") {
+                    continue;
+                }
+                let required = rule
+                    .pointer("/parameters/requiredStatusChecks")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        invalid("a ruleset requires status checks and does not say which")
+                    })?;
+                checks.extend(
+                    required
+                        .iter()
+                        .filter_map(|check| check.get("context").and_then(Value::as_str))
+                        .map(str::to_owned),
+                );
+            }
+            let patterns = |key: &str| -> Vec<String> {
+                ruleset
+                    .pointer(&format!("/conditions/refName/{key}"))
+                    .and_then(Value::as_array)
+                    .map(|listed| {
+                        listed
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            read.rulesets.push(Ruleset {
+                include: patterns("include"),
+                exclude: patterns("exclude"),
+                checks,
+            });
+        }
+        for rule in nodes(classic, "branch protection rules")? {
+            let pattern = rule
+                .get("pattern")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("GitHub answered a protection rule without its pattern"))?;
+            let contexts = rule
+                .get("requiredStatusCheckContexts")
+                .and_then(Value::as_array)
+                .map(|listed| {
+                    listed
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            read.classic.push((pattern.to_owned(), contexts));
+        }
+        Ok(Ok(read))
+    }
+
+    /// Every check the declarations require of a merge into `base`, and nothing —
+    /// completely — where none of them names one.
+    fn on(&self, base: &str) -> Declared {
+        let reference = format!("refs/heads/{base}");
+        let applies = |pattern: &str| match pattern {
+            "~ALL" => true,
+            "~DEFAULT_BRANCH" => self.default_branch.as_deref() == Some(base),
+            spelled => glob(spelled, &reference),
+        };
+        let mut names = BTreeSet::new();
+        for ruleset in &self.rulesets {
+            if ruleset.include.iter().any(|pattern| applies(pattern))
+                && !ruleset.exclude.iter().any(|pattern| applies(pattern))
+            {
+                names.extend(ruleset.checks.iter().cloned());
+            }
+        }
+        for (pattern, contexts) in &self.classic {
+            if glob(pattern, base) {
+                names.extend(contexts.iter().cloned());
+            }
+        }
+        if names.is_empty() {
+            Declared::Nothing
+        } else {
+            Declared::Names(names)
+        }
+    }
+}
+
+fn nodes<'a>(connection: &'a Value, what: &str) -> Result<&'a Vec<Value>> {
+    connection
+        .get("nodes")
         .and_then(Value::as_array)
         .ok_or_else(|| {
             invalid(format!(
-                "GitHub answered pull request {number}'s base without its rules"
+                "GitHub answered the repository's {what} without its nodes"
             ))
-        })?;
-    let mut names = std::collections::BTreeSet::new();
-    for rule in rules {
-        if rule.get("type").and_then(Value::as_str) != Some("REQUIRED_STATUS_CHECKS") {
-            continue;
-        }
-        let required = rule
-            .pointer("/parameters/requiredStatusChecks")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "a ruleset on pull request {number}'s base requires status checks and does \
-                     not say which"
-                ))
-            })?;
-        for check in required {
-            if let Some(context) = check.get("context").and_then(Value::as_str) {
-                names.insert(context.to_owned());
-            }
+        })
+}
+
+/// Whether `name` matches a GitHub branch pattern: `**` any run of characters, `*` any
+/// run not crossing a `/`, `?` one character not a `/`, and anything else itself.
+fn glob(pattern: &str, name: &str) -> bool {
+    fn matches(pattern: &[char], name: &[char]) -> bool {
+        match pattern {
+            [] => name.is_empty(),
+            ['*', '*', rest @ ..] => (0..=name.len()).any(|at| matches(rest, &name[at..])),
+            ['*', rest @ ..] => (0..=name.len())
+                .take_while(|at| *at == 0 || name[at - 1] != '/')
+                .any(|at| matches(rest, &name[at..])),
+            ['?', rest @ ..] => name
+                .split_first()
+                .is_some_and(|(first, tail)| *first != '/' && matches(rest, tail)),
+            [literal, rest @ ..] => name
+                .split_first()
+                .is_some_and(|(first, tail)| first == literal && matches(rest, tail)),
         }
     }
-    if let Some(classic) = base_ref
-        .pointer("/branchProtectionRule/requiredStatusCheckContexts")
-        .and_then(Value::as_array)
-    {
-        names.extend(classic.iter().filter_map(Value::as_str).map(str::to_owned));
-    }
-    Ok(if names.is_empty() {
-        Declared::Nothing
-    } else {
-        Declared::Names(names)
-    })
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    matches(&pattern, &name)
 }
 
 /// Every check the head commit's rollup reports, attached to that commit. A head

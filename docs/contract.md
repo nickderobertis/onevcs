@@ -5146,17 +5146,24 @@ object; without it, one line per change request a person reads, and the cost.
 through one aliased GraphQL query per 50 of them — each an alias of `repository {
 pullRequest(number:) }` carrying its state, merge commit and time, base and head ref,
 head oid, draft flag and body, its head commit's status-check rollup with each context's
-`isRequired` for that change request, and its base ref's rulesets and classic
-protection — never a REST request and never a call per change request, and reports
-`cost` from each response's own `rateLimit.cost`. Each change request's rollup contexts
-and its base's rules are its two connections, so a query asks for 100 nodes per 50,
-which GitHub's published rule charges one point. The required set is what the host
-declares for the change request's base — the rulesets' required status checks and
-classic protection's required contexts — read in that same query, so no second call is
-made for it, and a base the origin no longer holds has no declaration to read, so its
-verdict is read off the rollup's own marking. The standings come back one per change
-request asked about, in the order asked; every URL must be one of the repository
-`repo` names, and one that is not is refused before the host is asked.
+`isRequired` for that change request, and whether its base ref still exists — never a
+REST request and never a call per change request, and reports `cost` from each
+response's own `rateLimit.cost`. **Each distinct base's required set is read at most
+once per call:** the first query of a call also reads the repository's declarations —
+its active branch rulesets with the refs each applies to (`~ALL`, `~DEFAULT_BRANCH` and
+`refs/heads/` patterns, include and exclude) and its classic protection rules with their
+branch patterns — and every base a change request of the call targets, in that batch or
+a later one, has its required set derived from that one read once and remembered for
+the call: the rulesets' required status checks and classic protection's required
+contexts that apply to it. No alias reads its base's rules, so drafts sharing a base
+never read them again, and no second call is made for them. Each change request's rollup
+contexts are its one connection and the declarations add 27 (25 rulesets of 25 rules,
+and the classic rules), so a query of 50 asks for 77 nodes, which GitHub's published
+rule charges one point. A base the origin no longer holds has no declaration to apply,
+so its verdict is read off the rollup's own marking, and declarations holding more than
+one page are read as unknown rather than as a whole answer. The standings come back one
+per change request asked about, in the order asked; every URL must be one of the
+repository `repo` names, and one that is not is refused before the host is asked.
 
 **The review read rides the same query.** `review_standings` reads every named change
 request's standing *and* its review threads, comments and reviews in one aliased GraphQL
@@ -5170,7 +5177,8 @@ read's own cost, so nothing is answered from part of it. Each `ReviewRead`'s own
 is zero for a change answered from the batched query — the batch's charge is the whole
 read's `cost` — and that paged read's charge for one that was not. `spike-quota-round`
 measured the aliased review query at 6 points over 10 drafts and 3 over 5 (GitHub's
-published rule over its 55 connections a change request: 5.5 and 2.75, rounded), and
+published rule over its 54 connections a change request and the declarations' 27: 5.67
+and 2.97, rounded), and
 the standings-only query at 1 point up to at least 10 drafts.
 
 **The verdict reads as a publication's watch reads.** One classifier decides both: the
@@ -5273,8 +5281,8 @@ at that moment, its head then kept or deleted — and when deleted, every open c
 request based on it closed or retargeted onto the merged one's base), `Host::close_unmerged`,
 `Host::retarget_by_person` and `Host::set_head_checks`. A charge is what GitHub charges
 the call the real host sends: the standings query and the aliased review-and-standings
-query by GitHub's published rule over their connections (one point per standings query
-of up to 50; 6 points over ten drafts and 3 over five for the review query, as
+query by GitHub's published rule over their connections, the first of a call carrying
+the declarations (one point per standings query of up to 50; 6 points over ten drafts and 3 over five for the review query, as
 `spike-quota-round` measured), the per-change review read one point a page (as
 `spike-review-loop` measured), a mutation one point, a REST request one, a conditional
 request answered 304 nothing. The e2e fake `gh` world answers the same query and the two

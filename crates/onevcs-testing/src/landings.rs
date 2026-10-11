@@ -77,27 +77,34 @@ fn points(requests: usize) -> u32 {
     u32::try_from(((requests + 50) / 100).max(1)).unwrap_or(u32::MAX)
 }
 
+/// The connection requests the repository's declarations add to the first query of a
+/// call: 25 rulesets of 25 rules each, and the classic protection rules — read once per
+/// call, so each distinct base's required set is derived from them rather than read again.
+const DECLARATIONS: usize = 27;
+
 /// What the real host's standings read of `count` change requests costs: one query per
-/// 50, each two connections a change request — its rollup and its base's rules.
+/// 50, each one connection a change request — its rollup — and the first carrying the
+/// declarations.
 pub(crate) fn standings_charge(count: usize) -> ReadCost {
-    ReadCost {
-        graphql_points: (0..count)
-            .step_by(STANDINGS_BATCH)
-            .map(|start| points(2 * (count - start).min(STANDINGS_BATCH)))
-            .sum(),
-        rest_requests: 0,
-    }
+    batched(count, STANDINGS_BATCH, 1)
 }
 
 /// What the real host's review-and-standings read of `count` change requests costs:
-/// one query per 150, each 55 connections a change request — the standing's two and the
-/// review read's 53 — which is 6 points over ten and 3 over five, as
-/// `spike-quota-round` measured.
+/// one query per 150, each 54 connections a change request — the rollup and the review
+/// read's 53 — and the first carrying the declarations, which is 6 points over ten and
+/// 3 over five, as `spike-quota-round` measured.
 pub(crate) fn review_charge(count: usize) -> ReadCost {
+    batched(count, REVIEW_BATCH, 54)
+}
+
+fn batched(count: usize, batch: usize, each: usize) -> ReadCost {
     ReadCost {
         graphql_points: (0..count)
-            .step_by(REVIEW_BATCH)
-            .map(|start| points(55 * (count - start).min(REVIEW_BATCH)))
+            .step_by(batch)
+            .map(|start| {
+                let declarations = if start == 0 { DECLARATIONS } else { 0 };
+                points(each * (count - start).min(batch) + declarations)
+            })
             .sum(),
         rest_requests: 0,
     }

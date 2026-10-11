@@ -242,10 +242,13 @@ things are easy to undo.
 GitHub transport. The amendment in `docs/contract.md` is the surface, and `op-readjust`
 restates it. Six things are easy to undo.
 
-- **One query per 50, and the required set rides in it.** Each alias reads its base
-  ref's rulesets and classic protection beside its rollup, so no read is made per base
-  or per change request; a `required_checks_on` call added here breaks the one-query
-  journey and the measured cost. The fake charges by GitHub's published rule over the
+- **One query per 50, and each base's required set is read once per call.** The first
+  query of a call reads the repository's declarations (rulesets with their ref
+  conditions, classic rules with their patterns); `standings::github::Required` derives
+  each distinct base's set from them once and remembers it for later batches. No alias
+  reads its base's rules — `drafts_sharing_a_base_read_its_required_set_once_per_call_across_batches`
+  counts the query text — and a `required_checks_on` call added here breaks the
+  one-query journey and the measured cost. The fake charges by GitHub's published rule over the
   query text (`standings_host.rs`'s `cost_of`), so a query that grows a connection is
   charged for it there too — re-check the measured figures (1 a query of up to 50; 6
   over ten and 3 over five with reviews) after changing one.
