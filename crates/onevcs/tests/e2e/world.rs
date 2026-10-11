@@ -611,6 +611,48 @@ impl World {
         self.write_rows("gh-state/checks.rows.after-ready", then);
     }
 
+    /// The workflow runs the substituted host reports on a change request's head, one
+    /// `(name, status, conclusion)` each, as GitHub's "List workflow runs for a
+    /// repository" lists them. Unset, a head carries one completed run.
+    pub fn host_workflow_runs(&self, runs: &[(&str, &str, Option<&str>)]) {
+        self.write_activity("gh-state/runs.rows", &workflow_runs(runs));
+    }
+
+    /// The check suites the substituted host reports on a change request's head, one
+    /// `(app, status, conclusion, latest_check_runs_count)` each, as GitHub's "List
+    /// check suites for a Git reference" lists them. Unset, a head carries none.
+    pub fn host_check_suites(&self, suites: &[(&str, &str, Option<&str>, u32)]) {
+        self.write_activity("gh-state/suites.rows", &check_suites(suites));
+    }
+
+    /// One phase of a repository's CI, from the reading of the rollup after the
+    /// `after`-th on: its checks, and — where given — the workflow runs and check
+    /// suites on the head. The latest phase passed stands in for every earlier one and
+    /// for what [`host_checks`](Self::host_checks) and its siblings set, so a journey
+    /// states each step of a run rather than racing it.
+    pub fn host_phase(
+        &self,
+        after: usize,
+        checks: &[Check],
+        runs: Option<&[(&str, &str, Option<&str>)]>,
+        suites: Option<&[(&str, &str, Option<&str>, u32)]>,
+    ) {
+        let dir = format!("gh-state/timeline/{after}");
+        std::fs::create_dir_all(self.path(&dir)).expect("a phase directory");
+        self.write_rows(&format!("{dir}/checks.rows"), checks);
+        if let Some(runs) = runs {
+            self.write_activity(&format!("{dir}/runs.rows"), &workflow_runs(runs));
+        }
+        if let Some(suites) = suites {
+            self.write_activity(&format!("{dir}/suites.rows"), &check_suites(suites));
+        }
+    }
+
+    fn write_activity(&self, at: &str, rows: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path(at), rows).expect("a listing of work on a head");
+    }
+
     /// Make the substituted host go on reporting the commit it already had for a
     /// change request until it has been asked for its rollup `after` times.
     ///
@@ -1179,6 +1221,23 @@ pub struct Check {
     pub conclusion: Option<&'static str>,
     /// Whether it blocks the merge.
     pub required: bool,
+}
+
+/// Workflow runs as the substituted host's rows spell them.
+fn workflow_runs(runs: &[(&str, &str, Option<&str>)]) -> String {
+    runs.iter()
+        .map(|(name, status, conclusion)| format!("{name}|{status}|{}\n", conclusion.unwrap_or("")))
+        .collect()
+}
+
+/// Check suites as the substituted host's rows spell them.
+fn check_suites(suites: &[(&str, &str, Option<&str>, u32)]) -> String {
+    suites
+        .iter()
+        .map(|(app, status, conclusion, runs)| {
+            format!("{app}|{status}|{}|{runs}\n", conclusion.unwrap_or(""))
+        })
+        .collect()
 }
 
 /// The token printed by `onevcs session open`.

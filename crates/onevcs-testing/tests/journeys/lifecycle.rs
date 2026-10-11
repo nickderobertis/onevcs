@@ -16,7 +16,7 @@ use onevcs::{
     MergePolicy, ProtectionSource, PublishOutcome, PublishRequest, RequiredChecks, SessionRequest,
     Vcs,
 };
-use onevcs_testing::{HostState, MemoryHost, MemoryVcs, VcsState};
+use onevcs_testing::{ActivityAnswer, HostState, MemoryHost, MemoryVcs, VcsState};
 
 use crate::support::{one_repository, Home};
 
@@ -774,4 +774,157 @@ fn a_green_read_from_the_hosts_marking_because_the_declaration_is_unreadable_say
         settled[0]["payload"].get("requirement").is_none(),
         "{settled:?}"
     );
+}
+
+/// Work the host names in progress on the head, with no check of its own yet.
+fn busy() -> ActivityAnswer {
+    ActivityAnswer::Head {
+        in_progress: vec!["ci".to_owned()],
+        complete: true,
+    }
+}
+
+/// A host whose draft's `gate` was skipped, `after` once lifted, and which answers
+/// `activity` in turn about what is running on its head.
+fn skipping(after: Option<Vec<Check>>, activity: Vec<ActivityAnswer>) -> MemoryHost {
+    let host = host(vec![check("gate", Some("skipped"), 1)], after);
+    let mut state = host.state();
+    state.head_activity = BTreeMap::from([(first(), activity)]);
+    MemoryHost::seeded(state)
+}
+
+#[test]
+fn a_draft_with_work_still_running_on_its_head_is_held_rather_than_lifted_early() {
+    // The repository side's one reading at the grace window, held to next door's rule: a
+    // skipped `gate` and nothing else reported, but the host names work in progress on
+    // the head — so this is not a repository that skips drafts, and nothing is lifted.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeOpen, Approvals::None, None);
+    let held = skipping(Some(vec![check("gate", Some("success"), 2)]), vec![busy()]);
+
+    let (outcome, kinds) = published(&vcs, &held, &home, &PublishRequest::default());
+
+    assert!(
+        matches!(
+            &outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(draft_standing(&held), "still a draft");
+    assert!(
+        !kinds.contains(&"draft-lifted-early".to_owned()),
+        "{kinds:?}"
+    );
+
+    // A check reported running, required by nothing, holds it the same way — and then
+    // the host is not asked about its head at all.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeOpen, Approvals::None, None);
+    let mut running = check("lint", None, 1);
+    running.required = false;
+    let pending = host(vec![check("gate", Some("skipped"), 1), running], None);
+    let (_, kinds) = published(&vcs, &pending, &home, &PublishRequest::default());
+    assert!(draft_standing(&pending));
+    assert!(
+        !kinds.contains(&"draft-lifted-early".to_owned()),
+        "{kinds:?}"
+    );
+    assert!(
+        !pending
+            .ledger()
+            .expect("the ledger")
+            .iter()
+            .any(|call| call.method == "head_activity"),
+        "never asked while a reported check was running"
+    );
+
+    // A refusal, or an answer about another commit, is no answer: the checks decide
+    // alone, and they say lift.
+    for answer in [
+        ActivityAnswer::Refused,
+        ActivityAnswer::Other {
+            head: onevcs::Sha("0123abcd".to_owned()),
+            in_progress: vec!["ci".to_owned()],
+        },
+    ] {
+        let home = Home::new();
+        let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+        let host = skipping(
+            Some(vec![check("gate", Some("success"), 2)]),
+            vec![answer.clone()],
+        );
+        let (outcome, kinds) = published(&vcs, &host, &home, &PublishRequest::default());
+        assert!(
+            matches!(outcome, PublishOutcome::Merged(_)),
+            "{answer:?}: {outcome:?}"
+        );
+        assert!(
+            kinds.contains(&"draft-lifted-early".to_owned()),
+            "{answer:?}"
+        );
+    }
+}
+
+#[test]
+fn after_an_early_lift_work_still_running_holds_the_did_not_rerun_ending_and_arms_nothing_on_a_skip(
+) {
+    // Lifted on an empty answer; after the lift nothing re-ran, and the host names work
+    // still going on the head — so the watch has not ended "did not re-run": it is still
+    // waiting, and the draft-era skip that is all `gate` has is never armed on.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+    let host = skipping(
+        None,
+        vec![
+            ActivityAnswer::Head {
+                in_progress: Vec::new(),
+                complete: true,
+            },
+            busy(),
+        ],
+    );
+
+    let (outcome, kinds) = published(&vcs, &host, &home, &PublishRequest::default());
+
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        armed,
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(*kind, FailureKind::ChecksUnsettled);
+    assert!(!reason.contains("did not re-run"), "{reason}");
+    assert!(
+        armed.is_none(),
+        "nothing armed on a draft-era skip: {reason}"
+    );
+    assert!(host.state().merges.is_empty());
+    assert!(
+        kinds.contains(&"draft-lifted-early".to_owned()),
+        "{kinds:?}"
+    );
+
+    // With nothing running, it ends as before, saying what to do.
+    let home = Home::new();
+    let vcs = repository(MergePolicy::ChangeAuto, Approvals::None, None);
+    let host = skipping(None, vec![ActivityAnswer::Refused]);
+    let (outcome, _) = published(&vcs, &host, &home, &PublishRequest::default());
+    let PublishOutcome::Failed { reason, .. } = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in [
+        "did not re-run after its draft was lifted",
+        "Run the required checks on drafts",
+        "a workflow that runs on drafts needs no `ready_for_review` trigger",
+        "at the cost of one more run per lift",
+    ] {
+        assert!(reason.contains(said), "{said:?} is not in: {reason}");
+    }
 }

@@ -1369,18 +1369,22 @@ fn watch(
     let settled = |emissions: &mut Vec<Emission>, skipped: Vec<String>, unread: Option<&str>| {
         record_settled(publishing, change, emissions, skipped, unread);
     };
+    let elapsed_naming = |checks: &[&Check],
+                          standing: &[(String, Option<CheckState>)],
+                          declared: &Declared,
+                          skipped: Vec<String>| Watched::Elapsed {
+        error: Error::ChecksUnsettled {
+            reason: format!(
+                "the host had not settled its required checks on {}; {}",
+                change.url,
+                unsettled_named(checks, standing, declared)
+            ),
+        },
+        skipped,
+    };
     let unsettled =
         |checks: &[&Check], standing: &[(String, Option<CheckState>)], declared: &Declared| {
-            Watched::Elapsed {
-                error: Error::ChecksUnsettled {
-                    reason: format!(
-                        "the host had not settled its required checks on {}; {}",
-                        change.url,
-                        unsettled_named(checks, standing, declared)
-                    ),
-                },
-                skipped: skipped(standing),
-            }
+            elapsed_naming(checks, standing, declared, skipped(standing))
         };
     let answered = host.change_checks(change)?;
     let complete = answered.complete();
@@ -1482,12 +1486,24 @@ fn watch(
         !from_the_draft(check)
             && (standing.is_empty() || standing.iter().any(|(name, _)| *name == check.name))
     });
+    // A watch that elapses after the lift names a required check standing on nothing
+    // but a draft-era skip as skipped, as next door's does: the host's auto-merge would
+    // read it as satisfied, so the change is left unarmed rather than merging on it.
+    let reported: Vec<&Check> = after.iter().collect();
+    let elapsed = || {
+        let mut named = skipped(&standing);
+        for name in skipped(&standings(&reported, &declared)) {
+            if !named.contains(&name) {
+                named.push(name);
+            }
+        }
+        elapsed_naming(&counted, &standing, &declared, named)
+    };
     if !rerun {
         // The draft's own workflow still going will attach the check it has not created
         // yet, so that is a watch still waiting rather than one that ended.
-        let reported: Vec<&Check> = after.iter().collect();
         if still_running(host, change, &reported) {
-            return Ok(unsettled(&counted, &standing, &declared));
+            return Ok(elapsed());
         }
         return Err(Error::ChecksUnsettled {
             reason: format!(
@@ -1505,7 +1521,7 @@ fn watch(
         .iter()
         .all(|(_, state)| matches!(state, Some(CheckState::Passed | CheckState::Skipped)))
     {
-        return Ok(unsettled(&counted, &standing, &declared));
+        return Ok(elapsed());
     }
     settled(emissions, skipped(&standing), unread);
     Ok(Watched::Ready)

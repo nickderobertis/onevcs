@@ -554,6 +554,14 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   never by what it concluded: a re-run on `ready_for_review` can conclude `skipped` just as
   the draft's run did, and never by its status either. A check — running or settled — with
   the draft's start or none is the draft's: the safe side. `onevcs-testing` mirrors the rule, so a seeded re-run needs a start of its own.
+- **An early lift, and the after-lift "did not re-run" ending, need nothing running on the
+  head** (`Watcher::still_running`, the one helper both ask): no reported check, required
+  or not, incomplete; then — only where none is, past the window — `head_activity`, whose
+  non-empty answer is reused for `gh::head_activity_reuse` (ten polls) and whose `Err` or
+  other-commit answer is no answer. A required aggregate gated by `needs:` is absent while
+  its prerequisites run, which is exactly what a draft-skipped check looks like; this is
+  the only thing telling the two apart. An after-lift watch that elapses names a check
+  standing on a draft-era skip as skipped, so it is never armed on one.
 - **`drafts: {disabled: true}` is the pre-lifecycle path kept whole**, and it is how a
   journey reaches a merge the host holds past the watch (`AUTOMATED_READY` in
   `tests/e2e/host.rs`) — a draft whose checks never settle is never armed at all.

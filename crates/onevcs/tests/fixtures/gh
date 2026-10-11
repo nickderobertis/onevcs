@@ -94,11 +94,44 @@ if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
     CHECKS="$STATE/checks.rows.next"
   fi
 fi
+# A watch reads a repository through phases — the jobs its aggregate needs running,
+# then the gap before the aggregate's own check run appears, then the aggregate — and
+# this world says so as `timeline/<n>/`: from the reading of the rollup after the
+# n-th on, that directory's `checks.rows`, `runs.rows` and `suites.rows` stand in for
+# the ones beside this script's state. Of the phases passed, the latest wins; counted
+# in readings for the reason the flip above is.
+PHASE=""
+if [ -d "$STATE/timeline" ]; then
+  readings="$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)"
+  for dir in "$STATE"/timeline/*/; do
+    n="$(basename "$dir")"
+    case "$n" in ""|*[!0-9]*) continue ;; esac
+    if [ "$readings" -gt "$n" ]; then
+      if [ -z "$PHASE" ] || [ "$n" -gt "$(basename "$PHASE")" ]; then PHASE="${dir%/}"; fi
+    fi
+  done
+  if [ -n "$PHASE" ] && [ -f "$PHASE/checks.rows" ]; then CHECKS="$PHASE/checks.rows"; fi
+fi
+# The workflow runs and the check suites on a head, one row each — a run as
+# `name|status|conclusion`, a suite as `app|status|conclusion|latest_check_runs_count`.
+# A world with no `runs.rows` has the one completed run it always had on a head a
+# change request is at, and one with no `suites.rows` has no suite.
+RUNS="$STATE/runs.rows"
+SUITES="$STATE/suites.rows"
+if [ -n "$PHASE" ]; then
+  if [ -f "$PHASE/runs.rows" ]; then RUNS="$PHASE/runs.rows"; fi
+  if [ -f "$PHASE/suites.rows" ]; then SUITES="$PHASE/suites.rows"; fi
+fi
 # A repository whose workflow skips drafts registers its real run only once the
 # change is lifted: `checks.rows.after-ready` takes over once any change request here
 # has been made ready for review, which is the moment GitHub fires the workflow.
 if [ -f "$STATE/checks.rows.after-ready" ] && ls "$STATE"/ready-* >/dev/null 2>&1; then
   CHECKS="$STATE/checks.rows.after-ready"
+fi
+# …and the workflow runs it reports on the head once any change request here has been
+# lifted, which is a run still going, or one started again, on the same commit.
+if [ -f "$STATE/runs.rows.after-ready" ] && ls "$STATE"/ready-* >/dev/null 2>&1; then
+  RUNS="$STATE/runs.rows.after-ready"
 fi
 # When each run started, which is a run's own identity: the rows a lift or a flip
 # brings in are runs of their own, so they report a start the rows before them did
@@ -269,6 +302,21 @@ case "$command" in
       printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
       exit 1
     fi
+    # What is running on a head is two reads, and a credential may be refused either:
+    # the check suites need the Checks permission no fine-grained token has, and
+    # `activity-refused` is a credential refused both.
+    case "$path" in
+      */commits/*/check-suites)
+        if ! readable_rollup || [ "$malformed" = "suites-refused" ] || [ "$malformed" = "activity-refused" ]; then
+          printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+          exit 1
+        fi ;;
+      */actions/runs)
+        if [ "$malformed" = "activity-refused" ]; then
+          printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+          exit 1
+        fi ;;
+    esac
     case "$path" in
       repos/*/*/*) ;;
       repos/*/*)
@@ -316,9 +364,55 @@ case "$command" in
         if [ "$malformed" = "actions-only-run-head-not-a-commit" ]; then
           head_sha="the tip of feature/x"
         fi
-        printf '{"total_count":1,"workflow_runs":[{"id":1,"head_sha":"%s","status":"completed"}]}\n' "$head_sha"
+        # GitHub's "List workflow runs for a repository": each run names its workflow,
+        # the commit it ran against, and where it is — `queued`, `in_progress`,
+        # `completed` and the rest — with a conclusion once it has one.
+        slug="${path#repos/}"; slug="${slug%%/actions/*}"
+        rows=""; separator=""; id=0
+        if [ -f "$RUNS" ]; then
+          while IFS='|' read -r name status conclusion; do
+            [ -n "$name" ] || continue
+            id=$((id + 1))
+            if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+            rows="$rows$separator{\"id\":$id,\"name\":\"$name\",\"head_branch\":\"feature\",\"head_sha\":\"$head_sha\",\"event\":\"pull_request\",\"status\":\"$status\",\"conclusion\":$entry,\"html_url\":\"https://github.com/$slug/actions/runs/$id\"}"
+            separator=","
+          done <"$RUNS"
+        else
+          id=1
+          rows="{\"id\":1,\"name\":\"ci\",\"head_branch\":\"feature\",\"head_sha\":\"$head_sha\",\"event\":\"pull_request\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"https://github.com/$slug/actions/runs/1\"}"
+        fi
+        printf '{"total_count":%s,"workflow_runs":[%s]}\n' "$id" "$rows"
+        exit 0 ;;
+      */commits/*/check-suites)
+        # GitHub's "List check suites for a Git reference": one suite per app that has
+        # posted — or been asked to — about the commit, with where it is and how many
+        # check runs it holds. Only for a head a change request here is at, as the
+        # workflow runs are.
+        head_sha="${path%/check-suites}"; head_sha="${head_sha##*/}"
+        on_a_head=0
+        for record in "$STATE"/pr-*.env; do
+          [ -e "$record" ] || continue
+          if ( . "$record"; [ "$(head_seen "$PR_HEAD_SHA" "$PR_HEAD")" = "$head_sha" ] ); then on_a_head=1; fi
+        done
+        rows=""; separator=""; id=0
+        if [ "$on_a_head" = "1" ] && [ -f "$SUITES" ]; then
+          while IFS='|' read -r app status conclusion count; do
+            [ -n "$app" ] || continue
+            id=$((id + 1))
+            if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+            rows="$rows$separator{\"id\":$id,\"head_branch\":\"feature\",\"head_sha\":\"$head_sha\",\"status\":\"$status\",\"conclusion\":$entry,\"app\":{\"id\":$id,\"slug\":\"$app\",\"name\":\"$app\"},\"pull_requests\":[],\"latest_check_runs_count\":${count:-0}}"
+            separator=","
+          done <"$SUITES"
+        fi
+        printf '{"total_count":%s,"check_suites":[%s]}\n' "$id" "$rows"
         exit 0 ;;
       */actions/runs/*/jobs)
+        # Every job is the first run's: a world listing several runs lists its jobs once.
+        run="${path%/jobs}"; run="${run##*/}"
+        if [ "$run" != "1" ]; then
+          printf '{"total_count":0,"jobs":[]}\n'
+          exit 0
+        fi
         # The same rows the rollup is rendered from, as the jobs of that one run —
         # so what this host reports through either source and what it acts on when
         # asked to merge cannot disagree. A job's id is its row, which is the id

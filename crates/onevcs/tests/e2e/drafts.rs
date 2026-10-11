@@ -2579,3 +2579,341 @@ fn a_lift_on_green_is_never_held_back_by_a_reused_answer() {
         "lifted on the first poll that read the aggregate green"
     );
 }
+
+/// One check row the substituted `gh` reports.
+fn row(
+    name: &'static str,
+    conclusion: Option<&'static str>,
+    required: bool,
+) -> crate::world::Check {
+    crate::world::Check {
+        name,
+        status: if conclusion.is_some() {
+            "completed"
+        } else {
+            "in_progress"
+        },
+        conclusion,
+        required,
+    }
+}
+
+/// How many readings of the rollup the substituted `gh` answered before it was asked
+/// to lift the draft.
+fn readings_before_the_lift(hosted: &crate::host::Hosted) -> usize {
+    let calls = hosted.world.host_calls();
+    let lifted = calls
+        .iter()
+        .position(|call| call.starts_with("pr ready "))
+        .unwrap_or_else(|| panic!("the draft was lifted: {calls:?}"));
+    calls[..lifted]
+        .iter()
+        .filter(|call| call.contains("statusCheckRollup"))
+        .count()
+}
+
+/// Whether the substituted `gh` was asked one of the two reads of what is running on
+/// a head: `runs` the workflow runs, otherwise the check suites.
+fn asked_about_the_head(hosted: &crate::host::Hosted, runs: bool) -> bool {
+    let wanted = if runs {
+        "/actions/runs?head_sha="
+    } else {
+        "/check-suites"
+    };
+    hosted
+        .world
+        .host_calls()
+        .iter()
+        .any(|call| call.starts_with("api ") && call.contains(wanted))
+}
+
+/// The `GitHub` implementation, in this process, against the substituted `gh` of
+/// `hosted` — asked what is running on the head this publication pushed.
+fn github_head_activity(
+    hosted: &crate::host::Hosted,
+    token: &str,
+) -> onevcs::Result<onevcs::HeadActivity> {
+    std::env::set_var("ONEVCS_GH", hosted.world.path("bin/gh"));
+    std::env::set_var("ONEVCS_FAKE_GH_STATE", hosted.world.path("gh-state"));
+    let settled = hosted.world.events_of(token, "checks-settled");
+    let head = settled[0]["payload"]["head"]
+        .as_str()
+        .expect("the settlement names the pushed head")
+        .to_owned();
+    let change = ChangeRequest {
+        id: first(),
+        url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1").expect("a URL"),
+        head_sha: onevcs::Sha(head),
+        base: "main".to_owned(),
+    };
+    onevcs::GitHub::new("acme-corp/hosted")
+        .expect("a repository")
+        .head_activity(&change)
+}
+
+/// Publish `token` through the binary with a 0.2s grace window, and answer stderr.
+///
+/// The bound is five minutes rather than the world's twenty seconds: each poll here is
+/// several runs of a shell script, and a journey whose phases are counted in readings
+/// must reach its last phase before the bound on a loaded machine too — an elapsed
+/// watch ends by another path, which is not the one these journeys are about.
+fn publish_through_the_binary(hosted: &crate::host::Hosted, token: &str) -> String {
+    let assert = hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_DRAFT_CHECKS_GRACE_SECONDS", "0.2")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "300")
+        .args(["publish", token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    String::from_utf8_lossy(&assert.get_output().stderr).into_owned()
+}
+
+#[test]
+fn the_command_line_keeps_a_needs_gated_draft_until_its_aggregate_passes_with_no_ready_for_review_run(
+) {
+    // A repository shaped like crozier's: the required aggregate `gate` is gated by
+    // `needs:` on jobs nothing requires, and its workflow has no `ready_for_review`
+    // trigger — so the stand-in starts no run when the draft is lifted. While the
+    // prerequisites run `gate` is absent; then, in the gap after they finish, every
+    // reported check has completed and only the workflow run itself is still going;
+    // then `gate` appears and passes. Through the binary and the real `GitHub`
+    // implementation, the draft stays a draft through all of it and is lifted by green.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted
+        .world
+        .host_requires_on("main", &["gate", "commitlint", "llmlint"]);
+    let settled = |gate: Option<&'static str>, done: bool| {
+        let mut rows = vec![
+            row("commitlint", Some("success"), true),
+            row("llmlint", Some("success"), true),
+        ];
+        for name in PREREQUISITES {
+            rows.push(row(name, done.then_some("success"), false));
+        }
+        if let Some(conclusion) = gate {
+            rows.push(row("gate", Some(conclusion), true));
+        }
+        rows
+    };
+    let running = [("ci", "in_progress", None)];
+    hosted.world.host_checks(&settled(None, false));
+    hosted.world.host_workflow_runs(&running);
+    hosted
+        .world
+        .host_phase(5, &settled(None, true), Some(&running), None);
+    hosted.world.host_phase(
+        20,
+        &settled(Some("success"), true),
+        Some(&[("ci", "completed", Some("success"))]),
+        None,
+    );
+    let token = hosted.change(
+        "feature/needs-gated",
+        "feat: land through a needs-gated aggregate",
+    );
+
+    let said = publish_through_the_binary(&hosted, &token);
+
+    assert!(!said.contains("lifted out of its draft"), "{said}");
+    assert!(
+        readings_before_the_lift(&hosted) > 20,
+        "held through the prerequisites and the gap after them"
+    );
+    assert!(
+        asked_about_the_head(&hosted, true) && asked_about_the_head(&hosted, false),
+        "the gap was decided by what the host said was running"
+    );
+    assert!(hosted
+        .world
+        .events_of(&token, "draft-lifted-early")
+        .is_empty());
+    assert!(
+        hosted.world.events_of(&token, "merge-armed").is_empty(),
+        "lifted by green, not by an elapsed wait"
+    );
+    assert_eq!(hosted.world.events_of(&token, "draft-lifted").len(), 1);
+    let settled = hosted.world.events_of(&token, "checks-settled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed");
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "the base advanced by the merge"
+    );
+}
+
+#[test]
+fn the_github_implementation_reads_a_running_workflow_run_or_check_suite_as_work_on_the_head() {
+    // A draft-skipping draft — `gate` skipped on it — whose head the host says is still
+    // busy: a workflow run not completed, or an app's suite not completed with a check
+    // run in it. Held until that work completes, then lifted early as before.
+    for (label, runs, suites) in [
+        ("a workflow run", true, false),
+        ("a check suite with a check run", false, true),
+    ] {
+        let hosted = crate::host::Hosted::new(AUTO);
+        hosted
+            .world
+            .host_checks(&[row("gate", Some("skipped"), true)]);
+        hosted
+            .world
+            .host_checks_after_ready(&[row("gate", Some("success"), true)]);
+        if runs {
+            hosted
+                .world
+                .host_workflow_runs(&[("ci", "in_progress", None)]);
+        }
+        if suites {
+            hosted
+                .world
+                .host_check_suites(&[("octoapp", "in_progress", None, 1)]);
+        }
+        hosted.world.host_phase(
+            15,
+            &[row("gate", Some("skipped"), true)],
+            Some(&[("ci", "completed", Some("success"))]),
+            Some(&[("octoapp", "completed", Some("success"), 1)]),
+        );
+        let token = hosted.change("feature/busy-head", "feat: land once the head is idle");
+
+        let said = publish_through_the_binary(&hosted, &token);
+
+        assert!(said.contains("lifted out of its draft"), "{label}: {said}");
+        assert!(
+            readings_before_the_lift(&hosted) > 15,
+            "{label}: held while the host named it"
+        );
+
+        // …and the answer itself, read in this process through the same stand-in:
+        // the work named, about the commit the publication pushed, every source read.
+        std::fs::remove_dir_all(hosted.world.path("gh-state/timeline")).expect("phases");
+        let answer = github_head_activity(&hosted, &token).expect("the host answers");
+        let named = if runs { "ci" } else { "octoapp" };
+        assert_eq!(answer.in_progress, vec![named.to_owned()], "{label}");
+        assert!(answer.complete, "{label}");
+        let settled = hosted.world.events_of(&token, "checks-settled");
+        assert_eq!(
+            answer.head.0,
+            settled[0]["payload"]["head"].as_str().expect("a head"),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn the_github_implementation_ignores_a_queued_suite_with_no_check_run_so_a_draft_skipping_draft_is_lifted(
+) {
+    // GitHub leaves an installed app's empty `queued` suite on every commit for ever:
+    // read as work in progress, it would hold every draft-skipping draft to its bound.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted
+        .world
+        .host_checks(&[row("gate", Some("skipped"), true)]);
+    hosted
+        .world
+        .host_checks_after_ready(&[row("gate", Some("success"), true)]);
+    hosted
+        .world
+        .host_check_suites(&[("octoapp", "queued", None, 0)]);
+    hosted.world.host_phase(
+        40,
+        &[row("gate", Some("skipped"), true)],
+        None,
+        Some(&[("octoapp", "queued", None, 0)]),
+    );
+    let token = hosted.change("feature/empty-suite", "feat: land past an empty suite");
+
+    let said = publish_through_the_binary(&hosted, &token);
+
+    assert!(said.contains("lifted out of its draft"), "{said}");
+    assert!(
+        readings_before_the_lift(&hosted) <= 40,
+        "lifted at the grace window, not held by an empty suite"
+    );
+    assert!(asked_about_the_head(&hosted, false), "the suites were read");
+    let answer = github_head_activity(&hosted, &token).expect("the host answers");
+    assert!(
+        answer.in_progress.is_empty() && answer.complete,
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn a_credential_refused_the_check_suites_answers_from_the_workflow_runs_and_says_it_is_incomplete()
+{
+    // A fine-grained token: it may read the workflow runs and never the check suites.
+    // The runs still hold the draft while one is going, and the answer says it is not
+    // the whole picture.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted.world.answer_malformed("suites-refused");
+    hosted
+        .world
+        .host_checks(&[row("gate", Some("skipped"), true)]);
+    hosted
+        .world
+        .host_checks_after_ready(&[row("gate", Some("success"), true)]);
+    hosted
+        .world
+        .host_workflow_runs(&[("ci", "in_progress", None)]);
+    hosted.world.host_phase(
+        15,
+        &[row("gate", Some("skipped"), true)],
+        Some(&[("ci", "completed", Some("success"))]),
+        None,
+    );
+    let token = hosted.change("feature/suites-refused", "feat: land under a narrow token");
+
+    publish_through_the_binary(&hosted, &token);
+
+    assert!(
+        readings_before_the_lift(&hosted) > 15,
+        "held by the workflow run alone"
+    );
+    std::fs::remove_dir_all(hosted.world.path("gh-state/timeline")).expect("phases");
+    let answer = github_head_activity(&hosted, &token).expect("the runs answer");
+    assert_eq!(answer.in_progress, vec!["ci".to_owned()]);
+    assert!(
+        !answer.complete,
+        "an external app's work is invisible to it"
+    );
+}
+
+#[test]
+fn a_credential_refused_both_reads_is_no_answer_and_the_checks_decide_alone() {
+    // The same busy head, but nothing about it can be read: no answer, so the checks
+    // decide alone — every one completed, `gate` skipped — and the draft is lifted at
+    // the grace window as before.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted.world.answer_malformed("activity-refused");
+    hosted
+        .world
+        .host_checks(&[row("gate", Some("skipped"), true)]);
+    hosted
+        .world
+        .host_checks_after_ready(&[row("gate", Some("success"), true)]);
+    hosted
+        .world
+        .host_workflow_runs(&[("ci", "in_progress", None)]);
+    hosted.world.host_phase(
+        40,
+        &[row("gate", Some("skipped"), true)],
+        Some(&[("ci", "completed", Some("success"))]),
+        None,
+    );
+    let token = hosted.change("feature/activity-refused", "feat: land on the checks alone");
+
+    let said = publish_through_the_binary(&hosted, &token);
+
+    assert!(said.contains("lifted out of its draft"), "{said}");
+    assert!(
+        readings_before_the_lift(&hosted) <= 40,
+        "lifted at the grace window"
+    );
+    assert!(asked_about_the_head(&hosted, true), "the host was asked");
+    assert!(
+        github_head_activity(&hosted, &token).is_err(),
+        "a credential refused both is a refusal, never an empty answer"
+    );
+}
