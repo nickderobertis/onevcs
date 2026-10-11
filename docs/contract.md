@@ -3902,7 +3902,7 @@ rules:
     approvals: none
     base_merge: on-conflict      # optional: always | on-conflict
     checks:                      # optional mapping; unknown keys inside are refused, as in `drafts:`
-      wait_seconds: 7200         # optional; a finite number > 0
+      wait_seconds: 7200         # optional; a finite number > 0 and <= 1000000000
 default:
   publication: change-open
   approvals: required
@@ -3917,8 +3917,10 @@ default:
   override, unchanged) → the matched rule's → `default:`'s → 3600. It is the bound the
   whole watch of a change request's checks holds, and it is validated before the push,
   as the environment's bound is. An unknown key inside `checks:`, a `checks:` that is
-  not a mapping, and a wait that is not a finite number above zero are refused by name
-  where the file is loaded.
+  not a mapping, and a wait that is not a finite number above zero and at most
+  1000000000 (about 31 years — past it a finite number is no duration a watch can run
+  to) are refused by name where the file is loaded, naming the key and that range. The
+  same range bounds `ONEVCS_CHECKS_TIMEOUT_SECONDS`, which is refused naming itself.
 - `onevcs rules check <repo>` prints two more lines, each with its source in the
   existing `(from …)` form; the `publication:` line is unchanged byte for byte, because
   onepipeline's `src/destination.rs` reads it:
@@ -3938,7 +3940,7 @@ it was derived; that of `checks wait:` is `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `rule
 pub enum BaseMerge { Always, OnConflict }
 #[serde(deny_unknown_fields)]
 pub struct Checks { pub wait_seconds: Option<WaitSeconds> }
-pub struct WaitSeconds(f64);        // TryFrom<f64>: finite and above zero; `get()` reads it
+pub struct WaitSeconds(f64);        // TryFrom<f64>: finite, above zero, at most 1e9; `get()` reads it
 //   Rule     pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>   // omitted when absent
 //   Policy   pub base_merge: Option<BaseMerge>, pub checks: Option<Checks>   // omitted when absent
 

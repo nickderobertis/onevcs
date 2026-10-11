@@ -529,6 +529,86 @@ fn a_malformed_base_merge_or_checks_block_is_refused_by_name() {
     }
 }
 
+#[test]
+fn a_wait_too_long_to_be_a_duration_is_refused_by_name_on_every_verb_that_reads_it() {
+    // Finite and above zero, and still no duration: `1e300` seconds converted for the
+    // watch would crash every verb that read it rather than be refused with its
+    // neighbours. Each is driven, and none may panic.
+    let hosted = Hosted::new(AUTO);
+    let world = &hosted.world;
+    green(world);
+    let tip = moved_under(&hosted, "base.txt", "the base moved\n");
+    let (token, worktree, _) = open(&hosted, &[]);
+    world.commit_file(&worktree, "more.txt", "more work\n", "feat: more work");
+    // A second pushed branch, for an open that continues one: a branch cut fresh never
+    // decides about a base, so it never reads the rules file's wait.
+    world.git(
+        &hosted.checkout,
+        &["push", "-q", "origin", "main:feature/another"],
+    );
+    let refused = |args: &[&str], env: Option<&str>, said: &str| {
+        let mut command = world.onevcs();
+        // Unset unless a leg sets it, so the file's wait is the one the verb converts.
+        match env {
+            Some(value) => command.env("ONEVCS_CHECKS_TIMEOUT_SECONDS", value),
+            None => command.env_remove("ONEVCS_CHECKS_TIMEOUT_SECONDS"),
+        };
+        command
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(said))
+            .stderr(predicate::str::contains(
+                "above zero and at most 1000000000",
+            ))
+            .stderr(predicate::str::contains("panicked").not());
+    };
+
+    for rules in [
+        "version: 3\nrules: []\ndefault: {publication: change-auto, approvals: none, \
+         checks: {wait_seconds: 1e300}}\n",
+        "version: 3\nrules:\n  - match: {name: hosted}\n    checks: {wait_seconds: \
+         1000000001}\ndefault: {publication: change-auto, approvals: none}\n",
+    ] {
+        configure_rules(world, rules);
+        for args in [
+            &["rules", "check", "hosted"][..],
+            &["session", "open", "hosted", "--branch", "feature/another"],
+            &["publish", &token],
+        ] {
+            refused(args, None, "checks: wait_seconds is");
+        }
+    }
+
+    // The process-wide bound shares the conversion, so it is refused the same way —
+    // naming itself, over a rules file that is fine.
+    configure_rules(world, format!("version: 3\nrules: []\ndefault: {AUTO}\n"));
+    for args in [&["rules", "check", "hosted"][..], &["publish", &token]] {
+        refused(args, Some("1e300"), "ONEVCS_CHECKS_TIMEOUT_SECONDS");
+    }
+
+    // The ceiling itself is a wait, and the refusals above published nothing: the
+    // session still publishes once the bound is one a watch can run to.
+    assert_eq!(
+        line(
+            &checked(world, &[("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1000000000")]),
+            "checks wait: "
+        ),
+        "checks wait: 1000000000 s (from ONEVCS_CHECKS_TIMEOUT_SECONDS)"
+    );
+    assert_eq!(
+        hosted.branch_on_origin(BRANCH).as_deref(),
+        Some(tip.as_str()),
+        "no refused publication pushed"
+    );
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+}
+
 /// A branch in the registered checkout itself, one commit ahead of `main` — and, for
 /// `recover`, carrying the unattested incomplete-step marker that verb lands — with the
 /// base then moved on the origin, touching `base_file`.

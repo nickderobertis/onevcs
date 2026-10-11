@@ -198,7 +198,7 @@ fn wait(name: &str) -> Result<Option<WaitSeconds>> {
     WaitSeconds::try_from(value)
         .map(Some)
         .map_err(|_| Error::Invalid {
-            reason: format!("{name} must be a finite number of seconds above zero, not {raw:?}"),
+            reason: format!("{name} must be {}, not {raw:?}", WaitSeconds::RANGE),
         })
 }
 

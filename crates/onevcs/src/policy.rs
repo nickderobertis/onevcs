@@ -620,9 +620,9 @@ fn refuse_malformed_checks(path: &Path, document: &serde_yaml_ng::Value) -> Resu
                 &where_,
                 if key == "wait_seconds" {
                     format!(
-                        "wait_seconds is {}, which is not a wait; write a finite number of \
-                         seconds above zero",
-                        spelled(value)
+                        "wait_seconds is {}, which is not a wait; write {}",
+                        spelled(value),
+                        WaitSeconds::RANGE
                     )
                 } else {
                     format!("names {key:?}, which it does not have: {said}")

@@ -254,12 +254,15 @@ pub struct Checks {
     pub wait_seconds: Option<WaitSeconds>,
 }
 
-/// A number of seconds to wait: finite, and above zero.
+/// A number of seconds to wait: finite, above zero, and at most
+/// [`WaitSeconds::MAX_SECONDS`].
 ///
 /// The check is in the conversion, as [`TrailerPrefix`]'s is, so a rules file naming a
 /// wait no watch could run to does not deserialize at all. Being finite is also what
 /// makes the value [`Eq`]: the one floating-point value that is not equal to itself is
-/// refused here.
+/// refused here. The ceiling is what keeps the wait a duration: a finite number past
+/// it, such as `1e300`, is no duration at all, and a watch bounded by one would reach
+/// the conversion and crash rather than be refused.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct WaitSeconds(f64);
@@ -270,6 +273,14 @@ impl WaitSeconds {
     /// The shipped `checks.wait_seconds`: an hour, which is what the watch was bounded
     /// by before the key existed.
     pub(crate) const SHIPPED: WaitSeconds = WaitSeconds(crate::gh::DEFAULT_CHECKS_TIMEOUT_SECONDS);
+
+    /// The longest wait accepted: a billion seconds, about 31 years — far past any
+    /// watch anyone means, and well inside what a duration and a clock can hold.
+    pub(crate) const MAX_SECONDS: f64 = 1_000_000_000.0;
+
+    /// The accepted range, as every refusal of a wait spells it.
+    pub(crate) const RANGE: &'static str =
+        "a finite number of seconds above zero and at most 1000000000";
 
     /// The wait, in seconds.
     #[must_use]
@@ -282,12 +293,10 @@ impl TryFrom<f64> for WaitSeconds {
     type Error = String;
 
     fn try_from(value: f64) -> std::result::Result<Self, Self::Error> {
-        if value.is_finite() && value > 0.0 {
+        if value.is_finite() && value > 0.0 && value <= Self::MAX_SECONDS {
             Ok(WaitSeconds(value))
         } else {
-            Err(format!(
-                "{value} is not a wait: write a finite number of seconds above zero"
-            ))
+            Err(format!("{value} is not a wait: write {}", Self::RANGE))
         }
     }
 }
