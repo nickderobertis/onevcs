@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.13.7...onevcs-testing-v0.14.0) - 2026-10-11
+
+### Added
+
+- *(change)* read a change request's review comments and reply in their threads ([#360](https://github.com/nickderobertis/onevcs/pull/360))
+
 ## [0.13.5](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.13.4...onevcs-testing-v0.13.5) - 2026-10-09
 
 ### Added
