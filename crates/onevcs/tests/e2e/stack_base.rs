@@ -1071,6 +1071,118 @@ fn a_change_a_session_cut_on_a_stack_base_is_judged_against_it_by_recoverable_an
 }
 
 #[test]
+fn the_landing_recoverable_offers_a_closed_child_opens_its_change_against_the_stack_base() {
+    let stack = Stack::new();
+    let world = &stack.world;
+    stack.parent("feature/a", "a.txt", "a\n");
+    stack.parent("feature/c", "c.txt", "c\n");
+    stack.assembled(&["feature/a", "feature/c"], 0);
+    let checkout = stack.checkout.to_string_lossy().into_owned();
+    let root = stack.tip("main").expect("the root is on the origin");
+    let base_head = stack.tip(BRANCH).expect("the stack base is on the origin");
+
+    // A session cuts the child on the stack base, commits its own work, and ends without
+    // publishing, which hands the branch back to the checkout as preserved work.
+    let assert = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "stacked",
+            "--branch",
+            "feature/child",
+            "--base",
+            BRANCH,
+        ])
+        .assert()
+        .success();
+    let stdout = &assert.get_output().stdout;
+    let (token, tree) = (
+        crate::world::token_of(stdout),
+        crate::world::worktree_of(stdout),
+    );
+    world.commit_file(&tree, "child.txt", "child\n", "feat: the child");
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // The command `recoverable` offers for it, run exactly as offered.
+    let rows = recoverable_rows(world, &checkout, &[]);
+    let row = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "feature/child")
+        .unwrap_or_else(|| panic!("the child is listed: {rows:#?}"));
+    assert_eq!(row["branch"]["base"], BRANCH, "{row:#}");
+    let argv: Vec<String> = row["recover_command"]
+        .as_array()
+        .expect("an argv")
+        .iter()
+        .map(|arg| arg.as_str().expect("a string").to_owned())
+        .collect();
+    assert_eq!(
+        argv[..3],
+        ["onevcs", "publish-branch", "feature/child"],
+        "{row:#}"
+    );
+    let output = world
+        .onevcs()
+        .args(&argv[1..])
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .output()
+        .expect("the binary runs");
+    let said = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Its change request targets the stack base the session recorded, never the root.
+    let calls = world.host_calls();
+    let opened: Vec<&String> = calls
+        .iter()
+        .filter(|call| call.starts_with("pr create "))
+        .collect();
+    assert_eq!(opened.len(), 1, "one change request: {calls:#?}\n{said}");
+    assert!(
+        opened[0].contains(&format!("--base {BRANCH}")),
+        "the change request targets the stack base: {}\n{said}",
+        opened[0]
+    );
+    assert!(
+        !opened[0].contains("--base main"),
+        "and not the root: {}",
+        opened[0]
+    );
+
+    // What it proposes is the child's own work alone, and nothing reached the root: the
+    // parents' work is not landed under the child's change.
+    let head = stack
+        .tip("feature/child")
+        .unwrap_or_else(|| panic!("the child was pushed\n{said}"));
+    let diff = world.git(
+        &stack.origin,
+        &["diff", "--name-only", &format!("{BRANCH}...{head}")],
+    );
+    assert_eq!(diff, "child.txt", "a child-only diff\n{said}");
+    assert!(
+        stack.carries(&head, &base_head),
+        "drafted on the stack base"
+    );
+    assert_eq!(
+        stack.tip("main").as_deref(),
+        Some(root.as_str()),
+        "no parent work landed on the root\n{said}"
+    );
+    assert_eq!(
+        stack.tip(BRANCH).as_deref(),
+        Some(base_head.as_str()),
+        "and the stack base itself did not move\n{said}"
+    );
+}
+
+#[test]
 fn a_host_holding_no_record_of_the_assembly_classifies_the_stack_base_by_its_name() {
     let stack = Stack::new();
     let a = stack.parent("feature/a", "a.txt", "a\n");

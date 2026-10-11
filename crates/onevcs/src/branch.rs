@@ -337,7 +337,15 @@ pub fn prepare(
                 verb.command(branch, repo),
             ),
         })?),
-        None => None,
+        // No trailer: the base the session that cut the branch recorded, which is the
+        // base `recoverable` and `status` judge it against and offer this command
+        // under — a change drafted on a stack base belongs on that stack base, and
+        // publishing it onto the root would land its parents' work as its own. Only a
+        // base the clone can still name: one deleted when it landed leaves the root,
+        // exactly as before there was a record to read.
+        // Records that cannot be read refuse rather than answer the root.
+        None => crate::vcs::recorded_base(&workspace::all()?, &resolution.key, branch)
+            .filter(|recorded| *recorded != base && stack_tip(&clone, recorded).is_some()),
     };
     // A branch whose recorded stack has landed belongs on the root base, and carries
     // the change below it as commits the root has only as one squashed equivalent. So

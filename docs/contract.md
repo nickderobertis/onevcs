@@ -4394,7 +4394,9 @@ classifies one ref one way. Every other branch is ordinary, and its base is the 
 session that cut it recorded — the root only where no session recorded one — which
 `recoverable` and `onevcs status` both judge it against: a change a session cut on a
 stack base with commits of its own is listed by `recoverable` against that stack base
-with its landing guidance, and one at the stack base's very head holds nothing beyond its
+with its landing guidance — and `publish-branch`, given no `Change-Base` trailer, lands a
+branch onto that same recorded base, so the offered command opens the child's change
+request against the stack base with the child's own diff — and one at the stack base's very head holds nothing beyond its
 base and is reported, and offered a next step, exactly as any such branch is — not
 listed, and `nothing-to-publish` in `status`. So
 `recoverable`, in both its default and `--all` forms, does not list a stack base as

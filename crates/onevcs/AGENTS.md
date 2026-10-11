@@ -280,6 +280,12 @@ on the change below it belongs on the root once that change lands, so it replays
 own commits there and retargets — merging instead would replay the change below against
 whatever the base holds of it.
 
+**A branch with no `Change-Base` trailer lands onto the base its session recorded**
+(`branch::prepare`, through `vcs::recorded_base`), where the clone can still name it, and
+onto the root otherwise — the same base `recoverable` and `status` judge it against. A
+closed session's child of a stack base carries no trailer, and landing it onto the root
+opened its change request against `main` with its parents' work as its own diff.
+
 **What makes a publication stacked is its record, never its content.** A branch carrying
 the change below it reads exactly like a branch that wrote those commits itself, so a
 stack inferred from content rewrites branches nobody stacked. Recorded stack state that
