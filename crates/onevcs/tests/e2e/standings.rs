@@ -823,6 +823,56 @@ fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads(
 }
 
 #[test]
+fn a_draft_whose_feedback_runs_past_one_page_is_read_whole_rather_than_answered_from_a_part() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let reviews = &stack.reviews;
+    stack.branch("draft/short", "main", "short.txt");
+    stack.branch("draft/long", "main", "long.txt");
+    let short = stack.open("draft/short", "main", true);
+    let long = stack.open("draft/long", "main", true);
+    reviews.pull(short as u64);
+    reviews.pull(long as u64);
+    reviews.conversation(short as u64, VIEWER, "One thing.");
+    // More conversation comments than one page of the query holds.
+    for at in 0..105 {
+        reviews.conversation(long as u64, VIEWER, &format!("Point {at}."));
+    }
+
+    let before = world.ledger().len();
+    let read = succeeded(&stack.standings_output("main", &[url(short), url(long)], &["--review"]));
+    let calls = since(world, before);
+    let methods: Vec<&str> = calls
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "graphql review-standings",
+            "graphql review",
+            "graphql review"
+        ],
+        "the batch, then the long draft read whole over its two pages: {calls:#?}"
+    );
+    assert_eq!(read["cost"], charged(&calls));
+    assert_eq!(
+        read["reads"][1]["comments"].as_array().map(Vec::len),
+        Some(105),
+        "every comment, not the first page's"
+    );
+    let one = succeeded(
+        &world
+            .onevcs()
+            .args(["change", "comments", &url(long), "--json"])
+            .output()
+            .expect("the binary runs"),
+    );
+    assert_eq!(read["reads"][1]["comments"], one["comments"]);
+    assert_eq!(read["reads"][1]["marker"], one["marker"]);
+}
+
+#[test]
 fn a_draft_on_its_parents_branch_moves_to_the_root_with_its_body_in_one_write() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;

@@ -387,10 +387,12 @@ fn rollup(pull: &Value, number: u64, head: &Sha) -> Result<Vec<Check>> {
                      {context}"
                 ))
             };
+            // Refused rather than read as optional: a check the host would not say is
+            // required is the one whose absence from a verdict lets a change through.
             let required = context
                 .get("isRequired")
                 .and_then(Value::as_bool)
-                .unwrap_or(false);
+                .ok_or_else(|| unsaid("isRequired"))?;
             let (name, status, conclusion) = match field("__typename") {
                 Some("StatusContext") => {
                     let name = field("context").ok_or_else(|| unsaid("context"))?;
