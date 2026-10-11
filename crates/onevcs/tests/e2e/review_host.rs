@@ -482,8 +482,8 @@ impl Model {
             }
         }
         let mut answer = json!({"data": data});
-        if let Some(at) = self.stripped.take() {
-            leave_out(&mut answer, at);
+        if self.stripped.is_some_and(|at| leave_out(&mut answer, at)) {
+            self.stripped = None;
         }
         (format!("{answer}\n"), String::new(), 0)
     }
@@ -574,13 +574,14 @@ impl Model {
     }
 }
 
-/// Remove the value at JSON pointer `at`, where there is one.
-fn leave_out(answer: &mut Value, at: &str) {
-    if let Some((parent, name)) = at.rsplit_once('/') {
-        if let Some(fields) = answer.pointer_mut(parent).and_then(Value::as_object_mut) {
-            fields.remove(name);
-        }
-    }
+/// Remove the value at JSON pointer `at`, answering whether there was one.
+fn leave_out(answer: &mut Value, at: &str) -> bool {
+    at.rsplit_once('/').is_some_and(|(parent, name)| {
+        answer
+            .pointer_mut(parent)
+            .and_then(Value::as_object_mut)
+            .is_some_and(|fields| fields.remove(name).is_some())
+    })
 }
 
 fn thread_comment(comment: &Comment) -> Value {
@@ -762,8 +763,8 @@ impl ReviewHost {
         self.model().garbled = Some((at, value));
     }
 
-    /// Answer the next page without the value at JSON pointer `at` into its whole
-    /// answer — `/data` included — as a host answering partially would.
+    /// Answer the next page that carries a value at JSON pointer `at` into its whole
+    /// answer — `/data` included — without it, as a host answering partially would.
     pub fn strip_next_page(&self, at: &'static str) {
         self.model().stripped = Some(at);
     }

@@ -1013,6 +1013,11 @@ fn what_cannot_be_posted_is_refused_and_nothing_reaches_the_host() {
             "neither a session token nor a change request's URL",
         ),
         (
+            "https://",
+            2,
+            "neither a session token nor a change request's URL",
+        ),
+        (
             "https://github.com/acme-corp/widgets/pull/1x",
             2,
             "neither a session token nor a change request's URL",
@@ -1040,6 +1045,15 @@ fn what_cannot_be_posted_is_refused_and_nothing_reaches_the_host() {
         .expect("the binary runs");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("is not a read marker"));
+    // …and so is one in this transport's spelling whose content is not what it writes.
+    let output = world
+        .onevcs()
+        .args(["change", "comments", CHANGE, "--since", "gh1.bm9wZQ"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("\"gh1.bm9wZQ\" is not a read marker this build's GitHub reads write"));
     let other = world
         .onevcs()
         .args([
@@ -1170,6 +1184,10 @@ fn a_page_or_a_post_that_leaves_out_what_it_owes_is_refused_by_name() {
             "/data/repository/pullRequest/reviewThreads/nodes/0/isResolved",
             "a review thread without its isResolved",
         ),
+        (
+            "/data/repository/pullRequest/comments/nodes/0/body",
+            "GitHub reported a comment without its body",
+        ),
     ] {
         host.strip_next_page(at);
         let output = world
@@ -1240,6 +1258,99 @@ fn a_page_or_a_post_that_leaves_out_what_it_owes_is_refused_by_name() {
 }
 
 #[test]
+fn a_threads_next_page_without_its_comments_is_refused_rather_than_read_as_its_last() {
+    let (world, host) = reviewed();
+    let long = host.thread(1, "src/lib.rs", Some(3), VIEWER, "Why?");
+    for n in 0..60 {
+        host.thread_reply(1, &long.thread, VIEWER, &format!("Word {n}."));
+    }
+    // The first page carries no `thread`; the one continuing it does, and leaves its
+    // comments out.
+    host.strip_next_page("/data/thread/comments");
+    let output = world
+        .onevcs()
+        .args(["change", "comments", CHANGE])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("GitHub answered a thread's next page without it"),
+        "{stderr}"
+    );
+    assert_eq!(
+        reads(&world),
+        2,
+        "the refusal came from the continuing page"
+    );
+    assert_eq!(ids(&comments(&world, CHANGE, None)).len(), 61);
+}
+
+#[test]
+fn a_thread_whose_first_comment_the_read_did_not_show_is_answered_through_the_one_asked_about() {
+    let (world, host) = reviewed();
+    let line = host.thread(1, "src/lib.rs", Some(3), VIEWER, "Line 3 should say why.");
+    let followed = host.thread_reply(1, &line.thread, VIEWER, "And cite the plan.");
+    // The read the reply makes shows the thread's first comment as itself a reply, so
+    // no comment of the thread reads as its root.
+    host.garble_next_page(
+        "/repository/pullRequest/reviewThreads/nodes/0/comments/nodes/0/replyTo",
+        json!({"id": "PRRC_kwDOT1IgdczI", "databaseId": 200}),
+    );
+    let output = reply(&world, CHANGE, &followed, "k", &["--body", "Cited."]);
+    // So the reply is addressed to the comment asked about — which GitHub's replies
+    // route, answering only a thread's first comment, refuses, and the call says so.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{followed} is a reply inside a review thread, and GitHub answers only a thread's first comment"
+        )) && stderr.contains("Nothing was posted"),
+        "{stderr}"
+    );
+    let posted: Vec<String> = world
+        .host_calls()
+        .into_iter()
+        .filter(|call| call.contains("--method POST"))
+        .collect();
+    assert_eq!(posted.len(), 1, "{posted:#?}");
+    assert!(
+        posted[0].starts_with(&format!(
+            "api repos/{SLUG}/pulls/1/comments/4238752131/replies "
+        )),
+        "{posted:#?}"
+    );
+}
+
+#[test]
+fn a_library_caller_naming_no_pull_request_number_is_refused_before_github_is_asked() {
+    use onevcs::{ChangeId, CommentId, Providers};
+    let (world, host) = reviewed();
+    crate::honesty::inhabit(&world);
+    let github = Providers::real()
+        .hosting
+        .for_repo(SLUG)
+        .expect("a GitHub host");
+    let change = ChangeId("1a".to_owned());
+    let read = github.review_comments(&change, None).map(|_| ());
+    let posted = github
+        .reply_to_comment(
+            &change,
+            &CommentId(RECORDED_CONVERSATION.to_owned()),
+            "Done.",
+            "k",
+        )
+        .map(|_| ());
+    for refused in [read, posted] {
+        assert!(
+            matches!(&refused, Err(onevcs::Error::Invalid { reason }) if reason.contains("\"1a\" is not a pull request number")),
+            "{refused:?}"
+        );
+    }
+    assert!(host.requests().is_empty(), "{:#?}", host.requests());
+}
+
+#[test]
 fn a_verified_absent_reply_is_routed_by_every_spelling_of_a_node_id_and_refused_by_none() {
     let (world, host) = reviewed();
     // Each names review comment `<id>` of the recorded repository; the host holds none
@@ -1280,8 +1391,10 @@ fn a_verified_absent_reply_is_routed_by_every_spelling_of_a_node_id_and_refused_
         // an id no unsigned integer spells, and one cut short;
         "PRRC_kwDOT1IgddAF",
         "PRRC_kwDOT1Igdc4AAQ",
-        // and a symbol neither base64 alphabet has.
+        // a symbol neither base64 alphabet has;
         "PRRC_kwDO*1IgdczI",
+        // and an older id naming a type no reply answers, `1:Issue7`.
+        "MTpJc3N1ZTc=",
     ] {
         let output = reply(
             &world,
