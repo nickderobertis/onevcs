@@ -150,6 +150,11 @@ impl<T: Store<HostState>> Host<T> {
     pub fn retarget_by_person(&self, change: &ChangeId, base: &str) -> Result<()> {
         crate::state::named_branch(base, "the base branch")?;
         self.store.with(|state| {
+            if !state.changes.iter().any(|held| held.id == *change) {
+                return Err(Error::Invalid {
+                    reason: format!("no change request {:?} was opened on this host", change.0),
+                });
+            }
             landings::retarget_in(state, change, base);
             Ok(())
         })

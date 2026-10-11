@@ -95,6 +95,12 @@ fn a_persons_merges_closes_and_moves_are_what_the_standings_report() {
     host.close_unmerged(&closed.id).expect("a person closes it");
     host.retarget_by_person(&sibling.id, "release")
         .expect("a person moves it");
+    assert!(
+        host.retarget_by_person(&ChangeId("99".to_owned()), "release")
+            .is_err(),
+        "nobody can move a change request the host never opened"
+    );
+    assert!(host.close_unmerged(&ChangeId("99".to_owned())).is_err());
     host.merge_by_person(
         &parent.id,
         PersonMerge::Squash,
