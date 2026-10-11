@@ -13,15 +13,15 @@ use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
-    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReplyArgs,
-    ChangeShowArgs, Command, EventsArgs, ExportArgs, ImportArgs, IntegrateArgs, PoolCommand,
-    PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs,
-    ReclaimArgs, RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs,
-    ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs,
-    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs,
-    RulesApplyArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs,
-    SessionOpenArgs, SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs,
-    SweepFormat, SyncArgs,
+    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReopenArgs,
+    ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs, Command, EventsArgs,
+    ExportArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
+    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs,
+    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
+    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
+    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StackBaseArgs,
+    StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -97,6 +97,9 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Ready(args) => change_ready(args, providers),
             ChangeCommand::Comments(args) => change_comments(args, providers),
             ChangeCommand::Reply(args) => change_reply(args, providers),
+            ChangeCommand::Standings(args) => change_standings(args, providers),
+            ChangeCommand::Retarget(args) => change_retarget(args, providers),
+            ChangeCommand::Reopen(args) => change_reopen(args, providers),
         },
         Command::Preserve(args) => preserve_branch(args),
         Command::StackBase(args) => stack_base(args, providers),
@@ -913,6 +916,8 @@ fn publish_session(args: &PublishArgs, providers: &Providers<'_>) -> Result<u8> 
             body,
             draft,
             term_scope: args.term_scope.scope(),
+            defer_checks: args.defer_checks,
+            adopt: args.adopt.as_deref().map(change_url).transpose()?,
         },
     )?;
     let PublishOutcome::Failed {
@@ -1090,6 +1095,221 @@ fn change_comments(args: &ChangeCommentsArgs, providers: &Providers<'_>) -> Resu
     }
     println!();
     println!("marker: {}", read.marker.0);
+    Ok(0)
+}
+
+/// A change request's URL as the command line typed it, refused by name where it is
+/// not one.
+fn change_url(text: &str) -> Result<crate::Url> {
+    crate::Url::parse(text.trim()).map_err(|failure| {
+        error::invalid(format!(
+            "{text:?} is not a change request's URL ({failure}); a URL names one as \
+             https://<host>/<owner>/<name>/pull/<number>"
+        ))
+    })
+}
+
+/// The repository a URL-addressed verb acts in: the one `--repo` names, or the one the
+/// URL itself names.
+fn repository_of(repo: Option<&String>, change: &crate::Url) -> Result<String> {
+    match repo {
+        Some(repo) => Ok(repo.clone()),
+        None => Ok(review::ChangeUrl::parse(change.as_str())?.identity),
+    }
+}
+
+/// How a standing reads on one line.
+fn standing_line(standing: &crate::ChangeStanding) -> String {
+    let state = match &standing.state {
+        crate::ChangeState::Open => "open".to_owned(),
+        crate::ChangeState::Merged {
+            into,
+            commit,
+            landing,
+            ..
+        } => format!(
+            "merged into {into} at {}{}",
+            commit.0,
+            if *landing { " (a landing)" } else { "" }
+        ),
+        crate::ChangeState::Closed { base_deleted } => format!(
+            "closed{}",
+            if *base_deleted {
+                ", its base deleted"
+            } else {
+                ""
+            }
+        ),
+    };
+    let checks = match &standing.checks {
+        crate::ChecksVerdict::Pending { waiting } => {
+            format!("pending ({})", guidance::listed(waiting))
+        }
+        crate::ChecksVerdict::Passed => "passed".to_owned(),
+        crate::ChecksVerdict::PassedWithSkipped { skipped } => {
+            format!("passed with skipped ({})", guidance::listed(skipped))
+        }
+        crate::ChecksVerdict::Failed { failed } => {
+            format!("failed ({})", guidance::listed(failed))
+        }
+        crate::ChecksVerdict::NoneRequired => "none required".to_owned(),
+    };
+    format!(
+        "{url} — {state}; base {base}, head {head} at {sha}, {draft}; checks {checks}",
+        url = standing.url,
+        base = standing.base,
+        head = standing.head_branch,
+        sha = standing.head.0,
+        draft = if standing.draft {
+            "a draft"
+        } else {
+            "ready for review"
+        },
+    )
+}
+
+/// Read where a repository's change requests stand, the way `onevcs change standings`
+/// reports it — with `--review`, through the read that carries their review feedback.
+fn change_standings(args: &ChangeStandingsArgs, providers: &Providers<'_>) -> Result<u8> {
+    let mut targets = Vec::with_capacity(args.changes.len());
+    for named in &args.changes {
+        let (url, marker) = match named.split_once('=') {
+            Some((url, marker)) => (url, Some(ReadMarker(marker.to_owned()))),
+            None => (named.as_str(), None),
+        };
+        if marker.is_some() && !args.review {
+            return Err(error::invalid(format!(
+                "--change {named:?} names a review marker, which only a read with --review \
+                 reads from: add --review, or name the change request alone"
+            )));
+        }
+        targets.push(crate::ReviewTarget {
+            change: change_url(url)?,
+            since: marker,
+        });
+    }
+    if args.review {
+        let read = crate::review_standings(
+            providers,
+            &crate::ReviewStandingsRequest {
+                repo: args.repo.clone(),
+                root: args.root.clone(),
+                changes: targets,
+            },
+        )?;
+        if args.json {
+            println!("{}", serde_json::to_string(&read).map_err(serialization)?);
+            return Ok(0);
+        }
+        for (standing, review) in read.standings.iter().zip(&read.reads) {
+            println!("{}", standing_line(standing));
+            println!(
+                "  review: {} comment(s){}; marker {}",
+                review.comments.len(),
+                if review.unchanged {
+                    ", nothing new since the marker"
+                } else {
+                    ""
+                },
+                review.marker.0
+            );
+        }
+        println!(
+            "cost: {} graphql point(s), {} REST request(s)",
+            read.cost.graphql_points, read.cost.rest_requests
+        );
+        return Ok(0);
+    }
+    let read = crate::change_standings(
+        providers,
+        &crate::ChangeStandingsRequest {
+            repo: args.repo.clone(),
+            root: args.root.clone(),
+            changes: targets.into_iter().map(|target| target.change).collect(),
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string(&read).map_err(serialization)?);
+        return Ok(0);
+    }
+    for standing in &read.standings {
+        println!("{}", standing_line(standing));
+    }
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        read.cost.graphql_points, read.cost.rest_requests
+    );
+    Ok(0)
+}
+
+/// Move a change request onto another base, the way `onevcs change retarget` reports it.
+fn change_retarget(args: &ChangeRetargetArgs, providers: &Providers<'_>) -> Result<u8> {
+    let change = change_url(&args.change)?;
+    let body = args
+        .body_file
+        .as_deref()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .map_err(error::at("read the change request's body from", path))
+        })
+        .transpose()?;
+    let moved = crate::retarget_change(
+        providers,
+        &crate::RetargetRequest {
+            repo: repository_of(args.repo.as_ref(), &change)?,
+            change,
+            base: args.base.clone(),
+            body,
+            remove_restored_base: args.remove_restored_base,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string(&moved).map_err(serialization)?);
+        return Ok(0);
+    }
+    match moved.outcome {
+        crate::RetargetOutcome::Retargeted => {
+            println!(
+                "{} moved from {} onto {}",
+                moved.change, moved.from, moved.to
+            )
+        }
+        _ => println!("{} already targets {}", moved.change, moved.to),
+    }
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        moved.cost.graphql_points, moved.cost.rest_requests
+    );
+    Ok(0)
+}
+
+/// Restore a closed change request's base and reopen it, the way `onevcs change reopen`
+/// reports it.
+fn change_reopen(args: &ChangeReopenArgs, providers: &Providers<'_>) -> Result<u8> {
+    let change = change_url(&args.change)?;
+    let reopened = crate::reopen_change(
+        providers,
+        &crate::ReopenRequest {
+            repo: repository_of(args.repo.as_ref(), &change)?,
+            change,
+            restore_base_at: crate::Sha(args.restore_base_at.clone()),
+        },
+    )?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&reopened).map_err(serialization)?
+        );
+        return Ok(0);
+    }
+    println!(
+        "{} reopened over {}, restored on the origin",
+        reopened.change, reopened.restored_base
+    );
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        reopened.cost.graphql_points, reopened.cost.rest_requests
+    );
     Ok(0)
 }
 

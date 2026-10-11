@@ -333,6 +333,9 @@ match published.outcome {
     PublishOutcome::ChangeOpen(url) | PublishOutcome::Queued(url) => journal.awaiting(url),
     // Green, and kept a draft for the person who dispatched the work to review.
     PublishOutcome::ChangeReviewDraft(url) => journal.for_review(url),
+    // Pushed into a draft held for review with `defer_checks`, asking the host nothing:
+    // its checks' verdict is read later, through `change_standings`.
+    PublishOutcome::ChangeReviewDraftUnchecked(url) => journal.unchecked(url),
     // A draft cannot land while it stands; `ready_change` lifts it, and so does a
     // publication with no `draft` once its checks are green. Whether it awaits a
     // dependency's release or is held by the session still making it is the

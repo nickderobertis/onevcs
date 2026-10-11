@@ -618,11 +618,11 @@ pub fn status(
     let mut stream = Stream::releases(&located.releases.identity)?;
     if let Landed::Yes { evidence } | Landed::InPart { evidence, .. } = &landing.landed {
         if let LandingEvidence::ChangeRequest { change_url, .. } = evidence {
-            reconcile_landing(
+            let _ = reconcile_landing(
                 registry,
                 &located,
                 &landing.branch,
-                landing.change_stream.as_deref(),
+                landing.change_stream.as_deref().map(LandingStream::Opened),
                 Landing {
                     commit: &commit,
                     at: None,
@@ -975,11 +975,11 @@ pub(crate) fn reconcile_landing(
     registry: &Registry,
     located: &Located,
     branch: &str,
-    change_stream: Option<&str>,
+    recording: Option<LandingStream<'_>>,
     landing: Landing<'_>,
     change: &Url,
     stream: &mut Stream,
-) {
+) -> bool {
     let Landing {
         commit,
         at: landed_at,
@@ -990,6 +990,7 @@ pub(crate) fn reconcile_landing(
             "onevcs: warning: {identity} landed {branch} at {commit}, discovered after the \
              publication that made it ended, and {what}: {failure}",
         );
+        false
     };
     let publication = match store::resolve(registry, identity) {
         Ok(resolution) => resolution.publication,
@@ -1008,18 +1009,47 @@ pub(crate) fn reconcile_landing(
     if let Err(failure) = capture_in(located, commit, withheld.as_deref(), stream) {
         return warn("its release baselines were not captured", &failure);
     }
-    let Some(token) = change_stream else {
-        return;
+    let Some(recording) = recording else {
+        return false;
     };
     // When the base received it is the host's own answer, recorded as unknown where
     // it gave none. Never the time of this read, which is only when somebody
     // happened to ask.
     let mut merged = json_object(json!({"url": change.to_string(), "sha": commit}));
     crate::gate_run::landed(&mut merged, landed_at, commit);
-    match Stream::open(token) {
-        Ok(mut recorded) => recorded.emit(EventKind::ChangeMerged, merged),
+    let opened = match recording {
+        LandingStream::Opened(token) => Stream::open(token),
+        // A stream no publication opened says whose landing it is the way a session's
+        // does: the identity on its label, the branch in its payload.
+        LandingStream::Own { token, identity } => Stream::open(token).map(|mut own| {
+            own.label("identity", identity);
+            merged.insert("branch".to_owned(), json!(branch));
+            own
+        }),
+    };
+    match opened {
+        Ok(mut recorded) => {
+            recorded.emit(EventKind::ChangeMerged, merged);
+            true
+        }
         Err(failure) => warn("the landing was not recorded", &failure),
     }
+}
+
+/// Which stream a landing found after the fact is recorded on.
+pub(crate) enum LandingStream<'a> {
+    /// The stream that recorded its change request being opened, which already says
+    /// whose work it is.
+    Opened(&'a str),
+    /// A stream of the change request's own, for a landing no publication on this host
+    /// opened: labelled with the identity, and the record naming the branch, so the
+    /// landing tiers read it as that branch's.
+    Own {
+        /// The stream's token.
+        token: &'a str,
+        /// The identity the branch belongs to.
+        identity: &'a str,
+    },
 }
 
 /// Why a reading taken now cannot stand for what was out when `commit` landed, or

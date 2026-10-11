@@ -199,6 +199,28 @@ pub enum Error {
         /// answer are listed.
         reason: String,
     },
+
+    /// A publication that defers its checks named a change request this host holds no
+    /// record of the head branch of — no standings read that saw it and no
+    /// `change-opened` it wrote — and asks the host nothing, so it cannot tell whether
+    /// the change request is the session's. Nothing was pushed. The CLI reports this as
+    /// exit code 2.
+    ///
+    /// A kind of its own for the reason [`Error::UnresolvableReference`] is one: a
+    /// caller falls back from it — reads the change request's standing, or publishes
+    /// watching the checks — and must never do so on a change request a record shows to
+    /// be another branch's, which is [`Error::Invalid`]. It renders and exits exactly as
+    /// that one does, under the `invalid input:` prefix, and
+    /// [`FailureKind`](crate::FailureKind) gains no kind for it.
+    // llmlint: ignore[names_match_behavior] rendered under `Invalid`'s prefix on purpose,
+    // as `UnresolvableReference` is; the variant name is what a caller routes on.
+    #[error("invalid input: {reason}")]
+    UnrecordedChangeHead {
+        /// The change request, as the publication named it.
+        change: String,
+        /// What this host holds no record of, and the two ways forward.
+        reason: String,
+    },
 }
 
 /// The result type every fallible entry point in this crate returns.

@@ -236,23 +236,59 @@ pub fn review_comments(
 ) -> Result<ReviewRead> {
     let addressed = Addressed::of(providers, change)?;
     let read = addressed.host.review_comments(&addressed.id, since)?;
-    addressed.record(
-        EventKind::ReviewCommentsRead,
-        json!({
-            "change_url": read.change_url,
-            "count": read.comments.len(),
-            "unchanged": read.unchanged,
-            // A digest rather than the marker: a marker grows with the change request
-            // and the envelope bounds payload text, while a digest is fixed in size and
-            // still says exactly which marker the call returned.
-            "marker_digest": ids::digest(&read.marker.0),
-            "cost": {
-                "graphql_points": read.cost.graphql_points,
-                "rest_requests": read.cost.rest_requests,
-            },
-        }),
-    );
+    addressed.record(EventKind::ReviewCommentsRead, read_payload(&read));
     Ok(read)
+}
+
+/// What a `review-comments-read` event says about one read — one spelling, whichever
+/// operation read it.
+fn read_payload(read: &ReviewRead) -> serde_json::Value {
+    json!({
+        "change_url": read.change_url,
+        "count": read.comments.len(),
+        "unchanged": read.unchanged,
+        // A digest rather than the marker: a marker grows with the change request
+        // and the envelope bounds payload text, while a digest is fixed in size and
+        // still says exactly which marker the call returned.
+        "marker_digest": ids::digest(&read.marker.0),
+        "cost": {
+            "graphql_points": read.cost.graphql_points,
+            "rest_requests": read.cost.rest_requests,
+        },
+    })
+}
+
+/// Record one read of a change request named by its URL, on that change request's own
+/// stream, exactly as [`review_comments`] records one — what a review-and-standings read
+/// records for each change request it read. Best effort.
+pub(crate) fn record_url_read(identity: &str, read: &ReviewRead) {
+    record_on_change_stream(
+        &read.change_url,
+        Some(identity),
+        EventKind::ReviewCommentsRead,
+        read_payload(read),
+    );
+}
+
+/// Record one event on the stream a change request named by URL records on.
+fn record_on_change_stream(
+    change_url: &str,
+    identity: Option<&str>,
+    kind: EventKind,
+    payload: serde_json::Value,
+) {
+    match Stream::open(&change_stream(change_url)) {
+        Ok(mut stream) => {
+            stream.label("change_url", change_url);
+            if let Some(identity) = identity {
+                stream.label("identity", identity);
+            }
+            stream.emit(kind, object(payload));
+        }
+        Err(error) => {
+            eprintln!("onevcs: warning: what was done on {change_url} is not recorded: {error}")
+        }
+    }
 }
 
 /// Answer one comment: in its thread where it has one, and otherwise as a new
@@ -520,18 +556,14 @@ impl Addressed {
     /// reporting it as failed because its record could not be stored would send
     /// somebody to do it again.
     fn record(&self, kind: EventKind, payload: serde_json::Value) {
-        let opened = match &self.stream {
-            StreamOf::Session { token, identity } => Stream::open(token).map(|mut stream| {
-                stream.label("identity", identity);
-                stream
-            }),
-            StreamOf::Change => Stream::open(&change_stream(&self.change_url)).map(|mut stream| {
-                stream.label("change_url", &self.change_url);
-                stream
-            }),
+        let StreamOf::Session { token, identity } = &self.stream else {
+            return record_on_change_stream(&self.change_url, None, kind, payload);
         };
-        match opened {
-            Ok(mut stream) => stream.emit(kind, object(payload)),
+        match Stream::open(token) {
+            Ok(mut stream) => {
+                stream.label("identity", identity);
+                stream.emit(kind, object(payload));
+            }
             Err(error) => eprintln!(
                 "onevcs: warning: what was done on {} is not recorded: {error}",
                 self.change_url
@@ -542,21 +574,23 @@ impl Addressed {
 
 /// The stream a change request named by URL records on.
 fn change_stream(change_url: &str) -> String {
-    format!("change-{}", ids::short_digest(change_url))
+    crate::standings::change_stream(change_url)
 }
 
 /// A change request's URL, taken apart: `https://<host>/<owner>/<name>/pull/<number>`,
 /// with anything after the number — a tab of the page, a fragment — ignored.
-struct ChangeUrl {
+pub(crate) struct ChangeUrl {
     host: String,
     owner: String,
     name: String,
-    number: String,
-    identity: String,
+    /// The host's number for it.
+    pub(crate) number: String,
+    /// The identity key of the repository it belongs to: `<host>/<owner>/<name>`.
+    pub(crate) identity: String,
 }
 
 impl ChangeUrl {
-    fn parse(text: &str) -> Result<Self> {
+    pub(crate) fn parse(text: &str) -> Result<Self> {
         let refused = || {
             invalid(format!(
                 "{text:?} is neither a session token nor a change request's URL; a URL names \
@@ -595,7 +629,7 @@ impl ChangeUrl {
         })
     }
 
-    fn canonical(&self) -> String {
+    pub(crate) fn canonical(&self) -> String {
         format!(
             "https://{}/{}/{}/pull/{}",
             self.host, self.owner, self.name, self.number

@@ -163,6 +163,8 @@ fn a_session_opens_preserves_publishes_and_the_change_lands_on_the_real_reposito
                 body: None,
                 draft: None,
                 term_scope: Default::default(),
+                defer_checks: false,
+                adopt: None,
             },
             providers.hosting,
         )

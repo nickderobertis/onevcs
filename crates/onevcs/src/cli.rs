@@ -547,6 +547,18 @@ pub struct PublishArgs {
     // checked at dispatch for that reason.
     #[arg(long, value_name = "TEXT")]
     pub draft_reason: Option<String>,
+    /// Push into the draft `--adopt` names and ask the host nothing — no lookup, no
+    /// check watch, no lift — for a change request held for review. Its checks are read
+    /// later, with `onevcs change standings`.
+    #[arg(long)]
+    pub defer_checks: bool,
+    /// The draft change request a `--defer-checks` publication pushes into, by URL.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text for the reason given on
+    // `title`: it becomes a `Url` in `app::adopted`, where the refusal names the text the
+    // operator typed rather than clap's usage text, and `--adopt` without
+    // `--defer-checks` is refused by name in the publication, before anything is pushed.
+    #[arg(long, value_name = "URL")]
+    pub adopt: Option<String>,
     /// Which private repositories the public boundary check derives its terms from.
     #[command(flatten)]
     pub term_scope: TermScopeArgs,
@@ -572,6 +584,84 @@ pub enum ChangeCommand {
     Comments(ChangeCommentsArgs),
     /// Answer one review comment, in its thread where it has one.
     Reply(ChangeReplyArgs),
+    /// Read where a repository's change requests stand — open, merged and into which
+    /// branch, or closed — with each one's base, head, draft state and required-check
+    /// verdict, recording a merge into the root as a landing.
+    Standings(ChangeStandingsArgs),
+    /// Move a change request onto another base, writing its description with it.
+    Retarget(ChangeRetargetArgs),
+    /// Restore a closed change request's deleted base and reopen it as the draft it was.
+    Reopen(ChangeReopenArgs),
+}
+
+/// Arguments for `onevcs change standings`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeStandingsArgs {
+    /// The repository: its identity, or a registered checkout's path.
+    pub repo: String,
+    /// The root base: a change request merged into it is a landing.
+    #[arg(long, value_name = "R")]
+    pub root: String,
+    /// A change request to read, by URL; repeat for each. With `--review`,
+    /// `<URL>=<MARKER>` reads its review feedback since that marker.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text, parsed into the
+    // request's `Url`s and markers in `app::standing_targets`, where a refusal names the
+    // argument the operator typed rather than clap's usage text.
+    #[arg(long = "change", value_name = "URL", required = true)]
+    pub changes: Vec<String>,
+    /// Read each change request's review feedback with its standing, in the same query.
+    #[arg(long)]
+    pub review: bool,
+    /// Report the read as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change retarget`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeRetargetArgs {
+    /// The change request, by URL.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text, parsed into a `Url` in
+    // `app::change_url`, where the refusal names what the operator typed.
+    #[arg(value_name = "URL")]
+    pub change: String,
+    /// The base it should target.
+    #[arg(long, value_name = "B")]
+    pub base: String,
+    /// A file holding the description to write in the same request.
+    #[arg(long, value_name = "PATH")]
+    pub body_file: Option<PathBuf>,
+    /// Delete the previous base branch after the move — only a base `change reopen`
+    /// restored on this change request.
+    #[arg(long)]
+    pub remove_restored_base: bool,
+    /// The repository: its identity, or a registered checkout's path. Omitted, the one
+    /// the URL names.
+    #[arg(long, value_name = "R")]
+    pub repo: Option<String>,
+    /// Report what the move did as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change reopen`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeReopenArgs {
+    /// The change request, by URL.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text, parsed into a `Url` in
+    // `app::change_url`, where the refusal names what the operator typed.
+    #[arg(value_name = "URL")]
+    pub change: String,
+    /// The commit its deleted base branch is restored at.
+    #[arg(long, value_name = "SHA")]
+    pub restore_base_at: String,
+    /// The repository: its identity, or a registered checkout's path. Omitted, the one
+    /// the URL names.
+    #[arg(long, value_name = "R")]
+    pub repo: Option<String>,
+    /// Report what the reopen did as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs change show`.

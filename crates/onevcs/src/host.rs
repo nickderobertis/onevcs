@@ -12,9 +12,10 @@ use crate::boundary::Visibility;
 use crate::error::{invalid, Error, Result};
 use crate::event::ArtifactId;
 use crate::publish::DraftReason;
-use crate::review::{CommentId, PostedReply, ReadMarker, ReviewRead};
+use crate::review::{CommentId, PostedReply, ReadCost, ReadMarker, ReviewRead};
 use crate::rules::MergePolicy;
-use crate::{gh, git, review, stream};
+use crate::standings::{ChangeStandings, ReviewStandings};
+use crate::{gh, git, review, standings, stream};
 
 /// What `gh pr checks` exits with when a check it has just reported has not
 /// settled. The rollup it printed is still the answer, so this status is read
@@ -380,6 +381,70 @@ pub trait RemoteHost {
     ) -> Result<PostedReply> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::reply_to_comment",
+        })
+    }
+
+    /// Where each of `changes` stands — its state and the branch it merged into, its
+    /// base, head, description, draft flag and its required checks' verdict — one per
+    /// change request asked about, in the order asked, with what the read cost.
+    ///
+    /// `landing` on a merge is true exactly when it merged into `root`; `base_deleted`
+    /// on a closed one is whether the origin still has its base. The verdict is the one
+    /// a publication's watch would reach from the same rollup, against what the host
+    /// declares a merge into each base requires. What [`change_standings`] asks, and
+    /// what [`retarget_change`] and [`reopen_change`] read before and after they write.
+    ///
+    /// [`change_standings`]: crate::change_standings
+    /// [`retarget_change`]: crate::retarget_change
+    /// [`reopen_change`]: crate::reopen_change
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn change_standings(&self, _root: &str, _changes: &[ChangeId]) -> Result<ChangeStandings> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::change_standings",
+        })
+    }
+
+    /// [`change_standings`](RemoteHost::change_standings) carrying each change
+    /// request's review feedback since the marker beside it, in one read: one
+    /// [`ReviewRead`] per change request, in the order asked, each the one
+    /// [`review_comments`](RemoteHost::review_comments) would answer from the same
+    /// marker.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn review_standings(
+        &self,
+        _root: &str,
+        _changes: &[(ChangeId, Option<ReadMarker>)],
+    ) -> Result<ReviewStandings> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::review_standings",
+        })
+    }
+
+    /// Move a change request onto `base`, writing `body` as its description in the
+    /// same request where one is given, and answer what the write cost. Never changes
+    /// whether it is a draft.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn retarget_change(
+        &self,
+        _change: &ChangeId,
+        _base: &str,
+        _body: Option<&str>,
+    ) -> Result<ReadCost> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::retarget_change",
+        })
+    }
+
+    /// Reopen a closed change request, as the draft it was where it was one, and answer
+    /// what the write cost. Its base branch is already back on the origin.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn reopen_change(&self, _change: &ChangeId) -> Result<ReadCost> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::reopen_change",
         })
     }
 }
@@ -1908,6 +1973,35 @@ impl RemoteHost for GitHub {
         review::github::reply(&self.repo, change, comment, body)
     }
 
+    /// One aliased GraphQL query per 50 change requests — see `standings::github`.
+    fn change_standings(&self, root: &str, changes: &[ChangeId]) -> Result<ChangeStandings> {
+        standings::github::read(&self.repo, root, changes)
+    }
+
+    /// One aliased GraphQL query per 150 change requests — see `standings::github`.
+    fn review_standings(
+        &self,
+        root: &str,
+        changes: &[(ChangeId, Option<ReadMarker>)],
+    ) -> Result<ReviewStandings> {
+        standings::github::read_with_reviews(&self.repo, root, changes)
+    }
+
+    /// One REST request — see `standings::github`.
+    fn retarget_change(
+        &self,
+        change: &ChangeId,
+        base: &str,
+        body: Option<&str>,
+    ) -> Result<ReadCost> {
+        standings::github::retarget(&self.repo, change, base, body)
+    }
+
+    /// One REST request — see `standings::github`.
+    fn reopen_change(&self, change: &ChangeId) -> Result<ReadCost> {
+        standings::github::reopen(&self.repo, change)
+    }
+
     fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {
         // The rulesets first, and their refusal is the whole read's: every
         // credential that can see the repository can read them, so one that cannot
@@ -2022,7 +2116,7 @@ fn check(
 /// GitHub answers a run that is queued and has not started with the zero time rather
 /// than with nothing, and that is read as nothing: a start every queued run shares is
 /// no run's identity, and a time every unfinished thing shares is no time at all.
-fn reported_time(entry: &serde_json::Value, field: &str) -> Option<String> {
+pub(crate) fn reported_time(entry: &serde_json::Value, field: &str) -> Option<String> {
     entry
         .get(field)
         .and_then(|value| value.as_str())

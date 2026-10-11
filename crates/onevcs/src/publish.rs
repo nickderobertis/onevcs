@@ -30,6 +30,7 @@ use crate::host::{
 use crate::releases::TargetName;
 use crate::rules::{MergePolicy, Policy};
 use crate::session::{Lifecycle, Provenance, SessionToken};
+use crate::standings::ChecksVerdict;
 use crate::store::Resolution;
 use crate::stream::{self, Stream};
 use crate::workspace::{object, Ref};
@@ -89,6 +90,24 @@ pub struct PublishRequest {
     /// should the destination be public. Unset is every registered private one.
     #[serde(default, skip_serializing_if = "TermScope::is_registry")]
     pub term_scope: TermScope,
+    /// Push into the draft [`adopt`](PublishRequest::adopt) names and stop there:
+    /// no host call at all — no lookup, no description write, no check watch, no
+    /// lift — ending [`PublishOutcome::ChangeReviewDraftUnchecked`]. Its checks' verdict
+    /// is read later, through [`change_standings`](crate::change_standings) or
+    /// [`review_standings`](crate::review_standings).
+    ///
+    /// Only for a change request held for review — a `change-open` identity whose
+    /// approvals are required — and only with `adopt`; refused otherwise, with nothing
+    /// pushed. Defaulted and omitted when false, so a request written before it reads
+    /// and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_checks: bool,
+    /// The change request a [`defer_checks`](PublishRequest::defer_checks) publication
+    /// pushes into, which is never looked up on the host: its head branch is read from
+    /// this host's own newest record of it — a standings read that saw its head, or the
+    /// `change-opened` a publication wrote — and must be the session's branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopt: Option<Url>,
 }
 
 /// Why a change request is a draft, in the shape a machine reads it.
@@ -363,6 +382,15 @@ pub enum PublishOutcome {
     /// for the person who dispatched it — while a `ChangeDraft` is held back by a
     /// reason, and a `ChangeOpen` is already asking the team for review.
     ChangeReviewDraft(Url),
+    /// The branch was pushed into a draft held for review **without its checks being
+    /// read**: what a [`defer_checks`](PublishRequest::defer_checks) publication ends
+    /// in, having asked the host nothing.
+    ///
+    /// Its own case rather than a [`ChangeReviewDraft`](PublishOutcome::ChangeReviewDraft),
+    /// because that case says the checks came back green and this one says nothing
+    /// about them: their verdict is read later, through
+    /// [`change_standings`](crate::change_standings).
+    ChangeReviewDraftUnchecked(Url),
     /// The host queued the merge and will land it once its checks pass.
     Queued(Url),
     /// The branch had nothing the base did not already carry.
@@ -399,6 +427,10 @@ impl PublishOutcome {
             PublishOutcome::ChangeReviewDraft(url) => format!(
                 "change request's checks are green at {url}, and it is kept as a draft for its \
                  user's review"
+            ),
+            PublishOutcome::ChangeReviewDraftUnchecked(url) => format!(
+                "pushed into the draft at {url}, kept for its user's review; its checks were \
+                 not read"
             ),
             PublishOutcome::Queued(url) => format!("merge queued for {url}"),
             PublishOutcome::NothingToPublish => {
@@ -643,6 +675,15 @@ pub fn run_for_session(
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
     let effective = effective_policy(&resolved.policy, request.policy)?;
+    // Before anything is preserved or pushed: a deferred publication is refused whole
+    // or not at all.
+    let adopt = deferred(
+        request,
+        &record,
+        &resolution.key,
+        &resolved.policy,
+        effective,
+    )?;
 
     let mut stream = Stream::open(&record.token)?;
     stream.label("identity", &record.identity);
@@ -676,6 +717,7 @@ pub fn run_for_session(
         cancellation,
         built: Built::InWorkspace,
         term_scope: request.term_scope.clone(),
+        adopt,
     };
     let branch = record.branch.to_string();
     let outcome = match run_resolving(&context, &mut stream) {
@@ -804,6 +846,10 @@ pub struct Context<'a> {
     pub built: Built,
     /// Which private repositories the public boundary check derives its terms from.
     pub term_scope: TermScope,
+    /// The draft a deferred publication pushes into and asks the host nothing about,
+    /// already held to everything [`deferred`] checks. `None` for every other
+    /// publication, a branch-keyed verb's included.
+    pub adopt: Option<Url>,
 }
 
 /// Where a publication was built.
@@ -1047,7 +1093,78 @@ impl<'a> Context<'a> {
             cancellation: self.cancellation,
             built: self.built,
             term_scope: self.term_scope.clone(),
+            adopt: self.adopt.clone(),
         }
+    }
+}
+
+/// The draft a deferred publication pushes into, or `None` for a publication that
+/// watches its checks as it always has — refusing, before anything is preserved or
+/// pushed, every deferred request this build will not carry out.
+///
+/// A deferred publication asks the host nothing, so everything it needs is decided
+/// here from what this host holds: the resolved policy must hold its change request
+/// for review, the change request must be one of the session's repository, and this
+/// host's newest record of its head branch must name the session's branch. Where this
+/// host holds no record of it at all, the refusal is its own kind,
+/// [`Error::UnrecordedChangeHead`], so a caller can tell it from a mismatch and fall back
+/// to a publication that reads the host.
+fn deferred(
+    request: &PublishRequest,
+    record: &workspace::Record,
+    identity: &str,
+    resolved: &Policy,
+    effective: MergePolicy,
+) -> Result<Option<Url>> {
+    let token = &record.token;
+    let (defer, adopt) = match (request.defer_checks, &request.adopt) {
+        (false, None) => return Ok(None),
+        (true, Some(adopt)) => (true, adopt),
+        (true, None) => {
+            return Err(crate::error::invalid(format!(
+                "--defer-checks publishes into a draft that is already open, and names no host                  call to find it with: name it with --adopt <URL>. Nothing was pushed; `{}`                  publishes and watches the checks instead",
+                guidance::command(["onevcs", "publish", token])
+            )))
+        }
+        (false, Some(adopt)) => {
+            return Err(crate::error::invalid(format!(
+                "--adopt {adopt} is the draft a --defer-checks publication pushes into, and this                  publication does not defer its checks: add --defer-checks, or drop --adopt.                  Nothing was pushed"
+            )))
+        }
+    };
+    debug_assert!(defer);
+    if request.draft.is_some() {
+        return Err(crate::error::invalid(
+            "--defer-checks pushes into a draft held for its user's review, and a draft reason              asks for a different draft: drop one of them. Nothing was pushed",
+        ));
+    }
+    if policy::GreenDraft::of(effective, resolved.approvals) != policy::GreenDraft::KeepForReview {
+        return Err(crate::error::invalid(format!(
+            "--defer-checks is for a change request held for review — a change-open identity              whose approvals are required — and {identity} publishes {} here, so its checks are              what decides it. Nothing was pushed; `{}` publishes and watches them",
+            policy::spell(effective),
+            guidance::command(["onevcs", "publish", token])
+        )));
+    }
+    let named = crate::review::ChangeUrl::parse(adopt.as_str())?;
+    if named.identity != identity {
+        return Err(crate::error::invalid(format!(
+            "{adopt} is a change request of {}, and session {token} publishes to {identity}.              Nothing was pushed",
+            named.identity
+        )));
+    }
+    match crate::standings::recorded_head(adopt)? {
+        Some(head) if head == *record.branch => Ok(Some(adopt.clone())),
+        Some(head) => Err(crate::error::invalid(format!(
+            "{adopt} carries {head:?} by this host's newest record of it, and session {token}              is on {:?}, so it is not this session's change request. Nothing was pushed",
+            record.branch
+        ))),
+        None => Err(Error::UnrecordedChangeHead {
+            change: adopt.to_string(),
+            reason: format!(
+                "this host holds no record of which branch {adopt} carries — no standings read                  that saw its head and no change request this host opened — and a                  --defer-checks publication asks the host nothing, so it cannot tell whether it                  is session {token}'s. Nothing was pushed: read it with `onevcs change                  standings`, or publish with `{}`, which reads the host",
+                guidance::command(["onevcs", "publish", token])
+            ),
+        }),
     }
 }
 
@@ -1978,6 +2095,9 @@ fn publish_as_change(
     // about this publication, so a tree that will not say what it just pushed is a
     // merge path this build cannot read rather than one it reads about some other
     // commit. It reaches the operator as exactly that, through `unverified`.
+    if let Some(adopt) = &context.adopt {
+        return Ok(land_deferred(context, stream, adopt));
+    }
     match pushed_at.as_deref() {
         Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned())),
         None => Err(crate::error::invalid(format!(
@@ -1987,6 +2107,32 @@ fn publish_as_change(
         ))),
     }
     .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+}
+
+/// End a deferred publication once its push is accepted: the change request it adopts
+/// is recorded as this publication's, and nothing at all is asked of the host.
+///
+/// The `change-opened` it records is the one a watched publication records, less the
+/// author — which only the host could say — so `status`, `landing_status` and a later
+/// deferred publication read this one's change request exactly as they read a watched
+/// one's.
+fn land_deferred(context: &Context<'_>, stream: &mut Stream, adopt: &Url) -> PublishOutcome {
+    let number = adopt
+        .path_segments()
+        .and_then(|mut segments| segments.nth(3))
+        .unwrap_or_default()
+        .to_owned();
+    stream.emit(
+        EventKind::ChangeOpened,
+        object(json!({
+            "url": adopt.to_string(),
+            "host": "github",
+            "id": number,
+            "base": context.target.base().to_string(),
+        })),
+    );
+    crate::standings::record_head(adopt, &context.branch);
+    PublishOutcome::ChangeReviewDraftUnchecked(adopt.clone())
 }
 
 /// Refuse an identity that has no host at all, before anything is pushed.
@@ -2702,7 +2848,7 @@ impl Reading {
 /// and it is only ever the host's **complete** answer. An incomplete or unreadable one
 /// is [`Declared::Unknown`], which waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Declared {
+pub(crate) enum Declared {
     /// The host answered, completely, that nothing is required.
     Nothing,
     /// The checks the host names as required, from every source that answered.
@@ -2747,11 +2893,19 @@ impl Declared {
     /// that same answer given another way — `gh pr checks --required`'s "no required
     /// checks reported" — and is read as it.
     fn given(&self, reading: &Reading) -> Declared {
-        match (self, &reading.reported) {
-            (Declared::Unknown(_), Reported::About(checks))
-                if reading.complete
-                    && !checks.is_empty()
-                    && checks.iter().all(|check| !check.required) =>
+        match &reading.reported {
+            Reported::About(checks) => self.sharpened(checks, reading.complete),
+            Reported::NotYet => self.clone(),
+        }
+    }
+
+    /// [`given`](Declared::given), for checks already narrowed to the commit they are
+    /// about: where the host would not say what it requires, a complete answer
+    /// reporting checks of which none is required is its answer that nothing is.
+    fn sharpened(&self, checks: &[Check], complete: bool) -> Declared {
+        match self {
+            Declared::Unknown(_)
+                if complete && !checks.is_empty() && checks.iter().all(|check| !check.required) =>
             {
                 Declared::Nothing
             }
@@ -2768,6 +2922,64 @@ impl Declared {
             Declared::Nothing | Declared::Names(_) => None,
         }
     }
+}
+
+/// The verdict one reading's standing gives, by the rules every phase of the watch
+/// reads a ready change's checks by — the one classifier a publication's watch and a
+/// standings read both decide through, so the two cannot come to disagree.
+///
+/// A required check that concluded red is `Failed`, naming every one that did; a set
+/// the host answered, completely, is empty is `NoneRequired`; a set every member of
+/// which passed or was skipped is `Passed`, or `PassedWithSkipped` naming the skipped
+/// ones, because a skipped check never reads as passed; and anything else — a declared
+/// check with no run yet, one still running, one that ended with no verdict — is
+/// `Pending`, naming each.
+fn verdict_of(standing: &[Standing<'_>], declared: &Declared) -> ChecksVerdict {
+    let named = |wanted: fn(Option<CheckState>) -> bool| -> Vec<String> {
+        standing
+            .iter()
+            .filter(|standing| wanted(standing.state))
+            .map(|standing| standing.name.clone())
+            .collect()
+    };
+    let failed = named(|state| state == Some(CheckState::Failed));
+    if !failed.is_empty() {
+        return ChecksVerdict::Failed { failed };
+    }
+    if *declared == Declared::Nothing && standing.is_empty() {
+        return ChecksVerdict::NoneRequired;
+    }
+    if lets_through(standing, declared) {
+        let skipped = skipped_in(standing);
+        return if skipped.is_empty() {
+            ChecksVerdict::Passed
+        } else {
+            ChecksVerdict::PassedWithSkipped { skipped }
+        };
+    }
+    ChecksVerdict::Pending {
+        waiting: named(|state| {
+            matches!(
+                state,
+                None | Some(CheckState::Pending | CheckState::NoVerdict)
+            )
+        }),
+    }
+}
+
+/// The verdict of `checks` — every check the host reports on one commit — against
+/// what the host declares a merge into the base requires, read the way the watch
+/// reads one reading of them. `complete` is whether the checks came from the host's
+/// whole rollup, which is what lets a rollup marking nothing required stand for a
+/// declaration that could not be read.
+pub(crate) fn checks_verdict(
+    checks: &[Check],
+    declared: &Declared,
+    complete: bool,
+) -> ChecksVerdict {
+    let declared = declared.sharpened(checks, complete);
+    let about: Vec<&Check> = checks.iter().collect();
+    verdict_of(&standings(&about, &declared), &declared)
 }
 
 /// Whether `standing` lets the change through: every required check passed or was
@@ -3180,12 +3392,19 @@ fn settle_ready(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<()> {
         if let Reported::About(checks) = &reading.reported {
             let about: Vec<&Check> = checks.iter().collect();
             let standing = standings(&about, &declared);
-            if let Some(failed) = red(&standing) {
-                return Err(watcher.failed(stream, &standing, failed));
-            }
-            if lets_through(&standing, &declared) {
-                watcher.record_settled(stream, &standing, declared.unread());
-                return Ok(());
+            // The verdict a standings read gives the same checks, through the same
+            // function: pending waits, red fails, and every other verdict settles.
+            match verdict_of(&standing, &declared) {
+                ChecksVerdict::Pending { .. } => {}
+                ChecksVerdict::Failed { .. } => {
+                    if let Some(failed) = red(&standing) {
+                        return Err(watcher.failed(stream, &standing, failed));
+                    }
+                }
+                _ => {
+                    watcher.record_settled(stream, &standing, declared.unread());
+                    return Ok(());
+                }
             }
         }
         // Otherwise the host has posted nothing about the commit this publication
@@ -4071,11 +4290,11 @@ pub(crate) fn record_late_merge(
         Ok(stream) => stream,
         Err(failure) => return warn_unreconciled(watched, &merged.0, &failure),
     };
-    crate::release::reconcile_landing(
+    let _ = crate::release::reconcile_landing(
         registry,
         &located,
         watched.branch,
-        watched.stream,
+        watched.stream.map(crate::release::LandingStream::Opened),
         crate::release::Landing {
             commit: &merged.0,
             at: landed_at,
