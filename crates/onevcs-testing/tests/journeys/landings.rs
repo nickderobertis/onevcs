@@ -453,31 +453,11 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
 
     let ledger = host.ledger().expect("the ledger");
     let called: BTreeSet<&str> = ledger.iter().map(|call| call.method.as_str()).collect();
-    let declared: BTreeSet<&str> = [
-        "authenticated_user",
-        "open_change",
-        "find_changes",
-        "change_checks",
-        "check_log",
-        "merge",
-        "merged_at",
-        "merge_time",
-        "mergeability",
-        "ready_for_review",
-        "is_draft",
-        "required_checks_on",
-        "describe_change",
-        "visibility",
-        "change_description",
-        "review_comments",
-        "reply_to_comment",
-        "change_standings",
-        "review_standings",
-        "retarget_change",
-        "reopen_change",
-    ]
-    .into_iter()
-    .collect();
+    // The trait's own declaration is the list, read out of its source, so a method
+    // added to `RemoteHost` and not recorded here — or not called above — fails this.
+    let declared = remote_host_methods();
+    let called: BTreeSet<String> = called.into_iter().map(str::to_owned).collect();
+    assert!(declared.len() >= 21, "the trait was read: {declared:?}");
     assert_eq!(called, declared, "{ledger:#?}");
     let charge = |method: &str| -> Vec<&HostCall> {
         ledger.iter().filter(|call| call.method == method).collect()
@@ -642,4 +622,25 @@ fn a_file_backed_host_keeps_its_ledger_and_its_persons_moves_across_invocations(
         &read.standings[0].state,
         ChangeState::Merged { landing: true, merged_at: Some(at), .. } if at == MERGED_AT
     ));
+}
+
+/// Every method `RemoteHost` declares, read out of the trait in `onevcs`'s own source:
+/// each `fn` at the trait's own indentation between `pub trait RemoteHost {` and the
+/// brace that closes it.
+fn remote_host_methods() -> BTreeSet<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onevcs/src/host.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the trait's source at {} is readable: {e}", path.display()));
+    let trait_body = source
+        .split_once("\npub trait RemoteHost {\n")
+        .expect("host.rs declares RemoteHost")
+        .1
+        .split_once("\n}\n")
+        .expect("the trait ends")
+        .0;
+    trait_body
+        .lines()
+        .filter_map(|line| line.strip_prefix("    fn "))
+        .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.to_owned()))
+        .collect()
 }
