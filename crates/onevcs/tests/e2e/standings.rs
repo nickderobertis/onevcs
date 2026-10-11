@@ -781,6 +781,67 @@ fn drafts_sharing_a_base_read_its_required_set_once_per_call_across_batches() {
 }
 
 #[test]
+fn a_classic_rule_naming_a_base_exactly_is_the_one_applied_over_an_older_wildcard() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:dev"]);
+    // An older wildcard rule requires `legacy`; a newer one naming `main` requires `ci`.
+    // GitHub applies the exact one to `main`, so `main` never waits for `legacy` — and
+    // `dev`, which only the wildcard names, does.
+    world.host_classic_rules(&[("*", &["legacy"]), ("main", &["ci"])]);
+    // A ruleset applies beside whichever classic rule does, and combines with it.
+    world.host_requires_on("main", &["lint"]);
+    world.host_requires_on("dev", &[]);
+    let on_main = stack.branch("feature/on-main", "main", "on-main.txt");
+    let on_dev = stack.branch("feature/on-dev", "dev", "on-dev.txt");
+    world.host_checks_on(
+        &on_main,
+        &[
+            check("ci", "success", false),
+            check("lint", "success", false),
+        ],
+    );
+    world.host_checks_on(&on_dev, &[check("ci", "success", false)]);
+    let main_draft = stack.open("feature/on-main", "main", true);
+    let dev_draft = stack.open("feature/on-dev", "dev", true);
+
+    let before = world.ledger().len();
+    let read = stack.standings("main", &[main_draft, dev_draft]);
+    assert_eq!(since(world, before).len(), 1, "still one query");
+    assert_eq!(
+        standing(&read, main_draft)["checks"],
+        json!({"verdict": "passed"}),
+        "main requires its exact rule's ci and its ruleset's lint, and not the wildcard's legacy"
+    );
+    assert_eq!(
+        standing(&read, dev_draft)["checks"],
+        json!({"verdict": "pending", "waiting": ["legacy"]}),
+        "dev is named only by the wildcard"
+    );
+}
+
+#[test]
+fn of_two_overlapping_classic_patterns_the_older_is_the_one_applied() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:release-1"]);
+    // Both patterns match `release-1`; neither names it exactly, so the one created
+    // first is the one GitHub applies — whatever order the host lists them in.
+    world.host_classic_rules(&[("release-*", &["older"]), ("rel*", &["newer"])]);
+    world.host_requires_on("release-1", &[]);
+    let head = stack.branch("feature/on-release", "release-1", "on-release.txt");
+    world.host_checks_on(&head, &[check("older", "success", false)]);
+    let draft = stack.open("feature/on-release", "release-1", true);
+
+    let read = stack.standings("main", &[draft]);
+    assert_eq!(
+        standing(&read, draft)["checks"],
+        json!({"verdict": "passed"}),
+        "release-1 requires the older rule's check alone"
+    );
+}
+
+#[test]
 fn ten_drafts_review_feedback_is_one_query_and_each_read_is_the_per_draft_reads() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;

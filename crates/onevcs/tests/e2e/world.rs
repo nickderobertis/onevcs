@@ -866,6 +866,19 @@ impl World {
             .expect("a base's requirement");
     }
 
+    /// The substituted host's classic branch-protection rules, oldest first: each a
+    /// branch pattern GitHub's own grammar spells (`main`, `release/*`, `**`) and the
+    /// contexts it requires. GitHub applies exactly one of them to a branch.
+    pub fn host_classic_rules(&self, rules: &[(&str, &[&str])]) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        let listed: String = rules
+            .iter()
+            .map(|(pattern, contexts)| format!("{pattern}|{}\n", contexts.join(",")))
+            .collect();
+        std::fs::write(self.path("gh-state/classic-rules"), listed)
+            .expect("the host's classic protection rules");
+    }
+
     /// Every call the substituted host answered, in order, as the host's call ledger
     /// records it: `{method, changes, graphql_points, rest_requests}` — what GitHub
     /// charges for each.

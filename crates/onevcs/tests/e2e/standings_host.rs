@@ -241,6 +241,45 @@ impl Model {
             .collect()
     }
 
+    /// The classic protection rules a journey declared, oldest first: each a branch
+    /// pattern and the contexts it requires.
+    fn classic_rules(&self) -> Vec<(String, Vec<String>)> {
+        std::fs::read_to_string(self.state.join("classic-rules"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once('|'))
+            .map(|(pattern, contexts)| {
+                (
+                    pattern.to_owned(),
+                    contexts
+                        .split(',')
+                        .filter(|context| !context.is_empty())
+                        .map(str::to_owned)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The contexts the one classic rule GitHub applies to `base` requires: a rule naming
+    /// it exactly before any pattern, and the oldest of either kind first.
+    fn classic_on(&self, base: &str) -> Vec<String> {
+        let rules = self.classic_rules();
+        let special = |pattern: &str| pattern.contains(['*', '?', ']']);
+        let exact = rules
+            .iter()
+            .find(|(pattern, _)| !special(pattern) && pattern == base);
+        let patterned = || {
+            rules
+                .iter()
+                .find(|(pattern, _)| special(pattern) && shell_match(pattern, base))
+        };
+        exact
+            .or_else(patterned)
+            .map(|(_, contexts)| contexts.clone())
+            .unwrap_or_default()
+    }
+
     /// One aliased standings query — with each change request's review connections,
     /// where the query asks for them.
     pub(super) fn standings(&mut self, call: &Call, query: &str) -> (String, String, i32) {
@@ -352,8 +391,25 @@ impl Model {
             marked,
         ));
         let classic = self.state.join("classic-protection");
-        let protection: Vec<Value> = if classic.is_file() {
+        let declared_rules = self.classic_rules();
+        // Newest first, so a reader that took the answer's order for the order the rules
+        // were created in would choose the wrong one: `databaseId` is what says it.
+        let protection: Vec<Value> = if !declared_rules.is_empty() {
+            declared_rules
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(at, (pattern, contexts))| {
+                    json!({
+                        "databaseId": 2000 + at,
+                        "pattern": pattern,
+                        "requiredStatusCheckContexts": contexts,
+                    })
+                })
+                .collect()
+        } else if classic.is_file() {
             vec![json!({
+                "databaseId": 1000,
                 "pattern": "**",
                 "requiredStatusCheckContexts": std::fs::read_to_string(classic)
                     .unwrap_or_default()
@@ -397,7 +453,11 @@ impl Model {
             "" => Value::Null,
             at => json!(at),
         };
-        let required: BTreeSet<String> = self.required_on(&base).into_iter().collect();
+        let required: BTreeSet<String> = self
+            .required_on(&base)
+            .into_iter()
+            .chain(self.classic_on(&base))
+            .collect();
         let base_ref = if self.holds(&base) {
             json!({"name": base})
         } else {
@@ -608,4 +668,34 @@ impl Model {
             .expect("the call ledger");
         writeln!(file, "{line}").expect("the call ledger");
     }
+}
+
+/// Whether `name` matches a GitHub branch pattern — `**` across path segments, `*`
+/// within one, `?` one character — written here apart from the crate's own matcher, so
+/// the fake and the reader cannot share a mistake.
+fn shell_match(pattern: &str, name: &str) -> bool {
+    if let Some(rest) = pattern.strip_prefix("**") {
+        return name
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain([name.len()])
+            .any(|at| shell_match(rest, &name[at..]));
+    }
+    if let Some(rest) = pattern.strip_prefix('*') {
+        let segment = name.find('/').unwrap_or(name.len());
+        return name[..segment]
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain([segment])
+            .any(|at| shell_match(rest, &name[at..]));
+    }
+    let (Some(want), Some(have)) = (pattern.chars().next(), name.chars().next()) else {
+        return pattern.is_empty() && name.is_empty();
+    };
+    let fits = if want == '?' {
+        have != '/'
+    } else {
+        want == have
+    };
+    fits && shell_match(&pattern[want.len_utf8()..], &name[have.len_utf8()..])
 }

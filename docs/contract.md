@@ -5154,8 +5154,10 @@ its active branch rulesets with the refs each applies to (`~ALL`, `~DEFAULT_BRAN
 `refs/heads/` patterns, include and exclude) and its classic protection rules with their
 branch patterns — and every base a change request of the call targets, in that batch or
 a later one, has its required set derived from that one read once and remembered for
-the call: the rulesets' required status checks and classic protection's required
-contexts that apply to it. No alias reads its base's rules, so drafts sharing a base
+the call: the required status checks of every active ruleset that applies to it, which
+GitHub layers, and the required contexts of the one classic protection rule GitHub
+applies to it — a rule naming the branch exactly over any pattern, and of those the one
+created first (its `databaseId`), never a union of every matching rule. No alias reads its base's rules, so drafts sharing a base
 never read them again, and no second call is made for them. Each change request's rollup
 contexts are its one connection and the declarations add 27 (25 rulesets of 25 rules,
 and the classic rules), so a query of 50 asks for 77 nodes, which GitHub's published

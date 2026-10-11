@@ -53,7 +53,7 @@ pub(crate) const DECLARATION_FIELDS: &str = "defaultBranchRef { name } rulesets(
 includeParents: true) { pageInfo { hasNextPage } nodes { target enforcement conditions { \
 refName { include exclude } } rules(first: 25) { pageInfo { hasNextPage } nodes { type \
 parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } } \
-branchProtectionRules(first: 100) { pageInfo { hasNextPage } nodes { pattern \
+branchProtectionRules(first: 100) { pageInfo { hasNextPage } nodes { databaseId pattern \
 requiredStatusCheckContexts } }";
 
 /// The three review connections each alias reads with reviews asked for, at the page
@@ -379,8 +379,16 @@ struct Required {
 struct Declarations {
     default_branch: Option<String>,
     rulesets: Vec<Ruleset>,
-    /// Each classic protection rule's branch pattern and the contexts it requires.
-    classic: Vec<(String, Vec<String>)>,
+    /// Each classic protection rule: its branch pattern, the contexts it requires, and
+    /// its database id — which is the order GitHub created the rules in.
+    classic: Vec<Classic>,
+}
+
+/// One classic branch-protection rule.
+struct Classic {
+    pattern: String,
+    contexts: Vec<String>,
+    created: i64,
 }
 
 /// One active branch ruleset: the refs it applies to, and the checks it requires.
@@ -517,13 +525,49 @@ impl Declarations {
                         .collect()
                 })
                 .unwrap_or_default();
-            read.classic.push((pattern.to_owned(), contexts));
+            let created = rule
+                .get("databaseId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "GitHub answered the protection rule for {pattern:?} without its \
+                         databaseId, so which of several rules applies cannot be told"
+                    ))
+                })?;
+            read.classic.push(Classic {
+                pattern: pattern.to_owned(),
+                contexts,
+                created,
+            });
         }
         Ok(Ok(read))
     }
 
-    /// Every check the declarations require of a merge into `base`, and nothing —
-    /// completely — where none of them names one.
+    /// The one classic rule GitHub applies to `base`, where one does.
+    ///
+    /// GitHub applies exactly one classic rule to a branch, never a union of them: a rule
+    /// naming the branch exactly — a pattern with no `*`, `?` or `]` — over every pattern
+    /// that matches it, and of the rules left the one created first, which `databaseId`
+    /// orders. So an older wildcard rule never adds its contexts to a branch a newer rule
+    /// names exactly.
+    fn classic_on(&self, base: &str) -> Option<&Classic> {
+        let patterned = |rule: &&Classic| rule.pattern.contains(['*', '?', ']']);
+        let exact = self
+            .classic
+            .iter()
+            .filter(|rule| !patterned(rule) && rule.pattern == base)
+            .min_by_key(|rule| rule.created);
+        exact.or_else(|| {
+            self.classic
+                .iter()
+                .filter(|rule| patterned(rule) && glob(&rule.pattern, base))
+                .min_by_key(|rule| rule.created)
+        })
+    }
+
+    /// Every check the declarations require of a merge into `base` — every active ruleset
+    /// that applies to it, which GitHub layers, and the one classic rule it applies — and
+    /// nothing, completely, where none of them names one.
     fn on(&self, base: &str) -> Declared {
         let reference = format!("refs/heads/{base}");
         let applies = |pattern: &str| match pattern {
@@ -539,10 +583,8 @@ impl Declarations {
                 names.extend(ruleset.checks.iter().cloned());
             }
         }
-        for (pattern, contexts) in &self.classic {
-            if glob(pattern, base) {
-                names.extend(contexts.iter().cloned());
-            }
+        if let Some(classic) = self.classic_on(base) {
+            names.extend(classic.contexts.iter().cloned());
         }
         if names.is_empty() {
             Declared::Nothing
