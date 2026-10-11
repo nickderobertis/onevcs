@@ -4080,7 +4080,11 @@ check red, pending or without a verdict, and some required check absent or concl
 
 - **(a)** no check the host reports about the pushed commit, required or not, has not
   completed — an Actions job, a check run an external app posted, a commit status still
-  `pending`. This is the host's existing check read and costs no new request;
+  `pending`. This is the host's existing check read and costs no new request. GitHub's
+  rollup reports a commit status as a `StatusContext`, which `GitHub` now reads as the check
+  it stands for, by its `context`: `PENDING` or `EXPECTED` is running, and `SUCCESS`,
+  `FAILURE` or `ERROR` is completed with that conclusion (`ERROR` red); a state none of
+  those is refused. A change request carrying a commit status was unreadable before;
 - **(b)** only where (a) finds nothing in progress at the moment an early lift would
   otherwise happen, the watch asks `RemoteHost::head_activity`, and an answer naming work
   in progress holds the lift for that poll. This closes the gap between the last `needs:`

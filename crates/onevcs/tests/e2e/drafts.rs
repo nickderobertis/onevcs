@@ -2917,3 +2917,99 @@ fn a_credential_refused_both_reads_is_no_answer_and_the_checks_decide_alone() {
         "a credential refused both is a refusal, never an empty answer"
     );
 }
+
+#[test]
+fn the_command_line_reads_commit_statuses_and_a_pending_one_holds_the_draft() {
+    // An external integration posts commit statuses, which GitHub's rollup reports as
+    // `StatusContext` entries beside the check runs: `llmlint` is a required one, and
+    // `ci/external` a status nothing requires, still `pending` while the aggregate `gate`
+    // is absent. The pending status is work in progress on the head, so the draft is held
+    // — without asking the host anything more — until `gate` appears and passes and the
+    // status reports success; then it is lifted by green and merged.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted
+        .world
+        .host_requires_on("main", &["gate", "commitlint", "llmlint"]);
+    let done = |gate: Option<&'static str>| {
+        let mut rows = vec![row("commitlint", Some("success"), true)];
+        for name in PREREQUISITES {
+            rows.push(row(name, Some("success"), false));
+        }
+        if let Some(conclusion) = gate {
+            rows.push(row("gate", Some(conclusion), true));
+        }
+        rows
+    };
+    hosted.world.host_checks(&done(None));
+    hosted.world.host_commit_statuses(
+        "gh-state/checks.rows",
+        &[
+            ("llmlint", "success", true),
+            ("ci/external", "pending", false),
+        ],
+    );
+    hosted
+        .world
+        .host_phase(15, &done(Some("success")), None, None);
+    hosted.world.host_commit_statuses(
+        "gh-state/timeline/15/checks.rows",
+        &[
+            ("llmlint", "success", true),
+            ("ci/external", "success", false),
+        ],
+    );
+    let token = hosted.change(
+        "feature/statuses",
+        "feat: land past an integration's status",
+    );
+
+    let said = publish_through_the_binary(&hosted, &token);
+
+    assert!(!said.contains("lifted out of its draft"), "{said}");
+    assert!(
+        readings_before_the_lift(&hosted) > 15,
+        "held while the status was pending"
+    );
+    assert!(
+        !asked_about_the_head(&hosted, true),
+        "a pending status is work in progress the check read already shows"
+    );
+    let settled = hosted.world.events_of(&token, "checks-settled");
+    assert_eq!(settled[0]["payload"]["verdict"], "passed");
+    let external: Vec<serde_json::Value> = hosted
+        .world
+        .events_of(&token, "change-check")
+        .into_iter()
+        .filter(|event| event["payload"]["name"] == "ci/external")
+        .map(|event| event["payload"]["state"].clone())
+        .collect();
+    assert_eq!(
+        external,
+        vec![serde_json::json!("pending"), serde_json::json!("passed")],
+        "the status is reported as the check it stands for"
+    );
+}
+
+#[test]
+fn a_required_commit_status_in_error_fails_the_publication_naming_it() {
+    // `ERROR` is a commit status's red, as every conclusion that is not green is.
+    let hosted = crate::host::Hosted::new(AUTO);
+    hosted.world.host_requires_on("main", &["deploy/preview"]);
+    hosted
+        .world
+        .host_checks(&[row("build", Some("success"), false)]);
+    hosted
+        .world
+        .host_commit_statuses("gh-state/checks.rows", &[("deploy/preview", "error", true)]);
+    let token = hosted.change("feature/status-error", "feat: land past a failed deploy");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("required check failed"))
+        .stderr(predicate::str::contains("deploy/preview"));
+    assert!(hosted.world.events_of(&token, "draft-lifted").is_empty());
+}

@@ -421,9 +421,12 @@ case "$command" in
         # the host, whichever source a credential can read it from.
         slug="${path#repos/}"; slug="${slug%%/actions/*}"
         rows=""; separator=""; row=0; entry=""
-        while IFS='|' read -r name status conclusion required; do
+        while IFS='|' read -r name status conclusion required kind; do
           [ -n "$name" ] || continue
           row=$((row + 1))
+          # A commit status is posted by an integration, not run as a job: Actions
+          # never lists one.
+          [ "$kind" != "status" ] || continue
           if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
           # A job still running has no completion, which the Actions API says as null.
           if [ "$status" = "completed" ]; then done_at="\"${STARTED%:00Z}:30Z\""; else done_at=null; fi
@@ -489,7 +492,7 @@ case "$command" in
             exit 0 ;;
         esac
         contexts=""; separator=""
-        while IFS='|' read -r name status conclusion required; do
+        while IFS='|' read -r name status conclusion required kind; do
           [ -n "$name" ] || continue
           [ "$required" = "true" ] || continue
           contexts="$contexts$separator{\"context\":\"$name\",\"integration_id\":15368}"
@@ -591,10 +594,21 @@ done
 # `pr checks --required`, below.
 rollup() {
   printf '['
-  local separator="" name status conclusion required entry completed row=0 rows="${1:-$CHECKS}"
-  while IFS='|' read -r name status conclusion required; do
+  local separator="" name status conclusion required kind entry completed state row=0 rows="${1:-$CHECKS}"
+  while IFS='|' read -r name status conclusion required kind; do
     [ -n "$name" ] || continue
     row=$((row + 1))
+    # A row whose fifth field is `status` is a commit status an integration posted,
+    # which GitHub's rollup reports as a `StatusContext`: named by its `context`, with
+    # one `state` — PENDING until it has a verdict, then SUCCESS, FAILURE or ERROR —
+    # and the address it was posted with.
+    if [ "$kind" = "status" ]; then
+      if [ "$status" = "completed" ]; then state="$(printf '%s' "$conclusion" | tr '[:lower:]' '[:upper:]')"; else state="PENDING"; fi
+      printf '%s{"__typename":"StatusContext","context":"%s","state":"%s","targetUrl":"https://ci.example.com/%s/%s","startedAt":"%s"}' \
+        "$separator" "$name" "$state" "$repo" "$row" "$STARTED"
+      separator=","
+      continue
+    fi
     if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
     # `detailsUrl` is where a check run says it is, and it is the same address
     # `pr checks` reports as that row's `link` — one check, one place on the host,
@@ -612,7 +626,7 @@ rollup() {
 verdict() {
   local name status conclusion required total settled red context
   total=0; settled=0; red=0
-  while IFS='|' read -r name status conclusion required; do
+  while IFS='|' read -r name status conclusion required kind; do
     [ -n "$name" ] || continue
     [ "$required" = "true" ] || continue
     total=$((total + 1))
@@ -768,14 +782,17 @@ case "$subcommand" in
       exit 1
     fi
     rows=""; separator=""; row=0; unsettled=0
-    while IFS='|' read -r name status conclusion required; do
+    while IFS='|' read -r name status conclusion required kind; do
       [ -n "$name" ] || continue
       # Counted over every row, filtered or not, so the job id a row reports is the
       # one `gh run view --job` answers to.
       row=$((row + 1))
       if [ "$only_required" = "1" ] && [ "$required" != "true" ]; then continue; fi
       [ "$status" = "completed" ] || unsettled=1
-      rows="$rows$separator{\"name\":\"$name\",\"state\":\"$status\",\"link\":\"https://github.com/$repo/actions/runs/1/job/$row\"}"
+      # A commit status is where its integration said it is, which names no job.
+      link="https://github.com/$repo/actions/runs/1/job/$row"
+      [ "$kind" != "status" ] || link="https://ci.example.com/$repo/$row"
+      rows="$rows$separator{\"name\":\"$name\",\"state\":\"$status\",\"link\":\"$link\"}"
       separator=","
     done <"$CHECKS" 2>/dev/null || true
     if [ "$only_required" = "1" ] && [ -z "$rows" ]; then

@@ -614,14 +614,14 @@ impl World {
     /// The workflow runs the substituted host reports on a change request's head, one
     /// `(name, status, conclusion)` each, as GitHub's "List workflow runs for a
     /// repository" lists them. Unset, a head carries one completed run.
-    pub fn host_workflow_runs(&self, runs: &[(&str, &str, Option<&str>)]) {
+    pub fn host_workflow_runs(&self, runs: &[WorkflowRun<'_>]) {
         self.write_activity("gh-state/runs.rows", &workflow_runs(runs));
     }
 
     /// The check suites the substituted host reports on a change request's head, one
     /// `(app, status, conclusion, latest_check_runs_count)` each, as GitHub's "List
     /// check suites for a Git reference" lists them. Unset, a head carries none.
-    pub fn host_check_suites(&self, suites: &[(&str, &str, Option<&str>, u32)]) {
+    pub fn host_check_suites(&self, suites: &[CheckSuite<'_>]) {
         self.write_activity("gh-state/suites.rows", &check_suites(suites));
     }
 
@@ -634,8 +634,8 @@ impl World {
         &self,
         after: usize,
         checks: &[Check],
-        runs: Option<&[(&str, &str, Option<&str>)]>,
-        suites: Option<&[(&str, &str, Option<&str>, u32)]>,
+        runs: Option<&[WorkflowRun<'_>]>,
+        suites: Option<&[CheckSuite<'_>]>,
     ) {
         let dir = format!("gh-state/timeline/{after}");
         std::fs::create_dir_all(self.path(&dir)).expect("a phase directory");
@@ -646,6 +646,27 @@ impl World {
         if let Some(suites) = suites {
             self.write_activity(&format!("{dir}/suites.rows"), &check_suites(suites));
         }
+    }
+
+    /// Add commit statuses to the rows at `at` — the repository's, or a phase's — one
+    /// `(context, state, required)` each, `state` being `pending`, `success`,
+    /// `failure` or `error`. GitHub's rollup reports each as a `StatusContext`.
+    pub fn host_commit_statuses(&self, at: &str, statuses: &[(&str, &str, bool)]) {
+        let rows: String = statuses
+            .iter()
+            .map(|(context, state, required)| {
+                let (status, conclusion) = if *state == "pending" {
+                    ("pending", "")
+                } else {
+                    ("completed", *state)
+                };
+                format!("{context}|{status}|{conclusion}|{required}|status\n")
+            })
+            .collect();
+        let path = self.path(at);
+        let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+        existing.push_str(&rows);
+        std::fs::write(path, existing).expect("a check rollup");
     }
 
     fn write_activity(&self, at: &str, rows: &str) {
@@ -1223,15 +1244,22 @@ pub struct Check {
     pub required: bool,
 }
 
+/// One workflow run the substituted host lists: its name, status and conclusion.
+pub type WorkflowRun<'a> = (&'a str, &'a str, Option<&'a str>);
+
+/// One check suite the substituted host lists: its app, status, conclusion, and how
+/// many check runs it holds.
+pub type CheckSuite<'a> = (&'a str, &'a str, Option<&'a str>, u32);
+
 /// Workflow runs as the substituted host's rows spell them.
-fn workflow_runs(runs: &[(&str, &str, Option<&str>)]) -> String {
+fn workflow_runs(runs: &[WorkflowRun<'_>]) -> String {
     runs.iter()
         .map(|(name, status, conclusion)| format!("{name}|{status}|{}\n", conclusion.unwrap_or("")))
         .collect()
 }
 
 /// Check suites as the substituted host's rows spell them.
-fn check_suites(suites: &[(&str, &str, Option<&str>, u32)]) -> String {
+fn check_suites(suites: &[CheckSuite<'_>]) -> String {
     suites
         .iter()
         .map(|(app, status, conclusion, runs)| {

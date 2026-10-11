@@ -2363,6 +2363,10 @@ fn unregistered(url: &Url, said: &str) -> Error {
 /// partially be read as a green check — the one shape that must never be inferred.
 /// Whether the check *blocks* is not in this entry at all and never was: it comes
 /// from [`GitHub::required_checks`], which refuses a host that will not say.
+///
+/// Two shapes, told apart by the `__typename` GitHub writes on each: a check run
+/// (`CheckRun` — every Actions job, and any app's run), and a commit status an
+/// integration posted (`StatusContext`), which [`status_context`] reads.
 fn check(
     entry: &serde_json::Value,
     cr: &ChangeRequest,
@@ -2381,6 +2385,9 @@ fn check(
                 ))
             })
     };
+    if entry.get("__typename").and_then(|value| value.as_str()) == Some("StatusContext") {
+        return status_context(entry, cr, required, head);
+    }
     let name = field("name").or_else(|_| field("context"))?.to_owned();
     let blocks = required.contains(&name);
     Ok(Check {
@@ -2395,14 +2402,66 @@ fn check(
             .map(str::to_ascii_lowercase),
         required: blocks,
         head: head.cloned(),
-        // A check run's own address, and only that spelling. A commit status
-        // spells it `targetUrl` — and never reaches here: it carries `state` where
-        // this reads `status`, so `field("status")` above refuses the whole answer
-        // before an address is looked for. Reading the second spelling would be a
-        // branch nothing can drive, on a path that already cannot be taken.
+        // A check run's own address; a commit status spells its own `targetUrl`, and
+        // is read by `status_context`.
         url: reported_url(entry, "detailsUrl"),
         started_at: reported_time(entry, "startedAt"),
         completed_at: reported_time(entry, "completedAt"),
+    })
+}
+
+/// One commit status in the host's rollup, read as the check it stands for.
+///
+/// A commit status has one `state` where a check run has a status and a conclusion:
+/// `PENDING` (and `EXPECTED`, a required context nothing has posted yet) is a check
+/// still running, and `SUCCESS`, `FAILURE` and `ERROR` are a completed one concluding
+/// that way — so an `ERROR` is red, as every conclusion `Check::state` does not name
+/// is. A state none of those five is refused rather than guessed at: reading an
+/// unknown one as either would wave a merge through or hold one for ever. It is named
+/// by its `context`, which is what branch protection requires it by, and its start is
+/// when the integration posted it — a status posted again after a lift is a new one.
+fn status_context(
+    entry: &serde_json::Value,
+    cr: &ChangeRequest,
+    required: &BTreeSet<String>,
+    head: Option<&Sha>,
+) -> Result<Check> {
+    let named = |name: &str| {
+        entry
+            .get(name)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "gh pr view returned a commit status on {} with no {name}: {entry}",
+                    cr.url
+                ))
+            })
+    };
+    let name = named("context")?.to_owned();
+    let state = named("state")?;
+    let (status, conclusion) = match state.to_ascii_uppercase().as_str() {
+        "PENDING" | "EXPECTED" => ("pending", None),
+        "SUCCESS" => ("completed", Some("success")),
+        "FAILURE" => ("completed", Some("failure")),
+        "ERROR" => ("completed", Some("error")),
+        _ => {
+            return Err(invalid(format!(
+                "gh pr view reports commit status {name:?} on {} as {state:?}, which is none of \
+                 PENDING, EXPECTED, SUCCESS, FAILURE or ERROR, so where it stands cannot be read",
+                cr.url
+            )))
+        }
+    };
+    Ok(Check {
+        required: required.contains(&name),
+        name,
+        status: status.to_owned(),
+        conclusion: conclusion.map(str::to_owned),
+        head: head.cloned(),
+        url: reported_url(entry, "targetUrl"),
+        started_at: reported_time(entry, "startedAt"),
+        completed_at: None,
     })
 }
 
