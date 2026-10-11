@@ -534,8 +534,13 @@ impl World {
 
     /// Make one of the substituted host's protection sources — `"rulesets"` or
     /// `"classic"` — require a branch to be up to date with its base before it merges,
-    /// which is GitHub's `strict`. Unset, no source requires it.
+    /// which is GitHub's `strict`. Unset, no source requires it; any other source is
+    /// one the stand-in cannot answer, and is refused here.
     pub fn host_requires_up_to_date(&self, source: &str) {
+        assert!(
+            matches!(source, "rulesets" | "classic"),
+            "a protection source is `rulesets` or `classic`, not {source:?}"
+        );
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
         std::fs::write(self.path("gh-state/up-to-date"), source)
             .expect("a protection source requiring an up-to-date branch");

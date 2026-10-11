@@ -63,9 +63,19 @@ fi
 ORIGIN="$(cat "$STATE/origin")"
 # Whether a protection source requires a branch to be up to date with its base before
 # it merges — GitHub's `strict`. `up-to-date` names the one source that says so,
-# `rulesets` or `classic`; a world that says nothing requires it of no branch.
+# `rulesets` or `classic`; a world that says nothing requires it of no branch. Any
+# other value is a world this stand-in cannot answer, so it is refused here rather
+# than read as "not required".
+UP_TO_DATE="$(cat "$STATE/up-to-date" 2>/dev/null || printf '')"
+case "$UP_TO_DATE" in
+  ""|rulesets|classic) ;;
+  *)
+    printf 'fake gh: gh-state/up-to-date names %s, which is neither rulesets nor classic\n' "$UP_TO_DATE" >&2
+    exit 1
+    ;;
+esac
 strict_in() {
-  if [ "$(cat "$STATE/up-to-date" 2>/dev/null || printf '')" = "$1" ]; then
+  if [ "$UP_TO_DATE" = "$1" ]; then
     printf 'true'
   else
     printf 'false'
