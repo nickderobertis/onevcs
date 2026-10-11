@@ -420,6 +420,11 @@ pub enum PublishOutcome {
         /// its checks elapsed with none of them red: set only with
         /// [`FailureKind::ChecksUnsettled`], and then the change lands on the host's
         /// clock once its required checks pass, with nobody publishing it again.
+        // llmlint: ignore[invalid_states_unrepresentable] `docs/contract.md` fixes this
+        // field verbatim as an optional `armed` on `Failed`, beside `retained`, and
+        // onepipeline compiles against that shape — splitting the case would change the
+        // agreed surface. The one place that sets it, the elapsed wait's arming, sets
+        // it with `ChecksUnsettled`; every other path passes it through unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         armed: Option<ArmedMerge>,
     },
