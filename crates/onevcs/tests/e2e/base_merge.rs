@@ -84,7 +84,6 @@ fn open(hosted: &Hosted, extra: &[&str]) -> (String, std::path::PathBuf, Value) 
     (token, worktree, printed)
 }
 
-/// The parents of a commit, as git lists them.
 fn parents(world: &World, repo: &std::path::Path, commit: &str) -> Vec<String> {
     world
         .git(repo, &["rev-list", "--parents", "-n", "1", commit])
@@ -376,7 +375,6 @@ fn checked(world: &World, env: &[(&str, &str)]) -> String {
     String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
 }
 
-/// Every line of `said` that begins with `prefix`.
 fn line<'s>(said: &'s str, prefix: &str) -> &'s str {
     said.lines()
         .find(|line| line.starts_with(prefix))

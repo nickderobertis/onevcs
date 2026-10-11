@@ -29,7 +29,6 @@ use crate::world::{Check, World};
 const AUTO: &str = "{publication: change-auto, approvals: none}";
 const DIRECT: &str = "{publication: change-direct, approvals: none}";
 
-/// The required check, still running.
 fn running() -> Check {
     Check {
         name: "gate",
@@ -39,7 +38,6 @@ fn running() -> Check {
     }
 }
 
-/// The required check, passed.
 fn passed() -> Check {
     Check {
         name: "gate",
@@ -49,7 +47,6 @@ fn passed() -> Check {
     }
 }
 
-/// The required check, failed.
 fn failed() -> Check {
     Check {
         name: "gate",
