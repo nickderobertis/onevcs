@@ -403,10 +403,13 @@ this crate's to rename alone. Five things are easy to undo.
   change cut from a stack base inherits every one of them and one cut at its head shares
   its head, and both are ordinary work. A record of the assembly is no better — a host
   that never saw it assembled has none, and listed the base as unpublished work.
-  `recoverable` drops a stack base in both reports and counts a held one as a base
-  beside the origin's refs (`unpublished_branches_among`'s `based`), so a child at its
-  head holds nothing beyond its base; `status` reports `branch.stack_base` and no
-  landing verb. Retirement keeps it as `unmerged-unique-commits` with no change, because
+  `recoverable` drops a stack base in both reports; `status` reports `branch.stack_base`
+  and no landing verb. Every other branch is judged, by both, against the base the
+  session that cut it recorded (`vcs::session_base`, the root where none did) — a held
+  copy of that base counts beside the origin's refs for that branch alone
+  (`unpublished_branches_among`'s `based_on`) — so a child at a stack base's head holds
+  nothing beyond its base, and a blanket "every stack base is a base" would judge a
+  branch against a base nobody cut it on. Retirement keeps it as `unmerged-unique-commits` with no change, because
   `KeepReason` is a closed public enum and that is already the true reason.
 
 ## The repository's own merge path is the only verifier

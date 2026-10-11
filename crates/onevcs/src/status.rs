@@ -130,7 +130,11 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// `12` is `branch.stack_base`: the parents a branch named in the stack-base namespace
 /// carries, each at the newest head merged, read off the `Stack-Base` trailers of its
 /// own history. A stack base is never landed itself, so `next` names no landing verb
-/// for one, and a branch that is not a stack base omits the field.
+/// for one, and a branch that is not a stack base omits the field. With it,
+/// `branch.base` became the base the branch is judged against — the one the session
+/// that cut it recorded, as its publication resolves it now, and the root only where no
+/// session recorded one — rather than always the root, so a change drafted on a stack
+/// base, or stacked on the change below, is measured by its own commits.
 ///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
@@ -274,7 +278,9 @@ pub struct SessionReport {
 pub struct BranchReport {
     /// The branch name.
     pub name: Ref,
-    /// The identity's root base, which is what it is compared against.
+    /// The base it is compared against: the one the session that cut it recorded, as
+    /// its publication resolves it now, and the identity's root where no session
+    /// recorded one.
     pub base: Ref,
     /// The change base a preserved commit recorded, for a stacked change.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -992,6 +998,33 @@ fn carrying<'a>(holders: &'a [Holder], superseded: &BTreeSet<String>) -> Vec<&'a
         .collect()
 }
 
+/// The base a branch is judged against: the one the session answering for it recorded
+/// (`vcs::session_base`) — a stack base, for a change drafted on one — and `root` only
+/// where no session recorded one, or where nothing here can name the one it did.
+///
+/// The rule `recoverable` lists a branch by, so the two reports measure one branch
+/// against one base.
+fn own_base(
+    resolution: &Resolution,
+    root: Ref,
+    answering: &Answering,
+    carrying: &[&Holder],
+) -> Ref {
+    answering
+        .session
+        .as_ref()
+        .map(vcs::session_base)
+        .filter(|own| {
+            *own != root
+                && (vcs::base_commit(&resolution.publication, own).is_some()
+                    || (!carrying.is_empty()
+                        && carrying
+                            .iter()
+                            .all(|holder| vcs::names_a_base(&holder.path, own))))
+        })
+        .unwrap_or(root)
+}
+
 /// What one landing read judges its copies under: where this identity keeps its
 /// authoritative checkout, which object store may be lent, the base and the work, what
 /// this host recorded about it, and the session records read once for the whole
@@ -1235,6 +1268,7 @@ pub(crate) fn landing_of_within(
     let mut told = from_streams(&streams, &work, held_by.as_deref());
     let change_stream = told.change_stream.clone();
     let carrying = carrying(&holders, &answering.superseded);
+    let base = own_base(&resolution, base, &answering, &carrying);
     // Before the tiers are asked, because a landing it records is one tier 1 then
     // answers from — which is what puts a late merge into *this* read rather than
     // into the next one. It takes no host where the caller has none to give.
@@ -1347,6 +1381,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let held_by = session.as_ref().map(|session| session.token.to_string());
     let mut told = from_streams(&streams, &work, held_by.as_deref());
     let carrying = carrying(&holders, &answering.superseded);
+    let base = own_base(&resolution, base, &answering, &carrying);
     // Before the tiers, so a merge the host performed after this host stopped
     // watching is decided *in* this read: it becomes a recorded landing, the word
     // below is the word a record fixes, and the next step is recomputed from it.

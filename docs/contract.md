@@ -4390,11 +4390,13 @@ its own first-parent line. What makes a branch a stack base is its name alone: a
 outside that namespace with nothing opened or pushed, so every branch it writes is one.
 Never its commit content, its ancestry, a head it shares with a stack base, or this
 host's record of an assembly, so every host — one that never saw it assembled included —
-classifies one ref one way. Every other branch is ordinary, judged against its own base:
-a stack base the checkout holds counts as a base beside the origin's own refs, so a
-change cut from one with commits of its own is listed by `recoverable` with its landing
-guidance, and one at its very head holds nothing beyond its base and is reported as any
-such branch is — not listed. So
+classifies one ref one way. Every other branch is ordinary, and its base is the one the
+session that cut it recorded — the root only where no session recorded one — which
+`recoverable` and `onevcs status` both judge it against: a change a session cut on a
+stack base with commits of its own is listed by `recoverable` against that stack base
+with its landing guidance, and one at the stack base's very head holds nothing beyond its
+base and is reported, and offered a next step, exactly as any such branch is — not
+listed, and `nothing-to-publish` in `status`. So
 `recoverable`, in both its default and `--all` forms, does not list a stack base as
 preserved work, and the retirement pass offers it no landing verb and never classifies it
 `superseded-with-changes` — it is kept as `unmerged-unique-commits` while it holds what

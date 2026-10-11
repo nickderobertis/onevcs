@@ -897,137 +897,164 @@ fn recoverable_status_and_retirement_read_a_stack_base_as_one_and_offer_it_no_la
     }
 }
 
+/// `onevcs recoverable --repo CHECKOUT --json`, with `extra`.
+fn recoverable_rows(world: &World, checkout: &str, extra: &[&str]) -> Vec<Value> {
+    let assert = world
+        .onevcs()
+        .args(["recoverable", "--repo", checkout, "--json"])
+        .args(extra)
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array")
+}
+
+/// `onevcs status REFERENCE --json`.
+fn status_of(world: &World, reference: &str) -> Value {
+    let assert = world
+        .onevcs()
+        .args(["status", reference, "--json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).expect("one object")
+}
+
 #[test]
-fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidance() {
+fn a_change_a_session_cut_on_a_stack_base_is_judged_against_it_by_recoverable_and_status() {
     let stack = Stack::new();
     let world = &stack.world;
     stack.parent("feature/a", "a.txt", "a\n");
     stack.parent("feature/c", "c.txt", "c\n");
     stack.assembled(&["feature/a", "feature/c"], 0);
     let checkout = stack.checkout.to_string_lossy().into_owned();
+    let open = |branch: &str, base: &str| {
+        let assert = world
+            .onevcs()
+            .args([
+                "session", "open", "stacked", "--branch", branch, "--base", base,
+            ])
+            .assert()
+            .success();
+        let stdout = &assert.get_output().stdout;
+        (
+            crate::world::token_of(stdout),
+            crate::world::worktree_of(stdout),
+        )
+    };
 
-    // Two changes drafted against the stack base. One is cut from it with work of its
-    // own: every `Stack-Base` merge of the base is in its history, and none is its own.
-    // The other is cut at the base's very head and holds nothing else, so its head *is*
-    // the base's newest `Stack-Base` merge — the same commit, under another name.
-    world.git(
-        &stack.checkout,
-        &["checkout", "-q", "-b", "feature/child", BRANCH],
-    );
-    world.commit_file(&stack.checkout, "child.txt", "child\n", "feat: the child");
-    world.git(
-        &stack.checkout,
-        &["checkout", "-q", "-b", "feature/twin", BRANCH],
-    );
-    world.git(&stack.checkout, &["checkout", "-q", "main"]);
-    let base_head = world.git(&stack.checkout, &["rev-parse", BRANCH]);
+    // Two changes drafted on the stack base by real sessions, the way an engine drafts a
+    // node depending on both parents. The child commits work of its own; the twin is cut
+    // at the base's very head and commits nothing, so its head *is* the base's newest
+    // `Stack-Base` merge. Beside them, the control: a session cut on the root that
+    // commits nothing — a branch with no work beyond its base, by the root's rule.
+    let (child, tree) = open("feature/child", BRANCH);
+    world.commit_file(&tree, "child.txt", "child\n", "feat: the child");
+    let (twin, twin_tree) = open("feature/twin", BRANCH);
+    let (idle, _) = open("feature/idle", "main");
     assert_eq!(
-        world.git(&stack.checkout, &["rev-parse", "feature/twin"]),
-        base_head,
+        world.git(&twin_tree, &["rev-parse", "HEAD"]),
+        stack.tip(BRANCH).expect("the stack base is on the origin"),
         "the twin shares the stack base's head"
     );
 
-    // A branch at the root's own head holds nothing beyond its base: what `recoverable`
-    // answers for any branch with no work beyond its base is to list nothing for it.
-    world.git(&stack.checkout, &["branch", "feature/idle", "origin/main"]);
-
-    // What `recoverable` lists for a branch, and what `status` says of it: the child is
-    // an ordinary branch holding commits its base lacks, so it is listed with the
-    // landing guidance every such branch gets, and is not reported a stack base.
-    let ordinary = |branch: &str, when: &str| {
+    let judged = |when: &str, ahead: u64| {
+        // `recoverable`: the child is listed against the stack base its session
+        // recorded, with the landing verb every unpublished branch gets; the twin, like
+        // the idle control, holds nothing beyond its base and is in neither report; and
+        // the stack base itself is never a row.
         for extra in [&[][..], &["--all"][..]] {
-            let assert = world
-                .onevcs()
-                .args(["recoverable", "--repo", &checkout, "--json"])
-                .args(extra)
-                .assert()
-                .success();
-            let rows: Vec<Value> =
-                serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
+            let rows = recoverable_rows(world, &checkout, extra);
             let row = rows
                 .iter()
-                .find(|row| row["branch"]["branch"] == branch)
-                .unwrap_or_else(|| panic!("{when} {extra:?}: {branch} is listed: {rows:#?}"));
+                .find(|row| row["branch"]["branch"] == "feature/child")
+                .unwrap_or_else(|| panic!("{when} {extra:?}: the child is listed: {rows:#?}"));
+            assert_eq!(row["branch"]["base"], BRANCH, "{when} {extra:?}: {row:#}");
             assert_eq!(
-                row["recover_command"][1], "publish-branch",
+                (&row["recover_command"][1], &row["recover_command"][2]),
+                (
+                    &Value::from("publish-branch"),
+                    &Value::from("feature/child")
+                ),
                 "{when} {extra:?}: {row:#}"
             );
-            assert!(
-                rows.iter().all(|row| row["branch"]["branch"] != BRANCH),
-                "{when} {extra:?}: the stack base itself is still not listed: {rows:#?}"
-            );
+            for quiet in ["feature/twin", "feature/idle", BRANCH] {
+                assert!(
+                    rows.iter().all(|row| row["branch"]["branch"] != quiet),
+                    "{when} {extra:?}: {quiet} is not listed: {rows:#?}"
+                );
+            }
         }
-        let assert = world
-            .onevcs()
-            .args(["status", branch, "--json"])
-            .assert()
-            .success();
-        let report: Value =
-            serde_json::from_slice(&assert.get_output().stdout).expect("one object");
+
+        // `status` measures the child against the same base: by its own commits ahead of
+        // the stack base, not the parents' merges ahead of the root, and offered a landing.
+        let report = status_of(world, "feature/child");
+        assert_eq!(report["branch"]["base"], BRANCH, "{when}: {report:#}");
+        assert_eq!(report["branch"]["ahead"], ahead, "{when}: {report:#}");
+        assert_eq!(
+            report["publication"]["state"], "unpublished",
+            "{when}: {report:#}"
+        );
         assert!(
             report["branch"].get("stack_base").is_none(),
-            "{when}: {branch}: {report:#}"
+            "{when}: {report:#}"
         );
         let command = report["next"]["command"].as_str().unwrap_or_default();
         assert!(
-            command.starts_with(&format!("onevcs publish-branch {branch} ")),
-            "{when}: {branch} is offered a landing: {report:#}"
+            command == format!("onevcs publish {child}")
+                || command.starts_with("onevcs publish-branch feature/child "),
+            "{when}: the child is offered a landing: {report:#}"
         );
-        let because = report["next"]["because"].as_str().unwrap_or_default();
-        assert!(
-            !because.contains("stack base"),
-            "{when}: {branch}: {report:#}"
-        );
-    };
-    ordinary("feature/child", "cut from the stack base");
 
-    // The twin is judged against its own base — the stack base, not the root — and holds
-    // nothing beyond it, so it is reported exactly as the branch at the root's head is:
-    // listed by neither report. It is still not a stack base, because its name is not.
-    for extra in [&[][..], &["--all"][..]] {
-        let assert = world
+        // …and the twin exactly as the idle control: no work beyond its base, the same
+        // publication answer, and the same next step, naming its own branch and base.
+        let report = status_of(world, "feature/twin");
+        let control = status_of(world, "feature/idle");
+        assert_eq!(report["branch"]["base"], BRANCH, "{when}: {report:#}");
+        assert_eq!(control["branch"]["base"], "main", "{when}: {control:#}");
+        assert_eq!(report["branch"]["ahead"], 0, "{when}: {report:#}");
+        assert_eq!(control["branch"]["ahead"], 0, "{when}: {control:#}");
+        assert_eq!(
+            report["publication"]["state"], "nothing-to-publish",
+            "{when}: {report:#}"
+        );
+        assert_eq!(report["publication"], control["publication"], "{when}");
+        assert!(
+            report["branch"].get("stack_base").is_none(),
+            "{when}: {report:#}"
+        );
+        let expected: Value = serde_json::from_str(
+            &serde_json::to_string(&control["next"])
+                .expect("serializes")
+                .replace("feature/idle", "feature/twin")
+                .replace(&idle, &twin)
+                .replace(" main ", &format!(" {BRANCH} ")),
+        )
+        .expect("still JSON");
+        assert_eq!(report["next"], expected, "{when}");
+    };
+    judged("while each session is open", 1);
+
+    // The sessions end without publishing, which hands each branch back to the
+    // checkout; each is still judged against the base its session recorded.
+    for token in [&child, &twin, &idle] {
+        world
             .onevcs()
-            .args(["recoverable", "--repo", &checkout, "--json"])
-            .args(extra)
+            .args(["session", "close", token])
             .assert()
             .success();
-        let rows: Vec<Value> =
-            serde_json::from_slice(&assert.get_output().stdout).expect("one JSON array");
-        for quiet in ["feature/twin", "feature/idle"] {
-            assert!(
-                rows.iter().all(|row| row["branch"]["branch"] != quiet),
-                "{extra:?}: {quiet} holds no work beyond its base: {rows:#?}"
-            );
-        }
-        assert!(
-            rows.iter()
-                .any(|row| row["branch"]["branch"] == "feature/child"),
-            "{extra:?}: {rows:#?}"
-        );
     }
-    let assert = world
-        .onevcs()
-        .args(["status", "feature/twin", "--json"])
-        .assert()
-        .success();
-    let report: Value = serde_json::from_slice(&assert.get_output().stdout).expect("one object");
-    assert!(report["branch"].get("stack_base").is_none(), "{report:#}");
+    judged("once each session is closed", 1);
 
-    // The stack base itself, at that same head, is still one.
-    let assert = world
-        .onevcs()
-        .args(["status", BRANCH, "--json"])
-        .assert()
-        .success();
-    let report: Value = serde_json::from_slice(&assert.get_output().stdout).expect("one object");
+    // The stack base itself, at the twin's head, is still one.
+    let report = status_of(world, BRANCH);
     assert!(report["branch"]["stack_base"].is_object(), "{report:#}");
 
-    // The base advances after review, and the child merges it forward — its head is
-    // now a merge whose history carries the base's newest `Stack-Base` merge too.
+    // The base advances after review, and the child merges it forward: it is still
+    // ordinary work ahead of its stack base, and the twin, now behind it, still holds
+    // nothing beyond it.
     stack.advance("feature/a", "a.txt", "a, reworked\n");
     stack.assembled(&["feature/a", "feature/c"], 0);
-    world.git(&stack.checkout, &["checkout", "-q", "feature/child"]);
     world.git(&stack.checkout, &["fetch", "-q", "origin"]);
+    world.git(&stack.checkout, &["checkout", "-q", "feature/child"]);
     world.git(
         &stack.checkout,
         &[
@@ -1039,10 +1066,8 @@ fn a_change_cut_from_a_stack_base_is_still_ordinary_work_with_its_landing_guidan
         ],
     );
     world.git(&stack.checkout, &["checkout", "-q", "main"]);
-    ordinary(
-        "feature/child",
-        "after merging the advanced stack base forward",
-    );
+    // Its own commit and the merge.
+    judged("after the child merged the advanced stack base forward", 2);
 }
 
 #[test]
@@ -1099,6 +1124,40 @@ fn a_host_holding_no_record_of_the_assembly_classifies_the_stack_base_by_its_nam
     );
     let repo = checkout.to_string_lossy().into_owned();
 
+    // A session on this host cuts a change at the stack base's head and commits nothing.
+    // Its checkout holds the base only as a local branch, so no `origin` ref reaches the
+    // twin's head: what says it holds no work is the base its session recorded.
+    let assert = other
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "other-host",
+            "--branch",
+            "feature/twin",
+            "--base",
+            BRANCH,
+        ])
+        .assert()
+        .success();
+    let twin = crate::world::token_of(&assert.get_output().stdout);
+    other
+        .onevcs()
+        .args(["session", "close", &twin])
+        .assert()
+        .success();
+    assert_eq!(
+        other.git(&checkout, &["rev-parse", "feature/twin"]),
+        other.git(&checkout, &["rev-parse", BRANCH]),
+        "the twin was handed back at the stack base's head"
+    );
+    let report = status_of(&other, "feature/twin");
+    assert_eq!(report["branch"]["base"], BRANCH, "{report:#}");
+    assert_eq!(
+        report["publication"]["state"], "nothing-to-publish",
+        "{report:#}"
+    );
+
     for extra in [&[][..], &["--all"][..]] {
         let assert = other
             .onevcs()
@@ -1114,6 +1173,7 @@ fn a_host_holding_no_record_of_the_assembly_classifies_the_stack_base_by_its_nam
             .collect();
         assert!(branches.contains(&"feature/plain"), "{extra:?}: {rows:#?}");
         assert!(!branches.contains(&BRANCH), "{extra:?}: {rows:#?}");
+        assert!(!branches.contains(&"feature/twin"), "{extra:?}: {rows:#?}");
     }
 
     let assert = other

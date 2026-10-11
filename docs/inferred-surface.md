@@ -399,7 +399,12 @@ plan and a node, `<host prefix>stack-base/<plan>/<node>` — never its commits n
 host's record of an assembly, so a host that never saw it assembled reports it the same,
 and a branch cut from a stack base, or standing at its very head, is never reported as one.
 `next` then names no landing verb, because a stack base is drafted against and never landed, and the human rendering prints a `stack base:` line.
-Omitted for every other branch.
+Omitted for every other branch. The same version moved what `branch.base` means: it was
+always the identity's root, and is now the base the branch is judged against — the one
+the session that cut it recorded, as its publication resolves it now, and the root only
+where no session recorded one — which is also the base `recoverable` lists the branch
+against. A change drafted on a stack base is measured by its own commits rather than by
+its parents' merges, and one standing at the stack base's head has nothing to publish.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change

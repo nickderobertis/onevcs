@@ -1931,7 +1931,7 @@ pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
     Ok(
-        unpublished_branches_among(cwd, |_| true, &BTreeSet::new(), |_| false)?
+        unpublished_branches_among(cwd, |_| true, &BTreeSet::new(), |_| None)?
             .into_iter()
             .map(|(branch, _)| branch)
             .collect(),
@@ -1953,13 +1953,14 @@ pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
 /// the origin, whose own remote-tracking ref would otherwise make them read as
 /// published. Taken from the same listing, so they cost no process of their own.
 ///
-/// A local branch `based` names is a base beside the `origin` refs: what it reaches is
-/// counted as published, so a branch drafted on it is measured by its own commits.
+/// `based_on` names the base a branch was cut on, where one was recorded: a local copy of
+/// that base is counted beside the `origin` refs for that branch alone, so a branch
+/// drafted on a base the checkout holds is measured by its own commits.
 pub fn unpublished_branches_among(
     cwd: &Path,
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
-    based: impl Fn(&str) -> bool,
+    based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
     let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
     let (heads, origin_tips) = if let Some((heads, origin)) = native {
@@ -1991,12 +1992,7 @@ pub fn unpublished_branches_among(
         }
         (heads, origin_tips)
     };
-    let bases: Vec<String> = heads
-        .iter()
-        .filter(|(branch, _)| based(branch))
-        .map(|(_, tip)| tip.clone())
-        .collect();
-    let carried: Vec<&str> = bases.iter().map(String::as_str).collect();
+    let local: BTreeMap<String, String> = heads.iter().cloned().collect();
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -2006,9 +2002,14 @@ pub fn unpublished_branches_among(
             unpublished.push((branch, tip));
             continue;
         }
-        if origin_tips.contains(&tip) || bases.contains(&tip) {
+        if origin_tips.contains(&tip) {
             continue;
         }
+        let base = based_on(&branch).and_then(|base| local.get(&base).cloned());
+        if base.as_deref() == Some(tip.as_str()) {
+            continue;
+        }
+        let carried: Vec<&str> = base.iter().map(String::as_str).collect();
         if unpublished_ahead(cwd, &tip, &carried)? > 0 {
             unpublished.push((branch, tip));
         }
