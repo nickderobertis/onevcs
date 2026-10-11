@@ -1435,6 +1435,103 @@ fn a_base_only_retarget_the_public_boundary_refuses_writes_nothing() {
     assert_eq!(world.change_request(2)["PR_BASE"], "main");
 }
 
+/// What a verb printed for a person, having succeeded.
+fn said(output: &Output) -> String {
+    assert!(
+        output.status.success(),
+        "the command failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout.clone()).expect("UTF-8")
+}
+
+#[test]
+fn each_verb_without_json_tells_a_person_what_it_read_or_moved() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let parent_head = stack.branch("feature/a", "main", "a.txt");
+    let child_head = stack.branch("feature/b", "feature/a", "b.txt");
+    let parent = stack.open("feature/a", "main", true);
+    let child = stack.open("feature/b", "feature/a", true);
+    let standings = |changes: &[usize], extra: &[&str]| {
+        let mut command = world.onevcs();
+        command.args(["change", "standings", IDENTITY, "--root", "main"]);
+        for change in changes {
+            command.args(["--change", &url(*change)]);
+        }
+        said(&command.args(extra).output().expect("the binary runs"))
+    };
+
+    let read = standings(&[child], &[]);
+    assert!(
+        read.contains(&format!(
+            "{} — open; base feature/a, head feature/b at {child_head}",
+            url(child)
+        )),
+        "{read}"
+    );
+    assert!(
+        read.contains("cost: 1 graphql point(s), 0 REST request(s)"),
+        "{read}"
+    );
+    let reviewed = standings(&[child], &["--review"]);
+    assert!(
+        reviewed.contains(&format!("{} — open; base feature/a", url(child))),
+        "{reviewed}"
+    );
+    assert!(reviewed.contains("  review: 0 comment(s)"), "{reviewed}");
+    assert!(reviewed.contains("; marker "), "{reviewed}");
+
+    world.person_merges(
+        parent,
+        PersonMerge::Squash,
+        MERGED_AT,
+        HeadAfter::Deleted(Dependants::Closed),
+    );
+    let closed = standings(&[parent, child], &[]);
+    assert!(closed.contains(" (a landing)"), "{closed}");
+    assert!(closed.contains("closed, its base deleted"), "{closed}");
+    let reopened = said(
+        &world
+            .onevcs()
+            .args([
+                "change",
+                "reopen",
+                &url(child),
+                "--restore-base-at",
+                &parent_head,
+            ])
+            .output()
+            .expect("the binary runs"),
+    );
+    assert!(
+        reopened.contains(&format!(
+            "{} reopened over feature/a, restored on the origin",
+            url(child)
+        )),
+        "{reopened}"
+    );
+
+    let retarget = || {
+        world
+            .onevcs()
+            .args(["change", "retarget", &url(child), "--base", "main"])
+            .output()
+            .expect("the binary runs")
+    };
+    let moved = said(&retarget());
+    assert!(
+        moved.contains(&format!("{} moved from feature/a onto main", url(child))),
+        "{moved}"
+    );
+    assert!(moved.contains("cost: "), "{moved}");
+    let unchanged = said(&retarget());
+    assert!(
+        unchanged.contains(&format!("{} already targets main", url(child))),
+        "{unchanged}"
+    );
+}
+
 #[test]
 fn a_draft_closed_by_its_parents_deletion_is_reopened_and_moved_off_the_restored_base() {
     let stack = Stack::new(HELD_FOR_REVIEW);
