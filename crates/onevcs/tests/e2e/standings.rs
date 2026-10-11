@@ -615,6 +615,68 @@ fn each_verdict_reads_as_the_publication_watch_reads_the_same_rollup() {
         verdicts, through_the_watch,
         "the watch and the standings read agree"
     );
+
+    // `onevcs-testing` mirrors the classifier for consumers' suites: the same six
+    // rollups, read through its host, give the real classifier's answer for each.
+    assert_eq!(
+        mirrored(&rollups),
+        verdicts,
+        "onevcs-testing's verdicts drifted from onevcs's classifier"
+    );
+}
+
+/// The verdict `onevcs-testing`'s host gives each rollup, its base declaring what the
+/// world's base declares: `ci` for `main`, nothing for `release`.
+fn mirrored(rollups: &[Rollup]) -> Vec<Value> {
+    use onevcs::{ChangeSpec, Hosting, RequiredChecks, Sha};
+    use onevcs_testing::MemoryHost;
+    rollups
+        .iter()
+        .map(|rollup| {
+            let required = match rollup.base {
+                "main" => std::collections::BTreeSet::from(["ci".to_owned()]),
+                _ => std::collections::BTreeSet::new(),
+            };
+            let host = MemoryHost::seeded(onevcs_testing::HostState {
+                required_checks: Some(RequiredChecks {
+                    checks: required,
+                    unconsulted: std::collections::BTreeMap::new(),
+                }),
+                ..onevcs_testing::HostState::default()
+            });
+            let remote = host.for_repo(SLUG).expect("a host");
+            let change = remote
+                .open_change(ChangeSpec {
+                    head: rollup.branch.to_owned(),
+                    base: rollup.base.to_owned(),
+                    title: format!("feat: {}", rollup.branch),
+                    body: None,
+                    draft: None,
+                    draft_awaiting_checks: true,
+                })
+                .expect("the host opens it");
+            let checks: Vec<onevcs::Check> = rollup
+                .checks
+                .iter()
+                .map(|check| onevcs::Check {
+                    name: check.name.to_owned(),
+                    status: check.status.to_owned(),
+                    conclusion: check.conclusion.map(str::to_owned),
+                    required: check.required,
+                    head: Some(change.head_sha.clone()),
+                    url: None,
+                    started_at: None,
+                    completed_at: None,
+                })
+                .collect();
+            host.set_head_checks(&Sha(change.head_sha.0.clone()), checks)
+                .expect("the head's checks");
+            let read = remote
+                .change_standings(rollup.base, std::slice::from_ref(&change.id))
+                .expect("the host reads");
+            serde_json::to_value(&read.standings[0].checks).expect("a verdict serializes")
+        })
+        .collect()
 }
 
 #[test]

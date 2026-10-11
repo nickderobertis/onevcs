@@ -545,6 +545,30 @@ fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_re
         "no host call of any kind"
     );
 
+    // A URL that names no change request of this repository is refused before
+    // anything else is asked of it.
+    for malformed in [
+        "https://github.com/acme-corp/widgets/pull/abc",
+        "https://github.com/acme-corp/widgets/pulls",
+        "https://github.com/acme-corp/other/pull/1",
+        "http://github.com/acme-corp/widgets/pull/1",
+    ] {
+        let refused = onevcs::publish(
+            &providers,
+            &again.token,
+            &PublishRequest {
+                defer_checks: true,
+                adopt: Some(Url::parse(malformed).expect("a URL")),
+                ..PublishRequest::default()
+            },
+        )
+        .expect_err("refused before anything");
+        assert!(
+            matches!(&refused, Error::Invalid { reason } if reason.contains("is not a change request of")),
+            "{malformed}: {refused:?}"
+        );
+    }
+
     // A draft nothing here records is its own refusal; another branch's is refused.
     let unknown = Url::parse("https://github.com/acme-corp/widgets/pull/99").expect("a URL");
     let refused = onevcs::publish(

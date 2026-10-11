@@ -11,9 +11,9 @@
 //! here exactly as this crate already mirrors the watch's reading of a declaration: a
 //! declared check with no run is pending, a skipped one is never passed, a cancelled or
 //! stale one is no verdict, a failure fails, and a base requiring nothing — by the host's
-//! complete answer — requires nothing. `tests/journeys/landings.rs` holds this one to
-//! the answer per rollup that `tests/e2e/standings.rs` next door holds the real classifier
-//! and the real watch to.
+//! complete answer — requires nothing. `tests/e2e/standings.rs` next door is the drift
+//! gate: it reads the same rollups through the real classifier, the real watch and this
+//! host, and fails on any difference.
 //!
 //! **A person's moves are a journey's, never a method's.** Merging on the host, deleting
 //! the merged head, closing unmerged, retargeting: the real host takes them from people,

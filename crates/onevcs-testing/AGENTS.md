@@ -75,7 +75,8 @@ What people do on the host — merging (`merge_by_person`), deleting a merged he
 closing or retargeting what was based on it, closing unmerged, retargeting — are
 `Host` methods rather than trait methods, and write nothing to the ledger: nobody on
 this host made a call. The verdict a standing carries mirrors `onevcs`'s private
-`publish::checks_verdict`; change one and change the other.
+`publish::checks_verdict`; `each_verdict_reads_as_the_publication_watch_reads_the_same_rollup`
+in `onevcs`'s e2e suite reads the same rollups through both and fails on any difference.
 
 ## One behaviour, two stores
 

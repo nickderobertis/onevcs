@@ -671,10 +671,29 @@ fn deferred(
              Nothing was pushed"
         )));
     }
-    let expected = slug(identity).map(|slug| format!("https://{DEFAULT_HOST}/{slug}/pull/"));
-    if !expected.is_some_and(|prefix| adopt.as_str().starts_with(&prefix)) {
+    // Parsed as a change request's URL — `https://<host>/<owner>/<name>/pull/<number>`
+    // with a number of digits — and held to the session's repository, as the real one
+    // holds it, rather than matched by its prefix.
+    let segments: Vec<&str> = adopt
+        .path_segments()
+        .map(|segments| segments.collect())
+        .unwrap_or_default();
+    let named = match segments.as_slice() {
+        [owner, name, "pull", number, ..]
+            if adopt.scheme() == "https"
+                && !number.is_empty()
+                && number.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            adopt
+                .host_str()
+                .map(|host| format!("{}/{owner}/{name}", host.to_ascii_lowercase()))
+        }
+        _ => None,
+    };
+    if named.as_deref() != Some(identity) || slug(identity).is_none() {
         return Err(refused(format!(
-            "{adopt} is not a change request of {identity}. Nothing was pushed"
+            "{adopt} is not a change request of {identity}: a change request is named as \
+             https://{DEFAULT_HOST}/<owner>/<name>/pull/<number>. Nothing was pushed"
         )));
     }
     let recorded = state.publications.iter().rev().find_map(|earlier| {

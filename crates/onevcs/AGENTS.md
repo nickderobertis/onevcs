@@ -239,8 +239,8 @@ things are easy to undo.
 
 `standings.rs` is `change_standings`, `review_standings`, `retarget_change` and
 `reopen_change` (`onevcs change standings|retarget|reopen`); `standings/github.rs` is the
-GitHub transport. The amendment in `docs/contract.md` is the surface, and `op-readjust`
-restates it. Six things are easy to undo.
+GitHub transport. The amendment in `docs/contract.md` is the surface, and its consumers
+restate it. Six things are easy to undo.
 
 - **One query per 50, and each base's required set is read once per call.** The first
   query of a call reads the repository's declarations (rulesets with their ref
@@ -255,7 +255,8 @@ restates it. Six things are easy to undo.
 - **The verdict is the watch's, through one function.** `publish::checks_verdict` is
   what a standing is classified by and what `settle_ready` decides through. A second
   classifier in this crate is the drift the criterion forbids; `onevcs-testing` keeps a
-  mirror, held to the e2e journey's answers by its own.
+  mirror, and the verdict journey reads every rollup through it too and fails on a
+  difference.
 - **A landing found on the host is a late merge recorded.** `release::reconcile_landing`
   writes it, on `LandingStream::Opened` where a stream here opened the change request and
   on `Own` — the change request's own stream, labelled with the identity, the record
