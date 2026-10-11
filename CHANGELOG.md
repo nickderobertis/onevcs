@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0](https://github.com/nickderobertis/onevcs/compare/v0.46.0...v0.47.0) - 2026-10-11
+
+### Added
+
+- *(change)* read where change requests stand and retarget one to another base ([#364](https://github.com/nickderobertis/onevcs/pull/364))
+
 ## [0.46.0](https://github.com/nickderobertis/onevcs/compare/v0.45.0...v0.46.0) - 2026-10-11
 
 ### Added
