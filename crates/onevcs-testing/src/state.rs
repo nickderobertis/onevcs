@@ -514,9 +514,10 @@ pub struct HostState {
     /// required checks pass — GitHub's `allow_auto_merge` — which is what
     /// `allows_auto_merge` answers. Unset is a repository that allows it, so a
     /// publication whose watch elapses arms the merge; `false` is one that does not,
-    /// so it is left as the elapsed watch left it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow_auto_merge: Option<bool>,
+    /// so it is left as the elapsed watch left it. Only `false` is written, so allowed
+    /// has the one spelling.
+    #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
+    pub allow_auto_merge: bool,
     /// The change requests whose own merge is armed — by a `change-auto` publication,
     /// or by one whose watch elapsed with no required check red. The host lands one
     /// the moment its required checks are green, whoever asks next: a publication
@@ -734,10 +735,24 @@ impl Default for HostState {
             head_checks: BTreeMap::new(),
             ledger: Vec::new(),
             up_to_date_required: false,
-            allow_auto_merge: None,
+            allow_auto_merge: true,
             armed: BTreeSet::new(),
         }
     }
+}
+
+/// What a host document that says nothing about auto-merge allows: GitHub's default.
+fn allowed() -> bool {
+    true
+}
+
+/// Whether `allow_auto_merge` holds the default, which a written document omits.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_allowed(allow: &bool) -> bool {
+    *allow
 }
 
 /// The identity a session request names, or the reason none of them is it.

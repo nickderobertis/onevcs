@@ -528,7 +528,7 @@ pub fn full_host_state() -> HostState {
         // The fields version 22 added: a host requiring an up-to-date branch, a
         // repository that does not allow auto-merge, and a change whose merge is armed.
         up_to_date_required: true,
-        allow_auto_merge: Some(false),
+        allow_auto_merge: false,
         armed: BTreeSet::from([ChangeId("1".to_owned())]),
     }
 }

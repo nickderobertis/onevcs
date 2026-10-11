@@ -561,7 +561,7 @@ fn the_bound_ends_every_change_policy_checks_unsettled_and_leaves_the_draft_stan
     for rules in [AUTO, DIRECT, OPEN, TEAM] {
         let (world, _origin, session) = scene(rules, "60", "0.5");
         let host = MemoryHost::seeded(HostState {
-            allow_auto_merge: Some(false),
+            allow_auto_merge: false,
             ..host_with(vec![check("gate", None, true, 1)], None)
         });
 

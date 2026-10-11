@@ -269,7 +269,7 @@ fn a_version_21_document_reads_as_a_host_that_arms_nothing_and_is_written_back_a
     let state = host.state().expect("readable");
     assert_eq!(state.version, STATE_VERSION);
     assert!(!state.up_to_date_required);
-    assert_eq!(state.allow_auto_merge, None);
+    assert!(state.allow_auto_merge);
     assert!(state.armed.is_empty());
     let repository = vcs.state().expect("readable");
     assert!(repository.publications.iter().all(|publication| matches!(

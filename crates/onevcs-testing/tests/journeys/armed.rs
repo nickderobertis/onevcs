@@ -209,7 +209,7 @@ fn a_repository_that_does_not_allow_auto_merge_is_left_as_the_watch_left_it() {
         &home,
         vec![gate(None)],
         HostState {
-            allow_auto_merge: Some(false),
+            allow_auto_merge: false,
             ..HostState::default()
         },
     );
@@ -314,7 +314,7 @@ fn the_host_answers_whether_it_requires_an_up_to_date_branch_and_allows_auto_mer
         home.path("strict.json"),
         HostState {
             up_to_date_required: true,
-            allow_auto_merge: Some(false),
+            allow_auto_merge: false,
             ..HostState::default()
         },
     )

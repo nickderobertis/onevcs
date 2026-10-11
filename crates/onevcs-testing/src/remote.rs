@@ -555,11 +555,11 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         Ok(self.store.snapshot()?.up_to_date_required)
     }
 
-    /// Whether the repository allows auto-merge: [`HostState::allow_auto_merge`], and
-    /// allowed where it says nothing. Charged as the one query the real host makes.
+    /// Whether the repository allows auto-merge: [`HostState::allow_auto_merge`].
+    /// Charged as the one query the real host makes.
     fn allows_auto_merge(&self) -> Result<bool> {
         self.called("allows_auto_merge", &[], landings::graphql(1))?;
-        Ok(self.store.snapshot()?.allow_auto_merge.unwrap_or(true))
+        Ok(self.store.snapshot()?.allow_auto_merge)
     }
 
     /// Recorded on the ledger and answered as the trait's default answers: this host

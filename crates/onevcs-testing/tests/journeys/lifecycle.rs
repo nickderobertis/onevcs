@@ -178,13 +178,9 @@ fn red_and_the_bound_leave_the_draft_standing_where_no_merge_is_armed() {
         (
             check("gate", Some("failure"), 1),
             FailureKind::ChecksFailed,
-            None,
+            true,
         ),
-        (
-            check("gate", None, 1),
-            FailureKind::ChecksUnsettled,
-            Some(false),
-        ),
+        (check("gate", None, 1), FailureKind::ChecksUnsettled, false),
     ] {
         for (policy, approvals) in [
             (MergePolicy::ChangeAuto, Approvals::None),
