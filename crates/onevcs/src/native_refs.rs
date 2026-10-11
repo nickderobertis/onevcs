@@ -18,13 +18,72 @@ struct Snapshot {
     #[cfg(unix)]
     common: PathBuf,
 }
+/// A repository, and the store it is lent where it is lent one.
+type Lending = (PathBuf, Option<PathBuf>);
 thread_local! {
     static OBJECT_REPOSITORIES: RefCell<HashMap<(PathBuf, Option<PathBuf>), git2::Repository>> = RefCell::new(HashMap::new());
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
+    /// One object store read on its own, by its path, for every repository that
+    /// borrows it.
+    static STORES: RefCell<HashMap<PathBuf, Option<git2::Repository>>> = RefCell::new(HashMap::new());
+    /// The stores a repository borrows, as its alternates name them.
+    static BORROWED: RefCell<HashMap<Lending, Vec<PathBuf>>> = RefCell::new(HashMap::new());
+    /// Each snapshot's configuration as it read it, frozen: every read of it is of
+    /// that one reading, rather than a fresh look at every file it came from.
+    static CONFIGURATIONS: RefCell<HashMap<PathBuf, git2::Config>> = RefCell::new(HashMap::new());
+    /// Every path resolved within one read, and what it resolved to.
+    static CANONICAL: RefCell<HashMap<PathBuf, Option<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
+    // Closed here, inside the read that opened them, so what a read costs its caller
+    // is all of it: nothing it opened outlives it or waits for anything later.
+    crate::native_objects::clear();
+    CONFIGURATIONS.with(|configurations| configurations.borrow_mut().clear());
     SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().clear());
     OBJECT_REPOSITORIES.with(|repositories| repositories.borrow_mut().clear());
+    STORES.with(|stores| stores.borrow_mut().clear());
+    BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
+    CANONICAL.with(|canonical| canonical.borrow_mut().clear());
+}
+/// `std::fs::canonicalize`, resolved once per path within a read.
+///
+/// A read asks the same repositories' paths, and the long prefix they share, to be
+/// resolved again and again, and each resolution reads every component's link. So a
+/// path is resolved from its parent's resolution: a last component that is a link is
+/// resolved whole as before, and one that is not is the parent's resolution with
+/// that name — which is what resolving it whole answers. A relative path, or one
+/// naming `.` or `..`, is resolved whole every time, and outside a read nothing is
+/// remembered.
+pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !crate::recovery_cache::enabled()
+        || !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+    {
+        return std::fs::canonicalize(path).ok();
+    }
+    if let Some(known) = CANONICAL.with(|canonical| canonical.borrow().get(path).cloned()) {
+        return known;
+    }
+    let resolved = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => canonical(parent).and_then(|parent| {
+            let candidate = parent.join(name);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(&candidate).ok(),
+                Ok(_) => Some(candidate),
+                Err(_) => None,
+            }
+        }),
+        _ => std::fs::canonicalize(path).ok(),
+    };
+    CANONICAL.with(|canonical| {
+        canonical
+            .borrow_mut()
+            .insert(path.to_owned(), resolved.clone())
+    });
+    resolved
 }
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
@@ -34,7 +93,7 @@ fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
             .entry(repo.to_owned())
-            .or_insert_with(|| snapshot(repo))
+            .or_insert_with(|| settled_snapshot(repo))
             .as_ref()?;
         choose(snapshot)
     })
@@ -54,47 +113,56 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
 #[cfg(unix)]
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
-        let config = snapshot.repository.config().ok()?;
-        let mut entries = config.entries(None).ok()?;
+        let _ = snapshot;
         let mut output = String::new();
-        while let Some(entry) = entries.next() {
-            let entry = entry.ok()?;
-            let name = entry.name().ok()?;
-            if name.starts_with("include.") || name.starts_with("includeif.") {
-                return None;
+        frozen(repo, |configuration| {
+            let mut entries = configuration.entries(None).ok()?;
+            while let Some(entry) = entries.next() {
+                let entry = entry.ok()?;
+                let name = entry.name().ok()?;
+                if name.starts_with("include.") || name.starts_with("includeif.") {
+                    return None;
+                }
+                output.push_str(&format!(
+                    "native:{:?}\0{name}\n{}\0",
+                    entry.level(),
+                    entry.value().ok()?
+                ));
             }
-            output.push_str(&format!(
-                "native:{:?}\0{name}\n{}\0",
-                entry.level(),
-                entry.value().ok()?
-            ));
-        }
+            Some(())
+        })?;
         Some(output)
     })
 }
+/// `read` asked of the configuration a repository's snapshot froze.
+fn frozen<T>(repo: &Path, read: impl FnOnce(&git2::Config) -> Option<T>) -> Option<T> {
+    CONFIGURATIONS.with(|configurations| read(configurations.borrow().get(repo)?))
+}
 pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     read(repo, |snapshot| {
-        let config = snapshot.repository.config().ok()?;
-        let mut entries = config.entries(None).ok()?;
-        let key = format!("remote.{remote}.url");
-        let mut url = None;
-        while let Some(entry) = entries.next() {
-            let entry = entry.ok()?;
-            let name = entry.name().ok()?;
-            if name.starts_with("include.")
-                || name.starts_with("includeif.")
-                || name.starts_with("url.")
-            {
-                return None;
-            }
-            if name == key {
-                if url.is_some() {
+        let _ = snapshot;
+        frozen(repo, |configuration| {
+            let mut entries = configuration.entries(None).ok()?;
+            let key = format!("remote.{remote}.url");
+            let mut url = None;
+            while let Some(entry) = entries.next() {
+                let entry = entry.ok()?;
+                let name = entry.name().ok()?;
+                if name.starts_with("include.")
+                    || name.starts_with("includeif.")
+                    || name.starts_with("url.")
+                {
                     return None;
                 }
-                url = Some(entry.value().ok()?.trim().to_owned());
+                if name == key {
+                    if url.is_some() {
+                        return None;
+                    }
+                    url = Some(entry.value().ok()?.trim().to_owned());
+                }
             }
-        }
-        url
+            url
+        })
     })
 }
 pub(crate) fn symbolic(repo: &Path, name: &str) -> Option<Option<String>> {
@@ -225,6 +293,7 @@ pub(crate) fn with_objects<T>(
     borrowing: Option<&Path>,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let borrowing = beyond_alternates(at, borrowing);
     let mut choose = Some(choose);
     if borrowing.is_none() {
         if let Some(answer) = read(at, |snapshot| Some(choose.take()?(&snapshot.repository))) {
@@ -249,28 +318,120 @@ pub(crate) fn with_objects<T>(
         choose(repositories.get(&key)?)
     })
 }
+/// [`with_objects`], asked first of a store the repository borrows where every
+/// object `named` is in it.
+///
+/// A repository reads every object of the stores it borrows, so a walk from objects a
+/// borrowed store holds reaches the same objects there as in the repository — the
+/// parents a commit names are part of its content — and answers the same; and every
+/// clone of one identity borrows the same checkout's store, which read once for all of
+/// them is read once rather than once per clone. A store that cannot answer — it
+/// lacks a named object, or the walk meets one it does not hold — leaves the question
+/// to the repository itself.
+pub(crate) fn with_objects_holding<T>(
+    at: &Path,
+    borrowing: Option<&Path>,
+    named: &[git2::Oid],
+    choose: impl Fn(&git2::Repository) -> Option<T>,
+) -> Option<T> {
+    for store in borrowed(at, borrowing) {
+        let answer = with_store(&store, |repository| {
+            let odb = repository.odb().ok()?;
+            named
+                .iter()
+                .all(|id| odb.exists_ext(*id, git2::OdbLookupFlags::NO_REFRESH))
+                .then(|| choose(repository))
+                .flatten()
+        });
+        if answer.is_some() {
+            return answer;
+        }
+    }
+    with_objects(at, borrowing, choose)
+}
+/// One store's objects, and only its own and its alternates', read through a
+/// repository opened on nothing else, once within a read.
+pub(crate) fn with_store<T>(
+    store: &Path,
+    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+) -> Option<T> {
+    STORES.with(|stores| {
+        let mut stores = stores.borrow_mut();
+        let repository = stores
+            .entry(store.to_owned())
+            .or_insert_with(|| {
+                let odb = git2::Odb::new().ok()?;
+                odb.add_disk_alternate(store.to_str()?).ok()?;
+                git2::Repository::from_odb(odb).ok()
+            })
+            .as_ref()?;
+        choose(repository)
+    })
+}
+/// The store `at` is lent, where it is not one `at` already reads through its own
+/// alternates: lending a repository a store it borrows already changes no object it
+/// can read, so it is read through the same repository rather than a second one.
+pub(crate) fn beyond_alternates<'a>(at: &Path, borrowing: Option<&'a Path>) -> Option<&'a Path> {
+    borrowing.filter(|lent| {
+        let lent_canonical = canonical(lent);
+        !borrowed(at, None).iter().any(|alternate| {
+            alternate == lent
+                || (lent_canonical.is_some() && canonical(alternate) == lent_canonical)
+        })
+    })
+}
+/// The stores `at` reads besides its own, by absolute path: its alternates, and the
+/// one it is lent.
+pub(crate) fn borrowed(at: &Path, borrowing: Option<&Path>) -> Vec<PathBuf> {
+    let key = (at.to_owned(), borrowing.map(Path::to_owned));
+    if let Some(known) = BORROWED.with(|borrowed| borrowed.borrow().get(&key).cloned()) {
+        return known;
+    }
+    let mut stores: Vec<PathBuf> = objects_dir(at)
+        .and_then(|objects| std::fs::read_to_string(objects.join("info/alternates")).ok())
+        .map(|raw| {
+            raw.lines()
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(lent) = borrowing {
+        if !stores.iter().any(|store| store == lent) {
+            stores.push(lent.to_owned());
+        }
+    }
+    BORROWED.with(|borrowed| borrowed.borrow_mut().insert(key, stores.clone()));
+    stores
+}
 fn with_object_repository<T>(
     at: &Path,
     env: &[(String, String)],
-    choose: impl FnOnce(&git2::Repository) -> Option<T>,
+    named: &[git2::Oid],
+    choose: impl Fn(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
     read(at, |_| Some(()))?;
-    let borrowing = match env {
-        [] => None,
+    with_objects_holding(at, lent(env)?, named, choose)
+}
+/// The one store an environment lends, where it lends nothing else: `Some(None)` for
+/// none, `None` for an environment this does not read.
+fn lent(env: &[(String, String)]) -> Option<Option<&Path>> {
+    match env {
+        [] => Some(None),
         [(name, path)]
             if name == "GIT_ALTERNATE_OBJECT_DIRECTORIES"
                 && Path::new(path).is_absolute()
                 && !path.contains([':', '"', '\n']) =>
         {
-            Some(Path::new(path))
+            Some(Some(Path::new(path)))
         }
-        _ => return None,
-    };
-    with_objects(at, borrowing, choose)
+        _ => None,
+    }
 }
 pub(crate) fn has_commit(at: &Path, env: &[(String, String)], name: &str) -> Option<bool> {
     crate::git::ObjectId::parse(name)?;
-    with_object_repository(at, env, |repository| {
+    let named = [git2::Oid::from_str(name).ok()?];
+    with_object_repository(at, env, &named, |repository| {
         let oid = git2::Oid::from_str(name).ok()?;
         let present = repository
             .find_object(oid, None)
@@ -287,7 +448,18 @@ pub(crate) fn is_ancestor(
 ) -> Option<bool> {
     crate::git::ObjectId::parse(ancestor)?;
     crate::git::ObjectId::parse(descendant)?;
-    with_object_repository(at, env, |repository| {
+    read(at, |_| Some(()))?;
+    let named = [
+        git2::Oid::from_str(ancestor).ok()?,
+        git2::Oid::from_str(descendant).ok()?,
+    ];
+    if let Some(answer) = lent(env)
+        .filter(|borrowing| crate::recovery_cache::readable_in_process(at, *borrowing))
+        .and_then(|borrowing| crate::native_objects::is_ancestor(at, borrowing, named[0], named[1]))
+    {
+        return Some(answer);
+    }
+    with_object_repository(at, env, &named, |repository| {
         let ancestor = repository
             .find_object(git2::Oid::from_str(ancestor).ok()?, None)
             .ok()?
@@ -308,6 +480,67 @@ pub(crate) fn is_ancestor(
     })
 }
 
+/// A snapshot of refs nothing moved while they were read.
+///
+/// Other sessions' fetches rewrite a checkout's refs at any moment, and a snapshot
+/// whose listing and whose values disagree is refused rather than answered from; a
+/// refusal of that kind is read again, a few times, so that a ref moved during the
+/// read costs one more read rather than every ref read of the call going to git.
+fn settled_snapshot(at: &Path) -> Option<Snapshot> {
+    let mut wait = std::time::Duration::from_millis(2);
+    for _ in 0..5 {
+        if let Some(snapshot) = snapshot(at) {
+            return Some(snapshot);
+        }
+        // A refusal for any other reason is final at once: only refs a writer is
+        // moving now are worth reading again.
+        if !refs_moving(at) {
+            return None;
+        }
+        std::thread::sleep(wait);
+        wait *= 2;
+    }
+    None
+}
+
+/// Whether a writer is moving this repository's refs now: a ref or `packed-refs` lock
+/// is held, or a refs directory or `packed-refs` changed within the last two seconds.
+fn refs_moving(at: &Path) -> bool {
+    fn common(at: &Path) -> Option<PathBuf> {
+        let dot = at.join(".git");
+        if dot.is_dir() {
+            return Some(dot);
+        }
+        let raw = std::fs::read_to_string(&dot).ok()?;
+        let gitdir = at.join(raw.strip_prefix("gitdir: ")?.trim_end());
+        let shared = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        Some(gitdir.join(shared.trim_end()))
+    }
+    fn recent(meta: &std::fs::Metadata) -> bool {
+        meta.modified()
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age < std::time::Duration::from_secs(2))
+    }
+    fn moving(path: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return false;
+        };
+        if std::fs::metadata(path).is_ok_and(|meta| recent(&meta)) {
+            return true;
+        }
+        entries.flatten().any(|entry| {
+            entry.file_name().to_string_lossy().ends_with(".lock")
+                || (entry.file_type().is_ok_and(|kind| kind.is_dir()) && moving(&entry.path()))
+        })
+    }
+    let Some(common) = common(at) else {
+        return false;
+    };
+    common.join("packed-refs.lock").exists()
+        || std::fs::metadata(common.join("packed-refs")).is_ok_and(|meta| recent(&meta))
+        || moving(&common.join("refs"))
+}
 fn snapshot(at: &Path) -> Option<Snapshot> {
     if !Path::new(crate::git::git_program()).is_absolute()
         || crate::recovery_cache::has_git_overrides()
@@ -317,13 +550,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     let repo = git2::Repository::open(at).ok()?;
     // libgit2 resolves symlinks in the paths it reports (macOS's /var is one), so
     // the caller's spelling of the checkout is compared resolved too.
-    if repo.is_bare()
-        || std::fs::canonicalize(repo.workdir()?).ok()? != std::fs::canonicalize(at).ok()?
-    {
+    if repo.is_bare() || canonical(repo.workdir()?)? != canonical(at)? {
         return None;
     }
-    let directory = std::fs::canonicalize(repo.path()).ok()?;
-    let common = std::fs::canonicalize(repo.commondir()).ok()?;
+    let directory = canonical(repo.path())?;
+    let common = canonical(repo.commondir())?;
     if common.file_name()?.to_str() != Some(".git") {
         return None;
     }
@@ -336,10 +567,10 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         } else {
             at.join(target)
         };
-        if std::fs::canonicalize(target).ok()? != directory {
+        if canonical(&target)? != directory {
             return None;
         }
-    } else if std::fs::canonicalize(at.join(".git")).ok()? != directory {
+    } else if canonical(&at.join(".git"))? != directory {
         return None;
     }
     if ["reftable", "refs/replace", "info/grafts", "shallow"]
@@ -383,7 +614,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     if names.iter().any(|name| name.starts_with("refs/replace/")) {
         return None;
     }
-    let configuration = repo.config().ok()?;
+    let configuration = repo.config().ok()?.snapshot().ok()?;
     for key in [
         "core.worktree",
         "core.warnAmbiguousRefs",
@@ -406,7 +637,12 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         if let Some(target) = reference.symbolic_target().ok()? {
             symbolic.insert(name.clone(), target.to_owned());
         }
-        let oid = reference.resolve().ok()?.target()?;
+        // A direct reference names its commit already; only a symbolic one is
+        // followed to the reference it names.
+        let oid = match reference.target() {
+            Some(oid) => oid,
+            None => reference.resolve().ok()?.target()?,
+        };
         tips.insert(name, oid);
     }
     if tips.keys().cloned().collect::<BTreeSet<_>>() != names {
@@ -447,6 +683,11 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         worktrees.push((path.to_owned(), branch));
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
+    CONFIGURATIONS.with(|configurations| {
+        configurations
+            .borrow_mut()
+            .insert(at.to_owned(), configuration)
+    });
     Some(Snapshot {
         repository: repo,
         tips,

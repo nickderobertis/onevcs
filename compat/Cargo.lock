@@ -981,6 +981,7 @@ dependencies = [
  "icu_normalizer",
  "icu_properties",
  "libc",
+ "libz-sys",
  "minijinja",
  "onemessagebus",
  "schemars",

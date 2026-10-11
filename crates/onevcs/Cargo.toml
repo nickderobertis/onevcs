@@ -63,6 +63,7 @@ url = { workspace = true }
 # cannot outlive the push it was gating. There is no portable spelling for that.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+libz-sys = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 dunce = { workspace = true }
@@ -120,6 +121,13 @@ onevcs-testing = { path = "../onevcs-testing" }
 # The release workflow, parsed as the YAML Actions reads rather than grepped, so
 # the paths a release archive names are the ones the suite checks exist.
 serde_yaml_ng = { workspace = true }
+
+# The in-process timing program the recovery workload journeys drive. Its tests,
+# over how it reads each kernel's resident memory and thread count, run in the unit
+# tier with the crate's own, so a figure a host reports differently fails there.
+[[example]]
+name = "recoverable_latency"
+test = true
 
 # The end-to-end journeys: they spawn the compiled binary as a subprocess, so they
 # are their own target (`just test-e2e` runs it alone) while `just check` still

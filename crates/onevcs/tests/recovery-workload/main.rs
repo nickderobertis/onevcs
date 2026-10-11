@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 mod boundary;
 mod churn;
 mod counting;
+#[cfg(target_os = "linux")]
+mod scoped;
 mod telemetry;
 use counting::Counting;
 use telemetry::{Build, Record, Sample, Scenario, Workload};
@@ -67,6 +69,27 @@ fn query_program(
     counting: Option<&Counting>,
     program: Option<&std::ffi::OsStr>,
 ) -> Vec<Value> {
+    query_launcher(
+        fixture,
+        &fixture.launcher,
+        detail,
+        all,
+        session,
+        counting,
+        program,
+    )
+}
+/// The CLI read of one launcher's rows. `--detail` is passed to this build and to
+/// the 0.43.1 baseline, and withheld from the v0.42.0 one, which predates it.
+fn query_launcher(
+    fixture: &Fixture,
+    launcher: &str,
+    detail: &str,
+    all: bool,
+    session: Option<&str>,
+    counting: Option<&Counting>,
+    program: Option<&std::ffi::OsStr>,
+) -> Vec<Value> {
     let program = program
         .map(std::ffi::OsStr::to_owned)
         .unwrap_or_else(binary);
@@ -93,7 +116,7 @@ fn query_program(
             .current_dir(&fixture.root);
     }
     command.args(["recoverable", "--json"]);
-    if program == binary() {
+    if program == binary() || Some(&program) == decision_baseline().as_ref() {
         command.args(["--detail", detail]);
     }
     if all {
@@ -102,7 +125,7 @@ fn query_program(
     if let Some(token) = session {
         command.args(["--session", token]);
     } else {
-        command.args(["--label", &format!("launcher={}", fixture.launcher)]);
+        command.args(["--label", &format!("launcher={launcher}")]);
     }
     let assertion = command.assert().success();
     let rows: Vec<Value> =
@@ -135,6 +158,100 @@ fn legacy_semantics(rows: &[Value], fixture: &Fixture) -> Value {
             .replace(&fixture.root.to_string_lossy().into_owned(), "<fixture>"),
     )
     .expect("normalized baseline semantics")
+}
+
+/// The released 0.43.1 binary, where a caller supplies one to compare against live
+/// and to record the oracle below from.
+fn decision_baseline() -> Option<std::ffi::OsString> {
+    std::env::var_os("ONEVCS_DECISION_BASELINE_BINARY")
+}
+/// Whole rows with the disposable fixture root spelled out of them.
+fn normalized(rows: &[Value], fixture: &Fixture) -> Value {
+    serde_json::from_str(
+        &serde_json::to_string(rows)
+            .unwrap()
+            .replace(&fixture.root.to_string_lossy().into_owned(), "<fixture>"),
+    )
+    .expect("normalized rows")
+}
+/// Which launcher-filtered Decision reads the 0.43.1 oracle holds at a scale: the
+/// measured launcher's, unpublished and `--all`; and at the smaller workload every
+/// other launcher's unpublished rows as well, so that the sessions *not* selected are
+/// the ones holding every landed, retirement and holding class.
+fn decision_selections(fixture: &Fixture) -> Vec<(String, bool)> {
+    let mut selections = vec![
+        (fixture.launcher.clone(), false),
+        (fixture.launcher.clone(), true),
+    ];
+    if fixture.scale == Scale::One {
+        selections.extend((0..4).map(|n| (format!("fixture-launcher-{n}"), false)));
+    }
+    selections
+}
+fn decision_reads(fixture: &Fixture, program: Option<&std::ffi::OsStr>) -> Value {
+    Value::Array(
+        decision_selections(fixture)
+            .into_iter()
+            .map(|(launcher, all)| {
+                let rows = query_launcher(fixture, &launcher, "decision", all, None, None, program);
+                // Held by digest: the rows themselves are what any 0.43.1 binary
+                // prints again, and the recorded document stays small.
+                let rows = normalized(&rows, fixture);
+                let count = rows.as_array().map_or(0, Vec::len);
+                let rows = serde_json::to_vec(&rows).expect("rows");
+                json!({"launcher": launcher, "all": all, "rows": count, "sha256": digest(&rows)})
+            })
+            .collect(),
+    )
+}
+/// The release-built program that times in-process reads
+/// (`crates/onevcs/examples/recoverable_latency.rs`).
+fn latency_program() -> std::path::PathBuf {
+    std::env::var_os("ONEVCS_RECOVERY_LATENCY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/release/examples/recoverable_latency")
+        })
+}
+/// `calls` in-process launcher Decision reads, and the last one's rows.
+fn in_process(fixture: &Fixture, mode: &str, calls: usize) -> (Vec<telemetry::Call>, Value) {
+    let program = latency_program();
+    assert!(
+        program.is_file(),
+        "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
+        program.display()
+    );
+    let mut command = std::process::Command::new(&program);
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &fixture.root)
+        .env("ONEVCS_HOME", &fixture.home)
+        .current_dir(&fixture.root)
+        .args(["--launcher", &fixture.launcher])
+        .args(["--calls", &calls.to_string(), "--mode", mode]);
+    if mode == "uncached" {
+        // Any `GIT_*` override refuses every proof and every in-process read, so
+        // this is git's own answer.
+        command.env("GIT_NAMESPACE", "");
+    }
+    let output = command
+        .output()
+        .expect("the in-process timing program runs");
+    assert!(
+        output.status.success(),
+        "in-process {mode} reads: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("timing report");
+    let timed: Vec<telemetry::Call> =
+        serde_json::from_value(report["samples"].clone()).expect("timed calls");
+    assert_eq!(timed.len(), calls, "every requested {mode} call was timed");
+    (timed, report["rows"].clone())
+}
+fn ten(calls: Vec<telemetry::Call>) -> [telemetry::Call; 10] {
+    calls.try_into().expect("ten in-process calls")
 }
 
 fn class_name(class: Class) -> &'static str {
@@ -400,6 +517,82 @@ fn full_workload_recovery() {
             "unchanged proofs must be reused at scale {}: cold {cold_git}, warm {warm_git}",
             scale.number()
         );
+        // The library call a consumer makes, in the process making it: its rows are
+        // the uncached read's on every call, and that read is the CLI's.
+        let (uncached, uncached_rows) = in_process(&fixture, "uncached", 1);
+        assert_eq!(
+            uncached_rows,
+            Value::Array(expected.clone()),
+            "the library and the CLI answer one launcher read"
+        );
+        let uncached_verdict = uncached[0].verdict_sha256.clone();
+        let (warm_calls, _) = in_process(&fixture, "warm", 10);
+        let cold_calls = (scale == Scale::One).then(|| in_process(&fixture, "cold", 10).0);
+        for call in warm_calls.iter().chain(cold_calls.iter().flatten()) {
+            assert_eq!(
+                call.verdict_sha256, uncached_verdict,
+                "every timed in-process call answers the uncached rows"
+            );
+        }
+        // 0.43.1's launcher-filtered Decision rows, whole: recorded once from the
+        // released binary, and compared live wherever a caller supplies it.
+        let decided = decision_reads(&fixture, None);
+        let decision_oracle = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "tests/recovery-workload/oracle-decision-{}.json",
+            scale.number()
+        ));
+        let mut baseline_cold_git = None;
+        if let Some(released) = decision_baseline() {
+            let theirs = decision_reads(&fixture, Some(&released));
+            assert_eq!(theirs, decided, "0.43.1's launcher-filtered Decision rows");
+            clear_cache(&fixture);
+            counting.clear();
+            let rows = query_program(
+                &fixture,
+                "decision",
+                false,
+                None,
+                Some(&counting),
+                Some(&released),
+            );
+            assert_eq!(rows, expected, "0.43.1's counted cold read");
+            baseline_cold_git = Some(counting.calls().len());
+            if let Some(output) = std::env::var_os("ONEVCS_BASELINE_ORACLE_DIR") {
+                std::fs::write(
+                    Path::new(&output).join(format!("oracle-decision-{}.json", scale.number())),
+                    serde_json::to_vec(&json!({
+                        "version": "0.43.1",
+                        "cold_git": baseline_cold_git,
+                        "reads": theirs,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        if decision_oracle.exists() || baseline_cold_git.is_none() {
+            let oracle: Value =
+                serde_json::from_slice(&std::fs::read(&decision_oracle).unwrap_or_else(|_| {
+                    panic!(
+                        "recorded 0.43.1 Decision oracle {} is required",
+                        decision_oracle.display()
+                    )
+                }))
+                .expect("Decision oracle JSON");
+            assert_eq!(oracle["reads"], decided, "recorded 0.43.1 Decision rows");
+            baseline_cold_git =
+                baseline_cold_git.or(oracle["cold_git"].as_u64().map(|n| n as usize));
+        }
+        let baseline_cold_git = baseline_cold_git.expect("0.43.1's cold Git count");
+        assert!(
+            cold_git < baseline_cold_git,
+            "a cold launcher Decision read spawns fewer Git processes than 0.43.1 at scale {}: {cold_git} against {baseline_cold_git}",
+            scale.number()
+        );
+        eprintln!(
+            "recovery scale {} cold Git {cold_git} against 0.43.1's {baseline_cold_git}",
+            scale.number()
+        );
         if let Some(baseline) = std::env::var_os("ONEVCS_BASELINE_BINARY") {
             let mut samples = Vec::new();
             for mode in ["cold", "warm"] {
@@ -443,6 +636,19 @@ fn full_workload_recovery() {
             warm.load1,
             warm_git
         );
+        let slowest =
+            |calls: &[telemetry::Call]| calls.iter().map(|call| call.wall_ms).fold(0.0, f64::max);
+        eprintln!(
+            "recovery scale {} in-process warm max {:.1}ms at load1 {}{}",
+            scale.number(),
+            slowest(&warm_calls),
+            warm_calls[0].load1,
+            cold_calls.as_ref().map_or_else(String::new, |cold| format!(
+                "; cold max {:.1}ms at load1 {}",
+                slowest(cold),
+                cold[0].load1
+            ))
+        );
         workloads.push(Workload {
             scale: scale.number(),
             shape: scale.counts(),
@@ -452,6 +658,9 @@ fn full_workload_recovery() {
             cold_git,
             warm_git,
             counted_verdict_sha256: digest(&serde_json::to_vec(&counted).unwrap()),
+            uncached_verdict_sha256: uncached_verdict,
+            in_process_warm: ten(warm_calls),
+            in_process_cold: cold_calls.map(ten),
         });
         drop(fixture);
         root.close().expect("required fixture cleanup");
@@ -464,7 +673,7 @@ fn full_workload_recovery() {
         .unwrap();
     }
     let mut record = Record {
-        version: 1,
+        version: 2,
         build: provenance.clone(),
         scenario: Scenario::LauncherDecision,
         workloads: workloads.try_into().expect("both workloads"),
@@ -484,17 +693,20 @@ fn full_workload_recovery() {
     std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap())
         .expect("complete validated telemetry");
     std::fs::write(&manifest,serde_json::to_vec(&json!({"state":"complete","run_id":provenance.run_id,"binary":provenance.binary,"binary_sha256":provenance.binary_sha256,"source_sha256":provenance.source_sha256})).unwrap()).expect("matching completed invocation");
-    for args in [
-        vec!["--scale", "1", "--cold"],
-        vec!["--scale", "1", "--warm"],
-        vec!["--scale", "10", "--cold"],
-        vec!["--scale", "10", "--warm"],
-        vec!["--journey-time"],
+    for (reader, args) in [
+        ("git-count", vec!["--scale", "1", "--cold"]),
+        ("git-count", vec!["--scale", "1", "--warm"]),
+        ("git-count", vec!["--scale", "10", "--cold"]),
+        ("git-count", vec!["--scale", "10", "--warm"]),
+        ("git-count", vec!["--journey-time"]),
+        ("latency", vec!["--scale", "1", "--warm"]),
+        ("latency", vec!["--scale", "10", "--warm"]),
+        ("latency", vec!["--scale", "1", "--cold"]),
     ] {
         let result = directory.join("sdk-result.json");
         let status = std::process::Command::new("node")
             .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .arg("scripts/recoverable-git-count-budget.mjs")
+            .arg(format!("scripts/recoverable-{reader}-budget.mjs"))
             .args(args)
             .env("ONEBUDGETSPEC_RESULT", &result)
             .status()
@@ -507,4 +719,180 @@ fn full_workload_recovery() {
     std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap())
         .expect("elapsed time includes reader validation and cleanup");
     eprintln!("recovery validated total {}ms", record.total_ms);
+}
+
+/// The timing program refuses what it cannot use — exit 2, naming it — and a read
+/// that fails is exit 1, naming that, so a broken timing run is never a report.
+#[test]
+fn the_latency_program_refuses_what_it_cannot_use() {
+    let program = latency_program();
+    assert!(
+        program.is_file(),
+        "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
+        program.display()
+    );
+    let scratch = tempfile::tempdir().expect("scratch state root");
+    let run = |args: &[&str], home: Option<&Path>| {
+        let mut command = std::process::Command::new(&program);
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", scratch.path())
+            .args(args);
+        if let Some(home) = home {
+            command.env("ONEVCS_HOME", home);
+        }
+        let output = command.output().expect("the timing program runs");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.stdout.is_empty(),
+        )
+    };
+    let home = scratch.path().join("home");
+    for (args, refusal) in [
+        (
+            vec!["--launcher", "x", "--calls", "0", "--mode", "warm"],
+            "is not a positive count",
+        ),
+        (
+            vec!["--launcher", "x", "--calls", "1", "--mode", "hot"],
+            "is not warm, cold or uncached",
+        ),
+        (
+            vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
+            "is not a label value",
+        ),
+        (
+            vec!["--calls", "1", "--mode", "warm"],
+            "--launcher is required",
+        ),
+    ] {
+        let (code, stderr, silent) = run(&args, Some(&home));
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(refusal),
+            "{args:?} names {refusal:?}: {stderr}"
+        );
+        assert!(silent, "{args:?} prints no report");
+    }
+    let (code, stderr, _) = run(&["--launcher", "x", "--calls", "1", "--mode", "warm"], None);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ONEVCS_HOME names no state root"),
+        "{stderr}"
+    );
+    let (code, stderr, silent) = run(
+        &["--launcher", "x", "--calls", "1", "--mode", "cold"],
+        Some(&home),
+    );
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("is not a directory"), "{stderr}");
+    assert!(silent, "a missing state root prints no report");
+    // A state root whose registry is not a document is a read that failed.
+    std::fs::create_dir_all(&home).expect("state root");
+    std::fs::write(home.join("registry.json"), "{broken").expect("broken registry");
+    let (code, stderr, silent) = run(
+        &["--launcher", "x", "--calls", "1", "--mode", "warm"],
+        Some(&home),
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
+    assert!(silent, "a failed read prints no report");
+}
+
+/// A long-lived caller repeats this read for hours, so one process making it two
+/// hundred times holds its threads and its memory where the first reads left them:
+/// every repository a read opens is closed inside that read, and no work is left
+/// behind for a later one.
+#[test]
+fn repeating_the_read_in_one_process_keeps_memory_and_threads_bounded() {
+    let _exclusive = exclusive();
+    let scratch = std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let root = tempfile::Builder::new()
+        .prefix("recovery-repeated-")
+        .tempdir_in(scratch)
+        .expect("empty disposable host");
+    let fixture = build(root.path(), Scale::One).expect("production-shaped fixture");
+    let program = latency_program();
+    assert!(
+        program.is_file(),
+        "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
+        program.display()
+    );
+    let output = std::process::Command::new(&program)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &fixture.root)
+        .env("ONEVCS_HOME", &fixture.home)
+        .current_dir(&fixture.root)
+        .args([
+            "--launcher",
+            &fixture.launcher,
+            "--calls",
+            "200",
+            "--mode",
+            "warm",
+        ])
+        .output()
+        .expect("the timing program runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("timing report");
+    let verdicts: std::collections::BTreeSet<&str> = report["samples"]
+        .as_array()
+        .expect("samples")
+        .iter()
+        .map(|sample| sample["verdict_sha256"].as_str().expect("verdict"))
+        .collect();
+    assert_eq!(
+        verdicts.len(),
+        1,
+        "every repeated read answers the same rows"
+    );
+    let held: Vec<(u64, u64)> = report["resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .map(|after| {
+            (
+                after["rss_kib"].as_u64().expect("resident memory"),
+                after["threads"].as_u64().expect("thread count"),
+            )
+        })
+        .collect();
+    assert_eq!(held.len(), 200, "every read reported what it left");
+    let threads: std::collections::BTreeSet<u64> =
+        held.iter().map(|(_, threads)| *threads).collect();
+    assert_eq!(
+        threads.len(),
+        1,
+        "no read leaves a thread behind: {threads:?}"
+    );
+    // The first reads settle the allocator; after them, a read that kept anything it
+    // opened would grow the process by what it kept, two hundred times over.
+    let settled = held[..50]
+        .iter()
+        .map(|(rss, _)| *rss)
+        .max()
+        .expect("early reads");
+    let last = held[150..]
+        .iter()
+        .map(|(rss, _)| *rss)
+        .max()
+        .expect("late reads");
+    eprintln!(
+        "200 reads in one process: resident {settled} KiB after the first 50, at most {last} KiB over the last 50; threads {threads:?}"
+    );
+    assert!(
+        last <= settled + 8 * 1024,
+        "resident memory grew with the number of reads: {settled} KiB after 50, {last} KiB by 200"
+    );
+    drop(fixture);
+    root.close().expect("required fixture cleanup");
 }

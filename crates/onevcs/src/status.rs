@@ -2260,9 +2260,60 @@ pub(crate) fn recorded_streams_whole(notes: &mut Vec<String>) -> Result<(Vec<Rec
     Ok((streams, listing))
 }
 
-/// Read only selected provenance after validating changed source streams. The
-/// disposable hint index is bound to each source file's identity and change stamp;
-/// missing, corrupt and unreadable entries are parsed through the baseline reader.
+/// The streams the branch-keyed verbs record a branch under: each verb's prefix and
+/// the branch's slug. One spelling for the verbs that write them and every reader
+/// that asks for one by name.
+pub(crate) mod keyed {
+    /// A verb that records a branch under a stream of its own.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Verb {
+        PublishBranch,
+        Recover,
+        Preserve,
+    }
+
+    /// Every verb, for the stream index that only Unix keeps.
+    #[cfg(unix)]
+    pub(crate) const ALL: [Verb; 3] = [Verb::PublishBranch, Verb::Recover, Verb::Preserve];
+
+    impl Verb {
+        /// What the verb's stream names begin with.
+        pub(crate) fn prefix(self) -> &'static str {
+            match self {
+                Self::PublishBranch => "publish-branch-",
+                Self::Recover => "recover-",
+                Self::Preserve => "preserve-",
+            }
+        }
+
+        /// The stream the verb records `branch` under.
+        pub(crate) fn stream(self, branch: &str) -> String {
+            format!("{}{}", self.prefix(), crate::policy::branch_slug(branch))
+        }
+    }
+
+    /// Whether `token` is a stream one of the verbs names.
+    #[cfg(unix)]
+    pub(crate) fn names(token: &str) -> bool {
+        ALL.iter().any(|verb| token.starts_with(verb.prefix()))
+    }
+}
+
+/// Read only selected provenance, from the streams that can be about what was
+/// selected.
+///
+/// A disposable index under `cache/recoverable/v1/` says which streams name which
+/// `(identity, branch)`: a stream's identity and branch are the first ones its
+/// events name, and a stream is only ever appended to, so once a stream has named
+/// both no later event can make it about anything else. The index is held to the
+/// streams directory's own stamp, which moves whenever a stream is created, removed
+/// or renamed over — so while it stands, the streams the index names for the
+/// selected branches, the tokens a selected branch is read under by name, and every
+/// stream that has not yet named both are all the streams that can be about the
+/// selection, and only those are opened. Each is parsed fresh, and kept by what it
+/// says now. Where the directory moved, every stream is listed and held to its own
+/// stamp, as before, and anything changed or new is parsed. Missing, corrupt and
+/// unreadable index documents fall to that same full listing.
 #[cfg(unix)]
 pub(crate) fn recorded_streams_about(
     wanted: Option<&BTreeSet<(String, String)>>,
@@ -2275,9 +2326,8 @@ pub(crate) fn recorded_streams_about(
     // stream's content says: its sessions', and the branch-keyed verbs' spellings.
     let mut named: BTreeSet<String> = BTreeSet::new();
     for (identity, branch) in wanted {
-        let slug = policy::branch_slug(branch);
-        named.insert(format!("publish-branch-{slug}"));
-        named.insert(format!("recover-{slug}"));
+        named.insert(keyed::Verb::PublishBranch.stream(branch));
+        named.insert(keyed::Verb::Recover.stream(branch));
         named.insert(crate::preserve::preserve_token(branch));
         for record in sessions {
             if record.identity == *identity && *record.branch == **branch {
@@ -2290,178 +2340,583 @@ pub(crate) fn recorded_streams_about(
             || matches!((identity, branch), (Some(identity), Some(branch))
                 if wanted.contains(&(identity.clone(), branch.clone())))
     };
-    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
+    let directory = home::streams_dir()?;
+    let listed = match std::fs::metadata(&directory) {
+        Ok(listed) => streams_index::Listed::of(&listed),
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return recorded_streams(&mut Vec::new()),
+    };
+    let root = crate::home::root()
+        .ok()
+        .map(|root| root.join("cache/recoverable/v1"));
+    if let Some(recorded) = root.as_deref().and_then(|root| {
+        streams_index::Lookup::read(root, &directory)
+            .filter(|lookup| lookup.listed == Some(listed))?
+            .recorded(root, &directory, wanted, &named, &about)
+    }) {
+        return Ok(recorded);
+    }
+    streams_index::relist(&directory, root.as_deref(), &listed, about)
+}
+
+/// The two documents [`recorded_streams_about`] narrows its reads with.
+#[cfg(unix)]
+mod streams_index {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Serialize};
+
+    use super::{read_stream, recorded_streams, Recorded};
+    use crate::error::Result;
+
+    /// The shape of every document here. A document of any other is rebuilt.
+    const VERSION: u32 = 3;
+
+    /// How recently the directory may have moved and still stand for its listing.
+    /// A filesystem stamps a directory at its own granularity, so a change made in
+    /// the same tick as the one before it leaves the stamp where it was: a listing is
+    /// only held to a stamp older than any such tick.
+    const SETTLED: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// One stream file's identity and contents, as its metadata says.
+    #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
     #[serde(deny_unknown_fields)]
-    struct Indexed {
+    pub(super) struct Stamp {
         len: u64,
         modified: i128,
         changed: i128,
         device: u64,
         inode: u64,
-        identity: Option<String>,
-        branch: Option<String>,
-        checksum: String,
     }
-    impl Indexed {
-        fn digest(&self, directory: &Path, token: &str) -> Option<String> {
-            serde_json::to_string(&(
-                1_u64,
-                directory,
-                token,
-                self.len,
-                self.modified,
-                self.changed,
-                self.device,
-                self.inode,
-                &self.identity,
-                &self.branch,
-            ))
-            .ok()
-            .map(|body| crate::ids::digest(&body))
-        }
-        fn valid(&self, directory: &Path, token: &str) -> bool {
-            let identity = self.identity.as_ref().is_none_or(|identity| {
-                !identity.is_empty()
-                    && identity.trim() == identity
-                    && !identity.chars().any(char::is_control)
-                    && (Path::new(identity).is_absolute()
-                        || crate::store::normalize(identity).key == *identity)
-            });
-            identity
-                && self
-                    .branch
-                    .as_ref()
-                    .is_none_or(|branch| git::is_valid_branch_name(branch))
-                && self.digest(directory, token).as_ref() == Some(&self.checksum)
-        }
-    }
-    use std::os::unix::fs::MetadataExt;
-    let directory = home::streams_dir()?;
-    let index_path = crate::home::root()
-        .ok()
-        .map(|root| root.join("cache/recoverable/v1/streams-index.json"));
-    let index: std::collections::BTreeMap<String, Indexed> = index_path
-        .as_ref()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return recorded_streams(&mut Vec::new()),
-    };
-    let mut fresh: std::collections::BTreeMap<String, Indexed> = std::collections::BTreeMap::new();
-    let mut kept: Vec<Recorded> = Vec::new();
-    let mut notes = Vec::new();
-    let mut tokens: Vec<(String, std::fs::Metadata)> = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return recorded_streams(&mut Vec::new());
-        };
-        let filename = entry.file_name();
-        if !filename.as_encoded_bytes().ends_with(b".ndjson") {
-            continue;
-        }
-        let name = filename.into_string().map_err(|name| {
-            crate::error::invalid(format!(
-                "event stream filename {name:?} in {} is not UTF-8",
-                directory.display()
-            ))
-        })?;
-        let Some(token) = name.strip_suffix(".ndjson").map(str::to_owned) else {
-            continue;
-        };
-        if !crate::ids::is_safe_name(&token) {
-            return Err(crate::error::invalid(format!(
-                "event stream filename {name:?} does not name a valid stream token"
-            )));
-        }
-        let Ok(meta) = entry.metadata() else {
-            // Unstattable: read it the way v0.42.0 would, gap and all.
-            kept.push(read_stream(&directory, &token, &mut notes));
-            continue;
-        };
-        tokens.push((token, meta));
-    }
-    tokens.sort_by(|left, right| left.0.cmp(&right.0));
-    let stamped: Vec<(String, Indexed, Option<Indexed>)> = tokens
-        .into_iter()
-        .map(|(token, meta)| {
-            let stamp = Indexed {
+
+    impl Stamp {
+        fn of(meta: &std::fs::Metadata) -> Self {
+            Self {
                 len: meta.len(),
                 modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
                 changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
                 device: meta.dev(),
                 inode: meta.ino(),
-                identity: None,
-                branch: None,
-                checksum: String::new(),
+            }
+        }
+    }
+
+    /// The streams directory itself, which every creation, removal and rename of a
+    /// stream moves.
+    #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Listed {
+        modified: i128,
+        changed: i128,
+        device: u64,
+        inode: u64,
+    }
+
+    impl Listed {
+        pub(super) fn of(meta: &std::fs::Metadata) -> Self {
+            Self {
+                modified: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+                changed: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+                device: meta.dev(),
+                inode: meta.ino(),
+            }
+        }
+
+        /// Whether a later change to the directory is certain to move this stamp.
+        fn settled(&self) -> bool {
+            let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+                return false;
             };
-            let known = index
-                .get(&token)
-                .filter(|entry| {
-                    entry.len == stamp.len
-                        && entry.modified == stamp.modified
-                        && entry.inode == stamp.inode
-                        && entry.changed == stamp.changed
-                        && entry.device == stamp.device
-                        && entry.valid(&directory, &token)
-                })
-                .cloned();
-            (token, stamp, known)
-        })
-        .collect();
-    // Every stream the index cannot answer for is parsed, which is every stream on a
-    // read with no index. Each is its own file and its own answer, so they are parsed
-    // side by side and taken back in token order.
-    let parsed = crate::vcs::concurrently(&stamped, |(token, _, known)| {
-        if known
-            .as_ref()
-            .is_some_and(|entry| !about(entry.identity.as_ref(), entry.branch.as_ref(), token))
-        {
-            return None;
+            let now = i128::try_from(now.as_nanos()).unwrap_or(i128::MAX);
+            let settled = i128::try_from(SETTLED.as_nanos()).unwrap_or(i128::MAX);
+            now - self.modified >= settled && now - self.changed >= settled
         }
-        // llmlint: ignore[changed_behavior_has_e2e] unchanged by parsing in parallel:
-        // these notes only mark a stream as having a gap, as the one `notes` list did
-        // before, and `recoverable` has nowhere to report them (see `vcs::collected`).
-        let mut gap_notes = Vec::new();
-        let mut record = read_stream(&directory, token, &mut gap_notes);
-        record.gaps = !gap_notes.is_empty();
-        Some(record)
-    });
-    for ((token, stamp, known), record) in stamped.into_iter().zip(parsed) {
-        if let Some(entry) = &known {
-            fresh.insert(token.clone(), entry.clone());
-        }
-        let Some(record) = record else {
-            continue;
+    }
+
+    /// A string a document here holds, which only a check of its kind makes: read
+    /// back, a value that fails it fails the whole document, which is then rebuilt.
+    macro_rules! checked {
+        ($(#[$doc:meta])* $name:ident, $what:literal, $check:expr) => {
+            $(#[$doc])*
+            #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
+            #[serde(try_from = "String", into = "String")]
+            struct $name(String);
+
+            impl TryFrom<String> for $name {
+                type Error = String;
+
+                fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+                    let check: fn(&str) -> bool = $check;
+                    if check(&value) {
+                        Ok(Self(value))
+                    } else {
+                        Err(format!("{value:?} is not {}", $what))
+                    }
+                }
+            }
+
+            impl From<$name> for String {
+                fn from(value: $name) -> Self {
+                    value.0
+                }
+            }
+
+            impl std::borrow::Borrow<str> for $name {
+                fn borrow(&self) -> &str {
+                    &self.0
+                }
+            }
         };
-        if known.is_none() && !record.gaps {
-            let mut indexed = Indexed {
-                identity: record.identity.clone(),
-                branch: record.branch.clone(),
-                ..stamp
+    }
+
+    checked!(
+        /// An identity a registry key could be.
+        Identity,
+        "an identity",
+        crate::store::is_identity
+    );
+
+    checked!(
+        /// A branch name git would accept.
+        Branch,
+        "a branch name",
+        crate::git::is_valid_branch_name
+    );
+
+    checked!(
+        /// A stream's name: its file under the streams directory, less `.ndjson`.
+        Stream,
+        "a stream name",
+        crate::ids::is_safe_name
+    );
+
+    /// What one stream named first, held to the file it was read from.
+    #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
+    #[serde(deny_unknown_fields)]
+    struct Attributed {
+        stamp: Stamp,
+        identity: Option<Identity>,
+        branch: Option<Branch>,
+    }
+
+    impl Attributed {
+        /// What a stream named, where a reader would accept it: an identity a registry
+        /// key could be, and a branch git would. Nothing where it named one that is not.
+        fn of(stamp: Stamp, record: &Recorded) -> Option<Self> {
+            Some(Self {
+                stamp,
+                identity: record
+                    .identity
+                    .clone()
+                    .map(Identity::try_from)
+                    .transpose()
+                    .ok()?,
+                branch: record
+                    .branch
+                    .clone()
+                    .map(Branch::try_from)
+                    .transpose()
+                    .ok()?,
+            })
+        }
+
+        fn identity(&self) -> Option<&String> {
+            self.identity.as_ref().map(|identity| &identity.0)
+        }
+
+        fn branch(&self) -> Option<&String> {
+            self.branch.as_ref().map(|branch| &branch.0)
+        }
+    }
+
+    /// Every listed stream and what it named, which a full listing holds each
+    /// stream to so that only a changed one is parsed again.
+    #[derive(Serialize, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct Stamps {
+        version: u32,
+        directory: PathBuf,
+        streams: BTreeMap<Stream, Attributed>,
+    }
+
+    /// What a read narrowed to some branches opens while the directory stands.
+    #[derive(Serialize, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Lookup {
+        version: u32,
+        directory: PathBuf,
+        /// The directory as the listing found it, or nothing where it had moved too
+        /// recently to stand for it.
+        pub(super) listed: Option<Listed>,
+        /// Each identity's [`Shard`], by the digest of the document it was written
+        /// as: a shard of any other listing is not this one's.
+        shards: BTreeMap<Identity, String>,
+        /// Every stream a branch-keyed verb writes under a name of its own spelling,
+        /// which a read asks for by name.
+        keyed: BTreeSet<Stream>,
+        /// The streams a later event can still attribute, with what they named.
+        open: BTreeMap<Stream, Attributed>,
+        /// The streams no stamp or no whole reading stands for, read every time.
+        unindexed: Vec<Stream>,
+    }
+
+    /// The streams that named one identity and a branch, by the branch.
+    #[derive(Serialize, Deserialize, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct Shard {
+        version: u32,
+        identity: Identity,
+        branches: BTreeMap<Branch, Vec<Stream>>,
+    }
+
+    fn shard_path(root: &Path, identity: &str) -> PathBuf {
+        root.join("streams-index")
+            .join(format!("{}.json", crate::ids::digest(identity)))
+    }
+
+    /// A shard and the digest it was written under, where it is whole.
+    fn read_shard(path: &Path) -> Option<(String, Shard)> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let (digest, body) = raw.split_once('\n')?;
+        (crate::ids::digest(body) == digest)
+            .then(|| serde_json::from_str::<Shard>(body).ok())
+            .flatten()
+            .filter(|shard| shard.version == VERSION)
+            .map(|shard| (digest.to_owned(), shard))
+    }
+
+    /// Write a shard, and the digest a lookup records it by.
+    fn write_shard(path: &Path, shard: &Shard) -> Option<String> {
+        let body = serde_json::to_string(shard).ok()?;
+        let digest = crate::ids::digest(&body);
+        let parent = path.parent()?;
+        let staged = parent.join(format!(".shard.{}.tmp", crate::ids::unique()));
+        let written = std::fs::create_dir_all(parent)
+            .and_then(|()| std::fs::write(&staged, format!("{digest}\n{body}")))
+            .and_then(|()| std::fs::rename(&staged, path));
+        let _ = std::fs::remove_file(staged);
+        written.ok().map(|()| digest)
+    }
+
+    /// One document, held to one digest of its own text.
+    fn read_document<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let (digest, body) = raw.split_once('\n')?;
+        (crate::ids::digest(body) == digest)
+            .then(|| serde_json::from_str(body).ok())
+            .flatten()
+    }
+
+    fn write_document<T: Serialize>(path: &Path, document: &T) {
+        let (Some(parent), Some(name), Ok(body)) = (
+            path.parent(),
+            path.file_name(),
+            serde_json::to_string(document),
+        ) else {
+            return;
+        };
+        let staged = parent.join(format!(
+            ".{}.{}.tmp",
+            name.to_string_lossy(),
+            crate::ids::unique()
+        ));
+        let _ = std::fs::create_dir_all(parent)
+            .and_then(|()| {
+                std::fs::write(&staged, format!("{}\n{body}", crate::ids::digest(&body)))
+            })
+            .and_then(|()| std::fs::rename(&staged, path));
+        let _ = std::fs::remove_file(staged);
+    }
+
+    impl Lookup {
+        pub(super) fn read(root: &Path, directory: &Path) -> Option<Self> {
+            read_document::<Self>(&root.join("streams-index.json"))
+                .filter(|lookup| lookup.version == VERSION && lookup.directory == directory)
+        }
+
+        /// The streams about the selection, read from the directory this stands for,
+        /// or nothing where a shard it names is not the one it was written with.
+        pub(super) fn recorded(
+            &self,
+            root: &Path,
+            directory: &Path,
+            wanted: &BTreeSet<(String, String)>,
+            named: &BTreeSet<String>,
+            about: &(impl Fn(Option<&String>, Option<&String>, &str) -> bool + Sync),
+        ) -> Option<Vec<Recorded>> {
+            let mut shards: BTreeMap<&str, Shard> = BTreeMap::new();
+            for (identity, _) in wanted {
+                if shards.contains_key(identity.as_str()) {
+                    continue;
+                }
+                let Some(digest) = self.shards.get(identity.as_str()) else {
+                    continue;
+                };
+                let (written, shard) = read_shard(&shard_path(root, identity))?;
+                if written != *digest || shard.identity.0 != *identity {
+                    return None;
+                }
+                shards.insert(identity, shard);
+            }
+            let mut candidates: BTreeSet<&str> = BTreeSet::new();
+            for (identity, branch) in wanted {
+                if let Some(tokens) = shards
+                    .get(identity.as_str())
+                    .and_then(|shard| shard.branches.get(branch.as_str()))
+                {
+                    candidates.extend(tokens.iter().map(|token| token.0.as_str()));
+                }
+            }
+            // A token a wanted branch is read under by name is a stream only where
+            // the directory holds one, and the listing this stands for says which:
+            // every branch-keyed name it holds, every stream of the identities read
+            // above, and the streams it could not attribute. Any other is asked of
+            // the directory itself.
+            let held: std::collections::HashSet<&str> = shards
+                .values()
+                .flat_map(|shard| shard.branches.values().flatten())
+                .chain(self.open.keys())
+                .chain(&self.unindexed)
+                .map(|token| token.0.as_str())
+                .collect();
+            for token in named {
+                let present = if super::keyed::names(token) {
+                    self.keyed.contains(token.as_str())
+                } else {
+                    held.contains(token.as_str())
+                        || (crate::ids::is_safe_name(token)
+                            && std::fs::symlink_metadata(directory.join(format!("{token}.ndjson")))
+                                .is_ok())
+                };
+                if present {
+                    candidates.insert(token);
+                }
+            }
+            // Only one that moved since it was listed can name anything new.
+            for (token, attributed) in &self.open {
+                let moved =
+                    std::fs::symlink_metadata(directory.join(format!("{}.ndjson", token.0)))
+                        .map_or(true, |meta| Stamp::of(&meta) != attributed.stamp);
+                if moved {
+                    candidates.insert(&token.0);
+                }
+            }
+            candidates.extend(self.unindexed.iter().map(|token| token.0.as_str()));
+            let candidates: Vec<&str> = candidates
+                .into_iter()
+                .filter(|token| crate::ids::is_safe_name(token))
+                .collect();
+            let parsed = crate::vcs::concurrently(&candidates, |token| {
+                let mut gap_notes = Vec::new();
+                let mut record = read_stream(directory, token, &mut gap_notes);
+                record.gaps = !gap_notes.is_empty();
+                record
+            });
+            Some(
+                parsed
+                    .into_iter()
+                    .filter(|record| {
+                        about(
+                            record.identity.as_ref(),
+                            record.branch.as_ref(),
+                            &record.token,
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    /// List every stream, hold each to its own stamp, parse what changed, and index
+    /// what was learned for the reads after this one.
+    pub(super) fn relist(
+        directory: &Path,
+        root: Option<&Path>,
+        listed: &Listed,
+        about: impl Fn(Option<&String>, Option<&String>, &str) -> bool + Sync,
+    ) -> Result<Vec<Recorded>> {
+        // Asked before the listing: a directory that moves while it is listed then
+        // fails to match it, and the next read lists it again.
+        let settled = listed.settled();
+        let stamps_path = root.map(|root| root.join("streams-stamps.json"));
+        let index: BTreeMap<Stream, Attributed> = stamps_path
+            .as_deref()
+            .and_then(read_document::<Stamps>)
+            .filter(|stamps| stamps.version == VERSION && stamps.directory == directory)
+            .map(|stamps| stamps.streams)
+            .unwrap_or_default();
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return recorded_streams(&mut Vec::new()),
+        };
+        let mut kept: Vec<Recorded> = Vec::new();
+        let mut notes = Vec::new();
+        let mut unindexed: Vec<Stream> = Vec::new();
+        let mut tokens: Vec<(Stream, std::fs::Metadata)> = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return recorded_streams(&mut Vec::new());
             };
-            if let Some(checksum) = indexed.digest(&directory, &token) {
-                indexed.checksum = checksum;
-                fresh.insert(token.clone(), indexed);
+            let filename = entry.file_name();
+            if !filename.as_encoded_bytes().ends_with(b".ndjson") {
+                continue;
+            }
+            let name = filename.into_string().map_err(|name| {
+                crate::error::invalid(format!(
+                    "event stream filename {name:?} in {} is not UTF-8",
+                    directory.display()
+                ))
+            })?;
+            let Some(token) = name.strip_suffix(".ndjson").map(str::to_owned) else {
+                continue;
+            };
+            let Ok(token) = Stream::try_from(token) else {
+                return Err(crate::error::invalid(format!(
+                    "event stream filename {name:?} does not name a valid stream token"
+                )));
+            };
+            let Ok(meta) = entry.metadata() else {
+                // Unstattable: read it the way v0.42.0 would, gap and all.
+                kept.push(read_stream(directory, &token.0, &mut notes));
+                unindexed.push(token);
+                continue;
+            };
+            tokens.push((token, meta));
+        }
+        tokens.sort_by(|left, right| left.0.cmp(&right.0));
+        let stamped: Vec<(Stream, Stamp, Option<Attributed>)> = tokens
+            .into_iter()
+            .map(|(token, meta)| {
+                let stamp = Stamp::of(&meta);
+                let known = index
+                    .get(&token)
+                    .filter(|entry| entry.stamp == stamp)
+                    .cloned();
+                (token, stamp, known)
+            })
+            .collect();
+        // Every stream the index cannot answer for is parsed, which is every stream on a
+        // read with no index. Each is its own file and its own answer, so they are parsed
+        // side by side and taken back in token order.
+        let parsed = crate::vcs::concurrently(&stamped, |(token, _, known)| {
+            if known
+                .as_ref()
+                .is_some_and(|entry| !about(entry.identity(), entry.branch(), &token.0))
+            {
+                return None;
+            }
+            // llmlint: ignore[changed_behavior_has_e2e] unchanged by parsing in parallel:
+            // these notes only mark a stream as having a gap, as the one `notes` list did
+            // before, and `recoverable` has nowhere to report them (see `vcs::collected`).
+            let mut gap_notes = Vec::new();
+            let mut record = read_stream(directory, &token.0, &mut gap_notes);
+            record.gaps = !gap_notes.is_empty();
+            Some(record)
+        });
+        let mut fresh: BTreeMap<Stream, Attributed> = BTreeMap::new();
+        for ((token, stamp, known), record) in stamped.into_iter().zip(parsed) {
+            if let Some(entry) = &known {
+                fresh.insert(token.clone(), entry.clone());
+            }
+            let Some(record) = record else {
+                continue;
+            };
+            if known.is_none() {
+                match Attributed::of(stamp, &record) {
+                    Some(attributed) if !record.gaps => {
+                        fresh.insert(token.clone(), attributed);
+                    }
+                    _ => unindexed.push(token.clone()),
+                }
+            }
+            if about(record.identity.as_ref(), record.branch.as_ref(), &token.0) {
+                kept.push(record);
             }
         }
-        if about(record.identity.as_ref(), record.branch.as_ref(), &token) {
-            kept.push(record);
-        }
-    }
-    if fresh != index {
-        if let Some(path) = index_path {
-            if let (Some(parent), Ok(bytes)) = (path.parent(), serde_json::to_vec(&fresh)) {
-                let staged = parent.join(format!(".streams-index.{}.tmp", std::process::id()));
-                let _ = std::fs::create_dir_all(parent)
-                    .and_then(|()| std::fs::write(&staged, bytes))
-                    .and_then(|()| std::fs::rename(&staged, &path));
+        let Some(root) = root else {
+            return Ok(kept);
+        };
+        let mut lookup = Lookup {
+            version: VERSION,
+            directory: directory.to_owned(),
+            // llmlint: ignore[changed_behavior_has_e2e] no journey can make this guard
+            // decide a row: a stream added after the listing moves the directory's
+            // ctime, which nothing can set back, unless it lands in the same coarse
+            // kernel clock tick as the listing — a race between two processes that a
+            // spawned binary cannot arrange on demand. Every way to reach the index
+            // otherwise is held by the stream-index journeys in `tests/e2e/labels.rs`.
+            listed: settled.then_some(*listed),
+            shards: BTreeMap::new(),
+            keyed: BTreeSet::new(),
+            open: BTreeMap::new(),
+            unindexed,
+        };
+        lookup.unindexed.sort();
+        let mut attributed: BTreeMap<Identity, BTreeMap<Branch, Vec<Stream>>> = BTreeMap::new();
+        for (token, entry) in &fresh {
+            if super::keyed::names(&token.0) {
+                lookup.keyed.insert(token.clone());
+            }
+            match (&entry.identity, &entry.branch) {
+                (Some(identity), Some(branch)) => attributed
+                    .entry(identity.clone())
+                    .or_default()
+                    .entry(branch.clone())
+                    .or_default()
+                    .push(token.clone()),
+                _ => {
+                    lookup.open.insert(token.clone(), entry.clone());
+                }
             }
         }
+        lookup.keyed.extend(
+            lookup
+                .unindexed
+                .iter()
+                .filter(|token| super::keyed::names(&token.0))
+                .cloned(),
+        );
+        // Each identity's shard is written only where it is not the one the last
+        // listing wrote, and the lookup records the digest of the one it stands for.
+        let previous = Lookup::read(root, directory);
+        for (identity, branches) in attributed {
+            let shard = Shard {
+                version: VERSION,
+                identity: identity.clone(),
+                branches,
+            };
+            let path = shard_path(root, &identity.0);
+            let digest = match previous
+                .as_ref()
+                .and_then(|previous| previous.shards.get(&identity))
+                .zip(read_shard(&path))
+            {
+                Some((recorded, (written, kept))) if *recorded == written && kept == shard => {
+                    Some(written)
+                }
+                _ => write_shard(&path, &shard),
+            };
+            let Some(digest) = digest else {
+                return Ok(kept);
+            };
+            lookup.shards.insert(identity, digest);
+        }
+        let stamps = Stamps {
+            version: VERSION,
+            directory: directory.to_owned(),
+            streams: fresh,
+        };
+        if stamps.streams != index {
+            write_document(&root.join("streams-stamps.json"), &stamps);
+        }
+        if previous.as_ref() != Some(&lookup) {
+            write_document(&root.join("streams-index.json"), &lookup);
+        }
+        Ok(kept)
     }
-    Ok(kept)
 }
 
 #[cfg(not(unix))]
@@ -2756,11 +3211,10 @@ fn relevant_streams<'a>(
     branch: &str,
     session: Option<&str>,
 ) -> Vec<&'a Recorded> {
-    let slug = policy::branch_slug(branch);
     let named: BTreeSet<String> = [
         session.map(str::to_owned),
-        Some(format!("publish-branch-{slug}")),
-        Some(format!("recover-{slug}")),
+        Some(keyed::Verb::PublishBranch.stream(branch)),
+        Some(keyed::Verb::Recover.stream(branch)),
         // Named as well as matched by label and payload, so a preservation is found by
         // the one spelling `preserve` writes it under rather than only by what its
         // event happens to carry.

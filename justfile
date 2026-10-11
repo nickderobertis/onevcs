@@ -250,8 +250,8 @@ _recovery-test:
     @node scripts/recoverable-invocation.mjs just _recovery-covered
 
 _recovery-covered:
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" just _cover onevcs-recovery 'binary(recovery-workload)'
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" just _cover onevcs-recovery 'binary(recovery-workload)'
     @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs
 
 # Regenerate validated current-build telemetry without running unrelated journeys.
@@ -264,8 +264,8 @@ recoverable-journeys:
 recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "--no-tests=fail" }
 
 _recovery-quick:
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail {{recovery-no-tests}}
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail {{recovery-no-tests}}
     @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs
 
 onebudgetspec-version := "0.1.1"

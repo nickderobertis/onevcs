@@ -600,6 +600,53 @@ minutes. Three things are easy to undo.
 against uncached git; `tests/recovery-workload/churn.rs` holds the workload fixture's warm
 read under a concurrent ref writer to the registered warm budgets.
 
+Inside a context that admits reuse, the immutable reads a decision asks most are not
+reused but answered in process (`native_objects.rs`), never stored, and byte for byte
+as git prints them; any shape or answer git could word differently is still git's.
+Five things are easy to undo.
+
+- **An answer that would read much is not made in process.** Each reads fewer than
+  `OBJECT_LIMIT` commits and trees this read has not read already; one that reaches it
+  is left to the proofs and to git. On a real host's checkouts a count over a long
+  history or a listing of two large trees made a warm read slower than 0.43.1's,
+  which answered the same reads from proofs, and the workload fixture's small
+  repositories never show it — `labels::a_read_that_would_walk_a_long_history_is_left_to_its_proof`
+  is what does.
+
+- **No store is read in process until every loose object in it is proved safe to
+  read** (`recovery_cache::sound`). libgit2's inflate never returns from a loose
+  object cut short, so one truncated ancestor hangs the read. Nothing in process reads
+  a blob — the tree diff compares entries, and every named object's type is read off
+  its header first — so a blob is proved by its header and everything else by
+  inflating whole; the proof is remembered per listed object identity and bounded per
+  read, and an unproved store goes to git and the proofs as before. Keep it that way:
+  a read added here that opens a blob needs blobs proved whole, which on a real
+  host's stores is hundreds of megabytes.
+- **What only a content comparison reads stays out of what is answered in process.**
+  These reads, and the proofs of a listing of changed paths or of whether any
+  changed, are keyed by the context that compares no content, so the worktree's
+  `.gitattributes` walk — every directory of the checkout, 200 ms on a real one — is
+  paid only by the comparisons that still go through git (`merge-tree`, `--shortstat`
+  and `--numstat`). Keep those there: the small proof-cache journeys in
+  `tests/e2e/labels.rs` observe reuse and invalidation through the proofs they store.
+  An attribute can move a listing or `--quiet` only through a driver the configuration
+  defines (`diff.<driver>.command` with `trustExitCode`, `textconv`, `diff.external`),
+  and every such key refuses proofs by name;
+  `labels::worktree_attributes_move_no_listing_and_a_configured_diff_driver_refuses_its_proof`
+  holds both halves. Admit a `diff.*` key and that reasoning no longer holds.
+  And `git::changed_paths` asks `--shortstat` only of a listing that could be
+  incomplete — an empty one, or one whose pipe failed — since a listing that is text
+  at all is the whole listing.
+- **The commit graph is shared per identity within a read, keyed by the store a commit
+  was read from.** A commit read from the checkout store every clone borrows answers
+  for all of them; one read from a clone's own store answers for that clone only.
+  Ancestry and a single unstale merge-base candidate are exact whatever the walk
+  order; anything else goes to libgit2 and then git.
+- **A journey that counts spawned git as its instrument counts an uncached read**
+  (`GIT_NAMESPACE=` refuses proofs and in-process answers): with in-process answers a
+  warm or cold read may spawn nothing, which proves nothing about which tier a branch
+  reached.
+
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
 `branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the
