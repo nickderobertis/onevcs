@@ -335,8 +335,7 @@ impl Fleet {
             .collect()
     }
 
-    /// The change request records the host holds for `repo`, as `(number, state,
-    /// closed)`.
+    /// The state and closed marker the host holds for `repo`'s change request `number`.
     fn held(&self, repo: &Repo, number: usize) -> (String, bool) {
         let state = self.world.host_state(Some(&repo.slug()));
         let record = std::fs::read_to_string(state.join(format!("pr-{number}.env")))
@@ -1242,6 +1241,9 @@ fn the_multi_repository_host_refuses_unsafe_repository_slugs() {
     fleet.worked(alpha, BRANCH, "alpha.txt");
     fleet.publish(alpha, BRANCH);
     let view = |slug: &str| {
+        // llmlint: ignore[tests_mirror_real_usage] this test verifies the gh double's
+        // own argument boundary; malformed slugs cannot be sent through onevcs, whose
+        // inputs are already validated. Invoke that boundary as its real caller does.
         std::process::Command::new(fleet.world.path("bin/gh"))
             .env("ONEVCS_FAKE_GH_STATE", fleet.world.path("gh-state"))
             .args(["pr", "view", "1", "--repo", slug, "--json", "state"])
