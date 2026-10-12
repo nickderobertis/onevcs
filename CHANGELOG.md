@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.1](https://github.com/nickderobertis/onevcs/compare/v0.48.0...v0.48.1) - 2026-10-12
+
+### Added
+
+- *(publish)* keep watching a draft while work on its head still runs, before and after an early lift ([#374](https://github.com/nickderobertis/onevcs/pull/374))
+
 ## [0.48.0](https://github.com/nickderobertis/onevcs/compare/v0.47.0...v0.48.0) - 2026-10-11
 
 ### Added
