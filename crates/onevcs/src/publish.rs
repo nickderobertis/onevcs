@@ -4565,6 +4565,9 @@ pub(crate) struct Watched<'a> {
     /// The commit this host last saw the branch at, which is the head the change
     /// request was opened from.
     pub head: &'a str,
+    /// A repository holding that commit, where whether the head the host reports
+    /// merging carries it is asked.
+    pub repo: &'a Path,
     /// The stream that recorded it being opened, which is where a landing found
     /// after that publication ended is recorded.
     pub stream: Option<&'a str>,
@@ -4599,7 +4602,12 @@ pub(crate) fn reconcile_late_merge(
     registry: &crate::registry::Registry,
     watched: &Watched<'_>,
     hosting: &dyn Hosting,
-) -> Option<String> {
+) -> Option<crate::landed::RecordedLanding> {
+    // Never a change request of another repository: the host is asked about the one
+    // repository this identity is, and a number there names nothing elsewhere.
+    if !crate::status::names_repository(watched.url.as_str(), watched.identity) {
+        return None;
+    }
     let host = hosting
         .for_repo(&change_host(watched.identity).ok()?)
         .ok()?;
@@ -4609,7 +4617,7 @@ pub(crate) fn reconcile_late_merge(
         head_sha: Sha(watched.head.to_owned()),
         base: watched.base.to_owned(),
     };
-    let merged = host.merged_at(&change).ok()??;
+    let merged = host.merged_head(&change).ok()??;
     record_late_merge(
         registry,
         watched,
@@ -4636,19 +4644,33 @@ pub(crate) fn late_merge_time(host: &dyn RemoteHost, change: &ChangeRequest) -> 
 pub(crate) fn record_late_merge(
     registry: &crate::registry::Registry,
     watched: &Watched<'_>,
-    merged: &Sha,
+    merged: &crate::host::MergedChange,
     landed_at: Option<Moment>,
-) -> Option<String> {
+) -> Option<crate::landed::RecordedLanding> {
+    // A merge proves this branch's work landed only where the change request is in the
+    // identity's own repository and the head the host merged carries everything the
+    // branch holds. Anything else is recorded as nothing: a landing written for it is
+    // what every later read would take as the branch's.
+    let carried = crate::status::names_repository(watched.url.as_str(), watched.identity)
+        && git::carries_content_of(watched.repo, &merged.head.0, watched.head).unwrap_or(false);
+    if !carried {
+        return None;
+    }
+    let (head, commit) = (
+        git::ObjectId::parse(&merged.head.0)?,
+        git::ObjectId::parse(&merged.commit.0)?,
+    );
+    let merged_commit = &merged.commit;
     let located = match crate::release::for_repository(registry, watched.identity) {
         Ok(located) => located,
         // Best effort throughout, as every part of recording a landing after the
         // fact is: the change has merged whatever this host can write about it, and
         // refusing the read that found it would be the worse answer.
-        Err(failure) => return warn_unreconciled(watched, &merged.0, &failure),
+        Err(failure) => return warn_unreconciled(watched, &merged_commit.0, &failure),
     };
     let mut stream = match Stream::releases(watched.identity) {
         Ok(stream) => stream,
-        Err(failure) => return warn_unreconciled(watched, &merged.0, &failure),
+        Err(failure) => return warn_unreconciled(watched, &merged_commit.0, &failure),
     };
     let _ = crate::release::reconcile_landing(
         registry,
@@ -4656,13 +4678,18 @@ pub(crate) fn record_late_merge(
         watched.branch,
         watched.stream.map(crate::release::LandingStream::Opened),
         crate::release::Landing {
-            commit: &merged.0,
+            commit: &merged_commit.0,
+            head: Some(head.as_str()),
             at: landed_at,
         },
         watched.url,
         &mut stream,
     );
-    Some(merged.0.clone())
+    Some(crate::landed::RecordedLanding {
+        commit,
+        head: Some(head),
+        change: Some(watched.url.clone()),
+    })
 }
 
 /// Say on stderr that a merge the host reported could not be recorded here, and
@@ -4672,11 +4699,11 @@ pub(crate) fn record_late_merge(
 /// records as they stand, which is what they still say. Reporting the merge without
 /// having recorded it would leave a read answering `landed` that the next read,
 /// reading the same records, answers `closed` — one landing, two answers.
-fn warn_unreconciled(
+fn warn_unreconciled<T>(
     watched: &Watched<'_>,
     commit: &str,
     failure: &dyn std::fmt::Display,
-) -> Option<String> {
+) -> Option<T> {
     eprintln!(
         "onevcs: warning: the host reports {url} merged at {commit}, and this host could not \
          record that landing for {branch} ({failure}); `onevcs status {branch}` still answers \

@@ -2988,11 +2988,15 @@ fn squash_landing() -> (crate::host::Hosted, String, String) {
     let opened = hosted.world.events_of(&stream, "change-opened");
     assert_eq!(opened.len(), 1, "{opened:?}");
     assert_eq!(opened[0]["payload"]["url"], url.as_str());
-    assert!(
-        opened[0]["labels"].get("identity").is_none(),
-        "the premise: a branch-keyed verb's stream names no identity: {:?}",
+    // This build labels what a branch-keyed verb writes with the identity it published
+    // for; a stream a build before the label wrote names nobody, which is what these
+    // journeys resolve through — so the label is taken back off, as that build left it.
+    assert_eq!(
+        opened[0]["labels"]["identity"], "github.com/acme-corp/hosted",
+        "a branch-keyed verb's stream names the identity it published for: {:?}",
         opened[0]
     );
+    unlabel(&hosted.world, &stream);
     let landed = hosted
         .world
         .git(&hosted.origin, &["rev-parse", "main"])
@@ -3007,6 +3011,25 @@ fn squash_landing() -> (crate::host::Hosted, String, String) {
     assert_eq!(merged.len(), 1, "{merged:?}");
     assert_eq!(merged[0]["payload"]["sha"], landed.as_str());
     (hosted, url, landed)
+}
+
+/// Take the identity label off every event of one stream, leaving the stream a build
+/// that wrote branch-keyed streams without one would have left.
+// llmlint: ignore[tests_mirror_real_usage] no verb of this build writes an unlabelled
+// branch-keyed event any more — a build before the label did, and its streams are still
+// on every host that ran it — so the journey leaves the file the way that build left it.
+pub(crate) fn unlabel(world: &crate::world::World, token: &str) {
+    let path = world.home().join("streams").join(format!("{token}.ndjson"));
+    let text = std::fs::read_to_string(&path).expect("the stream");
+    let mut lines = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let mut event: Value = serde_json::from_str(line).expect("one event a line");
+        if let Some(labels) = event["labels"].as_object_mut() {
+            labels.remove("identity");
+        }
+        lines.push(event.to_string());
+    }
+    std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("the stream, unlabelled");
 }
 
 /// `squash_landing`, after `onevcs`'s own retirement has deleted its branch from every
@@ -3267,8 +3290,13 @@ fn a_retired_landings_url_names_its_own_repository_where_two_identities_retired_
         .args(["session", "close", &token_of(&opened)])
         .assert()
         .success();
-    // Closing the session retired the branch as landed, after the change request was
-    // opened — so the name alone is now two identities' retired work.
+    // The mirror's own pass retires its branch on its own proof — its base carries what
+    // it changed — after the change request was opened, so the name alone is now two
+    // identities' retired work. Its close alone does not: nothing recorded a landing *of
+    // the mirror's*, and the hosted repository's landing on the shared branch-keyed stream
+    // is not one.
+    let (code, pass) = crate::retire::verb(&hosted.world, &["retire-finished", "--repo", "mirror"]);
+    assert_eq!(code, 0, "{pass}");
     let retired: Vec<Value> = crate::retire::events(&hosted.world, "branch-retired")
         .into_iter()
         .filter(|event| event["payload"]["branch"] == LANDED_BRANCH)

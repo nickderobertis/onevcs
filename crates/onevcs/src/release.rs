@@ -625,6 +625,7 @@ pub fn status(
                 landing.change_stream.as_deref().map(LandingStream::Opened),
                 Landing {
                     commit: &commit,
+                    head: None,
                     at: None,
                 },
                 change_url,
@@ -940,6 +941,9 @@ fn capture_in(
 /// when the host says it did — `None` where nobody asked the host, or it could not say.
 pub(crate) struct Landing<'a> {
     pub(crate) commit: &'a str,
+    /// The head the host reported merging, where the host was asked about it — which is
+    /// what lets a later reader take the record in place of asking again.
+    pub(crate) head: Option<&'a str>,
     pub(crate) at: Option<crate::gate_run::Moment>,
 }
 
@@ -982,6 +986,7 @@ pub(crate) fn reconcile_landing(
 ) -> bool {
     let Landing {
         commit,
+        head,
         at: landed_at,
     } = landing;
     let identity = &located.releases.identity;
@@ -1016,9 +1021,18 @@ pub(crate) fn reconcile_landing(
     // it gave none. Never the time of this read, which is only when somebody
     // happened to ask.
     let mut merged = json_object(json!({"url": change.to_string(), "sha": commit}));
+    if let Some(head) = head {
+        merged.insert("head".to_owned(), json!(head));
+    }
     crate::gate_run::landed(&mut merged, landed_at, commit);
     let opened = match recording {
-        LandingStream::Opened(token) => Stream::open(token),
+        // Labelled with the identity even on a stream that already says whose it is,
+        // because a branch-keyed verb's stream is one per branch *name*: a record on it
+        // that named nobody would be anybody's who published that name.
+        LandingStream::Opened(token) => Stream::open(token).map(|mut opened| {
+            opened.label("identity", identity);
+            opened
+        }),
         // A stream no publication opened says whose landing it is the way a session's
         // does: the identity on its label, the branch in its payload.
         LandingStream::Own { token, identity } => Stream::open(token).map(|mut own| {

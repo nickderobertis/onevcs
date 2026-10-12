@@ -860,7 +860,7 @@ fn a_change_the_host_now_reports_closed_or_merged_is_derived_again_and_the_merge
     let closed = pass(&["--dry-run"]);
     let closing = entry(&closed, "feature/closing");
     assert_eq!(closing["derivation"], "derived", "{closing}");
-    assert_eq!(closing["reason"], "unmerged-unique-commits", "{closing}");
+    assert_eq!(closing["reason"], "closed-change-request", "{closing}");
     assert_eq!(entry(&closed, "feature/merging")["derivation"], "reused");
 
     // The other merges on the host's own clock, and the pass retires it.
@@ -1157,7 +1157,7 @@ fn a_corrupt_record_or_one_another_release_wrote_is_derived_again_and_rewritten(
     // will not read is a fact about the host; no verb of this crate makes either, and
     // what is driven over them is the binary.
     let mut reshaped = record.clone();
-    reshaped["format"] = Value::from(2);
+    reshaped["format"] = Value::from(1);
     std::fs::write(open_ended, reshaped.to_string()).expect("a record of another format");
     let rehearsed = with_mode(finished, 0o000, || {
         assert!(
@@ -1173,7 +1173,7 @@ fn a_corrupt_record_or_one_another_release_wrote_is_derived_again_and_rewritten(
         assert_eq!(again["derivation"], "derived", "{again}");
         assert_eq!(verdict_of(again), verdict_of(entry(&reused, branch)));
     }
-    assert_eq!(records(world)["feature/open-ended"].1["format"], 1);
+    assert_eq!(records(world)["feature/open-ended"].1["format"], 2);
     for (_, derivation) in derivations(&pass_over(&yard, &["--dry-run"])) {
         assert_eq!(derivation, "reused");
     }
@@ -1657,18 +1657,20 @@ fn every_record_a_pass_writes_has_the_shape_the_contract_spells() {
         for held in [&mut around, &mut spelled] {
             held["verdict"]["host"]["merged"] = Value::Null;
             held["verdict"]["host"]["open"] = Value::Null;
-            held["verdict"]["history"] = Value::Null;
             held["key"]["session"] = Value::Null;
         }
         assert_eq!(shape(&around), shape(&spelled), "{branch}: {record:#}");
         assert_eq!(record["format"], documented["format"], "{branch}");
-        for word in ["reached", "history"] {
-            let said = &record["verdict"][word];
-            assert!(
-                said.is_null() || documented_word(said),
-                "{branch}: {word} is {said}, which the amendment does not spell"
-            );
-        }
+        assert!(
+            record["verdict"]["consulted"].is_boolean(),
+            "{branch}: consulted is {}",
+            record["verdict"]["consulted"]
+        );
+        let reached = &record["verdict"]["reached"];
+        assert!(
+            documented_word(reached),
+            "{branch}: reached is {reached}, which the amendment does not spell"
+        );
         assert!(documented_word(&record["key"]["asking"]), "{branch}");
         for answer in ["merged", "open"] {
             let said = &record["verdict"]["host"][answer];

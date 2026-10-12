@@ -179,6 +179,25 @@ pub trait RemoteHost {
         })
     }
 
+    /// The commit a change request reached its base at **and the head the host merged
+    /// it from**, or `None` while the host has not merged it.
+    ///
+    /// What a retirement asks before it may call a branch merged: a merge proves the
+    /// *branch's* work landed only where the head that merged carries that work, and a
+    /// change request whose number happens to match, or whose branch moved on after it
+    /// merged, says nothing about what the branch holds now. Both halves come from one
+    /// read of the host, so the head is the one the merge was of.
+    ///
+    /// Defaulted for the reason [`merged_at`](RemoteHost::merged_at) is — the seam
+    /// stays additive — and to the same refusal: a host never taught to say which head
+    /// merged has not said that this branch's did, and a retirement reads the refusal
+    /// as a question nobody answered, which keeps the branch.
+    fn merged_head(&self, _cr: &ChangeRequest) -> Result<Option<MergedChange>> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::merged_head",
+        })
+    }
+
     /// When the host says a merged change request reached its base, as the host
     /// spelled it, or `None` while it has not merged it.
     ///
@@ -539,6 +558,17 @@ pub enum Mergeability {
     },
     /// The host has not computed it yet, which is never a conflict.
     Unknown,
+}
+
+/// A change request the host reports merged, as
+/// [`RemoteHost::merged_head`] answers it: the commit it reached its base at, and the
+/// head commit the host merged it from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergedChange {
+    /// The commit the base reached — the squash or merge commit the host made.
+    pub commit: Sha,
+    /// The head the host reports the change request carried when it merged.
+    pub head: Sha,
 }
 
 /// A change request's description as the host holds it.
@@ -2088,6 +2118,21 @@ impl RemoteHost for GitHub {
         merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
     }
 
+    /// One `gh pr view`, reading the two fields a merge is decided from and the head
+    /// it was of — the read [`merged_at`](RemoteHost::merged_at) makes, through the same
+    /// parser, with `headRefOid` beside it rather than in a second request.
+    fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>> {
+        addressable(&cr.id.0, "change request id")?;
+        let view = self.view(&cr.id.0, MERGED_HEAD_FIELDS)?;
+        let Some(commit) = merged_sha(&view, cr)? else {
+            return Ok(None);
+        };
+        Ok(Some(MergedChange {
+            commit,
+            head: head_sha(&view)?,
+        }))
+    }
+
     /// One `gh pr view`, reading exactly the field GitHub records a merge's time in.
     ///
     /// `mergedAt` is null — or GitHub's zero time — on a change request that has not
@@ -2484,6 +2529,9 @@ pub(crate) fn reported_time(entry: &serde_json::Value, field: &str) -> Option<St
 
 /// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.
 const MERGE_FIELDS: &str = "state,mergeCommit";
+
+/// What [`GitHub`]'s `merged_head` reads: [`MERGE_FIELDS`] and the head it merged.
+const MERGED_HEAD_FIELDS: &str = "state,mergeCommit,headRefOid";
 
 /// What [`GitHub`]'s `merge_time` reads.
 const MERGE_TIME_FIELDS: &str = "mergedAt";

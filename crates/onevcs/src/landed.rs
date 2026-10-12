@@ -201,11 +201,28 @@ impl LandingEvidence {
 /// git as a revision.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Recorded {
-    /// The commit a landing this host saw put the work on the base at. What a merge
-    /// this crate performed records, and where a merge it only waited for would
-    /// record one too.
-    pub landing: Option<ObjectId>,
+    /// The landing this host saw put the work on the base. What a merge this crate
+    /// performed records, and where a merge it only waited for would record one too.
+    pub landing: Option<RecordedLanding>,
     /// The change request opened for this branch.
+    pub change: Option<Url>,
+}
+
+/// One landing this host recorded: the commit the base reached and, where the record
+/// was written from the host's own report of the merge, the head the host merged and
+/// the change request it merged.
+///
+/// The head is what a retirement holds the branch's content to. A record with none —
+/// every landing written before the head was recorded — proves nothing about what the
+/// branch holds, and a reader takes it only where its commit is on the identity's own
+/// base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedLanding {
+    /// The commit the work reached the base at.
+    pub commit: ObjectId,
+    /// The head the host reported merging, where the record was written from that report.
+    pub head: Option<ObjectId>,
+    /// The change request the record names, where it names one.
     pub change: Option<Url>,
 }
 
@@ -249,7 +266,11 @@ pub(crate) fn decide(
     let mut partial: Option<(LandingEvidence, String)> = None;
     // Tier 1. Exact and permanent: a commit somebody recorded as this branch's
     // landing, which the base can reach. Nothing edited afterwards changes it.
-    if let Some(commit) = recorded.landing.as_ref().map(ObjectId::as_str) {
+    if let Some(commit) = recorded
+        .landing
+        .as_ref()
+        .map(|landing| landing.commit.as_str())
+    {
         if git::known_to_reach(repo, commit, compared)? {
             let evidence = LandingEvidence::RecordedLanding {
                 commit: Sha(commit.to_owned()),
@@ -265,7 +286,7 @@ pub(crate) fn decide(
     // this answers for anything merged through the host by anybody — no write of
     // ours required, and true however far the base has moved since.
     if let Some(url) = recorded.change.as_ref() {
-        if let Some(commit) = names_the_change(&base_history, url.as_str()) {
+        if let Some(commit) = names_the_change(&base_history, url.as_str(), branch) {
             let evidence = LandingEvidence::ChangeRequest {
                 commit: Sha(commit.clone()),
                 change_url: url.clone(),
@@ -447,29 +468,39 @@ fn inferred(
     }
 }
 
-/// The base commit that names this change request, when one does.
+/// The base commit that names this change request, when one does — in one of the two
+/// subjects GitHub itself writes when it lands one.
 ///
-/// Three spellings, because three things write one: the host's squash commit puts
-/// its number in the subject, the host's merge commit spells it out, and anything
-/// that quoted the change request itself carries its URL. A number is matched with
-/// its own punctuation around it so that `#1` cannot answer for `#12`.
-pub(crate) fn names_the_change(history: &[git::CommitMessage], url: &str) -> Option<String> {
-    let number = url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|last| !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()));
-    let mut spellings = vec![url.to_owned()];
-    if let Some(number) = number {
-        spellings.push(format!("(#{number})"));
-        spellings.push(format!("Merge pull request #{number} "));
-    }
+/// A squash's subject ends in `(#N)`, and a merge commit's subject is `Merge pull
+/// request #N from <owner>/<branch>`, naming this branch. Nothing else is read: a
+/// number in a body, a number under another repository's URL, or the URL quoted in a
+/// message are things anybody can write, and the subjects above are the host's own.
+/// A number is matched with its own punctuation around it so that `#1` cannot answer
+/// for `#12`.
+///
+/// **Corroboration only.** A match here says the base's history *mentions* the change
+/// request the way a landing of it would; it never proves a branch merged, and a
+/// retirement never takes it in place of asking the host.
+pub(crate) fn names_the_change(
+    history: &[git::CommitMessage],
+    url: &str,
+    branch: &str,
+) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let (owner, number) = match segments.as_slice() {
+        [owner, _, "pull", number] if number.chars().all(|c| c.is_ascii_digit()) => {
+            (*owner, *number)
+        }
+        _ => return None,
+    };
+    let squash = format!("(#{number})");
+    let merge = format!("Merge pull request #{number} from {owner}/{branch}");
     history
         .iter()
         .find(|commit| {
-            spellings
-                .iter()
-                .any(|spelling| commit.message.contains(spelling))
+            let subject = commit.message.lines().next().unwrap_or_default().trim_end();
+            subject.ends_with(&squash) || subject == merge
         })
         .map(|commit| commit.sha.clone())
 }

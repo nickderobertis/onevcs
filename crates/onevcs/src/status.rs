@@ -540,8 +540,8 @@ fn landed_on_base(
     let tip = vcs::base_ref(publication, base);
     let recorded = recorded_for(streams, &work.identity, &work.branch, session);
     if let Some(landing) = recorded.landing {
-        if git::known_to_reach(publication, landing.as_str(), &tip).unwrap_or(false) {
-            return Some(landing.as_str().to_owned());
+        if git::known_to_reach(publication, landing.commit.as_str(), &tip).unwrap_or(false) {
+            return Some(landing.commit.as_str().to_owned());
         }
     }
     let mentioning = |needle: &str| git::first_commit_mentioning(publication, &tip, needle);
@@ -864,7 +864,11 @@ struct Opened {
 
 fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Told {
     let relevant = relevant_streams(streams, &work.identity, &work.branch, session);
-    let opened = latest(relevant.iter().filter_map(|record| record.opened.clone()));
+    let opened = latest(
+        relevant
+            .iter()
+            .filter_map(|record| record.opened_for(&work.identity)),
+    );
     let change_url = opened.as_ref().map(|opened| opened.url.clone());
     Told {
         draft: standing_draft(&relevant),
@@ -881,7 +885,11 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
                 .filter_map(|record| record.merge_path.clone()),
         ),
         recorded: landed::Recorded {
-            landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
+            landing: latest(
+                relevant
+                    .iter()
+                    .filter_map(|record| record.landing_for(&work.identity)),
+            ),
             // Parsed rather than passed through, for the same reason: the report
             // prints this URL and the decision *compares* it, and a value that is no
             // URL names no change request to look for.
@@ -890,8 +898,8 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
         change_url,
         opened,
         change_stream: newest(relevant.iter().filter_map(|record| {
-            record.opened.as_ref().map(|opened| Stamped {
-                at: opened.at.clone(),
+            record.opened_for(&work.identity).map(|opened| Stamped {
+                at: opened.at,
                 value: record.token.clone(),
             })
         }))
@@ -1149,10 +1157,9 @@ fn reconcile_late_merge(
     // A superseded clone's copy is not asked: what it holds is the work that was
     // taken over, and the head of the change request is the head of the work that
     // went on. `carrying` is that distinction, already made for the tiers.
-    let Some(head) = carrying
-        .iter()
-        .find_map(|holder| git::tip(&holder.path, &work.branch))
-    else {
+    let Some((repo, head)) = carrying.iter().find_map(|holder| {
+        git::tip(&holder.path, &work.branch).map(|tip| (holder.path.as_path(), tip))
+    }) else {
         return;
     };
     let merged = publish::reconcile_late_merge(
@@ -1164,6 +1171,7 @@ fn reconcile_late_merge(
             id,
             base,
             head: &head,
+            repo,
             stream: told.change_stream.as_deref(),
         },
         hosting,
@@ -1171,7 +1179,7 @@ fn reconcile_late_merge(
     // Through the conversion that decides what an object id is, for the reason every
     // other commit this module takes from outside goes through it: the value is
     // handed to git as a revision, and one that is not an id names no commit.
-    told.recorded.landing = merged.as_deref().and_then(ObjectId::parse);
+    told.recorded.landing = merged;
 }
 
 /// Where a reference's work stands in history, for a caller that needs the landing
@@ -1269,6 +1277,7 @@ pub(crate) fn landing_of_within(
     let change_stream = told.change_stream.clone();
     let carrying = carrying(&holders, &answering.superseded);
     let base = own_base(&resolution, base, &answering, &carrying);
+    hold_landing_to_base(&mut told, &resolution.publication, &base);
     // Before the tiers are asked, because a landing it records is one tier 1 then
     // answers from — which is what puts a late merge into *this* read rather than
     // into the next one. It takes no host where the caller has none to give.
@@ -1382,6 +1391,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let mut told = from_streams(&streams, &work, held_by.as_deref());
     let carrying = carrying(&holders, &answering.superseded);
     let base = own_base(&resolution, base, &answering, &carrying);
+    hold_landing_to_base(&mut told, &resolution.publication, &base);
     // Before the tiers, so a merge the host performed after this host stopped
     // watching is decided *in* this read: it becomes a recorded landing, the word
     // below is the word a record fixes, and the next step is recomputed from it.
@@ -2009,19 +2019,18 @@ pub(crate) struct Recorded {
     token: String,
     identity: Option<String>,
     branch: Option<String>,
-    /// What the newest `change-opened` on this stream recorded: the change
-    /// request's URL, the host's own identifier for it, and the branch it targets.
+    /// What this stream recorded that proves something about one identity's work —
+    /// the change request it opened and the landing it saw — kept apart by whose each
+    /// record is.
     ///
-    /// One value rather than three, because they are one event's three fields and a
-    /// reader that took each by "whichever is newest" could compose an identifier
-    /// from one change request with a URL from another — which is a change request
-    /// nobody opened, addressed to a host.
-    opened: Option<Stamped<Opened>>,
-    /// The commit a merge this host saw landed the work at, which is the record the
-    /// most certain landing tier reads. An object id, because a stream is a file
-    /// whichever process wrote it and this value goes on to be handed to git as a
-    /// revision.
-    landing: Option<Stamped<ObjectId>>,
+    /// Scoped per event rather than per stream, because a branch-keyed verb wrote one
+    /// stream per branch *name* before it labelled its events: every repository that
+    /// published `nick/x` wrote into the same `publish-branch-nick-x`, and a reader
+    /// taking the newest `change-opened` across it read another repository's change
+    /// request as its own. An event nobody's scope admits — a push, a fetch or a gate
+    /// run that carries no identity and names no change request — proves nothing for
+    /// anybody, and is not kept here at all.
+    proofs: std::collections::BTreeMap<Scope, Proofs>,
     /// The reason the newest `change-drafted` on this stream gave for opening the
     /// change request as a draft.
     draft: Option<Stamped<StandingDraft>>,
@@ -2048,10 +2057,6 @@ pub(crate) struct Recorded {
     on_origin: Option<Stamped<PreservedRecord>>,
     asked_the_host_to_land: bool,
     merge_path: Option<Stamped<MergePathReport>>,
-    /// Every head this stream recorded pushing for a branch: the commit a publishing
-    /// push of the branch's own name put on the origin, which is what a change request
-    /// opened from it carries as its head.
-    pushed_heads: Vec<(Ref, ObjectId)>,
     /// Every `branch-superseded` this stream recorded.
     superseded: Vec<Stamped<crate::retire::SupersessionRecord>>,
     /// The newest `branch-retired` this stream recorded.
@@ -2059,6 +2064,136 @@ pub(crate) struct Recorded {
     /// Whether some of the stream could not be read — the file, or a line of it — so
     /// what it recorded is not all here.
     gaps: bool,
+}
+
+/// Whose an event's proofs are, as the record-scoping rule reads it.
+///
+/// An event counts for identity `I` only if it carries `I` as `labels.identity`, or it
+/// carries no identity and every change-request URL it names is in `I`'s repository.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Scope {
+    /// The event carries this identity as its `identity` label.
+    Labelled(String),
+    /// The event carries no identity, and every change request it names is in this
+    /// repository, spelled the way an identity key spells one: `host/owner/name`.
+    Repository(String),
+}
+
+impl Scope {
+    /// Whose this event is, or `None` for an event that names nobody — no identity
+    /// label, and no change request in one repository — which proves nothing for anyone.
+    fn of(labelled: Option<String>, payload: &serde_json::Map<String, Value>) -> Option<Self> {
+        if let Some(identity) = labelled {
+            return Some(Scope::Labelled(identity));
+        }
+        let mut repositories = payload
+            .values()
+            .filter_map(Value::as_str)
+            .filter_map(change_repository);
+        let first = repositories.next()?;
+        repositories
+            .all(|other| other.eq_ignore_ascii_case(&first))
+            .then_some(Scope::Repository(first))
+    }
+
+    /// Whether this scope's records count for `identity`.
+    fn admits(&self, identity: &str) -> bool {
+        match self {
+            Scope::Labelled(labelled) => labelled == identity,
+            Scope::Repository(repository) => repository.eq_ignore_ascii_case(identity),
+        }
+    }
+
+    /// The identity this scope names, where it names one this registry holds.
+    fn identity_in(&self, registry: &Registry) -> Option<String> {
+        let named = match self {
+            Scope::Labelled(identity) | Scope::Repository(identity) => identity,
+        };
+        registry
+            .identities
+            .keys()
+            .find(|key| key.eq_ignore_ascii_case(named))
+            .cloned()
+    }
+}
+
+/// What one scope of one stream recorded that proves something about its work.
+#[derive(Debug, Clone, Default)]
+struct Proofs {
+    /// What the newest `change-opened` recorded: the change request's URL, the host's
+    /// own identifier for it, and the branch it targets.
+    ///
+    /// One value rather than three, because they are one event's three fields and a
+    /// reader that took each by "whichever is newest" could compose an identifier
+    /// from one change request with a URL from another — which is a change request
+    /// nobody opened, addressed to a host.
+    opened: Option<Stamped<Opened>>,
+    /// The newest landing a merge this host saw recorded, which is the record the most
+    /// certain landing tier reads.
+    landing: Option<Stamped<landed::RecordedLanding>>,
+}
+
+impl Recorded {
+    /// This stream's proofs that count for `identity`, under the record-scoping rule.
+    fn proofs_for<'a>(&'a self, identity: &'a str) -> impl Iterator<Item = &'a Proofs> + 'a {
+        self.proofs
+            .iter()
+            .filter(move |(scope, _)| scope.admits(identity))
+            .map(|(_, proofs)| proofs)
+    }
+
+    /// The newest change request this stream records opening for `identity`, held to
+    /// that identity's own repository: a change request anywhere else is not one a
+    /// branch of `identity` could have been opened as.
+    fn opened_for(&self, identity: &str) -> Option<Stamped<Opened>> {
+        newest(
+            self.proofs_for(identity)
+                .filter_map(|proofs| proofs.opened.clone())
+                .filter(|opened| names_repository(&opened.value.url, identity)),
+        )
+    }
+
+    /// The newest landing this stream records for `identity`, where it names no change
+    /// request or one in that identity's own repository.
+    fn landing_for(&self, identity: &str) -> Option<Stamped<landed::RecordedLanding>> {
+        newest(
+            self.proofs_for(identity)
+                .filter_map(|proofs| proofs.landing.clone())
+                .filter(|landing| {
+                    landing
+                        .value
+                        .change
+                        .as_ref()
+                        .is_none_or(|url| names_repository(url.as_str(), identity))
+                }),
+        )
+    }
+
+    /// The newest change request this stream records opening, whoever's it is — for
+    /// resolving a URL somebody asked about, which names its own repository.
+    fn opened_by_anyone(&self) -> Option<&Stamped<Opened>> {
+        self.proofs
+            .values()
+            .filter_map(|proofs| proofs.opened.as_ref())
+            .max_by(|left, right| left.at.cmp(&right.at))
+    }
+}
+
+/// The repository a change request's URL is in, spelled as an identity key spells a
+/// hosted repository — `host/owner/name` — or `None` for a value that is no change
+/// request's address: a GitHub pull request (`/<owner>/<name>/pull/<n>`) or a GitLab
+/// merge request (`/<group>/<name>/-/merge_requests/<n>`).
+pub(crate) fn change_repository(value: &str) -> Option<String> {
+    let url = Url::parse(value).ok()?;
+    let host = url.host_str()?;
+    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let number = |n: &&str| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+    let repository: Vec<&str> = match segments.as_slice() {
+        [owner, name, "pull", n] if number(n) => vec![*owner, *name],
+        [path @ .., "-", "merge_requests", n] if path.len() >= 2 && number(n) => path.to_vec(),
+        _ => return None,
+    };
+    Some(format!("{host}/{}", repository.join("/")))
 }
 
 /// The reason a `change-drafted` payload records, read back field by field.
@@ -2465,7 +2600,10 @@ mod streams_index {
     use crate::error::Result;
 
     /// The shape of every document here. A document of any other is rebuilt.
-    const VERSION: u32 = 3;
+    ///
+    /// `4` is the build that scopes a stream's records per event: an index an earlier
+    /// build wrote is never served to it, so nothing it attributed is read back.
+    const VERSION: u32 = 4;
 
     /// How recently the directory may have moved and still stand for its listing.
     /// A filesystem stamps a directory at its own granularity, so a change made in
@@ -3035,15 +3173,13 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         token: token.to_owned(),
         identity: None,
         branch: None,
-        opened: None,
-        landing: None,
+        proofs: std::collections::BTreeMap::new(),
         draft: None,
         lifted: None,
         described: None,
         on_origin: None,
         asked_the_host_to_land: false,
         merge_path: None,
-        pushed_heads: Vec::new(),
         superseded: Vec::new(),
         retired: None,
         gaps: false,
@@ -3124,10 +3260,14 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             record.branch = event.payload.get("branch").and_then(text);
         }
         let field = |name: &str| event.payload.get(name).and_then(text);
+        let scope = Scope::of(
+            event.labels.extra.get("identity").and_then(text),
+            &event.payload,
+        );
         match kind {
             EventKind::ChangeOpened => {
-                if let Some(url) = field("url") {
-                    record.opened = Some(Stamped {
+                if let (Some(url), Some(proofs)) = (field("url"), scoped(&mut record, &scope)) {
+                    proofs.opened = Some(Stamped {
                         at,
                         value: Opened {
                             url,
@@ -3236,8 +3376,19 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                 // reason the branch name above goes through `Ref`: what a stream
                 // records is input, and a value that is not an id would be handed to
                 // git as a revision and could not name the commit it claims to.
-                if let Some(sha) = field("sha").as_deref().and_then(ObjectId::parse) {
-                    record.landing = Some(Stamped { at, value: sha });
+                // The head the host reported merging is written beside the commit only
+                // where a host report carried one, and is held to the same conversion:
+                // it is what a retirement asks the branch's content to be contained in.
+                let landing = field("sha")
+                    .as_deref()
+                    .and_then(ObjectId::parse)
+                    .map(|commit| landed::RecordedLanding {
+                        commit,
+                        head: field("head").as_deref().and_then(ObjectId::parse),
+                        change: field("url").and_then(|url| Url::parse(&url).ok()),
+                    });
+                if let (Some(landing), Some(proofs)) = (landing, scoped(&mut record, &scope)) {
+                    proofs.landing = Some(Stamped { at, value: landing });
                 }
             }
             // The merge path's own verdict on a publishing push: git runs the
@@ -3245,17 +3396,6 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // push's output, so `accepted` is what it ruled. A push that recorded no
             // such field said nothing, which is not the same as saying no.
             EventKind::Push => {
-                // The head a publishing push of the branch's own name put on the
-                // origin, where the push recorded one: each value through the check
-                // its kind meets, because both go on to be handed to git.
-                if let (Some(branch), Some(head)) = (
-                    field("branch").and_then(|name| Ref::try_from(name).ok()),
-                    field("head").as_deref().and_then(ObjectId::parse),
-                ) {
-                    if event.payload.get("accepted").and_then(Value::as_bool) == Some(true) {
-                        record.pushed_heads.push((branch, head));
-                    }
-                }
                 record.merge_path = Some(Stamped {
                     at,
                     value: MergePathReport {
@@ -3287,6 +3427,12 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         }
     }
     record
+}
+
+/// The proofs one scope of a stream holds, made where they are first written — or
+/// `None` for an event nobody's scope admits, whose proofs are not kept.
+fn scoped<'r>(record: &'r mut Recorded, scope: &Option<Scope>) -> Option<&'r mut Proofs> {
+    Some(record.proofs.entry(scope.clone()?).or_default())
 }
 
 fn text(value: &Value) -> Option<String> {
@@ -3321,7 +3467,7 @@ pub(crate) fn landing_record(
         told.recorded
             .landing
             .as_ref()
-            .map(|landing| landing.as_str().to_owned()),
+            .map(|landing| landing.commit.as_str().to_owned()),
         told.change_stream,
     ))
 }
@@ -3333,8 +3479,12 @@ pub(crate) fn opened_heads(url: &str) -> Result<Vec<(String, String)>> {
     Ok(recorded_streams(&mut notes)?
         .into_iter()
         .filter_map(|record| {
-            let opened = record.opened.filter(|opened| opened.value.url == url)?;
-            Some((String::from(opened.at), record.branch?))
+            let opened = record
+                .proofs
+                .values()
+                .filter_map(|proofs| proofs.opened.as_ref())
+                .find(|opened| opened.value.url == url)?;
+            Some((String::from(opened.at.clone()), record.branch.clone()?))
         })
         .collect())
 }
@@ -3383,9 +3533,17 @@ pub(crate) fn recorded_for(
 ) -> landed::Recorded {
     let relevant = relevant_streams(streams, identity, branch, session);
     landed::Recorded {
-        landing: latest(relevant.iter().filter_map(|record| record.landing.clone())),
-        change: latest(relevant.iter().filter_map(|record| record.opened.clone()))
-            .and_then(|opened| Url::parse(&opened.url).ok()),
+        landing: latest(
+            relevant
+                .iter()
+                .filter_map(|record| record.landing_for(identity)),
+        ),
+        change: latest(
+            relevant
+                .iter()
+                .filter_map(|record| record.opened_for(identity)),
+        )
+        .and_then(|opened| Url::parse(&opened.url).ok()),
     }
 }
 
@@ -3439,29 +3597,6 @@ pub(crate) fn preserved_branches(streams: &[Recorded], identity: &str) -> BTreeS
         .filter_map(|record| record.on_origin.as_ref())
         .map(|stamped| stamped.value.branch.to_string())
         .collect()
-}
-
-/// Every head this host's own streams record pushing for one branch, newest first.
-///
-/// What a change request opened from the branch carries as its head: the publishing
-/// push of the branch's own name is what puts one there. A retirement asks whether the
-/// branch's content is contained in one of these, which is how a change request that
-/// merged is known to have merged *this* work rather than an earlier copy of it.
-pub(crate) fn pushed_heads(
-    streams: &[Recorded],
-    identity: &str,
-    branch: &str,
-    session: Option<&str>,
-) -> Vec<ObjectId> {
-    let mut heads: Vec<ObjectId> = Vec::new();
-    for record in relevant_streams(streams, identity, branch, session) {
-        for (pushed, head) in &record.pushed_heads {
-            if **pushed == *branch && !heads.contains(head) {
-                heads.push(head.clone());
-            }
-        }
-    }
-    heads
 }
 
 /// Every supersession of one branch this host's streams record, oldest first.
@@ -3569,18 +3704,8 @@ fn retired_landing(
 /// Whether a change request's URL is one of this identity's: the identity key is the
 /// host and path its origin normalizes to, and a change request's address is that
 /// repository's address with the host's own path for it beneath.
-fn names_repository(url: &str, identity: &str) -> bool {
-    Url::parse(url)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| format!("{host}{path}", path = url.path()))
-        })
-        .is_some_and(|place| {
-            place
-                .strip_prefix(identity)
-                .is_some_and(|rest| rest.starts_with('/'))
-        })
+pub(crate) fn names_repository(url: &str, identity: &str) -> bool {
+    change_repository(url).is_some_and(|repository| repository.eq_ignore_ascii_case(identity))
 }
 
 /// The work a recorded landing at this commit landed.
@@ -3602,51 +3727,111 @@ fn by_landing(
     let commit = commit.to_ascii_lowercase();
     let mut found: Vec<Work> = Vec::new();
     for record in streams {
-        let (Some(landing), Some(branch)) = (&record.landing, &record.branch) else {
+        let Some(branch) = &record.branch else {
             continue;
         };
-        if !landing.value.as_str().starts_with(&commit) {
-            continue;
-        }
-        let Ok(branch) = Ref::try_from(branch.clone()) else {
-            continue;
-        };
-        let attributed = match record
-            .identity
-            .as_ref()
-            .filter(|identity| registry.identities.contains_key(identity.as_str()))
-        {
-            Some(identity) => match within.is_none_or(|key| key == identity) {
-                true => vec![Work {
-                    identity: identity.clone(),
-                    branch,
-                }],
-                false => Vec::new(),
-            },
-            None => match by_branch(registry, &branch, within)? {
-                held if held.is_empty() => retired_landing(
-                    streams,
-                    &branch,
-                    &landing.at,
-                    record
-                        .opened
-                        .as_ref()
-                        .map(|opened| opened.value.url.as_str()),
-                    within,
-                ),
-                held => held,
-            },
-        };
-        for work in attributed {
-            if !found
-                .iter()
-                .any(|known| known.identity == work.identity && known.branch == work.branch)
-            {
-                found.push(work);
+        for (scope, proofs) in &record.proofs {
+            let Some(landing) = &proofs.landing else {
+                continue;
+            };
+            if !landing.value.commit.as_str().starts_with(&commit) {
+                continue;
+            }
+            let Ok(branch) = Ref::try_from(branch.clone()) else {
+                continue;
+            };
+            let attributed = match scope.identity_in(registry) {
+                // A landing with no reported head is only this identity's where the
+                // commit it records is on that identity's own base: a record naming
+                // another repository's merge is somebody else's commit.
+                Some(identity) if !landing_counts(registry, &identity, &landing.value) => {
+                    Vec::new()
+                }
+                Some(identity) => match within.is_none_or(|key| key == identity) {
+                    true => vec![Work { identity, branch }],
+                    false => Vec::new(),
+                },
+                None => match by_branch(registry, &branch, within)? {
+                    held if held.is_empty() => retired_landing(
+                        streams,
+                        &branch,
+                        &landing.at,
+                        record
+                            .opened_by_anyone()
+                            .map(|opened| opened.value.url.as_str()),
+                        within,
+                    ),
+                    held => held,
+                },
+            };
+            for work in attributed {
+                if !found
+                    .iter()
+                    .any(|known| known.identity == work.identity && known.branch == work.branch)
+                {
+                    found.push(work);
+                }
             }
         }
     }
     Ok(found)
+}
+
+/// Whether `token` is a stream one of the branch-keyed verbs writes, which is one per
+/// branch name whoever published it.
+fn branch_keyed(token: &str) -> bool {
+    [
+        keyed::Verb::PublishBranch,
+        keyed::Verb::Recover,
+        keyed::Verb::Preserve,
+    ]
+    .iter()
+    .any(|verb| token.starts_with(verb.prefix()))
+}
+
+/// Whether a recorded landing counts for `identity` as a reader of landings takes one.
+///
+/// A landing written from a host report carries the head the host merged, and counts.
+/// One carrying no head — every landing recorded before the head was — counts only
+/// where the commit it records is on that identity's own base, which is one local
+/// ancestry question through the memoized reads and never a request to the host: a
+/// genuine squash commit is on its base, and a record that took another repository's
+/// merge for this one's names a commit this repository has never had.
+fn landing_counts(registry: &Registry, identity: &str, landing: &landed::RecordedLanding) -> bool {
+    if landing.head.is_some() {
+        return true;
+    }
+    let Ok(resolution) = store::resolve(registry, identity) else {
+        return false;
+    };
+    let Ok(base) = git::default_branch(&resolution.publication, "origin") else {
+        return false;
+    };
+    landing_on_base(&resolution.publication, &Ref::from_git(base), landing)
+}
+
+/// Forget a recorded landing that does not count for this read: one with no head the
+/// host reported, whose commit is not on the identity's own base. A record that took
+/// another repository's merge for this branch's is then no landing here, and the late
+/// merge a read asks about is asked about instead.
+fn hold_landing_to_base(told: &mut Told, publication: &Path, base: &Ref) {
+    if told
+        .recorded
+        .landing
+        .as_ref()
+        .is_some_and(|landing| !landing_on_base(publication, base, landing))
+    {
+        told.recorded.landing = None;
+    }
+}
+
+/// Whether a landing with no reported head records a commit `base` carries, asked of
+/// `publication` — the checkout every publication fast-forwards.
+fn landing_on_base(publication: &Path, base: &Ref, landing: &landed::RecordedLanding) -> bool {
+    landing.head.is_some()
+        || vcs::base_commit(publication, base).is_some_and(|tip| {
+            git::known_to_reach(publication, landing.commit.as_str(), &tip.0).unwrap_or(false)
+        })
 }
 
 /// The change request this host's streams record opening for one branch, whole
@@ -3871,10 +4056,12 @@ fn change_url(
     let recorded = streams
         .iter()
         .find(|record| {
-            record
-                .opened
-                .as_ref()
-                .is_some_and(|recorded| recorded.value.url == url)
+            record.proofs.values().any(|proofs| {
+                proofs
+                    .opened
+                    .as_ref()
+                    .is_some_and(|opened| opened.value.url == url)
+            })
         })
         // Unresolvable rather than invalid, and one of the four: a URL nothing here
         // opened is a reference this host cannot resolve, which is what a consumer
@@ -3906,26 +4093,44 @@ fn change_url(
             token = recorded.token,
         ),
     })?;
-    if let Some(identity) = &recorded.identity {
-        if registry.identities.contains_key(identity) {
-            return Ok(Work {
-                identity: identity.clone(),
-                branch,
-            });
-        }
+    // Whose the opening is, as the record-scoping rule reads it: the identity its event
+    // was labelled with, or the repository its URL is in where it was labelled nobody.
+    let scope = recorded
+        .proofs
+        .iter()
+        .find(|(_, proofs)| {
+            proofs
+                .opened
+                .as_ref()
+                .is_some_and(|opened| opened.value.url == url)
+        })
+        .map(|(scope, _)| scope);
+    let owner = scope.and_then(|scope| scope.identity_in(registry));
+    let labelled = matches!(scope, Some(Scope::Labelled(_)));
+    if let (Some(identity), true, false) = (&owner, labelled, branch_keyed(&recorded.token)) {
+        return Ok(Work {
+            identity: identity.clone(),
+            branch,
+        });
     }
-    // A branch-keyed verb's stream carries no identity label, so the identity is the
-    // one whose checkouts hold the branch — the same search everything else here uses,
-    // narrowed the same way. Searching every identity under an explicit repository
-    // would refuse a name two of them hold as ambiguous, for an ambiguity the caller
-    // has already resolved.
-    let mut found = by_branch(registry, &branch, within)?;
+    // A branch-keyed verb's stream is one per branch *name*, so whose work the URL is
+    // decides only where to look: the identity is the one whose checkouts hold the
+    // branch — the same search everything else here uses, narrowed to the repository
+    // the caller named, or else to the one the opening names. Searching every identity
+    // under an explicit repository would refuse a name two of them hold as ambiguous,
+    // for an ambiguity the caller has already resolved.
+    let mut found = by_branch(registry, &branch, within.or(owner.as_deref()))?;
     // A landed branch is retired from every place that held it, and a branch-keyed
     // verb's stream still carries no identity — so where nothing holds the branch, the
     // record of its landing is what answers: a retirement of it this host wrote after
     // the change request was opened, on the proof that its work reached the base.
     if found.is_empty() {
-        if let Some(opened) = &recorded.opened {
+        let opened = recorded
+            .proofs
+            .values()
+            .filter_map(|proofs| proofs.opened.as_ref())
+            .find(|opened| opened.value.url == url);
+        if let Some(opened) = opened {
             found = retired_landing(streams, &branch, &opened.at, Some(url), within);
         }
     }

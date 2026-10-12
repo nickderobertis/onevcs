@@ -835,11 +835,12 @@ fn a_change_request_a_merge_commit_names_is_read_off_the_bases_history() {
 }
 
 #[test]
-fn a_change_request_its_own_url_names_is_read_off_the_bases_history() {
-    // The third spelling, and the one nothing about GitHub's own wording produces:
-    // whatever landed the work quoted the change request itself. The number is
-    // nowhere in this message — neither trailing in parentheses nor in a merge
-    // commit's sentence — so only the URL can answer.
+fn a_change_request_a_commit_body_or_another_repository_names_is_not_read_off_the_bases_history() {
+    // Only the two subjects GitHub itself writes when it lands a change request are
+    // read: a squash's subject ending in `(#N)`, and `Merge pull request #N from
+    // <owner>/<branch>`. A commit *body* quoting the change request — its URL, or its
+    // `(#N)` — is something anybody writes, and so is a merge sentence naming another
+    // owner's branch; none of them is even corroboration that this work landed.
     let hosted = Hosted::new(REVIEWED);
     let token = hosted.change("feature/quoted-by-url", "feat: add the thing");
     hosted
@@ -861,8 +862,18 @@ fn a_change_request_its_own_url_names_is_read_off_the_bases_history() {
     landed_on_the_host_saying(
         &hosted,
         "feature/quoted-by-url",
-        "feat: add the thing\n\nLanded from https://github.com/acme-corp/hosted/pull/1",
+        "feat: add the thing\n\nLanded from https://github.com/acme-corp/hosted/pull/1 (#1)",
     );
+    let elsewhere = hosted.world.clone_of(&hosted.origin, "a-fork");
+    hosted.world.commit_file(
+        &elsewhere,
+        "fork.txt",
+        "fork\n",
+        "Merge pull request #1 from somebody-else/feature/quoted-by-url",
+    );
+    hosted
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
     hosted
         .world
         .onevcs()
@@ -871,18 +882,17 @@ fn a_change_request_its_own_url_names_is_read_off_the_bases_history() {
         .assert()
         .success();
 
+    // The base carries everything the branch changed, and nothing the host wrote says
+    // why — which is undecidable rather than landed.
     let report = report(&hosted.world, "feature/quoted-by-url");
     assert_eq!(
-        report["publication"]["landed"]["state"], "yes",
-        "the base's history quotes this change request's own URL: {report}"
-    );
-    assert_eq!(
-        report["publication"]["landed"]["evidence"]["tier"],
-        "change-request"
+        report["publication"]["landed"]["state"], "unknown",
+        "neither a body quoting this change request nor another owner's merge sentence is \
+         a landing of it: {report}"
     );
     assert!(
-        row(&rows(&hosted.world, &[]), "feature/quoted-by-url").is_none(),
-        "and it is not offered to be published a second time"
+        report["publication"]["landed"]["evidence"].is_null(),
+        "{report}"
     );
 }
 

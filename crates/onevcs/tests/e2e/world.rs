@@ -482,6 +482,78 @@ impl World {
         write_script(&bin.join("gh"), FAKE_GH);
     }
 
+    /// Install the program that answers as `gh` for one of several repositories this
+    /// world hosts: `slug` (`owner/name`) gets its own origin and its own change
+    /// requests, numbered from 1 as GitHub numbers each repository's, and every call
+    /// naming it with `--repo` is answered from them. The first repository installed
+    /// is also the one a call naming none is answered for.
+    pub fn install_fake_host_for(&self, slug: &str, origin: &Path) {
+        if !self.path("gh-state/origin").exists() {
+            self.install_fake_host(origin);
+        }
+        let state = self.host_state(Some(slug));
+        std::fs::create_dir_all(&state).expect("a repository's host state");
+        std::fs::write(state.join("origin"), origin.to_string_lossy().as_bytes())
+            .expect("the host must know which origin this repository merges into");
+    }
+
+    /// Where the substituted host keeps one repository's change requests: `slug`'s own,
+    /// or the world's single repository's for `None`.
+    pub fn host_state(&self, slug: Option<&str>) -> PathBuf {
+        match slug {
+            Some(slug) => self.path("gh-state/repos").join(slug),
+            None => self.path("gh-state"),
+        }
+    }
+
+    // llmlint: ignore-block[tests_mirror_real_usage] what a host holds about a change
+    // request nobody on this host opened — one merged long ago, or one somebody closed —
+    // is the substituted host's input, written in the same records its own `pr create`
+    // and `pr merge` write, exactly as `close_change_request` writes `closed-<n>`. The
+    // behaviour under test is what `onevcs` concludes from what the host then answers.
+    /// Make change request `number` of `slug` hold exactly `fields` — `PR_STATE`,
+    /// `PR_HEAD`, `PR_HEAD_SHA`, `PR_MERGE_COMMIT` and the rest — over whatever it held.
+    pub fn host_change_request_in(&self, slug: &str, number: usize, fields: &[(&str, &str)]) {
+        let path = self.host_state(Some(slug)).join(format!("pr-{number}.env"));
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| {
+                !fields
+                    .iter()
+                    .any(|(key, _)| line.starts_with(&format!("{key}=")))
+            })
+            .map(str::to_owned)
+            .collect();
+        for (key, value) in fields {
+            lines.push(format!("{key}='{value}'"));
+        }
+        std::fs::write(&path, format!("{}\n", lines.join("\n")))
+            .expect("a change request's record");
+        let title = self
+            .host_state(Some(slug))
+            .join(format!("pr-{number}.title"));
+        if !title.exists() {
+            std::fs::write(title, "a change request\n").expect("its title");
+            std::fs::write(
+                self.host_state(Some(slug))
+                    .join(format!("pr-{number}.body")),
+                "\n",
+            )
+            .expect("its body");
+        }
+    }
+
+    /// Somebody closes change request `number` of `slug` without merging it.
+    pub fn close_change_request_in(&self, slug: &str, number: usize) {
+        std::fs::write(
+            self.host_state(Some(slug)).join(format!("closed-{number}")),
+            "",
+        )
+        .expect("a change request somebody closed without merging it");
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
     /// What the substituted host says one repository's visibility is: `public`,
     /// `private`, `internal`, or `refuse` for a host that will not say. A repository it
     /// has been told nothing about is one it will not say about either.

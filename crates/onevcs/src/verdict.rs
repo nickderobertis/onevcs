@@ -26,12 +26,17 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::host::Sha;
+use crate::host::{MergedChange, Sha};
 use crate::retire::{BranchHolderKind, Retirement};
 use crate::{home, ids};
 
 /// The shape of a record. A record of any other is derived again.
-const FORMAT: u32 = 1;
+///
+/// `2` is the build that proves a branch merged only from its own repository's change
+/// request, merged at a head carrying its content: a verdict a format-`1` build derived
+/// may rest on another repository's merge or on a number in the base's history, and is
+/// never reused — whichever version of this crate wrote it.
+const FORMAT: u32 = 2;
 
 /// The build that writes a record, which is the only build that reuses one: another
 /// release may derive differently from the same inputs.
@@ -105,7 +110,8 @@ pub(crate) enum Reply<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HostAnswer {
-    pub(crate) merged: Reply<Option<Sha>>,
+    /// Whether it merged, and where it did, at which head.
+    pub(crate) merged: Reply<Option<MergedChange>>,
     pub(crate) open: Reply<ChangeState>,
 }
 
@@ -130,14 +136,12 @@ impl HostAnswer {
         matches!(self.merged, Reply::Failed) || matches!(self.open, Reply::Failed)
     }
 
-    /// Whether two passes heard the same thing. A pass that may record a merge asks
-    /// whether it merged even where the base's history already names the change, and
-    /// one that may not asks only where it does not — so a merge nobody reported and a
-    /// question nobody asked are the same answer, and every other difference is a
-    /// changed input.
+    /// Whether two passes heard the same thing: a merge nobody reported and a question
+    /// nobody asked are the same answer, and every other difference — a merge at another
+    /// commit or of another head among them — is a changed input.
     pub(crate) fn same_as(&self, other: &HostAnswer) -> bool {
         let merged = |answer: &HostAnswer| match &answer.merged {
-            Reply::Answered(Some(commit)) => Some(commit.clone()),
+            Reply::Answered(Some(merged)) => Some(merged.clone()),
             _ => None,
         };
         merged(self) == merged(other) && self.open == other.open
@@ -150,9 +154,9 @@ impl HostAnswer {
 pub(crate) struct Verdict {
     pub(crate) retirement: Retirement,
     pub(crate) reached: Reached,
-    /// What the base's history says of the branch's change request, where the
-    /// derivation came to ask the host about one — which decides what it asks.
-    pub(crate) history: Option<History>,
+    /// Whether the derivation came to ask the host about the branch's change request,
+    /// which a pass reusing the verdict asks again.
+    pub(crate) consulted: bool,
     pub(crate) host: HostAnswer,
 }
 
@@ -167,14 +171,6 @@ pub(crate) enum Reached {
     /// From the proofs, after them: a checkout that has it checked out, or a dirty
     /// worktree over it, still keeps the branch.
     Concluded,
-}
-
-/// Whether the base's own history names the branch's change request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum History {
-    NamesTheChange,
-    DoesNotName,
 }
 
 // llmlint: ignore-block[invalid_states_unrepresentable] `onevcs` is compared for equality

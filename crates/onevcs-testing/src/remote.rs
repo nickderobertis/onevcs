@@ -14,8 +14,8 @@ use url::Url;
 use onevcs::{
     ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, ChangeStandings, Check,
     CheckSource, CheckState, CommentId, Description, Error, HeadActivity, Hosting, MergeOutcome,
-    MergePolicy, Mergeability, PostedReply, ReadCost, ReadMarker, RemoteHost, RequiredChecks,
-    Result, ReviewRead, ReviewStandings, Sha, Visibility,
+    MergePolicy, Mergeability, MergedChange, PostedReply, ReadCost, ReadMarker, RemoteHost,
+    RequiredChecks, Result, ReviewRead, ReviewStandings, Sha, Visibility,
 };
 
 use crate::landings::{self, HeadAfter, PersonMerge};
@@ -754,25 +754,44 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         })
     }
 
+    fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>> {
+        self.called("merged_head", &[&cr.id], landings::graphql(1))?;
+        self.store.with(|state| {
+            // The same merge `merged_at` answers, through the same rule, with the head
+            // this host holds the change request at beside it — which is the head it
+            // was opened from, or the one a later publication moved it to.
+            let merged = merged_now(state, cr);
+            let head = state
+                .changes
+                .iter()
+                .find(|held| held.id == cr.id)
+                .map_or_else(|| cr.head_sha.clone(), |held| held.head_sha.clone());
+            Ok(merged.map(|commit| MergedChange { commit, head }))
+        })
+    }
+
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
         self.called("merged_at", &[&cr.id], landings::graphql(1))?;
-        self.store.with(|state| {
-            // Native auto-merge, modelled rather than skipped: a change this host is
-            // holding lands the moment its own required checks are green, on the
-            // host's clock and not on the caller's. Asking is what makes that
-            // observable — which is exactly the shape a publication watching the
-            // real GitHub meets, and the reason a journey can drive a change request
-            // from queued to merged without a second process.
-            if matches!(state.merges.get(&cr.id), Some(MergeOutcome::Queued))
-                && required_checks_green(state, &cr.id)
-            {
-                return Ok(Some(land(state, cr)));
-            }
-            Ok(match state.merges.get(&cr.id) {
-                Some(MergeOutcome::Merged(sha)) => Some(sha.clone()),
-                _ => None,
-            })
-        })
+        self.store.with(|state| Ok(merged_now(state, cr)))
+    }
+}
+
+/// The commit a change request has merged at, where this host holds it as merged.
+///
+/// Native auto-merge, modelled rather than skipped: a change this host is holding lands
+/// the moment its own required checks are green, on the host's clock and not on the
+/// caller's. Asking is what makes that observable — which is exactly the shape a
+/// publication watching the real GitHub meets, and the reason a journey can drive a
+/// change request from queued to merged without a second process.
+fn merged_now(state: &mut HostState, cr: &ChangeRequest) -> Option<Sha> {
+    if matches!(state.merges.get(&cr.id), Some(MergeOutcome::Queued))
+        && required_checks_green(state, &cr.id)
+    {
+        return Some(land(state, cr));
+    }
+    match state.merges.get(&cr.id) {
+        Some(MergeOutcome::Merged(sha)) => Some(sha.clone()),
+        _ => None,
     }
 }
 

@@ -16,7 +16,10 @@ mod unix {
     use crate::workspace::{self, Record, Ref, Token};
 
     /// The shape of the document below. A document of any other is rebuilt.
-    const VERSION: u32 = 3;
+    ///
+    /// `4` is the build that scopes stream records per event, from which nothing under
+    /// `cache/recoverable/` an earlier build wrote is served.
+    const VERSION: u32 = 4;
 
     /// A record file's identity and contents, as its metadata says. Written as one
     /// array in this field order, which keeps a host's worth of hints small.

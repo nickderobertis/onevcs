@@ -252,6 +252,12 @@ mod retries;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod retire;
+// Unix only: several repositories publishing one branch name through the same
+// substituted `gh` as `host.rs`, one repository of it each, over real origins and real
+// sessions. Its own header carries the reason in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod own_change;
 // Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
 // and its landings are real local-direct publications. Its own header carries the
 // reason in full.

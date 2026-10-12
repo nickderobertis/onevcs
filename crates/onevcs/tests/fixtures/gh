@@ -60,6 +60,27 @@ if [ "$delegated" = "0" ]; then
     "${1:-}" "${2:-}" "$ledger_changes" "$ledger_points" "$ledger_rest" >>"$STATE/ledger.ndjson"
 fi
 
+# A world serving several repositories keeps each one's change requests apart, as
+# GitHub does: `repos/<owner>/<name>/` is that repository's own state — its origin, its
+# change requests, numbered from 1 in each — and a call naming it with `--repo` is
+# answered from there. The calls log and the ledger above stay the world's, so one
+# journey reads every request every repository was asked. A world with no such
+# directory is the one repository it always was.
+called_repo=""
+previous=""
+for argument in "$@"; do
+  [ "$previous" = "--repo" ] && called_repo="$argument"
+  previous="$argument"
+done
+case "$called_repo" in
+  */*)
+    if [ -d "$STATE/repos/$called_repo" ]; then
+      STATE="$STATE/repos/$called_repo"
+      { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+    fi
+    ;;
+esac
+
 ORIGIN="$(cat "$STATE/origin")"
 # Whether a protection source requires a branch to be up to date with its base before
 # it merges — GitHub's `strict`. `up-to-date` names the one source that says so,
