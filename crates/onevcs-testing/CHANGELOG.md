@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.17.0...onevcs-testing-v0.18.0) - 2026-10-12
+
+### Fixed
+
+- *(retire)* [**breaking**] retire a branch as merged only on its own repository's change request merged at its head ([#381](https://github.com/nickderobertis/onevcs/pull/381))
+
 ## [0.17.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.16.0...onevcs-testing-v0.17.0) - 2026-10-12
 
 ### Added
