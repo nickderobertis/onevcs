@@ -256,7 +256,10 @@ mod retire;
 // substituted `gh` as `host.rs`, one repository of it each, over real origins and real
 // sessions. Its own header carries the reason in full.
 #[cfg(unix)]
-// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] the host
+// boundary is substituted as explained above; these ordinary one/two-repository
+// journeys use the existing onevcs-e2e edge. The expensive 19-identity hour workload
+// lives behind its own onevcs-recovery edge.
 mod own_change;
 // Unix only: its probes are real POSIX shell scripts and real `sh -c` one-liners,
 // and its landings are real local-direct publications. Its own header carries the

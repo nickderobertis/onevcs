@@ -87,6 +87,9 @@ case "$called_repo" in
     if [ -d "$STATE/repos/$called_repo" ]; then
       STATE="$STATE/repos/$called_repo"
       { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+    elif [ -d "$STATE/repos" ]; then
+      printf 'invalid --repo: repository %s is not hosted by this world\n' "$called_repo" >&2
+      exit 1
     fi
     ;;
 esac

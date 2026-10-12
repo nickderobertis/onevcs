@@ -1259,6 +1259,7 @@ fn the_multi_repository_host_refuses_unsafe_repository_slugs() {
         "acme-corp/../alpha",
         "/alpha",
         "acme-corp/alpha/extra",
+        "acme-corp/missing",
         "acme-corp/alpha\n",
         "",
     ] {
