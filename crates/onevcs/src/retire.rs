@@ -177,9 +177,6 @@ pub enum KeepReason {
     Excluded,
     /// A change request opened from it is neither merged nor closed.
     OpenChangeRequest,
-    /// The change request opened from it was closed without merging: nothing the host
-    /// did landed it, so whatever it holds is still work nobody published.
-    ClosedChangeRequest,
     /// A registered checkout has it checked out.
     CheckedOut,
     /// A worktree over it has uncommitted changes.
@@ -190,6 +187,9 @@ pub enum KeepReason {
     Unknown,
     /// It is the base, or its tip is one the base already carries.
     IsBase,
+    /// The change request opened from it was closed without merging: nothing the host
+    /// did landed it, so whatever it holds is still work nobody published.
+    ClosedChangeRequest,
 }
 
 impl KeepReason {

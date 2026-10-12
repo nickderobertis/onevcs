@@ -191,8 +191,11 @@ impl Host {
             record.push_str(&format!("{key}='{value}'\n"));
         }
         std::fs::write(state.join(format!("pr-{number}.env")), record).expect("a record");
-        std::fs::write(state.join(format!("pr-{number}.title")), "a change request\n")
-            .expect("a title");
+        std::fs::write(
+            state.join(format!("pr-{number}.title")),
+            "a change request\n",
+        )
+        .expect("a title");
         std::fs::write(state.join(format!("pr-{number}.body")), "\n").expect("a body");
     }
 
@@ -253,20 +256,31 @@ fn workload(host: &Host) {
         host.git(&seed, &["add", "-A"]);
         host.git(&seed, &["commit", "-q", "-m", "chore: seed the repository"]);
         let origin = host.root.join(format!("{name}.git"));
-        host.git(&host.root, &["init", "-q", "--bare", &origin.to_string_lossy()]);
+        host.git(
+            &host.root,
+            &["init", "-q", "--bare", &origin.to_string_lossy()],
+        );
         host.git(&seed, &["push", "-q", &origin.to_string_lossy(), "main"]);
         let checkout = host.root.join(&name);
         host.git(
             &host.root,
-            &["clone", "-q", &origin.to_string_lossy(), &checkout.to_string_lossy()],
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &checkout.to_string_lossy(),
+            ],
         );
         let state = host.repo_state(&name);
         std::fs::create_dir_all(&state).expect("a repository's host state");
         std::fs::write(state.join("origin"), origin.to_string_lossy().as_bytes())
             .expect("the origin it merges into");
         if n == 0 {
-            std::fs::write(host.state.join("origin"), origin.to_string_lossy().as_bytes())
-                .expect("the default origin");
+            std::fs::write(
+                host.state.join("origin"),
+                origin.to_string_lossy().as_bytes(),
+            )
+            .expect("the default origin");
         }
         let visibility = host.state.join("visibility/acme-corp").join(&name);
         std::fs::create_dir_all(visibility.parent().expect("an owner")).expect("visibility");
@@ -284,10 +298,16 @@ fn workload(host: &Host) {
         assert!(opened.status.success(), "{}", stderr(&opened));
         let session: Value = serde_json::from_slice(&opened.stdout).expect("session JSON");
         let worktree = PathBuf::from(session["worktree"].as_str().expect("a worktree"));
-        std::fs::write(worktree.join(format!("{name}.txt")), format!("{name}'s own\n"))
-            .expect("the work");
+        std::fs::write(
+            worktree.join(format!("{name}.txt")),
+            format!("{name}'s own\n"),
+        )
+        .expect("the work");
         host.git(&worktree, &["add", "-A"]);
-        host.git(&worktree, &["commit", "-q", "-m", &format!("feat: {name}'s own work")]);
+        host.git(
+            &worktree,
+            &["commit", "-q", "-m", &format!("feat: {name}'s own work")],
+        );
         let token = session["token"].as_str().expect("a token");
         let closed = host.onevcs(&["session", "close", token]);
         assert!(closed.status.success(), "{}", stderr(&closed));
@@ -302,7 +322,10 @@ fn workload(host: &Host) {
         let mut fields = vec![
             ("PR_NUMBER", number.to_string()),
             ("PR_URL", url.clone()),
-            ("PR_STATE", if merged { "MERGED" } else { "OPEN" }.to_owned()),
+            (
+                "PR_STATE",
+                if merged { "MERGED" } else { "OPEN" }.to_owned(),
+            ),
             ("PR_HEAD", BRANCH.to_owned()),
             ("PR_BASE", "main".to_owned()),
             ("PR_HEAD_SHA", head.clone()),
@@ -311,10 +334,21 @@ fn workload(host: &Host) {
             let work = host.root.join(format!("merge-{name}"));
             host.git(
                 &host.root,
-                &["clone", "-q", &origin.to_string_lossy(), &work.to_string_lossy()],
+                &[
+                    "clone",
+                    "-q",
+                    &origin.to_string_lossy(),
+                    &work.to_string_lossy(),
+                ],
             );
-            host.git(&work, &["merge", "-q", "--squash", &format!("origin/{BRANCH}")]);
-            host.git(&work, &["commit", "-q", "-m", &format!("feat: {BRANCH} (#{number})")]);
+            host.git(
+                &work,
+                &["merge", "-q", "--squash", &format!("origin/{BRANCH}")],
+            );
+            host.git(
+                &work,
+                &["commit", "-q", "-m", &format!("feat: {BRANCH} (#{number})")],
+            );
             host.git(&work, &["push", "-q", "origin", "main"]);
             fields.push(("PR_MERGE_COMMIT", host.git(&work, &["rev-parse", "HEAD"])));
             fields.push(("PR_MERGED_AT", "2026-10-12T11:28:05Z".to_owned()));
@@ -343,8 +377,10 @@ fn workload(host: &Host) {
                 );
             }
         }
-        let fields: Vec<(&str, &str)> =
-            fields.iter().map(|(key, value)| (*key, value.as_str())).collect();
+        let fields: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
         host.change_request(&name, number, &fields);
         let seq = stream.len() + 1;
         stream.push(legacy_line(
@@ -396,12 +432,17 @@ fn measure(host: &Host, kind: Kind) -> Run {
     let views = |fields: &str| {
         calls
             .iter()
-            .filter(|call| call.starts_with("pr view ") && call.contains(&format!("--json {fields}")))
+            .filter(|call| {
+                call.starts_with("pr view ") && call.contains(&format!("--json {fields}"))
+            })
             .count() as u64
     };
     let merged_views = views("state,mergeCommit,headRefOid");
     let merge_times = views("mergedAt");
-    let open_lists = calls.iter().filter(|call| call.starts_with("pr list ")).count() as u64;
+    let open_lists = calls
+        .iter()
+        .filter(|call| call.starts_with("pr list "))
+        .count() as u64;
     let requests = graphql_points + rest_requests;
     let asked: std::collections::BTreeSet<String> = ledger
         .iter()
@@ -479,7 +520,11 @@ fn retire_hour_host_requests() {
     // The hour retired the one branch that merged at its own head, and nothing else.
     let retired: u64 = runs.iter().map(|run| run.retired).sum();
     assert_eq!(retired, 1, "{runs:#?}");
-    assert_eq!(runs[0].retired, 1, "the first pass retires it: {:#?}", runs[0]);
+    assert_eq!(
+        runs[0].retired, 1,
+        "the first pass retires it: {:#?}",
+        runs[0]
+    );
     for run in &runs {
         eprintln!(
             "retire hour {:?}: {} requests ({} merged views, {} open lists, {} merge times, \
