@@ -1,0 +1,13 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'env | cut -d= -f1 | sort > "$HOME/handed"; echo 1.0.0'
+          timeout_seconds: 20

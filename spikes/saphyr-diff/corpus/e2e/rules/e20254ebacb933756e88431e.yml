@@ -1,0 +1,6 @@
+version: 3
+rules:
+  - match: {host: github.com, owner: acme-corp}
+    publication: local-direct
+    approvals: none
+default: {publication: change-open, approvals: required}

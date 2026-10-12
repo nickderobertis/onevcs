@@ -1,0 +1,11 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpejFr7t/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: container
+        style: human-step
+        action: "Push the image."

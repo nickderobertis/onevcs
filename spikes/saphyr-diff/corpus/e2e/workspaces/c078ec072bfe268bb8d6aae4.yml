@@ -1,0 +1,2 @@
+version: 1
+default: {pool: 3, overflow: unlimited, delete: [".logs/"]}

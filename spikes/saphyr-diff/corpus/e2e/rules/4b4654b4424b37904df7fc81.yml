@@ -1,0 +1,10 @@
+version: 3
+rules:
+  - match: {name: hosted}
+    publication: change-auto
+    approvals: none
+default:
+  publication: local-direct
+  approvals: none
+  base_merge: on-conflict
+  checks: {wait_seconds: 1800.5}

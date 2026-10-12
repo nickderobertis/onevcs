@@ -1,0 +1,13 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpaVWL1M/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20

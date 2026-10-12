@@ -1,0 +1,2 @@
+version: 1
+default: {pool: 1, maintain: {command: ["/tmp/.tmpByVvSQ/bin/argv.sh", "--time", "7 days", "&&", "echo pwned", "*.rs"]}}

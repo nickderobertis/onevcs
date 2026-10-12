@@ -1,0 +1,7 @@
+version: 3
+rules:
+  - match: {host: github.com, owner: sample-owner}
+    publication: change-auto
+    approvals: none
+defualt: {}
+default: {publication: change-open, approvals: required}

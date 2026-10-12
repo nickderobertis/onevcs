@@ -1,0 +1,14 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpXqfp1S/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          script: probe
+          args: ["/tmp/.tmpXqfp1S/rendezvous", "9.9.9", "-", "0", "0"]
+          timeout_seconds: 20

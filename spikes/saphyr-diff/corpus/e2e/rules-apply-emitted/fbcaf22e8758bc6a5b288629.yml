@@ -1,0 +1,11 @@
+# Installed by `onevcs rules apply`. Edit the base and overlays it was composed from, and apply them again.
+version: 4
+rules:
+- match:
+    host: github.com
+    owner: sample-owner
+  publication: change-open
+  approvals: required
+default:
+  publication: change-open
+  approvals: required

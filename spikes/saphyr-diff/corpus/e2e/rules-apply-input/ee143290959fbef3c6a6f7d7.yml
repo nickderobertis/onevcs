@@ -1,0 +1,5 @@
+version: 4
+rules:
+  - match: {owner: someone-else}
+    publication: change-direct
+    approvals: none

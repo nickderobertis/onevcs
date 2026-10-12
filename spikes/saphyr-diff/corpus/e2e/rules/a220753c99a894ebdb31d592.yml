@@ -1,0 +1,8 @@
+version: 2
+trailer_prefix: Zzz-
+rules:
+  - match: {host: github.com, owner: acme-corp, name: "*"}
+    publication: change-open
+    approvals: required
+    gate: {command: ["just", "gate"]}
+default: {publication: change-auto, approvals: none, gate: {kind: checks}}

@@ -1,0 +1,3 @@
+version: 3
+rules: []
+default: {publication: change-auto, approvals: none, checks: {wait_seconds: 1e300}}

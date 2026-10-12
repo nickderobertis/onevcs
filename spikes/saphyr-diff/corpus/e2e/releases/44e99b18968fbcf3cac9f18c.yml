@@ -1,0 +1,7 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {name: '*'}
+    targets:
+      - {name: crate, style: automated, probe: {script: /etc/probe.sh}}

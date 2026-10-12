@@ -1,0 +1,12 @@
+version: 3
+rules:
+  - match: {host: github.com, owner: acme-corp, name: hosted}
+    publication: change-auto
+    approvals: none
+    base_merge: always
+    checks: {wait_seconds: 7200}
+default:
+  publication: change-open
+  approvals: required
+  base_merge: on-conflict
+  checks: {wait_seconds: 1800}

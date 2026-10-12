@@ -45,7 +45,7 @@ fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = arg("--repo").unwrap_or_else(|| manifest.join("../.."));
     let repo = repo.canonicalize().expect("the repository");
-    let dump = arg("--dump").unwrap_or_else(|| repo.join("target/saphyr-diff/e2e-dump"));
+    let dump = arg("--dump").unwrap_or_else(|| manifest.join("corpus/e2e"));
     let home_dir = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
     let onevcs_home = arg("--onevcs-home").unwrap_or_else(|| home_dir.join(".onevcs"));
     let orchestrator =

@@ -1,0 +1,5 @@
+version: 3
+rules:
+  - match: {name: "service-*-worker"}
+    publication: change-open
+default: {publication: change-auto, approvals: none}

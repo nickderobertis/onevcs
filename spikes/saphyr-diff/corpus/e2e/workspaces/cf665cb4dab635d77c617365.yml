@@ -1,0 +1,5 @@
+version: 1
+rules:
+  - match: {name: x}
+    overflow: 0
+default: {pool: 1}

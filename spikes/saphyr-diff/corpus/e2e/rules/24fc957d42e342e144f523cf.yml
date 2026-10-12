@@ -1,0 +1,5 @@
+version: 3
+rules:
+  - match: {name: hosted}
+    drafts: {warn_on_early_lift: false}
+default: {publication: change-open, approvals: required}

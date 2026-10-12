@@ -1,0 +1,5 @@
+version: 3
+rules:
+  - match: {name: hosted}
+    checks: {wait_seconds: -5}
+default: {publication: change-auto, approvals: none}

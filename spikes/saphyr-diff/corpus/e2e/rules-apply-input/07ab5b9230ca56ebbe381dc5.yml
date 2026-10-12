@@ -1,0 +1,3 @@
+version: 4
+default:
+  publicaton: local-direct

@@ -1,0 +1,6 @@
+version: 3
+rules:
+  - match: {name: "service-*-*i"}
+    publication: change-open
+    approvals: required
+default: {publication: change-auto, approvals: none}

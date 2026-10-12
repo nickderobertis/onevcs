@@ -1,0 +1,9 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {}
+    targets:
+      - name: container
+        style: human-step
+        action: "Push the image to the internal registry and record the tag."

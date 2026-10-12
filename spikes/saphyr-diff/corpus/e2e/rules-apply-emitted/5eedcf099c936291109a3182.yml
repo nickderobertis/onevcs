@@ -1,0 +1,18 @@
+# Installed by `onevcs rules apply`. Edit the base and overlays it was composed from, and apply them again.
+version: 4
+trailer_prefix: Acme-
+rules:
+- match:
+    host: github.com
+    owner: sample-owner
+  publication: change-auto
+  approvals: none
+  drafts:
+    disabled: true
+    warn_on_early_lift: false
+default:
+  publication: change-open
+  approvals: required
+  drafts:
+    disabled: true
+    warn_on_early_lift: false

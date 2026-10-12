@@ -1,0 +1,2 @@
+version: 1
+default: {pool: 2, overflow: unlimited, maintain: {command: ["/tmp/.tmp09MUQv/bin/maintain.sh", "ok"], timeout: 30s}}

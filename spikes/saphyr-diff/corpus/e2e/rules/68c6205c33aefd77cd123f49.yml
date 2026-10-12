@@ -1,0 +1,3 @@
+version: 3
+rules: []
+default: {publication: change-auto, approvals: none, drafts: {warn_on_early_lift: false}}

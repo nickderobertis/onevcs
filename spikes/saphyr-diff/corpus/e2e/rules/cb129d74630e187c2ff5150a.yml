@@ -1,0 +1,17 @@
+# Installed by `onevcs rules apply`. Edit the base and overlays it was composed from, and apply them again.
+version: 4
+rules:
+- match:
+    host: github.com
+    owner: sample-owner
+    name: openwidget
+  approvals: required
+- match:
+    host: github.com
+    owner: sample-owner
+  publication: change-auto
+  approvals: none
+  visibility: private
+default:
+  publication: change-open
+  approvals: none

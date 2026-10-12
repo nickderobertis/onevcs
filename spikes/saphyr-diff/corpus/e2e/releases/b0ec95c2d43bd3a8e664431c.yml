@@ -1,0 +1,16 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpE9QyaV/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: container
+        style: human-step
+        action: "Push the image to the internal registry and record the tag."
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20

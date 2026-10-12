@@ -1,0 +1,4 @@
+version: 2
+trailer_prefix: "-leading"
+rules: []
+default: {publication: change-open, approvals: required}

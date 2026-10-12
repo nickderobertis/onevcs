@@ -1,0 +1,21 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpglaArU/released"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers"'
+          timeout_seconds: 20
+      - name: container
+        style: human-step
+        action: push the image
+      - name: wheel
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers"'
+          timeout_seconds: 20

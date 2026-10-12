@@ -1,0 +1,4 @@
+version: 2
+trailer_prefix: Zzz-
+rules: []
+default: {publication: change-open, approvals: required}

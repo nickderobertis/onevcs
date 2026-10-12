@@ -1,0 +1,13 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpaprw0a/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'printf "x\n" >> "$HOME/waiting"; while [ ! -f "$HOME/go" ]; do sleep 0.02; done; cat "$HOME/answers/crate"'
+          timeout_seconds: 30

@@ -1,0 +1,12 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpWdSpJu/project"}
+    adoption: published
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'echo 5.0.0'
+        adoption_instructions: '{% block adopt %}Take the vendored copy.'

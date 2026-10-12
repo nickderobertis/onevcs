@@ -1,0 +1,4 @@
+version: 2
+trailer_prefix: ""
+rules: []
+default: {publication: change-open, approvals: required}

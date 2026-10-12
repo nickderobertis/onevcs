@@ -1,0 +1,5 @@
+version: 1
+rules:
+  - match: {path: "/tmp/.tmpkXOXr0/*"}
+    publication: local-direct
+default: {publication: change-open, approvals: none}

@@ -1,0 +1,3 @@
+version: 3
+rules: []
+default: {publication: change-open, approvals: none, drafts: {disabled: true}}

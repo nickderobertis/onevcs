@@ -1,0 +1,18 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {host: github.com, owner: acme-corp, name: hosted}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20
+      - name: wheel
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/wheel"'
+          timeout_seconds: 20

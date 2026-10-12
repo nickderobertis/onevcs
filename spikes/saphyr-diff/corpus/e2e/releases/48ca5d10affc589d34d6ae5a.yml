@@ -1,0 +1,8 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {name: '*'}
+    default_target: crate
+    targets:
+      - {name: crate, style: human-step, action: push the tag}

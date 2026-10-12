@@ -1,0 +1,13 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpwb98kQ/project"}
+    adoption: published
+    targets:
+      - name: wheel
+        style: automated
+        probe:
+          script: scripts/probe.sh
+          args: [wheel]
+          timeout_seconds: 20

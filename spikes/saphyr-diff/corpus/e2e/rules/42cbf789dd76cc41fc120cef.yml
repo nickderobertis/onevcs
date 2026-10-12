@@ -1,0 +1,4 @@
+version: 2
+trailer_prefix: Qqq-
+rules: []
+default: {publication: local-direct, approvals: none}

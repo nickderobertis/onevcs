@@ -1,0 +1,6 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpzE74fQ/project"}
+    default_target: wheel

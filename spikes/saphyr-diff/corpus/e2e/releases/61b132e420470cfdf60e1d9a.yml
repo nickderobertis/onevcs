@@ -1,0 +1,11 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpVC7lwl/project"}
+    adoption: published
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'echo 5.0.0'

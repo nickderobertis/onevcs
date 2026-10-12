@@ -1,0 +1,2 @@
+version: 1
+default: {maintain: {command: [], timeout: 7d}}

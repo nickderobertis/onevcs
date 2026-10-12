@@ -1,0 +1,14 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpFMsrQt/project"}
+    adoption: published
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'echo 5.0.0'
+        adoption_instructions: |
+          {% extends "producer" %}
+          {% block adopt %}Take the vendored copy instead.{% endblock %}

@@ -1,0 +1,8 @@
+version: 7
+signing: {required: true}
+rules:
+  - match: {}
+    publication: change-open
+    approvals: required
+    stacking: always
+default: {publication: change-auto, approvals: none}

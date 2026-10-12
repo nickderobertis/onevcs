@@ -1,0 +1,4 @@
+version: 3
+trailer_prefix: Acme-
+rules: []
+default: {publication: change-open, approvals: required}

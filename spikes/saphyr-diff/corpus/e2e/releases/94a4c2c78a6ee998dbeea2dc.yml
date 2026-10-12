@@ -1,0 +1,28 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmp6qZYTC/project"}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20
+      - name: slow
+        style: automated
+        probe:
+          shell: 'sleep 30'
+          timeout_seconds: 1
+      - name: red
+        style: automated
+        probe:
+          shell: 'echo boom >&2; exit 3'
+          timeout_seconds: 20
+      - name: chatty
+        style: automated
+        probe:
+          shell: 'printf "1.0.0\nand more\n"'
+          timeout_seconds: 20

@@ -1,0 +1,14 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpuDoLtA/project"}
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20
+      - name: container
+        style: human-step
+        action: "Push the image to the internal registry and record the tag."

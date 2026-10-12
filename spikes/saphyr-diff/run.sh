@@ -3,7 +3,8 @@
 #
 #   spikes/saphyr-diff/run.sh            # diff over the corpus already captured
 #   spikes/saphyr-diff/run.sh --capture  # first re-run the e2e suite with the crate's
-#                                        # `spike-saphyr-diff` dump on (~20 min)
+#                                        # `spike-saphyr-diff` dump on (~20 min) and
+#                                        # replace spikes/saphyr-diff/corpus/e2e
 #
 # Prints, per document kind, every difference between serde_yaml_ng 0.10 (today) and
 # serde-saphyr 1.3 in what is read, written and refused; then what serde-saphyr and
@@ -11,15 +12,20 @@
 set -euo pipefail
 here="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo="$(CDPATH='' cd -- "$here/../.." && pwd)"
-dump="$repo/target/saphyr-diff/e2e-dump"
+# The crate's `spike-saphyr-diff` dump writes under target/; what the harness reads is
+# the copy committed beside it, so a fresh checkout runs without re-capturing.
+capture="$repo/target/saphyr-diff/e2e-dump"
+dump="$here/corpus/e2e"
 
 if [[ ${1:-} == --capture ]]; then
     shift
-    rm -rf -- "$dump"
-    mkdir -p -- "$dump"
+    rm -rf -- "$capture"
+    mkdir -p -- "$capture"
     # Failures are tolerated: the run is for the documents the readers were handed.
     (cd "$repo" && cargo nextest run -p onevcs --features spike-saphyr-diff --test e2e \
         --no-fail-fast >"$repo/target/saphyr-diff/e2e.log" 2>&1) || true
+    rm -rf -- "$dump"
+    cp -r -- "$capture" "$dump"
 fi
 
 # A pre-3 rules document's spent `gate:` warning is printed by today's reader on every

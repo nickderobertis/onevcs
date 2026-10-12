@@ -1,0 +1,3 @@
+version: 1
+default: {adoption: fast}
+repositories: [ - broken

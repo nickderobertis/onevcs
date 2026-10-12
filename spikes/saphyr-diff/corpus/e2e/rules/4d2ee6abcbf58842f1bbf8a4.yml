@@ -1,0 +1,5 @@
+version: 3
+rules:
+  - match: {name: elsewhere}
+    drafts: {disabled: false}
+default: {publication: change-auto, approvals: none, drafts: {disabled: true}}

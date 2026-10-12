@@ -1,0 +1,2 @@
+version: 1
+default: {pool: 0, overflow: 0}

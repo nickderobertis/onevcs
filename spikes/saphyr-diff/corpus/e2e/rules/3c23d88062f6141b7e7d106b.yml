@@ -1,0 +1,8 @@
+version: 3
+rules:
+  - match: {host: github.com, owner: acme-corp}
+    drafts: {disabled: true}
+default:
+  publication: change-open
+  approvals: required
+  drafts: {warn_on_early_lift: false}

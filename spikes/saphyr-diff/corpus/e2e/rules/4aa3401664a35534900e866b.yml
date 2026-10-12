@@ -1,0 +1,3 @@
+version: 2
+rules: []
+default: {publication: change-auto, approvals: none, drafts: {disabled: true}}

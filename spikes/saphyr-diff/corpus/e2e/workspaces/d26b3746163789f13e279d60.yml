@@ -1,0 +1,2 @@
+version: 1
+default: {maintain: {command: [make], timeout: 1h30m}}

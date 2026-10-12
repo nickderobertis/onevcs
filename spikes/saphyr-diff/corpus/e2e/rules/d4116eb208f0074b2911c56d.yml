@@ -1,0 +1,5 @@
+version: 3
+rules:
+  - match: {name: hosted}
+    base_merge: sometimes
+default: {publication: change-auto, approvals: none}

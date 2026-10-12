@@ -1,0 +1,19 @@
+version: 99
+signing: {required: true}
+default:
+  adoption: published
+  quorum: 2
+repositories:
+  - match: {path: "/tmp/.tmpojMVQs/project"}
+    default_target: crate
+    cadence: nightly
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'cat "$HOME/answers/crate"'
+          timeout_seconds: 20
+      - name: container
+        style: human-step
+        action: "Push the image."
+        attested_by: somebody

@@ -1,0 +1,5 @@
+version: 1
+default: {pool: 2}
+rules:
+  - match: {path: "/tmp/.tmpwW1zkf/project"}
+    maintain: {command: ["/tmp/.tmpwW1zkf/bin/maintain.sh", "ok"]}

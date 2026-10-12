@@ -1,0 +1,5 @@
+version: 4
+rules:
+  - match: {owner: sample-owner}
+    visibility: public
+default: {publication: local-direct, approvals: none}

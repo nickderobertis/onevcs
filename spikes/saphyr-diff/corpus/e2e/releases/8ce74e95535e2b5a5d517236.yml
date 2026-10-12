@@ -1,0 +1,7 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {}
+    targets:
+      - {name: conventional, style: human-step, action: cut it}

@@ -1,0 +1,4 @@
+version: 2
+trailer_prefix: Orchestrator-
+rules: []
+default: {publication: change-auto, approvals: required}

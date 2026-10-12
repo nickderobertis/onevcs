@@ -1,0 +1,5 @@
+version: 4
+rules:
+  - match: {owner: acme-corp}
+    visibility: private
+default: {publication: change-open, approvals: required}

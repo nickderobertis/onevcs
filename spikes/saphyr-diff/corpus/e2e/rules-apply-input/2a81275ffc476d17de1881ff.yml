@@ -1,0 +1,8 @@
+version: 4
+trailer_prefix: Acme-
+rules:
+  - match: {host: github.com, owner: sample-owner}
+    drafts: {warn_on_early_lift: false}
+    approvals: null
+default:
+  drafts: {warn_on_early_lift: false}

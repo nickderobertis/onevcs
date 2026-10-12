@@ -1,0 +1,13 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {}
+    adoption: published
+    default_target: crate
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: '(sleep 5; echo finished > "$HOME/probe-holder.finished") & echo $! > "$HOME/probe-holder.pid"; echo 3.0.0'
+          timeout_seconds: 20

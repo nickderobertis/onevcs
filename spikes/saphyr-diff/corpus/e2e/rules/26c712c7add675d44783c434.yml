@@ -1,0 +1,6 @@
+version: 3
+rules:
+  - match: {path: "*/remote-owner"}
+    publication: change-auto
+    approvals: none
+default: {publication: local-direct, approvals: none}

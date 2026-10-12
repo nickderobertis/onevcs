@@ -1,0 +1,5 @@
+version: 2
+future_key: true
+default: {pool: 1}
+rules:
+  - match: {name: "*"}

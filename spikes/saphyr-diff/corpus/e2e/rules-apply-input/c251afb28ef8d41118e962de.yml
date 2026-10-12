@@ -1,0 +1,8 @@
+version: 4
+rules:
+  - match: {host: github.com, owner: sample-owner}
+    visibility: private
+  - match: {host: github.com, owner: sample-owner, name: openwidget}
+    approvals: required
+default:
+  approvals: none

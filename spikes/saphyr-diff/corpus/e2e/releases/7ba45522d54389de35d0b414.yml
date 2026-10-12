@@ -1,0 +1,18 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {host: github.com, owner: acme-corp, name: hosted}
+    adoption: published
+    targets:
+      - name: crate
+        style: automated
+        probe:
+          shell: 'echo 1.2.3'
+          timeout_seconds: 30
+      - name: container
+        style: human-step
+        action: "Push the image and record the tag."
+      - name: wheel
+        style: human-step
+        action: "Upload the wheel and record its version."

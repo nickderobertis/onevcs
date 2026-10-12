@@ -1,0 +1,28 @@
+version: 1
+default:
+  adoption: fast
+repositories:
+  - match: {path: "/tmp/.tmpwVausT/project"}
+    adoption: published
+    targets:
+      - name: wheel
+        style: automated
+        probe:
+          script: scripts/probe.sh
+          args: []
+          timeout_seconds: 20
+      - name: bytes
+        style: automated
+        probe:
+          shell: 'printf "\377\n"'
+          timeout_seconds: 20
+      - name: controls
+        style: automated
+        probe:
+          shell: 'printf "1.0\t0\n"'
+          timeout_seconds: 20
+      - name: silent
+        style: automated
+        probe:
+          shell: 'exit 4'
+          timeout_seconds: 20

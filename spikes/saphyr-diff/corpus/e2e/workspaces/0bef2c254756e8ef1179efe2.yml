@@ -1,0 +1,2 @@
+version: 1
+default: {pool: 2, overflow: unlimited, maintain: {command: ["/tmp/.tmpiEzMRI/bin/maintain.sh", "hang"], timeout: 1s}}
