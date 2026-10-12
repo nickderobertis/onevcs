@@ -11,4 +11,10 @@ license = "MIT"
 
 [dependencies]
 serde-saphyr = "=1.3.0"
-saphyr = "=0.2.1"
+saphyr = { version = "=0.2.1", default-features = false }
+
+# saphyr's one default feature, `encoding`, behind a switch of this crate's own, so
+# `cargo tree --no-default-features` shows saphyr without it.
+[features]
+default = ["saphyr-encoding"]
+saphyr-encoding = ["saphyr/encoding"]

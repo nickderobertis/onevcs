@@ -40,6 +40,15 @@ else
 fi
 
 echo
+echo "== what saphyr's default \`encoding\` feature adds (saphyr default-features = false removes these)"
+diff <(cargo tree --quiet --manifest-path "$repo/spikes/saphyr-deps/Cargo.toml" -e normal --prefix none | sort -u) \
+     <(cargo tree --quiet --manifest-path "$repo/spikes/saphyr-deps/Cargo.toml" -e normal --prefix none --no-default-features | sort -u) \
+    | grep '^<' | sed 's/^< /  /' || true
+echo "== crates with two versions in the harness graph (onevcs + serde-saphyr + saphyr) but one in this repository's"
+duplicated() { cargo tree --quiet -e normal -d --depth 0 "$@" 2>/dev/null | grep -E '^[a-z]' | sed 's/ (.*//' | sort -u; }
+comm -13 <(cd "$repo" && duplicated) <(cd "$here" && duplicated) | sed 's/^/  /'
+
+echo
 echo "== cargo deny check (this repository's deny.toml) over serde-saphyr + saphyr alone"
 (cd "$repo/spikes/saphyr-deps" && cargo deny check --config "$repo/deny.toml" 2>&1 \
     | grep -vE 'not encountered|unmatched|no crate matched|^\s*[│┌─]|^\s*[0-9]+ │|^$' | sed 's/^/  /') || true
