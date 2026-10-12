@@ -60,30 +60,6 @@ if [ "$delegated" = "0" ]; then
     "${1:-}" "${2:-}" "$ledger_changes" "$ledger_points" "$ledger_rest" >>"$STATE/ledger.ndjson"
 fi
 
-# A world may pace the watch it answers: `pace` names a number of seconds. The watch
-# begins with its read of what the base requires — the first ruleset read once a change
-# request is open here — and from then on the first reading of the rollup is answered at
-# once and the n-th no sooner than n paces after the watch began, so the logs the first
-# reading fetches fit inside the paces before the second. What a watch then reads per
-# unit of time is the schedule's rather than whatever this script's own start-up costs on
-# a loaded host, so a journey scaling a real watch down keeps its count of polls. Due
-# times are absolute, so one slow call is caught up on.
-if [ -f "$STATE/pace" ]; then
-  case " $* " in
-    *" api "*/rules/branches/*)
-      if [ ! -f "$STATE/pace-start" ] && ls "$STATE"/pr-*.env >/dev/null 2>&1; then
-        date +%s.%N >"$STATE/pace-start"
-      fi ;;
-    *statusCheckRollup*)
-      if [ -f "$STATE/pace-start" ]; then
-        wait_for="$(awk -v start="$(cat "$STATE/pace-start")" -v pace="$(cat "$STATE/pace")" \
-          -v reading="$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" -v now="$(date +%s.%N)" \
-          'BEGIN { due = start + reading * pace - now; if (reading > 1 && due > 0) printf "%.3f", due; else printf "0" }')"
-        sleep "$wait_for"
-      fi ;;
-  esac
-fi
-
 ORIGIN="$(cat "$STATE/origin")"
 # Whether a protection source requires a branch to be up to date with its base before
 # it merges — GitHub's `strict`. `up-to-date` names the one source that says so,

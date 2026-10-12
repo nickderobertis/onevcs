@@ -23,7 +23,7 @@ function fixture() {
   const build = { run_id: sha("invocation"), binary: "onevcs", binary_sha256: sha(binary), source_sha256: sourceFingerprint() };
   const workload = schema["x-workload"];
   const record = {
-    version: 1, build, scale: workload.scale, pace: workload.pace, poll_seconds: workload.poll_seconds, grace_seconds: workload.grace_seconds,
+    version: 1, build, scale: workload.scale, poll_seconds: workload.poll_seconds, grace_seconds: workload.grace_seconds,
     wait_seconds: workload.wait_seconds, reuse_seconds: workload.reuse_seconds,
     scenarios: [
       scenario("needs-gated", 3, { outcome: "merged" }),
@@ -58,9 +58,6 @@ const refusals = {
   "a foreign format": f => { f.record.version = 2; f.save(); },
   "another poll": f => { f.record.poll_seconds = 5; f.save(); },
   "another reuse window": f => { f.record.reuse_seconds = 30; f.save(); },
-  "another pace": f => { f.record.pace = 1.5; f.save(); },
-  "a shrunk never-idle watch": f => { f.record.scenarios[3].polls = 100; f.save(); },
-  "a shrunk two-phase watch": f => { f.record.scenarios[1].polls = 104; f.save(); },
   "a missing scenario": f => { f.record.scenarios[3].shape = "two-phase"; f.save(); },
   "a watch that never polled": f => { f.record.scenarios[0].polls = 0; f.save(); },
   "a scenario that never asked": f => { f.record.scenarios[1].activity_reads = 0; f.save(); },

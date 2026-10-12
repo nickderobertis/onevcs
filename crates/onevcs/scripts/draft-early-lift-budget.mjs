@@ -21,7 +21,7 @@ try {
     `${(scenario.activity_requests / scenario.activity_reads).toFixed(1)} requests a read, ${scenario.activity_requests} added`);
   const detail = `invocation ${record.build.run_id}: one change-auto draft watch per workload at ${record.poll_seconds}s poll, ` +
     `${record.grace_seconds}s grace, ${record.wait_seconds}s wait and ${record.reuse_seconds}s reuse, run 1/${record.scale} ` +
-    `of real time with readings paced ${record.pace} polls apart; worst is ${worst.shape}; ${each.join("; ")}; at load1 ${record.load1}`;
+    `of real time; worst is ${worst.shape}; ${each.join("; ")}; at load1 ${record.load1}`;
   if (!report(worst.activity_requests, detail)) {
     throw new Error("ONEBUDGETSPEC_RESULT is missing; invoke through 'just budgets'");
   }

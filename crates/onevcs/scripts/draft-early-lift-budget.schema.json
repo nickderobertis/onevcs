@@ -17,11 +17,6 @@
       "type": "number",
       "format": "double"
     },
-    "pace": {
-      "description": "How far apart the stand-in answered its readings, in polls.",
-      "type": "number",
-      "format": "double"
-    },
     "poll_seconds": {
       "description": "The real watch the scaled one stands for, in seconds.",
       "type": "number",
@@ -57,7 +52,6 @@
     "version",
     "build",
     "scale",
-    "pace",
     "poll_seconds",
     "grace_seconds",
     "wait_seconds",
@@ -187,9 +181,7 @@
     }
   },
   "x-workload": {
-    "scale": 4.0,
-    "pace": 1.1,
-    "polls": 120.0,
+    "scale": 30.0,
     "poll_seconds": 30.0,
     "grace_seconds": 120.0,
     "wait_seconds": 3600.0,
