@@ -502,6 +502,7 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let _ = remote.retarget_change(&change.id, "release", Some("Moved."));
     let _ = remote.merge(&change, MergePolicy::ChangeDirect);
     let _ = remote.merged_at(&change);
+    let _ = remote.merged_head(&change);
     let _ = remote.merge_time(&change);
     let closed = open(remote.as_ref(), "feature/two", "main");
     host.close_unmerged(&closed.id).expect("a person closes it");

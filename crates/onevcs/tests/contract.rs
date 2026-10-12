@@ -4899,6 +4899,76 @@ fn the_amendment_declares_the_question_a_watched_publication_asks_its_host() {
 }
 
 #[test]
+fn the_amendment_declares_the_merged_head_a_retirement_asks_and_its_default_refuses() {
+    // A branch is merged only where the head the host merged carries it, and that head
+    // is the host's answer or nobody's — so the method is spelled where the merged proof
+    // is, exported with the type it answers, and defaulted to the refusal a seam with no
+    // body gives rather than to `None`, which would read as "not merged".
+    let declared = amendment_declaring("fn merged_head");
+    for spelled in [
+        "fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>>;",
+        "pub commit: Sha,",
+        "pub head: Sha,",
+    ] {
+        assert!(
+            declared.contains(spelled),
+            "the amendment no longer declares {spelled}: {declared}"
+        );
+    }
+    let merged = onevcs::MergedChange {
+        commit: Sha("9f8e7d6".to_owned()),
+        head: Sha("0f1e2d3".to_owned()),
+    };
+    assert_eq!(
+        serde_json::to_value(&merged).expect("a merged change"),
+        json!({"commit": "9f8e7d6", "head": "0f1e2d3"})
+    );
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(
+        matches!(
+            Earlier.merged_head(&change),
+            Err(Error::NotImplemented { operation }) if operation.contains("merged_head")
+        ),
+        "a host never taught which head merged must refuse rather than say `not merged`"
+    );
+    // The landing record a host report writes carries that head, as the amendment fences it.
+    let fenced: Value = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "2026-10-12T11:28:05.000Z",
+    ))
+    .expect("the landing record is JSON");
+    for key in ["url", "sha", "head", "landed_at", "landing"] {
+        assert!(fenced.get(key).is_some(), "the fenced landing names {key}");
+    }
+}
+
+#[test]
 fn the_gate_run_amendment_fences_the_payload_and_declares_what_its_records_need() {
     // The kind's payload, fenced: exactly these keys, of these types, and a fixture
     // whose own `seconds` is its two stamps' difference — the rule every record is
@@ -8236,6 +8306,10 @@ fn the_retirement_amendment_declares_the_surface_it_added() {
         ),
         (onevcs::KeepReason::Excluded, "excluded"),
         (onevcs::KeepReason::OpenChangeRequest, "open-change-request"),
+        (
+            onevcs::KeepReason::ClosedChangeRequest,
+            "closed-change-request",
+        ),
         (onevcs::KeepReason::CheckedOut, "checked-out"),
         (onevcs::KeepReason::DirtyWorktree, "dirty-worktree"),
         (

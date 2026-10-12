@@ -14,6 +14,7 @@ mod boundary;
 mod churn;
 mod counting;
 mod draft_hold;
+mod retire_hour;
 #[cfg(target_os = "linux")]
 mod scoped;
 mod telemetry;

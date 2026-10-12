@@ -4,6 +4,22 @@ set -euo pipefail
 STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
 
+called_repo=""
+repo_given=0
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--repo" ]; then
+    called_repo="$argument"
+    repo_given=1
+  fi
+  previous="$argument"
+done
+if [ "$previous" = "--repo" ] || { [ "$repo_given" = 1 ] && ! [[ "$called_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; }; then
+  printf 'invalid --repo: expected an owner/name repository slug\n' >&2
+  exit 1
+fi
+
+
 # Every call this host is asked to make, one line each, in order. A journey about
 # what a *credential* can reach has to assert over this rather than over the
 # answer: a stand-in that replies is indistinguishable from one that was allowed
@@ -59,6 +75,24 @@ if [ "$delegated" = "0" ]; then
   printf '{"method":"%s %s","changes":%s,"graphql_points":%s,"rest_requests":%s}\n' \
     "${1:-}" "${2:-}" "$ledger_changes" "$ledger_points" "$ledger_rest" >>"$STATE/ledger.ndjson"
 fi
+
+# A world serving several repositories keeps each one's change requests apart, as
+# GitHub does: `repos/<owner>/<name>/` is that repository's own state — its origin, its
+# change requests, numbered from 1 in each — and a call naming it with `--repo` is
+# answered from there. The calls log and the ledger above stay the world's, so one
+# journey reads every request every repository was asked. A world with no such
+# directory is the one repository it always was.
+case "$called_repo" in
+  */*)
+    if [ -d "$STATE/repos/$called_repo" ]; then
+      STATE="$STATE/repos/$called_repo"
+      { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+    elif [ -d "$STATE/repos" ]; then
+      printf 'invalid --repo: repository %s is not hosted by this world\n' "$called_repo" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 ORIGIN="$(cat "$STATE/origin")"
 # Whether a protection source requires a branch to be up to date with its base before

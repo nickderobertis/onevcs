@@ -104,8 +104,9 @@ use crate::store::Checked;
 /// [`HostState::check_readings`] and [`HostState::check_readings_after_lift`], the
 /// checks each reading of a change request reports in turn on each side of its lift,
 /// and [`HostState::head_activity`], what the host answers in turn about the work
-/// still running on its head.
-pub const STATE_VERSION: u32 = 23;
+/// still running on its head. `24` is a ledger that may name `merged_head`, the
+/// question a retirement asks a host before it calls a branch merged.
+pub const STATE_VERSION: u32 = 24;
 
 /// The oldest document version this build reads.
 ///
@@ -171,7 +172,9 @@ pub const STATE_VERSION: u32 = 23;
 /// none of which left a merge armed — which is what that build could do. `22` to `23`
 /// added three host fields of that kind, so a version 22 document reads as a host whose
 /// checks hold still between readings and that reports nothing running on any head
-/// beyond its checks — which is what that build could answer.
+/// beyond its checks — which is what that build could answer. `23` to `24` added a word a
+/// ledger entry may name and no field, so a version 23 document reads as it was — a
+/// build that could not be asked which head merged recorded no such call.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -614,6 +617,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "merge",
     "merge_time",
     "merged_at",
+    "merged_head",
     "mergeability",
     "open_change",
     "ready_for_review",

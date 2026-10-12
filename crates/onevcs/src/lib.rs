@@ -136,8 +136,8 @@ pub use export::{
 };
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description,
-    GitHub, HeadActivity, Hosting, MergeOutcome, Mergeability, ProtectionSource, RemoteHost,
-    RequiredChecks, Sha,
+    GitHub, HeadActivity, Hosting, MergeOutcome, Mergeability, MergedChange, ProtectionSource,
+    RemoteHost, RequiredChecks, Sha,
 };
 pub use import::{Imported, Source as ImportSource, Wrote};
 pub use integrate::{

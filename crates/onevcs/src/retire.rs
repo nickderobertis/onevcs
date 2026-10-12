@@ -187,6 +187,9 @@ pub enum KeepReason {
     Unknown,
     /// It is the base, or its tip is one the base already carries.
     IsBase,
+    /// The change request opened from it was closed without merging: nothing the host
+    /// did landed it, so whatever it holds is still work nobody published.
+    ClosedChangeRequest,
 }
 
 impl KeepReason {
@@ -196,6 +199,7 @@ impl KeepReason {
             KeepReason::HeldByLiveSession => "held-by-live-session",
             KeepReason::Excluded => "excluded",
             KeepReason::OpenChangeRequest => "open-change-request",
+            KeepReason::ClosedChangeRequest => "closed-change-request",
             KeepReason::CheckedOut => "checked-out",
             KeepReason::DirtyWorktree => "dirty-worktree",
             KeepReason::UnmergedUniqueCommits => "unmerged-unique-commits",
@@ -222,7 +226,8 @@ impl KeepReason {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UnknownCause {
     /// The read that failed: `census`, `copy`, `live-holder`, `worked-in`, `judge`,
-    /// `supersession`, `open-change` or `host-consult`.
+    /// `supersession` or `host-consult` — and `open-change` from a build that read the
+    /// base's history for a change request, which no retirement reads any more.
     pub operation: String,
     /// What it read: a path, the origin, or a change request.
     pub subject: String,
@@ -1617,18 +1622,22 @@ impl<'a> Census<'a> {
                 .read(key)
                 .filter(|verdict| self.describes(&verdict.retirement, branch, base, copies))
             {
-                let Some(history) = verdict.history else {
+                if !verdict.consulted {
                     return (verdict, Derivation::Reused);
-                };
+                }
                 // The derivation asked the host, so this pass asks it the same
                 // questions; a different answer is a changed input, and one it could not
                 // hear is not an unchanged one.
                 let mut evidence = self.evidence(branch);
+                let repo = copies
+                    .copies
+                    .first()
+                    .and_then(|copy| self.readable(copy, branch, ask));
                 let (heard, _) = self.consult(
                     branch,
                     &mut evidence,
                     &copies.first_tip(),
-                    history,
+                    repo.as_deref(),
                     ask,
                     None,
                 );
@@ -1740,7 +1749,7 @@ impl<'a> Census<'a> {
         let mut verdict = crate::verdict::Verdict {
             retirement: kept(KeepReason::Unknown),
             reached: crate::verdict::Reached::Early,
-            history: None,
+            consulted: false,
             host: crate::verdict::HostAnswer::not_asked(),
         };
         let mut evidence = self.evidence(branch);
@@ -1755,25 +1764,19 @@ impl<'a> Census<'a> {
             verdict.retirement = kept(KeepReason::IsBase);
             return verdict;
         }
-        match self.open_change(branch, &mut evidence, &judged, ask, replies) {
+        let (open, consulted, heard) =
+            self.open_change(branch, &mut evidence, &judged, ask, replies);
+        verdict.consulted = consulted;
+        verdict.host = heard;
+        match open {
+            Ok(None) => {}
+            Ok(Some(reason)) => {
+                verdict.retirement = kept(reason);
+                return verdict;
+            }
             Err(cause) => {
                 verdict.retirement = unknown(cause);
                 return verdict;
-            }
-            Ok((open, history, heard)) => {
-                verdict.history = history;
-                verdict.host = heard;
-                match open {
-                    Ok(None) => {}
-                    Ok(Some(reason)) => {
-                        verdict.retirement = kept(reason);
-                        return verdict;
-                    }
-                    Err(cause) => {
-                        verdict.retirement = unknown(cause);
-                        return verdict;
-                    }
-                }
             }
         }
         verdict.reached = crate::verdict::Reached::Concluded;
@@ -1943,15 +1946,15 @@ impl<'a> Census<'a> {
             None => Vec::new(),
         };
         let mut proof = None;
-        if let Some(change) = evidence.merged(&history) {
-            for head in &evidence.heads {
-                if git::known_to_reach(asked, &content_tip, head.as_str())? {
-                    proof = Some(RetirementProof::MergedChangeRequest {
-                        change_url: change.clone(),
-                        head: Sha(head.as_str().to_owned()),
-                    });
-                    break;
-                }
+        // Merged only on the host's own word about this identity's own change request,
+        // and only where the head it merged carries this copy's content: the head is
+        // what landed, so a copy that went on after it holds work the merge never saw.
+        if let Some(merged) = &evidence.merged {
+            if git::known_to_reach(asked, &content_tip, merged.head.as_str())? {
+                proof = Some(RetirementProof::MergedChangeRequest {
+                    change_url: merged.change.clone(),
+                    head: Sha(merged.head.as_str().to_owned()),
+                });
             }
         }
         if proof.is_none() {
@@ -2000,7 +2003,7 @@ impl<'a> Census<'a> {
         for commit in history {
             landed_points.extend(landed::trailer_values(&commit.message, key));
         }
-        if let Some(landing) = &evidence.landing {
+        if let Some(landing) = evidence.landing.as_ref().map(|landing| &landing.commit) {
             if git::known_to_reach(asked, landing.as_str(), base_tip)? {
                 if let Some(message) = git::commit_message(asked, landing.as_str())? {
                     landed_points.extend(landed::trailer_values(&message, key));
@@ -2029,13 +2032,16 @@ impl<'a> Census<'a> {
         Ok(None)
     }
 
-    /// Whether a change request opened from the branch is still open, asked of the
-    /// records first and of the host only where they do not decide it — and whether
-    /// the host answered that it merged, which is then evidence of its own. Answers
-    /// the keep reason where there is one — or the host's read that failed — whether
-    /// the base's history names the change request where that was asked, and what the
-    /// host said; or the read of the base's history that failed.
-    #[allow(clippy::type_complexity)] // three answers of one question, each named where it is read
+    /// Whether a change request opened from the branch keeps it, asked of the records
+    /// first and of the host only where they do not decide it — and whether the host
+    /// answered that it merged at a head carrying the branch, which is then evidence of
+    /// its own. Answers the keep reason where there is one — or the host's read that
+    /// failed — whether the host was consulted, and what it said.
+    ///
+    /// The records decide it only where a landing this host recorded from the host's
+    /// own report names this change request and its head carries every copy. Nothing
+    /// in the base's history stands in for that: a `(#N)` subject anybody could write
+    /// never answers for the host.
     fn open_change(
         &self,
         branch: &str,
@@ -2043,68 +2049,47 @@ impl<'a> Census<'a> {
         judged: &[(Copy, Judged)],
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
-    ) -> std::result::Result<
-        (
-            std::result::Result<Option<KeepReason>, UnknownCause>,
-            Option<crate::verdict::History>,
-            crate::verdict::HostAnswer,
-        ),
-        UnknownCause,
-    > {
-        let Some(change) = evidence.change.clone() else {
-            return Ok((Ok(None), None, crate::verdict::HostAnswer::not_asked()));
-        };
-        if evidence.landing.is_some() {
-            return Ok((Ok(None), None, crate::verdict::HostAnswer::not_asked()));
+    ) -> (
+        std::result::Result<Option<KeepReason>, UnknownCause>,
+        bool,
+        crate::verdict::HostAnswer,
+    ) {
+        if evidence.change.is_none() {
+            return (Ok(None), false, crate::verdict::HostAnswer::not_asked());
         }
-        // Named on the base by the host's own squash commit is merged, whoever merged
-        // it — the same tier the landing decision reads.
-        let mut named = crate::verdict::History::DoesNotName;
-        for (copy, one) in judged {
-            let Some(fork) = &one.fork else { continue };
-            let Some(repo) = self.readable(copy, branch, ask) else {
-                continue;
-            };
-            // llmlint: ignore[changed_behavior_has_e2e] no journey fails this read alone,
-            // for the reason the supersession read in `conclude` gives: the judge read this
-            // same history of this same repository a moment before. The cause it records is
-            // driven directly by `retire::unknown_causes`, from a fork nobody has.
-            let history = git::log_messages(
-                self.asked(&repo),
-                fork,
-                self.base_tip.as_deref().unwrap_or(""),
-            )
-            .map_err(|failure| UnknownCause::new("open-change", &change, failure))?;
-            if landed::names_the_change(&history, change.as_str()).is_some() {
-                named = crate::verdict::History::NamesTheChange;
-                break;
-            }
+        let covered = evidence.merged.is_some()
+            && judged.iter().all(|(_, one)| {
+                one.at_base
+                    || matches!(one.proof, Some(RetirementProof::MergedChangeRequest { .. }))
+            });
+        if covered {
+            return (Ok(None), false, crate::verdict::HostAnswer::not_asked());
         }
-        let head = judged
-            .first()
-            .map(|(copy, _)| copy.tip.clone())
-            .unwrap_or_default();
-        let (heard, open) = self.consult(branch, evidence, &head, named, ask, replies);
-        Ok((open, Some(named), heard))
+        let first = judged.first().map(|(copy, _)| copy);
+        let head = first.map(|copy| copy.tip.clone()).unwrap_or_default();
+        let repo = first.and_then(|copy| self.readable(copy, branch, ask));
+        let (heard, open) = self.consult(branch, evidence, &head, repo.as_deref(), ask, replies);
+        (open, true, heard)
     }
 
-    /// Put to the host what the derivation asks it about the branch's change request,
-    /// given whether the base's history already names it — or take the answers from
-    /// `replies`, where this pass already answered them. Answers what was heard, and the
-    /// keep reason it decides — or the read of the host that failed, which decides
-    /// `unknown`.
+    /// Put to the host what the derivation asks it about the branch's change request —
+    /// or take the answers from `replies`, where this pass already answered them.
+    /// Answers what was heard, and the keep reason it decides — or the read of the host
+    /// that failed, which decides `unknown`.
     ///
-    /// A pass that may record takes a late merge up first, once, through the
-    /// reconciliation a read that meets one makes — whatever else the base says — so
-    /// the landing is on the record the way every late merge's is. A read that may not
-    /// record asks whether it merged without writing anything down, and only where the
-    /// base's history does not already say.
+    /// Only the change request this identity's own records opened, in this identity's
+    /// own repository, is asked about, and only of that repository's host. Merged is
+    /// asked first, in the one read that also says which head merged: a merge whose
+    /// head carries the branch's content is evidence the copies are judged again under,
+    /// and a pass that may record takes it up as a late merge; a merge whose head does
+    /// not carry it is neither, and leaves the branch to the proofs. Not merged is then
+    /// open or closed without merging, and either keeps the branch.
     fn consult(
         &self,
         branch: &str,
         evidence: &mut Evidence,
         head: &str,
-        history: crate::verdict::History,
+        repo: Option<&Path>,
         ask: &Ask<'_>,
         replies: Option<&crate::verdict::HostAnswer>,
     ) -> (
@@ -2116,12 +2101,6 @@ impl<'a> Census<'a> {
         // What the host said where it could not be asked, for the cause it decides.
         let failure = std::cell::RefCell::new(String::new());
         let failed = |said: Error| *failure.borrow_mut() = said.to_string();
-        // An answer this pass already heard, or the host asked now — again, where it
-        // could not be asked before, so a failure is reported with what it said.
-        let merged_heard = |ask_now: &dyn Fn() -> Reply<Option<Sha>>| match replies {
-            Some(replied) if matches!(replied.merged, Reply::Answered(_)) => replied.merged.clone(),
-            _ => ask_now(),
-        };
         let session = self
             .session_of(branch)
             .map(|record| record.token.to_string());
@@ -2131,65 +2110,6 @@ impl<'a> Census<'a> {
             branch,
             session.as_deref(),
         );
-        let host = ask.host.map(|hosting| {
-            crate::publish::change_host(&self.resolution.key)
-                .and_then(|slug| hosting.for_repo(&slug))
-        });
-        let (host, unhosted) = match host {
-            Some(Ok(host)) => (Some(host), None),
-            Some(Err(said)) => (None, Some(said.to_string())),
-            None => (None, None),
-        };
-        let merged_now = |sha: &Option<Sha>, evidence: &mut Evidence| match sha
-            .as_ref()
-            .and_then(|sha| ObjectId::parse(&sha.0))
-        {
-            Some(landing) => {
-                evidence.landing = Some(landing);
-                evidence.changed = true;
-                true
-            }
-            None => false,
-        };
-        if ask.reconcile {
-            if let (Some(host), Some(opened)) = (&host, &opened) {
-                if let (Some(id), Some(target)) = (&opened.id, &opened.base) {
-                    let change = change_request(opened, id, target, head);
-                    heard.merged = merged_heard(&|| match host.merged_at(&change) {
-                        Ok(Some(sha)) => Reply::Answered(
-                            crate::publish::record_late_merge(
-                                self.registry,
-                                &crate::publish::Watched {
-                                    identity: &self.resolution.key,
-                                    branch,
-                                    url: &opened.url,
-                                    id: &id.0,
-                                    base: target,
-                                    head,
-                                    stream: opened.stream.as_deref(),
-                                },
-                                &sha,
-                                crate::publish::late_merge_time(host.as_ref(), &change),
-                            )
-                            .map(Sha),
-                        ),
-                        Ok(None) => Reply::Answered(None),
-                        Err(said) => {
-                            failed(said);
-                            Reply::Failed
-                        }
-                    });
-                    if let Reply::Answered(sha) = &heard.merged {
-                        if merged_now(sha, evidence) {
-                            return (heard, Ok(None));
-                        }
-                    }
-                }
-            }
-        }
-        if history == crate::verdict::History::NamesTheChange {
-            return (heard, Ok(None));
-        }
         if ask.host.is_none() {
             return (heard, Ok(Some(KeepReason::OpenChangeRequest)));
         }
@@ -2205,32 +2125,65 @@ impl<'a> Census<'a> {
                 )),
             );
         };
-        let Some(host) = host else {
-            return (heard, Err(unanswered(&unhosted.unwrap_or_default())));
+        let host = ask.host.map(|hosting| {
+            crate::publish::change_host(&self.resolution.key)
+                .and_then(|slug| hosting.for_repo(&slug))
+        });
+        let host = match host {
+            Some(Ok(host)) => host,
+            Some(Err(said)) => return (heard, Err(unanswered(&said.to_string()))),
+            None => return (heard, Ok(Some(KeepReason::OpenChangeRequest))),
         };
-        if !ask.reconcile {
-            heard.merged = merged_heard(&|| match host
-                .merged_at(&change_request(&opened, id, target, head))
-            {
-                Ok(Some(sha)) => Reply::Answered(Some(sha)),
-                Ok(None) => Reply::Answered(None),
+        let change = change_request(&opened, id, target, head);
+        heard.merged = match replies {
+            Some(replied) if matches!(replied.merged, Reply::Answered(_)) => replied.merged.clone(),
+            _ => match host.merged_head(&change) {
+                Ok(merged) => Reply::Answered(merged),
                 Err(said) => {
                     failed(said);
                     Reply::Failed
                 }
-            });
-            match &heard.merged {
-                Reply::Answered(sha) => {
-                    if merged_now(sha, evidence) {
-                        return (heard, Ok(None));
-                    }
+            },
+        };
+        match &heard.merged {
+            Reply::Answered(Some(merged)) => {
+                let carried = repo.is_some_and(|repo| {
+                    git::carries_content_of(self.asked(repo), &merged.head.0, head).unwrap_or(false)
+                });
+                if let (true, Some(repo)) = (carried && ask.reconcile, repo) {
+                    let _ = crate::publish::record_late_merge(
+                        self.registry,
+                        &crate::publish::Watched {
+                            identity: &self.resolution.key,
+                            branch,
+                            url: &opened.url,
+                            id: &id.0,
+                            base: target,
+                            head,
+                            repo,
+                            stream: opened.stream.as_deref(),
+                        },
+                        merged,
+                        crate::publish::late_merge_time(host.as_ref(), &change),
+                    );
                 }
-                Reply::Failed => {
-                    let cause = unanswered(&format!("whether it merged: {}", failure.borrow()));
-                    return (heard, Err(cause));
+                if let Some(merged_head) = ObjectId::parse(&merged.head.0) {
+                    evidence.merged = Some(Merged {
+                        change: opened.url.clone(),
+                        head: merged_head,
+                    });
+                    evidence.changed = true;
                 }
-                Reply::NotAsked => {}
+                // Merged is not open, whatever head it merged: the proofs decide the
+                // branch from here, and a head that does not carry it proves nothing.
+                return (heard, Ok(None));
             }
+            Reply::Answered(None) => {}
+            Reply::Failed => {
+                let cause = unanswered(&format!("whether it merged: {}", failure.borrow()));
+                return (heard, Err(cause));
+            }
+            Reply::NotAsked => {}
         }
         heard.open = match replies {
             Some(replied) if matches!(replied.open, Reply::Answered(_)) => replied.open.clone(),
@@ -2249,8 +2202,9 @@ impl<'a> Census<'a> {
         };
         let open = match heard.open {
             Reply::Answered(ChangeState::Open) => Ok(Some(KeepReason::OpenChangeRequest)),
-            // Neither merged nor open is closed without merging, which holds nothing.
-            Reply::Answered(ChangeState::NotOpen) => Ok(None),
+            // Neither merged nor open is closed without merging: nothing the host did
+            // landed it, so the branch is kept for whoever closed it to decide on.
+            Reply::Answered(ChangeState::NotOpen) => Ok(Some(KeepReason::ClosedChangeRequest)),
             Reply::Failed => Err(unanswered(&format!(
                 "whether it is still open: {}",
                 failure.borrow()
@@ -2285,7 +2239,8 @@ impl<'a> Census<'a> {
                         true => Vec::new(),
                         false => git::log_messages(asked, &from, base_tip)?,
                     };
-                    landed::names_the_change(&history, url.as_str()).is_some()
+                    landed::names_the_change(&history, url.as_str(), &record.superseded_by)
+                        .is_some()
                 }
             };
             if reached {
@@ -2354,32 +2309,46 @@ impl Judged {
 
 /// What this host's own records say about one branch.
 struct Evidence {
+    /// The change request opened from it, in this identity's own repository.
     change: Option<Url>,
-    landing: Option<ObjectId>,
-    heads: Vec<ObjectId>,
+    /// The landing recorded for it, which a landing trailer is read off.
+    landing: Option<landed::RecordedLanding>,
+    /// The merge the host reported for that change request, with the head it merged —
+    /// from a landing recorded from such a report, or from asking the host now.
+    merged: Option<Merged>,
     /// Whether the host was found to have merged the change during this
     /// classification, which is new evidence every copy has to be judged under.
     changed: bool,
+}
+
+/// A merge the host reported for the branch's own change request.
+struct Merged {
+    change: Url,
+    head: ObjectId,
 }
 
 impl Evidence {
     fn of(census: &Census<'_>, branch: &str, session: Option<&str>) -> Self {
         let recorded =
             status::recorded_for(census.streams, &census.resolution.key, branch, session);
+        // A recorded landing stands in for the host's answer only where it was written
+        // from that answer: it carries the head the host merged, and names this very
+        // change request. One with no head — every landing written before the head was —
+        // proves nothing, and the host is asked instead.
+        let merged = recorded.landing.as_ref().and_then(|landing| {
+            let change = landing.change.clone()?;
+            (Some(&change) == recorded.change.as_ref()).then_some(())?;
+            Some(Merged {
+                change,
+                head: landing.head.clone()?,
+            })
+        });
         Evidence {
             change: recorded.change,
             landing: recorded.landing,
-            heads: status::pushed_heads(census.streams, &census.resolution.key, branch, session),
+            merged,
             changed: false,
         }
-    }
-
-    /// The change request, where the records — or the base's own history — say it
-    /// merged.
-    fn merged(&self, history: &[git::CommitMessage]) -> Option<&Url> {
-        let change = self.change.as_ref()?;
-        (self.landing.is_some() || landed::names_the_change(history, change.as_str()).is_some())
-            .then_some(change)
     }
 }
 
@@ -3808,7 +3777,10 @@ mod unknown_causes {
                     &checkout.to_string_lossy(),
                 ],
             );
-            register_checkout(&checkout, None).expect("the checkout registers");
+            // Registered under a hosted origin with no host implementation behind it, so
+            // a change request in its own repository is one nobody can be asked about.
+            let hosted = url::Url::parse("https://gitlab.com/acme/project.git").expect("a URL");
+            register_checkout(&checkout, Some(&hosted)).expect("the checkout registers");
             std::fs::write(
                 at.join(".onevcs/rules.yml"),
                 "version: 1\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
@@ -3999,53 +3971,13 @@ mod unknown_causes {
     }
 
     #[test]
-    fn a_base_history_that_cannot_be_read_is_an_open_change_cause_naming_the_change_request() {
-        let landed = Landed::new();
-        let host = landed.host();
-        let identity = landed.identity();
-        let census = census(&host, &identity);
-        let copies = census.copies(BRANCH, &Ask::offline());
-        let base_tip = census.base_tip.clone().expect("the base is read");
-        let mut judged = census
-            .judged(
-                BRANCH,
-                &base_tip,
-                &copies,
-                &census.evidence(BRANCH),
-                &Ask::offline(),
-            )
-            .expect("every copy is judged");
-        // The judge's answer read back with a fork no repository has, which is what makes
-        // the base's history from it a read that fails.
-        judged[0].1.fork = Some("1111111111111111111111111111111111111111".to_owned());
-        // A change request recorded and no landing, so whether the base's history names
-        // it is the question the read answers.
-        let url = "https://github.com/acme/project/pull/7";
-        let mut evidence = super::Evidence {
-            change: Some(url::Url::parse(url).expect("a change request URL")),
-            landing: None,
-            heads: Vec::new(),
-            changed: false,
-        };
-        let read = census.open_change(BRANCH, &mut evidence, &judged, &Ask::offline(), None);
-        let Err(cause) = read else {
-            panic!("a base history from a fork nobody has was read");
-        };
-        assert_eq!(
-            (cause.operation.as_str(), cause.subject.as_str()),
-            ("open-change", url)
-        );
-        assert!(cause.error.contains("1111111"), "{cause}");
-    }
-
-    #[test]
     fn a_change_request_the_host_cannot_be_asked_about_is_a_host_consult_cause_naming_it() {
         let landed = Landed::new();
         // The record `publish` writes when it opens a change request, on the open
-        // session's own stream: the identity is a local path, so no host serves it, and
+        // session's own stream: the identity is hosted where this build has no host, and
         // whether the change request merged or is still open is a question nobody can
         // answer.
-        let url = "https://github.com/acme/project/pull/7";
+        let url = "https://gitlab.com/acme/project/-/merge_requests/7";
         let mut stream = Stream::open(&landed.stale.token.to_string()).expect("its stream");
         stream.emit(
             EventKind::ChangeOpened,
@@ -4065,7 +3997,7 @@ mod unknown_causes {
             BRANCH,
             &mut census.evidence(BRANCH),
             &copies.first_tip(),
-            crate::verdict::History::DoesNotName,
+            None,
             &ask,
             None,
         );
@@ -4086,10 +4018,11 @@ mod unknown_causes {
 mod permits {
     use super::{Acting, KeepReason, RetirementClass};
 
-    const KEPT: [KeepReason; 8] = [
+    const KEPT: [KeepReason; 9] = [
         KeepReason::HeldByLiveSession,
         KeepReason::Excluded,
         KeepReason::OpenChangeRequest,
+        KeepReason::ClosedChangeRequest,
         KeepReason::CheckedOut,
         KeepReason::DirtyWorktree,
         KeepReason::UnmergedUniqueCommits,

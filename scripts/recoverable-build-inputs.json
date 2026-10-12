@@ -33,6 +33,10 @@
     {
       "directory": "crates/onevcs/scripts",
       "prefix": "draft-early-lift-budget"
+    },
+    {
+      "directory": "crates/onevcs/scripts",
+      "prefix": "retire-hour-host-requests-budget"
     }
   ]
 }

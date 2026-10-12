@@ -33,7 +33,10 @@ enum Compared {
 
 /// The shape of an entry and of the key it is stored under. An entry of any other
 /// is recomputed.
-const VERSION: u32 = 5;
+///
+/// `6` is the build that scopes stream records per event, from which nothing under
+/// `cache/recoverable/` an earlier build wrote is served.
+const VERSION: u32 = 6;
 
 /// What a repository's reads were answered from, beyond its configuration and
 /// layout: every object store it reads, by path, as this process found it.

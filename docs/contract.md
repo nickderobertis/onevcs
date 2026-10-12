@@ -3134,6 +3134,8 @@ identity's base on its origin is not a finished branch at all: it is `keep` with
     that change no content equals or is an ancestor of a head `onevcs` recorded pushing
     to it. A commit that changes no content is one whose tree equals its parent's, such
     as the `chore: record the landing of <branch>` commit a publication writes.
+    *(Superseded by "A branch is merged only on its own repository's change request"
+    below: the head is the one the host reports merging, never one `onevcs` pushed.)*
   - **`recorded-landing`**: a landing is recorded for the branch — a recorded landing
     commit, or a `<prefix>Landed-Commit:` trailer on the base — naming the branch commit
     that landed (the *landed point*). The record alone never makes a branch retirable:
@@ -3161,7 +3163,9 @@ identity's base on its origin is not a finished branch at all: it is `keep` with
   working in, or whose occupancy lease is held — or a pool slot such a session has it
   checked out in), `excluded` (the caller excluded it), `open-change-request` (a change
   request opened from it is neither merged nor closed; the host is asked once where the
-  records do not decide it, and a host that cannot be read is `unknown`), `checked-out`
+  records do not decide it, and a host that cannot be read is `unknown`),
+  `closed-change-request` (a change request opened from it was closed without merging),
+  `checked-out`
   (a registered checkout has it checked out), `dirty-worktree` (a worktree over it has
   uncommitted changes), `unmerged-unique-commits` (none of the above, and no proof
   holds), `unknown` (a read needed to decide failed), or `is-base`. Once any `keep`
@@ -3213,8 +3217,8 @@ pub struct Retirement { pub class: RetirementClass, pub reason: Option<KeepReaso
                         pub superseded_by: Option<SupersededBy>,
                         pub differing_paths: Vec<String>, pub holders: Vec<BranchHolder> }
 pub enum RetirementClass { Retirable, SupersededWithChanges, Keep }
-pub enum KeepReason { HeldByLiveSession, Excluded, OpenChangeRequest, CheckedOut,
-                      DirtyWorktree, UnmergedUniqueCommits, Unknown, IsBase }
+pub enum KeepReason { HeldByLiveSession, Excluded, OpenChangeRequest, ClosedChangeRequest,
+                      CheckedOut, DirtyWorktree, UnmergedUniqueCommits, Unknown, IsBase }
 pub enum RetirementProof { MergedChangeRequest { change_url: Url, head: Sha },
                            RecordedLanding { commit: Sha },
                            ContentIdentical { base_commit: Sha } }
@@ -3364,7 +3368,9 @@ Event kinds added: `branch-superseded`, `branch-retired`.
 
 One existing kind gains a field: a `push` of the branch's own name gains `head`, the
 commit it put on the origin — what a change request opened from the branch carries, and
-what `merged-change-request` asks the branch's content to be contained in.
+what `merged-change-request` asks the branch's content to be contained in. *(The last
+clause is superseded by "A branch is merged only on its own repository's change request"
+below: `merged-change-request` asks it of the head the host reports merging.)*
 
 ### A branch kept on purpose and never landed is discarded only by name
 
@@ -3386,9 +3392,9 @@ onevcs reclaim BRANCH [--repo REPO] --discard [--dry-run] [--json]
 A `RetireRequest` with `mode: RetireMode::Discard` permits everything `Reclaim`
 permits, and also a `keep` classification whose **only** reason is
 `unmerged-unique-commits`. It still refuses every other reason to keep a branch —
-`held-by-live-session`, `excluded`, `open-change-request`, `checked-out`,
-`dirty-worktree`, `unknown` and `is-base` — so a discard never touches a base, never
-closes a change request, and never deletes under somebody working. The classification
+`held-by-live-session`, `excluded`, `open-change-request`, `closed-change-request`,
+`checked-out`, `dirty-worktree`, `unknown` and `is-base` — so a discard never touches a
+base, never closes a change request, and never deletes under somebody working. The classification
 is unchanged; only what the mode permits moves. Without `--discard`, `reclaim` is
 `RetireMode::Reclaim` exactly as above.
 
@@ -3448,12 +3454,14 @@ it was derived under. A dry run records too: a record is a derivation, not an ac
 A record is one JSON document: the format, the writer, the key, and the verdict beside
 what reusing it has to ask again — where the derivation reached it (`early`, before the
 checked-out and dirty-worktree checks, or `concluded`, from the proofs), whether the
-base's history names the change request where the host came to be asked, and the host's
-two answers. No consumer reads one; the shape is spelled so the record and this text
-cannot drift apart.
+derivation consulted the host about the change request, and the host's two answers. No
+consumer reads one; the shape is spelled so the record and this text cannot drift apart.
+*(Format `2`, from "A branch is merged only on its own repository's change request" below:
+`history` is gone and `consulted` stands in its place, and a merged answer names the head
+the host merged as well as the commit.)*
 
 ```json
-{"format": 1, "onevcs": "0.35.0",
+{"format": 2, "onevcs": "0.35.0",
  "key": {"identity": "github.com/acme/project", "branch": "feature/unfinished",
          "base": "main", "base_tip": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
          "copies": [{"kind": "checkout", "location": "/home/me/src/project",
@@ -3470,14 +3478,14 @@ cannot drift apart.
                             "superseded_by": null, "differing_paths": ["src/lib.rs"],
                             "holders": [{"kind": "checkout",
                                          "location": "/home/me/src/project"}]},
-             "reached": "concluded", "history": "does-not-name",
+             "reached": "concluded", "consulted": true,
              "host": {"merged": {"answered": null}, "open": {"answered": "open"}}}}
 ```
 
-`asking` is `host` or `records`; `history` is `names-the-change`, `does-not-name`, or
-`null` where the host was never in question; each host answer is `"not-asked"`,
-`{"answered": ...}` — a merge commit or `null`, and `open` or `not-open` — or `"failed"`,
-which no reusable record holds.
+`asking` is `host` or `records`; `consulted` is whether the derivation came to ask the
+host about the change request, which a pass reusing the verdict asks again; each host
+answer is `"not-asked"`, `{"answered": ...}` — `{"commit": sha, "head": sha}` or `null`,
+and `open` or `not-open` — or `"failed"`, which no reusable record holds.
 
 **What a reused verdict may skip: only the derivation** — the ancestry, landing and
 content proofs. These are evaluated fresh on every pass and are never part of what a
@@ -3543,6 +3551,115 @@ impl Derivation { pub fn as_str(self) -> &'static str; }
  "outcome": "kept", "deleted": [], "failed": [], "slots_returned": [],
  "run_roots_removed": [], "sessions_closed": [], "derivation": "reused"}
 ```
+
+### A branch is merged only on its own repository's change request
+
+Branch-keyed verbs wrote one stream per branch *name*, with no identity on its events, and
+the finished-branches pass took the newest `change-opened` and landing across it. So every
+repository that published one branch name shared one change request: the pass asked each
+identity's own host about another repository's number, recorded that repository's merge as
+this one's landing, and then retired branches whose own change requests were still open —
+closing every one of them unmerged. **A branch is now proved merged only from its own
+repository's change request, merged at a head that carries the branch's content; a branch
+whose change request is open, or was closed without merging, is kept.** This amendment is
+the one source of the rules below, which `onepipeline` and `ai-orchestrator` restate.
+
+**Record scoping.** A record read for identity `I` and branch `B` counts only if its event
+carries `I` as `labels.identity`, or carries no identity and every change-request URL it
+names is in `I`'s repository (host, owner and name equal to `I`'s key). Scoping is per
+event, not per stream: in a legacy shared stream, `I` reads its own `change-opened` and
+landing, never the newest one across all identities. An event naming another repository's
+change request contributes nothing for `I`. An unlabelled legacy event that names no
+change-request URL identifying a repository — a push, a fetch, a gate run — is not
+attributable to any identity, so it supplies no identity-specific proof — no pushed head,
+landing or change request — for anyone; it may still be read for what is not proof. Streams
+already on disk are read under this rule and never rewritten.
+
+**New writes.** Every event `publish-branch`, `recover` and `preserve` write carries the
+identity key as `labels.identity` — the label session streams already carry — and so does
+a landing recorded after the fact onto the stream that opened its change request. Stream
+tokens and file names are unchanged.
+
+**Merged proof.** `merged-change-request` holds only when (a) the change request's URL is
+in the branch's own identity, (b) the host, asked about that repository, reports it
+merged, and (c) the head the host reports for that change request — `headRefOid`, read in
+the same `gh pr view` as the merge — equals or descends from the branch's tip less its
+content-free tail. A landing this host recorded counts in place of asking only when that
+record was written from such a host report for the same identity and change request and
+itself carries the reported head, and that head passes (c). A landing record carrying no
+reported head — every landing written before this amendment — or one naming another
+repository's change request proves nothing, and the host is asked instead; an open or
+closed-unmerged answer then keeps the branch. The host is never asked about a change
+request outside the identity's repository, and a late merge is never recorded for one, or
+for one whose reported head does not carry the branch's content. A merge whose head does
+not carry the branch leaves it to the other proofs, which keep it while it holds work.
+Because nothing the base's history says is asked before the host any more, the unknown
+cause's `open-change` operation is no longer produced; a document carrying it still
+reads.
+
+The landing record gains one field, written only where a host report carried it:
+`change-merged` gains `head`, the head the host reported merging.
+
+```json
+{"url": "https://github.com/acme/project/pull/12",
+ "sha": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+ "head": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+ "landed_at": "2026-10-12T11:28:05.000Z",
+ "landing": "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"}
+```
+
+`RemoteHost` gains one defaulted method and the type it answers. The default is the
+refusal every additive method has, which a retirement reads as a question nobody answered
+— so a host written before this method keeps every branch whose change request it is asked
+about:
+
+```rust
+pub trait RemoteHost {                                 // beside merged_at:
+    fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>>;  // default: NotImplemented
+}
+pub struct MergedChange {                              // onevcs::MergedChange, from the crate root
+    pub commit: Sha,                                   // the commit the base reached
+    pub head: Sha,                                     // the head the host merged it from
+}
+```
+
+`GitHub` answers it from `gh pr view --json state,mergeCommit,headRefOid` — one request,
+the one `merged_at` makes with the head beside it.
+
+**Readers of a landing.** `status`, `recoverable` and release correlation apply record
+scoping too, and a landing record carrying no reported head counts for them only if the
+landing commit it records is reachable from that identity's own base, decided by a
+memoized local ancestry check and never by a host request. A genuine landing recorded
+before this amendment, whose squash commit is on its base, still reads landed; a landing
+that names the identity's own change request while recording another repository's merge
+commit reads as no landing for anyone.
+
+**History matching is corroboration only.** A change request's number in the base's
+history never proves a branch merged, and never stands in for the host's answer or skips
+asking it: no `(#N)` subject, merge subject or URL in a commit message can make a branch
+retirable. Where it is still consulted — the landing tier `change-request`, and a
+supersession whose landing is a change request — it is held to the identity's own
+repository and to GitHub's own merge spellings: a squash subject ending in `(#N)`, or
+`Merge pull request #N from <owner>/<branch>` naming the branch. A number in a body, a URL
+quoted anywhere, or a number under another repository's URL is not read.
+
+**Keep reasons.** An open change request keeps the branch as `open-change-request`, as
+before. A change request closed without merging keeps it under a new keep reason,
+`KeepReason::ClosedChangeRequest`, travelling as `closed-change-request`. Once either
+applies nothing is deleted. `onevcs reclaim --discard` is unchanged: it still names one
+branch, and refuses both reasons.
+
+```rust
+pub enum KeepReason { /* every reason above, and: */ ClosedChangeRequest }
+```
+
+Adding a variant to the exhaustive `KeepReason` is a break of the public surface, released
+as a pre-1.0 minor.
+
+**Nothing an earlier build decided is reused.** The verdict record moves to format `2`
+(above), and every document under `cache/recoverable/v1/` moves to a version of its own
+that no earlier build wrote, so no verdict and no recovery cache entry computed before this
+amendment is served by a build carrying it.
 
 ### Every change request is a draft while its checks run, and green decides whether it is lifted
 

@@ -1189,14 +1189,14 @@ fn a_host_that_cannot_be_asked_keeps_the_branch_as_unknown_and_names_the_questio
         "#!/usr/bin/env bash\necho 'error connecting to api.github.com' >&2\nexit 1\n",
     )
     .expect("a host that cannot be reached");
-    // A rehearsal asks whether the change request merged and stops there; a retirement
-    // that may record a merge asks that first, and then whether it is still open.
+    // A rehearsal and a retirement that may record a merge both ask first whether the
+    // change request merged, and a host that cannot say decides nothing after it.
     for (args, question) in [
         (
             &["retire", "feature/unasked", "--dry-run"][..],
             "whether it merged: ",
         ),
-        (&["retire", "feature/unasked"], "whether it is still open: "),
+        (&["retire", "feature/unasked"], "whether it merged: "),
     ] {
         let (code, kept) = verb(&hosted.world, args);
         assert_eq!(code, 4, "{kept}");

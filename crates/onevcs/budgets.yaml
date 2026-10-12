@@ -41,3 +41,22 @@ budgets:
       these are the only requests this change adds. Detail, unbudgeted, per workload:
       polls, check-read requests a poll, the watch's total requests, head-activity reads,
       reads answered from the 300-second reuse, and requests a read.
+  # Basis: design (the plan's hourly request allowance). Measurement
+  # source: telemetry, the record the onevcs-recovery journey `retire_hour.rs` writes.
+  # Check runtime: about 2 seconds.
+  - id: retire-hour-host-requests
+    measure: reported
+    command: [node, scripts/retire-hour-host-requests-budget.mjs]
+    unit: requests
+    direction: max
+    threshold: 760
+    description: >-
+      GitHub API requests one hour's finished-branch retirement spends — each `gh pr`
+      call one GraphQL point, each `gh api` path one REST request, counted from the gh
+      stand-in's call ledger and summed over every pass and sweep in the workload
+      defined by `tests/recovery-workload/retire_hour.rs`. Inner measure: the shared
+      token's hourly headroom (5,000
+      requests an hour, GraphQL points and REST each) is the outcome, and these are the
+      requests retirement makes in it. Detail, unbudgeted: requests per pass and per
+      sweep, branches examined, branches decided from records alone, branches the host
+      was asked about, and requests by kind (merged-state view, open list, merge time).

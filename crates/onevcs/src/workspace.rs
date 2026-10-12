@@ -2759,7 +2759,7 @@ fn released_from_the_record(record: &Record) -> Option<FromTheRecord> {
     )
     .landing?;
     Some(FromTheRecord {
-        commit: commit.as_str().to_owned(),
+        commit: commit.commit.as_str().to_owned(),
         said,
     })
 }

@@ -422,7 +422,7 @@ pub fn publish_branch(
 ) -> Result<PublishOutcome> {
     let registry = store::load()?;
     let token = crate::status::keyed::Verb::PublishBranch.stream(&request.branch);
-    let mut stream = Stream::open(&token)?;
+    let mut stream = branch_keyed(&registry, &request.repo, &token)?;
     crate::publish_branch::run(
         &registry,
         &request.repo,
@@ -434,6 +434,21 @@ pub fn publish_branch(
         providers.hosting,
         &mut stream,
     )
+}
+
+/// The stream a branch-keyed verb records under, labelled with the identity it is
+/// publishing for.
+///
+/// The token is one per branch *name*, so every repository that publishes that name
+/// writes into the same file; the label is what keeps each event that repository's.
+/// A repository this registry cannot resolve is left unlabelled here — the verb refuses
+/// it itself, with the reason, before it records anything that proves something.
+fn branch_keyed(registry: &crate::registry::Registry, repo: &Path, token: &str) -> Result<Stream> {
+    let mut stream = Stream::open(token)?;
+    if let Ok(resolution) = store::resolve_path(registry, repo) {
+        stream.label("identity", &resolution.key);
+    }
+    Ok(stream)
 }
 
 /// What to recover, for the branch-keyed verb that takes work a step left behind.
@@ -459,7 +474,7 @@ pub struct RecoverRequest {
 pub fn recover(providers: &Providers<'_>, request: &RecoverRequest) -> Result<PublishOutcome> {
     let registry = store::load()?;
     let token = crate::status::keyed::Verb::Recover.stream(&request.branch);
-    let mut stream = Stream::open(&token)?;
+    let mut stream = branch_keyed(&registry, &request.repo, &token)?;
     crate::recover::run(
         &registry,
         &request.repo,

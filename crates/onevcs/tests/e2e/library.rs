@@ -5809,6 +5809,10 @@ fn late_merge(branch: &str) -> LateMerge {
     // …and then the host merges, out of a clone of its own.
     let merger = world.clone_of(&origin, "merger");
     world.git(&merger, &["fetch", "-q", "origin", branch]);
+    let head = world
+        .git(&merger, &["rev-parse", "FETCH_HEAD"])
+        .trim()
+        .to_owned();
     world.git(&merger, &["merge", "--squash", "FETCH_HEAD"]);
     world.git(
         &merger,
@@ -5828,6 +5832,9 @@ fn late_merge(branch: &str) -> LateMerge {
     merged_state
         .merges
         .insert(change, MergeOutcome::Merged(onevcs::Sha(merged.clone())));
+    // …from the head the publication pushed, which is what a host reports a merge was
+    // of: the in-memory host never saw the push, so the scenario says what it merged.
+    merged_state.changes[0].head_sha = onevcs::Sha(head);
     LateMerge {
         world,
         session,
@@ -5907,6 +5914,14 @@ impl RemoteHost for CountingHost {
         self.asked
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         self.behind.merged_at(cr)
+    }
+
+    // The question a late merge is now asked as: where it merged and at which head, in
+    // the one read — counted as the same one question.
+    fn merged_head(&self, cr: &ChangeRequest) -> onevcs::Result<Option<onevcs::MergedChange>> {
+        self.asked
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.behind.merged_head(cr)
     }
 
     fn ready_for_review(&self, cr: &ChangeRequest) -> onevcs::Result<()> {

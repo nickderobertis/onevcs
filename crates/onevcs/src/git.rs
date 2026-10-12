@@ -3865,6 +3865,25 @@ pub fn content_free_tail<'a>(
 /// How far back [`content_free_tail`] walks.
 const CONTENT_FREE_WALK: usize = 64;
 
+/// Whether `head` carries everything `tip` holds: `tip`, less the trailing commits that
+/// change no content, equals or is an ancestor of `head`.
+///
+/// What a merge reported for a change request has to show before it says anything about
+/// a branch: the head the host merged is what landed, and a branch that went on after
+/// it — a content commit pushed after that head — holds work the merge never saw. The
+/// walk back from `tip` stops where `tip` and `head` meet, so a branch standing at the
+/// merged head, or above it by nothing but landing records, carries nothing more.
+/// A `head` this repository does not have is `false`, which is the side that keeps.
+pub fn carries_content_of<'a>(cwd: impl Into<Asked<'a>>, head: &str, tip: &str) -> Result<bool> {
+    let cwd = cwd.into();
+    if !has_commit(cwd, &Sha(head.to_owned())) || !has_commit(cwd, &Sha(tip.to_owned())) {
+        return Ok(false);
+    }
+    let met = merge_base(cwd, head, tip)?.unwrap_or_default();
+    let (_, content_tip) = content_free_tail(cwd, tip, &met)?;
+    known_to_reach(cwd, &content_tip, head)
+}
+
 /// Every worktree of a repository with the branch each has checked out, read from the
 /// repository's own `HEAD` files where the layout is the one git writes, and from `git
 /// worktree list` where it is anything else.

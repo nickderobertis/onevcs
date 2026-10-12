@@ -54,3 +54,11 @@ the polls made beside the requests, and the reader holds the ratios, not the cou
 It writes `draft-hold.json`, retracted with the other two records;
 `crates/onevcs/scripts/draft-early-lift-budget.mjs` is the only reader, and
 `crates/onevcs/budgets.yaml` the only budget over it.
+
+`retire_hour.rs` is the retirement hour's budget journey: nineteen identities on the
+e2e tier's `gh` stand-in, each answering for its own repository (`gh-state/repos/`), all
+nineteen recorded in one legacy shared `publish-branch-<branch>` stream, then the hour
+the plan names — eighteen `retire-finished` passes and two `sweep`s — on the release
+binary. It counts what the stand-in's ledger and call log say each run asked, writes
+`retire-hour.json`, retracted with the other records, and
+`crates/onevcs/scripts/retire-hour-host-requests-budget.mjs` is the only reader.
