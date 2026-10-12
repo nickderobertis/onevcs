@@ -395,14 +395,18 @@ fn section_rules_apply(ctx: &Ctx, docs: &[Doc]) {
 struct SerFlavor {
     name: &'static str,
     options: fn() -> serde_saphyr::SerializerOptions,
+    /// CODE CHANGE applied to the emitted text (see `requote`).
+    requote: bool,
 }
 
 const SER_FLAVORS: &[SerFlavor] = &[
-    SerFlavor { name: "default", options: || serde_saphyr::ser_options! {} },
-    SerFlavor { name: "compact_list_indent=false", options: || serde_saphyr::ser_options! { compact_list_indent: false } },
-    SerFlavor { name: "compact_list_indent=false,prefer_block_scalars=false", options: || serde_saphyr::ser_options! { compact_list_indent: false, prefer_block_scalars: false } },
-    SerFlavor { name: "compact_list_indent=false,prefer_block_scalars=false,empty_as_braces=false", options: || serde_saphyr::ser_options! { compact_list_indent: false, prefer_block_scalars: false, empty_as_braces: false } },
-    SerFlavor { name: "compact_list_indent=false,yaml_12", options: || serde_saphyr::ser_options! { compact_list_indent: false, yaml_12: true } },
+    SerFlavor { name: "default", options: || serde_saphyr::ser_options! {}, requote: false },
+    SerFlavor { name: "prefer_block_scalars=false", options: || serde_saphyr::ser_options! { prefer_block_scalars: false }, requote: false },
+    SerFlavor { name: "prefer_block_scalars=false,yaml_12", options: || serde_saphyr::ser_options! { prefer_block_scalars: false, yaml_12: true }, requote: false },
+    SerFlavor { name: "prefer_block_scalars=false,yaml_12+code_change", options: || serde_saphyr::ser_options! { prefer_block_scalars: false, yaml_12: true }, requote: true },
+    SerFlavor { name: "yaml_12,folded_wrap_chars=MAX+code_change", options: || serde_saphyr::ser_options! { yaml_12: true, folded_wrap_chars: usize::MAX }, requote: true },
+    SerFlavor { name: "empty_as_braces=false", options: || serde_saphyr::ser_options! { empty_as_braces: false }, requote: false },
+    SerFlavor { name: "compact_list_indent=false", options: || serde_saphyr::ser_options! { compact_list_indent: false }, requote: false },
 ];
 
 fn emit_today<T: Serialize>(value: &T) -> String {
@@ -410,7 +414,64 @@ fn emit_today<T: Serialize>(value: &T) -> String {
 }
 
 fn emit_saphyr<T: Serialize>(value: &T, f: &SerFlavor) -> String {
-    serde_saphyr::to_string_with_options(value, (f.options)()).unwrap_or_else(|e| format!("<error: {e}>"))
+    let text = serde_saphyr::to_string_with_options(value, (f.options)()).unwrap_or_else(|e| format!("<error: {e}>"));
+    if f.requote {
+        requote(&text)
+    } else {
+        text
+    }
+}
+
+/// CODE CHANGE over serde-saphyr's `yaml_12` output: drop the `%YAML 1.2` / `---`
+/// header; for a line's quoted scalar value that holds no escape and no quote, write
+/// it bare where today's resolver reads the bare text back as that same string
+/// (`1_000`, `yes`), and single-quoted otherwise (serde_yaml_ng's style); and
+/// single-quote a leading-zero digit string, as serde_yaml_ng's emitter did. A line
+/// rule over emitted text: good enough to measure, not to ship as is.
+fn requote(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.starts_with("%YAML") || line == "---" {
+            continue;
+        }
+        let (head, value) = match line.rfind(": ") {
+            Some(i) if !line[..i].contains('"') => (&line[..i + 2], &line[i + 2..]),
+            _ => {
+                let trimmed = line.trim_start();
+                let indent = line.len() - trimmed.len();
+                match trimmed.strip_prefix("- ") {
+                    Some(rest) => (&line[..indent + 2], rest),
+                    None => ("", line),
+                }
+            }
+        };
+        let inner = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+        let bare = inner.unwrap_or(value);
+        let unsigned = bare.strip_prefix(['-', '+']).unwrap_or(bare);
+        let leading_zero_digits =
+            unsigned.len() > 1 && unsigned.starts_with('0') && unsigned[1..].bytes().all(|b| b.is_ascii_digit());
+        let requoted = match inner {
+            Some(inner) if !inner.contains('\\') && !inner.contains('"') && !inner.contains('\'') => {
+                // Bare where today's resolver reads the bare text back as this same
+                // string, single-quoted otherwise.
+                let same = port::resolved_tree(inner).ok() == Some(J::String(inner.to_owned()));
+                if same && !leading_zero_digits {
+                    inner.to_owned()
+                } else {
+                    format!("'{inner}'")
+                }
+            }
+            None if leading_zero_digits => format!("'{value}'"),
+            _ => value.to_owned(),
+        };
+        out.push_str(head);
+        out.push_str(&requoted);
+        out.push('\n');
+    }
+    out
 }
 
 /// A line diff (LCS), `-` today and `+` serde-saphyr.
@@ -519,16 +580,17 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
     // Every value read from the corpus, written back by both crates.
     println!("\n  every document today reads, written back by each crate (byte-identical count per serializer options)");
     let mut per_kind: BTreeMap<&str, (usize, Vec<usize>)> = BTreeMap::new();
-    // Every difference under default serializer options, grouped by the diff itself.
-    let mut default_diffs: BTreeMap<(&str, String), Vec<String>> = BTreeMap::new();
+    // Every difference under default serializer options and under the code change,
+    // grouped by the diff itself.
+    let mut default_diffs: BTreeMap<(usize, &str, String), Vec<String>> = BTreeMap::new();
     let mut tally = |kind: &'static str, source: &str, today: String, saphyrs: Vec<String>| {
         let entry = per_kind.entry(kind).or_insert((0, vec![0; SER_FLAVORS.len()]));
         entry.0 += 1;
         for (i, s) in saphyrs.iter().enumerate() {
             if *s == today {
                 entry.1[i] += 1;
-            } else if i == 0 {
-                default_diffs.entry((kind, diff(&today, s))).or_default().push(source.to_owned());
+            } else if i == 0 || i == 4 {
+                default_diffs.entry((i, kind, diff(&today, s))).or_default().push(source.to_owned());
             }
         }
     };
@@ -550,6 +612,8 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                 if let Ok(v) = onevcs::spike::rules_parse(&path, &doc.text) {
                     let written = emit_saphyr(&v, &SER_FLAVORS[0]);
                     note("rules", &doc.source, onevcs::spike::rules_parse(&path, &written).ok().as_ref() == Some(&v));
+                    let written = emit_saphyr(&v, &SER_FLAVORS[4]);
+                    note("rules (code change)", &doc.source, onevcs::spike::rules_parse(&path, &written).ok().as_ref() == Some(&v));
                     tally("rules", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                 }
             }
@@ -560,6 +624,8 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                         if let Ok(v) = onevcs::spike::releases_load() {
                             std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
                             note("releases", &doc.source, onevcs::spike::releases_load().ok().as_ref() == Some(&v));
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[4])).unwrap();
+                            note("releases (code change)", &doc.source, onevcs::spike::releases_load().ok().as_ref() == Some(&v));
                             tally("releases", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
@@ -567,6 +633,8 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                         if let Ok(v) = onevcs::spike::workspaces_load() {
                             std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
                             note("workspaces", &doc.source, onevcs::spike::workspaces_load().ok().as_ref() == Some(&v));
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[4])).unwrap();
+                            note("workspaces (code change)", &doc.source, onevcs::spike::workspaces_load().ok().as_ref() == Some(&v));
                             tally("workspaces", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
@@ -574,6 +642,8 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                         if let Ok(v) = onevcs::spike::branches_load() {
                             std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
                             note("branches", &doc.source, onevcs::spike::branches_load().ok().as_ref() == Some(&v));
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[4])).unwrap();
+                            note("branches (code change)", &doc.source, onevcs::spike::branches_load().ok().as_ref() == Some(&v));
                             tally("branches", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
@@ -588,17 +658,16 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
         }
     }
     for (kind, (n, same, not)) in &reread {
-        println!("    {kind}: today's reader reads serde-saphyr's default bytes back to the same value for {same}/{n}{}", if not.is_empty() { format!("; not for {}", not.join(", ")) } else { String::new() });
+        println!("    {kind}: today's reader reads serde-saphyr's bytes back to the same value for {same}/{n}{}", if not.is_empty() { format!("; not for {}", not.join(", ")) } else { String::new() });
     }
     for (kind, (n, counts)) in &per_kind {
         let summary: Vec<String> = SER_FLAVORS.iter().zip(counts).map(|(f, c)| format!("{}={c}/{n}", f.name)).collect();
         println!("    {kind}: {}", summary.join("  "));
     }
-    println!("\n  every difference under default serializer options (- serde_yaml_ng, + serde-saphyr), grouped by diff:");
-    for ((kind, d), sources) in &default_diffs {
+    for ((i, kind, d), sources) in &default_diffs {
         let shown: Vec<&str> = sources.iter().take(4).map(String::as_str).collect();
         let more = if sources.len() > 4 { format!(" and {} more", sources.len() - 4) } else { String::new() };
-        println!("\n    [{kind}] {} document(s): {}{more}", sources.len(), shown.join(", "));
+        println!("\n    [{kind}] under {} (- serde_yaml_ng, + serde-saphyr), {} document(s): {}{more}", SER_FLAVORS[*i].name, sources.len(), shown.join(", "));
         println!("{}", indent(d, "      "));
     }
 }
