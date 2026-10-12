@@ -93,6 +93,12 @@ test("the CLI reports the worst workload's added requests and each watch through
       "240 requests in the whole watch", "13 head-activity reads", "90 polls answered from the reuse", "2.0 requests a read"]) {
       assert.ok(reported.detail.includes(phrase), `${phrase}: ${reported.detail}`);
     }
+    const misused = spawnSync(process.execPath, [join(f.root, "crates", "onevcs", "scripts", "draft-early-lift-budget.mjs"), "extra"], {
+      encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: result },
+    });
+    assert.equal(misused.status, 2);
+    assert.match(misused.stderr, /expected no arguments, got extra/);
+    assert.match(misused.stderr, /next: run it as 'node scripts\/draft-early-lift-budget\.mjs'/);
     rmSync(join(f.root, "target", "budget-records", "draft-hold.json"));
     const refused = run();
     assert.equal(refused.status, 1);

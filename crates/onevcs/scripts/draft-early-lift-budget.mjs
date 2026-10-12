@@ -4,8 +4,12 @@
 import { report } from "@onebudgetspec/sdk";
 import { journeyCommand, readDraftHoldRecord } from "./draft-early-lift-budget-record.mjs";
 
+if (process.argv.length > 2) {
+  console.error(`draft hold telemetry: expected no arguments, got ${process.argv.slice(2).join(" ")}\n` +
+    "next: run it as 'node scripts/draft-early-lift-budget.mjs' from crates/onevcs, as 'just budgets' does");
+  process.exit(2);
+}
 try {
-  if (process.argv.length > 2) throw new Error("expected no arguments");
   const record = readDraftHoldRecord();
   // The figure is the worst of the four workloads; the detail carries each one's watch.
   const worst = record.scenarios.reduce((most, scenario) => (scenario.activity_requests > most.activity_requests ? scenario : most));
