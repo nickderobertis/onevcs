@@ -38,6 +38,7 @@ pub struct Flavor {
     /// plain scalar from its source text by serde_yaml_ng's rules
     /// (`resolved_tree`), instead of from serde-saphyr's `deserialize_any`.
     pub saphyr_resolved: bool,
+    pub reject_tags: bool,
 }
 
 impl Flavor {
@@ -50,6 +51,7 @@ impl Flavor {
             duplicate_keys: DuplicateKeyPolicy::Error,
             with_snippet: self.with_snippet,
             reject_non_finite_typeless_float: self.reject_non_finite,
+            reject_unsupported_tags: self.reject_tags,
         }
     }
 
@@ -141,6 +143,7 @@ const BASE: Flavor = Flavor {
     reject_non_finite: true,
     code_change: false,
     saphyr_resolved: false,
+    reject_tags: false,
 };
 
 /// Each flavor adds one knob to the one before it (the two typed paths each start
@@ -154,6 +157,7 @@ pub const FLAVORS: &[Flavor] = &[
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, ..BASE },
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, ..BASE },
     Flavor { name: "saphyr_tree+serde_yaml_ng_resolver+code_change", with_snippet: false, code_change: true, saphyr_resolved: true, ..BASE },
+    Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change+reject_unsupported_tags", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, reject_tags: true, ..BASE },
     Flavor { name: "direct", typed: Typed::Direct, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet+non_finite_ok", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, reject_non_finite: false, ..BASE },
