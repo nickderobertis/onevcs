@@ -13,8 +13,8 @@ const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const schema = JSON.parse(readFileSync(new URL("./draft-early-lift-budget.schema.json", import.meta.url)));
 const scratch = () => process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir();
 const scenario = (shape, activity_reads, extra = {}) => ({
-  shape, outcome: "checks-unsettled", lifted_early: false, polls: 100, check_read_requests: 200,
-  watch_requests: 240, activity_reads, reused_reads: 90, activity_requests: 2 * activity_reads, wall_ms: 60000, ...extra,
+  shape, outcome: "checks-unsettled", lifted_early: false, polls: 120, check_read_requests: 240,
+  watch_requests: 280, activity_reads, reused_reads: 90, activity_requests: 2 * activity_reads, wall_ms: 60000, ...extra,
 });
 function fixture() {
   const root = mkdtempSync(join(scratch(), "draft-hold-reader-"));
@@ -23,7 +23,7 @@ function fixture() {
   const build = { run_id: sha("invocation"), binary: "onevcs", binary_sha256: sha(binary), source_sha256: sourceFingerprint() };
   const workload = schema["x-workload"];
   const record = {
-    version: 1, build, scale: workload.scale, poll_seconds: workload.poll_seconds, grace_seconds: workload.grace_seconds,
+    version: 1, build, scale: workload.scale, pace: workload.pace, poll_seconds: workload.poll_seconds, grace_seconds: workload.grace_seconds,
     wait_seconds: workload.wait_seconds, reuse_seconds: workload.reuse_seconds,
     scenarios: [
       scenario("needs-gated", 3, { outcome: "merged" }),
@@ -58,6 +58,9 @@ const refusals = {
   "a foreign format": f => { f.record.version = 2; f.save(); },
   "another poll": f => { f.record.poll_seconds = 5; f.save(); },
   "another reuse window": f => { f.record.reuse_seconds = 30; f.save(); },
+  "another pace": f => { f.record.pace = 1.5; f.save(); },
+  "a shrunk never-idle watch": f => { f.record.scenarios[3].polls = 100; f.save(); },
+  "a shrunk two-phase watch": f => { f.record.scenarios[1].polls = 104; f.save(); },
   "a missing scenario": f => { f.record.scenarios[3].shape = "two-phase"; f.save(); },
   "a watch that never polled": f => { f.record.scenarios[0].polls = 0; f.save(); },
   "a scenario that never asked": f => { f.record.scenarios[1].activity_reads = 0; f.save(); },
@@ -89,8 +92,8 @@ test("the CLI reports the worst workload's added requests and each watch through
     assert.equal(accepted.status, 0, accepted.stderr);
     const reported = JSON.parse(readFileSync(result, "utf8"));
     assert.equal(reported.value, 26, "the two-phase watch's 13 reads at two requests each");
-    for (const phrase of ["worst is two-phase", "needs-gated (merged): 100 polls", "2.0 check-read requests a poll",
-      "240 requests in the whole watch", "13 head-activity reads", "90 polls answered from the reuse", "2.0 requests a read"]) {
+    for (const phrase of ["worst is two-phase", "needs-gated (merged): 120 polls", "2.0 check-read requests a poll",
+      "280 requests in the whole watch", "13 head-activity reads", "90 polls answered from the reuse", "2.0 requests a read"]) {
       assert.ok(reported.detail.includes(phrase), `${phrase}: ${reported.detail}`);
     }
     const misused = spawnSync(process.execPath, [join(f.root, "crates", "onevcs", "scripts", "draft-early-lift-budget.mjs"), "extra"], {

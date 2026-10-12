@@ -44,11 +44,15 @@ export function readDraftHoldRecord(directory = recordDirectory, sourceRoot = re
   }
   // The workload the budget names, or the figure is about some other watch.
   const workload = schema["x-workload"];
-  for (const key of ["scale", "poll_seconds", "grace_seconds", "wait_seconds", "reuse_seconds"]) {
+  for (const key of ["scale", "pace", "poll_seconds", "grace_seconds", "wait_seconds", "reuse_seconds"]) {
     if (record[key] !== workload[key]) throw new Error(`foreign workload: ${key} is ${record[key]}, not ${workload[key]}`);
   }
   const shapes = record.scenarios.map(scenario => scenario.shape);
   if (shapes.join() !== workload.shapes.join()) throw new Error(`foreign or missing scenarios: ${shapes.join(", ")}`);
+  // The two watches that run their whole wait make the real watch's readings.
+  for (const scenario of record.scenarios.filter(scenario => ["two-phase", "never-idle"].includes(scenario.shape))) {
+    if (scenario.polls !== workload.polls) throw new Error(`shrunk workload: ${scenario.shape} made ${scenario.polls} polls, not ${workload.polls}`);
+  }
   for (const scenario of record.scenarios) {
     if (scenario.polls <= 0 || scenario.check_read_requests < scenario.polls || scenario.watch_requests < scenario.check_read_requests ||
         scenario.activity_reads <= 0 || scenario.activity_requests < scenario.activity_reads || scenario.wall_ms <= 0) {

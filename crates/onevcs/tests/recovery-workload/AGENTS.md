@@ -47,7 +47,10 @@ reader, and `crates/onevcs/budgets.yaml` the only budget over it. It takes
 `draft_hold.rs` is the draft hold's budget journey: it publishes four `change-auto`
 drafts through the release binary against scratch bare origins and the e2e tier's `gh`
 stand-in (`tests/fixtures/gh`, a build input for that reason), the watch run at a
-sixtieth of real time so ten polls are still one reuse window, and counts what the
-stand-in was asked. It writes `draft-hold.json`, retracted with the other two records;
+quarter of real time, and counts what the stand-in was asked. The stand-in paces its
+readings (`gh-state/pace`) from the watch's first ruleset read, because a loaded host's
+own cost per poll otherwise cut the 120 readings to a hundred; the journey fails rather
+than records a watch that ran to its wait in any other number. That makes the long
+scenarios about seventeen minutes, side by side. It writes `draft-hold.json`, retracted with the other two records;
 `crates/onevcs/scripts/draft-early-lift-budget.mjs` is the only reader, and
 `crates/onevcs/budgets.yaml` the only budget over it.
