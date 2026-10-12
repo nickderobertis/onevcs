@@ -158,6 +158,13 @@ fn declared(state: &HostState, base: &str) -> Option<BTreeSet<String>> {
             .values()
             .chain(state.checks_after_lift.values())
             .chain(state.head_checks.values())
+            .chain(
+                state
+                    .check_readings
+                    .values()
+                    .chain(state.check_readings_after_lift.values())
+                    .flatten(),
+            )
             .flatten()
             .filter(|check| check.required)
             .map(|check| check.name.clone())

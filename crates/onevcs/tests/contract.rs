@@ -9255,3 +9255,110 @@ fn the_base_merge_and_check_wait_amendment_declares_its_surface() {
         );
     }
 }
+
+#[test]
+fn the_draft_hold_amendment_declares_what_a_host_says_is_running_and_the_code_has_it() {
+    // Three consumers restate this amendment — the engine's link, the UI's link and this
+    // host's adoption — so the declaration and the code are held to each other here, the
+    // way the lifecycle amendment's `Drafts` is.
+    let declared = amendment_declaring("pub struct HeadActivity");
+    for line in [
+        "fn head_activity(&self, cr: &ChangeRequest) -> Result<HeadActivity>;  // default: NotImplemented",
+        "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]",
+        "pub struct HeadActivity {",
+        "pub head: Sha,",
+        "pub in_progress: Vec<String>,",
+        "pub complete: bool,",
+    ] {
+        assert!(
+            declared.contains(line),
+            "the amendment no longer declares: {line}"
+        );
+    }
+    // Exactly those three fields, of exactly those types, exported from the crate root —
+    // an exhaustive literal and an exhaustive pattern fail to compile on a fourth field.
+    let answer = onevcs::HeadActivity {
+        head: Sha("0f1e2d3".to_owned()),
+        in_progress: vec!["ci".to_owned()],
+        complete: false,
+    };
+    let onevcs::HeadActivity {
+        head,
+        in_progress,
+        complete,
+    } = answer.clone();
+    let _: (Sha, Vec<String>, bool) = (head, in_progress, complete);
+    let written = serde_json::to_value(&answer).expect("an answer serializes");
+    assert_eq!(
+        written,
+        json!({"head": "0f1e2d3", "in_progress": ["ci"], "complete": false})
+    );
+    assert_eq!(
+        serde_json::from_value::<onevcs::HeadActivity>(written).expect("it reads back"),
+        answer
+    );
+
+    // Defaulted to the refusal, so a host written before the method compiles and is read
+    // as having said nothing — never as "idle".
+    struct Earlier;
+    impl RemoteHost for Earlier {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn open_change(&self, _: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn change_checks(&self, _: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn check_log(&self, _: &ChangeRequest, _: &Check) -> onevcs::Result<ArtifactId> {
+            unreachable!("the earlier surface is not driven here")
+        }
+        fn merge(&self, _: &ChangeRequest, _: MergePolicy) -> onevcs::Result<MergeOutcome> {
+            unreachable!("the earlier surface is not driven here")
+        }
+    }
+    let change = ChangeRequest {
+        id: ChangeId("42".to_owned()),
+        url: Url::parse("https://github.com/nickderobertis/onevcs/pull/42").expect("a URL"),
+        head_sha: Sha("0f1e2d3".to_owned()),
+        base: "main".to_owned(),
+    };
+    assert!(matches!(
+        Earlier.head_activity(&change),
+        Err(Error::NotImplemented { operation }) if operation == "RemoteHost::head_activity"
+    ));
+
+    // The prose the decision is held to, and the reuse window the code reuses for.
+    let text = regions().0.split_whitespace().collect::<Vec<_>>().join(" ");
+    for stated in [
+        "a draft is lifted early only when nothing on its pushed head is still running",
+        "never asked on a poll where (a) already shows work in progress, nor before the grace window has elapsed",
+        "An empty answer, an `Err`, or an answer about another commit is never reused.",
+        "The grace window, every `drafts:` rules key and every event payload are unchanged",
+        "an external app that has posted nothing at all by the grace window",
+        "a workflow that runs on drafts needs **no** `ready_for_review` trigger",
+    ] {
+        assert!(
+            text.contains(stated),
+            "the amendment no longer states: {stated}"
+        );
+    }
+    let reuse = repo_file("crates/onevcs/src/gh.rs")
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DEFAULT_HEAD_ACTIVITY_REUSE_SECONDS: f64 = ")?
+                .strip_suffix(";")
+                .map(str::to_owned)
+        })
+        .expect("gh.rs declares the reuse window");
+    let seconds: f64 = reuse.parse().expect("a number of seconds");
+    assert!(
+        text.contains(&format!("**reused for up to {seconds:.0} seconds**")),
+        "the amendment no longer states the {seconds:.0}-second reuse window"
+    );
+}

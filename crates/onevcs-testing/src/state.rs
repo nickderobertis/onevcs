@@ -98,7 +98,14 @@ use crate::store::Checked;
 /// [`HostState::deleted_branches`], the branches gone from the origin,
 /// [`HostState::head_checks`], each required check's state per head commit, and
 /// [`HostState::ledger`], every call the host answered with what GitHub charges for it.
-pub const STATE_VERSION: u32 = 22;
+/// `22` is what an elapsed watch arms: [`HostState::up_to_date_required`],
+/// [`HostState::allow_auto_merge`] and [`HostState::armed`], and a failed publication's
+/// armed merge. `23` is what a draft's watch reads per poll:
+/// [`HostState::check_readings`] and [`HostState::check_readings_after_lift`], the
+/// checks each reading of a change request reports in turn on each side of its lift,
+/// and [`HostState::head_activity`], what the host answers in turn about the work
+/// still running on its head.
+pub const STATE_VERSION: u32 = 23;
 
 /// The oldest document version this build reads.
 ///
@@ -161,7 +168,10 @@ pub const STATE_VERSION: u32 = 22;
 /// that build recorded. `21` to `22` added three host fields of that kind and one field
 /// of a failed publication, so a version 21 document reads as a host that requires no
 /// up-to-date branch, allows auto-merge and holds no armed merge, and as publications
-/// none of which left a merge armed — which is what that build could do.
+/// none of which left a merge armed — which is what that build could do. `22` to `23`
+/// added three host fields of that kind, so a version 22 document reads as a host whose
+/// checks hold still between readings and that reports nothing running on any head
+/// beyond its checks — which is what that build could answer.
 ///
 /// `1` is refused rather than read for the opposite reason: it describes a provider
 /// that could not publish, and every session in it would read back as open — a
@@ -524,6 +534,66 @@ pub struct HostState {
     /// watching it, or one asking for its merge again.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub armed: BTreeSet<ChangeId>,
+    /// The checks each reading of a change request reports, in turn: the first
+    /// `change_checks` call about it answers the first entry, the second the second,
+    /// and the last entry answers every call after it — so a journey scripts each poll
+    /// of a watch rather than racing a clock. Seeded, it stands in for that change
+    /// request's [`checks`](HostState::checks), and for its
+    /// [`checks_after_lift`](HostState::checks_after_lift) unless
+    /// [`check_readings_after_lift`](HostState::check_readings_after_lift) scripts the
+    /// lift's side; a merge is judged on the entry the latest reading answered.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_readings: BTreeMap<ChangeId, Vec<Vec<Check>>>,
+    /// The same script for the readings after a change request is lifted, counted from
+    /// its lift: the first `change_checks` call after `ready_for_review` answers the
+    /// first entry. A lift happens on a clock — the grace window — so the readings on
+    /// each side of it are scripted apart, and neither has to guess on which poll it
+    /// came.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub check_readings_after_lift: BTreeMap<ChangeId, Vec<Vec<Check>>>,
+    /// What `head_activity` answers about a change request, in turn: one answer per
+    /// call, and the last answering every call after it. A change request with none
+    /// answers, completely, that nothing is running on the commit it was asked about —
+    /// a host whose checks are the whole of what runs, which is what every journey
+    /// written before this answer existed describes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub head_activity: BTreeMap<ChangeId, Vec<ActivityAnswer>>,
+}
+
+/// One answer a host gives about the work still running on a change request's head —
+/// what [`HostState::head_activity`] scripts per call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "answer")]
+pub enum ActivityAnswer {
+    /// An answer about the commit it was asked about, naming the work in progress on
+    /// it — none, where `in_progress` is empty.
+    Head {
+        /// The host's name for each piece of work still in progress.
+        // llmlint: ignore[invalid_states_unrepresentable] a scripted copy of
+        // `onevcs::HeadActivity::in_progress`, whose contract-fixed type it must hand
+        // back unchanged; any name a host could report is a valid one.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_progress: Vec<String>,
+        /// Whether every source of such work was read: `false` is a credential that
+        /// could read the workflow runs and not the check suites.
+        // llmlint: ignore[invalid_states_unrepresentable] a scripted copy of the
+        // contract-fixed `onevcs::HeadActivity::complete: bool`, with the same two states.
+        #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
+        complete: bool,
+    },
+    /// An answer about `head`, a commit other than the one asked about — a host that
+    /// has not processed the push yet.
+    Other {
+        /// The commit the answer is about.
+        head: Sha,
+        /// The host's name for each piece of work still in progress on it.
+        // llmlint: ignore[invalid_states_unrepresentable] as on `Head::in_progress`: the
+        // contract-fixed `HeadActivity::in_progress` this answer is handed back as.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        in_progress: Vec<String>,
+    },
+    /// A refusal: a credential that may read neither source.
+    Refused,
 }
 
 /// Every method a ledger entry may name: each `RemoteHost` method this host answers.
@@ -539,6 +609,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "check_log",
     "describe_change",
     "find_changes",
+    "head_activity",
     "is_draft",
     "merge",
     "merge_time",
@@ -737,6 +808,9 @@ impl Default for HostState {
             up_to_date_required: false,
             allow_auto_merge: true,
             armed: BTreeSet::new(),
+            check_readings: BTreeMap::new(),
+            check_readings_after_lift: BTreeMap::new(),
+            head_activity: BTreeMap::new(),
         }
     }
 }
@@ -1183,6 +1257,47 @@ impl Checked for HostState {
         }
         for id in &self.armed {
             opened_change(self, id, "an armed merge")?;
+        }
+        // Scripted, like the checks, for a change a journey has not opened yet. What is
+        // refused is a script no call could answer from: one with no entry, which would
+        // read as unseeded while saying it was seeded, and an answer about a commit
+        // that names none.
+        for (id, readings) in self
+            .check_readings
+            .iter()
+            .chain(&self.check_readings_after_lift)
+        {
+            if readings.is_empty() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the checks scripted for change request {:?} hold no reading",
+                        id.0
+                    ),
+                });
+            }
+        }
+        for (id, answers) in &self.head_activity {
+            if answers.is_empty() {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "the head activity scripted for change request {:?} holds no answer",
+                        id.0
+                    ),
+                });
+            }
+            for answer in answers {
+                if let ActivityAnswer::Other { head, .. } = answer {
+                    if head.0.trim().is_empty() {
+                        return Err(Error::Invalid {
+                            reason: format!(
+                                "the head activity scripted for change request {:?} answers \
+                                 about a commit it does not name",
+                                id.0
+                            ),
+                        });
+                    }
+                }
+            }
         }
         for branch in &self.deleted_branches {
             named_branch(branch, "a deleted branch")?;

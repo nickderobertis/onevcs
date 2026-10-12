@@ -13,13 +13,13 @@ use url::Url;
 
 use onevcs::{
     ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, ChangeStandings, Check,
-    CheckSource, CheckState, CommentId, Description, Error, Hosting, MergeOutcome, MergePolicy,
-    Mergeability, PostedReply, ReadCost, ReadMarker, RemoteHost, RequiredChecks, Result,
-    ReviewRead, ReviewStandings, Sha, Visibility,
+    CheckSource, CheckState, CommentId, Description, Error, HeadActivity, Hosting, MergeOutcome,
+    MergePolicy, Mergeability, PostedReply, ReadCost, ReadMarker, RemoteHost, RequiredChecks,
+    Result, ReviewRead, ReviewStandings, Sha, Visibility,
 };
 
 use crate::landings::{self, HeadAfter, PersonMerge};
-use crate::state::{Described, HostCall, HostComment, HostState};
+use crate::state::{ActivityAnswer, Described, HostCall, HostComment, HostState};
 use crate::store::{FileStore, MemoryStore, Store};
 use crate::{events, review};
 
@@ -449,6 +449,14 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
                 .values()
                 .chain(state.checks_after_lift.values())
                 .flatten()
+                .chain(
+                    state
+                        .check_readings
+                        .values()
+                        .chain(state.check_readings_after_lift.values())
+                        .flatten()
+                        .flatten(),
+                )
                 .filter(|check| check.required)
                 .map(|check| check.name.clone())
                 .collect(),
@@ -546,6 +554,47 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::mergeability",
         })
+    }
+
+    /// What [`HostState::head_activity`] scripts for this call about `cr`, answered about
+    /// the commit `cr` names; unscripted, nothing is running there, by every source.
+    /// Charged as the two REST reads the real host makes — the workflow runs and the
+    /// check suites on that commit.
+    fn head_activity(&self, cr: &ChangeRequest) -> Result<HeadActivity> {
+        self.called("head_activity", &[&cr.id], landings::rest(2))?;
+        let state = self.store.snapshot()?;
+        let call = asked(&state, "head_activity", &cr.id);
+        let scripted = state.head_activity.get(&cr.id).and_then(|answers| {
+            answers
+                .get(call.saturating_sub(1))
+                .or_else(|| answers.last())
+        });
+        match scripted {
+            None => Ok(HeadActivity {
+                head: cr.head_sha.clone(),
+                in_progress: Vec::new(),
+                complete: true,
+            }),
+            Some(ActivityAnswer::Head {
+                in_progress,
+                complete,
+            }) => Ok(HeadActivity {
+                head: cr.head_sha.clone(),
+                in_progress: in_progress.clone(),
+                complete: *complete,
+            }),
+            Some(ActivityAnswer::Other { head, in_progress }) => Ok(HeadActivity {
+                head: head.clone(),
+                in_progress: in_progress.clone(),
+                complete: true,
+            }),
+            Some(ActivityAnswer::Refused) => Err(Error::Invalid {
+                reason: format!(
+                    "this host was scripted to refuse what is running on the head of {}",
+                    cr.url
+                ),
+            }),
+        }
     }
 
     /// Whether this host requires an up-to-date branch: [`HostState::up_to_date_required`].
@@ -789,12 +838,49 @@ pub(crate) fn drafted(state: &HostState, id: &ChangeId) -> bool {
 /// The checks the host reports on a change request right now: the ones registered
 /// after a lift, once it has been lifted and some are seeded, otherwise its own.
 pub(crate) fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
+    // The reading the latest `change_checks` call about it answered, which the ledger
+    // counts — so a merge is judged on what the watch last read.
+    let lifted = state
+        .ledger
+        .iter()
+        .rposition(|call| call.method == "ready_for_review" && call.changes.contains(id));
+    if let (Some(lifted), Some(readings)) = (lifted, state.check_readings_after_lift.get(id)) {
+        let read = state.ledger[lifted..]
+            .iter()
+            .filter(|call| call.method == "change_checks" && call.changes.contains(id))
+            .count();
+        if let Some(reading) = readings
+            .get(read.saturating_sub(1))
+            .or_else(|| readings.last())
+        {
+            return reading.clone();
+        }
+    }
+    if let Some(readings) = state.check_readings.get(id) {
+        let read = asked(state, "change_checks", id);
+        if let Some(reading) = readings
+            .get(read.saturating_sub(1))
+            .or_else(|| readings.last())
+        {
+            return reading.clone();
+        }
+    }
     if state.made_ready.contains(id) {
         if let Some(after) = state.checks_after_lift.get(id) {
             return after.clone();
         }
     }
     state.checks.get(id).cloned().unwrap_or_default()
+}
+
+/// How many `method` calls about `id` this host has answered, the one in hand
+/// included — which entry of a script answers it.
+fn asked(state: &HostState, method: &str, id: &ChangeId) -> usize {
+    state
+        .ledger
+        .iter()
+        .filter(|call| call.method == method && call.changes.contains(id))
+        .count()
 }
 
 /// The id one check's log is stored under.

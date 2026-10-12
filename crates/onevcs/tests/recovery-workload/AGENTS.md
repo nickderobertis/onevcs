@@ -43,3 +43,14 @@ together. The check's phases come from the binary's own `ONEVCS_BOUNDARY_DIAGNOS
 line and its peak memory from `wait4`; `scripts/boundary-check-budget.mjs` is the only
 reader, and `crates/onevcs/budgets.yaml` the only budget over it. It takes
 `exclusive()` too, so neither workload's clock carries the other's load.
+
+`draft_hold.rs` is the draft hold's budget journey: it publishes four `change-auto`
+drafts through the release binary against scratch bare origins and the e2e tier's `gh`
+stand-in (`tests/fixtures/gh`, a build input for that reason), the watch run at a
+thirtieth of real time with every ratio of the real one, and counts what the stand-in
+was asked. onevcs has no injectable clock, so the watch runs on the wall clock and a
+loaded host's own cost per poll leaves it short of the real 120 polls; the record keeps
+the polls made beside the requests, and the reader holds the ratios, not the count.
+It writes `draft-hold.json`, retracted with the other two records;
+`crates/onevcs/scripts/draft-early-lift-budget.mjs` is the only reader, and
+`crates/onevcs/budgets.yaml` the only budget over it.

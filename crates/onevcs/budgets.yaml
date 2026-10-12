@@ -16,3 +16,28 @@ budgets:
       building the matcher and matching 10 MiB across 1,000 paths plus message, branch,
       title and body. Detail, unbudgeted: the phases, the check process's peak resident
       memory, and one export of the same files.
+  # Basis: design (the manager's rulings: a non-empty head_activity answer reused for
+  # 300 s; at most 26). Measurement source: telemetry, the record the onevcs-recovery
+  # journey `draft_hold.rs` writes. Check runtime: about 2 seconds.
+  - id: draft-early-lift-added-host-requests
+    measure: reported
+    command: [node, scripts/draft-early-lift-budget.mjs]
+    unit: requests
+    direction: max
+    threshold: 26
+    description: >-
+      GitHub API requests one draft publication's watch spends on the head-activity read
+      across the whole watch, before and after any early lift, taking the worst of four
+      workloads: one change-auto draft at the default 3,600-second check wait, 30-second
+      poll (120 polls) and 120-second grace window, on a repository shaped like crozier's
+      CI (required aggregate `gate` gated by needs: on five non-required jobs, plus
+      required `commitlint` and `llmlint`) — (i) needs-gated, the aggregate absent while
+      its prerequisites run and in the gap before its check run; (ii) two-phase, a
+      required check skipped on the draft and work in progress with no incomplete check
+      run from the grace window, one empty answer that lifts it, then no post-lift run
+      and work in progress again until the bound; (iii) draft-skipping, lifted at the
+      grace window; (iv) in progress with no incomplete check run for the whole watch,
+      never lifted. Inner measure: the shared token's hourly headroom is the outcome, and
+      these are the only requests this change adds. Detail, unbudgeted, per workload:
+      polls, check-read requests a poll, the watch's total requests, head-activity reads,
+      reads answered from the 300-second reuse, and requests a read.

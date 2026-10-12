@@ -35,6 +35,17 @@ pub const DRAFT_GRACE_ENV: &str = "ONEVCS_DRAFT_CHECKS_GRACE_SECONDS";
 /// The default grace window. Two minutes is long past the moment a workflow that runs
 /// on drafts has registered its first job, and short beside the hour-long bound.
 pub const DEFAULT_DRAFT_GRACE_SECONDS: f64 = 120.0;
+/// How long a draft's watch reuses a `head_activity` answer that named work in
+/// progress before it asks the host again, at the default poll.
+///
+/// A workflow run between jobs, or an app that keeps its check suite open after its
+/// runs finish, can show work in progress with no incomplete check for the whole
+/// watch, and asking on every poll then costs two requests every thirty seconds for
+/// an answer that moves when the work ends. Five minutes is ten polls. An empty
+/// answer, a refusal, or an answer about another commit is never reused. The window
+/// scales with `ONEVCS_CHECKS_POLL_SECONDS` (see [`head_activity_reuse`]), so a
+/// journey that turns the poll down keeps the real ratio of polls to reuse.
+pub const DEFAULT_HEAD_ACTIVITY_REUSE_SECONDS: f64 = 300.0;
 /// The default bound on waiting for required checks. Long, because a repository's
 /// CI is doing the work and abandoning it mid-flight leaves state nobody recorded.
 pub const DEFAULT_CHECKS_TIMEOUT_SECONDS: f64 = 3600.0;
@@ -179,6 +190,13 @@ pub fn checks_poll() -> Result<f64> {
 /// How long a draft waits for its required checks to start before it is lifted.
 pub fn draft_grace() -> Result<f64> {
     seconds(DRAFT_GRACE_ENV, DEFAULT_DRAFT_GRACE_SECONDS)
+}
+
+/// How long a `head_activity` answer naming work in progress is reused:
+/// [`DEFAULT_HEAD_ACTIVITY_REUSE_SECONDS`] at the default poll, and the same number of
+/// polls at any other.
+pub fn head_activity_reuse() -> Result<f64> {
+    Ok(DEFAULT_HEAD_ACTIVITY_REUSE_SECONDS * checks_poll()? / DEFAULT_CHECKS_POLL_SECONDS)
 }
 
 fn seconds(name: &str, default: f64) -> Result<f64> {

@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 mod boundary;
 mod churn;
 mod counting;
+mod draft_hold;
 #[cfg(target_os = "linux")]
 mod scoped;
 mod telemetry;

@@ -51,7 +51,11 @@ watch is one reading of the host — one that has not settled stands for the bou
 a draft nothing ran on for the grace window — so a consumer drives a row by seeding
 the reading it wants —
 `checks_after_lift`, `required_checks` — never by timing one. A counter or a clock
-outside the state would make those rows unrepeatable.
+outside the state would make those rows unrepeatable. The one counter there is, is the
+state's own ledger: `check_readings`, `check_readings_after_lift` and `head_activity`
+answer the n-th call about a change request with their n-th entry, which is how a journey
+next door drives the real watch poll by poll on either side of a lift that happens on a
+clock.
 
 The two description methods are host-side and performed: `describe_change` writes
 into the same `titles` and `bodies` `open_change` wrote and records the call in
