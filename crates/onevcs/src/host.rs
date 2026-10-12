@@ -513,6 +513,9 @@ pub struct HeadActivity {
     /// Whether every source of such work was consulted. `false` means only GitHub
     /// Actions' workflow runs were (a credential that cannot read check suites), so an
     /// external app's work is invisible to this answer.
+    // llmlint: ignore[invalid_states_unrepresentable] the approved contract fixes this
+    // field as `complete: bool` for the three consumers that restate it; it has exactly
+    // two states, both meaningful, and no third a named type could exclude.
     pub complete: bool,
 }
 

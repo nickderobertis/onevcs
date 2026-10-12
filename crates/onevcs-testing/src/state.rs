@@ -569,10 +569,15 @@ pub enum ActivityAnswer {
     /// it — none, where `in_progress` is empty.
     Head {
         /// The host's name for each piece of work still in progress.
+        // llmlint: ignore[invalid_states_unrepresentable] a scripted copy of
+        // `onevcs::HeadActivity::in_progress`, whose contract-fixed type it must hand
+        // back unchanged; any name a host could report is a valid one.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         in_progress: Vec<String>,
         /// Whether every source of such work was read: `false` is a credential that
         /// could read the workflow runs and not the check suites.
+        // llmlint: ignore[invalid_states_unrepresentable] a scripted copy of the
+        // contract-fixed `onevcs::HeadActivity::complete: bool`, with the same two states.
         #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
         complete: bool,
     },
@@ -582,6 +587,8 @@ pub enum ActivityAnswer {
         /// The commit the answer is about.
         head: Sha,
         /// The host's name for each piece of work still in progress on it.
+        // llmlint: ignore[invalid_states_unrepresentable] as on `Head::in_progress`: the
+        // contract-fixed `HeadActivity::in_progress` this answer is handed back as.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         in_progress: Vec<String>,
     },
