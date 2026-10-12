@@ -678,9 +678,6 @@ fn legacy_line(token: &str, seq: usize, kind: &str, phase: &str, payload: Value)
 }
 
 /// Append lines to a stream, as the build that wrote them left them.
-// llmlint: ignore[tests_mirror_real_usage] no verb of this build writes an unlabelled
-// branch-keyed event any more; a build before the label did, and its streams are on every
-// host that ran it, so the journey leaves the lines the way that build left them.
 fn append_legacy(world: &World, token: &str, lines: &[String]) {
     let path = world.home().join("streams").join(format!("{token}.ndjson"));
     std::fs::create_dir_all(path.parent().expect("a streams directory")).expect("streams");
@@ -689,6 +686,8 @@ fn append_legacy(world: &World, token: &str, lines: &[String]) {
         text.push_str(line);
         text.push('\n');
     }
+    // llmlint: ignore[tests_mirror_real_usage] this writes the legacy unlabelled events
+    // that current verbs cannot produce, to test real readers against existing streams.
     std::fs::write(&path, text).expect("the legacy stream");
 }
 
@@ -777,9 +776,6 @@ const UNHAD_LANDING: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 
 /// Copy the committed legacy streams into this world's state root, as a build before
 /// the identity label left them.
-// llmlint: ignore[tests_mirror_real_usage] the streams under test are ones an earlier
-// build wrote and this one never writes; they are on every host that ran it, which is
-// the input this reads, and every assertion is about what the real binary makes of them.
 fn install_legacy(world: &World) {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(LEGACY);
     let streams = world.home().join("streams");
@@ -788,6 +784,8 @@ fn install_legacy(world: &World) {
         .expect("the legacy fixture")
         .flatten()
     {
+        // llmlint: ignore[tests_mirror_real_usage] current verbs cannot write this legacy
+        // shape; copy the committed fixture to exercise the real binary's readers.
         std::fs::copy(file.path(), streams.join(file.file_name())).expect("a legacy stream");
     }
 }

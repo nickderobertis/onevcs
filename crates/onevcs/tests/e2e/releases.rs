@@ -3015,9 +3015,6 @@ fn squash_landing() -> (crate::host::Hosted, String, String) {
 
 /// Take the identity label off every event of one stream, leaving the stream a build
 /// that wrote branch-keyed streams without one would have left.
-// llmlint: ignore[tests_mirror_real_usage] no verb of this build writes an unlabelled
-// branch-keyed event any more — a build before the label did, and its streams are still
-// on every host that ran it — so the journey leaves the file the way that build left it.
 pub(crate) fn unlabel(world: &crate::world::World, token: &str) {
     let path = world.home().join("streams").join(format!("{token}.ndjson"));
     let text = std::fs::read_to_string(&path).expect("the stream");
@@ -3029,6 +3026,8 @@ pub(crate) fn unlabel(world: &crate::world::World, token: &str) {
         }
         lines.push(event.to_string());
     }
+    // llmlint: ignore[tests_mirror_real_usage] current verbs always label events; remove
+    // the labels here to exercise readers against the streams earlier builds wrote.
     std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("the stream, unlabelled");
 }
 

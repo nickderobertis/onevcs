@@ -199,7 +199,7 @@ impl Host {
         std::fs::write(state.join(format!("pr-{number}.body")), "\n").expect("a body");
     }
 
-    /// Lines of the host's calls since `from`.
+    /// Every request in the host's call ledger.
     fn ledger(&self) -> Vec<Value> {
         std::fs::read_to_string(self.state.join("ledger.ndjson"))
             .unwrap_or_default()
