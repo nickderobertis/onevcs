@@ -41,3 +41,28 @@ budgets:
       these are the only requests this change adds. Detail, unbudgeted, per workload:
       polls, check-read requests a poll, the watch's total requests, head-activity reads,
       reads answered from the 300-second reuse, and requests a read.
+  # Basis: design (the plan's workload and the hour this host ran while it was written:
+  # 19 x 2 host reads a full pass, 18 passes and 2 sweeps an hour, 760). Measurement
+  # source: telemetry, the record the onevcs-recovery journey `retire_hour.rs` writes.
+  # Check runtime: about 2 seconds.
+  - id: retire-hour-host-requests
+    measure: reported
+    command: [node, scripts/retire-hour-host-requests-budget.mjs]
+    unit: requests
+    direction: max
+    threshold: 760
+    description: >-
+      GitHub API requests one hour's finished-branch retirement spends — each `gh pr`
+      call one GraphQL point, each `gh api` path one REST request, counted from the gh
+      stand-in's call ledger and summed over every pass and sweep — over one state root
+      of 19 registered identities, each holding `nick/dev-debuginfo-off` at content of
+      its own with every session closed, all recorded in the one legacy-shaped
+      `publish-branch-nick-dev-debuginfo-off` stream: 18 with their own open change
+      request whose number is a merged change request's in another of the 19, and 1
+      merged at a head carrying its content. The hour is 18 `onevcs retire-finished`
+      passes over every identity (three idle engine drivers sweeping every 600 s) then
+      two `onevcs sweep`s. Inner measure: the shared token's hourly headroom (5,000
+      requests an hour, GraphQL points and REST each) is the outcome, and these are the
+      requests retirement makes in it. Detail, unbudgeted: requests per pass and per
+      sweep, branches examined, branches decided from records alone, branches the host
+      was asked about, and requests by kind (merged-state view, open list, merge time).

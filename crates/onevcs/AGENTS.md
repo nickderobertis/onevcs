@@ -1296,6 +1296,16 @@ rename. Seven things are easy to undo.
   failed are never unchanged, and an `unknown` verdict is never recorded.
   `tests/e2e/verdicts.rs` holds each input to forcing a fresh derivation, and each
   fresh check to winning over a record that says `retirable`.
+- **A branch is merged only on its own repository's change request**, merged at a head
+  the host reports (`RemoteHost::merged_head`, `headRefOid` in the same `gh pr view`)
+  that carries the branch's content (`git::carries_content_of`). Records are scoped per
+  event (`status::Scope`): an event counts for an identity by its `identity` label, or,
+  unlabelled, only where every change-request URL it names is in that repository — a
+  legacy branch-keyed stream is one per branch *name* and holds every repository's
+  publications of it. An unlabelled event naming no change request proves nothing for
+  anybody. A landing record without the reported head never stands in for asking, and
+  the base's history never answers for the host. `tests/e2e/own_change.rs` is the
+  incident replayed over a committed legacy stream.
 - **A retired branch still answers `status`, `landing_status` and `release status`.**
   It resolves through its `branch-retired` record, reads as landed where it was retired
   `retirable`, and names the commit on the base its work reached — which is what a

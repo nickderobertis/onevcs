@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "description": "The record `crates/onevcs/scripts/retire-hour-host-requests-budget.mjs` reads, and\nnothing else writes.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
+    },
+    "identities": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "runs": {
+      "description": "Eighteen passes, then two sweeps, in the order they ran.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Run"
+      }
+    },
+    "requests": {
+      "description": "The hour's requests: every run's, summed.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "load1": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "identities",
+    "runs",
+    "requests",
+    "load1"
+  ],
+  "$defs": {
+    "Build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ]
+    },
+    "Run": {
+      "description": "What one run asked GitHub, off the stand-in's ledger and call log.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "requests": {
+          "description": "GitHub API requests: each `gh pr` call one GraphQL point, each `gh api` path one\nREST request.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "graphql_points": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "rest_requests": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "examined": {
+          "description": "The finished branches the run examined.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "from_records": {
+          "description": "Those it decided from this host's records alone, asking the host nothing.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "asked": {
+          "description": "The distinct change requests the host was asked about.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "merged_views": {
+          "description": "`gh pr view` reads of whether a change request merged, and at which head.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "open_lists": {
+          "description": "`gh pr list` reads of the branch's open change requests.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "merge_times": {
+          "description": "`gh pr view` reads of when a change request merged.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "other": {
+          "description": "Every other request.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retired": {
+          "description": "Branches the run retired.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wall_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "requests",
+        "graphql_points",
+        "rest_requests",
+        "examined",
+        "from_records",
+        "asked",
+        "merged_views",
+        "open_lists",
+        "merge_times",
+        "other",
+        "retired",
+        "wall_ms"
+      ]
+    },
+    "Kind": {
+      "description": "Which of the hour's runs one entry is.",
+      "oneOf": [
+        {
+          "description": "`onevcs retire-finished` over every identity — the `pass` trigger.",
+          "type": "string",
+          "const": "pass"
+        },
+        {
+          "description": "`onevcs sweep`, whose `finished-branches` family runs the same pass.",
+          "type": "string",
+          "const": "sweep"
+        }
+      ]
+    }
+  },
+  "x-workload": {
+    "identities": 19,
+    "passes": 18,
+    "sweeps": 2,
+    "branch": "nick/dev-debuginfo-off"
+  }
+}

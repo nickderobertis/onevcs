@@ -74,7 +74,12 @@ records itself here and joins the list in
 one and holds the ledger to naming exactly that list — a consumer sums the ledger over a
 whole review round, and a method missing from it is a cost nobody sees. `mergeability` and
 `visibility` are implemented only to be recorded: they answer the trait's default
-refusal, which is what this host always answered.
+refusal, which is what this host always answered. `merged_head` answers the merge
+`merged_at` does, with the head this host holds the change request at — a digest of its
+inputs unless a scenario seeds a real commit, since nothing here saw the push. So a
+consumer whose journey takes a late merge up through `onevcs` seeds the head that was
+pushed (`library.rs`'s `late_merge` does), or `onevcs` rightly records no landing for a
+head that does not carry the branch.
 
 What people do on the host — merging (`merge_by_person`), deleting a merged head and
 closing or retargeting what was based on it, closing unmerged, retargeting — are
