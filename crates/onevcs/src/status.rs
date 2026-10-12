@@ -2083,13 +2083,15 @@ impl Scope {
     /// Whose this event is, or `None` for an event that names nobody — no identity
     /// label, and no change request in one repository — which proves nothing for anyone.
     fn of(labelled: Option<String>, payload: &serde_json::Map<String, Value>) -> Option<Self> {
-        if let Some(identity) = labelled {
-            return Some(Scope::Labelled(identity));
-        }
         let mut repositories = payload
             .values()
             .filter_map(Value::as_str)
             .filter_map(change_repository);
+        if let Some(identity) = labelled {
+            return repositories
+                .all(|repository| repository.eq_ignore_ascii_case(&identity))
+                .then_some(Scope::Labelled(identity));
+        }
         let first = repositories.next()?;
         repositories
             .all(|other| other.eq_ignore_ascii_case(&first))

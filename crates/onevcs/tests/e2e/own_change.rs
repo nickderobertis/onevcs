@@ -685,8 +685,8 @@ fn append_legacy(world: &World, token: &str, lines: &[String]) {
         text.push_str(line);
         text.push('\n');
     }
-    // llmlint: ignore[tests_mirror_real_usage] this writes the legacy unlabelled events
-    // that current verbs cannot produce, to test real readers against existing streams.
+    // llmlint: ignore[tests_mirror_real_usage] current verbs cannot produce these legacy
+    // or misattributed foreign-URL events; import them to exercise real record readers.
     std::fs::write(&path, text).expect("the legacy stream");
 }
 
@@ -1275,4 +1275,61 @@ fn the_multi_repository_host_refuses_unsafe_repository_slugs() {
             "{refused:?}"
         );
     }
+}
+
+#[test]
+fn a_labelled_foreign_opening_cannot_hide_an_earlier_own_change_request() {
+    let fleet = Fleet::new(&["alpha", "beta"]);
+    let alpha = fleet.repo("alpha");
+    let beta = fleet.repo("beta");
+    let token = fleet.worked(alpha, BRANCH, "alpha.txt");
+    fleet.publish(alpha, BRANCH);
+    let before = fleet.copies(alpha, BRANCH);
+    assert_eq!(
+        fleet.status(&token)["publication"]["change_url"],
+        alpha.url(1)
+    );
+    let mut foreign = fleet.world.events_of(STREAM, "change-opened")[0].clone();
+    let text = std::fs::read_to_string(
+        fleet
+            .world
+            .home()
+            .join("streams")
+            .join(format!("{STREAM}.ndjson")),
+    )
+    .expect("the stream");
+    let sequence = text
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).expect("event")["seq"]
+                .as_u64()
+                .expect("sequence")
+        })
+        .max()
+        .expect("events")
+        + 1;
+    foreign["seq"] = json!(sequence);
+    foreign["payload"]["url"] = json!(beta.url(1));
+    append_legacy(&fleet.world, STREAM, &[foreign.to_string()]);
+    let status = fleet.status(&token);
+    assert_eq!(
+        status["publication"]["change_url"],
+        alpha.url(1),
+        "{status}"
+    );
+    let row = recoverable_row(&fleet, alpha, BRANCH);
+    assert_eq!(row["branch"]["change_url"], alpha.url(1), "{row}");
+    let asked = fleet.world.ledger().len();
+    for examined in [fleet.pass(), fleet.sweep()] {
+        let kept = entry(&examined, alpha, BRANCH);
+        assert_eq!(kept["reason"], "open-change-request", "{kept}");
+        assert_eq!(kept["outcome"], "kept", "{kept}");
+    }
+    assert_eq!(
+        fleet.viewed_since(asked),
+        [alpha.url(1)].into_iter().collect()
+    );
+    assert_eq!(fleet.copies(alpha, BRANCH), before);
+    assert!(events(&fleet.world, "branch-retired").is_empty());
+    assert!(landings(&fleet.world).is_empty());
 }
