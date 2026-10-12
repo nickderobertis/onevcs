@@ -486,6 +486,7 @@ pub(crate) fn names_the_change(
     url: &str,
     branch: &str,
 ) -> Option<String> {
+    let repository = crate::status::change_repository(url)?;
     let parsed = Url::parse(url).ok()?;
     let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
     let (owner, number) = match segments.as_slice() {
@@ -500,7 +501,15 @@ pub(crate) fn names_the_change(
         .iter()
         .find(|commit| {
             let subject = commit.message.lines().next().unwrap_or_default().trim_end();
-            subject.ends_with(&squash) || subject == merge
+            // A suffix number cannot override a change request explicitly named in
+            // another repository, even when that URL shares this request's number.
+            let foreign = subject
+                .split(|c: char| c.is_whitespace() || "()[]<>\"'".contains(c))
+                .filter_map(|word| {
+                    crate::status::change_repository(word.trim_end_matches([',', '.', ';']))
+                })
+                .any(|named| !named.eq_ignore_ascii_case(&repository));
+            !foreign && (subject.ends_with(&squash) || subject == merge)
         })
         .map(|commit| commit.sha.clone())
 }

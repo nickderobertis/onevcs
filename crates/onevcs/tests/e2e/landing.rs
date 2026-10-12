@@ -840,7 +840,8 @@ fn a_change_request_a_commit_body_or_another_repository_names_is_not_read_off_th
     // read: a squash's subject ending in `(#N)`, and `Merge pull request #N from
     // <owner>/<branch>`. A commit *body* quoting the change request — its URL, or its
     // `(#N)` — is something anybody writes, and so is a merge sentence naming another
-    // owner's branch; none of them is even corroboration that this work landed.
+    // owner's branch. Nor does a foreign change-request URL in a squash subject
+    // become corroboration just because it ends in the same `(#N)`.
     let hosted = Hosted::new(REVIEWED);
     let token = hosted.change("feature/quoted-by-url", "feat: add the thing");
     hosted
@@ -869,6 +870,12 @@ fn a_change_request_a_commit_body_or_another_repository_names_is_not_read_off_th
         &elsewhere,
         "fork.txt",
         "fork\n",
+        "feat: landed https://github.com/somebody-else/other/pull/1 (#1)",
+    );
+    hosted.world.commit_file(
+        &elsewhere,
+        "merge.txt",
+        "merge\n",
         "Merge pull request #1 from somebody-else/feature/quoted-by-url",
     );
     hosted
@@ -887,8 +894,8 @@ fn a_change_request_a_commit_body_or_another_repository_names_is_not_read_off_th
     let report = report(&hosted.world, "feature/quoted-by-url");
     assert_eq!(
         report["publication"]["landed"]["state"], "unknown",
-        "neither a body quoting this change request nor another owner's merge sentence is \
-         a landing of it: {report}"
+        "neither a body quoting this change request, a foreign URL's squash suffix nor \
+         another owner's merge sentence is a landing of it: {report}"
     );
     assert!(
         report["publication"]["landed"]["evidence"].is_null(),
