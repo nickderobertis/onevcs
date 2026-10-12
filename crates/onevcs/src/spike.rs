@@ -47,9 +47,17 @@ pub fn branches_load() -> Result<crate::branches::BranchesFile> {
 /// Copy one document a reader read into `target/saphyr-diff/e2e-dump/<kind>/`, named
 /// by its content digest, when that directory exists. The e2e fixture clears the
 /// environment of every process it spawns, so the switch is the directory rather than
-/// a variable.
+/// a variable. The harness links this same crate and must not add its own synthetic
+/// documents to the capture, so its process (`saphyr-diff`) never dumps.
 pub(crate) fn dump(kind: &str, raw: &str) {
     use sha2::Digest as _;
+    let harness = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().starts_with("saphyr-diff")))
+        .unwrap_or(false);
+    if harness {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/saphyr-diff/e2e-dump");
     if !root.is_dir() {
         return;

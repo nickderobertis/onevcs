@@ -82,6 +82,7 @@ struct DefaultPatch {
     drafts: Option<Drafts>,
 }
 
+/// The comment `rules apply` writes above the composed document.
 pub const HEADER: &str = "# Installed by `onevcs rules apply`. Edit the base and overlays it was \
                       composed from, and apply them again.\n";
 

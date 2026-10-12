@@ -18,6 +18,8 @@ pub enum Kind {
     Filter,
     /// `budgets.yaml`, walked schema-lessly by `tests/recovery-workload/churn.rs`.
     Budgets,
+    /// `.github/workflows/*.yml`, walked schema-lessly by `tests/contract.rs`.
+    Workflow,
 }
 
 impl Kind {
@@ -30,6 +32,7 @@ impl Kind {
             Kind::RulesApplyInput => "rules-apply-input",
             Kind::Filter => "filter",
             Kind::Budgets => "budgets",
+            Kind::Workflow => "workflow",
         }
     }
 }
@@ -106,6 +109,16 @@ pub fn repo_files(repo: &Path) -> Vec<Doc> {
     let mut out = Vec::new();
     if let Ok(text) = std::fs::read_to_string(repo.join("budgets.yaml")) {
         out.push(doc(Kind::Budgets, "repo:budgets.yaml", text));
+    }
+    let mut workflows: Vec<PathBuf> = std::fs::read_dir(repo.join(".github/workflows"))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    workflows.sort();
+    for path in workflows {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            out.push(doc(Kind::Workflow, format!("repo:.github/workflows/{name}"), text));
+        }
     }
     out
 }
@@ -190,7 +203,17 @@ pub fn host(onevcs_home: &Path, orchestrator: &Path) -> Vec<Doc> {
 /// crates could read differently.
 pub fn synthetic() -> Vec<Doc> {
     let mut out = Vec::new();
-    let mut add = |kind: Kind, name: &str, text: &str| out.push(doc(kind, format!("synthetic:{name}"), text));
+    // A rules document needs `rules:` as well as `default:`; one that names neither is
+    // given an empty list, so each case reaches the path it is about rather than
+    // stopping at the missing field.
+    let mut add = |kind: Kind, name: &str, text: &str| {
+        let text = if kind == Kind::Rules && text.contains("default:") && !text.contains("rules:") {
+            format!("{text}rules: []\n")
+        } else {
+            text.to_owned()
+        };
+        out.push(doc(kind, format!("synthetic:{name}"), text))
+    };
     use Kind::*;
     let base = "default: {publication: change-open, approvals: required}\n";
     // Document shapes.
