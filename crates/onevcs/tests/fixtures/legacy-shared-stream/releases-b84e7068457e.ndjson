@@ -1,0 +1,1 @@
+{"v":1,"ts":"2026-10-12T11:28:06.000Z","stream":"releases-b84e7068457e","seq":1,"source":"vcs","kind":"release-observed","phase":"release","labels":{"identity":"github.com/acme-corp/alpha"},"payload":{"identity":"github.com/acme-corp/alpha","target":"container","style":"automated","version":"0.1.0","landing_commit":"e8552f4ab332a18ca0b8969f392a64d542f225fb"},"artifacts":[]}
