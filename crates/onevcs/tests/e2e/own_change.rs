@@ -1234,3 +1234,42 @@ fn no_verdict_or_stream_index_an_earlier_build_wrote_is_served() {
         "an earlier build's index is listed again, not read: {relisted}"
     );
 }
+
+#[test]
+fn the_multi_repository_host_refuses_unsafe_repository_slugs() {
+    let fleet = Fleet::new(&["alpha"]);
+    let alpha = fleet.repo("alpha");
+    fleet.worked(alpha, BRANCH, "alpha.txt");
+    fleet.publish(alpha, BRANCH);
+    let view = |slug: &str| {
+        std::process::Command::new(fleet.world.path("bin/gh"))
+            .env("ONEVCS_FAKE_GH_STATE", fleet.world.path("gh-state"))
+            .args(["pr", "view", "1", "--repo", slug, "--json", "state"])
+            .output()
+            .expect("the host request")
+    };
+    let valid = view(&alpha.slug());
+    assert!(valid.status.success(), "{valid:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&valid.stdout).expect("view JSON")["state"],
+        "OPEN"
+    );
+    for slug in [
+        "../alpha",
+        "acme-corp/../alpha",
+        "/alpha",
+        "acme-corp/alpha/extra",
+        "acme-corp/alpha\n",
+        "",
+    ] {
+        let refused = view(slug);
+        assert!(
+            !refused.status.success(),
+            "accepted unsafe repository {slug:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("invalid --repo"),
+            "{refused:?}"
+        );
+    }
+}

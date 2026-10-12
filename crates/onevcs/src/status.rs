@@ -3876,8 +3876,8 @@ pub(crate) fn opened_change(
 }
 
 /// Everything this host's streams recorded about one branch that a retirement's
-/// derivation reads — its change request and landing, the heads pushed for it, the
-/// change request's own record, its supersessions and its retirement — as one digest,
+/// derivation reads — its change request and landing, its supersessions and its
+/// retirement — as one digest,
 /// or `None` where a stream that could be about it was not read whole.
 ///
 /// Every stream a reader above consults for the branch is in it, whole, so a record

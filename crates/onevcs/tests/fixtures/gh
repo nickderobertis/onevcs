@@ -4,6 +4,22 @@ set -euo pipefail
 STATE="${ONEVCS_FAKE_GH_STATE:?the substituted host needs a state directory}"
 mkdir -p "$STATE"
 
+called_repo=""
+repo_given=0
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--repo" ]; then
+    called_repo="$argument"
+    repo_given=1
+  fi
+  previous="$argument"
+done
+if [ "$previous" = "--repo" ] || { [ "$repo_given" = 1 ] && ! [[ "$called_repo" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; }; then
+  printf 'invalid --repo: expected an owner/name repository slug\n' >&2
+  exit 1
+fi
+
+
 # Every call this host is asked to make, one line each, in order. A journey about
 # what a *credential* can reach has to assert over this rather than over the
 # answer: a stand-in that replies is indistinguishable from one that was allowed
@@ -66,12 +82,6 @@ fi
 # answered from there. The calls log and the ledger above stay the world's, so one
 # journey reads every request every repository was asked. A world with no such
 # directory is the one repository it always was.
-called_repo=""
-previous=""
-for argument in "$@"; do
-  [ "$previous" = "--repo" ] && called_repo="$argument"
-  previous="$argument"
-done
 case "$called_repo" in
   */*)
     if [ -d "$STATE/repos/$called_repo" ]; then

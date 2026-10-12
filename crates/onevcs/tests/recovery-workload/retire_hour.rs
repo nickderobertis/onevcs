@@ -186,6 +186,7 @@ impl Host {
     /// Hold change request `number` of `name` as these fields say.
     fn change_request(&self, name: &str, number: usize, fields: &[(&str, &str)]) {
         let state = self.repo_state(name);
+        std::fs::create_dir_all(&state).expect("a repository's host state");
         let mut record = String::new();
         for (key, value) in fields {
             record.push_str(&format!("{key}='{value}'\n"));

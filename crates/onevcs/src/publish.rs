@@ -4588,10 +4588,9 @@ pub(crate) struct Watched<'a> {
 /// The question is asked of exactly one state and asked once per read: a change
 /// request this host recorded, which it asked the host to land, and for which no
 /// landing is recorded — which is what a `checks-unsettled` close leaves behind.
-/// [`RemoteHost::merged_at`] answers it, and its three answers are three outcomes: a
-/// merge commit is recorded as the landing, `None` and every refusal leave the record
-/// exactly as it stands. A change request the host reports open or closed-unmerged is
-/// the `None`.
+/// [`RemoteHost::merged_head`] answers it: a merge is recorded only where its reported
+/// head carries the branch's content. A merge at an older head, an open or
+/// closed-unmerged change request, and every refusal leave the record as it stands.
 ///
 /// What a recorded landing then gets is what a witnessed one gets, through the one
 /// function that gives it: the publication checkout fast-forwarded, each automated
