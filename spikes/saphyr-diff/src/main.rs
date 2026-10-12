@@ -78,7 +78,7 @@ fn main() {
     section_corpus(&docs, &dump);
     let reads = section_reads(&ctx, &docs);
     section_asserted(&ctx, &reads);
-    section_rules_apply(&ctx, &docs, &orchestrator);
+    section_rules_apply(&ctx, &docs);
     section_writes(&ctx, &docs, &dump);
     section_schemaless(&docs);
     section_timing(&docs, iterations);
@@ -340,32 +340,53 @@ fn section_asserted(ctx: &Ctx, reads: &[Read]) {
 
 // --------------------------------------------- rules apply: the unknown-key walk
 
-fn section_rules_apply(ctx: &Ctx, docs: &[Doc], orchestrator: &Path) {
+fn section_rules_apply(ctx: &Ctx, docs: &[Doc]) {
     println!("\n== rules apply: the unknown-key walk (`strictly`), today vs serde_json::Value vs saphyr's tree");
     let path = ctx.home.join("overlay.yml");
     let mut overlays = corpus::apply_overlays();
     for doc in docs.iter().filter(|d| d.kind == Kind::RulesApplyInput) {
         overlays.push((doc.source.clone(), doc.text.clone()));
     }
-    let f = &FLAVORS[5];
-    let g = &FLAVORS[8];
+    // The walk is compared on one typed read (FLAVORS[4], no code change), so the two
+    // trees are the only difference; FLAVORS[5] adds the code changes on the json tree.
+    let f = &FLAVORS[4];
+    let c = &FLAVORS[5];
+    let r = &FLAVORS[6];
     let mut same = 0;
     for (name, text) in &overlays {
-        let today = outcome(onevcs::spike::strictly::<Overlay>(&path, text), ctx);
-        let json = outcome(port::strictly_json::<Overlay>(&path, text, f), ctx);
-        let tree = outcome(port::strictly_saphyr::<Overlay>(&path, text, g), ctx);
-        if json == today && tree == today {
-            same += 1;
-            continue;
+        for (role, base) in [("as overlay", false), ("as base", true)] {
+            let (today, json, tree, shaped, resolved) = if base {
+                (
+                    outcome(onevcs::spike::strictly::<RulesFile>(&path, text), ctx),
+                    outcome(port::strictly_json::<RulesFile>(&path, text, f), ctx),
+                    outcome(port::strictly_saphyr::<RulesFile>(&path, text, f), ctx),
+                    outcome(port::strictly_json::<RulesFile>(&path, text, c), ctx),
+                    outcome(port::strictly_json::<RulesFile>(&path, text, r), ctx),
+                )
+            } else {
+                (
+                    outcome(onevcs::spike::strictly::<Overlay>(&path, text), ctx),
+                    outcome(port::strictly_json::<Overlay>(&path, text, f), ctx),
+                    outcome(port::strictly_saphyr::<Overlay>(&path, text, f), ctx),
+                    outcome(port::strictly_json::<Overlay>(&path, text, c), ctx),
+                    outcome(port::strictly_json::<Overlay>(&path, text, r), ctx),
+                )
+            };
+            if json == today && tree == today && shaped == today && resolved == today {
+                same += 1;
+                continue;
+            }
+            println!("\n  [rules apply {role}] {name}");
+            println!("{}", indent(text.trim_end(), "    | "));
+            let said = |o: &Outcome| if *o == today { "= today".to_owned() } else { show(o) };
+            println!("    today:                         {}", show(&today));
+            println!("    serde_json::Value walk:        {}", said(&json));
+            println!("    saphyr tree walk:              {}", said(&tree));
+            println!("    serde_json::Value + code change: {}", said(&shaped));
+            println!("    saphyr tree resolved as serde_yaml_ng + code change: {}", said(&resolved));
         }
-        println!("\n  [overlay] {name}");
-        println!("{}", indent(text.trim_end(), "    | "));
-        println!("    today:                {}", show(&today));
-        println!("    json ({}): {}", f.name, if json == today { "= today".into() } else { show(&json) });
-        println!("    saphyr tree ({}): {}", g.name, if tree == today { "= today".into() } else { show(&tree) });
     }
-    println!("\n  overlays identical under both walks: {same} of {}", overlays.len());
-    let _ = orchestrator;
+    println!("\n  (document, role) pairs identical under every walk: {same} of {}", overlays.len() * 2);
 }
 
 // -------------------------------------------------------------------- writes
@@ -417,7 +438,7 @@ fn diff(a: &str, b: &str) -> String {
             i += 1;
         }
     }
-    out.join("\n")
+    out.iter().map(|l| clip(l, 200)).collect::<Vec<_>>().join("\n")
 }
 
 fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
@@ -451,7 +472,7 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                 let saphyr = format!("{header}{}", emit_saphyr(&applied.rules, f));
                 let same = saphyr == applied.document;
                 println!("    serializer options {}: {}", f.name, if same { "byte-identical".to_owned() } else { format!("differs in {} lines", diff(&applied.document, &saphyr).lines().count()) });
-                if !same && f.name == "default" || !same && f.name == "compact_list_indent=false" {
+                if !same && f.name == "default" {
                     println!("{}", indent(&diff(&applied.document, &saphyr), "      "));
                 }
                 let reread = onevcs::spike::rules_parse(&path, &saphyr);
@@ -498,16 +519,28 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
     // Every value read from the corpus, written back by both crates.
     println!("\n  every document today reads, written back by each crate (byte-identical count per serializer options)");
     let mut per_kind: BTreeMap<&str, (usize, Vec<usize>)> = BTreeMap::new();
-    let mut first_diff: BTreeMap<(&str, usize), String> = BTreeMap::new();
+    // Every difference under default serializer options, grouped by the diff itself.
+    let mut default_diffs: BTreeMap<(&str, String), Vec<String>> = BTreeMap::new();
     let mut tally = |kind: &'static str, source: &str, today: String, saphyrs: Vec<String>| {
         let entry = per_kind.entry(kind).or_insert((0, vec![0; SER_FLAVORS.len()]));
         entry.0 += 1;
         for (i, s) in saphyrs.iter().enumerate() {
             if *s == today {
                 entry.1[i] += 1;
-            } else {
-                first_diff.entry((kind, i)).or_insert_with(|| format!("{source}\n{}", diff(&today, s)));
+            } else if i == 0 {
+                default_diffs.entry((kind, diff(&today, s))).or_default().push(source.to_owned());
             }
+        }
+    };
+    // Write-then-read: today's reader over serde-saphyr's default bytes, per kind.
+    let mut reread: BTreeMap<&str, (usize, usize, Vec<String>)> = BTreeMap::new();
+    let mut note = |kind: &'static str, source: &str, same: bool| {
+        let e = reread.entry(kind).or_insert((0, 0, Vec::new()));
+        e.0 += 1;
+        if same {
+            e.1 += 1;
+        } else {
+            e.2.push(source.to_owned());
         }
     };
     for doc in docs {
@@ -515,6 +548,8 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
         match doc.kind {
             Kind::Rules => {
                 if let Ok(v) = onevcs::spike::rules_parse(&path, &doc.text) {
+                    let written = emit_saphyr(&v, &SER_FLAVORS[0]);
+                    note("rules", &doc.source, onevcs::spike::rules_parse(&path, &written).ok().as_ref() == Some(&v));
                     tally("rules", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                 }
             }
@@ -523,16 +558,22 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
                 match doc.kind {
                     Kind::Releases => {
                         if let Ok(v) = onevcs::spike::releases_load() {
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
+                            note("releases", &doc.source, onevcs::spike::releases_load().ok().as_ref() == Some(&v));
                             tally("releases", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
                     Kind::Workspaces => {
                         if let Ok(v) = onevcs::spike::workspaces_load() {
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
+                            note("workspaces", &doc.source, onevcs::spike::workspaces_load().ok().as_ref() == Some(&v));
                             tally("workspaces", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
                     _ => {
                         if let Ok(v) = onevcs::spike::branches_load() {
+                            std::fs::write(host_path(ctx, doc.kind), emit_saphyr(&v, &SER_FLAVORS[0])).unwrap();
+                            note("branches", &doc.source, onevcs::spike::branches_load().ok().as_ref() == Some(&v));
                             tally("branches", &doc.source, emit_today(&v), saphyrs(&|f| emit_saphyr(&v, f)));
                         }
                     }
@@ -546,15 +587,19 @@ fn section_writes(ctx: &Ctx, docs: &[Doc], dump: &Path) {
             _ => {}
         }
     }
+    for (kind, (n, same, not)) in &reread {
+        println!("    {kind}: today's reader reads serde-saphyr's default bytes back to the same value for {same}/{n}{}", if not.is_empty() { format!("; not for {}", not.join(", ")) } else { String::new() });
+    }
     for (kind, (n, counts)) in &per_kind {
         let summary: Vec<String> = SER_FLAVORS.iter().zip(counts).map(|(f, c)| format!("{}={c}/{n}", f.name)).collect();
         println!("    {kind}: {}", summary.join("  "));
     }
-    for ((kind, i), example) in &first_diff {
-        if *i > 1 {
-            continue;
-        }
-        println!("\n    first {kind} difference under {}: {}", SER_FLAVORS[*i].name, indent(example, "      ").trim_start());
+    println!("\n  every difference under default serializer options (- serde_yaml_ng, + serde-saphyr), grouped by diff:");
+    for ((kind, d), sources) in &default_diffs {
+        let shown: Vec<&str> = sources.iter().take(4).map(String::as_str).collect();
+        let more = if sources.len() > 4 { format!(" and {} more", sources.len() - 4) } else { String::new() };
+        println!("\n    [{kind}] {} document(s): {}{more}", sources.len(), shown.join(", "));
+        println!("{}", indent(d, "      "));
     }
 }
 
@@ -639,12 +684,13 @@ fn section_schemaless(docs: &[Doc]) {
         println!("    serde_json::Value via serde-saphyr (default): {}", match &json { Ok(v) => v.clone(), Err(e) => format!("ERR {}", clip(e, 300)) });
         println!("    serde_json::Value via serde-saphyr (strict_booleans, merge as ordinary, non-finite ok): {}", match &json_strict { Ok(v) => v.clone(), Err(e) => format!("ERR {}", clip(e, 300)) });
         println!("    saphyr::Yaml: {}", match &tree { Ok(v) => clip(v, 300), Err(e) => format!("ERR {e}") });
+        println!("    serde_json::Value from saphyr's tree, resolved as serde_yaml_ng: {}", match port::resolved_tree(text) { Ok(v) => serde_json::to_string(&v).unwrap(), Err(e) => format!("ERR {}", clip(&e, 300)) });
     }
 
     println!("\n  real schema-less documents (budgets.yaml, workflows): today's tree as JSON vs serde-saphyr's serde_json::Value");
     for doc in docs.iter().filter(|d| matches!(d.kind, Kind::Budgets | Kind::Workflow)) {
         let today = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&doc.text).map(|v| yaml_ng_to_json(&v));
-        for f in [&FLAVORS[0], &FLAVORS[4]] {
+        for f in [&FLAVORS[0], &FLAVORS[4], &FLAVORS[6]] {
             let saphyr = f.tree(&doc.text);
             let verdict = match (&today, &saphyr) {
                 (Ok(a), Ok(b)) if a == b => "identical".to_owned(),
@@ -710,11 +756,12 @@ fn section_timing(docs: &[Doc], iterations: usize) {
         println!("    serde_yaml_ng::from_str::<Value>                {:>9.1}", time(&|| { std::hint::black_box(serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).unwrap()); }));
         println!("    serde_saphyr::from_str::<serde_json::Value>     {:>9.1}", time(&|| { std::hint::black_box(serde_saphyr::from_str::<J>(text).unwrap()); }));
         println!("    saphyr::Yaml::load_from_str                     {:>9.1}", time(&|| { std::hint::black_box(saphyr::Yaml::load_from_str(text).unwrap()); }));
+        println!("    port::resolved_tree (saphyr, serde_yaml_ng rules) {:>9.1}", time(&|| { std::hint::black_box(port::resolved_tree(text).unwrap()); }));
         if doc.kind == Kind::Rules {
             let path = Path::new("/rules.yml");
             println!("    today's policy::parse (whole reader)            {:>9.1}", time(&|| { std::hint::black_box(onevcs::spike::rules_parse(path, text).unwrap()); }));
             println!("    port::rules [{}] {:>9.1}", FLAVORS[5].name, time(&|| { std::hint::black_box(port::rules(path, text, &FLAVORS[5]).unwrap()); }));
-            println!("    port::rules [{}] {:>9.1}", FLAVORS[8].name, time(&|| { std::hint::black_box(port::rules(path, text, &FLAVORS[8]).unwrap()); }));
+            println!("    port::rules [{}] {:>9.1}", FLAVORS[6].name, time(&|| { std::hint::black_box(port::rules(path, text, &FLAVORS[6]).unwrap()); }));
         }
     }
 }

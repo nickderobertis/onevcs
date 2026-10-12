@@ -416,7 +416,7 @@ pub fn synthetic() -> Vec<Doc> {
 /// diff over non-string keys and nulls.
 pub fn apply_overlays() -> Vec<(String, String)> {
     [
-        ("ok", "version: 4\nrules:\n  - match: {host: github.com, owner: spike, name: x}\n    publication: local-direct\n"),
+        ("ok", "version: 4\nrules:\n  - match: {host: github.com, owner: spike, name: x}\n    publication: local-direct\n    approvals: none\n"),
         ("null-unknown", "version: 4\nfrobnicate: ~\n"),
         ("null-known-nested", "version: 4\ndefault: {drafts: ~}\n"),
         ("unknown-top", "version: 4\nfrobnicate: 1\n"),

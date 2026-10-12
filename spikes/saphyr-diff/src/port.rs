@@ -34,6 +34,10 @@ pub struct Flavor {
     /// The small code changes that reshape what serde-saphyr and serde_json say into
     /// what serde_yaml_ng said (see `shape_tree`, `shape_error` and `spelled`).
     pub code_change: bool,
+    /// Build the walks' `serde_json::Value` from saphyr's node tree, resolving each
+    /// plain scalar from its source text by serde_yaml_ng's rules
+    /// (`resolved_tree`), instead of from serde-saphyr's `deserialize_any`.
+    pub saphyr_resolved: bool,
 }
 
 impl Flavor {
@@ -51,6 +55,9 @@ impl Flavor {
 
     /// The document as the walks see it: `serde_json::Value` with `preserve_order`.
     pub fn tree(&self, raw: &str) -> Result<J, String> {
+        if self.saphyr_resolved {
+            return resolved_tree(raw);
+        }
         if self.code_change {
             // CODE CHANGE: today's refusal of a stream of several documents.
             if let Ok(docs) = serde_saphyr::from_multiple_with_options::<J>(raw, self.options()) {
@@ -89,8 +96,13 @@ impl Flavor {
 
     fn typed<T: for<'de> Deserialize<'de>>(&self, raw: &str, tree: J) -> Result<T, String> {
         match self.typed {
-            Typed::Json => serde_json::from_value(self.shape_tree::<T>(tree)?)
-                .map_err(|e| self.shape_error(e.to_string())),
+            Typed::Json => {
+                if self.code_change {
+                    refuse_non_string_key(raw)?;
+                }
+                serde_json::from_value(self.shape_tree::<T>(tree)?)
+                    .map_err(|e| self.shape_error(e.to_string()))
+            }
             Typed::Direct => serde_saphyr::from_str_with_options(raw, self.options())
                 .map_err(|e| e.to_string()),
         }
@@ -128,6 +140,7 @@ const BASE: Flavor = Flavor {
     with_snippet: true,
     reject_non_finite: true,
     code_change: false,
+    saphyr_resolved: false,
 };
 
 /// Each flavor adds one knob to the one before it (the two typed paths each start
@@ -140,6 +153,7 @@ pub const FLAVORS: &[Flavor] = &[
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, ..BASE },
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, ..BASE },
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, ..BASE },
+    Flavor { name: "saphyr_tree+serde_yaml_ng_resolver+code_change", with_snippet: false, code_change: true, saphyr_resolved: true, ..BASE },
     Flavor { name: "direct", typed: Typed::Direct, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet+non_finite_ok", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, reject_non_finite: false, ..BASE },
@@ -157,15 +171,93 @@ pub fn spelled(value: &J) -> String {
         .unwrap_or_default()
 }
 
-/// CODE CHANGE: a number spelled as serde_json's `Display` writes it (ryu, as
-/// serde_yaml_ng did: `1e300`, not serde-saphyr's `1.0e+300`), and a non-finite float
-/// — which a typeless read with `reject_non_finite_typeless_float: false` hands back as
-/// the string `.inf`/`-.inf`/`.nan` — written bare, as it was written.
+/// CODE CHANGE: a value spelled the way serde_yaml_ng spelled it in a refusal.
+/// - a number as serde_json's `Display` writes it with `e+` folded to `e` (ryu, as
+///   serde_yaml_ng: `1e300`, not serde-saphyr's `1.0e+300`);
+/// - a non-finite float — which a typeless read with
+///   `reject_non_finite_typeless_float: false` hands back as the string
+///   `.inf`/`-.inf`/`.nan` — bare, as it was written;
+/// - a string through `SerializerOptions { yaml_12: true }` (so `yes`, `on` and a date
+///   stay plain, as serde_yaml_ng left them), the `%YAML 1.2`/`---` header dropped, and
+///   a double-quoted scalar with no escape re-quoted with single quotes, which is the
+///   style serde_yaml_ng chose.
 pub fn spelled_shaped(value: &J) -> String {
     match value {
-        J::Number(n) => n.to_string(),
+        J::Number(n) => n.to_string().replace("e+", "e"),
         J::String(s) if matches!(s.as_str(), ".inf" | "-.inf" | ".nan") => s.clone(),
+        J::String(_) => {
+            let text = serde_saphyr::to_string_with_options(value, serde_saphyr::ser_options! { yaml_12: true })
+                .unwrap_or_default();
+            let body: Vec<&str> = text
+                .lines()
+                .filter(|line| !line.starts_with("%YAML") && *line != "---")
+                .collect();
+            let body = body.join("\n");
+            let body = body.trim();
+            let inner = body
+                .strip_prefix('"')
+                .and_then(|b| b.strip_suffix('"'))
+                .or_else(|| body.strip_prefix('\'').and_then(|b| b.strip_suffix('\'')));
+            match inner {
+                Some(inner) if !inner.contains('\\') && !inner.contains('\'') => {
+                    // Bare where today's resolver reads the bare text back as this same
+                    // string (`3_600`, `<<`, `yes`), single-quoted otherwise (`'3600'`),
+                    // and single-quoted for leading-zero digits (`'010'`), which
+                    // serde_yaml_ng's emitter quoted for YAML 1.1 readers.
+                    let unsigned = inner.strip_prefix(['-', '+']).unwrap_or(inner);
+                    let leading_zero_digits = unsigned.len() > 1
+                        && unsigned.starts_with('0')
+                        && unsigned[1..].bytes().all(|b| b.is_ascii_digit());
+                    if !leading_zero_digits && resolved_tree(inner).ok() == Some(value.clone()) {
+                        inner.to_owned()
+                    } else {
+                        format!("'{inner}'")
+                    }
+                }
+                _ => body.to_owned(),
+            }
+        }
         other => spelled(other),
+    }
+}
+
+/// CODE CHANGE: refuse, before the typed read, a mapping key that is not a string,
+/// in serde's words for a struct field — which serde_yaml_ng's typed read said and
+/// `serde_json::Value` (whose keys are strings) can no longer see. Read off saphyr's
+/// node tree, which keeps each key's type.
+pub fn refuse_non_string_key(raw: &str) -> Result<(), String> {
+    use saphyr::{LoadableYamlNode, Scalar, Yaml};
+    fn walk(node: &Yaml) -> Option<String> {
+        match node {
+            Yaml::Mapping(map) => {
+                for (key, value) in map {
+                    let what = match key {
+                        Yaml::Value(Scalar::String(_)) => None,
+                        Yaml::Value(Scalar::Integer(i)) => Some(format!("integer `{i}`")),
+                        Yaml::Value(Scalar::Boolean(b)) => Some(format!("boolean `{b}`")),
+                        Yaml::Value(Scalar::FloatingPoint(x)) => Some(format!("floating point `{x}`")),
+                        Yaml::Value(Scalar::Null) => Some("unit value".to_owned()),
+                        Yaml::Sequence(_) => Some("sequence".to_owned()),
+                        Yaml::Mapping(_) => Some("map".to_owned()),
+                        _ => None,
+                    };
+                    if let Some(what) = what {
+                        return Some(format!("invalid type: {what}, expected field identifier"));
+                    }
+                    if let Some(found) = walk(value) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Yaml::Sequence(items) => items.iter().find_map(walk),
+            _ => None,
+        }
+    }
+    let docs = Yaml::load_from_str(raw).map_err(|e| e.to_string())?;
+    match docs.first().and_then(walk) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
     }
 }
 
@@ -493,4 +585,130 @@ fn unknown_key_saphyr(given: &saphyr::Yaml, understood: &saphyr::Yaml, at: &str)
         }
         _ => None,
     }
+}
+
+// ------------------------------------- saphyr's tree, resolved as serde_yaml_ng did
+
+/// The document as `serde_json::Value`, built from saphyr's node tree loaded with
+/// `early_parse(false)` so every scalar arrives as its source text, style and tag, and
+/// each plain scalar resolved by serde_yaml_ng 0.10's rules: `~`/`null`/empty are null,
+/// only `true`/`True`/`TRUE` and the `false` forms are booleans, an integer is decimal
+/// (no leading zero, no `_`) or `0x`/`0o`/`0b`, a float is what `f64::from_str` takes
+/// and is finite (or `.inf`/`.nan`, kept as that string as serde-saphyr's
+/// `reject_non_finite_typeless_float: false` does), and everything else is a string.
+/// A quoted scalar or a `!!str` one is a string. Merge keys are ordinary keys.
+pub fn resolved_tree(raw: &str) -> Result<J, String> {
+    use saphyr::{Yaml, YamlLoader};
+    let mut parser = saphyr_parser::Parser::new_from_str(raw);
+    let mut loader: YamlLoader<Yaml> = YamlLoader::default();
+    loader.early_parse(false);
+    parser.load(&mut loader, true).map_err(|e| e.to_string())?;
+    if let Some(error) = loader.error() {
+        return Err(error.to_string());
+    }
+    let docs = loader.into_documents();
+    if docs.len() > 1 {
+        return Err("deserializing from YAML containing more than one document is not supported".to_owned());
+    }
+    match docs.first() {
+        None => Ok(J::Null),
+        Some(doc) => to_json(doc, 0),
+    }
+}
+
+/// serde_yaml_ng's recursion limit, which saphyr's loader does not have.
+const DEPTH_LIMIT: usize = 128;
+
+fn to_json(node: &saphyr::Yaml, depth: usize) -> Result<J, String> {
+    use saphyr::Yaml;
+    if depth > DEPTH_LIMIT {
+        return Err("recursion limit exceeded".to_owned());
+    }
+    match node {
+        Yaml::Representation(text, style, tag) => Ok(resolve(text, *style, tag.as_deref())),
+        Yaml::Value(scalar) => Ok(match scalar {
+            saphyr::Scalar::Null => J::Null,
+            saphyr::Scalar::Boolean(b) => J::Bool(*b),
+            saphyr::Scalar::Integer(i) => J::from(*i),
+            saphyr::Scalar::FloatingPoint(x) => serde_json::Number::from_f64(**x).map(J::Number).unwrap_or(J::Null),
+            saphyr::Scalar::String(s) => J::String(s.to_string()),
+        }),
+        Yaml::Sequence(items) => items.iter().map(|item| to_json(item, depth + 1)).collect::<Result<Vec<_>, _>>().map(J::Array),
+        Yaml::Mapping(map) => {
+            let mut out = Map::new();
+            for (key, value) in map {
+                let key = match to_json(key, depth + 1)? {
+                    J::String(s) => s,
+                    J::Null => "null".to_owned(),
+                    other => match key {
+                        Yaml::Representation(text, _, _) => text.to_string(),
+                        _ => other.to_string(),
+                    },
+                };
+                out.insert(key, to_json(value, depth + 1)?);
+            }
+            Ok(J::Object(out))
+        }
+        Yaml::Tagged(_, inner) => to_json(inner, depth),
+        Yaml::Alias(_) | Yaml::BadValue => Err("an alias saphyr could not resolve".to_owned()),
+    }
+}
+
+fn resolve(text: &str, style: saphyr_parser::ScalarStyle, tag: Option<&saphyr_parser::Tag>) -> J {
+    if style != saphyr_parser::ScalarStyle::Plain {
+        return J::String(text.to_owned());
+    }
+    if let Some(tag) = tag {
+        if tag.handle == "tag:yaml.org,2002:" && tag.suffix == "str" || tag.handle == "!!" && tag.suffix == "str" {
+            return J::String(text.to_owned());
+        }
+    }
+    match text {
+        "~" | "null" | "Null" | "NULL" | "" => return J::Null,
+        "true" | "True" | "TRUE" => return J::Bool(true),
+        "false" | "False" | "FALSE" => return J::Bool(false),
+        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => return J::String(".inf".to_owned()),
+        "-.inf" | "-.Inf" | "-.INF" => return J::String("-.inf".to_owned()),
+        ".nan" | ".NaN" | ".NAN" => return J::String(".nan".to_owned()),
+        _ => {}
+    }
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    // Leading zero(s) followed by digits is a string (serde_yaml_ng's
+    // `digits_but_not_number`).
+    if unsigned.len() > 1 && unsigned.starts_with('0') && unsigned[1..].bytes().all(|b| b.is_ascii_digit()) {
+        return J::String(text.to_owned());
+    }
+    let negative = text.starts_with('-');
+    let (radix, digits) = if let Some(d) = unsigned.strip_prefix("0x") {
+        (16, d)
+    } else if let Some(d) = unsigned.strip_prefix("0o") {
+        (8, d)
+    } else if let Some(d) = unsigned.strip_prefix("0b") {
+        (2, d)
+    } else {
+        (10, unsigned)
+    };
+    if !digits.is_empty() && !digits.starts_with(['+', '-']) {
+        if let Ok(v) = u128::from_str_radix(digits, radix) {
+            if negative {
+                if let Ok(i) = i64::try_from(v).map(|i| -i) {
+                    return J::from(i);
+                }
+            } else if let Ok(u) = u64::try_from(v) {
+                return J::from(u);
+            }
+            // serde_yaml_ng refused an integer beyond 64 bits in a Value; a string
+            // here is refused by every numeric field just the same.
+            return J::String(text.to_owned());
+        }
+    }
+    if let Ok(x) = unsigned.parse::<f64>() {
+        if x.is_finite() && !unsigned.starts_with(['+', '-']) {
+            let x = if negative { -x } else { x };
+            if let Some(n) = serde_json::Number::from_f64(x) {
+                return J::Number(n);
+            }
+        }
+    }
+    J::String(text.to_owned())
 }

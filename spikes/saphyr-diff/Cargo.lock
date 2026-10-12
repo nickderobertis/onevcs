@@ -1292,6 +1292,7 @@ version = "0.0.0"
 dependencies = [
  "onevcs",
  "saphyr",
+ "saphyr-parser",
  "serde",
  "serde-saphyr",
  "serde_json",
