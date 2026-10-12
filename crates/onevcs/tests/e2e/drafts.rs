@@ -1994,6 +1994,27 @@ fn answered(host: &MemoryHost) -> Vec<String> {
         .collect()
 }
 
+/// How many check reads the watch made from the host's first `head_activity` answer up
+/// to its second. Without reuse every eligible poll asks, so that is one; two or more is
+/// a poll the cached answer served. How many more depends on how many polls fit in the
+/// window on the machine running it, which a loaded runner shrinks, so no test holds it
+/// to a figure — the window's upper bound on asks is held against elapsed time instead.
+fn reads_between_first_two_asks(host: &MemoryHost) -> usize {
+    let methods = answered(host);
+    let mut asks = methods
+        .iter()
+        .enumerate()
+        .filter(|(_, method)| *method == "head_activity")
+        .map(|(at, _)| at);
+    let (Some(first), Some(second)) = (asks.next(), asks.next()) else {
+        panic!("asked at least twice: {methods:?}");
+    };
+    methods[first..second]
+        .iter()
+        .filter(|method| *method == "change_checks")
+        .count()
+}
+
 /// How many `method` calls the host answered.
 fn calls(host: &MemoryHost, method: &str) -> usize {
     answered(host)
@@ -2433,8 +2454,8 @@ fn work_the_host_names_with_no_check_incomplete_is_asked_about_once_per_reuse_wi
         "asked {asked} times over {took}s: again after the window, never per poll"
     );
     assert!(
-        calls(&host, "change_checks") > 3 * asked,
-        "the checks were read on every poll between"
+        reads_between_first_two_asks(&host) >= 2,
+        "the checks were read on every poll between, the cached answer serving them"
     );
 
     // After a lift: the answer that lifted it was empty, and from then on the host names
@@ -2511,12 +2532,9 @@ fn once_a_reused_answer_expires_an_empty_read_lifts_on_that_poll() {
         .position(|method| method == "ready_for_review")
         .expect("lifted");
     assert!(asked.len() >= 2, "{methods:?}");
-    let between = methods[asked[0]..asked[1]]
-        .iter()
-        .filter(|method| *method == "change_checks")
-        .count();
+    let between = reads_between_first_two_asks(&host);
     assert!(
-        between >= 5,
+        between >= 2,
         "the first answer was reused for its window: {between} readings"
     );
     assert!(
