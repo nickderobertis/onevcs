@@ -2807,7 +2807,17 @@ fn the_github_implementation_reads_a_running_workflow_run_or_check_suite_as_work
         // …and the answer itself, read in this process through the same stand-in:
         // the work named, about the commit the publication pushed, every source read.
         std::fs::remove_dir_all(hosted.world.path("gh-state/timeline")).expect("phases");
+        let before = hosted.world.host_calls().len();
         let answer = github_head_activity(&hosted, &token).expect("the host answers");
+        // One read is exactly the two requests about the commit it was handed: the
+        // change request's head is not read again first.
+        let asked = hosted.world.host_calls()[before..].to_vec();
+        assert_eq!(asked.len(), 2, "{label}: {asked:?}");
+        assert!(
+            asked[0].contains("/actions/runs?head_sha="),
+            "{label}: {asked:?}"
+        );
+        assert!(asked[1].contains("/check-suites"), "{label}: {asked:?}");
         let named = if runs { "ci" } else { "octoapp" };
         assert_eq!(answer.in_progress, vec![named.to_owned()], "{label}");
         assert!(answer.complete, "{label}");
