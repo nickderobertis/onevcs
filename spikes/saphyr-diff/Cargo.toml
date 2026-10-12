@@ -1,0 +1,20 @@
+# Throwaway differential harness (spike-onevcs-yaml; never lands): the YAML crate
+# this repository reads and writes with today (serde_yaml_ng 0.10) against
+# serde-saphyr 1.3 and saphyr 0.2, over this repository's real documents and its own
+# types. Its own workspace, so the repository's workspace and Cargo.lock are untouched.
+[package]
+name = "saphyr-diff"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+onevcs = { path = "../../crates/onevcs", features = ["spike-saphyr-diff"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "=0.10.0"
+serde-saphyr = "=1.3.0"
+saphyr = "=0.2.1"

@@ -107,6 +107,8 @@ mod status;
 mod store;
 mod stream;
 mod sweep;
+#[cfg(feature = "spike-saphyr-diff")]
+pub mod spike;
 #[cfg(feature = "testing")]
 #[doc(hidden)]
 pub mod testing;

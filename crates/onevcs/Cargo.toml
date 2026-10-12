@@ -36,6 +36,9 @@ path = "src/main.rs"
 [features]
 # Persistence writers used only by the sibling test-support crate.
 testing = []
+# Spike only (never lands): exposes today's YAML readers to spikes/saphyr-diff and
+# dumps every document they read into target/saphyr-diff/e2e-dump when it exists.
+spike-saphyr-diff = []
 
 [dependencies]
 aho-corasick = { workspace = true }

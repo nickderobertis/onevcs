@@ -116,6 +116,8 @@ pub(crate) fn load() -> Result<(BranchesFile, FileSource)> {
             path.display()
         ))
     };
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("branches", &raw);
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too,
     // for the reason the other host files do it: which keys a document may carry is

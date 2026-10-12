@@ -60,7 +60,7 @@ pub struct RulesApplied {
 /// An overlay: a declared `version` and, optionally, every other key a rules file has.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Overlay {
+pub struct Overlay {
     version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trailer_prefix: Option<TrailerPrefix>,
@@ -82,7 +82,7 @@ struct DefaultPatch {
     drafts: Option<Drafts>,
 }
 
-const HEADER: &str = "# Installed by `onevcs rules apply`. Edit the base and overlays it was \
+pub const HEADER: &str = "# Installed by `onevcs rules apply`. Edit the base and overlays it was \
                       composed from, and apply them again.\n";
 
 /// Compose the base and its overlays, validate the result, and install it — unless
@@ -105,6 +105,8 @@ pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied> {
         serde_yaml_ng::to_string(&composed)
             .map_err(|error| crate::error::invalid(error.to_string()))?
     );
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("rules-apply-emitted", &document);
     // The composition reads back as the rules every verb will load, or it is not
     // installed: a composition only this function could read is not a rules file.
     policy::parse(&destination, &document)?;
@@ -120,13 +122,16 @@ pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied> {
 }
 
 fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|error| Error::Invalid {
+    let raw = std::fs::read_to_string(path).map_err(|error| Error::Invalid {
         reason: format!("cannot read the rules file at {}: {error}", path.display()),
-    })
+    })?;
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("rules-apply-input", &raw);
+    Ok(raw)
 }
 
 /// Lay one overlay over the composition so far.
-fn lay(composed: &mut RulesFile, overlay: Overlay, path: &Path) -> Result<()> {
+pub fn lay(composed: &mut RulesFile, overlay: Overlay, path: &Path) -> Result<()> {
     if overlay.version < policy::OLDEST_VERSION {
         return Err(Error::Invalid {
             reason: format!(
@@ -198,7 +203,7 @@ fn lay(composed: &mut RulesFile, overlay: Overlay, path: &Path) -> Result<()> {
 /// The document is read as `T` and written again; a key that went in and did not come
 /// out is one nothing here understands. A key set to null says nothing either way and
 /// is passed over.
-fn strictly<T: Serialize + for<'de> Deserialize<'de>>(path: &Path, raw: &str) -> Result<T> {
+pub fn strictly<T: Serialize + for<'de> Deserialize<'de>>(path: &Path, raw: &str) -> Result<T> {
     let malformed = |error: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {error}", path.display()),
     };

@@ -503,6 +503,8 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
             path.display()
         ))
     };
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("workspaces", &raw);
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too, for
     // the reason the other two host files do it: which keys a document may carry is a
@@ -534,7 +536,7 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
 /// again at open where the two arrive separately. A maintenance command with no argv
 /// is not one of them: [`MaintenanceCommand`] cannot hold one, so the empty sequence
 /// is refused where the document deserializes, before a policy resolves to it.
-fn validate(path: &Path, file: &WorkspacesFile) -> Result<()> {
+pub(crate) fn validate(path: &Path, file: &WorkspacesFile) -> Result<()> {
     let mut checked: Vec<(String, &WorkspaceDefault)> = vec![("default".to_owned(), &file.default)];
     let resolved: Vec<(String, WorkspaceDefault)> = file
         .rules

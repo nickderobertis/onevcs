@@ -51,7 +51,7 @@ const TRAILER_PREFIX_VERSION: u32 = 2;
 /// not know. Versioned rather than taken outright because a rules file is an
 /// operator's document on their own host, and refusing every command before they
 /// can re-apply it is worse than reading a key this build has nothing to do with.
-const GATE_REMOVED_VERSION: u32 = 3;
+pub const GATE_REMOVED_VERSION: u32 = 3;
 
 /// The version from which a rule and `default:` may carry `drafts:`.
 ///
@@ -380,6 +380,8 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
 /// it declares, the keys that version has, the shape, and the combinations no policy
 /// can honour. `path` is what a refusal names the document by.
 pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("rules", raw);
     let path = path.to_path_buf();
     let malformed = |e: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
@@ -638,7 +640,7 @@ fn refuse_malformed_checks(path: &Path, document: &serde_yaml_ng::Value) -> Resu
 /// One line per load, and no `onevcs` command reads the rules file twice — so this
 /// is one line per command, and nothing here needs to remember what it has already
 /// reported.
-fn report_spent_gate(path: &Path, dropped: usize) {
+pub fn report_spent_gate(path: &Path, dropped: usize) {
     if dropped == 0 {
         return;
     }

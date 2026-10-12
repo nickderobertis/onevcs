@@ -108,6 +108,8 @@ pub fn load() -> Result<ReleasesFile> {
             path.display()
         ))
     };
+    #[cfg(feature = "spike-saphyr-diff")]
+    crate::spike::dump("releases", &raw);
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a document may carry is a fact about the version it declares, so a
@@ -138,7 +140,7 @@ pub fn load() -> Result<ReleasesFile> {
 /// What a *combination* of fields makes impossible belongs here; a field that is
 /// wrong on its own is refused by its own conversion, which is why nothing checks a
 /// target's name or a probe's shape twice.
-fn validate(path: &Path, file: &ReleasesFile) -> Result<()> {
+pub(crate) fn validate(path: &Path, file: &ReleasesFile) -> Result<()> {
     for (index, rule) in file.repositories.iter().enumerate() {
         let named = format!("repository rule {}", index + 1);
         let mut seen: Vec<&TargetName> = Vec::new();
