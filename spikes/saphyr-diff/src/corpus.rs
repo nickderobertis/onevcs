@@ -376,6 +376,10 @@ pub fn synthetic() -> Vec<Doc> {
     add(Rules, "null-key-top", &format!("version: 4\n~: one\n{base}"));
     add(Rules, "complex-key-top", &format!("version: 4\n? [a, b]\n: one\n{base}"));
     add(Rules, "deep-nesting", &format!("version: 4\nx: {}{}\n{base}", "[".repeat(200), "]".repeat(200)));
+    // Where each crate's depth limit falls: `n` flow sequences nested under one key.
+    for n in [62, 63, 64, 65, 66, 100, 125, 126, 127, 128, 129, 130] {
+        add(Rules, &format!("nesting-{n}"), &format!("version: 4\nx: {}{}\n{base}", "[".repeat(n), "]".repeat(n)));
+    }
     add(Rules, "block-scalar-trailer", &format!("version: 4\ntrailer_prefix: |\n  Onevcs-\n{base}"));
     // Releases-specific scalars.
     add(Releases, "probe-timeout-quoted", "version: 1\ndefault: {adoption: fast}\nrepositories:\n  - match: {name: x}\n    targets:\n      - {name: crate, style: automated, probe: {shell: 'true', timeout_seconds: \"60\"}}\n");

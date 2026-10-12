@@ -47,7 +47,12 @@ fn main() {
     let repo = repo.canonicalize().expect("the repository");
     let dump = arg("--dump").unwrap_or_else(|| manifest.join("corpus/e2e"));
     let home_dir = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-    let onevcs_home = arg("--onevcs-home").unwrap_or_else(|| home_dir.join(".onevcs"));
+    // This host's state root, read only: `--onevcs-home`, else the `ONEVCS_HOME` this
+    // process was started with (captured here, before it is replaced below), else the
+    // conventional `~/.onevcs`.
+    let onevcs_home = arg("--onevcs-home")
+        .or_else(|| std::env::var_os("ONEVCS_HOME").filter(|v| !v.is_empty()).map(PathBuf::from))
+        .unwrap_or_else(|| home_dir.join(".onevcs"));
     let orchestrator =
         arg("--orchestrator").unwrap_or_else(|| home_dir.join("projects/ai-orchestrator"));
     let iterations: usize = args
@@ -57,7 +62,9 @@ fn main() {
         .and_then(|n| n.parse().ok())
         .unwrap_or(2000);
 
-    let scratch = std::env::temp_dir().join(format!("saphyr-diff-{}", std::process::id()));
+    // Scratch lives under the worktree's own (gitignored) target/, never the system
+    // temporary directory: the spike writes nothing outside its worktree.
+    let scratch = repo.join(format!("target/saphyr-diff/scratch-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).expect("scratch");
     // Every host-file reader reads $ONEVCS_HOME; point it at a scratch root so this
     // host's own state is never written (the host files are read, copied, and only

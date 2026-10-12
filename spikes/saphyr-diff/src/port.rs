@@ -39,6 +39,9 @@ pub struct Flavor {
     /// (`resolved_tree`), instead of from serde-saphyr's `deserialize_any`.
     pub saphyr_resolved: bool,
     pub reject_tags: bool,
+    /// `Budget::max_depth` raised from serde-saphyr's default 64 to 128, today's
+    /// recursion limit.
+    pub depth_128: bool,
 }
 
 impl Flavor {
@@ -52,6 +55,7 @@ impl Flavor {
             with_snippet: self.with_snippet,
             reject_non_finite_typeless_float: self.reject_non_finite,
             reject_unsupported_tags: self.reject_tags,
+            budget: if self.depth_128 { serde_saphyr::budget! { max_depth: 128 } } else { serde_saphyr::budget! {} },
         }
     }
 
@@ -144,6 +148,7 @@ const BASE: Flavor = Flavor {
     code_change: false,
     saphyr_resolved: false,
     reject_tags: false,
+    depth_128: false,
 };
 
 /// Each flavor adds one knob to the one before it (the two typed paths each start
@@ -158,6 +163,7 @@ pub const FLAVORS: &[Flavor] = &[
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, ..BASE },
     Flavor { name: "saphyr_tree+serde_yaml_ng_resolver+code_change", with_snippet: false, code_change: true, saphyr_resolved: true, ..BASE },
     Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change+reject_unsupported_tags", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, reject_tags: true, ..BASE },
+    Flavor { name: "json+strict_booleans+merge_as_ordinary+non_finite_ok+no_snippet+code_change+max_depth_128", strict_booleans: true, merge_as_ordinary: true, reject_non_finite: false, with_snippet: false, code_change: true, depth_128: true, ..BASE },
     Flavor { name: "direct", typed: Typed::Direct, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, ..BASE },
     Flavor { name: "direct+strict_booleans+merge_as_ordinary+no_snippet+non_finite_ok", typed: Typed::Direct, strict_booleans: true, merge_as_ordinary: true, with_snippet: false, reject_non_finite: false, ..BASE },
@@ -625,7 +631,7 @@ const DEPTH_LIMIT: usize = 128;
 
 fn to_json(node: &saphyr::Yaml, depth: usize) -> Result<J, String> {
     use saphyr::Yaml;
-    if depth > DEPTH_LIMIT {
+    if depth >= DEPTH_LIMIT {
         return Err("recursion limit exceeded".to_owned());
     }
     match node {
