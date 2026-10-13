@@ -2421,6 +2421,84 @@ fn a_normalizer_run_without_the_scratch_host_refuses_rather_than_writing_a_shot(
     );
 }
 
+/// The removed setup must stay removed, including in clones whose previous setup
+/// left core.hooksPath pointing at the repository's sole hook directory.
+#[test]
+fn ordinary_pushes_with_the_previous_hooks_path_do_not_capture_screenshots() {
+    let root = workspace_root();
+    let project: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("project.json")).expect("workspace project"),
+    )
+    .expect("valid project JSON");
+    assert!(
+        project["targets"].get("bootstrap").is_none(),
+        "workspace hook setup returned"
+    );
+    assert!(
+        !root.join("scripts/install-hooks.sh").exists(),
+        "obsolete installer returned"
+    );
+    assert!(
+        !root.join(".githooks/pre-push").exists(),
+        "visual pre-push hook returned"
+    );
+
+    let world = tempfile::tempdir().expect("a local push world");
+    let checkout = world.path().join("checkout");
+    let remote = world.path().join("origin.git");
+    let git = |cwd: &Path, args: &[&str]| {
+        let mut command = Command::new("git");
+        hermetic_git(&mut command).current_dir(cwd).args(args);
+        let output = command.output().expect("real git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git text")
+            .trim()
+            .to_owned()
+    };
+    git(world.path(), &["init", "--bare", "origin.git"]);
+    git(world.path(), &["init", "-b", "main", "checkout"]);
+    git(&checkout, &["config", "user.name", "Push journey"]);
+    git(&checkout, &["config", "user.email", "push@example.invalid"]);
+    git(&checkout, &["config", "core.hooksPath", ".githooks"]);
+    git(&checkout, &["remote", "add", "origin", "../origin.git"]);
+    std::fs::create_dir_all(checkout.join("scripts")).expect("scripts directory");
+    std::fs::create_dir_all(checkout.join("shots/baseline")).expect("baseline directory");
+    std::fs::write(
+        checkout.join("shots/baseline/arm64.json"),
+        "baseline sentinel",
+    )
+    .expect("baseline");
+    for version in ["first", "changed"] {
+        // This is a guarded path, so the old hook would attempt scope/capture.
+        std::fs::write(checkout.join("scripts/screenshots.sh"), version).expect("guarded file");
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["commit", "-m", version]);
+        git(&checkout, &["push", "origin", "main"]);
+        assert_eq!(
+            git(&remote, &["rev-parse", "refs/heads/main"]),
+            git(&checkout, &["rev-parse", "HEAD"])
+        );
+    }
+    git(&checkout, &["push", "origin", "main"]);
+    assert_eq!(
+        git(&checkout, &["config", "--get", "core.hooksPath"]),
+        ".githooks"
+    );
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("shots/baseline/arm64.json")).expect("baseline"),
+        "baseline sentinel"
+    );
+    assert!(
+        !checkout.join("shots/review").exists(),
+        "push created a gallery"
+    );
+}
+
 /// The branch name release-plz gave release PR #242, which the journeys below use
 /// for theirs.
 const RELEASE_BRANCH: &str = "release-plz-2026-09-26T21-25-22Z";

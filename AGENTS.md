@@ -146,10 +146,10 @@ not tell you:
   `gate` job. [`screenshots/AGENTS.md`](screenshots/AGENTS.md) is the durable
   explanation — what the scenes are, what the capture is pinned to, and how to
   re-bless after an intended output change.
-- **`just bootstrap` now activates a git hook**, and it is the only one:
-  `core.hooksPath` is pointed at the committed `.githooks/`, which carries the
-  screencomp pre-push guard and nothing else. `just gate` stays unhooked and is still
-  the bar you run before pushing.
+- **Bootstrap installs no Git hooks.** CI owns verification, including screenshot
+  comparison. Existing clones may still point `core.hooksPath` at `.githooks`;
+  leave that setting alone so clone-owned hooks remain active. Manual `just gate`
+  and screenshot capture, baseline and review commands remain available.
 - **Affected selection fails closed** (`scripts/nx-affected.sh`): with no
   derivable base it runs everything, because a speed optimisation that can
   silently skip a check is a correctness hole. The base is `ONEVCS_NX_BASE_SHA`

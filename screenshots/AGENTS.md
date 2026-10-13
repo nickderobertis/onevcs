@@ -111,15 +111,15 @@ it is regenerated on demand with `just screenshots-gif` and committed.
 screencomp gates on the **hash** of each image, so two captures of one build must
 produce byte-identical trees. Unlike a rasterized PNG (whose anti-aliasing drifts
 across CPUs), an SVG is pure layout maths, which is why this needs no container and
-why its `x86_64` and `arm64` lanes hold the same digests. A second lane exists only
-because the pre-push guard refuses a host whose lane is not declared. What is pinned,
+why its `x86_64` and `arm64` lanes hold the same digests. The declared lanes let CI
+verify both supported architectures. What is pinned,
 and where its one source is:
 
 | pinned | its one source | how a copy is kept honest |
 | --- | --- | --- |
 | the `freeze` release | `freeze_version` in `scripts/ci-install-freeze.sh` | the justfile's `freeze-version` reads it back out of that script, so the local install and CI's install share one pin |
 | the renderer's font | the vendored file itself, `fonts/JetBrainsMono-Regular.ttf` (OFL — see `fonts/JetBrainsMono-OFL.txt`) | it is stated once, in `scripts/screenshots.sh`'s `--font.file`; there is no version string to drift |
-| the arch lane | `[capture].arches` in `screencomp.toml` | `scripts/host-arch.sh` is the one place a host's own lane name is derived from `uname -m`, shared by the capture, the bless and the guard; the guard reads the declared list back out of `screencomp.toml` and refuses a host it does not name |
+| the arch lane | `[capture].arches` in `screencomp.toml` | CI fans out over the declared lanes; `scripts/host-arch.sh` normalizes `uname -m` for manual capture and baseline refresh |
 | the screencomp release | `.github/workflows/visual-docs.yml`, which names it twice (the reusable workflow's `uses:` ref and its `screencomp-version:` input) | `screencomp doctor --env` reconciles both against the installed CLI and reports a drifted pin as a problem |
 | the Rust toolchain | `rust-toolchain.toml` | the workflow names no Rust version at all: the container's rustup reads that file and installs what it pins |
 
@@ -205,25 +205,22 @@ contradicts the contract is a contract bug to report, not a caption to fix.
 - `just screenshots-bless` — after an **intended** output change: recapture and rewrite
   this host's lane baseline. Commit `shots/baseline/` and `docs/screenshots/` together.
 
-## The gate, and how the local half is switched on
+## Verification and local review
 
-CI (`fail-on-drift: true`) fails when a capture diverges from the committed baseline.
-The local pre-push guard (`.githooks/pre-push`) re-captures **only** when a
-`[guard].paths` file changes (`screencomp.toml`), and on drift it rewrites this host's
-baseline, builds a review gallery at `shots/review/index.html`, and blocks the push so
-you commit the refreshed baseline and README images deliberately.
+CI (`fail-on-drift: true`) verifies captures against the committed baseline.
+Ordinary pushes run no screenshot capture or classification; bootstrap installs no
+Git hooks. Existing clones may retain `core.hooksPath = .githooks`, which can also
+hold clone-owned hooks; leave that setting intact.
 
-`core.hooksPath` is per-clone state that is never committed, so a committed hook nothing
-activates is an inert file. **`just bootstrap` activates it** — the `workspace` project's
-`bootstrap` target runs `scripts/install-hooks.sh`, which points `core.hooksPath` at
-`.githooks` (idempotent, and it refuses rather than quietly disarming a clone that had
-installed hooks of its own). `screencomp doctor --env` is what says the setup is really
-wired rather than merely present.
+For an intended change, use `just screenshots-bless` and commit the refreshed
+baseline and README images deliberately. For a local review gallery after capture:
 
-**`.githooks/` carries the screencomp guard and nothing else.** `just gate` stays
-unhooked, exactly as it was before this directory existed: wiring the complete pre-push
-bar into a git hook is a change to the development loop that nobody asked for. `just
-gate` is still the bar you run before pushing.
+```bash
+screencomp gallery --input shots/current --arch "$(bash scripts/host-arch.sh)" \
+  --output shots/review --title "Screenshot review"
+```
+
+Manual `just gate` remains available for verification before publication.
 
 ## Changing the screenshots
 

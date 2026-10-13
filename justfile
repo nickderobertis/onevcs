@@ -444,7 +444,7 @@ lint-llm-validate *args:
 # e2e tier builds one, rendered by `freeze` from a vendored pinned font, and
 # gated/galleried/PR-commented by screencomp (see screenshots/AGENTS.md). Out of the
 # gate like `deps-check` and `semver-check`; CI's Visual-docs workflow owns the
-# comparison, and the pre-push guard regenerates this host's lane baseline on drift.
+# comparison; `just screenshots-bless` refreshes this host's baseline on demand.
 
 # Install the pinned screenshot renderer (`freeze`) on demand. Needs Go.
 screenshots-tools:
@@ -473,8 +473,8 @@ screenshots-gif:
 
 # Refresh the committed baseline manifest from a fresh capture, after an INTENDED
 # output change. There is one lane per arch in [capture].arches (screencomp.toml) and
-# this refreshes THIS host's lane, named by scripts/host-arch.sh so it matches what
-# the pre-push guard classifies. Commit shots/baseline/ + docs/screenshots/ together.
+# this refreshes THIS host's lane, named by scripts/host-arch.sh to match CI.
+# Commit shots/baseline/ + docs/screenshots/ together.
 # Recapture and refresh this host's committed baseline after an intended change.
 screenshots-bless: screenshots
     @bash scripts/bless-baseline.sh

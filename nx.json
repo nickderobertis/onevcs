@@ -30,6 +30,7 @@
       "crateSource",
       "contractDocs",
       "{workspaceRoot}/scripts/**/*",
+      "{workspaceRoot}/.githooks/**/*",
       "{workspaceRoot}/npm/**/*",
       "{workspaceRoot}/.github/**/*",
       "{workspaceRoot}/release-targets.toml",
