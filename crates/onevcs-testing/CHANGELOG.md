@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.18.2...onevcs-testing-v0.19.0) - 2026-10-13
+
+### Added
+
+- [**breaking**] expose invocation-scoped landing events and significance ([#403](https://github.com/nickderobertis/onevcs/pull/403))
+
 ## [0.18.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.17.0...onevcs-testing-v0.18.0) - 2026-10-12
 
 ### Fixed
