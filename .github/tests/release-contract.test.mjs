@@ -66,6 +66,10 @@ test("actual release routes retain every platform and package, Darwin needs prec
     assert.match(stage, /release-payload-check.py/);
     assert.match(stage, /release-wheel-binary.py/);
     const install = read("scripts/release-local-install.sh");
+    // Darwin execution requires the real Mac runner; local proof checks the
+    // commands and foreign payload contracts rather than executing Darwin on Linux.
+    assert.match(install, /NODE_X64/);
+    assert.match(install, /NODE_ARM64/);
     assert.match(install, /arch -x86_64/);
     assert.match(install, /pip install --no-index --no-deps/);
     assert.match(install, /npm install .*--offline/);

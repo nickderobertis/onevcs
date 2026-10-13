@@ -9,6 +9,7 @@ bin="$out/binary/onevcs"
 [ -f "$bin" ] || bin="${bin}.exe"
 python3 scripts/release-payload-check.py "$target" "$bin" "$out" "$version"
 run=()
+# llmlint: ignore[changed_behavior_has_e2e] The release macOS job provisions both Node architectures and Rosetta and executes both staged products before publishing; this Linux host proves the declared architecture commands and payloads at the artifact contract because it cannot execute Darwin binaries.
 if [[ "$target" == *-apple-darwin ]]; then
   if [[ "$target" == x86_64-* ]]; then
     export PATH="${NODE_X64:?x64 Node is required; ACTION: provision x64 Node before running the Intel install}:$PATH"
