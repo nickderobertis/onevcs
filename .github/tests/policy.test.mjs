@@ -19,13 +19,16 @@ export function history() {
     const manifest =
         '[package]\nname = "onevcs"\nversion = "0.1.0"\n[dependencies]\nserde = "1"\n';
     writeFileSync(join(dir, "crates/onevcs/Cargo.toml"), manifest);
+    const lock =
+        'version = 4\n[[package]]\nname = "onevcs"\nversion = "0.1.0"\n[[package]]\nname = "onevcs"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "registry-checksum"\n';
+    writeFileSync(join(dir, "Cargo.lock"), lock);
     writeFileSync(join(dir, "CHANGELOG.md"), "# Changes\n");
     writeFileSync(join(dir, "source.rs"), "fn main() {}\n");
     git("add", ".");
     git("commit", "-qm", "base");
     const base = git("rev-parse", "HEAD");
     const refs = {};
-    for (const kind of ["source", "version", "dependency", "changelog"]) {
+    for (const kind of ["source", "version", "dependency", "changelog", "registry-dependency"]) {
         git("checkout", "-q", "--detach", base);
         writeFileSync(
             join(dir, "crates/onevcs/Cargo.toml"),
@@ -35,6 +38,11 @@ export function history() {
                   ? manifest.replace('serde = "1"', 'serde = "2"')
                   : manifest,
         );
+        if (kind === "registry-dependency")
+            writeFileSync(
+                join(dir, "Cargo.lock"),
+                lock.replace('version = "1.0.0"', 'version = "2.0.0"'),
+            );
         if (kind === "source")
             writeFileSync(
                 join(dir, "source.rs"),
@@ -138,7 +146,7 @@ test("real git semantic classifier admits only same-repo release versions", () =
             { head: "missing" },
         ])
             assert.equal(h.classify("version", options).macosRequired, true);
-        for (const kind of ["source", "dependency"])
+        for (const kind of ["source", "dependency", "registry-dependency"])
             assert.equal(h.classify(kind).macosRequired, true);
         assert.equal(
             h.classify("source", { eventName: "push", malformed: true })

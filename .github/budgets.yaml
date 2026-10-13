@@ -2,6 +2,7 @@ schema_version: 1
 budgets:
   # The brief explicitly requests both jobs/run and Mac-spending runs/change bounds;
   # the manager approved separate budgets for these two scheduling constraints.
+  # llmlint: ignore[budgets_track_product_owner_outcomes] The brief explicitly requests both jobs/run and Mac-spending runs/change bounds; the manager approved separate budgets for these two scheduling constraints.
   - id: onevcs-macos-jobs-per-run
     measure: reported
     command: [bash, -c, 'cd .. && exec node .github/macos-budget.mjs --metric jobs-per-run --telemetry .github/.telemetry/macos-policy.json']
@@ -13,6 +14,7 @@ budgets:
       workflow telemetry. Separate scheduling bounds are explicitly approved by
       the manager. Inner measure reason: one run can occupy several shared Mac
       slots even when the lifecycle run count stays within its bound.
+  # llmlint: ignore[budgets_track_product_owner_outcomes] The brief explicitly requests both jobs/run and Mac-spending runs/change bounds; the manager approved separate budgets for these two scheduling constraints.
   - id: onevcs-macos-runs-per-change
     measure: reported
     command: [bash, -c, 'cd .. && exec node .github/macos-budget.mjs --metric runs-per-change --telemetry .github/.telemetry/macos-policy.json']

@@ -503,6 +503,10 @@ screenshots-bless: screenshots
 lint-llm-diff base="origin/main" *nx_args:
     @./scripts/llmlint-diff.sh "$@"
 
+# Provision the private workflow tooling through the same bootstrap recipe convention.
+_github-workflows-bootstrap:
+    @bash .github/bootstrap.sh
+
 # Workflow scheduling reports use the same released checker as the root budgets.
 _github-workflows-budgets:
     @set -o pipefail; "{{onebudgetspec-root}}/bin/onebudgetspec" check .github/budgets.yaml --json | node .github/budget-verdict.mjs

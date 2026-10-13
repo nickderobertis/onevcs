@@ -19,7 +19,7 @@
   },
   "targets": {
     "bootstrap": {
-      "command": "bash .github/bootstrap.sh"
+      "command": "just _github-workflows-bootstrap"
     },
     "test": {
       "command": "node --test .github/tests/*.test.mjs",
