@@ -34,8 +34,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# This host's capture lane (shots/current/<arch>), named the same way the pre-push
-# guard and `just screenshots-bless` name it. CI overrides SHOTS_OUT per lane.
+# This host's capture lane (shots/current/<arch>), named the same way
+# `just screenshots-bless` names it. CI overrides SHOTS_OUT per lane.
 arch="$(bash "$REPO_ROOT/scripts/host-arch.sh")"
 SHOTS_OUT="${SHOTS_OUT:-shots/current/$arch}"
 if [ -e "$SHOTS_OUT" ] && [ ! -d "$SHOTS_OUT" ]; then
@@ -127,6 +127,9 @@ fi
 # (scene names, hex digests, file names), so plain printf is sound.
 {
   printf '{\n  "schema": 1,\n  "shots": [\n'
+  # Controlled scene entries contain safe ASCII and no newlines; newline IFS
+  # preserves each entry while splitting the sorted output on Bash 3 too.
+  # shellcheck disable=SC2207
   IFS=$'\n' sorted=($(printf '%s\n' "${entries[@]}" | sort))
   unset IFS
   last=$((${#sorted[@]} - 1))
