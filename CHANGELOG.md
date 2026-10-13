@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.1](https://github.com/nickderobertis/onevcs/compare/v0.50.0...v0.50.1) - 2026-10-13
+
+### Fixed
+
+- *(boundary)* accept root workspace members ([#399](https://github.com/nickderobertis/onevcs/pull/399))
+
 ## [0.50.0](https://github.com/nickderobertis/onevcs/compare/v0.49.0...v0.50.0) - 2026-10-13
 
 ### Added
