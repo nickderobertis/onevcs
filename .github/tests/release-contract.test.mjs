@@ -82,3 +82,9 @@ test("actual release routes retain every platform and package, Darwin needs prec
         ))
             assert.equal(step.with["run-id"], undefined);
 });
+
+test("CI declares its read-only default at workflow scope", () => {
+    const ci = workflows()["ci.yml"];
+    assert.deepEqual(ci.permissions, { contents: "read" });
+    assert.equal(ci.on.pull_request, null);
+});
