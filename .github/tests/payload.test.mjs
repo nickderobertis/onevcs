@@ -139,6 +139,24 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
             assert.match(missingManifest.stderr, /package\/package.json/);
             assert.match(missingManifest.stderr, /ACTION:/);
             writeFileSync(carrier, npm);
+            for (const field of ["name", "version", "os", "cpu"]) {
+                execFileSync("python3", [
+                    "-c",
+                    "import tarfile,json,sys,io; p=sys.argv[1]; field=sys.argv[2]; t=tarfile.open(p); files=[(m,t.extractfile(m).read()) for m in t.getmembers() if m.isfile()]; t.close(); t=tarfile.open(p,'w:gz');\nfor m,data in files:\n if m.name=='package/package.json':\n  value=json.loads(data);value[field]=[123] if field in ('name','version') else 'bad-array';data=json.dumps(value).encode()\n m.size=len(data);t.addfile(m,io.BytesIO(data))\nt.close()",
+                    carrier,
+                    field,
+                ]);
+                const invalid = run();
+                assert.notEqual(invalid.status, 0);
+                assert.match(
+                    invalid.stderr,
+                    field === "name" || field === "version"
+                        ? /name\/version must be non-empty strings/
+                        : /must be a string array/,
+                );
+                assert.match(invalid.stderr, /ACTION:/);
+                writeFileSync(carrier, npm);
+            }
             const wrong = Buffer.from(bytes);
             wrong.writeUInt32LE(0, windows ? 68 : 4);
             writeFileSync(binary, wrong);

@@ -68,6 +68,8 @@ def main():
         with tarfile.open(carrier) as t:
             manifest = json.load(tar_member(t, "package/package.json"))
             check(isinstance(manifest, dict) and {"name", "version"}.issubset(manifest), "npm manifest needs name and version fields")
+            check(all(isinstance(manifest[key], str) and manifest[key] for key in ("name", "version")), "npm manifest name/version must be non-empty strings")
+            inputs.version(manifest["version"])
             packages.append(manifest)
             if manifest["name"] == "onevcs-cli":
                 check(isinstance(manifest.get("bin"), dict) and manifest["bin"].get("onevcs") == "bin/onevcs.js", "npm launcher needs its onevcs entry point")
