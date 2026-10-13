@@ -49,6 +49,8 @@ mod branches;
 // over real repositories and the substituted `gh` that answers a repository's
 // visibility. Its own header carries the reason in full.
 #[cfg(unix)]
+mod borrower_config;
+#[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod boundary;
 mod cli;

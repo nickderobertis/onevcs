@@ -1515,6 +1515,16 @@ pub fn configured_hooks(cwd: &Path) -> Result<Option<PathBuf>> {
 /// to expire unreachable objects makes the lender safe to borrow from: nothing it
 /// does on its own can drop an object out from under a live session.
 pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
+    // Concurrent branch publications configure the same lender before taking
+    // their publication turn. Guard both writes with a resource-owned lock so
+    // worktrees and processes using different state roots share the guard too.
+    #[cfg(unix)]
+    let common = crate::native_refs::layout(cwd)
+        .map(|(_, common)| common)
+        .map_or_else(|| common_dir(cwd), Ok)?;
+    #[cfg(not(unix))]
+    let common = common_dir(cwd)?;
+    let _configuration = lock::exclusive_at(&common.join("onevcs-retention.lock"))?;
     checked(&["config", "gc.auto", "0"], Some(cwd))?;
     checked(&["config", "gc.pruneExpire", "never"], Some(cwd))?;
     Ok(())
