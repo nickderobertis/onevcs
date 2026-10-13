@@ -45,6 +45,8 @@ def normalized(text, path):
 
 
 try:
+    if len(sys.argv) != 2:
+        raise ValueError("expected one semantic file path")
     data = json.load(sys.stdin)
     before = tomllib.loads(data["before"])
     after = tomllib.loads(data["after"])

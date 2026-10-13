@@ -12,6 +12,19 @@ function compare(path, before, after) {
 }
 test("real semantic boundary admits package/lock versions and rejects other fields", () => {
     const manifest = readFileSync("crates/onevcs-testing/Cargo.toml", "utf8");
+    const bumpedPackage = manifest.replace(
+        /^version = "[^"]+"/m,
+        'version = "9.8.7"',
+    );
+    assert.notEqual(
+        bumpedPackage,
+        manifest,
+        "the fixture must actually change the package version",
+    );
+    assert.equal(
+        compare("crates/onevcs-testing/Cargo.toml", manifest, bumpedPackage),
+        true,
+    );
     assert.equal(
         compare(
             "crates/onevcs-testing/Cargo.toml",

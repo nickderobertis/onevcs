@@ -14,6 +14,25 @@ try {
             "expected --metric jobs-per-run|runs-per-change --telemetry PATH",
         );
     const record = JSON.parse(readFileSync(path, "utf8"));
+    const object = (value) =>
+        value !== null && typeof value === "object" && !Array.isArray(value);
+    if (
+        !object(record) ||
+        !Array.isArray(record.event_classes) ||
+        !Array.isArray(record.scenarios) ||
+        !Array.isArray(record.lifecycles) ||
+        !object(record.metrics)
+    )
+        throw new Error(
+            "telemetry needs event_classes/scenarios/lifecycles arrays and a metrics object",
+        );
+    if (
+        !record.scenarios.every((s) => object(s) && Array.isArray(s.rows)) ||
+        !record.lifecycles.every((l) => object(l) && Array.isArray(l.spending))
+    )
+        throw new Error(
+            "telemetry scenario rows and lifecycle spending must be arrays",
+        );
     if (
         record.schema_version !== 1 ||
         record.source_digest !== sourceDigest() ||
@@ -37,6 +56,7 @@ try {
             : record.lifecycles;
     if (
         !Number.isInteger(value) ||
+        value < 0 ||
         !report(
             value,
             JSON.stringify({ source_digest: record.source_digest, detail }),

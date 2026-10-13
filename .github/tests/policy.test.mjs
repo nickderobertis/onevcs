@@ -181,6 +181,24 @@ test("carriers drive production command over GitHub success/failure/cancel/skip/
         assert.equal(result.status, 0);
         assert.match(result.stdout, /omitted/);
         assert.doesNotMatch(result.stdout, /passed/);
+        assert.match(result.stdout, /Mac classifier authorizes omission/);
+        const pathOmitted = invoke({
+            ...omitted,
+            changes: {
+                result: "success",
+                outputs: { rust: "false", macos_required: "true" },
+            },
+        });
+        assert.equal(pathOmitted.status, 0);
+        assert.match(pathOmitted.stdout, /Rust path filter reports unaffected/);
+        assert.doesNotMatch(pathOmitted.stdout, /passed/);
+        for (const malformed of [
+            null,
+            [],
+            {},
+            { changes: { result: "success" } },
+        ])
+            assert.notEqual(invoke(malformed).status, 0);
         assert.notEqual(
             invoke({ ...omitted, "macos-pr": { result: "failure" } }).status,
             0,
