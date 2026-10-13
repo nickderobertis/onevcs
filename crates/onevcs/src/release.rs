@@ -41,7 +41,7 @@ use crate::releases::{
 };
 use crate::remainder::Remainder;
 use crate::stream::Stream;
-use crate::{git, home, ids, lock, policy, probe, status, store};
+use crate::{git, home, ids, lock, policy, probe, status, store, yaml};
 
 /// The environment variable that says who is recording an acknowledgement.
 ///
@@ -102,13 +102,19 @@ pub fn load() -> Result<ReleasesFile> {
             path.display()
         ))
     })?;
-    let malformed = |failure: serde_yaml_ng::Error| {
+    parse(&path, &raw)
+}
+
+/// One release-targets document's text, held to every check a loaded one is. `path` is
+/// what a refusal names the document by.
+pub(crate) fn parse(path: &Path, raw: &str) -> Result<ReleasesFile> {
+    let malformed = |failure: serde_saphyr::Error| {
         error::invalid(format!(
             "the release-targets file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a document may carry is a fact about the version it declares, so a
     // version this build does not read is answered as that rather than as whichever
@@ -116,10 +122,7 @@ pub fn load() -> Result<ReleasesFile> {
     // one is refused — a later one is read as this shape, ignoring what it names
     // beyond it, because refusing it would stop every release verb on a host a newer
     // `onevcs` had configured.
-    if let Some(declared) = document
-        .get("version")
-        .and_then(serde_yaml_ng::Value::as_u64)
-    {
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the release-targets file at {} declares version {declared}; this build reads \
@@ -128,8 +131,8 @@ pub fn load() -> Result<ReleasesFile> {
             )));
         }
     }
-    let file: ReleasesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    validate(&path, &file)?;
+    let file: ReleasesFile = yaml::from_str(raw).map_err(malformed)?;
+    validate(path, &file)?;
     Ok(file)
 }
 
@@ -403,7 +406,7 @@ fn locate(registry: &Registry, repo: &str) -> Result<(String, Option<PathBuf>)> 
 /// Never a run clone, a session worktree, or a branch under review. A probe reading
 /// a script off the branch a dispatch is authoring is a probe that dispatch can
 /// rewrite, so the one checkout this crate never works in is the one it reads from.
-fn probe_checkout(publication: Option<PathBuf>) -> probe::Checkout {
+pub(crate) fn probe_checkout(publication: Option<PathBuf>) -> probe::Checkout {
     let Some(checkout) = publication else {
         return probe::Checkout::None(
             "this identity has no registered checkout, so there is nowhere to run a script probe \
@@ -541,7 +544,12 @@ fn ask(
         // template, and no command line.
         payload.insert("version".to_owned(), Value::String(version.clone()));
     }
-    stream.emit(EventKind::ReleaseProbed, payload);
+    let result = if matches!(probed.answer, ReleaseAnswer::NotAnswered { .. }) {
+        crate::event::EmissionResult::Failed
+    } else {
+        crate::event::EmissionResult::Success
+    };
+    stream.emit_result(EventKind::ReleaseProbed, payload, Vec::new(), result);
     probed
 }
 
@@ -1043,6 +1051,7 @@ pub(crate) fn reconcile_landing(
     };
     match opened {
         Ok(mut recorded) => {
+            recorded.inherit_operation(stream);
             recorded.emit(EventKind::ChangeMerged, merged);
             true
         }

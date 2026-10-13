@@ -364,6 +364,11 @@ fn a_conflict_is_left_in_a_session_and_the_same_request_finishes_the_base_once_i
     let outcome = &conflicted["outcome"];
     assert_eq!(outcome["kind"], "conflicted", "{conflicted}");
     let token = outcome["session"].as_str().expect("the session").to_owned();
+    let records = world.events_of(&token, "stack-base-assembled");
+    assert_eq!(
+        records.last().expect("conflicted assembly record")["labels"]["significance"],
+        "blocker"
+    );
     assert_eq!(
         outcome["conflict"]["paths"],
         serde_json::json!(["shared.txt"])
@@ -431,6 +436,12 @@ fn a_conflict_is_left_in_a_session_and_the_same_request_finishes_the_base_once_i
 
     let advanced = stack.assembled(&parents, 0);
     assert_eq!(advanced["outcome"]["kind"], "advanced", "{advanced}");
+    let records = world.events_of(&token, "stack-base-assembled");
+    assert_eq!(
+        records.last().expect("resolved assembly record")["labels"]["significance"],
+        "progress"
+    );
+
     let head = stack.tip(BRANCH).expect("the stack base is on the origin");
     assert_eq!(advanced["head"], head.as_str());
     for parent in [&one, &two, &three] {

@@ -124,6 +124,8 @@ pub enum EventKind {
     /// The change request merged; carries its URL, the commit it landed at as `sha`
     /// and as `landing`, and `landed_at`, when the base received it.
     ChangeMerged,
+    /// One local invocation reached its actual base, carrying base, commit and ordered branches.
+    BaseArrived,
     /// The change request entered the host's merge queue.
     MergeQueued,
     /// The merge the host had queued completed; carries the commit it landed at as
@@ -215,6 +217,23 @@ pub enum EventKind {
     MergeArmed,
 }
 
+/// How much attention an event asks of its consumer, stamped by its producer.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[non_exhaustive]
+#[serde(rename_all = "kebab-case")]
+pub enum Significance {
+    /// A change opened, its checks passed, or its landing reached its base.
+    Milestone,
+    /// An attempted action failed, was refused, or needs a person.
+    Blocker,
+    /// Ordinary running or successful detail.
+    Progress,
+}
+
+pub(crate) use crate::significance::{significance, EmissionResult};
+
 impl EventKind {
     /// The kebab-case string this kind travels as, which is what a filter's
     /// `kind` glob is matched against and what an envelope's `kind` carries.
@@ -241,6 +260,7 @@ impl EventKind {
             EventKind::ChangeDescribed => "change-described",
             EventKind::ChangeCheck => "change-check",
             EventKind::ChangeMerged => "change-merged",
+            EventKind::BaseArrived => "base-arrived",
             EventKind::MergeQueued => "merge-queued",
             EventKind::MergeCompleted => "merge-completed",
             EventKind::RecoveryAttested => "recovery-attested",
@@ -322,7 +342,7 @@ impl PhaseOf for Phase {
             // it happens before that branch may enter one at all.
             | EventKind::RecoveryAttested
             | EventKind::SessionClosed => Phase::Development,
-            EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
+            EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict | EventKind::BaseArrived => {
                 Phase::Integrate
             }
             // Bringing the base into the branch, or deciding not to, is the step a sync
@@ -367,7 +387,7 @@ impl PhaseOf for Phase {
 /// The phase an event of this kind is stamped at when its producer names none.
 ///
 /// The kinds whose phase their producer decides are a push and a gate run, and
-/// [`Stream::emit_push`](crate::stream::Stream::emit_push) and
+/// [`Stream::push_result`](crate::stream::Stream::push_result) and
 /// [`Stream::emit_gate_run`](crate::stream::Stream::emit_gate_run) are where every
 /// one in this crate decides it. A push reaching here instead — or a line an older
 /// build wrote before there was a phase — is read at the phase a session's own

@@ -1813,6 +1813,7 @@ fn a_holder_that_refuses_its_deletion_is_reported_and_a_rerun_finishes_the_job()
     assert_eq!(partial["outcome"], "incomplete");
     let event = events(world, "branch-retired");
     assert_eq!(event.len(), 1);
+    assert_eq!(event[0]["labels"]["significance"], "blocker");
     let payload = &event[0]["payload"];
     let mut deleted: Vec<String> = payload["deleted"]
         .as_array()
@@ -1843,6 +1844,12 @@ fn a_holder_that_refuses_its_deletion_is_reported_and_a_rerun_finishes_the_job()
         "{finished}"
     );
     assert!(yard.held("feature/partial").is_empty());
+    assert_eq!(
+        events(world, "branch-retired")
+            .last()
+            .expect("successful retry")["labels"]["significance"],
+        "progress"
+    );
     assert_eq!(
         status(world, "feature/partial")["retired"]["class"],
         "retirable"

@@ -1693,7 +1693,7 @@ impl fmt::Display for Report {
 }
 
 /// A byte count as a reader of the report meets it.
-fn describe_bytes(bytes: u64) -> String {
+pub(crate) fn describe_bytes(bytes: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1_000_000_000, "GB"), (1_000_000, "MB"), (1_000, "kB")];
     for (scale, unit) in UNITS {
         if bytes >= scale {

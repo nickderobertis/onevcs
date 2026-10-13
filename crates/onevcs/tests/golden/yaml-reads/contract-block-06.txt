@@ -1,0 +1,43 @@
+Ok(
+    ReleasesFile {
+        version: 1,
+        repositories: [
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "crate",
+                ),
+                declaration: Some(
+                    Ignore,
+                ),
+                targets: [
+                    ReleaseTarget {
+                        name: "crate",
+                        release: Automated {
+                            probe: Shell {
+                                shell: "cargo search onevcs --limit 1",
+                                timeout_seconds: 60,
+                            },
+                        },
+                        adoption_instructions: None,
+                    },
+                ],
+            },
+        ],
+        default: ReleaseDefault {
+            adoption: Published,
+        },
+    },
+)

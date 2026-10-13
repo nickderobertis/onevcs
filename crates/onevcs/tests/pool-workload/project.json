@@ -1,0 +1,19 @@
+{
+  "name": "onevcs-pool-workload",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:pool-workload", "lang:rust"],
+  "targets": {
+    // llmlint: ignore-block[new_projects_keep_the_graph_uniform] The fixed task contract requires workload alone to run this journey; standard test, coverage and budgets targets must never depend on it, so the release sweep invokes this explicit target.
+    "workload": {
+      "command": "just _pool-workload",
+      "parallelism": false,
+      "cache": false,
+      // llmlint: ignore[expensive_tests_stay_behind_their_own_edge] These inputs describe the real binary this explicit workload builds; check is a noop with no workload dependency. The task-graph journey proves all-project and source/workload-affected check graphs contain no workload task, so these inputs cannot run the expensive journey on a per-change edge.
+      "inputs": ["sharedGlobals", "{projectRoot}/**/*", "{workspaceRoot}/crates/onevcs/src/**/*", "{workspaceRoot}/Cargo.toml", "{workspaceRoot}/Cargo.lock", "{workspaceRoot}/crates/onevcs/Cargo.toml"],
+      "outputs": ["{workspaceRoot}/target/budget-records"]
+    },
+    // llmlint: ignore-end[new_projects_keep_the_graph_uniform]
+    "check": { "executor": "nx:noop", "dependsOn": [] }
+  }
+}

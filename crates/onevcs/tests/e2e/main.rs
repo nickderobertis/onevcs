@@ -5,11 +5,13 @@
 //! exit code, stdout, and stderr, the way a user or a CI job meets it. Nothing
 //! here calls into the library.
 //!
-//! Seven modules are the exception, and they are the ones *about* the library:
+//! Eight modules are the exception, and they are the ones *about* the library:
 //! `honesty`, `seam`, `library` and `drafts` drive it in-process because supplying an
 //! implementation is something only a caller embedding the crate can do — the
 //! binary deliberately has no flag for it — `publication_watch` because handing a
-//! publication a cancellation is the same kind of thing, and `declaration` and
+//! publication a cancellation is the same kind of thing, `operation_progress`
+//! because a prepared invocation and its reader are library calls no verb renders,
+//! and `declaration` and
 //! `discovery` do
 //! because what they hold *is* the promise that a linking consumer reaches these
 //! answers without spawning anything, which no binary can show. Each says so at its
@@ -45,6 +47,9 @@ mod change;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod branches;
+// Concurrent CLI publications configure the same real git lender.
+#[cfg(unix)]
+mod borrower_config;
 // Unix only: the public boundary, through `boundary check`, `inspect` and `schema`,
 // over real repositories and the substituted `gh` that answers a repository's
 // visibility. Its own header carries the reason in full.
@@ -159,6 +164,15 @@ mod labels;
 mod library;
 #[cfg(unix)]
 mod lifecycle;
+// The additive operation API is a library interface; these journeys use real git
+// and only the existing third-party hosting provider boundary. They sit in this
+// project because what they test is this crate's own publication, recovery,
+// integration and stream code — exactly the edge onevcs-e2e has — and they reach no
+// live service: each runs in 0.4–2.6s against local git, under the `gate_runs` and
+// `publication_watch` journeys beside them.
+#[cfg(unix)]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
+mod operation_progress;
 // Linux only: it counts a directory's own `opendir` calls through `inotify`, which
 // only Linux has. Its head carries the reason the counting is outside the process,
 // and the journeys that use it are gated the same way.

@@ -1,0 +1,837 @@
+Ok(
+    RulesFile {
+        version: 4,
+        trailer_prefix: Some(
+            "Orchestrator-",
+        ),
+        rules: [
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "ai-orchestrator",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    LocalDirect,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "private-repo-a",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    LocalDirect,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister-remote",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister-terminal-approval-plugin",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "crozier",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "dero-skills",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "private-repo-b",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "github-graphql-node-count",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "github-secrets",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "nick-derobertis-site",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "llmlint",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "notignored",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneagentgraph",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onebudgetspec",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneharness",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneharness-ui",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onejudge",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onemessagebus",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline-ui",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onetaskgraph",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "printobserver",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "screencomp",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "skilltest",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "spanish-language-tutor",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    LocalDirect,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "private-repo-c",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: Some(
+                    Drafts {
+                        disabled: Some(
+                            true,
+                        ),
+                        warn_on_early_lift: None,
+                    },
+                ),
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-a",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeOpen,
+                ),
+                approvals: Some(
+                    Required,
+                ),
+                drafts: Some(
+                    Drafts {
+                        disabled: None,
+                        warn_on_early_lift: Some(
+                            false,
+                        ),
+                    },
+                ),
+                visibility: Some(
+                    Private,
+                ),
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-b",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeOpen,
+                ),
+                approvals: Some(
+                    Required,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-c",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeOpen,
+                ),
+                approvals: Some(
+                    Required,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-d",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeOpen,
+                ),
+                approvals: Some(
+                    Required,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-e",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeOpen,
+                ),
+                approvals: Some(
+                    Required,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+        ],
+        default: Policy {
+            publication: ChangeOpen,
+            approvals: Required,
+            drafts: Some(
+                Drafts {
+                    disabled: None,
+                    warn_on_early_lift: Some(
+                        true,
+                    ),
+                },
+            ),
+            base_merge: None,
+            checks: None,
+        },
+    },
+)
+Ok(
+    Ok(
+        (),
+    ),
+)

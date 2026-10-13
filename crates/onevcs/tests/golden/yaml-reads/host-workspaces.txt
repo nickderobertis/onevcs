@@ -1,0 +1,665 @@
+Ok(
+    WorkspacesFile {
+        version: 1,
+        default: WorkspaceDefault {
+            pool: 1,
+            overflow: Unlimited,
+            delete: [],
+            maintain: None,
+        },
+        rules: [
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "ai-orchestrator",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: Some(
+                    [
+                        ".logs/",
+                    ],
+                ),
+                maintain: None,
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "llmlint",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneagentgraph",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneharness",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneharness-ui",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onejudge",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onemessagebus",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline-ui",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister-remote",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "crozier",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onetaskgraph",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "printobserver",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "screencomp",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "notignored",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "allowlister-terminal-approval-plugin",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "github-secrets",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "skilltest",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onebudgetspec",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "team-org",
+                    ),
+                    name: Some(
+                        "team-repo-b",
+                    ),
+                    path: None,
+                },
+                pool: None,
+                overflow: None,
+                delete: None,
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "cargo",
+                            args: [
+                                "sweep",
+                                "--time",
+                                "7",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+        ],
+    },
+)

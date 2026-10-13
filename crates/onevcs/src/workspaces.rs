@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::{self, Error, Result};
 use crate::rules::RuleMatch;
 use crate::store::{self, Normalized};
-use crate::{home, policy};
+use crate::{home, policy, yaml};
 
 /// The version of the workspaces file this build writes, and the oldest it reads.
 ///
@@ -497,20 +497,23 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
             path.display()
         ))
     })?;
-    let malformed = |failure: serde_yaml_ng::Error| {
+    Ok((parse(&path, &raw)?, FileSource::File(path)))
+}
+
+/// One workspaces document's text, held to every check a loaded one is. `path` is what a
+/// refusal names the document by.
+pub(crate) fn parse(path: &Path, raw: &str) -> Result<WorkspacesFile> {
+    let malformed = |failure: serde_saphyr::Error| {
         error::invalid(format!(
             "the workspaces file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too, for
-    // the reason the other two host files do it: which keys a document may carry is a
-    // fact about the version it declares. Only a version *below* this one is refused.
-    if let Some(declared) = document
-        .get("version")
-        .and_then(serde_yaml_ng::Value::as_u64)
-    {
+    // the reason the other host files do it: which keys a document may carry is a fact
+    // about the version it declares. Only a version *below* this one is refused.
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the workspaces file at {} declares version {declared}; this build reads \
@@ -519,9 +522,9 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
             )));
         }
     }
-    let file: WorkspacesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    validate(&path, &file)?;
-    Ok((file, FileSource::File(path)))
+    let file: WorkspacesFile = yaml::from_str(raw).map_err(malformed)?;
+    validate(path, &file)?;
+    Ok(file)
 }
 
 /// Reject a document whose own values cannot be honoured.
@@ -627,6 +630,8 @@ pub(crate) struct Resolved {
     /// What maintaining an idle slot is, for the verb that performs it. `None` is no
     /// maintenance ever.
     pub maintain: Option<Maintenance>,
+    /// The host layer that supplied maintenance.
+    pub maintain_from: String,
     /// Whether anything about this identity departs from the shipped default: a pool
     /// above nought, a bounded overflow, a delete list, or maintenance. A host that
     /// departs in nothing takes today's path exactly.
@@ -733,6 +738,11 @@ pub(crate) fn resolve(
         file_pool,
         delete,
         maintain,
+        maintain_from: layer(if rule.and_then(|rule| rule.maintain.as_ref()).is_some() {
+            rule_name.as_deref().expect("a matching rule")
+        } else {
+            "default:"
+        }),
         configured,
     })
 }

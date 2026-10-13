@@ -337,10 +337,18 @@ pub struct SupersedeArgs {
 pub enum PoolCommand {
     /// Report a repository's capacity and every slot of its pool.
     Status(PoolStatusArgs),
+    /// Read a checkout’s repository maintenance declaration.
+    Declaration {
+        /// A repository root or its onevcs.toml file; registration is not needed.
+        path: PathBuf,
+        /// Print command and timeout as JSON, or null when undeclared.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove every idle slot whose clone retains no branch, and say why the rest
     /// were kept.
     Prune(PoolPruneArgs),
-    /// Run the host's maintain command in each idle slot, one slot at a time, and
+    /// Run the resolved maintain command in each idle slot, one slot at a time, and
     /// record the attempt on the slot.
     Maintain(PoolMaintainArgs),
 }

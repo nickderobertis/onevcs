@@ -609,10 +609,13 @@ fn a_malformed_base_merge_or_checks_block_is_refused_by_name() {
              default: {publication: change-auto, approvals: none}\n",
             "rule 1 checks: wait_seconds is -5, which is not a wait",
         ),
+        // A wait that is no number at all is refused as the document is read, at the
+        // line and column that spells it, before any key is put to its type.
         (
             "version: 3\nrules: []\ndefault: {publication: change-auto, approvals: none, \
              checks: {wait_seconds: .inf}}\n",
-            "which is not a wait",
+            "is malformed: non-finite float `.inf` rejected by reject_non_finite_typeless_float \
+             at line 3, column 77",
         ),
         (
             "version: 3\nrules: []\ndefault: {publication: change-auto, approvals: none, \

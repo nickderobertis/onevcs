@@ -372,3 +372,245 @@ fn later_overlays_win_over_earlier_ones_in_order() {
             "publication: change-open (from rule 1)",
         ));
 }
+
+/// One of this host's real files, as `tests/fixtures/host-files/` keeps it.
+fn host_file(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/host-files")
+        .join(name)
+}
+
+/// What `rules apply` wrote for the same inputs before its YAML crate was replaced.
+fn composed(name: &str) -> String {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/rules-apply")
+        .join(name);
+    std::fs::read_to_string(&golden)
+        .unwrap_or_else(|failure| panic!("{} is readable: {failure}", golden.display()))
+}
+
+#[test]
+fn this_hosts_rules_file_composes_to_the_bytes_it_always_composed_to() {
+    let base = host_file("rules-v3.yml");
+    let overlay = host_file("rules-overlay.yml");
+    for (overlays, expected) in [
+        (vec![], "host.yml"),
+        (vec![overlay.as_path()], "host-with-overlay.yml"),
+    ] {
+        let expected = composed(expected);
+
+        let printed = apply(&host(), &base, &overlays, &["--dry-run"]);
+        assert!(
+            printed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&printed.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&printed.stdout), expected);
+
+        let world = host();
+        let output = apply(&world, &base, &overlays, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let installed =
+            std::fs::read_to_string(world.home().join("rules.yml")).expect("the installed rules");
+        assert_eq!(installed, expected);
+    }
+}
+
+#[test]
+fn a_quoted_scalar_the_typed_read_converts_is_composed_rather_than_refused() {
+    let world = host();
+    let base = file(
+        &world,
+        "repo/rules.yml",
+        "version: 4\nrules: []\ndefault:\n  publication: change-open\n  approvals: required\n  \
+         drafts: {disabled: \"true\"}\n  checks: {wait_seconds: \"3600\"}\n",
+    );
+    let printed = apply(&world, &base, &[], &["--dry-run"]);
+    assert!(
+        printed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let document = String::from_utf8_lossy(&printed.stdout);
+    assert!(document.contains("disabled: true\n"), "{document}");
+    assert!(document.contains("wait_seconds: 3600"), "{document}");
+}
+
+#[test]
+fn a_quoted_version_decides_the_gate_on_every_verb_that_reads_the_rules() {
+    let world = host();
+    let rules = |version: &str| {
+        format!(
+            "version: {version}\nrules: []\ndefault: {{publication: change-open, approvals: \
+             required, gate: {{kind: checks}}}}\n"
+        )
+    };
+    // Installed directly, the way an operator's own copy reaches the conventional path.
+    std::fs::write(world.home().join("rules.yml"), rules("\"3\"")).expect("the rules file");
+    world
+        .onevcs()
+        .args(["rules", "check", "openwidget"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown field `gate` in default"));
+
+    std::fs::write(world.home().join("rules.yml"), rules("\"2\"")).expect("the rules file");
+    world
+        .onevcs()
+        .args(["rules", "check", "openwidget"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "names a gate, which version 3 removed",
+        ));
+}
+
+#[test]
+fn an_optional_key_set_to_null_reads_as_absent_on_a_rule_and_on_the_default() {
+    // Null spelled every way YAML has, so the walk that looks before the typed read is
+    // held to agreeing with it for each spelling: the key is absent, and the next layer
+    // decides.
+    for (key, null, from_rule_falls_to, from_default_falls_to) in [
+        (
+            "drafts",
+            "null",
+            ("drafts: {disabled: true}", "drafts: off (from the default)"),
+            "drafts: on (from the shipped default)",
+        ),
+        (
+            "checks",
+            "~",
+            (
+                "checks: {wait_seconds: 1800}",
+                "checks wait: 1800 s (from the default)",
+            ),
+            "checks wait: 3600 s (from the shipped default)",
+        ),
+        (
+            "base_merge",
+            "",
+            (
+                "base_merge: always",
+                "base merge: always (from the default)",
+            ),
+            "base merge: on-conflict (from publication change-auto)",
+        ),
+    ] {
+        let (default_sets, said_under_rule) = from_rule_falls_to;
+        for (rules, said) in [
+            (
+                format!(
+                    "version: 4\nrules:\n  - match: {{host: github.com, owner: sample-owner}}\n    \
+                     publication: change-auto\n    approvals: none\n    {key}: {null}\n\
+                     default:\n  publication: change-open\n  approvals: required\n  \
+                     {default_sets}\n"
+                ),
+                said_under_rule,
+            ),
+            (
+                format!(
+                    "version: 4\nrules:\n  - match: {{host: github.com, owner: sample-owner}}\n    \
+                     publication: change-auto\n    approvals: none\ndefault:\n  publication: \
+                     change-open\n  approvals: required\n  {key}: {null}\n"
+                ),
+                from_default_falls_to,
+            ),
+        ] {
+            let world = host();
+            let base = file(&world, "repo/rules.yml", &rules);
+            let applied = apply(&world, &base, &[], &[]);
+            assert!(
+                applied.status.success(),
+                "{rules}\n{}",
+                String::from_utf8_lossy(&applied.stderr)
+            );
+            // Absent, so the composed document does not carry it where it was null.
+            let installed =
+                std::fs::read_to_string(world.home().join("rules.yml")).expect("installed");
+            assert_eq!(
+                installed.matches(&format!("{key}:")).count(),
+                usize::from(said == said_under_rule),
+                "{installed}"
+            );
+            // The fixture bounds every watch process-wide; unset, so the file's wait shows.
+            let checked = world
+                .onevcs()
+                .env_remove("ONEVCS_CHECKS_TIMEOUT_SECONDS")
+                .args(["rules", "check", "openwidget"])
+                .output()
+                .expect("the binary runs");
+            let printed = String::from_utf8_lossy(&checked.stdout);
+            assert!(
+                checked.status.success(),
+                "{rules}\n{}",
+                String::from_utf8_lossy(&checked.stderr)
+            );
+            assert!(
+                printed.lines().any(|line| line == said),
+                "{rules}\nno {said:?} in:\n{printed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_null_beside_a_malformed_key_does_not_excuse_it() {
+    // Null is absence and nothing wider: an unknown key inside `checks:` or `drafts:`,
+    // and a non-null value of the wrong shape, are still refused by name — by the
+    // verbs that read the installed file, and by `rules apply` before it installs one.
+    for (rules, named, said) in [
+        (
+            "version: 4\nrules:\n  - match: {host: github.com, owner: sample-owner}\n    \
+             drafts: null\n    checks: {wait_second: 60}\ndefault: {publication: change-open, \
+             approvals: required}\n",
+            "wait_second",
+            "rule 1 checks: names \"wait_second\"",
+        ),
+        (
+            "version: 4\nrules: []\ndefault: {publication: change-open, approvals: required, \
+             checks: ~, drafts: {disabled: true, warn: false}}\n",
+            "warn",
+            "default drafts: names \"warn\"",
+        ),
+        (
+            "version: 4\nrules: []\ndefault: {publication: change-open, approvals: required, \
+             base_merge: null, drafts: [true]}\n",
+            // The strict read refuses the sequence where it starts.
+            "at line 3, column 84",
+            "default drafts: is not a mapping",
+        ),
+        (
+            "version: 4\nrules:\n  - match: {host: github.com, owner: sample-owner}\n    \
+             checks: null\n    base_merge: sometimes\ndefault: {publication: change-open, \
+             approvals: required}\n",
+            "sometimes",
+            "rule 1 base_merge: sometimes is not a base merge",
+        ),
+    ] {
+        let world = host();
+        std::fs::write(world.home().join("rules.yml"), rules).expect("the rules file");
+        let checked = world
+            .onevcs()
+            .args(["rules", "check", "openwidget"])
+            .output()
+            .expect("the binary runs");
+        assert_eq!(checked.status.code(), Some(2), "{rules}");
+        let stderr = String::from_utf8_lossy(&checked.stderr);
+        assert!(stderr.contains(said), "{rules}\nno {said:?} in:\n{stderr}");
+
+        std::fs::remove_file(world.home().join("rules.yml")).expect("removed");
+        let base = file(&world, "repo/rules.yml", rules);
+        let applied = apply(&world, &base, &[], &[]);
+        assert_eq!(applied.status.code(), Some(2), "{rules}");
+        let stderr = String::from_utf8_lossy(&applied.stderr);
+        assert!(
+            stderr.contains(named),
+            "{rules}\nno {named:?} in:\n{stderr}"
+        );
+        assert!(!world.home().join("rules.yml").exists(), "{rules}");
+    }
+}

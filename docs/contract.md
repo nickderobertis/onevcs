@@ -422,9 +422,10 @@ or empty — and matches no `exclude` matcher. Matcher fields are all optional a
 conjoin within one matcher: `source` is the envelope's source family, by exact
 equality; `kind` is a glob over the event kind's kebab-case wire string, so
 `change-*` is `change-opened`, `change-check`, and `change-merged`; and `run_id`,
-`node`, `step`, `member`, and `persona` are exact equality against the envelope's
+`node`, `step`, `member`, `persona`, and `significance` are exact equality against the envelope's
 reserved `labels` keys, where a matcher naming a label the envelope did not stamp
-does not match it. A `source` word this crate does not produce is admitted and
+does not match it. The significance amendment below adds its reader-only legacy
+default. A `source` word this crate does not produce is admitted and
 matches none of its envelopes, because `Source` is the bus core's open newtype.
 Deliberately **not** in the grammar: `stream`, which is a producing process's id
 rather than a family, and payload fields, which differ per kind. The filter types
@@ -441,7 +442,7 @@ impl EventStream {                           // `open`, `session`, `read` unchan
 pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }
 pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,
                           pub fields: MatchFields }
-pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,
+pub struct MatchFields { pub significance: Option<Significance>, pub phase: Option<Phase>, pub run_id: Option<String>,
                          pub node: Option<String>, pub step: Option<String>,
                          pub member: Option<String>, pub persona: Option<String> }
 impl EventFilter {
@@ -1214,7 +1215,7 @@ development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
-             stack-base-assembled base-merge
+             stack-base-assembled base-merge base-arrived
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
@@ -2076,13 +2077,13 @@ default:
   pool: 0               # non-negative integer; 0 = pooling off, every session fresh
   overflow: unlimited   # `unlimited` or a non-negative integer; sessions admitted past the pool
   delete: []            # worktree-relative paths deleted on every return (state that would leak)
-  # maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}   # what maintenance is
+  # maintain: {command: ["scripts/maintain-slot.sh", "--flag"], timeout: 30m}   # what maintenance is
 rules:
   - match: {host: github.com, owner: nickderobertis, name: onevcs}
     pool: 2
     overflow: 4
     delete: [".logs/"]
-    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+    maintain: {command: ["scripts/maintain-slot.sh", "--flag"], timeout: 30m}
 ```
 
 The shipped default is `pool: 0`, `overflow: unlimited`, `delete: []` and no
@@ -2153,7 +2154,7 @@ pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u
     pub overflow_in_use: u32, pub admits: Bound,   // how many more opens the identity admits now
     pub admitted: bool }                           // whether *this* request would be placed now
 pub fn pool_status(repo: &str) -> Result<PoolStatus>;
-pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus> }
+pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus>, pub maintenance: MaintenanceSource }
 pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,
     pub state: SlotState, pub last_maintained: Option<String>,   // RFC3339
     pub last_outcome: Option<MaintenanceOutcome> }
@@ -2264,9 +2265,8 @@ Two existing kinds gain a field. `session-opened` gains an additive `placement` 
 `{"kind": "slot", "slot": N, "created": bool}` or `{"kind": "run-root"}`, on every
 implementation — and `session-closed` gains `returned: {"slot": N}` on a slot return.
 
-**Maintaining the pool.** A warm slot that is never swept grows without bound — a Rust
-`target/` accumulates every build it has ever made — which would turn the disk-wear
-fix into a disk-space problem. So the one imperative maintenance verb runs the
+**Maintaining the pool.** A warm slot can accumulate output indefinitely, which
+would turn the disk-wear fix into a disk-space problem. So the one imperative maintenance verb runs the
 identity's `maintain.command` in each **idle** slot's worktree under the identity's
 `timeout`, and records on the slot that it ran. **`onevcs` holds no schedule** and
 keeps no state beyond the slot record: *when* to maintain is the caller's — a driver's
@@ -2282,6 +2282,7 @@ pub struct MaintainReport { pub identities: Vec<IdentityMaintenance> }
 pub struct IdentityMaintenance { pub identity: String, pub outcome: IdentityOutcome }
 pub enum IdentityOutcome {
     NoMaintainCommand,               // the resolved policy names no `maintain`
+    MaintenanceUnreadable { reason: String }, // unreadable declaration blocks fallback
     NoSlots,                         // nothing has cut a slot for this identity
     Claimed { by_pid: u32 },         // another maintain holds this identity right now
     Slots(Vec<SlotMaintenance>) }
@@ -2292,7 +2293,7 @@ pub enum SlotOutcome {
     Unavailable { holder: String },   // busy, not broken: a live claim, an occupancy it
                                       // could not take, or a process working inside it
     Broken { reason: String },        // an unusable clone, worktree or record
-    Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }
+    Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId>, disk: Option<SlotDisk> } }
 ```
 
 ```
@@ -3698,7 +3699,7 @@ including its refusal of a draft reason by name.
 `warn_on_early_lift` (shipped default `true`). Each key falls back on its own: the matched
 rule's, then `default:`'s, then the shipped default — as `publication` and `approvals`
 fall back. An unknown key inside `drafts:`, or a value that is not a boolean, is refused by
-name where the file is loaded. It is admitted at rules-file version 3 and later **with no
+name where the file is loaded; a `drafts:` set to null reads as absent. It is admitted at rules-file version 3 and later **with no
 version bump**: the rules file declares no `deny_unknown_fields`, so an older onevcs
 sharing the host ignores the block and opens ready change requests, which is exactly the
 pre-draft behaviour; a file declaring version 1 or 2 and naming `drafts:` is refused by
@@ -4039,8 +4040,9 @@ default:
   override, unchanged) → the matched rule's → `default:`'s → 3600. It is the bound the
   whole watch of a change request's checks holds, and it is validated before the push,
   as the environment's bound is. An unknown key inside `checks:`, a `checks:` that is
-  not a mapping, and a wait outside the accepted range are refused by name where the
-  file is loaded, naming the key and that range. The accepted range is greater than 0
+  neither a mapping nor null, and a wait outside the accepted range are refused by name
+  where the file is loaded, naming the key and that range; a `checks:` or `base_merge:`
+  set to null reads as absent, so the next layer decides. The accepted range is greater than 0
   and at most 1,000,000,000 seconds (about 31 years): a ceiling chosen so a watch's
   deadline, now plus the wait, is always representable. The same range bounds
   `ONEVCS_CHECKS_TIMEOUT_SECONDS`, which is refused naming itself.
@@ -5713,6 +5715,176 @@ request answered 304 nothing. The e2e fake `gh` world answers the same query and
 
 Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopened`.
 
+
+
+## Prepared direct operation progress (#388)
+
+The following additive public APIs are re-exported from `lib.rs`. Their authoritative
+Rust declarations live in `ops.rs` and `stream.rs`.
+
+```rust
+pub enum DirectOperation {
+    PublishBranch { repository: String, branch: String },
+    Recover { repository: String, branch: String },
+    Integrate { repository: String },
+}
+pub struct OperationHandle { /* opaque, cloneable invocation identity */ }
+impl OperationHandle {
+    pub fn prepare(operation: &DirectOperation) -> Result<Self>;
+    pub fn open(id: &str) -> Result<Self>;
+    pub fn id(&self) -> &str;
+}
+pub struct OperationEvents { /* opaque cursor */ }
+impl OperationEvents {
+    pub fn open(operation: &OperationHandle) -> Result<Self>;
+    pub fn resume(operation: &OperationHandle, cursor: &str) -> Result<Self>;
+    pub fn read(&mut self) -> Result<Vec<Envelope>>;
+    pub fn cursor(&self) -> String;
+}
+pub fn publish_branch_in_operation(providers: &Providers<'_>, request: &BranchPublishRequest, operation: &OperationHandle) -> Result<PublishOutcome>;
+pub fn recover_in_operation(providers: &Providers<'_>, request: &RecoverRequest, operation: &OperationHandle) -> Result<PublishOutcome>;
+pub fn integrate_in_operation(request: &IntegrateRequest, operation: &OperationHandle) -> Result<Integration>;
+#[non_exhaustive]
+pub enum Significance { Milestone, Blocker, Progress }
+```
+
+Preparation reserves a unique invocation without git or host side effects. Repository
+selectors are normalized registered identities; branches are nonempty. Integration
+matches the actual cwd identity. Only the matching additive entry point can claim a
+handle, exactly once; mismatched selectors, unknown handles and repeated claims refuse
+before git or host side effects. Concurrent preparations with identical selectors remain
+distinct. Handles can be opened before execution and after return or writer death.
+
+The operation reader starts at the first event, returns only new complete envelopes in
+append order (including unknown future kinds), and advances only through returned
+records. Empty reads make no completion claim. Resume validates cursor pairing and
+record boundaries. Every emitted invocation event carries string `identity` and
+`operation_id` labels, including child gate and merge records. Operation storage is
+private; consumers use this reader rather than deriving paths. Existing synchronous
+entry points, session readers and CLI operands retain their behavior; existing event
+stores remain authoritative beside the new invocation store. After a crash complete
+records remain readable; the engine determines death.
+
+Significance is a reserved textual label and travels as a kebab-case string in
+`Labels.extra`, beside the existing phase,
+without a new strict envelope field. `MatchFields.significance: Option<Significance>`
+is optional and omitted when absent. **This matcher field addition breaks exhaustive
+Rust struct literals and requires a pre-1.0 minor release (`feat!`).**
+The approved `BaseArrived` addition also widens the exhaustive `EventKind` enum. Legacy unstamped
+records mean progress for significance matching through the `EventStream` reader/filter
+adapter; direct `EventFilter::matches` on a raw unstamped envelope does not apply that
+default. Labels serialization and legacy round-trip bytes stay unchanged. Invalid stamps
+report an error. Every operation record requires a producer stamp; the unstamped
+legacy default applies to existing session streams.
+Consumers use the producer's stamp, including unknown future kinds, rather than a kind
+list. The engine provides the final-result milestone and the death blocker; a onevcs
+step completion is progress, not a second final result.
+
+Event kinds added: `base-arrived`.
+
+For local publication and integration, `base-arrived` records one actual base arrival
+per invocation with `{base, commit, branches}`, where branches are ordered. A hosted
+landing records `change-merged` with its existing payload and never also records
+`base-arrived`. Merge-step detail remains `merge-completed` progress.
+
+The producer classification table is exhaustive over current kinds:
+
+| Kinds | Ordinary classification | Typed conditional result |
+| --- | --- | --- |
+| change-opened, change-drafted, change-merged, base-arrived | milestone | One actual base arrival, not each train member or merge step |
+| checks-settled | blocker | milestone for passed or passed-with-skipped |
+| sync-conflict, draft-kept-for-review | blocker | A conflict or a required person |
+| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale) |
+| gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
+| stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
+| base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
+| release-probed | progress | blocker for not-answered; released and no-release remain progress |
+| branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
+| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
+
+Required check significance uses the watch's existing cached declaration, falling
+back to the host's per-check marking only when that declaration is unavailable.
+Original check payloads remain unchanged and no additional host read is made.
+
+For every kind, typed failure or refusal overrides its ordinary classification to
+blocker, including for base-merge. The current producer emits no failed base-merge
+event: real merge conflicts arrive as sync-conflict, stamped blocker and visible in
+the manager's milestone/blocker view. The universal typed-failure override is held
+to the producer function by the exhaustive contract test, while the actual conflict
+path is proven by the real-git operation journey.
+Lock waits requiring no person remain progress. Retired recognized kinds
+remain readable and inert. Errors with no onevcs event become the engine's
+landing-refused blocker; no per-check evidence is fabricated.
+
+## Repository-declared pool maintenance
+
+<!-- repository-maintenance-summary:start -->
+`onevcs.toml` at the repository root declares `schema_version = 1` and optional
+`[pool.maintain]`: required non-empty `command` argv with a non-empty program,
+optional `timeout` using the workspaces `Span` grammar (default `30m`). Version 1
+refuses unknown keys and tables; later versions ignore unknown keys. Missing or
+non-integer versions are refused with the document and line.
+
+Resolve from the publication checkout on its base branch, never a slot or session:
+repository command first, then the matching host workspaces rule or `default:` when
+the file or table is absent, otherwise nothing. Unreadable files or checkouts block
+fallback. onevcs has no default command and knows no build tool or output layout.
+Use `onevcs pool declaration PATH [--json]` to validate a root or file without
+registration. Example argv: `["scripts/maintain-slot.sh", "--flag"]`.
+
+`PoolStatus.maintenance` reports declared, host-rule, undeclared or unreadable;
+its JSON fields are `source`, `from`, `command`, `timeout`, `reason` (unused fields
+null). `IdentityOutcome::MaintenanceUnreadable { reason }` runs nothing.
+`SlotOutcome::Ran.disk: Option<SlotDisk>` reports allocated `before_bytes` and
+`after_bytes`, counting each inode once and following no symlink, inside the claim
+around the command even on failure. Measurement errors warn and leave disk null
+without changing the outcome; `duration_ms` times the command alone. Human slot
+lines append `, worktree <before> → <after>` in sweep's byte format.
+<!-- repository-maintenance-summary:end -->
+
+A repository tracks `onevcs.toml` at its root, with `schema_version = 1` and
+optional `[pool.maintain]`: required `command = ["scripts/maintain-slot.sh", "--flag"]`
+and optional `timeout = "30m"` (the workspaces `Span` grammar, default 30m).
+The argv must name a non-empty program. Version 1 refuses unknown keys and tables;
+later versions ignore unknown keys. Missing or non-integer versions are refused,
+with document and line. `onevcs pool declaration PATH [--json]` reads a root or file
+without registration; no maintenance table prints none declared (JSON `null`).
+
+Every `pool maintain` pass and `pool status` resolves maintenance from the registered
+publication checkout on its base branch, never from a slot or session branch:
+repository declaration first, then the matching host workspace rule or `default:`
+when the file or table is absent, otherwise nothing. An unreadable declaration or
+publication checkout blocks fallback. onevcs has no default command and knows no
+build tool or output layout.
+
+`PoolStatus.maintenance` reports `MaintenanceSource`: declared (document and command),
+host-rule (host layer and command), undeclared (directory searched), or unreadable
+(reason). JSON carries `source`, `from`, `command`, `timeout` and `reason`, with
+unused fields null. Human status reports the command, timeout and source, or none
+or unreadable. `IdentityOutcome::MaintenanceUnreadable { reason }` serializes as
+`{"maintenance-unreadable":{"reason":"..."}}`; `NoMaintainCommand` means neither
+layer declares maintenance.
+
+`SlotOutcome::Ran.disk: Option<SlotDisk>` holds `before_bytes` and `after_bytes`:
+allocated blocks of the whole worktree, counted once per inode without following
+symlinks, measured inside its claim around the command regardless of its outcome.
+Measurement failures warn naming the slot and leave disk null without changing the
+command outcome. The human slot line appends `, worktree <before> → <after>` in the
+sweep byte format. `duration_ms` still measures the command alone.
+
+```rust
+// onevcs::repository_config
+pub const FILE: &str = "onevcs.toml";
+pub fn read_repository_maintenance(path: &Path) -> Result<Option<Maintenance>>;
+pub fn validate_repository_config(document: &str, origin: &str) -> Result<Option<Maintenance>>;
+pub enum MaintenanceSource {
+    Declared { document: PathBuf, maintenance: Maintenance },
+    HostRule { from: String, maintenance: Maintenance },
+    Undeclared { looked_in: PathBuf },
+    Unreadable { reason: String },
+}
+pub struct SlotDisk { pub before_bytes: u64, pub after_bytes: u64 }
+```
 
 ---
 

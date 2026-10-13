@@ -25,13 +25,14 @@ use std::process::{Command, Output};
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` journeys
 /// carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 7] = [
+const GATE_PROJECTS: [&str; 8] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
     "onevcs-e2e",
     "onevcs-recovery",
+    "onevcs-pool-workload",
     "onevcs-scripts-e2e",
 ];
 
@@ -279,7 +280,7 @@ fn a_change_under_crates_reaches_the_crate_and_every_tier_that_reads_it() {
         projects_running(&tasks, "test"),
         set(&GATE_PROJECTS)
             .into_iter()
-            .filter(|project| project != "github-workflows")
+            .filter(|project| project != "github-workflows" && project != "onevcs-pool-workload")
             .collect(),
         "a change to the crate's source selected {tasks:?}"
     );
@@ -498,5 +499,31 @@ fn a_tier_runs_again_for_a_change_to_what_it_reads_and_is_replayed_otherwise() {
         (runs(&unit), runs(&contract)),
         (2, 3),
         "a crate change reruns both"
+    );
+}
+
+#[test]
+fn pool_workload_is_absent_from_every_check_graph_and_present_only_when_requested() {
+    let checkout = Checkout::new();
+    let all = checkout.selected(&["npx", "nx", "run-many", "-t", "check"], &[]);
+    assert!(projects_running(&all, "workload").is_empty());
+    for (branch, path) in [
+        ("maintenance-only", "crates/onevcs/src/pool/maintain.rs"),
+        ("workload-only", "crates/onevcs/tests/pool-workload/main.rs"),
+    ] {
+        checkout.branch_changing(branch, &[path]);
+        let selected = checkout.selected(
+            &["npx", "nx", "affected", "-t", "check", "--base", "main"],
+            &[],
+        );
+        assert!(
+            projects_running(&selected, "workload").is_empty(),
+            "{selected:?}"
+        );
+    }
+    let workloads = checkout.selected(&["npx", "nx", "run-many", "-t", "workload"], &[]);
+    assert_eq!(
+        projects_running(&workloads, "workload"),
+        set(&["onevcs-pool-workload"])
     );
 }

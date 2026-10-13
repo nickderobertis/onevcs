@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::rules::{Approvals, Drafts, MergePolicy, Rule, RulesFile, TrailerPrefix};
-use crate::{home, policy, store};
+use crate::{home, policy, store, yaml};
 
 /// What to compose, and whether to install it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,8 +102,7 @@ pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied> {
     policy::validate(&destination, &composed)?;
     let document = format!(
         "{HEADER}{}",
-        serde_yaml_ng::to_string(&composed)
-            .map_err(|error| crate::error::invalid(error.to_string()))?
+        yaml::to_string(&composed).map_err(|error| crate::error::invalid(error.to_string()))?
     );
     // The composition reads back as the rules every verb will load, or it is not
     // installed: a composition only this function could read is not a rules file.
@@ -199,12 +198,17 @@ fn lay(composed: &mut RulesFile, overlay: Overlay, path: &Path) -> Result<()> {
 /// out is one nothing here understands. A key set to null says nothing either way and
 /// is passed over.
 fn strictly<T: Serialize + for<'de> Deserialize<'de>>(path: &Path, raw: &str) -> Result<T> {
-    let malformed = |error: serde_yaml_ng::Error| Error::Invalid {
+    let malformed = |error: serde_saphyr::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {error}", path.display()),
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
-    let typed: T = serde_yaml_ng::from_value(document.clone()).map_err(malformed)?;
-    let understood = serde_yaml_ng::to_value(&typed).map_err(malformed)?;
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
+    let typed: T = yaml::from_str(raw).map_err(malformed)?;
+    let understood = serde_json::to_value(&typed).map_err(|error| Error::Invalid {
+        reason: format!(
+            "the rules file at {} reads as rules that cannot be written back: {error}",
+            path.display()
+        ),
+    })?;
     if let Some(key) = unknown_key(&document, &understood, "") {
         return Err(Error::Invalid {
             reason: format!(
@@ -218,22 +222,18 @@ fn strictly<T: Serialize + for<'de> Deserialize<'de>>(path: &Path, raw: &str) ->
 }
 
 fn unknown_key(
-    given: &serde_yaml_ng::Value,
-    understood: &serde_yaml_ng::Value,
+    given: &serde_json::Value,
+    understood: &serde_json::Value,
     at: &str,
 ) -> Option<String> {
-    use serde_yaml_ng::Value;
+    use serde_json::Value;
     match (given, understood) {
-        (Value::Mapping(given), Value::Mapping(understood)) => {
+        (Value::Object(given), Value::Object(understood)) => {
             for (key, value) in given {
-                let name = key
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("{key:?}"));
                 let path = if at.is_empty() {
-                    name
+                    key.clone()
                 } else {
-                    format!("{at}.{name}")
+                    format!("{at}.{key}")
                 };
                 match understood.get(key) {
                     None if !value.is_null() => return Some(path),
@@ -247,17 +247,13 @@ fn unknown_key(
             }
             None
         }
-        (Value::Sequence(given), Value::Sequence(understood))
-            if given.len() == understood.len() =>
-        {
-            given
-                .iter()
-                .zip(understood)
-                .enumerate()
-                .find_map(|(index, (value, seen))| {
-                    unknown_key(value, seen, &format!("{at}[{}]", index + 1))
-                })
-        }
+        (Value::Array(given), Value::Array(understood)) if given.len() == understood.len() => given
+            .iter()
+            .zip(understood)
+            .enumerate()
+            .find_map(|(index, (value, seen))| {
+                unknown_key(value, seen, &format!("{at}[{}]", index + 1))
+            }),
         _ => None,
     }
 }

@@ -1,0 +1,211 @@
+# Installed by `onevcs rules apply`. Edit the base and overlays it was composed from, and apply them again.
+version: 3
+trailer_prefix: Orchestrator-
+rules:
+- match:
+    host: github.com
+    owner: sample-owner
+    name: openwidget
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: ai-orchestrator
+  publication: local-direct
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: private-repo-a
+  publication: local-direct
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: allowlister
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: allowlister-remote
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: allowlister-terminal-approval-plugin
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: crozier
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: dero-skills
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: private-repo-b
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: github-graphql-node-count
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: github-secrets
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: nick-derobertis-site
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: llmlint
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: notignored
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: oneagentgraph
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onebudgetspec
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: oneharness
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: oneharness-ui
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onejudge
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onemessagebus
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onepipeline
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onepipeline-ui
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onetaskgraph
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: onevcs
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: printobserver
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: screencomp
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: skilltest
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: spanish-language-tutor
+  publication: local-direct
+  approvals: none
+- match:
+    host: github.com
+    owner: nickderobertis
+    name: private-repo-c
+  publication: change-auto
+  approvals: none
+- match:
+    host: github.com
+    owner: team-org
+    name: team-repo-a
+  publication: change-open
+  approvals: required
+- match:
+    host: github.com
+    owner: team-org
+    name: team-repo-b
+  publication: change-open
+  approvals: required
+- match:
+    host: github.com
+    owner: team-org
+    name: team-repo-c
+  publication: change-open
+  approvals: required
+- match:
+    host: github.com
+    owner: team-org
+    name: team-repo-d
+  publication: change-open
+  approvals: required
+- match:
+    host: github.com
+    owner: team-org
+    name: team-repo-e
+  publication: change-open
+  approvals: required
+default:
+  publication: change-open
+  approvals: required
