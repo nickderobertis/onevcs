@@ -111,9 +111,8 @@ it is regenerated on demand with `just screenshots-gif` and committed.
 screencomp gates on the **hash** of each image, so two captures of one build must
 produce byte-identical trees. Unlike a rasterized PNG (whose anti-aliasing drifts
 across CPUs), an SVG is pure layout maths, which is why this needs no container and
-why its `x86_64` and `arm64` lanes hold the same digests. The declared lanes let CI
-verify both supported architectures. What is pinned,
-and where its one source is:
+why its declared lanes hold the same digests. CI verifies the architectures
+listed in `screencomp.toml`. What is pinned, and where its one source is:
 
 | pinned | its one source | how a copy is kept honest |
 | --- | --- | --- |

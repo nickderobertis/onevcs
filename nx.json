@@ -31,6 +31,7 @@
       "contractDocs",
       "{workspaceRoot}/scripts/**/*",
       "{workspaceRoot}/.githooks/**/*",
+      "{workspaceRoot}/screencomp.toml",
       "{workspaceRoot}/npm/**/*",
       "{workspaceRoot}/.github/**/*",
       "{workspaceRoot}/release-targets.toml",
