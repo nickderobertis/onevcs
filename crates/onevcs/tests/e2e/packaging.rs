@@ -244,6 +244,7 @@ fn an_intel_mac_is_refused_by_name_rather_than_sent_after_a_missing_package() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let project = npm_install(scratch.path(), false);
     let preload = scratch.path().join("intel-mac.cjs");
+    // llmlint: ignore[e2e_not_mocked,tests_mirror_real_usage] The only real Intel macOS host is a GitHub Intel runner, which is exactly the Mac capacity this repository stopped spending and the platform it stopped shipping. Everything else is real — the packed launcher, the npm install, the installed command, its exit code and stderr; only Node's report of the host, a third-party boundary, is doubled.
     std::fs::write(
         &preload,
         "Object.defineProperty(process, 'platform', { value: 'darwin' });\n\

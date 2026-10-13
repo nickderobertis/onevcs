@@ -50,6 +50,7 @@ function fail(message) {
 
 function binaryPath() {
   const key = `${process.platform}-${process.arch}`;
+  // llmlint: ignore[changed_behavior_has_e2e] No Intel macOS host is available to run this on without the Intel Mac runner this change retires. crates/onevcs/tests/e2e/packaging.rs drives this refusal through a real npm install of the packed launcher, doubling only Node's report of the host.
   if (Object.prototype.hasOwnProperty.call(DISCONTINUED, key)) {
     fail(DISCONTINUED[key]);
   }
