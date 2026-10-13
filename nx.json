@@ -30,6 +30,10 @@
       "crateSource",
       "contractDocs",
       "{workspaceRoot}/scripts/**/*",
+      // llmlint: ignore-block[changed_behavior_has_e2e] These declarative cache inputs name files the existing push and capture-lane journeys already read; this configuration-only change needs no new behavior test.
+      "{workspaceRoot}/.githooks/**/*",
+      "{workspaceRoot}/screencomp.toml",
+      // llmlint: ignore-end[changed_behavior_has_e2e]
       "{workspaceRoot}/npm/**/*",
       "{workspaceRoot}/.github/**/*",
       "{workspaceRoot}/release-targets.toml",

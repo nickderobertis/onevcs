@@ -4,15 +4,9 @@
 # The shots are deterministic SVGs — pure layout maths over a vendored, pinned font
 # embedded into each file as base64 — rather than rasterized pixels whose
 # anti-aliasing drifts across CPUs, so the bytes are identical on every architecture
-# and every lane's baseline is the same set of digests. There is still one lane per
-# architecture a push is made from, because the pre-push guard refuses a host whose
-# lane is not declared here: arm64 is here so a push from an arm64 host is checked
-# rather than refused, which every such push was until it was added.
-#
-# This is the single source for the lane name. scripts/host-arch.sh derives *this
-# host's* lane from `uname -m` for the capture, the bless and the guard; the guard
-# reads the declared list back out of this file and refuses a host it does not name,
-# saying how to add one. CI fans one job out per entry here.
+# and every lane's baseline is the same set of digests. CI verifies one lane per
+# supported architecture. scripts/host-arch.sh normalizes this host's architecture
+# for manual capture and baseline refresh; CI fans one job out per entry here.
 arches = ["x86_64", "arm64"]
 
 [comment]
@@ -25,8 +19,8 @@ embed_limit = 10             # embed images inline when <= N shots differ (0 dis
 # `screencomp doctor` is what would catch a capture that started using one anyway.
 
 [guard]
-# Local pre-push guard (.githooks/pre-push): re-capture only when something that can
-# change the rendered output changes — the commands' own rendering, the CLI surface,
+# Screenshot-relevant paths for manual scope inspection: files that can
+# change the rendered output — the commands' own rendering, the CLI surface,
 # the scratch host the scenes are driven against, or the capture machinery itself.
 paths = [
   "crates/onevcs/src/cli.rs",
