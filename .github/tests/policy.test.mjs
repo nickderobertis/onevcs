@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { NON_PR_EVENTS } from "../macos-policy.mjs";
 const root = resolve(".");
 export function history() {
     const scratch =
@@ -153,6 +154,29 @@ test("real git semantic classifier admits only same-repo release versions", () =
                 .macosRequired,
             false,
         );
+        // Every known non-PR automatic event stays Mac-free, whatever the diff,
+        // branch or ownership; an event nobody decided about fails closed.
+        for (const eventName of NON_PR_EVENTS)
+            for (const kind of ["source", "version", "dependency"])
+                for (const fork of [false, true]) {
+                    const answer = h.classify(kind, {
+                        eventName,
+                        fork,
+                        branch: "release-plz-2026",
+                    });
+                    assert.equal(answer.macosRequired, false, eventName);
+                    assert.equal(answer.isReleaseOnly, false, eventName);
+                    assert.match(answer.reason, new RegExp(eventName));
+                }
+        for (const eventName of ["merge_group", "pull_request_target"]) {
+            const answer = h.classify("version", {
+                eventName,
+                branch: "release-plz-2026",
+            });
+            assert.equal(answer.macosRequired, true, eventName);
+            assert.equal(answer.isReleaseOnly, false, eventName);
+            assert.match(answer.reason, new RegExp(`unrecognised event "${eventName}"`));
+        }
     } finally {
         h.cleanup();
     }

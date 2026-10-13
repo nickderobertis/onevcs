@@ -1,10 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const releasePaths = JSON.parse(
     readFileSync(new URL("./release-only-paths.json", import.meta.url), "utf8"),
 );
+
+// The events besides pull_request that this repository's workflows are started by.
+// None of them runs the PR Mac lane. An event outside this set is one nobody has
+// decided about, so it fails closed and requires coverage.
+export const NON_PR_EVENTS = [
+    "push",
+    "release",
+    "workflow_run",
+    "repository_dispatch",
+    "schedule",
+    "workflow_dispatch",
+];
 
 // Only release-plz's same-repository branch plus a semantic diff authorizes omission.
 // The PAT author is also the human maintainer, so login/title confer no authority.
@@ -21,8 +34,14 @@ export function classify(
         macosRequired,
         reason,
     });
-    if (name && name !== "pull_request")
-        return answer(false, false, "non-PR event");
+    if (name !== undefined && name !== "" && name !== "pull_request")
+        return NON_PR_EVENTS.includes(name)
+            ? answer(false, false, `known non-PR event ${name}`)
+            : answer(
+                  false,
+                  true,
+                  `unrecognised event ${JSON.stringify(name)} requires coverage`,
+              );
     if (!pr) return answer(false, true, "unknown PR input requires coverage");
     if (
         typeof event.repository?.full_name !== "string" ||
@@ -90,10 +109,8 @@ export function classify(
     }
 }
 
-if (
-    process.argv[1]?.endsWith("/macos-policy.mjs") ||
-    process.argv[1] === ".github/macos-policy.mjs"
-) {
+// Run as a command (on any platform's path spelling), not when imported.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const [command, ...args] = process.argv.slice(2);
     if (
         command !== "classify" ||

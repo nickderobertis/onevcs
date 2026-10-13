@@ -51,14 +51,11 @@ function fixture(system, os, machine = "x86_64") {
             join(dir, "archive", binary),
             binary,
         ]);
+    // Relative paths: GNU tar on Windows reads a drive-letter path as host:path.
     else
-        execFileSync("tar", [
-            "-czf",
-            response,
-            "-C",
-            join(dir, "archive"),
-            binary,
-        ]);
+        execFileSync("tar", ["-czf", "response", "-C", "archive", binary], {
+            cwd: dir,
+        });
     const original = readFileSync(response);
     const checksum = (bytes) =>
         `${createHash("sha256").update(bytes).digest("hex")}  ${asset}\n`;
