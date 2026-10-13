@@ -17,6 +17,9 @@ use crate::workspace::{self, Record};
 
 /// Validated full object names for the commits a persisted fixture expects.
 pub use crate::git::ObjectId;
+/// The producer's one classification table and the typed result it reads, so a
+/// provider that writes events stamps them through it rather than through a copy.
+pub use crate::significance::{significance, EmissionResult};
 /// Validated production branch and session names for persisted fixtures.
 pub use crate::workspace::{Ref, Token};
 

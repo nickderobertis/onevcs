@@ -33,7 +33,7 @@ use onevcs::{
     SOURCE_WORD,
 };
 
-use crate::significance::significance;
+use onevcs::testing::{significance, EmissionResult};
 
 /// The envelope schema version this crate emits, as `onevcs` emits it.
 const ENVELOPE_VERSION: u32 = 1;
@@ -53,6 +53,8 @@ pub(crate) struct Emission {
     pub kind: EventKind,
     /// The event's own fields.
     pub payload: Map<String, Value>,
+    /// What the provider recorded happening, which the producer's table classifies.
+    pub result: EmissionResult,
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 
@@ -132,8 +134,10 @@ fn append(emission: &Emission) -> Result<()> {
     }
     labels.extra.insert(
         "significance".to_owned(),
-        serde_json::to_value(significance(emission.kind)).map_err(|e| Error::Invalid {
-            reason: format!("cannot serialize a significance: {e}"),
+        serde_json::to_value(significance(emission.kind, emission.result)).map_err(|e| {
+            Error::Invalid {
+                reason: format!("cannot serialize a significance: {e}"),
+            }
         })?,
     );
     let envelope = Envelope {

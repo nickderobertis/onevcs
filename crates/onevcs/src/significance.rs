@@ -4,17 +4,28 @@ use crate::{CheckState, EventKind, Significance};
 
 /// Typed producer evidence; payload strings never decide significance.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum EmissionResult {
+pub enum EmissionResult {
+    /// The attempt succeeded, or is still running.
     Success,
+    /// The attempt failed or was refused.
     Failed,
-    Check { required: bool, state: CheckState },
+    /// One check reading, and whether the merge path requires that check.
+    Check {
+        /// Whether the merge path requires this check.
+        required: bool,
+        /// What the check reported.
+        state: CheckState,
+    },
+    /// A ruling of passed.
     Passed,
+    /// A ruling of passed with skipped checks.
     PassedWithSkipped,
+    /// A ruling with no usable verdict.
     NoVerdict,
 }
 
 /// The single classification table for every kind this producer writes.
-pub(crate) fn significance(kind: EventKind, result: EmissionResult) -> Significance {
+pub fn significance(kind: EventKind, result: EmissionResult) -> Significance {
     let blocked = match result {
         EmissionResult::Failed => true,
         EmissionResult::Check { required, state } => {
