@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0](https://github.com/nickderobertis/onevcs/compare/v0.50.1...v0.51.0) - 2026-10-13
+
+### Added
+
+- [**breaking**] expose invocation-scoped landing events and significance ([#403](https://github.com/nickderobertis/onevcs/pull/403))
+
+### Fixed
+
+- *(deps)* read and write host files with serde-saphyr in place of serde_yaml_ng ([#405](https://github.com/nickderobertis/onevcs/pull/405))
+
 ## [0.50.1](https://github.com/nickderobertis/onevcs/compare/v0.50.0...v0.50.1) - 2026-10-13
 
 ### Fixed
