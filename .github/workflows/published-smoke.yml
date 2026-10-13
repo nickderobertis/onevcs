@@ -17,7 +17,7 @@ name: Published smoke
 # `--version`.
 #
 # The third install surface is `cargo install onevcs`, which resolves from
-# crates.io and is proven on all three platforms by ci.yml's `install` job on every
+# crates.io and is proven by ci.yml's platform install jobs and macos-pr lane on every
 # pull request. Nothing here downloads a GitHub Release asset by constructed name,
 # so there is no asset-naming contract that could rot unnoticed between releases.
 #

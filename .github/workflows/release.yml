@@ -34,7 +34,7 @@ name: Release
 # can be, by running on every real release, and everything they call that *can* be driven
 # locally is: scripts/smoke-published.sh runs over the compiled binary in
 # crates/onevcs/tests/e2e/smoke.rs, and the same install-then-smoke path runs on all
-# three platforms in ci.yml's `install` job.
+# three platforms through ci.yml's platform install jobs and macos-pr lane.
 #
 # llmlint: ignore-file[live_tier_compiles_and_requires_credential] the publish and verify
 # jobs are deliberately switched by the PYPI_PUBLISH / NPM_PUBLISH repository variables,

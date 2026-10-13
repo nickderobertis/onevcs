@@ -247,7 +247,7 @@ jobs:
 
   # The README's install one-liner, run verbatim. It can only resolve code that is
   # already on the remote, so it runs on main rather than on PRs — where the
-  # `install` job above proves the same path against the branch's own revision.
+  # platform install proofs here exercise the branch's own revision.
   install-documented:
     if: github.event_name == 'push'
     strategy:
