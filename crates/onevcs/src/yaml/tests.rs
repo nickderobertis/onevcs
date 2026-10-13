@@ -126,3 +126,105 @@ fn every_host_file_reads_the_value_it_always_read() {
         held_to_golden(&format!("host-{name}"), &read(&path, &document));
     }
 }
+
+/// A rules document holding `default` as given, at `version`.
+fn rules_with(version: &str, default: &str) -> String {
+    format!(
+        "version: {version}\nrules: []\ndefault: {{publication: change-open, approvals: \
+         required, {default}}}\n"
+    )
+}
+
+#[test]
+fn a_policy_key_reads_every_scalar_the_typed_read_converts() {
+    let path = Path::new("rules.yml");
+    let drafts = policy::parse(path, &rules_with("4", "drafts: {disabled: \"true\"}"))
+        .expect("a quoted boolean is a boolean to the typed read")
+        .default
+        .drafts
+        .expect("the drafts the document set");
+    assert_eq!(drafts.disabled, Some(true));
+    let checks = policy::parse(path, &rules_with("4", "checks: {wait_seconds: \"3600\"}"))
+        .expect("a quoted number is a wait to the typed read")
+        .default
+        .checks
+        .expect("the checks the document set");
+    assert_eq!(checks.wait_seconds.map(|wait| wait.get()), Some(3600.0));
+
+    // What no conversion makes a boolean or a wait is still refused naming where.
+    for (default, named) in [
+        (
+            "drafts: {disabled: maybe}",
+            "default drafts: disabled is maybe, which is not a boolean",
+        ),
+        (
+            "drafts: {disable: \"true\"}",
+            "default drafts: names \"disable\", which it does not have",
+        ),
+        (
+            "drafts: {disable: true}",
+            "default drafts: names \"disable\", which it does not have",
+        ),
+        (
+            "checks: {wait_seconds: soon}",
+            "default checks: wait_seconds is soon, which is not a wait",
+        ),
+        (
+            "checks: {wait_seconds: \"0\"}",
+            "default checks: wait_seconds is \"0\", which is not a wait",
+        ),
+        (
+            "checks: {wait_second: \"60\"}",
+            "default checks: names \"wait_second\", which it does not have",
+        ),
+        (
+            "base_merge: sometimes",
+            "default base_merge: sometimes is not a base merge",
+        ),
+    ] {
+        let refused = policy::parse(path, &rules_with("4", default))
+            .expect_err(default)
+            .to_string();
+        assert!(refused.contains(named), "{default}: {refused}");
+    }
+}
+
+#[test]
+fn a_quoted_version_is_the_version_every_version_check_asks_about() {
+    let path = Path::new("rules.yml");
+    let gate = "gate: {kind: checks}";
+    // The version the typed read takes decides the gate, however it is spelled.
+    let refused = policy::parse(path, &rules_with("\"3\"", gate))
+        .expect_err("a gate at version 3 is refused by name")
+        .to_string();
+    assert!(
+        refused.contains("unknown field `gate` in default"),
+        "{refused}"
+    );
+    policy::parse(path, &rules_with("\"2\"", gate)).expect("a gate at version 2 is spent");
+    let refused = policy::parse(path, &rules_with("\"0\"", "drafts: {disabled: true}"))
+        .expect_err("version 0 is older than this build reads")
+        .to_string();
+    assert!(refused.contains("declares version 0"), "{refused}");
+
+    for (refused, file) in [
+        (
+            release::parse(path, "version: \"0\"\ndefault: {adoption: fast}\n").map(|_| ()),
+            "release-targets",
+        ),
+        (
+            branches::parse(path, "version: \"0\"\n").map(|_| ()),
+            "branches",
+        ),
+        (
+            workspaces::parse(path, "version: \"0\"\n").map(|_| ()),
+            "workspaces",
+        ),
+    ] {
+        let refused = refused.expect_err(file).to_string();
+        assert!(
+            refused.contains(&format!("the {file} file at rules.yml declares version 0")),
+            "{refused}"
+        );
+    }
+}

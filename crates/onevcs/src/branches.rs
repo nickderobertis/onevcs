@@ -127,7 +127,7 @@ pub(crate) fn parse(path: &Path, raw: &str) -> Result<BranchesFile> {
     // for the reason the other host files do it: which keys a document may carry is
     // a fact about the version it declares. Only a version *below* this one is
     // refused.
-    if let Some(declared) = document.get("version").and_then(serde_json::Value::as_u64) {
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the branches file at {} declares version {declared}; this build reads \

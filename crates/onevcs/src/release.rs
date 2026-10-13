@@ -122,7 +122,7 @@ pub(crate) fn parse(path: &Path, raw: &str) -> Result<ReleasesFile> {
     // one is refused — a later one is read as this shape, ignoring what it names
     // beyond it, because refusing it would stop every release verb on a host a newer
     // `onevcs` had configured.
-    if let Some(declared) = document.get("version").and_then(serde_json::Value::as_u64) {
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the release-targets file at {} declares version {declared}; this build reads \

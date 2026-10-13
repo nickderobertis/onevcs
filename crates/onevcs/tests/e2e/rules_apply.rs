@@ -419,3 +419,52 @@ fn this_hosts_rules_file_composes_to_the_bytes_it_always_composed_to() {
         assert_eq!(installed, expected);
     }
 }
+
+#[test]
+fn a_quoted_scalar_the_typed_read_converts_is_composed_rather_than_refused() {
+    let world = host();
+    let base = file(
+        &world,
+        "repo/rules.yml",
+        "version: 4\nrules: []\ndefault:\n  publication: change-open\n  approvals: required\n  \
+         drafts: {disabled: \"true\"}\n  checks: {wait_seconds: \"3600\"}\n",
+    );
+    let printed = apply(&world, &base, &[], &["--dry-run"]);
+    assert!(
+        printed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let document = String::from_utf8_lossy(&printed.stdout);
+    assert!(document.contains("disabled: true\n"), "{document}");
+    assert!(document.contains("wait_seconds: 3600"), "{document}");
+}
+
+#[test]
+fn a_quoted_version_decides_the_gate_on_every_verb_that_reads_the_rules() {
+    let world = host();
+    let rules = |version: &str| {
+        format!(
+            "version: {version}\nrules: []\ndefault: {{publication: change-open, approvals: \
+             required, gate: {{kind: checks}}}}\n"
+        )
+    };
+    // Installed directly, the way an operator's own copy reaches the conventional path.
+    std::fs::write(world.home().join("rules.yml"), rules("\"3\"")).expect("the rules file");
+    world
+        .onevcs()
+        .args(["rules", "check", "openwidget"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown field `gate` in default"));
+
+    std::fs::write(world.home().join("rules.yml"), rules("\"2\"")).expect("the rules file");
+    world
+        .onevcs()
+        .args(["rules", "check", "openwidget"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "names a gate, which version 3 removed",
+        ));
+}

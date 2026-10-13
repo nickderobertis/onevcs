@@ -400,7 +400,7 @@ pub(crate) fn read(path: &Path, raw: &str) -> Result<RulesFile> {
     // which keys a file may carry is a fact about the version it declares, so a
     // version this build does not read has to be answered as that rather than as
     // whichever of its keys this build happened not to recognize.
-    if let Some(declared) = declared_version(&document) {
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(OLDEST_VERSION) {
             return Err(Error::Invalid {
                 reason: format!(
@@ -420,11 +420,6 @@ pub(crate) fn read(path: &Path, raw: &str) -> Result<RulesFile> {
     refuse_malformed_base_merge(&path, &document)?;
     refuse_malformed_checks(&path, &document)?;
     yaml::from_str(raw).map_err(malformed)
-}
-
-/// The version a document declares, before anything about its shape is enforced.
-fn declared_version(document: &serde_json::Value) -> Option<u64> {
-    document.get("version")?.as_u64()
 }
 
 /// How many `gate:` keys a pre-`3` document carries where the schema put them.
@@ -516,23 +511,23 @@ fn refuse_malformed_drafts(path: &Path, document: &serde_json::Value) -> Result<
             return Err(refused(&where_, "is not a mapping".to_owned()));
         };
         for (key, value) in fields {
-            let Err(said) = alone::<Drafts>(key, value) else {
-                continue;
-            };
-            let key = spelled(&serde_json::Value::String(key.clone()));
-            // Every key the type has takes a boolean, so a boolean it refused is a key
-            // it does not have — and its own refusal lists the ones it does.
-            return Err(refused(
-                &where_,
-                if value.is_boolean() {
-                    format!("names {key:?}, which it does not have: {said}")
-                } else {
+            // Every key the type has takes a boolean, so a key refused even a boolean is
+            // one it does not have — and its own refusal lists the ones it does.
+            if let Err(said) = alone::<Drafts>(key, &serde_json::Value::Bool(true)) {
+                return Err(refused(
+                    &where_,
+                    format!("names {key:?}, which it does not have: {said}"),
+                ));
+            }
+            if yaml::convert::<Drafts>(&single(key, value)).is_none() {
+                return Err(refused(
+                    &where_,
                     format!(
                         "{key} is {}, which is not a boolean; write true or false",
                         spelled(value)
-                    )
-                },
-            ));
+                    ),
+                ));
+            }
         }
     }
     Ok(())
@@ -565,14 +560,21 @@ fn spelled(value: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-/// One key of a policy mapping and its value, read as `T` with nothing beside it.
+/// One key of a policy mapping and its value, as a mapping with nothing beside it.
+fn single(key: &str, value: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([(
+        key.to_owned(),
+        value.clone(),
+    )]))
+}
+
+/// Whether `T` has `key`, asked with a value of the type that key holds: its refusal
+/// of anything else names the key and lists the ones it has.
 fn alone<T: serde::de::DeserializeOwned>(
     key: &str,
     value: &serde_json::Value,
 ) -> serde_json::Result<T> {
-    let mut alone = serde_json::Map::new();
-    alone.insert(key.to_owned(), value.clone());
-    serde_json::from_value(serde_json::Value::Object(alone))
+    serde_json::from_value(single(key, value))
 }
 
 /// Refuse, naming where it is, a `base_merge:` that is not one of its two values.
@@ -580,7 +582,7 @@ fn alone<T: serde::de::DeserializeOwned>(
 /// The shape refuses it too, but in words that name neither the rule nor the key.
 fn refuse_malformed_base_merge(path: &Path, document: &serde_json::Value) -> Result<()> {
     for (where_, value) in policy_keys(document, "base_merge") {
-        if serde_json::from_value::<BaseMerge>(value.clone()).is_err() {
+        if yaml::convert::<BaseMerge>(value).is_none() {
             return Err(Error::Invalid {
                 reason: format!(
                     "the rules file at {} is malformed: {where_} base_merge: {} is not a base \
@@ -608,25 +610,25 @@ fn refuse_malformed_checks(path: &Path, document: &serde_json::Value) -> Result<
             return Err(refused(&where_, "is not a mapping".to_owned()));
         };
         for (key, value) in fields {
-            let Err(said) = alone::<Checks>(key, value) else {
-                continue;
-            };
-            let key = spelled(&serde_json::Value::String(key.clone()));
-            // The one key the type has takes a wait, so a key it refused is either one
-            // it does not have — its own refusal lists the ones it does — or that wait
-            // spelled as something no watch can run to.
-            return Err(refused(
-                &where_,
-                if key == "wait_seconds" {
+            // The one key the type has takes a wait, so a key refused even a wait is one
+            // it does not have — its own refusal lists the ones it does.
+            if let Err(said) = alone::<Checks>(key, &serde_json::Value::from(60)) {
+                return Err(refused(
+                    &where_,
+                    format!("names {key:?}, which it does not have: {said}"),
+                ));
+            }
+            // Otherwise the key is the wait, spelled as something no watch can run to.
+            if yaml::convert::<Checks>(&single(key, value)).is_none() {
+                return Err(refused(
+                    &where_,
                     format!(
-                        "wait_seconds is {}, which is not a wait; write {}",
+                        "{key} is {}, which is not a wait; write {}",
                         spelled(value),
                         WaitSeconds::RANGE
-                    )
-                } else {
-                    format!("names {key:?}, which it does not have: {said}")
-                },
-            ));
+                    ),
+                ));
+            }
         }
     }
     Ok(())
