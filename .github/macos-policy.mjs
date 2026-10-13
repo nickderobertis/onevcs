@@ -2,6 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+const releasePaths = JSON.parse(
+    readFileSync(new URL("./release-only-paths.json", import.meta.url), "utf8"),
+);
+
 // Only release-plz's same-repository branch plus a semantic diff authorizes omission.
 // The PAT author is also the human maintainer, so login/title confer no authority.
 export function classify(
@@ -46,23 +50,12 @@ export function classify(
             .filter(Boolean);
         if (!paths.length) throw new Error("empty diff");
         for (const path of paths) {
-            if (
-                ["CHANGELOG.md", "crates/onevcs-testing/CHANGELOG.md"].includes(
-                    path,
-                )
-            ) {
+            if (releasePaths.changelogs.includes(path)) {
                 git("show", `${b}:${path}`);
                 git("show", `${h}:${path}`);
                 continue;
             }
-            if (
-                ![
-                    "crates/onevcs/Cargo.toml",
-                    "crates/onevcs-testing/Cargo.toml",
-                    "Cargo.lock",
-                    "compat/Cargo.lock",
-                ].includes(path)
-            ) {
+            if (!releasePaths.semantic.includes(path)) {
                 throw new Error(`non-release path ${path}`);
             }
             const before = git("show", `${b}:${path}`);

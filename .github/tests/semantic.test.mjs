@@ -65,7 +65,7 @@ test("real semantic boundary admits package/lock versions and rejects other fiel
 });
 
 test("semantic CLI rejects malformed invocation/input separately from a valid negative answer", () => {
-    for (const [args, input] of [[[], "{}"], [["Cargo.lock"], "{"], [["Cargo.lock"], "null"], [["Cargo.lock"], JSON.stringify({before: 1, after: []})]]) {
+    for (const [args, input] of [[[], "{}"], [["unsupported-path"], JSON.stringify({before: '[package]\nname="onevcs"\nversion="0.1.0"', after: '[package]\nname="onevcs"\nversion="0.2.0"'})], [["Cargo.lock"], "{"], [["Cargo.lock"], "null"], [["Cargo.lock"], JSON.stringify({before: 1, after: []})]]) {
         const run = spawnSync("python3", [".github/version-only.py", ...args], {input, encoding: "utf8"});
         assert.notEqual(run.status, 0);
         assert.equal(run.stdout, "");

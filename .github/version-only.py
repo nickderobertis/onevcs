@@ -1,6 +1,7 @@
 """Compare parsed TOML; erase only this repository's own package versions."""
 import copy
 import json
+import pathlib
 import re
 import sys
 import tomllib
@@ -47,6 +48,9 @@ def normalized(text, path):
 try:
     if len(sys.argv) != 2:
         raise ValueError("expected one semantic file path")
+    paths = json.loads(pathlib.Path(__file__).with_name("release-only-paths.json").read_text())
+    if sys.argv[1] not in paths["semantic"]:
+        raise ValueError("unsupported semantic release file path")
     data = json.load(sys.stdin)
     if not isinstance(data, dict) or not all(isinstance(data.get(key), str) for key in ("before", "after")):
         raise ValueError("expected before/after TOML strings")

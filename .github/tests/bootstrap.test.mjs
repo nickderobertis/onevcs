@@ -101,6 +101,8 @@ function fixture(system, os, machine = "x86_64") {
         reset: () => {
             const bin = join(dir, ".github/bin", binary);
             if (existsSync(bin)) rmSync(bin);
+            const archive = join(dir, ".github/bin", asset);
+            if (existsSync(archive)) rmSync(archive);
         },
         cleanup: () => rmSync(dir, { recursive: true, force: true }),
     };
@@ -119,6 +121,21 @@ test("real bootstrap uses declared zip/tar archives and rejects transport, integ
             assert.ok(
                 readFileSync(join(f.dir, "requests"), "utf8").includes(f.asset),
             );
+            const requests = readFileSync(join(f.dir, "requests"), "utf8");
+            const cached = join(f.dir, ".github/bin", f.binary);
+            const expectedBinary = readFileSync(cached);
+            writeFileSync(cached, "stale or corrupt cached executable");
+            assert.equal(f.run().status, 0, "cache hit re-extracts only the verified archive");
+            assert.deepEqual(readFileSync(cached), expectedBinary);
+            assert.equal(readFileSync(join(f.dir, "requests"), "utf8"), requests);
+            const cachedArchive = join(f.dir, ".github/bin", f.asset);
+            const verifiedArchive = readFileSync(cachedArchive);
+            writeFileSync(cachedArchive, "corrupt cached archive");
+            const invalidCache = f.run();
+            assert.notEqual(invalidCache.status, 0);
+            assert.match(invalidCache.stderr, /checksum mismatch[\s\S]*ACTION:/);
+            writeFileSync(cachedArchive, verifiedArchive);
+            assert.equal(f.run().status, 0);
             f.reset();
             const unsupported = f.run({ BOOTSTRAP_SYSTEM: "unknown-host" });
             assert.notEqual(unsupported.status, 0);
@@ -133,6 +150,7 @@ test("real bootstrap uses declared zip/tar archives and rejects transport, integ
             const bad = f.run();
             assert.notEqual(bad.status, 0);
             assert.match(bad.stderr, /checksum mismatch[\s\S]*ACTION:/);
+            f.reset();
             writeFileSync(f.response, f.original);
             writeFileSync(
                 join(f.dir, ".github/actionlint-checksums.txt"),
@@ -144,6 +162,7 @@ test("real bootstrap uses declared zip/tar archives and rejects transport, integ
                 malformed.stderr,
                 /invalid checksum row[\s\S]*ACTION:/,
             );
+            f.reset();
             writeFileSync(f.response, "not an archive");
             writeFileSync(
                 join(f.dir, ".github/actionlint-checksums.txt"),
@@ -152,6 +171,7 @@ test("real bootstrap uses declared zip/tar archives and rejects transport, integ
             const extraction = f.run();
             assert.notEqual(extraction.status, 0);
             assert.match(extraction.stderr, /extraction failed[\s\S]*ACTION:/);
+            f.reset();
             writeFileSync(f.response, f.original);
             writeFileSync(
                 join(f.dir, ".github/actionlint-checksums.txt"),
@@ -186,6 +206,7 @@ test("ARM host aliases download the declared ARM assets and recover after corrup
             const bad = f.run();
             assert.notEqual(bad.status, 0);
             assert.match(bad.stderr, /checksum mismatch[\s\S]*ACTION:/);
+            f.reset();
             writeFileSync(f.response, f.original);
             assert.equal(f.run().status, 0);
         } finally {
