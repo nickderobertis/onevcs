@@ -1,0 +1,51 @@
+Ok(
+    WorkspacesFile {
+        version: 1,
+        default: WorkspaceDefault {
+            pool: 0,
+            overflow: Unlimited,
+            delete: [],
+            maintain: None,
+        },
+        rules: [
+            WorkspaceRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                pool: Some(
+                    2,
+                ),
+                overflow: Some(
+                    Bounded(
+                        4,
+                    ),
+                ),
+                delete: Some(
+                    [
+                        ".logs/",
+                    ],
+                ),
+                maintain: Some(
+                    Maintenance {
+                        command: MaintenanceCommand {
+                            program: "scripts/maintain-slot.sh",
+                            args: [
+                                "--flag",
+                            ],
+                        },
+                        timeout: "30m",
+                    },
+                ),
+            },
+        ],
+    },
+)

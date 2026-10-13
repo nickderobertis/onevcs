@@ -449,9 +449,15 @@ fn a_spec_the_grammar_does_not_name_is_refused_before_a_single_event_is_reported
             r#"{"include": [{"kind": "fetch"}, {"kinds": "push"}]}"#.to_owned(),
             "`kinds`",
         ),
-        (r#"{"exclude": [["kind"]]}"#.to_owned(), "exclude[0]"),
+        (
+            r#"{"exclude": [["kind"]]}"#.to_owned(),
+            "expected mapping start at line 1, column 14",
+        ),
         // A list that is not one, from a file rather than inline.
-        (spec.to_string_lossy().into_owned(), "include: invalid type"),
+        (
+            spec.to_string_lossy().into_owned(),
+            "expected sequence start at line 1, column 10",
+        ),
     ] {
         let output = world
             .onevcs()

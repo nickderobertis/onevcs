@@ -1,0 +1,64 @@
+Ok(
+    RulesFile {
+        version: 3,
+        trailer_prefix: None,
+        rules: [
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "printobserver",
+                    ),
+                    path: None,
+                },
+                publication: Some(
+                    ChangeAuto,
+                ),
+                approvals: Some(
+                    None,
+                ),
+                drafts: None,
+                visibility: None,
+                base_merge: Some(
+                    OnConflict,
+                ),
+                checks: Some(
+                    Checks {
+                        wait_seconds: Some(
+                            WaitSeconds(
+                                7200.0,
+                            ),
+                        ),
+                    },
+                ),
+            },
+        ],
+        default: Policy {
+            publication: ChangeOpen,
+            approvals: Required,
+            drafts: None,
+            base_merge: Some(
+                Always,
+            ),
+            checks: Some(
+                Checks {
+                    wait_seconds: Some(
+                        WaitSeconds(
+                            3600.0,
+                        ),
+                    ),
+                },
+            ),
+        },
+    },
+)
+Ok(
+    Ok(
+        (),
+    ),
+)

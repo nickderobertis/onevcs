@@ -9,13 +9,7 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-ignore = [
-    # Temporary, authorized by the user on 2026-10-12: `unsafe-libyaml` is
-    # unmaintained (informational, no fixed version), reached through
-    # `serde_yaml` / `serde_yaml_ng`. The planned move to `serde_norway`
-    # (plan authoring:serde-yaml-replacement) removes this entry.
-    "RUSTSEC-2024-0449",
-]
+ignore = []
 
 [licenses]
 # Permissive licenses compatible with this MIT-licensed binary. Adding a
@@ -58,7 +52,18 @@ wildcards = "deny"
 # still refused; this narrows to `{ path = ... }`.
 allow-wildcard-paths = true
 allow = []
-deny = []
+# The libyaml translations and every serde front end over one, all unmaintained under
+# RUSTSEC-2024-0449. YAML here is read and written through serde-saphyr; a crate that
+# brings one of these back into the graph turns `cargo deny check bans` red.
+deny = [
+    { crate = "serde_yaml", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "serde_yaml_ng", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "serde_norway", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "serde_yml", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "unsafe-libyaml", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "unsafe-libyaml-norway", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+    { crate = "libyml", reason = "RUSTSEC-2024-0449: a serde front end or a translation of libyaml (`unsafe-libyaml`), unmaintained; YAML goes through serde-saphyr" },
+]
 skip = []
 skip-tree = []
 

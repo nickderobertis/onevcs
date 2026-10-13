@@ -1,0 +1,6 @@
+# One rule laid over the host's rules file, the way a private overlay adds a repository.
+version: 3
+rules:
+  - match: {host: github.com, owner: sample-owner, name: openwidget}
+    publication: change-auto
+    approvals: none

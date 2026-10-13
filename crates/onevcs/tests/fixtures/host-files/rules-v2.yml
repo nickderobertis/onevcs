@@ -1,0 +1,219 @@
+# A sanitized copy of a real host file: each private repository's owner and name,
+# and the user name, is a placeholder of the same shape; every other byte is as the host had it.
+# How each repository on this host publishes a change, and what verifies it.
+#
+# `onevcs` reads this file from `$ONEVCS_HOME/rules.yml` (`~/.onevcs/rules.yml` by
+# default); `just repos-apply` installs this tracked copy there. Editing *this*
+# file and re-running that recipe is how routing changes — there is no command that
+# writes a policy, and `onevcs rules check <repo>` reports which rule a repository
+# matched and the policy that followed.
+#
+# First match wins, and every rule here names one repository outright. A repository
+# no rule matches falls through to `default:`, which is the reviewed path — so
+# forgetting a rule costs a pull request nobody asked for rather than a direct merge
+# nobody reviewed. `just repos-apply` fails on any registered checkout that lands
+# there, because the default is safe but is not this host's policy for any of them.
+#
+# The three fields carry what the pre-adoption registry held per identity:
+#
+# | pre-adoption                        | here                       |
+# | ----------------------------------- | -------------------------- |
+# | `workflow: local`, strategy direct  | `publication: local-direct` |
+# | `workflow: remote`, strategy auto   | `publication: change-auto`  |
+# | `workflow: remote`, strategy none   | `publication: change-open`  |
+# | `repo_type: single-owner`           | `approvals: none`           |
+# | `repo_type: team`                   | `approvals: required`       |
+# | `gate: "<command>"`                 | `gate: {command: [...]}`    |
+#
+# `tests/e2e/test_repo_registry_apply_e2e.py` holds every row of that mapping against
+# `tests/fixtures/pre-adoption-repos.json`, so a rule edited to disagree with the
+# registry this host was migrated from fails the gate rather than changing a merge
+# path quietly.
+#
+# A `command:` gate is argv this crate runs directly — no shell, and no `{base}`
+# substitution. The comparison identity arrives as `ONEVCS_COMPARISON_REMOTE` and
+# `ONEVCS_COMPARISON_BASE` instead, which is why every gate that reads a base ref is
+# spelled `bash -c` here: the shell is what reads them.
+#
+# A gate must run every tier the repository's own merge path requires, not merely
+# the tier its `check` recipe happens to reach. Most of these repositories keep the
+# judged llmlint tier deliberately *outside* `check` and require it as a separate
+# status check on the pull request, so a gate naming `check` alone verifies a branch
+# that cannot merge — which is exactly what happened to
+# `nick-derobertis-site`'s PR #77. `config/merge-path-checks.json` is where each
+# identity's required checks are recorded against the command this gate runs for
+# them, `tests/e2e/test_repo_registry_apply_e2e.py` holds these gates to it, and
+# `just repos --audit-gate-coverage` reports the ones no gate here runs.
+#
+# So every gate below is the command its repository already verifies with, and
+# nothing wraps one. Nine of them used to run their argv through
+# `env NEXTEST_STATUS_LEVEL=fail`, which was a workaround rather than policy: an
+# `onevcs` before 0.2.10 read a gate child's stdout to EOF before it read stderr, so
+# a gate writing more than one 64 KiB pipe buffer to stderr filled it, wedged, and
+# was reported as a rejected gate — this host had `oneharness`'s gate cut off
+# mid-suite twice at just over 65,000 bytes of cargo-nextest status lines, failing
+# complete work. `onevcs` 0.2.10 drains both pipes concurrently and this host is past
+# it (`config/onevcs.version`), so the silencing is gone and a loud gate is judged by
+# its own exit status with every line delivered. Do not reintroduce a wrapper here;
+# `tests/e2e/test_repo_registry_apply_e2e.py` holds every rule to carrying none.
+version: 2
+
+# The prefix every provenance trailer key on a preserved branch is spelled under.
+# `onevcs` writes `Onevcs-` when nothing configures one, but every branch this host
+# has preserved — and every recovery attestation already on a base branch here —
+# carries `Orchestrator-`, which is the spelling `AGENTS.md` documents. A marker
+# written under a prefix the host is not configured with is neither read nor
+# ignored: it is reported as unrecognized and refused publication, so leaving this
+# unset strands every preserved branch that predates the adoption.
+trailer_prefix: Orchestrator-
+
+rules:
+  # This repository's own publication path: merged in the local checkout and
+  # pushed, never through a pull request. `local-direct` is the only policy here
+  # that opens no change request, so it is the one to be most careful editing.
+  - match: {host: github.com, owner: nickderobertis, name: ai-orchestrator}
+    publication: local-direct
+    approvals: none
+    gate: {command: ["just", "gate"]}
+
+  # `just check` is the whole deterministic bar here; the judged tier has no `gate`
+  # recipe to hide in, so this names it directly the way `dero-skills` does.
+  - match: {host: github.com, owner: nickderobertis, name: crozier}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just check && just lint-llm-diff "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  # The shape every gate above copies: the deterministic bar, then the judged tier
+  # against the resolved comparison base.
+  - match: {host: github.com, owner: nickderobertis, name: dero-skills}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just check && just lint-llm-diff "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  # Its base branch is `master`, so that is what the comparison falls back to when a
+  # manual run supplies no identity. `just gate` there is `just check`, and the
+  # judged tier is a separate required check on the pull request — the omission that
+  # let PR #77 pass this gate and be refused by the merge path.
+  - match: {host: github.com, owner: nickderobertis, name: nick-derobertis-site}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - base="${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-master}"; export NX_BASE="$base"; just bootstrap && just gate && just lint-llm-diff "$base"
+
+  # The one repository here whose merge path does *not* require its own judged tier:
+  # `llmlint` runs that job on every pull request but has never made it a required
+  # check, so naming it in this gate would verify something that cannot refuse the
+  # merge. What its required `gate` check does run beyond `just check` is
+  # `check-version-bump`, which is why that is named here.
+  - match: {host: github.com, owner: nickderobertis, name: llmlint}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just check && just check-version-bump "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  # `just gate` is `check` plus the judged tier in each of the four Nx-workspace
+  # engines below, and it takes the base to judge against as its one argument.
+  - match: {host: github.com, owner: nickderobertis, name: oneagentgraph}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just gate "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  # Already whole: `just gate` here is `check` plus `deps-check`, `package-crates`,
+  # `semver-check`, and the judged tier, and it derives its own comparison base from
+  # the environment.
+  - match: {host: github.com, owner: nickderobertis, name: oneharness}
+    publication: change-auto
+    approvals: none
+    gate: {command: ["just", "gate"]}
+
+  # Its `gate` recipe dispatches to `check-affected`, which refuses anything but a
+  # resolved commit SHA pair — so the ref is resolved here rather than handed to Nx
+  # raw, which is also what brings the repository's own `supply-chain` step, and the
+  # rest of its bar, back inside this gate.
+  - match: {host: github.com, owner: nickderobertis, name: oneharness-ui}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - base="${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"; NX_BASE="$(git rev-parse "$base")" NX_HEAD=HEAD just gate && just lint-llm-diff "$base"
+
+  - match: {host: github.com, owner: nickderobertis, name: onejudge}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just check && just lint-llm-diff "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just gate "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline-ui}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just gate "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    publication: change-auto
+    approvals: none
+    gate:
+      command:
+        - bash
+        - -c
+        - just gate "${ONEVCS_COMPARISON_REMOTE:-origin}/${ONEVCS_COMPARISON_BASE:-main}"
+
+  # Already whole for a different reason: `just gate` is `just check`, and the only
+  # required check on this merge path that judges the tree is the Linux `check` job
+  # that runs it. Its judged tier, like `llmlint`'s, is not a required check.
+  - match: {host: github.com, owner: nickderobertis, name: screencomp}
+    publication: change-auto
+    approvals: none
+    gate: {command: ["just", "gate"]}
+
+  # The one team repository on this host. `change-open` leaves an ordinary
+  # ready-for-review pull request and `approvals: required` is what keeps somebody
+  # else in the path; re-registering it as either of the rows above is how a direct
+  # merge happens where a review was intended.
+  - match: {host: github.com, owner: team-org, name: team-repo-c}
+    publication: change-open
+    approvals: required
+    gate: {command: ["just", "check"]}
+
+# The policy for a repository no rule above names: reviewed, approved, and verified
+# by the host's own required checks. This is `onevcs`'s own built-in default,
+# restated so that reading this file tells you what an unlisted repository gets.
+default:
+  publication: change-open
+  approvals: required
+  gate: {kind: checks}

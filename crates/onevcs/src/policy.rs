@@ -19,7 +19,7 @@ use crate::rules::{
     RulesFile, WaitSeconds,
 };
 use crate::store::{Normalized, Resolution};
-use crate::{home, ids};
+use crate::{home, ids, yaml};
 
 /// The version of the rules file this build writes, and the newest it has an
 /// opinion about.
@@ -380,19 +380,27 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
 /// it declares, the keys that version has, the shape, and the combinations no policy
 /// can honour. `path` is what a refusal names the document by.
 pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
+    let file = read(path, raw)?;
+    validate(path, &file)?;
+    Ok(file)
+}
+
+/// One rules document's text read as the shape its version has, before the
+/// combinations no policy can honour are refused.
+pub(crate) fn read(path: &Path, raw: &str) -> Result<RulesFile> {
     let path = path.to_path_buf();
-    let malformed = |e: serde_yaml_ng::Error| Error::Invalid {
+    let malformed = |e: serde_saphyr::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
     };
-    // The declared version decides whether a `gate:` is a spent key this build drops
-    // or a stray one it refuses, and that has to be settled before the shape is
-    // enforced: `deny_unknown_fields` gets no say in which version it is reading.
-    let mut document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
+    // The declared version decides whether a `gate:` is a spent key this build passes
+    // over or a stray one it refuses, and that has to be settled before the shape is
+    // read: the shape gets no say in which version it is reading.
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a file may carry is a fact about the version it declares, so a
     // version this build does not read has to be answered as that rather than as
     // whichever of its keys this build happened not to recognize.
-    if let Some(declared) = declared_version(&document) {
+    if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(OLDEST_VERSION) {
             return Err(Error::Invalid {
                 reason: format!(
@@ -403,7 +411,7 @@ pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
             });
         }
         if declared < u64::from(GATE_REMOVED_VERSION) {
-            report_spent_gate(&path, drop_gate(&mut document));
+            report_spent_gate(&path, spent_gates(&document));
         } else {
             refuse_removed_gate(&path, &document)?;
         }
@@ -411,35 +419,23 @@ pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
     refuse_malformed_drafts(&path, &document)?;
     refuse_malformed_base_merge(&path, &document)?;
     refuse_malformed_checks(&path, &document)?;
-    let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    validate(&path, &file)?;
-    Ok(file)
+    yaml::from_str(raw).map_err(malformed)
 }
 
-/// The version a document declares, before anything about its shape is enforced.
-fn declared_version(document: &serde_yaml_ng::Value) -> Option<u64> {
-    document.get("version")?.as_u64()
-}
-
-/// Drop every `gate:` a pre-`3` document carries, and say how many there were.
+/// How many `gate:` keys a pre-`3` document carries where the schema put them.
 ///
-/// The key is spent rather than unknown, so it is taken out of the document before
-/// the shape refuses it. Nothing else is touched: a `gate:` nested anywhere this
-/// schema does not put one is left where it is and refused as the stray key it is.
-fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
-    let mut dropped = 0;
-    let mut take = |from: Option<&mut serde_yaml_ng::Value>| {
-        if let Some(serde_yaml_ng::Value::Mapping(fields)) = from {
-            dropped += usize::from(fields.remove("gate").is_some());
-        }
+/// The key is spent rather than unknown, and the shape passes over a key it does not
+/// have, so nothing is taken out of the document: the count is what the warning says.
+/// A `gate:` nested anywhere this schema does not put one is not counted.
+fn spent_gates(document: &serde_json::Value) -> usize {
+    let carries = |policy: Option<&serde_json::Value>| {
+        usize::from(policy.and_then(|policy| policy.get("gate")).is_some())
     };
-    take(document.get_mut("default"));
-    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get_mut("rules") {
-        for rule in rules {
-            take(Some(rule));
-        }
-    }
-    dropped
+    let rules = match document.get("rules") {
+        Some(serde_json::Value::Array(rules)) => rules.iter().map(|rule| carries(Some(rule))).sum(),
+        _ => 0,
+    };
+    carries(document.get("default")) + rules
 }
 
 /// Refuse, by name, a `gate:` at a version that no longer has one.
@@ -449,16 +445,16 @@ fn drop_gate(document: &mut serde_yaml_ng::Value) -> usize {
 /// a second verifier beside the repository's own merge path and threw its answer
 /// away, and a file still carrying one is asking for something version
 /// `GATE_REMOVED_VERSION` took away. It is looked for exactly where the schema used
-/// to put one, which is where `drop_gate` takes it from at the versions that still
-/// had it; a `gate:` anywhere else is a key like any other.
-fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
-    let named = |value: Option<&serde_yaml_ng::Value>, where_: String| match value {
-        Some(serde_yaml_ng::Value::Mapping(fields)) if fields.contains_key("gate") => Some(where_),
+/// to put one, which is where `spent_gates` counts it at the versions that still had
+/// it; a `gate:` anywhere else is a key like any other.
+fn refuse_removed_gate(path: &Path, document: &serde_json::Value) -> Result<()> {
+    let named = |value: Option<&serde_json::Value>, where_: String| match value {
+        Some(serde_json::Value::Object(fields)) if fields.contains_key("gate") => Some(where_),
         _ => None,
     };
     let found = named(document.get("default"), "default".to_owned()).or_else(|| {
         match document.get("rules") {
-            Some(serde_yaml_ng::Value::Sequence(rules)) => rules
+            Some(serde_json::Value::Array(rules)) => rules
                 .iter()
                 .enumerate()
                 .find_map(|(index, rule)| named(Some(rule), format!("rule {}", index + 1))),
@@ -489,57 +485,35 @@ fn refuse_removed_gate(path: &Path, document: &serde_yaml_ng::Value) -> Result<(
 /// own here, where the document still says which rule is which: the type stays the one
 /// statement of which keys there are, and an operator is told the rule and the key
 /// rather than that something somewhere "expected a boolean".
-fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
-    let mut found: Vec<(String, &serde_yaml_ng::Value)> = Vec::new();
-    if let Some(drafts) = document
-        .get("default")
-        .and_then(|policy| policy.get("drafts"))
-    {
-        found.push(("default".to_owned(), drafts));
-    }
-    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get("rules") {
-        for (index, rule) in rules.iter().enumerate() {
-            if let Some(drafts) = rule.get("drafts") {
-                found.push((format!("rule {}", index + 1), drafts));
-            }
-        }
-    }
+fn refuse_malformed_drafts(path: &Path, document: &serde_json::Value) -> Result<()> {
     let refused = |where_: &str, what: String| Error::Invalid {
         reason: format!(
             "the rules file at {} is malformed: {where_} drafts: {what}",
             path.display()
         ),
     };
-    for (where_, drafts) in found {
-        let serde_yaml_ng::Value::Mapping(fields) = drafts else {
+    for (where_, drafts) in policy_keys(document, "drafts") {
+        let serde_json::Value::Object(fields) = drafts else {
             return Err(refused(&where_, "is not a mapping".to_owned()));
         };
         for (key, value) in fields {
-            let mut alone = serde_yaml_ng::Mapping::new();
-            alone.insert(key.clone(), value.clone());
-            let Err(said) =
-                serde_yaml_ng::from_value::<Drafts>(serde_yaml_ng::Value::Mapping(alone))
-            else {
-                continue;
-            };
-            let key = serde_yaml_ng::to_string(key)
-                .map(|spelled| spelled.trim().to_owned())
-                .unwrap_or_default();
-            // Every key the type has takes a boolean, so a boolean it refused is a key
-            // it does not have — and its own refusal lists the ones it does.
-            return Err(refused(
-                &where_,
-                if value.is_bool() {
-                    format!("names {key:?}, which it does not have: {said}")
-                } else {
+            // Every key the type has takes a boolean, so a key refused even a boolean is
+            // one it does not have — and its own refusal lists the ones it does.
+            if let Err(said) = alone::<Drafts>(key, &serde_json::Value::Bool(true)) {
+                return Err(refused(
+                    &where_,
+                    format!("names {key:?}, which it does not have: {said}"),
+                ));
+            }
+            if yaml::convert::<Drafts>(&single(key, value)).is_none() {
+                return Err(refused(
+                    &where_,
                     format!(
                         "{key} is {}, which is not a boolean; write true or false",
-                        serde_yaml_ng::to_string(value)
-                            .map(|spelled| spelled.trim().to_owned())
-                            .unwrap_or_default()
-                    )
-                },
-            ));
+                        spelled(value)
+                    ),
+                ));
+            }
         }
     }
     Ok(())
@@ -547,17 +521,22 @@ fn refuse_malformed_drafts(path: &Path, document: &serde_yaml_ng::Value) -> Resu
 
 /// Every place the schema puts a policy key — `default:` and each rule — with the
 /// value it holds there, named the way a refusal names it.
+///
+/// A key set to null is passed over: every one of them is optional, and the typed read
+/// takes an explicit null as the key being absent, so a walk that refused one would
+/// refuse a document the shape reads.
 fn policy_keys<'d>(
-    document: &'d serde_yaml_ng::Value,
+    document: &'d serde_json::Value,
     key: &str,
-) -> Vec<(String, &'d serde_yaml_ng::Value)> {
+) -> Vec<(String, &'d serde_json::Value)> {
+    let set = |policy: &'d serde_json::Value| policy.get(key).filter(|value| !value.is_null());
     let mut found = Vec::new();
-    if let Some(value) = document.get("default").and_then(|policy| policy.get(key)) {
+    if let Some(value) = document.get("default").and_then(set) {
         found.push(("default".to_owned(), value));
     }
-    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get("rules") {
+    if let Some(serde_json::Value::Array(rules)) = document.get("rules") {
         for (index, rule) in rules.iter().enumerate() {
-            if let Some(value) = rule.get(key) {
+            if let Some(value) = set(rule) {
                 found.push((format!("rule {}", index + 1), value));
             }
         }
@@ -566,18 +545,35 @@ fn policy_keys<'d>(
 }
 
 /// One YAML value as an operator wrote it, for a refusal to quote.
-fn spelled(value: &serde_yaml_ng::Value) -> String {
-    serde_yaml_ng::to_string(value)
+fn spelled(value: &serde_json::Value) -> String {
+    yaml::to_string(value)
         .map(|spelled| spelled.trim().to_owned())
         .unwrap_or_default()
+}
+
+/// One key of a policy mapping and its value, as a mapping with nothing beside it.
+fn single(key: &str, value: &serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([(
+        key.to_owned(),
+        value.clone(),
+    )]))
+}
+
+/// Whether `T` has `key`, asked with a value of the type that key holds: its refusal
+/// of anything else names the key and lists the ones it has.
+fn alone<T: serde::de::DeserializeOwned>(
+    key: &str,
+    value: &serde_json::Value,
+) -> serde_json::Result<T> {
+    serde_json::from_value(single(key, value))
 }
 
 /// Refuse, naming where it is, a `base_merge:` that is not one of its two values.
 ///
 /// The shape refuses it too, but in words that name neither the rule nor the key.
-fn refuse_malformed_base_merge(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+fn refuse_malformed_base_merge(path: &Path, document: &serde_json::Value) -> Result<()> {
     for (where_, value) in policy_keys(document, "base_merge") {
-        if serde_yaml_ng::from_value::<BaseMerge>(value.clone()).is_err() {
+        if yaml::convert::<BaseMerge>(value).is_none() {
             return Err(Error::Invalid {
                 reason: format!(
                     "the rules file at {} is malformed: {where_} base_merge: {} is not a base \
@@ -593,7 +589,7 @@ fn refuse_malformed_base_merge(path: &Path, document: &serde_yaml_ng::Value) -> 
 
 /// Refuse, naming the key and where it is, a `checks:` that is not a mapping of the
 /// keys [`Checks`] has, each holding a wait.
-fn refuse_malformed_checks(path: &Path, document: &serde_yaml_ng::Value) -> Result<()> {
+fn refuse_malformed_checks(path: &Path, document: &serde_json::Value) -> Result<()> {
     let refused = |where_: &str, what: String| Error::Invalid {
         reason: format!(
             "the rules file at {} is malformed: {where_} checks: {what}",
@@ -601,33 +597,29 @@ fn refuse_malformed_checks(path: &Path, document: &serde_yaml_ng::Value) -> Resu
         ),
     };
     for (where_, checks) in policy_keys(document, "checks") {
-        let serde_yaml_ng::Value::Mapping(fields) = checks else {
+        let serde_json::Value::Object(fields) = checks else {
             return Err(refused(&where_, "is not a mapping".to_owned()));
         };
         for (key, value) in fields {
-            let mut alone = serde_yaml_ng::Mapping::new();
-            alone.insert(key.clone(), value.clone());
-            let Err(said) =
-                serde_yaml_ng::from_value::<Checks>(serde_yaml_ng::Value::Mapping(alone))
-            else {
-                continue;
-            };
-            let key = spelled(key);
-            // The one key the type has takes a wait, so a key it refused is either one
-            // it does not have — its own refusal lists the ones it does — or that wait
-            // spelled as something no watch can run to.
-            return Err(refused(
-                &where_,
-                if key == "wait_seconds" {
+            // The one key the type has takes a wait, so a key refused even a wait is one
+            // it does not have — its own refusal lists the ones it does.
+            if let Err(said) = alone::<Checks>(key, &serde_json::Value::from(60)) {
+                return Err(refused(
+                    &where_,
+                    format!("names {key:?}, which it does not have: {said}"),
+                ));
+            }
+            // Otherwise the key is the wait, spelled as something no watch can run to.
+            if yaml::convert::<Checks>(&single(key, value)).is_none() {
+                return Err(refused(
+                    &where_,
                     format!(
-                        "wait_seconds is {}, which is not a wait; write {}",
+                        "{key} is {}, which is not a wait; write {}",
                         spelled(value),
                         WaitSeconds::RANGE
-                    )
-                } else {
-                    format!("names {key:?}, which it does not have: {said}")
-                },
-            ));
+                    ),
+                ));
+            }
         }
     }
     Ok(())

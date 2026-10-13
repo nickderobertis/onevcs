@@ -53,6 +53,14 @@ use onevcs::{
 };
 use serde_json::{json, Value};
 
+#[path = "../src/yaml/options.rs"]
+mod yaml_options;
+
+/// A YAML document read as `T` the way the crate reads its host files.
+fn yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_saphyr::Error> {
+    serde_saphyr::from_str_with_options(text, yaml_options::options())
+}
+
 /// The approved contract, read from the repository rather than embedded here.
 fn contract() -> String {
     let path = contract_path();
@@ -118,7 +126,7 @@ fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
         .expect("cargo metadata lists packages");
     for (name, version) in [
         ("onevcs", env!("CARGO_PKG_VERSION")),
-        ("onemessagebus", "0.9.0"),
+        ("onemessagebus", "0.9.1"),
     ] {
         let matches: Vec<_> = packages
             .iter()
@@ -744,16 +752,15 @@ fn the_contract_and_the_code_name_the_same_event_kinds() {
 /// on disk* is decided in this test; what a rules file carrying a gate actually does
 /// on this build is a journey, since it is a warning on stderr and a policy an
 /// operator reads back.
-fn without_gate(fixture: &str) -> serde_yaml_ng::Value {
-    let mut document: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(fixture).expect("a documented fixture is YAML");
-    let drop = |value: Option<&mut serde_yaml_ng::Value>| {
-        if let Some(serde_yaml_ng::Value::Mapping(fields)) = value {
+fn without_gate(fixture: &str) -> serde_json::Value {
+    let mut document: serde_json::Value = yaml(fixture).expect("a documented fixture is YAML");
+    let drop = |value: Option<&mut serde_json::Value>| {
+        if let Some(serde_json::Value::Object(fields)) = value {
             fields.remove("gate");
         }
     };
     drop(document.get_mut("default"));
-    if let Some(serde_yaml_ng::Value::Sequence(rules)) = document.get_mut("rules") {
+    if let Some(serde_json::Value::Array(rules)) = document.get_mut("rules") {
         for rule in rules {
             drop(Some(rule));
         }
@@ -763,7 +770,7 @@ fn without_gate(fixture: &str) -> serde_yaml_ng::Value {
 
 /// The same fixture as the shape this build reads.
 fn documented_rules(fixture: &str) -> RulesFile {
-    serde_yaml_ng::from_value(without_gate(fixture)).expect("a documented fixture deserializes")
+    serde_json::from_value(without_gate(fixture)).expect("a documented fixture deserializes")
 }
 
 #[test]
@@ -819,8 +826,7 @@ fn the_rules_fixture_round_trips() {
         }
     );
 
-    let round_tripped =
-        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
+    let round_tripped = serde_json::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
         round_tripped,
         without_gate(&fixture),
@@ -856,8 +862,7 @@ fn the_version_2_fixture_round_trips_with_the_prefix_the_amendment_documents() {
     assert_eq!(rules.rules, version_1.rules);
     assert_eq!(rules.default, version_1.default);
 
-    let round_tripped =
-        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
+    let round_tripped = serde_json::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
         round_tripped,
         without_gate(&fixture),
@@ -876,11 +881,10 @@ fn a_version_2_file_that_configures_no_prefix_omits_the_key_entirely() {
     assert_eq!(rules.version, 2);
     assert_eq!(rules.trailer_prefix, None);
 
-    let round_tripped =
-        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
+    let round_tripped = serde_json::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(round_tripped, without_gate(&unset));
     assert!(
-        !serde_yaml_ng::to_string(&rules)
+        !serde_saphyr::to_string(&rules)
             .expect("a rules file serializes")
             .contains(key.as_str()),
         "an unset prefix must be omitted, not written out"
@@ -890,8 +894,7 @@ fn a_version_2_file_that_configures_no_prefix_omits_the_key_entirely() {
 #[test]
 fn the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate() {
     let fixture = amendment_yaml_spelling("version: 3");
-    let rules: RulesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the version 3 fixture must deserialize");
+    let rules: RulesFile = yaml(&fixture).expect("the version 3 fixture must deserialize");
 
     assert_eq!(rules.version, 3);
     // The amendment says version 3 is the gate going away and nothing else, so
@@ -901,11 +904,10 @@ fn the_version_3_fixture_round_trips_and_is_the_approved_one_without_its_gate() 
     assert_eq!(rules.rules, approved.rules);
     assert_eq!(rules.default, approved.default);
 
-    let round_tripped =
-        serde_yaml_ng::to_value(&rules).expect("a rules file serializes back to YAML");
+    let round_tripped = serde_json::to_value(&rules).expect("a rules file serializes back to YAML");
     assert_eq!(
         round_tripped,
-        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&fixture).expect("the fixture is YAML"),
+        yaml::<serde_json::Value>(&fixture).expect("the fixture is YAML"),
         "the version 3 rules file lost or added a field"
     );
 }
@@ -920,12 +922,11 @@ fn a_rules_file_that_still_names_a_gate_is_no_shape_this_type_holds() {
     // that a version 3 file naming one is refused **by name** is
     // `a_rules_file_that_still_names_a_gate_is_read_at_the_versions_that_had_one_and_refused_at_three`
     // in tests/e2e/registry.rs, over the real binary.
-    let read: RulesFile = serde_yaml_ng::from_str(&block("yaml")).expect(
+    let read: RulesFile = yaml(&block("yaml")).expect(
         "the approved fixture names a gate, and a key this type has no opinion on is not \
                  a reason to refuse a whole document",
     );
-    let round_tripped =
-        serde_yaml_ng::to_value(&read).expect("a rules file serializes back to YAML");
+    let round_tripped = serde_json::to_value(&read).expect("a rules file serializes back to YAML");
     assert_eq!(
         round_tripped,
         without_gate(&block("yaml")),
@@ -954,12 +955,12 @@ fn a_malformed_rules_file_is_rejected_at_the_boundary() {
         "version: 3\nrules: []\npublication: change-open\ndefault: {publication: change-open, approvals: required}\n",
         "version: 3\nrules: [{match: {hostname: github.com}}]\ndefault: {publication: change-open, approvals: required}\n",
     ] {
-        serde_yaml_ng::from_str::<RulesFile>(tolerated)
+        yaml::<RulesFile>(tolerated)
             .expect("a key this build has no opinion on is read past, not refused");
     }
     for case in cases {
         assert!(
-            serde_yaml_ng::from_str::<RulesFile>(case).is_err(),
+            yaml::<RulesFile>(case).is_err(),
             "this must be rejected:\n{case}"
         );
     }
@@ -998,8 +999,7 @@ fn the_release_targets_fixture_round_trips_and_keeps_the_style_that_shapes_it() 
     // fixture: the document an operator is shown and the type that reads it cannot
     // drift, because editing one without the other fails this.
     let fixture = documented_releases();
-    let file: ReleasesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the documented fixture must deserialize");
+    let file: ReleasesFile = yaml(&fixture).expect("the documented fixture must deserialize");
     assert_eq!(file.version, 1);
     assert_eq!(file.default.adoption, Adoption::Fast);
     let rule = &file.repositories[0];
@@ -1062,8 +1062,8 @@ fn the_release_targets_fixture_round_trips_and_keeps_the_style_that_shapes_it() 
     );
 
     // And it round-trips: what this build writes is the document it read.
-    let written = serde_yaml_ng::to_string(&file).expect("a releases file serializes");
-    let reread: ReleasesFile = serde_yaml_ng::from_str(&written).expect("what it writes it reads");
+    let written = serde_saphyr::to_string(&file).expect("a releases file serializes");
+    let reread: ReleasesFile = yaml(&written).expect("what it writes it reads");
     assert_eq!(reread, file);
 }
 
@@ -1083,7 +1083,7 @@ fn a_probe_bound_the_document_leaves_out_is_the_documented_default() {
         .expect("the sentence names the number")
         .parse()
         .expect("the documented default is a number");
-    let file: ReleasesFile = serde_yaml_ng::from_str(
+    let file: ReleasesFile = yaml(
         "version: 1\ndefault: {adoption: fast}\nrepositories:\n  - match: {name: onevcs}\n    \
          targets:\n      - {name: crate, style: automated, probe: {shell: 'echo 1'}}\n",
     )
@@ -1147,7 +1147,7 @@ fn a_target_whose_style_and_body_disagree_does_not_deserialize_and_the_refusal_n
             "",
         ]
         .join("\n");
-        let failure = serde_yaml_ng::from_str::<ReleasesFile>(&document)
+        let failure = yaml::<ReleasesFile>(&document)
             .err()
             .unwrap_or_else(|| panic!("{what} must not deserialize: {document}"))
             .to_string();
@@ -1832,8 +1832,7 @@ fn the_precedence_among_the_three_layers_is_stated_rather_than_left_to_read_orde
     // …and the rule that says a host does not consume what a repository declares is a
     // document an operator writes, so it is extracted and read rather than described.
     let fixture = amendment_yaml_spelling("declaration: ignore");
-    let file: ReleasesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the documented fixture must deserialize");
+    let file: ReleasesFile = yaml(&fixture).expect("the documented fixture must deserialize");
     assert_eq!(
         file.repositories[0].declaration,
         Some(DeclarationPolicy::Ignore),
@@ -1847,7 +1846,7 @@ fn the_precedence_among_the_three_layers_is_stated_rather_than_left_to_read_orde
     // The same document without the key is the merging default, which is what every
     // rule written before this amendment existed now means.
     let merging: ReleasesFile =
-        serde_yaml_ng::from_str(&fixture.replace("declaration: ignore", "adoption: published"))
+        yaml(&fixture.replace("declaration: ignore", "adoption: published"))
             .expect("a rule naming no policy still reads");
     assert_eq!(merging.repositories[0].declaration, None);
     assert_eq!(
@@ -4269,7 +4268,7 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
     // acts on either without ever being told it asked for something else. The same
     // posture the rules loader takes to a bound it cannot read.
     // Each refusal is `onemessagebus`'s, and each names what was wrong: the field, the
-    // value, or the position in the list that held it.
+    // value, or the line and column of the node that held it.
     let cases = [
         // A matcher field nobody declared, which is usually a typo for one that matters.
         ("include: [{kind: fetch}, {kinds: push}]", "`kinds`"),
@@ -4277,18 +4276,30 @@ fn a_filter_spec_the_grammar_does_not_name_is_refused_where_it_is_read() {
         // The label the envelope has and the grammar deliberately does not.
         ("include: [{round: 2}]", "`round`"),
         // A matcher that is not a mapping of fields.
-        ("include: [fetch]", "include[0]"),
-        ("exclude: [[{kind: fetch}]]", "exclude[0]"),
+        (
+            "include: [fetch]",
+            "expected mapping start at line 1, column 11",
+        ),
+        (
+            "exclude: [[{kind: fetch}]]",
+            "expected mapping start at line 1, column 11",
+        ),
         // A field compared as a string, given something that is not one.
         ("include: [{kind: 7}]", "kind: invalid type"),
         ("exclude: [{node: [service]}]", "expected a string"),
         // A list that is not one.
-        ("include: {kind: fetch}", "expected a sequence"),
+        (
+            "include: {kind: fetch}",
+            "expected sequence start at line 1, column 10",
+        ),
         // A matcher that would match everything, and one that could match nothing.
         ("include: [{}]", "naming no field"),
         ("include: [{kind: \"\"}]", "`kind` is empty"),
         // A document that is not a filter at all, and one naming neither list.
-        ("- {kind: fetch}", "expected struct Filter"),
+        (
+            "- {kind: fetch}",
+            "expected mapping start at line 1, column 1",
+        ),
         ("includes: [{kind: fetch}]", "`includes`"),
     ];
     for (spec, named) in cases {
@@ -4341,15 +4352,14 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
     let fixture = amendment_yaml_spelling("exclude:");
     let filter = EventFilter::parse(&fixture).expect("the grammar fixture parses");
 
-    let expected: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&fixture).expect("the fixture is YAML");
-    let round_tripped = serde_yaml_ng::to_value(&filter).expect("a filter serializes back to YAML");
+    let expected: serde_json::Value = yaml(&fixture).expect("the fixture is YAML");
+    let round_tripped = serde_json::to_value(&filter).expect("a filter serializes back to YAML");
     assert_eq!(
         round_tripped, expected,
         "the filter lost or added a field on its way back to the grammar"
     );
     assert_eq!(
-        serde_yaml_ng::from_value::<EventFilter>(round_tripped).expect("and reads back"),
+        serde_json::from_value::<EventFilter>(round_tripped).expect("and reads back"),
         filter,
         "what this crate writes is not what it reads"
     );
@@ -4381,7 +4391,7 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
         serde_json::to_value(&empty).expect("an empty filter serializes"),
         json!({})
     );
-    let written = serde_yaml_ng::to_string(&empty).expect("an empty filter serializes as YAML");
+    let written = serde_saphyr::to_string(&empty).expect("an empty filter serializes as YAML");
     assert!(
         !written.contains("include") && !written.contains("exclude"),
         "an empty filter wrote a list nobody set:\n{written}"
@@ -4407,7 +4417,7 @@ fn a_filter_round_trips_through_the_grammar_and_writes_only_what_was_set() {
     // which is what makes an unversioned document safe to hand between builds.
     assert!(
         !expected
-            .as_mapping()
+            .as_object()
             .expect("the fixture is a mapping")
             .contains_key("version"),
         "the grammar fixture names a version; the shared grammar has none"
@@ -4753,7 +4763,7 @@ fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_st
     // The `drafts:` fixture reads as the type declares, and a key it does not know is
     // refused by the type too.
     let fixture = amendment_yaml_spelling("drafts: {disabled: true}");
-    let file: RulesFile = serde_yaml_ng::from_str(&format!("version: 3\n{fixture}"))
+    let file: RulesFile = yaml(&format!("version: 3\n{fixture}"))
         .expect("the amendment's drafts fixture is a rules file at version 3");
     assert_eq!(
         file.default.drafts,
@@ -4770,15 +4780,14 @@ fn the_draft_lifecycle_amendment_declares_its_surface_and_every_check_has_one_st
         })
     );
     assert!(
-        serde_yaml_ng::from_str::<Drafts>("{disable: true}").is_err(),
+        yaml::<Drafts>("{disable: true}").is_err(),
         "an unknown key inside drafts is refused"
     );
     // A file naming no drafts writes none back.
-    let plain: RulesFile = serde_yaml_ng::from_str(
-        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
-    )
-    .expect("a plain rules file");
-    assert!(!serde_yaml_ng::to_string(&plain)
+    let plain: RulesFile =
+        yaml("version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n")
+            .expect("a plain rules file");
+    assert!(!serde_saphyr::to_string(&plain)
         .expect("it writes")
         .contains("drafts"));
 
@@ -5714,16 +5723,15 @@ const ARCHIVE_ACTION: &str = "taiki-e/upload-rust-binary-action";
 /// has to arrive already checked, or this only ever covers the three that
 /// happened to be there when it was written.
 fn archive_include_paths(workflow: &str) -> Vec<String> {
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
-    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    let doc: serde_json::Value = yaml(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_json::Value::as_object);
     let mut named = Vec::new();
-    for job in jobs.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
-        let steps = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence);
+    for job in jobs.into_iter().flat_map(serde_json::Map::values) {
+        let steps = job.get("steps").and_then(serde_json::Value::as_array);
         for step in steps.into_iter().flatten() {
             let uses = step
                 .get("uses")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             if !uses.starts_with(ARCHIVE_ACTION) {
                 continue;
@@ -5731,7 +5739,7 @@ fn archive_include_paths(workflow: &str) -> Vec<String> {
             let include = step
                 .get("with")
                 .and_then(|with| with.get("include"))
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             named.extend(
                 include
@@ -5968,48 +5976,43 @@ fn every_nextest_binary_filter_names_a_test_target_that_exists() {
 }
 
 /// One workflow file, parsed.
-fn workflow(relative: &str) -> serde_yaml_ng::Value {
-    serde_yaml_ng::from_str(&repo_file(relative))
-        .unwrap_or_else(|e| panic!("{relative} is not YAML: {e}"))
+fn workflow(relative: &str) -> serde_json::Value {
+    yaml(&repo_file(relative)).unwrap_or_else(|e| panic!("{relative} is not YAML: {e}"))
 }
 
 /// The events a parsed workflow runs on, whichever of the three shapes of `on:` it
 /// uses.
-fn workflow_events(doc: &serde_yaml_ng::Value) -> BTreeSet<String> {
+fn workflow_events(doc: &serde_json::Value) -> BTreeSet<String> {
     let on = doc.get("on").cloned().unwrap_or_default();
     match on {
-        serde_yaml_ng::Value::String(event) => BTreeSet::from([event]),
-        serde_yaml_ng::Value::Sequence(events) => events
+        serde_json::Value::String(event) => BTreeSet::from([event]),
+        serde_json::Value::Array(events) => events
             .iter()
-            .filter_map(serde_yaml_ng::Value::as_str)
+            .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect(),
-        serde_yaml_ng::Value::Mapping(events) => events
-            .keys()
-            .filter_map(serde_yaml_ng::Value::as_str)
-            .map(str::to_owned)
-            .collect(),
+        serde_json::Value::Object(events) => events.keys().cloned().collect(),
         _ => BTreeSet::new(),
     }
 }
 
 /// A workflow's jobs, by id.
-fn workflow_jobs(doc: &serde_yaml_ng::Value) -> BTreeMap<String, serde_yaml_ng::Value> {
+fn workflow_jobs(doc: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
     doc.get("jobs")
-        .and_then(serde_yaml_ng::Value::as_mapping)
+        .and_then(serde_json::Value::as_object)
         .expect("a workflow has jobs")
         .iter()
-        .filter_map(|(id, job)| Some((id.as_str()?.to_owned(), job.clone())))
+        .map(|(id, job)| (id.clone(), job.clone()))
         .collect()
 }
 
 /// The job ids one job `needs`.
-fn job_needs(job: &serde_yaml_ng::Value) -> BTreeSet<String> {
+fn job_needs(job: &serde_json::Value) -> BTreeSet<String> {
     match job.get("needs") {
-        Some(serde_yaml_ng::Value::String(need)) => BTreeSet::from([need.clone()]),
-        Some(serde_yaml_ng::Value::Sequence(needs)) => needs
+        Some(serde_json::Value::String(need)) => BTreeSet::from([need.clone()]),
+        Some(serde_json::Value::Array(needs)) => needs
             .iter()
-            .filter_map(serde_yaml_ng::Value::as_str)
+            .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect(),
         _ => BTreeSet::new(),
@@ -6018,16 +6021,16 @@ fn job_needs(job: &serde_yaml_ng::Value) -> BTreeSet<String> {
 
 /// The status-check contexts one job reports: its name, or for a matrix over
 /// `os`, its name with each leg's value — the way GitHub names them.
-fn job_contexts(id: &str, job: &serde_yaml_ng::Value) -> Vec<String> {
+fn job_contexts(id: &str, job: &serde_json::Value) -> Vec<String> {
     let name = job
         .get("name")
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .unwrap_or(id);
     let legs: Vec<String> = job
         .get("strategy")
         .and_then(|strategy| strategy.get("matrix"))
         .and_then(|matrix| matrix.get("os"))
-        .and_then(serde_yaml_ng::Value::as_sequence)
+        .and_then(serde_json::Value::as_array)
         .map(|legs| {
             legs.iter()
                 .filter_map(|leg| leg.as_str().map(str::to_owned))
@@ -6072,7 +6075,7 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
     let filtered = ci
         .get("on")
         .and_then(|on| on.get("pull_request"))
-        .and_then(serde_yaml_ng::Value::as_mapping)
+        .and_then(serde_json::Value::as_object)
         .is_some_and(|trigger| {
             trigger.contains_key("paths") || trigger.contains_key("paths-ignore")
         });
@@ -6099,7 +6102,7 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
         let job = &jobs[id];
         let condition = job
             .get("if")
-            .and_then(serde_yaml_ng::Value::as_str)
+            .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         assert!(
             !condition.contains("tier"),
@@ -6167,10 +6170,10 @@ fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_for
     );
     let permissions: BTreeMap<String, String> = doc
         .get("permissions")
-        .and_then(serde_yaml_ng::Value::as_mapping)
+        .and_then(serde_json::Value::as_object)
         .expect("notignored.yml declares its permissions")
         .iter()
-        .filter_map(|(scope, grant)| Some((scope.as_str()?.to_owned(), grant.as_str()?.to_owned())))
+        .filter_map(|(scope, grant)| Some((scope.clone(), grant.as_str()?.to_owned())))
         .collect();
     assert_eq!(
         permissions,
@@ -6185,17 +6188,17 @@ fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_for
         .get("suppressions")
         .unwrap_or_else(|| panic!("{file} has no `suppressions` job"));
     assert_eq!(
-        job.get("if").and_then(serde_yaml_ng::Value::as_str),
+        job.get("if").and_then(serde_json::Value::as_str),
         Some("github.event.pull_request.head.repo.full_name == github.repository"),
         "{file} no longer skips a fork's pull request"
     );
     let steps = job
         .get("steps")
-        .and_then(serde_yaml_ng::Value::as_sequence)
+        .and_then(serde_json::Value::as_array)
         .expect("the suppressions job has steps");
     assert!(
         steps.iter().any(|step| {
-            step.get("uses").and_then(serde_yaml_ng::Value::as_str)
+            step.get("uses").and_then(serde_json::Value::as_str)
                 == Some("nickderobertis/notignored@v0")
         }),
         "{file} no longer runs nickderobertis/notignored@v0"
@@ -6204,12 +6207,12 @@ fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_for
     assert!(
         steps.iter().any(|step| {
             step.get("uses")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .is_some_and(|action| action.starts_with("actions/checkout@"))
                 && step
                     .get("with")
                     .and_then(|with| with.get("fetch-depth"))
-                    .and_then(serde_yaml_ng::Value::as_i64)
+                    .and_then(serde_json::Value::as_i64)
                     == Some(0)
         }),
         "{file} checks out shallow, so the scan has no base branch to diff against"
@@ -6282,12 +6285,12 @@ fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
     let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
     let runs: Vec<String> = job
         .get("steps")
-        .and_then(serde_yaml_ng::Value::as_sequence)
+        .and_then(serde_json::Value::as_array)
         .expect("the smoke job has steps")
         .iter()
         .map(|step| {
             step.get("run")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned()
         })
@@ -6304,7 +6307,7 @@ fn the_live_tier_runs_in_its_own_workflow_through_its_one_entry_point() {
     let token = job
         .get("env")
         .and_then(|env| env.get("GH_TOKEN"))
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .expect("the smoke job takes its credential as GH_TOKEN");
     assert!(
         token.contains("secrets.RELEASE_PLZ_TOKEN"),
@@ -6340,19 +6343,19 @@ fn smoke_repo_key() -> String {
 
 /// Every string a workflow step hands to its runner as a value: its `run`, and each
 /// value under its `env` and its `with`. Not its `uses`, which names an action.
-fn step_values(step: &serde_yaml_ng::Value) -> Vec<String> {
+fn step_values(step: &serde_json::Value) -> Vec<String> {
     let mut values: Vec<String> = step
         .get("run")
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .into_iter()
         .collect();
     for key in ["env", "with"] {
-        let mapping = step.get(key).and_then(serde_yaml_ng::Value::as_mapping);
-        for value in mapping.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
+        let mapping = step.get(key).and_then(serde_json::Value::as_object);
+        for value in mapping.into_iter().flat_map(serde_json::Map::values) {
             match value {
-                serde_yaml_ng::Value::String(text) => values.push(text.clone()),
-                other => values.push(serde_yaml_ng::to_string(other).unwrap_or_default()),
+                serde_json::Value::String(text) => values.push(text.clone()),
+                other => values.push(serde_saphyr::to_string(other).unwrap_or_default()),
             }
         }
     }
@@ -6395,20 +6398,20 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
     let job = jobs.get("smoke").expect("smoke.yml has a `smoke` job");
     let steps = job
         .get("steps")
-        .and_then(serde_yaml_ng::Value::as_sequence)
+        .and_then(serde_json::Value::as_array)
         .expect("the smoke job has steps");
     let entry = steps
         .iter()
         .find(|step| {
             step.get("run")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .is_some_and(|run| run.trim() == "just smoke-real")
         })
         .expect("the smoke job no longer runs `just smoke-real`");
     let mapped = entry
         .get("env")
         .and_then(|env| env.get(key.as_str()))
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     assert_eq!(
         mapped.replace(' ', ""),
@@ -6422,15 +6425,13 @@ fn the_live_tier_reads_its_scratch_repository_from_a_secret_and_names_none() {
     for (id, job) in &jobs {
         let mut values: Vec<String> = Vec::new();
         if let Some(env) = job.get("env") {
-            values.extend(step_values(&serde_yaml_ng::Value::Mapping(
-                [(serde_yaml_ng::Value::from("env"), env.clone())]
-                    .into_iter()
-                    .collect(),
+            values.extend(step_values(&serde_json::Value::Object(
+                [("env".to_owned(), env.clone())].into_iter().collect(),
             )));
         }
         for step in job
             .get("steps")
-            .and_then(serde_yaml_ng::Value::as_sequence)
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
         {
@@ -6522,16 +6523,15 @@ struct Publishes {
 /// Every `run:` script line in a workflow, so what a release job actually invokes
 /// can be read rather than guessed at.
 fn workflow_run_lines(workflow: &str) -> Vec<String> {
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
-    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    let doc: serde_json::Value = yaml(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_json::Value::as_object);
     let mut lines = Vec::new();
-    for job in jobs.into_iter().flat_map(serde_yaml_ng::Mapping::values) {
-        let steps = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence);
+    for job in jobs.into_iter().flat_map(serde_json::Map::values) {
+        let steps = job.get("steps").and_then(serde_json::Value::as_array);
         for step in steps.into_iter().flatten() {
             let run = step
                 .get("run")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             lines.extend(run.lines().map(|line| line.trim().to_owned()));
         }
@@ -6541,14 +6541,13 @@ fn workflow_run_lines(workflow: &str) -> Vec<String> {
 
 /// Whether any step of this workflow `uses` the named action.
 fn workflow_uses(workflow: &str, action: &str) -> bool {
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
-    let jobs = doc.get("jobs").and_then(serde_yaml_ng::Value::as_mapping);
+    let doc: serde_json::Value = yaml(workflow).expect("a workflow file is YAML");
+    let jobs = doc.get("jobs").and_then(serde_json::Value::as_object);
     jobs.into_iter()
-        .flat_map(serde_yaml_ng::Mapping::values)
-        .filter_map(|job| job.get("steps").and_then(serde_yaml_ng::Value::as_sequence))
+        .flat_map(serde_json::Map::values)
+        .filter_map(|job| job.get("steps").and_then(serde_json::Value::as_array))
         .flatten()
-        .filter_map(|step| step.get("uses").and_then(serde_yaml_ng::Value::as_str))
+        .filter_map(|step| step.get("uses").and_then(serde_json::Value::as_str))
         .any(|uses| uses.starts_with(action))
 }
 
@@ -6860,15 +6859,14 @@ jobs:
     );
 }
 
-/// The `on:` block of a workflow, which YAML's own resolver would happily read as
-/// the boolean `true` — so both spellings are asked for, and a workflow whose
-/// triggers cannot be read stops this rather than passing with none.
-fn workflow_triggers(workflow: &str) -> serde_yaml_ng::Mapping {
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(workflow).expect("a workflow file is YAML");
+/// The `on:` block of a workflow, which a YAML 1.1 resolver would happily read as
+/// the boolean `true`, held as the key `"true"` — so both spellings are asked for, and
+/// a workflow whose triggers cannot be read stops this rather than passing with none.
+fn workflow_triggers(workflow: &str) -> serde_json::Map<String, serde_json::Value> {
+    let doc: serde_json::Value = yaml(workflow).expect("a workflow file is YAML");
     doc.get("on")
-        .or_else(|| doc.get(serde_yaml_ng::Value::Bool(true)))
-        .and_then(serde_yaml_ng::Value::as_mapping)
+        .or_else(|| doc.get("true"))
+        .and_then(serde_json::Value::as_object)
         .cloned()
         .expect("a workflow declares what triggers it")
 }
@@ -6892,23 +6890,17 @@ fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it
 
     // The release workflow is named rather than spelled, so renaming it fails here
     // instead of leaving a `workflow_run` that matches nothing and never fires.
-    let release: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&repo_file(".github/workflows/release.yml"))
-            .expect("a workflow file is YAML");
+    let release: serde_json::Value =
+        yaml(&repo_file(".github/workflows/release.yml")).expect("a workflow file is YAML");
     let release_name = release
         .get("name")
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .expect("the release workflow names itself");
     let watched: Vec<&str> = triggers
         .get("workflow_run")
         .and_then(|on| on.get("workflows"))
-        .and_then(serde_yaml_ng::Value::as_sequence)
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(serde_yaml_ng::Value::as_str)
-                .collect()
-        })
+        .and_then(serde_json::Value::as_array)
+        .map(|names| names.iter().filter_map(serde_json::Value::as_str).collect())
         .expect("the published smoke runs when a workflow completes");
     assert!(
         watched.contains(&release_name),
@@ -6935,28 +6927,27 @@ fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it
     // The reporting job: it exists, it checks this repository out so the script it
     // runs is in its workspace, it may write issues, and it waits on every other
     // job — a smoke leg added without being reported is a leg that fails unheard.
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&workflow).expect("a workflow file is YAML");
+    let doc: serde_json::Value = yaml(&workflow).expect("a workflow file is YAML");
     let jobs = doc
         .get("jobs")
-        .and_then(serde_yaml_ng::Value::as_mapping)
+        .and_then(serde_json::Value::as_object)
         .expect("a workflow has jobs");
     const REPORTER: &str = "scripts/report-workflow-failure.sh";
     let (name, job) = jobs
         .iter()
         .find(|(_, job)| {
             job.get("steps")
-                .and_then(serde_yaml_ng::Value::as_sequence)
+                .and_then(serde_json::Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(|step| step.get("run").and_then(serde_yaml_ng::Value::as_str))
+                .filter_map(|step| step.get("run").and_then(serde_json::Value::as_str))
                 .any(|run| run.contains(REPORTER))
         })
         .expect(
             "no job of the published smoke runs the reporter, so a failure would \
              announce itself nowhere",
         );
-    let name = name.as_str().expect("a job's key is its name").to_owned();
+    let name = name.clone();
 
     assert!(
         repo_root().join(REPORTER).is_file(),
@@ -6964,10 +6955,10 @@ fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it
     );
     assert!(
         job.get("steps")
-            .and_then(serde_yaml_ng::Value::as_sequence)
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|step| step.get("uses").and_then(serde_yaml_ng::Value::as_str))
+            .filter_map(|step| step.get("uses").and_then(serde_json::Value::as_str))
             .any(|uses| uses.starts_with("actions/checkout")),
         "the `{name}` job runs a committed script without checking the repository \
          out, so its workspace holds no such file"
@@ -6975,24 +6966,19 @@ fn the_published_smoke_asks_when_the_answer_can_have_changed_and_reports_when_it
     assert_eq!(
         job.get("permissions")
             .and_then(|permissions| permissions.get("issues"))
-            .and_then(serde_yaml_ng::Value::as_str),
+            .and_then(serde_json::Value::as_str),
         Some("write"),
         "the `{name}` job cannot open an issue without being granted one — the \
          workflow's default is `permissions: {{}}`"
     );
     let needs: Vec<&str> = job
         .get("needs")
-        .and_then(serde_yaml_ng::Value::as_sequence)
-        .map(|needs| {
-            needs
-                .iter()
-                .filter_map(serde_yaml_ng::Value::as_str)
-                .collect()
-        })
+        .and_then(serde_json::Value::as_array)
+        .map(|needs| needs.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default();
     let unreported: Vec<&str> = jobs
         .keys()
-        .filter_map(serde_yaml_ng::Value::as_str)
+        .map(String::as_str)
         .filter(|job| *job != name && !needs.contains(job))
         .collect();
     assert!(
@@ -7010,8 +6996,7 @@ fn documented_workspaces() -> String {
 #[test]
 fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaults() {
     let fixture = documented_workspaces();
-    let file: WorkspacesFile =
-        serde_yaml_ng::from_str(&fixture).expect("the contract's workspaces file parses");
+    let file: WorkspacesFile = yaml(&fixture).expect("the contract's workspaces file parses");
     assert_eq!(file.version, onevcs::workspaces::VERSION);
     assert_eq!(
         file.default,
@@ -7060,9 +7045,8 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
     // and the one a consumer reads by name.
     assert_eq!(maintain.command.program, "scripts/maintain-slot.sh");
     assert_eq!(maintain.command.args, ["--flag"]);
-    let direct: MaintenanceCommand =
-        serde_yaml_ng::from_str("[\"scripts/maintain-slot.sh\", \"--flag\"]")
-            .expect("a command deserializes from the sequence a document spells");
+    let direct: MaintenanceCommand = yaml("[\"scripts/maintain-slot.sh\", \"--flag\"]")
+        .expect("a command deserializes from the sequence a document spells");
     assert_eq!(
         direct.program, "scripts/maintain-slot.sh",
         "the first element is the program"
@@ -7073,22 +7057,22 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
         "and the remaining elements are its arguments, none of them dropped"
     );
     assert_eq!(
-        serde_yaml_ng::to_value(&direct).expect("it serializes"),
-        serde_yaml_ng::Value::Sequence(
+        serde_json::to_value(&direct).expect("it serializes"),
+        serde_json::Value::Array(
             ["scripts/maintain-slot.sh", "--flag"]
                 .into_iter()
-                .map(serde_yaml_ng::Value::from)
+                .map(serde_json::Value::from)
                 .collect()
         ),
         "and serializing reconstructs [program, ...args]"
     );
     let single: MaintenanceCommand =
-        serde_yaml_ng::from_str("[\"make\"]").expect("a program with no arguments is a command");
+        yaml("[\"make\"]").expect("a program with no arguments is a command");
     assert_eq!(single.program, "make");
     assert!(single.args.is_empty(), "no arguments is no arguments");
     // A sequence that is not empty and still names nothing to spawn is the same
     // absence spelled a second way, and is refused at the same boundary.
-    let nameless = serde_yaml_ng::from_str::<MaintenanceCommand>("[\"\", \"--all\"]")
+    let nameless = yaml::<MaintenanceCommand>("[\"\", \"--all\"]")
         .expect_err("an empty program is nothing to spawn");
     assert!(
         nameless.to_string().contains(
@@ -7096,8 +7080,8 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
         ),
         "the refusal names the key: {nameless}"
     );
-    let empty_argument: MaintenanceCommand = serde_yaml_ng::from_str("[\"make\", \"\"]")
-        .expect("a program is entitled to an empty argument");
+    let empty_argument: MaintenanceCommand =
+        yaml("[\"make\", \"\"]").expect("a program is entitled to an empty argument");
     assert_eq!(
         empty_argument.args,
         [""],
@@ -7111,28 +7095,25 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
 
     // Round trip: what this build writes is what it read, with the absent keys
     // written as the values the amendment says they default to.
-    let written = serde_yaml_ng::to_string(&file).expect("it serializes");
-    let reread: WorkspacesFile = serde_yaml_ng::from_str(&written).expect("it reads back");
+    let written = serde_saphyr::to_string(&file).expect("it serializes");
+    let reread: WorkspacesFile = yaml(&written).expect("it reads back");
     assert_eq!(reread, file);
-    let as_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&written).expect("YAML");
+    let as_value: serde_json::Value = yaml(&written).expect("YAML");
     assert_eq!(
         as_value["default"]["overflow"],
-        serde_yaml_ng::Value::from("unlimited")
+        serde_json::Value::from("unlimited")
     );
-    assert_eq!(
-        as_value["rules"][0]["overflow"],
-        serde_yaml_ng::Value::from(4)
-    );
+    assert_eq!(as_value["rules"][0]["overflow"], serde_json::Value::from(4));
     assert_eq!(
         as_value["rules"][0]["maintain"]["timeout"],
-        serde_yaml_ng::Value::from("30m")
+        serde_json::Value::from("30m")
     );
     assert_eq!(
         as_value["rules"][0]["maintain"]["command"],
-        serde_yaml_ng::Value::Sequence(
+        serde_json::Value::Array(
             ["scripts/maintain-slot.sh", "--flag"]
                 .into_iter()
-                .map(serde_yaml_ng::Value::from)
+                .map(serde_json::Value::from)
                 .collect()
         ),
         "a command is written back as the sequence the host wrote"
@@ -7140,10 +7121,8 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
 
     // An argv with nothing to spawn is refused where the document is read, naming the
     // key the operator edits, rather than reaching a policy that resolves to it.
-    let empty = serde_yaml_ng::from_str::<WorkspacesFile>(
-        "version: 1\ndefault: {maintain: {command: []}}\n",
-    )
-    .expect_err("an empty command is not a command");
+    let empty = yaml::<WorkspacesFile>("version: 1\ndefault: {maintain: {command: []}}\n")
+        .expect_err("an empty command is not a command");
     assert!(
         empty.to_string().contains(
             "maintain.command is an empty list: name the program to run and its arguments"
@@ -7151,24 +7130,21 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
         "the refusal names the key: {empty}"
     );
     assert!(
-        serde_yaml_ng::from_str::<WorkspacesFile>(
-            "version: 1\ndefault: {maintain: {command: [\"\"]}}\n",
-        )
-        .expect_err("nor is a document naming an empty program")
-        .to_string()
-        .contains("maintain.command names an empty program"),
+        yaml::<WorkspacesFile>("version: 1\ndefault: {maintain: {command: [\"\"]}}\n",)
+            .expect_err("nor is a document naming an empty program")
+            .to_string()
+            .contains("maintain.command names an empty program"),
         "a document naming an empty program is refused where it is read"
     );
 
     // A document with only a version is the shipped default whole: every rule
     // field is optional and so is `default:` itself.
-    let bare: WorkspacesFile = serde_yaml_ng::from_str("version: 1\n").expect("a bare file");
+    let bare: WorkspacesFile = yaml("version: 1\n").expect("a bare file");
     assert_eq!(bare.default, WorkspaceDefault::default());
     assert!(bare.rules.is_empty());
-    let unset: WorkspacesFile = serde_yaml_ng::from_str(
-        "version: 1\nrules:\n  - match: {name: x}\n    maintain: {command: [make, clean]}\n",
-    )
-    .expect("a maintenance with no timeout");
+    let unset: WorkspacesFile =
+        yaml("version: 1\nrules:\n  - match: {name: x}\n    maintain: {command: [make, clean]}\n")
+            .expect("a maintenance with no timeout");
     assert_eq!(
         unset.rules[0]
             .maintain
@@ -7972,7 +7948,7 @@ fn documented_branches() -> String {
 #[test]
 fn the_branch_prefix_fixture_parses_and_an_absent_key_is_the_shipped_default() {
     let file: onevcs::branches::BranchesFile =
-        serde_yaml_ng::from_str(&documented_branches()).expect("the contract's branches file");
+        yaml(&documented_branches()).expect("the contract's branches file");
     assert_eq!(file.version, onevcs::branches::VERSION);
     assert_eq!(
         file.prefix, "nick/",
@@ -7982,13 +7958,13 @@ fn the_branch_prefix_fixture_parses_and_an_absent_key_is_the_shipped_default() {
     // whole of the shipped default — and what every host that never writes the file
     // resolves to.
     let bare: onevcs::branches::BranchesFile =
-        serde_yaml_ng::from_str("version: 1\n").expect("a document naming only its version");
+        yaml("version: 1\n").expect("a document naming only its version");
     assert_eq!(bare, onevcs::branches::BranchesFile::default());
     assert!(bare.prefix.is_empty());
     // And it round-trips as the operator wrote it, which is what keeps a build that
     // rewrote the file from putting a prefix into one that had none.
     assert_eq!(
-        serde_yaml_ng::to_string(&bare).expect("the shipped default serializes"),
+        serde_saphyr::to_string(&bare).expect("the shipped default serializes"),
         "version: 1\n"
     );
 }
@@ -8692,18 +8668,17 @@ fn the_release_job_and_ci_are_wired_to_the_scripts_that_carry_and_check_the_comp
     // release-plz has cut the branch, the carry and CI's `just release-pr-check`
     // have to run the same lockfile script, and CI has to run the check at all.
     let workflow = repo_file(".github/workflows/release-plz.yml");
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&workflow).expect("a workflow file is YAML");
+    let doc: serde_json::Value = yaml(&workflow).expect("a workflow file is YAML");
     let runs: Vec<String> = doc
         .get("jobs")
         .and_then(|jobs| jobs.get("release-plz"))
         .and_then(|job| job.get("steps"))
-        .and_then(serde_yaml_ng::Value::as_sequence)
+        .and_then(serde_json::Value::as_array)
         .expect("release-plz.yml has a release-plz job with steps")
         .iter()
         .map(|step| {
             step.get("run")
-                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned()
         })
@@ -8984,7 +8959,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
 #[test]
 fn the_rules_version_4_fixture_round_trips_with_a_declared_visibility() {
     let fixture = amendment_yaml_spelling("visibility: private");
-    let rules: RulesFile = serde_yaml_ng::from_str(&fixture).expect("the fixture reads");
+    let rules: RulesFile = yaml(&fixture).expect("the fixture reads");
     assert_eq!(rules.version, 4);
     assert_eq!(
         rules.rules[0].visibility,
@@ -8994,9 +8969,8 @@ fn the_rules_version_4_fixture_round_trips_with_a_declared_visibility() {
         rules.rules[1].visibility,
         Some(onevcs::rules::DeclaredVisibility::Public)
     );
-    let written: serde_yaml_ng::Value =
-        serde_yaml_ng::to_value(&rules).expect("the rules serialize");
-    let read: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fixture).expect("YAML");
+    let written: serde_json::Value = serde_json::to_value(&rules).expect("the rules serialize");
+    let read: serde_json::Value = yaml(&fixture).expect("YAML");
     assert_eq!(written, read, "the fixture round-trips");
     // A rule that sets none writes none, so a version 3 file read here is unchanged.
     let older = RulesFile {
@@ -9013,7 +8987,7 @@ fn the_rules_version_4_fixture_round_trips_with_a_declared_visibility() {
         }],
         default: rules.default.clone(),
     };
-    assert!(!serde_yaml_ng::to_string(&older)
+    assert!(!serde_saphyr::to_string(&older)
         .expect("serializes")
         .contains("visibility"));
 }
@@ -9209,7 +9183,7 @@ fn the_base_merge_and_check_wait_amendment_declares_its_surface() {
     // The fixture reads as the types declare it, at a version that predates both keys —
     // there is no bump — and writes back what it read.
     let fixture = amendment_yaml_spelling("base_merge: on-conflict");
-    let file: RulesFile = serde_yaml_ng::from_str(&format!("version: 3\n{fixture}"))
+    let file: RulesFile = yaml(&format!("version: 3\n{fixture}"))
         .expect("the amendment's fixture is a rules file at version 3");
     assert_eq!(file.rules[0].base_merge, Some(BaseMerge::OnConflict));
     assert_eq!(
@@ -9227,23 +9201,22 @@ fn the_base_merge_and_check_wait_amendment_declares_its_surface() {
             .map(WaitSeconds::get),
         Some(3600.0)
     );
-    let plain: RulesFile = serde_yaml_ng::from_str(
-        "version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
-    )
-    .expect("a plain rules file");
-    let written = serde_yaml_ng::to_string(&plain).expect("it writes");
+    let plain: RulesFile =
+        yaml("version: 3\nrules: []\ndefault: {publication: change-open, approvals: required}\n")
+            .expect("a plain rules file");
+    let written = serde_saphyr::to_string(&plain).expect("it writes");
     assert!(
         !written.contains("base_merge") && !written.contains("checks"),
         "a file naming neither writes neither back: {written}"
     );
     assert_eq!(
-        serde_yaml_ng::to_string(&BaseMerge::OnConflict)
+        serde_saphyr::to_string(&BaseMerge::OnConflict)
             .expect("it writes")
             .trim(),
         "on-conflict"
     );
     assert!(
-        serde_yaml_ng::from_str::<Checks>("{wait_second: 60}").is_err(),
+        yaml::<Checks>("{wait_second: 60}").is_err(),
         "an unknown key inside checks is refused"
     );
     for refused in [0.0, -1.0, f64::NAN, f64::INFINITY] {
@@ -9834,10 +9807,10 @@ fn repository_maintenance_documentation_summaries_follow_the_contract_source() {
 
 #[test]
 fn release_sweep_runs_disjoint_workloads_after_its_quality_gate() {
-    let workflow: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&repo_file(".github/workflows/ci.yml")).expect("workflow YAML");
+    let workflow: serde_json::Value =
+        yaml(&repo_file(".github/workflows/ci.yml")).expect("workflow YAML");
     let runs: Vec<_> = workflow["jobs"]["sweep"]["steps"]
-        .as_sequence()
+        .as_array()
         .expect("sweep steps")
         .iter()
         .filter_map(|step| step["run"].as_str())

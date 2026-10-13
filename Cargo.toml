@@ -28,10 +28,12 @@ serde = { version = "1", features = ["derive"] }
 # re-serializes in the field order docs/contract.md declares rather than in
 # whatever order a hash map happened to yield.
 serde_json = { version = "1", features = ["preserve_order"] }
-# The maintained fork of serde_yaml, which its author archived. The rules file is
-# YAML, so the crate needs a YAML reader; this one is the drop-in that is still
-# receiving fixes (and does not trip `cargo deny`'s unmaintained advisory).
-serde_yaml_ng = "0.10"
+# The host files are YAML, so the crate needs a YAML reader and writer. serde-saphyr
+# is safe Rust with its own parser: every libyaml translation (`unsafe-libyaml`, and
+# the serde_yaml family built on it) is unmaintained under RUSTSEC-2024-0449, and
+# `deny.toml` bans each of them by name. Every repository of the fleet requires this
+# same release line.
+serde-saphyr = "1.3"
 thiserror = "2"
 # A change request's URL is parsed at the boundary rather than carried as a
 # string, so an unparseable one is rejected where it enters.
@@ -107,7 +109,7 @@ libz-sys = "1.1.29"
 # `onemessagebus-agent` and left the bus holding only generic contracts: a
 # consumer resolves one copy of the bus, so every sibling `onepipeline` composes
 # has to require the same release.
-onemessagebus = "0.9.0"
+onemessagebus = "0.9.1"
 # The JSON Schema derive the bus core's `Wire` bound asks of every type a
 # vocabulary puts on the wire. `preserve_order` for the same reason `serde_json`
 # has it: a generated schema lists an envelope's properties in declaration order
