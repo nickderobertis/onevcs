@@ -362,6 +362,8 @@ jobs:
         # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] This is the baseline macOS lane's own check, kept verbatim because Linux cannot prove macOS-native behaviour; it waits on gate as the old macOS install lane did.
         run: just check-quick
       - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
         run: cargo install --path crates/onevcs --locked
       - name: Smoke-test the installed binary
         run: |
@@ -370,6 +372,8 @@ jobs:
             --expect-version "$version" \
             --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
       - name: Documented git install at this revision
+        env:
+          RUSTFLAGS: "-D warnings"
         run: |-
           cargo install --git "file://$GITHUB_WORKSPACE" --rev "$(git rev-parse HEAD)" onevcs --locked --force
           onevcs --version
@@ -421,6 +425,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
         run: cargo install --path crates/onevcs --locked
       - name: Smoke-test the installed binary
         run: |
@@ -442,6 +448,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
         run: cargo install --path crates/onevcs --locked
       - name: Smoke-test the installed binary
         run: |

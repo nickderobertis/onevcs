@@ -3,7 +3,7 @@
 set -euo pipefail
 export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 target="$(rustc -vV | sed -n 's/^host: //p')"
-python3 -m pip install 'maturin==1.14.1'
+python3 -m pip install 'maturin==1.14.1' || { echo 'release journey: maturin installation failed; ACTION: provision pip and access to maturin 1.14.1, then retry' >&2; exit 1; }
 bash scripts/release-stage.sh "$target"
 version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
 out="$PWD/dist/$target"
