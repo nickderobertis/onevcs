@@ -38,11 +38,12 @@ def main():
     source = pathlib.Path(binary).read_bytes()
     arch = target.split("-")[0]
     # payload.test.mjs drives these foreign headers through the real artifact
-    # boundary without executing them on Linux. release-darwin.sh runs real
-    # Darwin/Rosetta products; the retained Windows release jobs own PE execution.
+    # boundary without executing them on Linux. release-darwin.sh runs the real
+    # Apple Silicon products natively; the retained Windows release jobs own PE
+    # execution. Only aarch64 Darwin is a release target (release_inputs.target).
     if "apple" in target:
         check(source[:4] == b"\xcf\xfa\xed\xfe", "Darwin payload is not a 64-bit Mach-O executable")
-        check(struct.unpack_from("<I", source, 4)[0] == (0x0100000C if arch == "aarch64" else 0x01000007), "Darwin executable architecture differs from its target")
+        check(struct.unpack_from("<I", source, 4)[0] == 0x0100000C, "Darwin executable architecture differs from its target")
     elif "linux" in target:
         check(source[:6] == b"\x7fELF\x02\x01", "Linux payload is not a little-endian ELF64 executable")
         check(struct.unpack_from("<H", source, 18)[0] == (183 if arch == "aarch64" else 62), "Linux executable architecture differs from its target")
@@ -62,7 +63,7 @@ def main():
         metadata = z.read(metadata_entries[0]).decode()
         check(f"Version: {version}\n" in metadata, f"wheel METADATA version does not match expected {version}")
         if "apple" in target:
-            check(f"_{'arm64' if arch == 'aarch64' else arch}.whl" in wheel.name and "macosx_" in wheel.name, f"wrong Darwin tag: {wheel}")
+            check(wheel.name.endswith("_arm64.whl") and "macosx_" in wheel.name, f"wrong Darwin tag: {wheel}")
     packages = []
     for carrier in (out / "npm").glob("*.tgz"):
         with tarfile.open(carrier) as t:

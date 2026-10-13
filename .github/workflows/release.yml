@@ -15,9 +15,10 @@ name: Release
 # nothing, and the release would silently ship no artifacts.
 #
 # Linux/Windows keep their existing archive, wheel and npm builds and registry
-# verification. build-darwin compiles both targets sequentially on Apple Silicon,
-# stages all three forms from each binary, and installs/runs the local wheel and
-# launcher before publish-pypi/publish-npm can proceed. upload-darwin only moves
+# verification. build-darwin compiles the one macOS target, Apple Silicon, natively,
+# stages all three forms from that binary, and installs/runs the local wheel and
+# launcher before publish-pypi/publish-npm can proceed. Intel macOS is no longer
+# built: the launcher refuses it by name rather than resolving a missing package. upload-darwin only moves
 # its checked archives and checksums to the Release, from a Linux runner.
 # published-smoke.yml repeats registry verification on Linux/Windows after this
 # workflow completes; its Mac diagnostic is manual and defaults off.
@@ -484,53 +485,24 @@ jobs:
             --label "npm onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH"
   build-darwin:
     env:
-      DARWIN_TARGETS: x86_64-apple-darwin aarch64-apple-darwin
+      DARWIN_TARGETS: aarch64-apple-darwin
     needs: test
     runs-on: macos-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Enable Intel tooling on Apple Silicon
-        run: softwareupdate --install-rosetta --agree-to-license
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Remember arm64 Node
-        id: arm-node
-        run: echo "path=$(dirname "$(command -v node)")" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          architecture: x64
-      - name: Remember x64 Node
-        id: intel-node
-        run: echo "path=$(dirname "$(command -v node)")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build both Darwin binaries once; package and run before publication
+      - name: Build the Apple Silicon binary once; package and run before publication
         env:
           RUSTFLAGS: -D warnings
-          NODE_ARM64: ${{ steps.arm-node.outputs.path }}
-          NODE_X64: ${{ steps.intel-node.outputs.path }}
         run: |-
           bash scripts/release-darwin.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: archives-x86_64-apple-darwin
-          path: dist/x86_64-apple-darwin/archives/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-x86_64-apple-darwin
-          path: dist/x86_64-apple-darwin/wheels/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: npm-x86_64-apple-darwin
-          path: dist/x86_64-apple-darwin/npm/*.tgz
-          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: archives-aarch64-apple-darwin

@@ -13,7 +13,7 @@
 # registry serves.
 #
 # A target is a **consumable** artifact — one a dependent names in order to depend
-# on it. The five per-platform npm packages (`onevcs-cli-<platform>-<arch>`) are
+# on it. The four per-platform npm packages (`onevcs-cli-<platform>-<arch>`) are
 # not targets of their own: they exist only so the `onevcs-cli` launcher can
 # resolve one at its own exact version, they are named by nobody else, and
 # `npm:onevcs-cli` is the wait that covers them. That is what the `covers` list on
@@ -117,7 +117,7 @@ what = "The `onevcs` binary as a wheel, installable with pip or uv."
 published_by = ".github/workflows/release.yml — the publish-pypi job, under pyproject.toml's [project] name."
 manifest = "pyproject.toml"
 
-# The launcher an `npm install onevcs-cli` resolves, published last, after the five
+# The launcher an `npm install onevcs-cli` resolves, published last, after the four
 # per-platform packages it pins at its own exact version.
 [[target]]
 id = "npm:onevcs-cli"
@@ -128,7 +128,6 @@ manifest = "npm/onevcs/package.json"
 covers = [
     "npm:onevcs-cli-linux-x64",
     "npm:onevcs-cli-linux-arm64",
-    "npm:onevcs-cli-darwin-x64",
     "npm:onevcs-cli-darwin-arm64",
     "npm:onevcs-cli-win32-x64",
 ]

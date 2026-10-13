@@ -11,7 +11,7 @@ import { resolve, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { workflows } from "../workflow-graph.mjs";
 // Foreign platform fixtures prove the artifact/header boundary only. They are
-// never executed here; release-darwin.sh supplies real native/Rosetta execution.
+// never executed here; release-darwin.sh supplies real native Apple Silicon execution.
 test("foreign artifact contracts validate declared Mach-O/PE architectures and reject damaged package forms", () => {
     const base =
         process.env.ONEPIPELINE_NODE_SCRATCH_DIR ||
@@ -76,7 +76,7 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
                     { encoding: "utf8" },
                 );
             assert.equal(run().status, 0);
-            if (target === "x86_64-apple-darwin")
+            if (target === "aarch64-apple-darwin")
                 assert.deepEqual(
                     JSON.parse(readFileSync(join(out, "payload-hashes.json"))),
                     JSON.parse(

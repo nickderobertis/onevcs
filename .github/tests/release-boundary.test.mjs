@@ -57,7 +57,7 @@ test("Darwin build reports registry/toolchain transport failures before compilat
             '#!/bin/bash\n[ "$1" = target ] && [ "$2" = add ] || exit 2\nexit 1\n',
             { mode: 0o755 },
         );
-        for (const targets of ["--help", "x86_64-unknown-linux-gnu", "x86_64-apple-darwin x86_64-apple-darwin"]) {
+        for (const targets of ["--help", "x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin aarch64-apple-darwin"]) {
             const invalid = spawnSync("bash", ["scripts/release-darwin.sh"], {env: {...process.env, PATH: dir + delimiter + process.env.PATH, DARWIN_TARGETS: targets, REAL_PYTHON: python, PIP_TRANSPORT_RESULT: "1"}, encoding: "utf8"});
             assert.notEqual(invalid.status, 0);
             assert.match(invalid.stderr, /unsupported release target|non-Darwin target|duplicate target/);

@@ -24,7 +24,6 @@ const { spawnSync } = require("node:child_process");
 const PACKAGES = {
   "linux-x64": "onevcs-cli-linux-x64",
   "linux-arm64": "onevcs-cli-linux-arm64",
-  "darwin-x64": "onevcs-cli-darwin-x64",
   "darwin-arm64": "onevcs-cli-darwin-arm64",
   "win32-x64": "onevcs-cli-win32-x64",
 };
@@ -34,6 +33,16 @@ const PACKAGES = {
 const OTHER_INSTALLS =
   "Install another way instead: 'pip install onevcs-cli' or 'cargo install onevcs'.";
 
+// Hosts a release used to ship a binary for and no longer does. Each is refused by
+// name before anything is resolved: no platform package exists for it, so the
+// generic "not installed" advice would send the user to reinstall something npm
+// can never fetch, and no wheel exists for it either.
+const DISCONTINUED = {
+  "darwin-x64":
+    "Intel macOS is no longer supported: prebuilt onevcs binaries ship for " +
+    "Apple Silicon (arm64) macOS only. Build from source with 'cargo install onevcs'.",
+};
+
 function fail(message) {
   process.stderr.write(`onevcs: ${message}\n`);
   process.exit(1);
@@ -41,6 +50,9 @@ function fail(message) {
 
 function binaryPath() {
   const key = `${process.platform}-${process.arch}`;
+  if (Object.prototype.hasOwnProperty.call(DISCONTINUED, key)) {
+    fail(DISCONTINUED[key]);
+  }
   const pkg = PACKAGES[key];
   // llmlint: ignore-block[changed_behavior_has_e2e] reaching this branch means running
   // where no prebuilt package exists, and a test can only get there by lying to node about

@@ -8,7 +8,6 @@
 //     optionalDependencies:        one per Rust target in release.yml's matrix
 //       onevcs-cli-linux-x64
 //       onevcs-cli-linux-arm64
-//       onevcs-cli-darwin-x64
 //       onevcs-cli-darwin-arm64
 //       onevcs-cli-win32-x64   each carries the matching prebuilt binary
 //
@@ -56,7 +55,6 @@ const CRATE_MANIFEST = join(REPO_ROOT, "crates", "onevcs", "Cargo.toml");
 const TARGETS = {
   "x86_64-unknown-linux-gnu": { platform: "linux", arch: "x64", exe: false },
   "aarch64-unknown-linux-gnu": { platform: "linux", arch: "arm64", exe: false },
-  "x86_64-apple-darwin": { platform: "darwin", arch: "x64", exe: false },
   "aarch64-apple-darwin": { platform: "darwin", arch: "arm64", exe: false },
   "x86_64-pc-windows-msvc": { platform: "win32", arch: "x64", exe: true },
 };

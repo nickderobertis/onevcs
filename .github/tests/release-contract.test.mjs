@@ -68,9 +68,17 @@ test("actual release routes retain every platform and package, Darwin needs prec
     const install = read("scripts/release-local-install.sh");
     // Darwin execution requires the real Mac runner; local proof checks the
     // commands and foreign payload contracts rather than executing Darwin on Linux.
-    assert.match(install, /NODE_X64/);
-    assert.match(install, /NODE_ARM64/);
-    assert.match(install, /arch -x86_64/);
+    // Only Apple Silicon is built, natively: no Rosetta, no x86_64 cross-compile.
+    assert.deepEqual(
+        wf.jobs["build-darwin"].env.DARWIN_TARGETS.split(" "),
+        ["aarch64-apple-darwin"],
+    );
+    assert.doesNotMatch(
+        JSON.stringify(wf.jobs["build-darwin"]),
+        /rosetta|x86_64|architecture/i,
+    );
+    assert.doesNotMatch(install, /arch -x86_64|NODE_X64/);
+    assert.ok(!platforms.some((p) => p.includes("darwin-x64")));
     assert.match(install, /pip install --no-index --no-deps/);
     assert.match(install, /npm install .*--offline/);
     assert.equal(install.match(/bash scripts\/smoke-published.sh/g).length, 2);
