@@ -41,20 +41,35 @@ pub enum DirectOperation {
     /// Publish one completed branch.
     PublishBranch {
         /// Normalized registered repository identity.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
         repository: String,
         /// Nonempty branch selector.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration fixes this field as String. prepare and selector reject an
+        // empty branch; changing its type would change the approved interface.
         branch: String,
     },
     /// Recover one interrupted branch.
     Recover {
         /// Normalized registered repository identity.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
         repository: String,
         /// Nonempty branch selector.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration fixes this field as String. prepare and selector reject an
+        // empty branch; changing its type would change the approved interface.
         branch: String,
     },
     /// Integrate a train in the selected repository's current checkout.
     Integrate {
         /// Normalized registered repository identity, matched against cwd.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
         repository: String,
     },
 }
@@ -74,6 +89,25 @@ fn operation_repository(operation: &DirectOperation) -> &str {
     }
 }
 
+fn validate_selector(operation: &DirectOperation) -> Result<()> {
+    let (repository, branch) = match operation {
+        DirectOperation::PublishBranch { repository, branch }
+        | DirectOperation::Recover { repository, branch } => (repository, Some(branch)),
+        DirectOperation::Integrate { repository } => (repository, None),
+    };
+    if branch.is_some_and(|branch| branch.trim().is_empty()) {
+        return Err(crate::error::invalid("operation branch must be nonempty"));
+    }
+    let registry = store::load()?;
+    let resolved = store::resolve(&registry, repository)?;
+    if &resolved.key != repository {
+        return Err(crate::error::invalid(
+            "operation repository must be a normalized registered identity",
+        ));
+    }
+    Ok(())
+}
+
 /// A reserved invocation identity. Cloning it never reserves another invocation.
 #[derive(Debug, Clone)]
 pub struct OperationHandle {
@@ -83,21 +117,7 @@ pub struct OperationHandle {
 impl OperationHandle {
     /// Reserve an invocation without starting git or host work.
     pub fn prepare(operation: &DirectOperation) -> Result<Self> {
-        let (repository, branch) = match operation {
-            DirectOperation::PublishBranch { repository, branch }
-            | DirectOperation::Recover { repository, branch } => (repository, Some(branch)),
-            DirectOperation::Integrate { repository } => (repository, None),
-        };
-        if branch.is_some_and(|branch| branch.trim().is_empty()) {
-            return Err(crate::error::invalid("operation branch must be nonempty"));
-        }
-        let registry = store::load()?;
-        let resolved = store::resolve(&registry, repository)?;
-        if &resolved.key != repository {
-            return Err(crate::error::invalid(
-                "operation repository must be a normalized registered identity",
-            ));
-        }
+        validate_selector(operation)?;
         let directory = crate::home::root()?.join("operations");
         crate::home::ensure_dir(&directory)?;
         let (handle, path) = loop {
@@ -158,6 +178,7 @@ impl OperationHandle {
                 stored.version
             )));
         }
+        validate_selector(&stored.operation)?;
         Ok(stored.operation)
     }
 

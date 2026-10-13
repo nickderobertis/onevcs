@@ -391,11 +391,12 @@ impl OperationEvents {
             {
                 return Err(error::invalid("event does not belong to its operation"));
             }
-            if let Some(stamp) = envelope.labels.extra.get("significance") {
-                serde_json::from_value::<crate::event::Significance>(stamp.clone()).map_err(
-                    |error| crate::error::invalid(format!("invalid event significance: {error}")),
-                )?;
-            }
+            let stamp = envelope.labels.extra.get("significance").ok_or_else(|| {
+                error::invalid("operation event is missing its producer significance stamp")
+            })?;
+            serde_json::from_value::<crate::event::Significance>(stamp.clone()).map_err(
+                |error| crate::error::invalid(format!("invalid event significance: {error}")),
+            )?;
             events.push(envelope);
             consumed += record.len() as u64;
         }
@@ -1273,20 +1274,22 @@ mod tests {
         let _home = inhabit();
         // Corrupt and future records have no public writer; this fixture exercises
         // the reader's actual filesystem boundary beside the real-operation journeys.
-        let directory = home::root()
-            .expect("state root")
-            .join("operations/o-reader");
-        std::fs::create_dir_all(&directory).expect("invocation directory");
-        std::fs::write(
-            directory.join("operation.json"),
-            r#"{"version":1,"operation":{"kind":"integrate","repository":"/local/repository"}}"#,
-        )
-        .expect("versioned selector");
+        let repo = _home.path().join("repository");
+        std::fs::create_dir(&repo).expect("repository directory");
+        crate::git::checked(&["init"], Some(&repo)).expect("real git repository");
+        let origin = crate::Url::from_file_path(&repo).expect("absolute local identity");
+        let registered =
+            crate::ops::register_checkout(&repo, Some(&origin)).expect("registered identity");
+        let operation =
+            crate::ops::OperationHandle::prepare(&crate::ops::DirectOperation::Integrate {
+                repository: registered.identity.clone(),
+            })
+            .expect("prepared invocation");
+        let directory = operation.directory().expect("private fixture directory");
         let path = directory.join("events.ndjson");
         let mut file = std::fs::File::create(&path).expect("actual stream file");
-        let operation = crate::ops::OperationHandle::open("o-reader").expect("invocation");
         let mut reader = OperationEvents::open(&operation).expect("reader");
-        let record = serde_json::json!({"v":1,"ts":"2026-01-01T00:00:00.000Z","stream":"o-reader","seq":1,"source":"vcs","kind":"future-kind","phase":"integrate","labels":{"identity":"/local/repository","operation_id":"o-reader","significance":"milestone"},"payload":{"future":"preserved"},"artifacts":[]});
+        let record = serde_json::json!({"v":1,"ts":"2026-01-01T00:00:00.000Z","stream":operation.id(),"seq":1,"source":"vcs","kind":"future-kind","phase":"integrate","labels":{"identity":registered.identity,"operation_id":operation.id(),"significance":"milestone"},"payload":{"future":"preserved"},"artifacts":[]});
         let bytes = serde_json::to_vec(&record).expect("record bytes");
         file.write_all(&bytes[..bytes.len() / 2])
             .expect("partial append");
@@ -1318,13 +1321,31 @@ mod tests {
             cursor,
             "failed batch never consumes records"
         );
-        assert!(OperationEvents::resume(&operation, "o-reader:1").is_err());
-        assert!(OperationEvents::resume(&operation, "o-reader:unknown").is_err());
-        assert!(OperationEvents::resume(&operation, "o-reader:18446744073709551615").is_err());
+        assert!(OperationEvents::resume(&operation, &format!("{}:1", operation.id())).is_err());
+        assert!(
+            OperationEvents::resume(&operation, &format!("{}:unknown", operation.id())).is_err()
+        );
+        assert!(OperationEvents::resume(
+            &operation,
+            &format!("{}:18446744073709551615", operation.id())
+        )
+        .is_err());
         std::fs::write(&path, format!("{record}\n{record}\n")).expect("repair malformed tail");
         let mut resumed = OperationEvents::resume(&operation, &cursor).expect("saved cursor");
         assert_eq!(resumed.read().expect("one repaired record").len(), 1);
         assert!(resumed.read().expect("drained, not completed").is_empty());
+        let mut unstamped = record.clone();
+        unstamped["labels"]
+            .as_object_mut()
+            .expect("labels")
+            .remove("significance");
+        std::fs::write(&path, format!("{unstamped}\n")).expect("missing operation stamp");
+        assert!(OperationEvents::open(&operation)
+            .expect("reader")
+            .read()
+            .expect_err("operation records require a producer stamp")
+            .to_string()
+            .contains("significance"));
         let mut wrong_identity = record.clone();
         wrong_identity["labels"]["identity"] = json!("/different/repository");
         std::fs::write(&path, format!("{wrong_identity}\n")).expect("foreign identity fixture");
@@ -1336,13 +1357,27 @@ mod tests {
             .contains("does not belong"));
         std::fs::write(
             directory.join("operation.json"),
-            r#"{"version":2,"operation":{"kind":"integrate","repository":"/local/repository"}}"#,
+            serde_json::json!({"version":2,"operation":{"kind":"integrate","repository":registered.identity}}).to_string(),
         )
         .expect("future manifest");
-        assert!(crate::ops::OperationHandle::open("o-reader")
+        assert!(crate::ops::OperationHandle::open(operation.id())
             .expect_err("unknown storage schema")
             .to_string()
             .contains("schema version 2"));
+        for selector in [
+            json!({"kind":"publish-branch","repository":registered.identity,"branch":""}),
+            json!({"kind":"integrate","repository":"unregistered"}),
+        ] {
+            std::fs::write(
+                directory.join("operation.json"),
+                json!({"version":1,"operation":selector}).to_string(),
+            )
+            .expect("malformed selector fixture");
+            assert!(
+                crate::ops::OperationHandle::open(operation.id()).is_err(),
+                "persisted selector invariants are rechecked"
+            );
+        }
     }
     #[test]
     fn operation_progress_legacy_significance_matching_preserves_bytes_and_rejects_malformed_stamps(

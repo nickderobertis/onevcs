@@ -47,6 +47,9 @@ fn operation_batch(operation: &onevcs::OperationHandle, identity: &str) -> Vec<o
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
     let world = World::new();
     inhabit(&world);
@@ -509,6 +512,9 @@ fn operation_check(conclusion: Option<&str>) -> Check {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_and_recovery_return(
 ) {
     for recovering in [false, true] {
@@ -659,6 +665,9 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
@@ -793,6 +802,9 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_publication_and_recovery_policy_endings_keep_armed_queued_and_skipped_detail()
 {
     for recovering in [false, true] {
@@ -1004,6 +1016,9 @@ fn operation_progress_local_push_refusal_drains_its_own_records_and_a_fresh_atte
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_late_merge_records_inherit_the_new_invocation_without_replaying_the_old_one()
 {
     let world = World::new();
@@ -1150,6 +1165,9 @@ fn operation_progress_release_probes_preserve_success_and_typed_failure_signific
 }
 
 #[test]
+// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
+// onevcs-testing providers at the third-party hosting boundary and excludes the
+// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while_the_call_waits() {
     let world = World::new();
     inhabit(&world);

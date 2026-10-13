@@ -5773,7 +5773,8 @@ The approved `BaseArrived` addition also widens the exhaustive `EventKind` enum.
 records mean progress for significance matching through the `EventStream` reader/filter
 adapter; direct `EventFilter::matches` on a raw unstamped envelope does not apply that
 default. Labels serialization and legacy round-trip bytes stay unchanged. Invalid stamps
-report an error.
+report an error. Every operation record requires a producer stamp; the unstamped
+legacy default applies to existing session streams.
 Consumers use the producer's stamp, including unknown future kinds, rather than a kind
 list. The engine provides the final-result milestone and the death blocker; a onevcs
 step completion is progress, not a second final result.
