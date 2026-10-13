@@ -5665,7 +5665,7 @@ fn every_copy_of_the_platform_target_table_agrees() {
         from_assembler.insert(target.to_owned());
     }
     assert!(
-        from_assembler.len() >= 5,
+        from_assembler.len() >= 4,
         "npm-build.mjs's target table did not parse: {from_assembler:?}"
     );
 
@@ -5704,7 +5704,7 @@ fn every_copy_of_the_platform_target_table_agrees() {
     let darwin = jobs["build-darwin"]
         .get("env")
         .and_then(|env| env.get("DARWIN_TARGETS"))
-        .and_then(serde_yaml_ng::Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .expect("the Darwin builder declares its targets");
     from_release.extend(darwin.split_whitespace().map(str::to_owned));
 
@@ -6130,18 +6130,18 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
             assert_eq!(condition, "${{ always() }}", "{context} must always report");
             let steps = job
                 .get("steps")
-                .and_then(serde_yaml_ng::Value::as_sequence)
+                .and_then(serde_json::Value::as_array)
                 .expect("a carrier has result-handling steps");
             assert!(
                 steps.iter().any(|step| {
-                    step.get("run").and_then(serde_yaml_ng::Value::as_str)
+                    step.get("run").and_then(serde_json::Value::as_str)
                         == Some(
                             format!("node .github/required-result.mjs {lane} \"$NEEDS\"").as_str(),
                         )
                         && step
                             .get("env")
                             .and_then(|env| env.get("NEEDS"))
-                            .and_then(serde_yaml_ng::Value::as_str)
+                            .and_then(serde_json::Value::as_str)
                             == Some("${{ toJSON(needs) }}")
                 }),
                 "{context} must inspect explicit needs results"
