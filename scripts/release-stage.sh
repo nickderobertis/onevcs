@@ -5,6 +5,9 @@ target="${1:-}"
 python3 scripts/release_inputs.py "$target"
 version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
 out="$PWD/dist/$target"
+# Start empty: a carrier left by an earlier staging (another version, say) would be
+# validated, uploaded or installed beside this one.
+rm -rf "$out"
 mkdir -p "$out/archives" "$out/wheels" "$out/npm" "$out/binary"
 # Maturin owns the sole compilation. Strip is disabled so all forms carry
 # precisely its Cargo artifact, including when this target is cross-compiled.
