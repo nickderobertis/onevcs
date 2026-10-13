@@ -14,7 +14,7 @@ if [ ! -x .github/bin/actionlint ] && [ ! -x .github/bin/actionlint.exe ]; then
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     arm64|aarch64) arch=arm64 ;;
-    *) echo 'workflow tools: unsupported architecture' >&2; exit 1 ;;
+    *) echo 'workflow tools: unsupported architecture; ACTION: install actionlint 1.7.12 for this host architecture' >&2; exit 1 ;;
   esac
   asset="actionlint_${version}_${os}_${arch}.tar.gz"
   curl --fail --silent --show-error --location "https://github.com/rhysd/actionlint/releases/download/v${version}/$asset" -o ".github/bin/$asset"

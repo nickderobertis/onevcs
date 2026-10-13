@@ -59,7 +59,11 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                                     pypi,
                                     npm,
                                     crate,
-                                    upstream: "Release",
+                                    upstream: workflows()["release.yml"].name,
+                                    diagnostic:
+                                        id === "manual-opt-in"
+                                            ? true
+                                            : undefined,
                                 };
                                 const key = JSON.stringify([diff, fork, event]);
                                 if (!classifications.has(key))
@@ -76,25 +80,6 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                                     );
                                 const classification = classifications.get(key);
                                 let rows = resolveScenario(s, classification);
-                                // Manual boolean inputs are resolved by the workflow, default off.
-                                if (event === "workflow_dispatch") {
-                                    const wf = structuredClone(
-                                        workflows()["published-smoke.yml"],
-                                    );
-                                    wf.on.workflow_call = {
-                                        inputs: {
-                                            "macos-diagnostic": {
-                                                default: id === "manual-opt-in",
-                                            },
-                                        },
-                                    };
-                                    rows = resolveRun(
-                                        "published-smoke.yml",
-                                        wf,
-                                        s,
-                                        classification,
-                                    );
-                                }
                                 if (event === "pull_request") {
                                     const names = rows.map((r) => r.name);
                                     for (const name of protectedNames)

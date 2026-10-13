@@ -370,11 +370,13 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         with:
           python-version: "3.12"
+      - uses: ./.github/actions/setup-just
+        if: matrix.os == 'ubuntu-latest'
       - name: Native packaging journey before publication
         if: matrix.os == 'ubuntu-latest'
         env:
           RUSTFLAGS: -D warnings
-        run: bash scripts/release-native-journey.sh
+        run: just release-packaging
 
   # npm publishing activates when the NPM_PUBLISH repository variable is 'true'.
   # `registry-url` makes setup-node write an .npmrc that authenticates with
@@ -489,6 +491,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Enable Intel tooling on Apple Silicon
+        run: softwareupdate --install-rosetta --agree-to-license
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -511,7 +515,6 @@ jobs:
           NODE_ARM64: ${{ steps.arm-node.outputs.path }}
           NODE_X64: ${{ steps.intel-node.outputs.path }}
         run: |-
-          softwareupdate --install-rosetta --agree-to-license
           bash scripts/release-darwin.sh
       - uses: actions/upload-artifact@v4
         with:

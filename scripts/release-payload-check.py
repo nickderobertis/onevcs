@@ -16,6 +16,7 @@ def check(condition, message="staged artifact contents do not match the release 
         inputs.fail(message)
 
 
+# llmlint: ignore[changed_behavior_has_e2e] onevcs-scripts-e2e:release-packaging drives this path with real artifacts and corruption rejection on Linux in release.yml build-npm before publication; it stays outside blanket check to avoid a release build on every change.
 def main():
     if len(sys.argv) != 5:
         inputs.fail("expected TARGET BINARY STAGING_DIRECTORY VERSION")
@@ -47,14 +48,24 @@ def main():
         check(f"Version: {version}\n" in metadata, "staged artifact contract mismatch")
         if "apple" in target:
             check(f"_{'arm64' if arch == 'aarch64' else arch}.whl" in wheel.name and "macosx_" in wheel.name, f"wrong Darwin tag: {wheel}")
-    carrier, = (out / "npm").glob("onevcs-cli-*-*.tgz")
-    with tarfile.open(carrier) as t:
-        exe = "onevcs.exe" if "windows" in target else "onevcs"
-        check(t.extractfile(f"package/bin/{exe}").read() == source, "npm binary differs")
-        manifest = json.load(t.extractfile("package/package.json"))
-        check(manifest["version"] == version, "staged artifact contract mismatch")
-        check(manifest["os"] == ["darwin" if "apple" in target else "win32" if "windows" in target else "linux"], "npm OS differs from its target")
-        check(manifest["cpu"] == ["arm64" if arch == "aarch64" else "x64"], "staged artifact contract mismatch")
+    packages = []
+    for carrier in (out / "npm").glob("*.tgz"):
+        with tarfile.open(carrier) as t:
+            manifest = json.load(t.extractfile("package/package.json"))
+            packages.append(manifest)
+            if manifest["name"] != "onevcs-cli":
+                exe = "onevcs.exe" if "windows" in target else "onevcs"
+                check(t.extractfile(f"package/bin/{exe}").read() == source, "npm binary differs")
+                check(manifest["version"] == version, "npm carrier version differs")
+                check(manifest["os"] == ["darwin" if "apple" in target else "win32" if "windows" in target else "linux"], "npm OS differs from its target")
+                check(manifest["cpu"] == ["arm64" if arch == "aarch64" else "x64"], "npm CPU differs from its target")
+    launchers = [p for p in packages if p["name"] == "onevcs-cli"]
+    carriers = [p for p in packages if p["name"] != "onevcs-cli"]
+    check(len(launchers) == len(carriers) == 1, "staging needs exactly one npm carrier and launcher")
+    launcher = launchers[0]
+    check(launcher["version"] == version, "npm launcher version differs")
+    check(launcher["optionalDependencies"].get(carriers[0]["name"]) == version, "npm launcher does not pin its staged carrier")
+    check(all(v == version for v in launcher["optionalDependencies"].values()), "npm launcher platform pins differ from its version")
     archive, = [p for p in (out / "archives").iterdir() if not p.name.endswith(".sha256")]
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as z:

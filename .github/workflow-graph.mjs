@@ -225,10 +225,11 @@ export function resolveRun(
     };
     function walk(wf, prefix = "", inputValues = {}, active = true) {
         const inputs = Object.fromEntries(
-            Object.entries(wf.on?.workflow_call?.inputs || {}).map(([k, v]) => [
-                k,
-                v.default,
-            ]),
+            Object.entries(
+                wf.on?.workflow_call?.inputs ||
+                    wf.on?.workflow_dispatch?.inputs ||
+                    {},
+            ).map(([k, v]) => [k, v.default]),
         );
         Object.assign(inputs, inputValues);
         const outcomes = {};
@@ -327,7 +328,11 @@ export function resolveRun(
                             event: scenario.event,
                             job: prefix + id,
                             name: prefix + name,
-                            target: matrix.target || matrix.arch || null,
+                            target:
+                                matrix.target ||
+                                matrix.arch ||
+                                job.env?.DARWIN_TARGETS ||
+                                null,
                             runner,
                             scheduled: enabled,
                             macos:
@@ -346,7 +351,14 @@ export function resolveRun(
                 );
         }
     }
-    walk(workflow);
+    walk(
+        workflow,
+        "",
+        scenario.event === "workflow_dispatch" &&
+            scenario.diagnostic !== undefined
+            ? { "macos-diagnostic": scenario.diagnostic }
+            : {},
+    );
     return rows;
 }
 export function resolveScenario(scenario, classification) {
