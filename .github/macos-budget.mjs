@@ -3,17 +3,18 @@ import { readFileSync } from "node:fs";
 import { report } from "@onebudgetspec/sdk";
 import { sourceDigest } from "./workflow-graph.mjs";
 try {
-    const [flag, metric, telemetry, path] = process.argv.slice(2);
+    const [metricFlag, metric, telemetryFlag, telemetryPath] =
+        process.argv.slice(2);
     if (
-        flag !== "--metric" ||
-        telemetry !== "--telemetry" ||
+        metricFlag !== "--metric" ||
+        telemetryFlag !== "--telemetry" ||
         !["jobs-per-run", "runs-per-change"].includes(metric) ||
-        !path
+        !telemetryPath
     )
         throw new Error(
             "expected --metric jobs-per-run|runs-per-change --telemetry PATH",
         );
-    const record = JSON.parse(readFileSync(path, "utf8"));
+    const record = JSON.parse(readFileSync(telemetryPath, "utf8"));
     const object = (value) =>
         value !== null && typeof value === "object" && !Array.isArray(value);
     if (

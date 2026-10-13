@@ -137,6 +137,13 @@ function triggered(workflow, scenario) {
     if (Array.isArray(on)) return on.includes(scenario.event);
     if (!on || !(scenario.event in on)) return false;
     const spec = on[scenario.event];
+    // Actions' default pull_request activity set excludes close and draft lift.
+    if (
+        scenario.event === "pull_request" &&
+        !spec?.types &&
+        !["opened", "synchronize", "reopened"].includes(scenario.action)
+    )
+        return false;
     if (spec?.types && !spec.types.includes(scenario.action)) return false;
     if (spec?.branches && !spec.branches.includes(scenario.branch))
         return false;

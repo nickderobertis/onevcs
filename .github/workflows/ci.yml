@@ -359,6 +359,7 @@ jobs:
       - name: Bootstrap
         run: just bootstrap
       - name: Quality gate (format, lint, every offline tier)
+        # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] This is the baseline macOS lane's own check, kept verbatim because Linux cannot prove macOS-native behaviour; it waits on gate as the old macOS install lane did.
         run: just check-quick
       - name: Install (this revision)
         run: cargo install --path crates/onevcs --locked

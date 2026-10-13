@@ -9,7 +9,7 @@ if [ ! -x .github/bin/actionlint ] && [ ! -x .github/bin/actionlint.exe ]; then
     Linux) os=linux ;;
     Darwin) os=darwin ;;
     MINGW*|MSYS*) os=windows ;;
-    *) echo 'workflow tools: unsupported host; install actionlint 1.7.12' >&2; exit 1 ;;
+    *) echo 'workflow tools: unsupported host; ACTION: install actionlint 1.7.12 for this host' >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;

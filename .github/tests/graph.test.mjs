@@ -285,3 +285,27 @@ test("real job conditions keep carriers on failed prerequisites and path skips h
     assert.equal(rows.find((r) => r.job === "macos-pr").scheduled, false);
     assert.equal(rows.find((r) => r.job === "cross-macos").scheduled, true);
 });
+
+test("actual pull-request trigger defaults exclude close and draft lift from CI", () => {
+    for (const action of ["closed", "ready_for_review"]) {
+        const rows = resolveScenario(
+            {
+                event: "pull_request",
+                action,
+                branch: "main",
+                pypi: true,
+                npm: true,
+                crate: true,
+            },
+            { macosRequired: true, isReleaseOnly: false },
+        );
+        assert.equal(
+            rows.some((row) => row.workflow === "ci.yml"),
+            false,
+        );
+        assert.deepEqual(
+            rows.filter((row) => row.macos),
+            [],
+        );
+    }
+});

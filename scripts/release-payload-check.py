@@ -76,6 +76,8 @@ def main():
                 exe = "onevcs.exe" if "windows" in target else "onevcs"
                 check(tar_member(t, f"package/bin/{exe}").read() == source, "npm binary differs")
                 check(manifest["version"] == version, "npm carrier version differs")
+                check(isinstance(manifest.get("os"), list) and all(isinstance(value, str) for value in manifest["os"]), "npm carrier os must be a string array")
+                check(isinstance(manifest.get("cpu"), list) and all(isinstance(value, str) for value in manifest["cpu"]), "npm carrier cpu must be a string array")
                 check(manifest["os"] == ["darwin" if "apple" in target else "win32" if "windows" in target else "linux"], "npm OS differs from its target")
                 check(manifest["cpu"] == ["arm64" if arch == "aarch64" else "x64"], "npm CPU differs from its target")
     launchers = [p for p in packages if p["name"] == "onevcs-cli"]
