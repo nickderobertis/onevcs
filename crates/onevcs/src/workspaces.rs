@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::{self, Error, Result};
 use crate::rules::RuleMatch;
 use crate::store::{self, Normalized};
-use crate::{home, policy};
+use crate::{home, policy, yaml};
 
 /// The version of the workspaces file this build writes, and the oldest it reads.
 ///
@@ -503,20 +503,17 @@ pub(crate) fn load() -> Result<(WorkspacesFile, FileSource)> {
 /// One workspaces document's text, held to every check a loaded one is. `path` is what a
 /// refusal names the document by.
 pub(crate) fn parse(path: &Path, raw: &str) -> Result<WorkspacesFile> {
-    let malformed = |failure: serde_yaml_ng::Error| {
+    let malformed = |failure: serde_saphyr::Error| {
         error::invalid(format!(
             "the workspaces file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too, for
     // the reason the other two host files do it: which keys a document may carry is a
     // fact about the version it declares. Only a version *below* this one is refused.
-    if let Some(declared) = document
-        .get("version")
-        .and_then(serde_yaml_ng::Value::as_u64)
-    {
+    if let Some(declared) = document.get("version").and_then(serde_json::Value::as_u64) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the workspaces file at {} declares version {declared}; this build reads \
@@ -525,7 +522,7 @@ pub(crate) fn parse(path: &Path, raw: &str) -> Result<WorkspacesFile> {
             )));
         }
     }
-    let file: WorkspacesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
+    let file: WorkspacesFile = yaml::from_str(raw).map_err(malformed)?;
     validate(path, &file)?;
     Ok(file)
 }

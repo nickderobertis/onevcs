@@ -18,13 +18,19 @@ use serde_json::Value;
 
 use super::{binary, exclusive, Counting};
 
+#[path = "../../src/yaml/options.rs"]
+mod yaml_options;
+
 /// The registered threshold of one budget, from the document the gate reads.
 fn threshold(id: &str) -> usize {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../budgets.yaml");
-    let document: serde_yaml_ng::Value =
-        serde_yaml_ng::from_slice(&std::fs::read(path).expect("budgets.yaml")).expect("budgets");
+    let document: Value = serde_saphyr::from_slice_with_options(
+        &std::fs::read(path).expect("budgets.yaml"),
+        yaml_options::options(),
+    )
+    .expect("budgets");
     document["budgets"]
-        .as_sequence()
+        .as_array()
         .expect("budget list")
         .iter()
         .find(|budget| budget["id"].as_str() == Some(id))

@@ -6,9 +6,9 @@
 //! value: the loaders are private, and each verb renders only the part of the file it
 //! resolved. The documents are the YAML blocks of `docs/contract.md` and
 //! `tests/fixtures/host-files/`, sanitized copies of this host's real files; each
-//! expected value under `tests/golden/yaml-reads/` was captured from the build that
-//! read YAML through `serde_yaml_ng`, so a reading that moved is a difference here
-//! rather than a host whose files quietly mean something else.
+//! expected value under `tests/golden/yaml-reads/` was captured from the build that read
+//! YAML through a libyaml translation, before serde-saphyr, so a reading that moved is a
+//! difference here rather than a host whose files quietly mean something else.
 
 use std::path::{Path, PathBuf};
 

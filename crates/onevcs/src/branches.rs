@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{self, Error, Result};
 use crate::workspaces::{FileSource, Sourced};
-use crate::{git, home};
+use crate::{git, home, yaml};
 
 /// The version of the branches file this build writes, and the oldest it reads.
 ///
@@ -116,21 +116,18 @@ pub(crate) fn load() -> Result<(BranchesFile, FileSource)> {
 /// One branches document's text, held to every check a loaded one is. `path` is what a
 /// refusal names the document by.
 pub(crate) fn parse(path: &Path, raw: &str) -> Result<BranchesFile> {
-    let malformed = |failure: serde_yaml_ng::Error| {
+    let malformed = |failure: serde_saphyr::Error| {
         error::invalid(format!(
             "the branches file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
+    let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too,
     // for the reason the other host files do it: which keys a document may carry is
     // a fact about the version it declares. Only a version *below* this one is
     // refused.
-    if let Some(declared) = document
-        .get("version")
-        .and_then(serde_yaml_ng::Value::as_u64)
-    {
+    if let Some(declared) = document.get("version").and_then(serde_json::Value::as_u64) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(
                 "the branches file at {} declares version {declared}; this build reads \
@@ -139,7 +136,7 @@ pub(crate) fn parse(path: &Path, raw: &str) -> Result<BranchesFile> {
             )));
         }
     }
-    serde_yaml_ng::from_value(document).map_err(malformed)
+    yaml::from_str(raw).map_err(malformed)
 }
 
 /// Resolve the prefix every branch this open cuts is put in front of, highest layer
