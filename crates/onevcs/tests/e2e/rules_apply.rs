@@ -372,3 +372,50 @@ fn later_overlays_win_over_earlier_ones_in_order() {
             "publication: change-open (from rule 1)",
         ));
 }
+
+/// One of this host's real files, as `tests/fixtures/host-files/` keeps it.
+fn host_file(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/host-files")
+        .join(name)
+}
+
+/// What `rules apply` wrote for the same inputs before its YAML crate was replaced.
+fn composed(name: &str) -> String {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/rules-apply")
+        .join(name);
+    std::fs::read_to_string(&golden)
+        .unwrap_or_else(|failure| panic!("{} is readable: {failure}", golden.display()))
+}
+
+#[test]
+fn this_hosts_rules_file_composes_to_the_bytes_it_always_composed_to() {
+    let base = host_file("rules-v3.yml");
+    let overlay = host_file("rules-overlay.yml");
+    for (overlays, expected) in [
+        (vec![], "host.yml"),
+        (vec![overlay.as_path()], "host-with-overlay.yml"),
+    ] {
+        let expected = composed(expected);
+
+        let printed = apply(&host(), &base, &overlays, &["--dry-run"]);
+        assert!(
+            printed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&printed.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&printed.stdout), expected);
+
+        let world = host();
+        let output = apply(&world, &base, &overlays, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let installed =
+            std::fs::read_to_string(world.home().join("rules.yml")).expect("the installed rules");
+        assert_eq!(installed, expected);
+    }
+}
