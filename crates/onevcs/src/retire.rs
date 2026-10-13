@@ -3605,7 +3605,14 @@ fn record_retirement(retired: &Retired, branch: &str, acting: Acting, trigger: T
         return;
     };
     match open_stream(&retirement.identity, branch) {
-        Ok(mut stream) => stream.emit(EventKind::BranchRetired, payload),
+        Ok(mut stream) => {
+            let result = if retired.outcome == RetireOutcome::Incomplete {
+                crate::event::EmissionResult::Failed
+            } else {
+                crate::event::EmissionResult::Success
+            };
+            stream.emit_result(EventKind::BranchRetired, payload, Vec::new(), result);
+        }
         Err(failure) => eprintln!(
             "onevcs: warning: {branch} was retired and the record of it was not written: {failure}"
         ),

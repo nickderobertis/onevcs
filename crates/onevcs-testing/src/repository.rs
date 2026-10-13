@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
 use onevcs::rules::{Approvals, Drafts};
+use onevcs::testing::EmissionResult;
 use onevcs::{
     ArmedMerge, ChangeRequest, ChangeSpec, Check, CheckState, DraftReason, Error, EventKind,
     FailureKind, HeldBy, Holding, Hosting, Identity, Landed, Lifecycle, MergeOutcome, MergePolicy,
@@ -211,6 +212,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 stream: token.0.clone(),
                 identity: Some(identity.origin.clone()),
                 kind: EventKind::SessionOpened,
+                result: EmissionResult::Success,
                 payload: object(json!({
                     "token": token.0,
                     "identity": identity.origin,
@@ -314,6 +316,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 // information.
                 identity: None,
                 kind: EventKind::CommitPreserved,
+                result: EmissionResult::Success,
                 payload: object(json!({
                     "branch": s.branch,
                     "sha": events::stable_sha(&[&s.token.0, &s.branch, spell(provenance)]),
@@ -369,6 +372,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                 // where a session is opened.
                 identity: None,
                 kind: EventKind::SessionClosed,
+                result: EmissionResult::Success,
                 payload: object(json!({"token": token.0, "branch": session.branch})),
             };
             // Match the real provider's observable ordering: a follower reads the
@@ -443,6 +447,7 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                     stream: token.0.clone(),
                     identity: Some(identity.clone()),
                     kind: EventKind::ChangeOpened,
+                    result: EmissionResult::Success,
                     payload: object(json!({
                         "url": adopt.to_string(),
                         "host": "github",
@@ -741,6 +746,7 @@ fn record_local_landing(
         kind: EventKind::MergeCompleted,
         // Every record of a landing says when the base received it and at which
         // commit, as `onevcs`'s own does: here, the moment this provider decided it.
+        result: EmissionResult::Success,
         payload: object(json!({
             "identity": identity,
             "sha": sha,
@@ -771,6 +777,7 @@ impl Publishing<'_> {
             stream: self.token.0.clone(),
             identity: Some(self.identity.to_owned()),
             kind,
+            result: EmissionResult::Success,
             payload: object(payload),
         }
     }
@@ -1354,7 +1361,13 @@ fn record_settled(
         );
         payload["requirement"] = json!({"read_from": "host-marking", "because": because});
     }
-    emissions.push(publishing.emission(EventKind::ChecksSettled, payload));
+    let mut settled = publishing.emission(EventKind::ChecksSettled, payload);
+    settled.result = if verdict == "passed" {
+        EmissionResult::Passed
+    } else {
+        EmissionResult::PassedWithSkipped
+    };
+    emissions.push(settled);
 }
 
 /// The watch, one reading per phase. See [`publish_as_change`] for what a reading

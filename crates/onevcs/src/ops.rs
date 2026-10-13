@@ -34,6 +34,253 @@ use crate::sweep::Report as SweepReport;
 use crate::workspace::Ref;
 use crate::{git, policy, provenance, status, stream};
 
+/// A direct invocation's selector, using its normalized registered identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum DirectOperation {
+    /// Publish one completed branch.
+    PublishBranch {
+        /// Normalized registered repository identity.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
+        repository: String,
+        /// Nonempty branch selector.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration fixes this field as String. prepare and selector reject an
+        // empty branch; changing its type would change the approved interface.
+        branch: String,
+    },
+    /// Recover one interrupted branch.
+    Recover {
+        /// Normalized registered repository identity.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
+        repository: String,
+        /// Nonempty branch selector.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration fixes this field as String. prepare and selector reject an
+        // empty branch; changing its type would change the approved interface.
+        branch: String,
+    },
+    /// Integrate a train in the selected repository's current checkout.
+    Integrate {
+        /// Normalized registered repository identity, matched against cwd.
+        // llmlint: ignore[invalid_states_unrepresentable] The approved DirectOperation
+        // declaration in docs/contract.md fixes this field as String. prepare and
+        // selector validate its normalized registered identity before use.
+        repository: String,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredOperation {
+    version: u32,
+    operation: DirectOperation,
+}
+
+fn operation_repository(operation: &DirectOperation) -> &str {
+    match operation {
+        DirectOperation::PublishBranch { repository, .. }
+        | DirectOperation::Recover { repository, .. }
+        | DirectOperation::Integrate { repository } => repository,
+    }
+}
+
+fn validate_selector(operation: &DirectOperation) -> Result<()> {
+    let (repository, branch) = match operation {
+        DirectOperation::PublishBranch { repository, branch }
+        | DirectOperation::Recover { repository, branch } => (repository, Some(branch)),
+        DirectOperation::Integrate { repository } => (repository, None),
+    };
+    if branch.is_some_and(|branch| branch.trim().is_empty()) {
+        return Err(crate::error::invalid("operation branch must be nonempty"));
+    }
+    let registry = store::load()?;
+    let resolved = store::resolve(&registry, repository)?;
+    if &resolved.key != repository {
+        return Err(crate::error::invalid(
+            "operation repository must be a normalized registered identity",
+        ));
+    }
+    Ok(())
+}
+
+/// A reserved invocation identity. Cloning it never reserves another invocation.
+#[derive(Debug, Clone)]
+pub struct OperationHandle {
+    id: String,
+}
+
+impl OperationHandle {
+    /// Reserve an invocation without starting git or host work.
+    pub fn prepare(operation: &DirectOperation) -> Result<Self> {
+        validate_selector(operation)?;
+        let directory = crate::home::root()?.join("operations");
+        crate::home::ensure_dir(&directory)?;
+        let (handle, path) = loop {
+            let handle = Self {
+                id: format!("o-{}", crate::ids::unique()),
+            };
+            let path = handle.directory()?;
+            match std::fs::create_dir(&path) {
+                Ok(()) => break (handle, path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(crate::error::at("reserve operation directory", &path)(
+                        error,
+                    ))
+                }
+            }
+        };
+        let manifest = path.join("operation.json");
+        let bytes = serde_json::to_vec(&StoredOperation {
+            version: 1,
+            operation: operation.clone(),
+        })
+        .map_err(crate::error::at("serialize operation", &manifest))?;
+        std::fs::write(&manifest, bytes)
+            .map_err(crate::error::at("reserve operation", &manifest))?;
+        std::fs::File::create(path.join("events.ndjson"))
+            .map_err(crate::error::at("create operation stream", &path))?;
+        Ok(handle)
+    }
+
+    /// Open an existing prepared invocation, including after its writer died.
+    pub fn open(id: &str) -> Result<Self> {
+        let handle = Self { id: id.to_owned() };
+        handle.selector()?;
+        Ok(handle)
+    }
+
+    /// The opaque identity to persist for another process.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn directory(&self) -> Result<PathBuf> {
+        if !self.id.starts_with("o-") || !crate::ids::is_safe_name(&self.id) {
+            return Err(crate::error::invalid("invalid operation handle"));
+        }
+        Ok(crate::home::root()?.join("operations").join(&self.id))
+    }
+
+    fn selector(&self) -> Result<DirectOperation> {
+        let path = self.directory()?.join("operation.json");
+        let bytes = std::fs::read(&path).map_err(crate::error::at("open operation", &path))?;
+        let stored: StoredOperation =
+            serde_json::from_slice(&bytes).map_err(crate::error::at("read operation", &path))?;
+        if stored.version != 1 {
+            return Err(crate::error::invalid(format!(
+                "unsupported operation schema version {}",
+                stored.version
+            )));
+        }
+        validate_selector(&stored.operation)?;
+        Ok(stored.operation)
+    }
+
+    pub(crate) fn repository(&self) -> Result<String> {
+        Ok(operation_repository(&self.selector()?).to_owned())
+    }
+
+    fn claim(&self, expected: &DirectOperation) -> Result<()> {
+        if self.selector()? != *expected {
+            return Err(crate::error::invalid(
+                "operation handle does not match repository, kind and branch",
+            ));
+        }
+        let path = self.directory()?.join("claimed");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(crate::error::at("claim operation exactly once", &path))?;
+        Ok(())
+    }
+}
+
+/// Publish a branch into exactly the invocation prepared by its caller.
+pub fn publish_branch_in_operation(
+    providers: &Providers<'_>,
+    request: &BranchPublishRequest,
+    operation: &OperationHandle,
+) -> Result<PublishOutcome> {
+    let registry = store::load()?;
+    let resolution = store::resolve_path(&registry, &request.repo)?;
+    let expected = DirectOperation::PublishBranch {
+        repository: resolution.key,
+        branch: request.branch.clone(),
+    };
+    let token = crate::status::keyed::Verb::PublishBranch.stream(&request.branch);
+    operation.claim(&expected)?;
+    let mut stream = branch_keyed(&registry, &request.repo, &token)?;
+    stream.operation(operation, operation_repository(&expected))?;
+    crate::publish_branch::run(
+        &registry,
+        &request.repo,
+        &request.branch,
+        request.title.clone(),
+        request.body.clone(),
+        request.policy,
+        &request.term_scope,
+        providers.hosting,
+        &mut stream,
+    )
+}
+
+/// Recover a branch into exactly the invocation prepared by its caller.
+pub fn recover_in_operation(
+    providers: &Providers<'_>,
+    request: &RecoverRequest,
+    operation: &OperationHandle,
+) -> Result<PublishOutcome> {
+    let registry = store::load()?;
+    let resolution = store::resolve_path(&registry, &request.repo)?;
+    let expected = DirectOperation::Recover {
+        repository: resolution.key,
+        branch: request.branch.clone(),
+    };
+    let token = crate::status::keyed::Verb::Recover.stream(&request.branch);
+    operation.claim(&expected)?;
+    let mut stream = branch_keyed(&registry, &request.repo, &token)?;
+    stream.operation(operation, operation_repository(&expected))?;
+    crate::recover::run(
+        &registry,
+        &request.repo,
+        &request.branch,
+        request.title.clone(),
+        request.body.clone(),
+        &request.term_scope,
+        providers.hosting,
+        &mut stream,
+    )
+}
+
+/// Integrate in the actual cwd identity, refusing a different prepared identity.
+pub fn integrate_in_operation(
+    request: &IntegrateRequest,
+    operation: &OperationHandle,
+) -> Result<Integration> {
+    let registry = store::load()?;
+    let resolution = store::resolve_here(&registry)?;
+    let token = format!("integrate-{}", policy::branch_slug(&resolution.alias));
+    operation.claim(&DirectOperation::Integrate {
+        repository: resolution.key.clone(),
+    })?;
+    let mut stream = Stream::open(&token)?;
+    stream.operation(operation, &resolution.key)?;
+    crate::integrate::run(
+        &resolution,
+        &request.branches,
+        request.push == BasePush::Push,
+        &request.term_scope,
+        &mut stream,
+    )
+}
+
 /// The publication policy a repository resolves to, and where each half of it came
 /// from.
 ///

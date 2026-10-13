@@ -208,12 +208,23 @@ fn an_event_this_build_emits_carries_the_recorded_streams_key_order() {
         vec!["run_id", "round", "node", "step", "member", "persona", "session"],
         "the reserved labels are no longer in wire order, or an extra got among them"
     );
+    // `significance` is declared reserved after them so a matcher can name it, but
+    // `Labels` has no field for it: the producer stamps it among the extras, so it is
+    // the one declared key that is not part of this typed wire order.
     assert_eq!(
         RESERVED_LABELS
             .iter()
             .map(|reserved| reserved.key)
             .collect::<Vec<&str>>(),
-        vec!["run_id", "round", "node", "step", "member", "persona"],
+        vec![
+            "run_id",
+            "round",
+            "node",
+            "step",
+            "member",
+            "persona",
+            "significance"
+        ],
         "the declared reserved keys and the wire order came apart"
     );
     assert_eq!(emitted["labels"]["round"], Value::from(2));

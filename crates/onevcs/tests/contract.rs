@@ -47,7 +47,7 @@ use onevcs::{
     MergePolicy, NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
     ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
-    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Significance,
     SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, TermScope, Url,
     Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
@@ -346,6 +346,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeDescribed,
         EventKind::ChangeCheck,
         EventKind::ChangeMerged,
+        EventKind::BaseArrived,
         EventKind::MergeQueued,
         EventKind::MergeCompleted,
         EventKind::RecoveryAttested,
@@ -403,6 +404,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ChangeRetargeted
             | EventKind::ChangeReopened
             | EventKind::BaseMerge
+            | EventKind::BaseArrived
             | EventKind::MergeArmed => {}
         }
     }
@@ -3894,6 +3896,7 @@ fn the_event_vocabulary_is_this_crates_own_over_the_buss_open_source() {
             ("step", Admits::Text),
             ("member", Admits::Text),
             ("persona", Admits::Text),
+            ("significance", Admits::Text),
         ]
     );
     assert_eq!(
@@ -3944,6 +3947,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
             source: Some(Source::from(SOURCE_WORD)),
             kind: Some("change-*".to_owned()),
             fields: MatchFields {
+                significance: None,
                 phase: Some(Phase::Review),
                 run_id: Some("R".to_owned()),
                 node: Some("service".to_owned()),
@@ -4012,7 +4016,7 @@ fn the_amendment_declares_the_filter_a_stream_is_read_through() {
         "pub type EventMatcher = onemessagebus::Matcher<VcsEvents>;",
         "pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,",
         "pub fields: MatchFields }",
-        "pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,",
+        "pub struct MatchFields { pub significance: Option<Significance>, pub phase: Option<Phase>, pub run_id: Option<String>,",
         "pub node: Option<String>, pub step: Option<String>,",
         "pub member: Option<String>, pub persona: Option<String> }",
         "pub fn parse(spec: &str) -> Result<Self, FilterError>;",
@@ -4099,6 +4103,7 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
         source: Some(Source::from(SOURCE_WORD)),
         kind: Some("push".to_owned()),
         fields: MatchFields {
+            significance: Some(onevcs::Significance::Progress),
             phase: Some(Phase::Development),
             run_id: Some("R".to_owned()),
             node: Some("service".to_owned()),
@@ -4156,6 +4161,7 @@ fn every_matcher_field_the_type_has_is_one_a_refusal_names_and_the_parser_takes(
         let value = match field {
             "source" => "vcs",
             "phase" => "review",
+            "significance" => "progress",
             _ => "anything",
         };
         let spec = format!("include: [{{{field}: {value}}}]");
@@ -9422,6 +9428,211 @@ fn the_draft_hold_amendment_declares_what_a_host_says_is_running_and_the_code_ha
         text.contains(&format!("**reused for up to {seconds:.0} seconds**")),
         "the amendment no longer states the {seconds:.0}-second reuse window"
     );
+}
+
+#[test]
+fn operation_progress_public_signatures_match_the_documented_invocation_contract() {
+    let declarations = amendment_declaring("pub enum DirectOperation");
+    let _: fn(&onevcs::DirectOperation) -> onevcs::Result<onevcs::OperationHandle> =
+        onevcs::OperationHandle::prepare;
+    let _: fn(&str) -> onevcs::Result<onevcs::OperationHandle> = onevcs::OperationHandle::open;
+    let _: fn(&onevcs::OperationHandle) -> onevcs::Result<onevcs::OperationEvents> =
+        onevcs::OperationEvents::open;
+    let _: fn(&onevcs::OperationHandle, &str) -> onevcs::Result<onevcs::OperationEvents> =
+        onevcs::OperationEvents::resume;
+    for declaration in [
+        "pub fn id(&self) -> &str;",
+        "pub fn read(&mut self) -> Result<Vec<Envelope>>;",
+        "pub fn cursor(&self) -> String;",
+        "pub enum Significance { Milestone, Blocker, Progress }",
+    ] {
+        assert!(declarations.contains(declaration), "{declaration}");
+    }
+    let _: fn(
+        &Providers<'_>,
+        &onevcs::BranchPublishRequest,
+        &onevcs::OperationHandle,
+    ) -> onevcs::Result<onevcs::PublishOutcome> = onevcs::publish_branch_in_operation;
+    let _: fn(
+        &Providers<'_>,
+        &onevcs::RecoverRequest,
+        &onevcs::OperationHandle,
+    ) -> onevcs::Result<onevcs::PublishOutcome> = onevcs::recover_in_operation;
+    let _: fn(
+        &onevcs::IntegrateRequest,
+        &onevcs::OperationHandle,
+    ) -> onevcs::Result<onevcs::Integration> = onevcs::integrate_in_operation;
+    let table = regions()
+        .0
+        .split("The producer classification table is exhaustive over current kinds:")
+        .nth(1)
+        .expect("classification table")
+        .to_owned();
+    for kind in all_event_kinds() {
+        assert!(
+            table.contains(&kind_name(kind)),
+            "undocumented significance for {kind:?}"
+        );
+    }
+    let matcher = onevcs::MatchFields {
+        significance: Some(onevcs::Significance::Milestone),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&matcher).expect("matcher wire schema");
+    assert_eq!(value, json!({"significance":"milestone"}));
+    assert_eq!(
+        serde_json::from_value::<onevcs::MatchFields>(value).expect("round trip"),
+        matcher
+    );
+    assert_eq!(
+        serde_json::to_value(onevcs::MatchFields::default()).expect("empty fields"),
+        json!({})
+    );
+    assert!(EventFilter::parse("include: [{significance: important}]").is_err());
+}
+
+// Compile the private pure producer function against the public vocabulary. This
+// keeps its exhaustive contract reconciliation in the contract graph, without a
+// public testing seam or a unit-tier dependency on docs.
+#[path = "../src/significance.rs"]
+mod producer_significance;
+
+mod significance_contract_tests {
+    use super::producer_significance::{significance, EmissionResult};
+    use super::*;
+
+    #[test]
+    fn operation_progress_producer_reconciles_the_complete_documented_table_and_typed_results() {
+        let doc = contract();
+        let table = doc
+            .split("The producer classification table is exhaustive over current kinds:")
+            .nth(1)
+            .expect("classification contract")
+            .split("For every kind,")
+            .next()
+            .expect("classification rows");
+        let mut tested = std::collections::BTreeSet::new();
+        for row in table.lines().filter(|line| {
+            line.starts_with("| ") && !line.starts_with("| Kinds") && !line.starts_with("| ---")
+        }) {
+            let columns: Vec<_> = row.split('|').collect();
+            let expected: Significance =
+                serde_json::from_value(serde_json::Value::String(columns[2].trim().to_owned()))
+                    .expect("documented significance");
+            for word in columns[1].split(',').map(str::trim) {
+                let kind: EventKind =
+                    serde_json::from_value(serde_json::Value::String(word.to_owned()))
+                        .expect("every documented kind exists");
+                assert!(tested.insert(word.to_owned()), "{word} is classified twice");
+                assert_eq!(
+                    significance(kind, EmissionResult::Success),
+                    expected,
+                    "{word}"
+                );
+                assert_eq!(
+                    significance(kind, EmissionResult::Failed),
+                    Significance::Blocker,
+                    "failure override for {word}"
+                );
+            }
+        }
+        // Count the actual enum's declarations rather than a second maintained list.
+        let source = repo_file("crates/onevcs/src/event.rs");
+        let variants = source
+            .split("pub enum EventKind {")
+            .nth(1)
+            .expect("event kind enum")
+            .split("\n}")
+            .next()
+            .expect("enum body")
+            .lines()
+            .filter(|line| line.trim().ends_with(',') && !line.trim().starts_with("///"))
+            .count();
+        assert_eq!(
+            tested.len(),
+            variants,
+            "every current kind has exactly one row"
+        );
+        for state in [
+            CheckState::Passed,
+            CheckState::Skipped,
+            CheckState::Pending,
+            CheckState::Failed,
+            CheckState::NoVerdict,
+        ] {
+            for required in [true, false] {
+                let expected =
+                    if required && matches!(state, CheckState::Failed | CheckState::NoVerdict) {
+                        Significance::Blocker
+                    } else {
+                        Significance::Progress
+                    };
+                assert_eq!(
+                    significance(
+                        EventKind::ChangeCheck,
+                        EmissionResult::Check { required, state }
+                    ),
+                    expected
+                );
+            }
+        }
+        for conclusion in [
+            "failure",
+            "timed_out",
+            "action_required",
+            "cancelled",
+            "stale",
+        ] {
+            let check = Check {
+                name: "required".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some(conclusion.to_owned()),
+                required: true,
+                head: None,
+                url: None,
+                started_at: None,
+                completed_at: None,
+            };
+            assert_eq!(
+                significance(
+                    EventKind::ChangeCheck,
+                    EmissionResult::Check {
+                        required: check.required,
+                        state: check.state()
+                    }
+                ),
+                Significance::Blocker,
+                "required {conclusion} is an immediate blocker"
+            );
+        }
+        for ruling in [
+            EmissionResult::Passed,
+            EmissionResult::PassedWithSkipped,
+            EmissionResult::Failed,
+            EmissionResult::NoVerdict,
+        ] {
+            let passed = matches!(
+                ruling,
+                EmissionResult::Passed | EmissionResult::PassedWithSkipped
+            );
+            assert_eq!(
+                significance(EventKind::GateRun, ruling),
+                if passed {
+                    Significance::Progress
+                } else {
+                    Significance::Blocker
+                }
+            );
+            assert_eq!(
+                significance(EventKind::ChecksSettled, ruling),
+                if passed {
+                    Significance::Milestone
+                } else {
+                    Significance::Blocker
+                }
+            );
+        }
+    }
 }
 
 #[test]

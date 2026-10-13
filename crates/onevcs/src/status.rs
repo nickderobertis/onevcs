@@ -1144,6 +1144,7 @@ fn reconcile_late_merge(
     told: &mut Told,
     carrying: &[&Holder],
     hosting: &dyn Hosting,
+    observing: Option<&crate::stream::Stream>,
 ) {
     if told.recorded.landing.is_some() || !told.asked_the_host_to_land {
         return;
@@ -1175,6 +1176,7 @@ fn reconcile_late_merge(
             stream: told.change_stream.as_deref(),
         },
         hosting,
+        observing,
     );
     // Through the conversion that decides what an object id is, for the reason every
     // other commit this module takes from outside goes through it: the value is
@@ -1240,6 +1242,16 @@ pub(crate) fn landing_of_within(
     repo: Option<&str>,
     hosting: Option<&dyn Hosting>,
 ) -> Result<LandingOf> {
+    landing_of_within_observed(registry, reference, repo, hosting, None)
+}
+
+pub(crate) fn landing_of_within_observed(
+    registry: &Registry,
+    reference: &str,
+    repo: Option<&str>,
+    hosting: Option<&dyn Hosting>,
+    observing: Option<&crate::stream::Stream>,
+) -> Result<LandingOf> {
     // Resolved before anything is searched, so a repository this host does not know is
     // refused as the unregistered repository it is rather than silently widening the
     // question to every identity there is.
@@ -1282,7 +1294,7 @@ pub(crate) fn landing_of_within(
     // answers from — which is what puts a late merge into *this* read rather than
     // into the next one. It takes no host where the caller has none to give.
     if let Some(hosting) = hosting {
-        reconcile_late_merge(registry, &work, &mut told, &carrying, hosting);
+        reconcile_late_merge(registry, &work, &mut told, &carrying, hosting, observing);
     }
     let (judged, unread) = judge(
         &carrying,
@@ -1395,7 +1407,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     // Before the tiers, so a merge the host performed after this host stopped
     // watching is decided *in* this read: it becomes a recorded landing, the word
     // below is the word a record fixes, and the next step is recomputed from it.
-    reconcile_late_merge(registry, &work, &mut told, &carrying, hosting);
+    reconcile_late_merge(registry, &work, &mut told, &carrying, hosting, None);
     let change_url = told.change_url.clone();
     let draft = told.draft.clone();
     let described = told.described.clone();

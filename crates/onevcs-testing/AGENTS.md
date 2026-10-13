@@ -105,7 +105,10 @@ Events go to `$ONEVCS_HOME/streams/<token>.ndjson` and artifacts to
 `$ONEVCS_HOME/artifacts/<id>`, resolved the way `onevcs` resolves them, because
 `onevcs` exposes no writer. The envelope written there is `onevcs`'s own — its
 source word, its phases and its labels, named through it rather than copied, over
-the bus core's generic envelope. **In-memory means the provider's state, never the stream**: both
+the bus core's generic envelope. Its `significance` label is `onevcs`'s own too: each
+emission carries the typed result the provider recorded, and `onevcs::testing::significance`
+— the producer's one table, reachable only under the `testing` feature — classifies it.
+Never keep a second table here. **In-memory means the provider's state, never the stream**: both
 flavours emit the same way, because the stream is the thing under test rather than
 part of the bookkeeping. Nothing here can drift silently — writing anywhere else
 produces a stream `onevcs events` cannot read, and the honesty gate reads both
