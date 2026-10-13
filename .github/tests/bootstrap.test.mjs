@@ -12,7 +12,10 @@ import {
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, join, delimiter } from "node:path";
-function fixture(system, os) {
+function fixture(system, os, machine = "x86_64") {
+    const architecture = ["arm64", "aarch64"].includes(machine)
+        ? "arm64"
+        : "amd64";
     const base =
         process.env.ONEPIPELINE_NODE_SCRATCH_DIR ||
         resolve(".github/.telemetry");
@@ -28,7 +31,7 @@ function fixture(system, os) {
     const asset = readFileSync(".github/actionlint-checksums.txt", "utf8")
         .split("\n")
         .map((line) => line.split(/\s+/)[1])
-        .find((name) => name?.startsWith(`actionlint_${version}_${os}_amd64.`));
+        .find((name) => name?.startsWith(`actionlint_${version}_${os}_${architecture}.`));
     assert.ok(
         asset,
         "archive name must come from the production checksum authority",
@@ -78,7 +81,7 @@ function fixture(system, os) {
         PATH: join(dir, "transport") + delimiter + process.env.PATH,
         npm_config_offline: "true",
         BOOTSTRAP_SYSTEM: system,
-        BOOTSTRAP_MACHINE: "x86_64",
+        BOOTSTRAP_MACHINE: machine,
         BOOTSTRAP_RESPONSE: response,
         BOOTSTRAP_REQUESTS: join(dir, "requests"),
     };
@@ -159,6 +162,32 @@ test("real bootstrap uses declared zip/tar archives and rejects transport, integ
                 0,
                 "recovery after all download boundary failures",
             );
+        } finally {
+            f.cleanup();
+        }
+    }
+});
+
+test("ARM host aliases download the declared ARM assets and recover after corruption", () => {
+    for (const [system, os, machine] of [
+        ["Linux", "linux", "aarch64"],
+        ["Darwin", "darwin", "arm64"],
+    ]) {
+        const f = fixture(system, os, machine);
+        try {
+            const good = f.run();
+            assert.equal(good.status, 0, good.stderr);
+            assert.match(f.asset, /_arm64\.tar\.gz$/);
+            assert.ok(
+                readFileSync(join(f.dir, "requests"), "utf8").includes(f.asset),
+            );
+            f.reset();
+            writeFileSync(f.response, "corrupt ARM response");
+            const bad = f.run();
+            assert.notEqual(bad.status, 0);
+            assert.match(bad.stderr, /checksum mismatch[\s\S]*ACTION:/);
+            writeFileSync(f.response, f.original);
+            assert.equal(f.run().status, 0);
         } finally {
             f.cleanup();
         }

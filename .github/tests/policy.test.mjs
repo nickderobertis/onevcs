@@ -25,7 +25,7 @@ export function history() {
     git("commit", "-qm", "base");
     const base = git("rev-parse", "HEAD");
     const refs = {};
-    for (const kind of ["source", "version", "dependency"]) {
+    for (const kind of ["source", "version", "dependency", "changelog"]) {
         git("checkout", "-q", "--detach", base);
         writeFileSync(
             join(dir, "crates/onevcs/Cargo.toml"),
@@ -39,6 +39,11 @@ export function history() {
             writeFileSync(
                 join(dir, "source.rs"),
                 'fn main() { println!("change"); }\n',
+            );
+        if (kind === "changelog")
+            writeFileSync(
+                join(dir, "CHANGELOG.md"),
+                "# Changes\n\n## 0.2.0\n- Updated release notes.\n",
             );
         git("add", ".");
         git("commit", "-qm", kind);
@@ -112,6 +117,10 @@ test("real git semantic classifier admits only same-repo release versions", () =
     const h = history();
     try {
         assert.equal(h.classify("version").isReleaseOnly, true);
+        assert.equal(h.classify("changelog").isReleaseOnly, true);
+        assert.equal(h.classify("changelog").macosRequired, false);
+        assert.equal(h.classify("changelog", { fork: true }).macosRequired, true);
+        assert.equal(h.classify("changelog", { branch: "feature" }).macosRequired, true);
         assert.equal(
             h.classify("version", { malformedData: true }).macosRequired,
             true,

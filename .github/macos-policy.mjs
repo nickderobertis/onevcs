@@ -46,14 +46,15 @@ export function classify(
             .filter(Boolean);
         if (!paths.length) throw new Error("empty diff");
         for (const path of paths) {
-            const before = git("show", `${b}:${path}`);
-            const after = git("show", `${h}:${path}`);
             if (
                 ["CHANGELOG.md", "crates/onevcs-testing/CHANGELOG.md"].includes(
                     path,
                 )
-            )
+            ) {
+                git("show", `${b}:${path}`);
+                git("show", `${h}:${path}`);
                 continue;
+            }
             if (
                 ![
                     "crates/onevcs/Cargo.toml",
@@ -64,6 +65,8 @@ export function classify(
             ) {
                 throw new Error(`non-release path ${path}`);
             }
+            const before = git("show", `${b}:${path}`);
+            const after = git("show", `${h}:${path}`);
             const result = execFileSync(
                 "python3",
                 [
