@@ -40,9 +40,9 @@ test("reporting commands reject missing or malformed telemetry without rerunning
             }),
             encoding: "utf8",
         });
-        assert.equal(semantic.status, 0);
-        assert.equal(semantic.stdout.trim(), "false");
-        assert.equal(semantic.stderr, "");
+        assert.notEqual(semantic.status, 0);
+        assert.equal(semantic.stdout, "");
+        assert.match(semantic.stderr, /expected one semantic file path[\s\S]*ACTION:/);
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }

@@ -106,6 +106,16 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
             assert.match(missingMetadata.stderr, /METADATA/);
             assert.match(missingMetadata.stderr, /ACTION:/);
             writeFileSync(wheel, saved);
+            execFileSync("python3", [
+                "-c",
+                "import zipfile,sys; p=sys.argv[1];z=zipfile.ZipFile(p);files=[(n,z.read(n)) for n in z.namelist()];z.close();z=zipfile.ZipFile(p,'w');\nfor n,data in files:\n z.writestr(n,data.replace(b'Version: 0.0.0',b'Version: 9.8.7') if n.endswith('/METADATA') else data)\nz.close()",
+                wheel,
+            ]);
+            const wrongVersion = run();
+            assert.notEqual(wrongVersion.status, 0);
+            assert.match(wrongVersion.stderr, /wheel METADATA version.*0\.0\.0/);
+            assert.match(wrongVersion.stderr, /ACTION:/);
+            writeFileSync(wheel, saved);
             const sidecar = execFileSync(
                 "python3",
                 [
@@ -115,6 +125,22 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
                 ],
                 { encoding: "utf8" },
             ).trim();
+            const archive = sidecar.slice(0, -".sha256".length);
+            const archived = readFileSync(archive);
+            const modes = windows ? ["binary"] : ["binary", "docs"];
+            for (const mode of modes) {
+                execFileSync("python3", [
+                    "-c",
+                    "import zipfile,tarfile,sys,io;p,mode=sys.argv[1:];\nif p.endswith('.zip'):\n z=zipfile.ZipFile(p);files=[(n,z.read(n)) for n in z.namelist()];z.close();z=zipfile.ZipFile(p,'w');\n for n,data in files: z.writestr(n,b'corrupt' if n=='onevcs.exe' else data)\n z.close()\nelse:\n t=tarfile.open(p);files=[(m,t.extractfile(m).read()) for m in t.getmembers() if m.isfile()];t.close();t=tarfile.open(p,'w:gz');\n for m,data in files:\n  if mode=='docs' and m.name=='README.md': continue\n  if mode=='binary' and m.name=='onevcs': data=b'corrupt'\n  m.size=len(data);t.addfile(m,io.BytesIO(data))\n t.close()",
+                    archive,
+                    mode,
+                ]);
+                const damaged = run();
+                assert.notEqual(damaged.status, 0);
+                assert.match(damaged.stderr, mode === "binary" ? /archive onevcs.*differs/ : /missing required members.*README/);
+                assert.match(damaged.stderr, /ACTION:/);
+                writeFileSync(archive, archived);
+            }
             const checksum = readFileSync(sidecar);
             writeFileSync(sidecar, "wrong checksum\n");
             assert.notEqual(run().status, 0);

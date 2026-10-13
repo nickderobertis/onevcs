@@ -48,8 +48,16 @@ try:
     if len(sys.argv) != 2:
         raise ValueError("expected one semantic file path")
     data = json.load(sys.stdin)
+    if not isinstance(data, dict) or not all(isinstance(data.get(key), str) for key in ("before", "after")):
+        raise ValueError("expected before/after TOML strings")
     before = tomllib.loads(data["before"])
     after = tomllib.loads(data["after"])
-    print(str(before != after and normalized(data["before"], sys.argv[1]) == normalized(data["after"], sys.argv[1])).lower())
-except (ValueError, KeyError, TypeError):
-    print("false")
+    try:
+        is_version_only = before != after and normalized(data["before"], sys.argv[1]) == normalized(data["after"], sys.argv[1])
+    except ValueError:
+        # Valid TOML with a non-release version requirement is a negative answer.
+        is_version_only = False
+    print(str(is_version_only).lower())
+except (ValueError, KeyError, TypeError) as error:
+    print(f"semantic release comparison: {error}\nACTION: provide one manifest/lock path and valid before/after TOML strings", file=sys.stderr)
+    sys.exit(1)

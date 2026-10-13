@@ -32,7 +32,7 @@
       "dependsOn": ["bootstrap"]
     },
     "lint": {
-      "command": ".github/bin/actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/published-smoke.yml",
+      "command": ".github/bin/actionlint .github/workflows/*.yml",
       "inputs": ["workflowSource"],
       "dependsOn": ["bootstrap"]
     },

@@ -39,6 +39,7 @@ test("Darwin build reports registry/toolchain transport failures before compilat
     );
     const { resolve, join, delimiter } = await import("node:path");
     const { workflows } = await import("../workflow-graph.mjs");
+    const python = spawnSync("bash", ["-c", "command -v python3"], {encoding: "utf8"}).stdout.trim();
     const base =
         process.env.ONEPIPELINE_NODE_SCRATCH_DIR ||
         resolve(".github/.telemetry");
@@ -48,7 +49,7 @@ test("Darwin build reports registry/toolchain transport failures before compilat
         // Only installer transport results are doubled; the release shell runs unchanged.
         writeFileSync(
             join(dir, "python3"),
-            '#!/bin/bash\n[ "$*" = "-m pip install maturin==1.14.1" ] || exit 2\nexit "$PIP_TRANSPORT_RESULT"\n',
+            '#!/bin/bash\n[ "$*" = "-m pip install maturin==1.14.1" ] || exec "$REAL_PYTHON" "$@"\nexit "$PIP_TRANSPORT_RESULT"\n',
             { mode: 0o755 },
         );
         writeFileSync(
@@ -56,6 +57,13 @@ test("Darwin build reports registry/toolchain transport failures before compilat
             '#!/bin/bash\n[ "$1" = target ] && [ "$2" = add ] || exit 2\nexit 1\n',
             { mode: 0o755 },
         );
+        for (const targets of ["--help", "x86_64-unknown-linux-gnu", "x86_64-apple-darwin x86_64-apple-darwin"]) {
+            const invalid = spawnSync("bash", ["scripts/release-darwin.sh"], {env: {...process.env, PATH: dir + delimiter + process.env.PATH, DARWIN_TARGETS: targets, REAL_PYTHON: python, PIP_TRANSPORT_RESULT: "1"}, encoding: "utf8"});
+            assert.notEqual(invalid.status, 0);
+            assert.match(invalid.stderr, /unsupported release target|non-Darwin target|duplicate target/);
+            assert.match(invalid.stderr, /ACTION:/);
+            assert.doesNotMatch(invalid.stderr, /maturin install failed|target installation failed/);
+        }
         for (const result of ["1", "0"]) {
             const run = spawnSync("bash", ["scripts/release-darwin.sh"], {
                 env: {
@@ -65,6 +73,7 @@ test("Darwin build reports registry/toolchain transport failures before compilat
                         workflows()["release.yml"].jobs["build-darwin"].env
                             .DARWIN_TARGETS,
                     PIP_TRANSPORT_RESULT: result,
+                    REAL_PYTHON: python,
                 },
                 encoding: "utf8",
             });

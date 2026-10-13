@@ -11,7 +11,7 @@ sys.dont_write_bytecode = True
 import release_inputs as inputs
 
 
-def check(condition, message="staged artifact contents do not match the release contract"):
+def check(condition, message):
     if not condition:
         inputs.fail(message)
 
@@ -60,7 +60,7 @@ def main():
         metadata_entries = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
         check(len(metadata_entries) == 1, "wheel needs exactly one METADATA member")
         metadata = z.read(metadata_entries[0]).decode()
-        check(f"Version: {version}\n" in metadata, "staged artifact contract mismatch")
+        check(f"Version: {version}\n" in metadata, f"wheel METADATA version does not match expected {version}")
         if "apple" in target:
             check(f"_{'arm64' if arch == 'aarch64' else arch}.whl" in wheel.name and "macosx_" in wheel.name, f"wrong Darwin tag: {wheel}")
     packages = []
@@ -93,11 +93,12 @@ def main():
     archive = inputs.one([p for p in (out / "archives").iterdir() if not p.name.endswith(".sha256")], "staged archive")
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as z:
-            check(z.read("onevcs.exe") == source, "staged artifact contract mismatch")
+            check(z.read("onevcs.exe") == source, "zip archive onevcs.exe differs from retained compiled artifact")
     else:
         with tarfile.open(archive) as t:
-            check(tar_member(t, "onevcs").read() == source, "staged artifact contract mismatch")
-            check({"README.md", "LICENSE", "CHANGELOG.md"}.issubset(t.getnames()))
+            check(tar_member(t, "onevcs").read() == source, "tar archive onevcs differs from retained compiled artifact")
+            missing = {"README.md", "LICENSE", "CHANGELOG.md"} - set(t.getnames())
+            check(not missing, f"tar archive is missing required members: {sorted(missing)}")
     checksum = archive.with_name(archive.name + ".sha256").read_text().split()
     check(len(checksum) == 2, "archive checksum needs a digest and filename")
     check(checksum[0] == hashlib.sha256(archive.read_bytes()).hexdigest() and checksum[1] == archive.name, "archive checksum does not match its staged archive")
