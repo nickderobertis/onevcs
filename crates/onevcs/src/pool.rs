@@ -44,7 +44,7 @@ use crate::{git, guidance, ids, lock, processes};
 mod maintain;
 
 pub use maintain::{
-    pool_maintain, IdentityMaintenance, IdentityOutcome, MaintainReport, SlotMaintenance,
+    pool_maintain, IdentityMaintenance, IdentityOutcome, MaintainReport, SlotDisk, SlotMaintenance,
     SlotOutcome,
 };
 
@@ -242,6 +242,8 @@ pub struct WorkspaceCapacity {
 /// What `pool status` reports: the capacity, and every slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PoolStatus {
+    /// The resolved maintenance and the layer supplying it.
+    pub maintenance: crate::repository_config::MaintenanceSource,
     /// The identity's capacity, resolved with no per-open override.
     pub capacity: WorkspaceCapacity,
     /// Every slot, by number.
@@ -1169,6 +1171,7 @@ pub fn pool_status(repo: &str) -> Result<PoolStatus> {
     let asked = asked(&request)?;
     let survey = survey(&asked.resolution.key, &pool_dir(&asked.identity_root))?;
     Ok(PoolStatus {
+        maintenance: crate::repository_config::resolve(&asked.resolution, &asked.resolved),
         capacity: capacity_of(&asked, &survey, &request),
         slots: survey.slots.iter().map(Surveyed::status).collect(),
     })

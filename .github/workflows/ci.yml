@@ -235,6 +235,8 @@ jobs:
         run: just bootstrap
       - name: Quality gate (every project)
         run: just ci-tier run -t check
+      - name: Host-sized workloads
+        run: just workload
 
   # Prove the end-user install path on every platform: install the binary the
   # documented way and smoke-test the real artifact with the same script the

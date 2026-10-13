@@ -216,7 +216,7 @@ _audit-test:
 scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
-unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload))"
+unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload) | binary(pool-workload))"
 # `onevcs-e2e:test` — the binary's journeys.
 e2e-tier := "binary(e2e) & not " + scripts-suites
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
@@ -502,3 +502,12 @@ screenshots-bless: screenshots
 [positional-arguments]
 lint-llm-diff base="origin/main" *nx_args:
     @./scripts/llmlint-diff.sh "$@"
+
+# Host-sized workloads run only on the release sweep or explicit request.
+workload:
+    @bash scripts/nx.sh run-many -t workload
+
+_pool-workload:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_POOL_WORKLOAD_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test pool-workload --locked --status-level fail {{recovery-no-tests}}
+    @"{{onebudgetspec-root}}/bin/onebudgetspec" check crates/onevcs/tests/pool-workload/budgets.yaml

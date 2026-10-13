@@ -627,6 +627,8 @@ pub(crate) struct Resolved {
     /// What maintaining an idle slot is, for the verb that performs it. `None` is no
     /// maintenance ever.
     pub maintain: Option<Maintenance>,
+    /// The host layer that supplied maintenance.
+    pub maintain_from: String,
     /// Whether anything about this identity departs from the shipped default: a pool
     /// above nought, a bounded overflow, a delete list, or maintenance. A host that
     /// departs in nothing takes today's path exactly.
@@ -733,6 +735,11 @@ pub(crate) fn resolve(
         file_pool,
         delete,
         maintain,
+        maintain_from: layer(if rule.and_then(|rule| rule.maintain.as_ref()).is_some() {
+            rule_name.as_deref().expect("a matching rule")
+        } else {
+            "default:"
+        }),
         configured,
     })
 }

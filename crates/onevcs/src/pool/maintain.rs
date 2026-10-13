@@ -96,6 +96,11 @@ pub struct IdentityMaintenance {
 pub enum IdentityOutcome {
     /// The resolved policy names no `maintain`, so there is nothing to run.
     NoMaintainCommand,
+    /// The repository configuration could not be read; nothing ran.
+    MaintenanceUnreadable {
+        /// The refusal naming the checkout or document.
+        reason: String,
+    },
     /// Nothing has cut a slot for this identity.
     NoSlots,
     /// Another `pool maintain` holds this identity right now; nothing was touched.
@@ -157,7 +162,18 @@ pub enum SlotOutcome {
         /// Everything it wrote, stored as one artifact — `None` where storing it
         /// failed, which is warned about on stderr.
         log: Option<ArtifactId>,
+        /// Allocated worktree bytes before and after the command.
+        disk: Option<SlotDisk>,
     },
+}
+
+/// Allocated bytes held by a slot's worktree around maintenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDisk {
+    /// Allocated bytes immediately before the command.
+    pub before_bytes: u64,
+    /// Allocated bytes immediately after the command.
+    pub after_bytes: u64,
 }
 
 /// The lock identity one identity's maintenance is serialized under.
@@ -209,10 +225,20 @@ pub fn pool_maintain(scope: Scope, older_than: Option<Span>) -> Result<MaintainR
 
 /// Maintain one identity: cheap answers first, then the identity lock, then each slot.
 fn maintain_identity(resolution: &Resolution, older_than: Option<Span>) -> Result<IdentityOutcome> {
+    let resolving = Instant::now();
     let resolved = workspaces::resolve_for(resolution, Overrides::default())?;
-    let Some(maintenance) = resolved.maintain else {
-        return Ok(IdentityOutcome::NoMaintainCommand);
+    let maintenance = match crate::repository_config::resolve(resolution, &resolved) {
+        crate::repository_config::MaintenanceSource::Declared { maintenance, .. }
+        | crate::repository_config::MaintenanceSource::HostRule { maintenance, .. } => maintenance,
+        crate::repository_config::MaintenanceSource::Undeclared { .. } => {
+            return Ok(IdentityOutcome::NoMaintainCommand)
+        }
+        // llmlint: ignore-block[cli_output_contract] The approved contract keeps command-based exits: nothing ran, so exit 0. Unreadable maintenance is the identity's structured outcome, which the engine reads and surfaces; a nonzero exit would change the contract without approval (manager ruling).
+        crate::repository_config::MaintenanceSource::Unreadable { reason } => {
+            return Ok(IdentityOutcome::MaintenanceUnreadable { reason })
+        } // llmlint: ignore-end[cli_output_contract]
     };
+    let resolving_seconds = resolving.elapsed().as_secs_f64();
     let pool = pool_dir(&workspace::identity_dir(&resolution.key)?);
     if !pool.is_dir() {
         return Ok(IdentityOutcome::NoSlots);
@@ -237,7 +263,14 @@ fn maintain_identity(resolution: &Resolution, older_than: Option<Span>) -> Resul
     }
     let mut slots = Vec::with_capacity(numbers.len());
     for number in numbers {
-        let outcome = maintain_slot(&resolution.key, &pool, number, &maintenance, older_than)?;
+        let outcome = maintain_slot(
+            &resolution.key,
+            &pool,
+            number,
+            &maintenance,
+            older_than,
+            resolving_seconds,
+        )?;
         slots.push(SlotMaintenance { number, outcome });
     }
     Ok(IdentityOutcome::Slots(slots))
@@ -260,12 +293,36 @@ fn maintain_slot(
     number: u32,
     maintenance: &Maintenance,
     older_than: Option<Span>,
+    resolving_seconds: f64,
 ) -> Result<SlotOutcome> {
+    let claiming = Instant::now();
     let claimed = match claim(identity, pool, number, older_than)? {
         Ok(claimed) => claimed,
         Err(kept) => return Ok(kept),
     };
-    let ran = run(&claimed.dir.join("worktree"), maintenance);
+    let claiming_seconds = claiming.elapsed().as_secs_f64();
+    let worktree = claimed.dir.join("worktree");
+    let measure = || match disk_bytes(&worktree) {
+        Ok(measured) => Some(measured),
+        Err(failure) => {
+            eprintln!("onevcs: warning: slot {number} of {identity}: cannot measure worktree {}: {failure}", worktree.display());
+            None
+        }
+    };
+    let measuring = Instant::now();
+    let before = measure();
+    let before_seconds = measuring.elapsed().as_secs_f64();
+    let ran = run(&worktree, maintenance);
+    let measuring = Instant::now();
+    let after = measure();
+    let after_seconds = measuring.elapsed().as_secs_f64();
+    let recording = Instant::now();
+    let disk = before
+        .zip(after)
+        .map(|((before_bytes, _), (after_bytes, _))| SlotDisk {
+            before_bytes,
+            after_bytes,
+        });
     let log = match stream::store_artifact("log", &ran.output) {
         Ok(stored) => Some(ArtifactId(stored.id)),
         Err(failure) => {
@@ -281,10 +338,41 @@ fn maintain_slot(
     record.last_maintained = Some(Timestamp::now());
     record.last_outcome = Some(ran.outcome);
     write_record(&claimed.dir, &record)?;
+    if let Some(path) = std::env::var_os("ONEVCS_POOL_MAINTAIN_TELEMETRY") {
+        let telemetry = serde_json::json!({
+            "resolving_seconds": resolving_seconds,
+            "claiming_seconds": claiming_seconds,
+            "before_seconds": before_seconds,
+            "after_seconds": after_seconds,
+            "recording_seconds": recording.elapsed().as_secs_f64(),
+            "before_entries": before.map(|(_, entries)| entries),
+            "after_entries": after.map(|(_, entries)| entries),
+        });
+        let path = PathBuf::from(path);
+        let valid = path.is_absolute()
+            && path.parent().is_some_and(Path::is_dir)
+            && match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata.is_file() && !metadata.is_symlink(),
+                Err(failure) => failure.kind() == std::io::ErrorKind::NotFound,
+            };
+        let recorded = if valid {
+            std::fs::write(&path, telemetry.to_string())
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "telemetry requires an absolute regular file path with an existing parent directory"))
+        };
+        if let Err(failure) = recorded {
+            eprintln!(
+                "onevcs: warning: cannot record maintenance telemetry at {}: {failure}",
+                path.display()
+            );
+        }
+    }
     Ok(SlotOutcome::Ran {
         outcome: ran.outcome,
         duration_ms: u64::try_from(ran.duration.as_millis()).unwrap_or(u64::MAX),
         log,
+        disk,
     })
 }
 
@@ -411,7 +499,12 @@ fn run(worktree: &Path, maintenance: &Maintenance) -> Ran {
     let started = Instant::now();
     let bound = maintenance.timeout.as_duration();
     let program = &maintenance.command.program;
-    let mut command = Command::new(program);
+    let executable = if program.chars().any(std::path::is_separator) {
+        worktree.join(program)
+    } else {
+        PathBuf::from(program)
+    };
+    let mut command = Command::new(executable);
     command
         .args(&maintenance.command.args)
         .current_dir(worktree)
@@ -497,4 +590,36 @@ fn combined(stdout: Vec<u8>, stderr: Vec<u8>) -> String {
     let mut output = String::from_utf8_lossy(&stdout).into_owned();
     output.push_str(&String::from_utf8_lossy(&stderr));
     output
+}
+
+/// Walk every entry without following links, counting allocated blocks once per inode.
+#[cfg(unix)]
+fn disk_bytes(root: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![root.to_path_buf()];
+    let mut bytes = 0u64;
+    let mut entries = 0u64;
+    while let Some(path) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        entries += 1;
+        if !seen.insert((metadata.dev(), metadata.ino())) {
+            continue;
+        }
+        bytes = bytes.saturating_add(metadata.blocks().saturating_mul(512));
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        }
+    }
+    Ok((bytes, entries))
+}
+
+#[cfg(not(unix))]
+fn disk_bytes(_root: &Path) -> std::io::Result<(u64, u64)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "allocated block measurement is unavailable on this platform",
+    ))
 }

@@ -160,3 +160,8 @@ path = "tests/release_pr/main.rs"
 [[test]]
 name = "recovery-workload"
 path = "tests/recovery-workload/main.rs"
+
+# Isolated pool measurement, excluded from every per-change tier.
+[[test]]
+name = "pool-workload"
+path = "tests/pool-workload/main.rs"

@@ -834,7 +834,7 @@ amendment left to inference.
 
 | Item | Inferred shape | Why |
 | --- | --- | --- |
-| a slot kept for a reason the report has no variant for | `Broken { reason }`, with the reason: a live claim this run did not write, an exclusive occupancy take that failed, or a process still working inside an unreturned tree | `SlotOutcome` names four outcomes and three reasons to keep, and each of these is a slot that cannot be claimed *now* rather than one that is not due or in use by a session. `Broken` is the one variant that carries prose, and `pool status` says which state the slot is really in. The declared enum is `onepipeline`'s to read, so a fifth variant is a question for the contract owner rather than this crate's to add. |
+| a busy slot | `Unavailable { holder }` for a live claim, occupancy or process | Busy slots may become available later; `Broken` names persistent damage. |
 | `Claimed.by_pid` where the holder has not stamped its pid | `0` | The holder writes its pid the instant after the kernel grants the lock, so a reader can arrive inside that instant; `0` names no process an operator could look at, which is what an unknown holder is, and the next call reads the stamp. |
 | which slots one run visits | the ones the survey found, after the shed, in number order — a slot cut while an earlier one was being maintained is left for the next call | A survey is one read; re-reading the pool after every command would have a run chase opens for as long as they kept coming. Each slot's *state* is still read when its turn comes, because a slot idle at the survey may be a session's by then. |
 | the artifact | one `log` artifact per ran command, standard output first then standard error, stored even when empty | `Output::combined`'s order, for the reason it gives: interleaving is not recoverable from two captured pipes, and what matters is that the whole run survives. Stored even when empty so `log` is `None` only where storing failed, which is warned about on stderr. |
@@ -1068,3 +1068,30 @@ the production registry, record and envelope types; it selects no alternate VCS
 implementation and changes no default-build interface. Manager ruling
 `c-8c93437fae9b6ae18b6a1387e3f29280` approved this bridge so the producer and
 onepipeline can generate the same complete workloads in process.
+
+
+## Repository-declared pool maintenance
+
+<!-- repository-maintenance-summary:start -->
+`onevcs.toml` at the repository root declares `schema_version = 1` and optional
+`[pool.maintain]`: required non-empty `command` argv with a non-empty program,
+optional `timeout` using the workspaces `Span` grammar (default `30m`). Version 1
+refuses unknown keys and tables; later versions ignore unknown keys. Missing or
+non-integer versions are refused with the document and line.
+
+Resolve from the publication checkout on its base branch, never a slot or session:
+repository command first, then the matching host workspaces rule or `default:` when
+the file or table is absent, otherwise nothing. Unreadable files or checkouts block
+fallback. onevcs has no default command and knows no build tool or output layout.
+Use `onevcs pool declaration PATH [--json]` to validate a root or file without
+registration. Example argv: `["scripts/maintain-slot.sh", "--flag"]`.
+
+`PoolStatus.maintenance` reports declared, host-rule, undeclared or unreadable;
+its JSON fields are `source`, `from`, `command`, `timeout`, `reason` (unused fields
+null). `IdentityOutcome::MaintenanceUnreadable { reason }` runs nothing.
+`SlotOutcome::Ran.disk: Option<SlotDisk>` reports allocated `before_bytes` and
+`after_bytes`, counting each inode once and following no symlink, inside the claim
+around the command even on failure. Measurement errors warn and leave disk null
+without changing the outcome; `duration_ms` times the command alone. Human slot
+lines append `, worktree <before> → <after>` in sweep's byte format.
+<!-- repository-maintenance-summary:end -->

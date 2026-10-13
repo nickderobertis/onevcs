@@ -403,7 +403,7 @@ fn locate(registry: &Registry, repo: &str) -> Result<(String, Option<PathBuf>)> 
 /// Never a run clone, a session worktree, or a branch under review. A probe reading
 /// a script off the branch a dispatch is authoring is a probe that dispatch can
 /// rewrite, so the one checkout this crate never works in is the one it reads from.
-fn probe_checkout(publication: Option<PathBuf>) -> probe::Checkout {
+pub(crate) fn probe_checkout(publication: Option<PathBuf>) -> probe::Checkout {
     let Some(checkout) = publication else {
         return probe::Checkout::None(
             "this identity has no registered checkout, so there is nowhere to run a script probe \
