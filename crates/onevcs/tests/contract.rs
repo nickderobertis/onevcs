@@ -9523,10 +9523,45 @@ fn operation_progress_public_signatures_match_the_documented_invocation_contract
 // public testing seam or a unit-tier dependency on docs.
 #[path = "../src/significance.rs"]
 mod producer_significance;
+// The testing crate's provider stamps the same words from a mirror of that table;
+// compiled here the same way, so the two are reconciled in the contract graph.
+#[path = "../../onevcs-testing/src/significance.rs"]
+mod provider_significance;
 
 mod significance_contract_tests {
     use super::producer_significance::{significance, EmissionResult};
     use super::*;
+
+    #[test]
+    fn operation_progress_the_testing_providers_stamp_what_the_producer_stamps_for_every_kind() {
+        // A provider records only the successful form of a kind, and `checks-settled`
+        // only once its checks passed — so that is the producer's answer it mirrors.
+        let doc = contract();
+        let table = doc
+            .split("The producer classification table is exhaustive over current kinds:")
+            .nth(1)
+            .expect("classification contract")
+            .split("For every kind,")
+            .next()
+            .expect("classification rows");
+        let mut compared = 0;
+        for row in table.lines().filter(|line| {
+            line.starts_with("| ") && !line.starts_with("| Kinds") && !line.starts_with("| ---")
+        }) {
+            for word in row.split('|').nth(1).expect("a kinds column").split(',') {
+                let kind: EventKind =
+                    serde_json::from_value(serde_json::Value::String(word.trim().to_owned()))
+                        .expect("every documented kind exists");
+                assert_eq!(
+                    super::provider_significance::significance(kind),
+                    significance(kind, EmissionResult::Passed),
+                    "{word}"
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared > 30, "the whole table was compared: {compared}");
+    }
 
     #[test]
     fn operation_progress_producer_reconciles_the_complete_documented_table_and_typed_results() {
