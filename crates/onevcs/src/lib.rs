@@ -101,6 +101,7 @@ mod review;
 pub mod rules;
 mod rules_apply;
 mod session;
+mod significance;
 mod stack_base;
 mod standings;
 mod status;

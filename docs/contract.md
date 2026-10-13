@@ -422,9 +422,10 @@ or empty — and matches no `exclude` matcher. Matcher fields are all optional a
 conjoin within one matcher: `source` is the envelope's source family, by exact
 equality; `kind` is a glob over the event kind's kebab-case wire string, so
 `change-*` is `change-opened`, `change-check`, and `change-merged`; and `run_id`,
-`node`, `step`, `member`, and `persona` are exact equality against the envelope's
+`node`, `step`, `member`, `persona`, and `significance` are exact equality against the envelope's
 reserved `labels` keys, where a matcher naming a label the envelope did not stamp
-does not match it. A `source` word this crate does not produce is admitted and
+does not match it. The significance amendment below adds its reader-only legacy
+default. A `source` word this crate does not produce is admitted and
 matches none of its envelopes, because `Source` is the bus core's open newtype.
 Deliberately **not** in the grammar: `stream`, which is a producing process's id
 rather than a family, and payload fields, which differ per kind. The filter types
@@ -5763,10 +5764,12 @@ entry points, session readers and CLI operands retain their behavior; existing e
 stores remain authoritative beside the new invocation store. After a crash complete
 records remain readable; the engine determines death.
 
-Significance travels as a kebab-case string in `Labels.extra`, beside the existing phase,
+Significance is a reserved textual label and travels as a kebab-case string in
+`Labels.extra`, beside the existing phase,
 without a new strict envelope field. `MatchFields.significance: Option<Significance>`
 is optional and omitted when absent. **This matcher field addition breaks exhaustive
-Rust struct literals and requires a pre-1.0 minor release (`feat!`).** Legacy unstamped
+Rust struct literals and requires a pre-1.0 minor release (`feat!`).**
+The approved `BaseArrived` addition also widens the exhaustive `EventKind` enum. Legacy unstamped
 records mean progress for significance matching through the `EventStream` reader/filter
 adapter; direct `EventFilter::matches` on a raw unstamped envelope does not apply that
 default. Labels serialization and legacy round-trip bytes stay unchanged. Invalid stamps
@@ -5793,7 +5796,13 @@ The producer classification table is exhaustive over current kinds:
 | gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
 | stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
 | base-merge | progress | blocker for conflict or refusal; merged and skipped remain progress |
-| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, branch-retired, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, release-probed, review-comments-read, change-standings-read | progress | Ordinary success or running |
+| release-probed | progress | blocker for not-answered; released and no-release remain progress |
+| branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
+| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
+
+Required check significance uses the watch's existing cached declaration, falling
+back to the host's per-check marking only when that declaration is unavailable.
+Original check payloads remain unchanged and no additional host read is made.
 
 For every kind, typed failure or refusal overrides its ordinary classification to
 blocker. Lock waits requiring no person remain progress. Retired recognized kinds

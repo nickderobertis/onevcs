@@ -98,11 +98,23 @@ impl OperationHandle {
                 "operation repository must be a normalized registered identity",
             ));
         }
-        let handle = Self {
-            id: format!("o-{}", crate::ids::unique()),
+        let directory = crate::home::root()?.join("operations");
+        crate::home::ensure_dir(&directory)?;
+        let (handle, path) = loop {
+            let handle = Self {
+                id: format!("o-{}", crate::ids::unique()),
+            };
+            let path = handle.directory()?;
+            match std::fs::create_dir(&path) {
+                Ok(()) => break (handle, path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(crate::error::at("reserve operation directory", &path)(
+                        error,
+                    ))
+                }
+            }
         };
-        let path = handle.directory()?;
-        crate::home::ensure_dir(&path)?;
         let manifest = path.join("operation.json");
         let bytes = serde_json::to_vec(&StoredOperation {
             version: 1,

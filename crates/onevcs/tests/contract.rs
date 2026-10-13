@@ -47,7 +47,7 @@ use onevcs::{
     MergePolicy, NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
     ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
     PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
-    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha,
+    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Significance,
     SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, TermScope, Url,
     Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
@@ -9502,4 +9502,148 @@ fn operation_progress_public_signatures_match_the_documented_invocation_contract
         json!({})
     );
     assert!(EventFilter::parse("include: [{significance: important}]").is_err());
+}
+
+// Compile the private pure producer function against the public vocabulary. This
+// keeps its exhaustive contract reconciliation in the contract graph, without a
+// public testing seam or a unit-tier dependency on docs.
+#[path = "../src/significance.rs"]
+mod producer_significance;
+
+mod significance_contract_tests {
+    use super::producer_significance::{significance, EmissionResult};
+    use super::*;
+
+    #[test]
+    fn operation_progress_producer_reconciles_the_complete_documented_table_and_typed_results() {
+        let doc = contract();
+        let table = doc
+            .split("The producer classification table is exhaustive over current kinds:")
+            .nth(1)
+            .expect("classification contract")
+            .split("For every kind,")
+            .next()
+            .expect("classification rows");
+        let mut tested = std::collections::BTreeSet::new();
+        for row in table.lines().filter(|line| {
+            line.starts_with("| ") && !line.starts_with("| Kinds") && !line.starts_with("| ---")
+        }) {
+            let columns: Vec<_> = row.split('|').collect();
+            let expected: Significance =
+                serde_json::from_value(serde_json::Value::String(columns[2].trim().to_owned()))
+                    .expect("documented significance");
+            for word in columns[1].split(',').map(str::trim) {
+                let kind: EventKind =
+                    serde_json::from_value(serde_json::Value::String(word.to_owned()))
+                        .expect("every documented kind exists");
+                assert!(tested.insert(word.to_owned()), "{word} is classified twice");
+                assert_eq!(
+                    significance(kind, EmissionResult::Success),
+                    expected,
+                    "{word}"
+                );
+                assert_eq!(
+                    significance(kind, EmissionResult::Failed),
+                    Significance::Blocker,
+                    "failure override for {word}"
+                );
+            }
+        }
+        // Count the actual enum's declarations rather than a second maintained list.
+        let source = repo_file("crates/onevcs/src/event.rs");
+        let variants = source
+            .split("pub enum EventKind {")
+            .nth(1)
+            .expect("event kind enum")
+            .split("\n}")
+            .next()
+            .expect("enum body")
+            .lines()
+            .filter(|line| line.trim().ends_with(',') && !line.trim().starts_with("///"))
+            .count();
+        assert_eq!(
+            tested.len(),
+            variants,
+            "every current kind has exactly one row"
+        );
+        for state in [
+            CheckState::Passed,
+            CheckState::Skipped,
+            CheckState::Pending,
+            CheckState::Failed,
+            CheckState::NoVerdict,
+        ] {
+            for required in [true, false] {
+                let expected =
+                    if required && matches!(state, CheckState::Failed | CheckState::NoVerdict) {
+                        Significance::Blocker
+                    } else {
+                        Significance::Progress
+                    };
+                assert_eq!(
+                    significance(
+                        EventKind::ChangeCheck,
+                        EmissionResult::Check { required, state }
+                    ),
+                    expected
+                );
+            }
+        }
+        for conclusion in [
+            "failure",
+            "timed_out",
+            "action_required",
+            "cancelled",
+            "stale",
+        ] {
+            let check = Check {
+                name: "required".to_owned(),
+                status: "completed".to_owned(),
+                conclusion: Some(conclusion.to_owned()),
+                required: true,
+                head: None,
+                url: None,
+                started_at: None,
+                completed_at: None,
+            };
+            assert_eq!(
+                significance(
+                    EventKind::ChangeCheck,
+                    EmissionResult::Check {
+                        required: check.required,
+                        state: check.state()
+                    }
+                ),
+                Significance::Blocker,
+                "required {conclusion} is an immediate blocker"
+            );
+        }
+        for ruling in [
+            EmissionResult::Passed,
+            EmissionResult::PassedWithSkipped,
+            EmissionResult::Failed,
+            EmissionResult::NoVerdict,
+        ] {
+            let passed = matches!(
+                ruling,
+                EmissionResult::Passed | EmissionResult::PassedWithSkipped
+            );
+            assert_eq!(
+                significance(EventKind::GateRun, ruling),
+                if passed {
+                    Significance::Progress
+                } else {
+                    Significance::Blocker
+                }
+            );
+            assert_eq!(
+                significance(EventKind::ChecksSettled, ruling),
+                if passed {
+                    Significance::Milestone
+                } else {
+                    Significance::Blocker
+                }
+            );
+        }
+    }
 }

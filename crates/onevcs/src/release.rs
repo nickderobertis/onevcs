@@ -541,7 +541,12 @@ fn ask(
         // template, and no command line.
         payload.insert("version".to_owned(), Value::String(version.clone()));
     }
-    stream.emit(EventKind::ReleaseProbed, payload);
+    let result = if matches!(probed.answer, ReleaseAnswer::NotAnswered { .. }) {
+        crate::event::EmissionResult::Failed
+    } else {
+        crate::event::EmissionResult::Success
+    };
+    stream.emit_result(EventKind::ReleaseProbed, payload, Vec::new(), result);
     probed
 }
 
@@ -1043,6 +1048,7 @@ pub(crate) fn reconcile_landing(
     };
     match opened {
         Ok(mut recorded) => {
+            recorded.inherit_operation(stream);
             recorded.emit(EventKind::ChangeMerged, merged);
             true
         }

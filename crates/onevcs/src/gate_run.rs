@@ -59,6 +59,17 @@ pub(crate) enum Ruling {
     NoVerdict,
 }
 
+impl From<Ruling> for crate::event::EmissionResult {
+    fn from(ruling: Ruling) -> Self {
+        match ruling {
+            Ruling::Passed => Self::Passed,
+            Ruling::PassedWithSkipped => Self::PassedWithSkipped,
+            Ruling::Failed => Self::Failed,
+            Ruling::NoVerdict => Self::NoVerdict,
+        }
+    }
+}
+
 impl Ruling {
     fn word(self) -> &'static str {
         match self {

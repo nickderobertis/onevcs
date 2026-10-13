@@ -159,8 +159,12 @@ mod labels;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod library;
+// The additive operation API is a library interface; these journeys use real git
+// and only the existing third-party hosting provider boundary.
 #[cfg(unix)]
 mod lifecycle;
+#[cfg(unix)]
+mod operation_progress;
 // Linux only: it counts a directory's own `opendir` calls through `inotify`, which
 // only Linux has. Its head carries the reason the counting is outside the process,
 // and the journeys that use it are gated the same way.

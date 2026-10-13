@@ -97,6 +97,17 @@ impl Stream {
         Ok(())
     }
 
+    pub(crate) fn inherit_operation(&mut self, parent: &Stream) {
+        if let Some(operation) = &parent.operation {
+            for key in ["identity", "operation_id"] {
+                if let Some(value) = parent.labels.extra.get(key).and_then(Value::as_str) {
+                    self.label(key, value);
+                }
+            }
+            self.operation = Some(operation.clone().with_labels(self.labels.clone()));
+        }
+    }
+
     pub(crate) fn in_operation(&self) -> bool {
         self.operation.is_some()
     }
@@ -171,7 +182,7 @@ impl Stream {
             run.gate.phase(),
             run.payload(attempt),
             Vec::new(),
-            crate::event::EmissionResult::Gate(run.verdict),
+            run.verdict.into(),
         );
     }
 
@@ -1308,9 +1319,73 @@ mod tests {
             "failed batch never consumes records"
         );
         assert!(OperationEvents::resume(&operation, "o-reader:1").is_err());
+        assert!(OperationEvents::resume(&operation, "o-reader:unknown").is_err());
+        assert!(OperationEvents::resume(&operation, "o-reader:18446744073709551615").is_err());
         std::fs::write(&path, format!("{record}\n{record}\n")).expect("repair malformed tail");
         let mut resumed = OperationEvents::resume(&operation, &cursor).expect("saved cursor");
         assert_eq!(resumed.read().expect("one repaired record").len(), 1);
         assert!(resumed.read().expect("drained, not completed").is_empty());
+        let mut wrong_identity = record.clone();
+        wrong_identity["labels"]["identity"] = json!("/different/repository");
+        std::fs::write(&path, format!("{wrong_identity}\n")).expect("foreign identity fixture");
+        assert!(OperationEvents::open(&operation)
+            .expect("reader")
+            .read()
+            .expect_err("foreign identity refuses")
+            .to_string()
+            .contains("does not belong"));
+        std::fs::write(
+            directory.join("operation.json"),
+            r#"{"version":2,"operation":{"kind":"integrate","repository":"/local/repository"}}"#,
+        )
+        .expect("future manifest");
+        assert!(crate::ops::OperationHandle::open("o-reader")
+            .expect_err("unknown storage schema")
+            .to_string()
+            .contains("schema version 2"));
+    }
+    #[test]
+    fn operation_progress_legacy_significance_matching_preserves_bytes_and_rejects_malformed_stamps(
+    ) {
+        let _home = inhabit();
+        let token = "s-significance";
+        let mut stream = Stream::open(token).expect("real stream writer");
+        stream.emit(EventKind::ChangeOpened, Map::new());
+        let path = path_for(token).expect("private fixture path");
+        let text = std::fs::read_to_string(&path).expect("producer record");
+        let mut legacy: Value = serde_json::from_str(text.trim()).expect("record");
+        legacy["labels"]
+            .as_object_mut()
+            .expect("labels")
+            .remove("significance");
+        let bytes = format!("{legacy}\n");
+        std::fs::write(&path, &bytes).expect("legacy unstamped fixture");
+        let progress = EventFilter::parse("include: [{significance: progress}]")
+            .expect("significance matcher");
+        let mut reader =
+            EventStream::open_filtered(&SessionToken(token.to_owned()), progress.clone())
+                .expect("reader adapter");
+        let batch = reader.read().expect("legacy matches progress");
+        assert_eq!(batch.len(), 1);
+        assert!(!batch[0].labels.extra.contains_key("significance"));
+        assert!(
+            !progress.matches(&batch[0]),
+            "raw matching intentionally has no vocabulary default hook"
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("legacy bytes"), bytes);
+        for stamp in [json!("important"), json!(3), Value::Null] {
+            let mut malformed = legacy.clone();
+            malformed["labels"]["significance"] = stamp;
+            std::fs::write(&path, format!("{malformed}\n")).expect("malformed legacy record");
+            let filter = EventFilter::parse("include: [{significance: milestone}]")
+                .expect("a filter that would omit progress");
+            let mut reader = EventStream::open_filtered(&SessionToken(token.to_owned()), filter)
+                .expect("stream still opens");
+            assert!(reader
+                .read()
+                .expect_err("invalid stamp is reported even if filtered out")
+                .to_string()
+                .contains("significance"));
+        }
     }
 }
