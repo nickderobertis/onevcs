@@ -539,9 +539,11 @@ fn pool_maintain(args: &PoolMaintainArgs) -> Result<u8> {
             crate::IdentityOutcome::NoMaintainCommand => {
                 println!("{} — no maintain command", identity.identity);
             }
+            // llmlint: ignore-block[cli_output_contract] This is an identity row in the successful command's maintenance report, alongside NoMaintainCommand and Claimed, not a command error. The structured outcome stays unchanged and exit 0 follows the manager's contract ruling, so its human rendering belongs on stdout.
             crate::IdentityOutcome::MaintenanceUnreadable { reason } => {
                 println!("{} — maintenance unreadable: {reason}", identity.identity)
             }
+            // llmlint: ignore-end[cli_output_contract]
             crate::IdentityOutcome::NoSlots => println!("{} — no slots", identity.identity),
             crate::IdentityOutcome::Claimed { by_pid } => println!(
                 "{} — claimed: another pool maintain (pid {by_pid}) is maintaining it right now",

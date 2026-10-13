@@ -521,26 +521,6 @@ fn pool_workload_is_absent_from_every_check_graph_and_present_only_when_requeste
             "{selected:?}"
         );
     }
-    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-        &std::fs::read_to_string(checkout.root.join(".github/workflows/ci.yml"))
-            .expect("CI workflow"),
-    )
-    .expect("workflow YAML");
-    let runs: Vec<_> = workflow["jobs"]["sweep"]["steps"]
-        .as_sequence()
-        .expect("sweep steps")
-        .iter()
-        .filter_map(|step| step["run"].as_str())
-        .collect();
-    let gate = runs
-        .iter()
-        .position(|run| *run == "just ci-tier run -t check")
-        .expect("quality gate");
-    let workload = runs
-        .iter()
-        .position(|run| *run == "just workload")
-        .expect("release sweep runs workloads");
-    assert!(workload > gate);
     let workloads = checkout.selected(&["npx", "nx", "run-many", "-t", "workload"], &[]);
     assert_eq!(
         projects_running(&workloads, "workload"),

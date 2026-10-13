@@ -236,6 +236,7 @@ jobs:
       - name: Quality gate (every project)
         run: just ci-tier run -t check
       - name: Host-sized workloads
+        # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] The task explicitly requires this release-only workload after the quality gate. Check graphs contain no workload task (proved by graph.rs), so this runs the disjoint performance journey and budget, not a second sweep of any already-gated check.
         run: just workload
 
   # Prove the end-user install path on every platform: install the binary the

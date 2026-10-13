@@ -9620,3 +9620,24 @@ fn repository_maintenance_documentation_summaries_follow_the_contract_source() {
     }
     assert!(guidance.contains("../../docs/contract.md"));
 }
+
+#[test]
+fn release_sweep_runs_disjoint_workloads_after_its_quality_gate() {
+    let workflow: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&repo_file(".github/workflows/ci.yml")).expect("workflow YAML");
+    let runs: Vec<_> = workflow["jobs"]["sweep"]["steps"]
+        .as_sequence()
+        .expect("sweep steps")
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect();
+    let gate = runs
+        .iter()
+        .position(|run| *run == "just ci-tier run -t check")
+        .expect("quality gate");
+    let workload = runs
+        .iter()
+        .position(|run| *run == "just workload")
+        .expect("release sweep runs workloads");
+    assert!(workload > gate);
+}
