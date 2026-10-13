@@ -310,10 +310,11 @@ fn train(
     };
     let mut branches = Vec::new();
     for branch in candidates {
-        branches.push(one(&train, branch)?);
+        branches.push(one(&train, branch, stream)?);
     }
 
-    let mut ending = if git::head_sha(root)? == initial {
+    let final_head = git::head_sha(root)?;
+    let mut ending = if final_head == initial {
         Ending::Unchanged
     } else {
         Ending::Advanced
@@ -386,6 +387,9 @@ fn train(
         ending = Ending::AdvancedAndPushed;
     }
     let _ = std::fs::remove_dir_all(&workspace);
+    if ending.advanced() {
+        stream.base_arrived(base, &final_head, candidates);
+    }
     Ok(Outcome {
         base: Ref::from_git(base),
         branches,
@@ -406,7 +410,7 @@ struct Train<'a> {
     trailers: &'a provenance::Trailers,
 }
 
-fn one(train: &Train, branch: &str) -> Result<BranchOutcome> {
+fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome> {
     let Train {
         resolution,
         base,
@@ -526,7 +530,7 @@ fn one(train: &Train, branch: &str) -> Result<BranchOutcome> {
             };
         let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
         let message = publish::compose_message(&subject, &attested);
-        let landed = squash_publish(root, base, branch, &message, workspace)?;
+        let landed = squash_publish(root, base, branch, &message, workspace, stream)?;
         Ok(BranchOutcome {
             branch: Ref::from_git(branch),
             status: if landed {
@@ -556,6 +560,7 @@ fn squash_publish(
     branch: &str,
     message: &str,
     workspace: &Path,
+    stream: &mut Stream,
 ) -> Result<bool> {
     let parent = workspace.join(format!("publish-{}", ids::unique()));
     home::ensure_dir(&parent)?;
@@ -566,6 +571,12 @@ fn squash_publish(
             return Ok(false);
         };
         git::merge_ff_only(root, &sha)?;
+        if stream.in_operation() {
+            stream.emit(
+                EventKind::MergeCompleted,
+                object(json!({"branch": branch, "base": base, "sha": sha})),
+            );
+        }
         Ok(true)
     })();
     git::worktree_remove(root, &scratch)?;

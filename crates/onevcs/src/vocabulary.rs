@@ -49,6 +49,7 @@ pub const RESERVED_LABELS: &[Reserved] = &[
     Reserved::text("step"),
     Reserved::text("member"),
     Reserved::text("persona"),
+    Reserved::text("significance"),
 ];
 
 /// The reserved top-level dimensions: `phase` alone.
@@ -85,7 +86,7 @@ pub type Envelope = onemessagebus::Envelope<VcsEvents>;
 pub type EventFilter = onemessagebus::Filter<VcsEvents>;
 
 /// One matcher of an [`EventFilter`]: `source`, `kind`, and the [`MatchFields`] —
-/// `phase` and the five reserved labels a matcher may name.
+/// `phase` and the reserved labels a matcher may name.
 pub type EventMatcher = onemessagebus::Matcher<VcsEvents>;
 
 /// The bus core's emitter over this vocabulary.
@@ -223,6 +224,10 @@ pub struct Labels {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MatchFields {
+    /// The producer's significance stamp. EventStream's filter adapter treats a
+    /// missing legacy stamp as progress; raw matching applies no default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub significance: Option<crate::event::Significance>,
     /// The phase the envelope was stamped at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,

@@ -1287,7 +1287,7 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
     // already landed: a change request a `checks-unsettled` close stopped watching
     // merges on the host's clock, and a publication that met it again republished the
     // work the base already carried.
-    take_up_a_late_merge(context);
+    take_up_a_late_merge(context, stream);
     // A publication attempt starts here: every gate it runs is numbered as one.
     stream.begin_attempt();
     // Where this repository last saw the host's copy of the branch, read before the
@@ -1794,6 +1794,7 @@ fn publish_locally(
                 object(json!({"identity": identity, "sha": sha, "base": context.target.base()}));
             gate_run::landed(&mut completed, Some(ended), &sha);
             stream.emit(EventKind::MergeCompleted, completed);
+            stream.base_arrived(context.target.base(), &sha, &[context.branch.to_string()]);
             record_baselines(context, &sha, stream);
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
@@ -3181,6 +3182,14 @@ impl Declared {
         }
     }
 
+    fn requires(&self, check: &Check) -> bool {
+        match self {
+            Declared::Names(names) => names.contains(&check.name),
+            Declared::Nothing => false,
+            Declared::Unknown(_) => check.required,
+        }
+    }
+
     /// Why what is required is read off the host's own per-check marking, where it
     /// is — under [`Declared::Unknown`], and nowhere the host gave an answer — which is
     /// what a settlement then has to say it was read from.
@@ -3523,7 +3532,7 @@ impl<'a> Watcher<'a> {
                     ),
                 }
             }
-            stream.emit_with(
+            stream.emit_result(
                 EventKind::ChangeCheck,
                 object(json!({
                     "name": check.name,
@@ -3534,6 +3543,13 @@ impl<'a> Watcher<'a> {
                     "state": check.state(),
                 })),
                 artifacts,
+                crate::event::EmissionResult::Check {
+                    required: self
+                        .declaration
+                        .as_ref()
+                        .map_or(check.required, |declared| declared.requires(check)),
+                    state: check.state(),
+                },
             );
             self.reported.retain(|(name, _)| name != &check.name);
             self.reported.push((check.name.clone(), now));
@@ -3676,7 +3692,7 @@ impl<'a> Watcher<'a> {
                 json!({"read_from": "host-marking", "because": because}),
             );
         }
-        stream.emit(EventKind::ChecksSettled, payload);
+        stream.emit_result(EventKind::ChecksSettled, payload, Vec::new(), ruled.into());
         self.record_gate(stream, ruled, standing);
     }
 }
@@ -4372,7 +4388,12 @@ pub(crate) fn record_push(
             Some(Err(_)) | None => None,
         },
     };
-    stream.emit_push(phase, payload, artifact.into_iter().collect());
+    stream.push_result(
+        phase,
+        payload,
+        artifact.into_iter().collect(),
+        pushed.accepted(),
+    );
     Ok(evidence)
 }
 
@@ -4601,6 +4622,7 @@ pub(crate) fn reconcile_late_merge(
     registry: &crate::registry::Registry,
     watched: &Watched<'_>,
     hosting: &dyn Hosting,
+    observing: Option<&Stream>,
 ) -> Option<crate::landed::RecordedLanding> {
     // Never a change request of another repository: the host is asked about the one
     // repository this identity is, and a number there names nothing elsewhere.
@@ -4617,11 +4639,12 @@ pub(crate) fn reconcile_late_merge(
         base: watched.base.to_owned(),
     };
     let merged = host.merged_head(&change).ok()??;
-    record_late_merge(
+    record_late_merge_observed(
         registry,
         watched,
         &merged,
         merge_time(host.as_ref(), &change),
+        observing,
     )
 }
 
@@ -4645,6 +4668,16 @@ pub(crate) fn record_late_merge(
     watched: &Watched<'_>,
     merged: &crate::host::MergedChange,
     landed_at: Option<Moment>,
+) -> Option<crate::landed::RecordedLanding> {
+    record_late_merge_observed(registry, watched, merged, landed_at, None)
+}
+
+fn record_late_merge_observed(
+    registry: &crate::registry::Registry,
+    watched: &Watched<'_>,
+    merged: &crate::host::MergedChange,
+    landed_at: Option<Moment>,
+    observing: Option<&Stream>,
 ) -> Option<crate::landed::RecordedLanding> {
     // A merge proves this branch's work landed only where the change request is in the
     // identity's own repository and the head the host merged carries everything the
@@ -4671,6 +4704,9 @@ pub(crate) fn record_late_merge(
         Ok(stream) => stream,
         Err(failure) => return warn_unreconciled(watched, &merged_commit.0, &failure),
     };
+    if let Some(parent) = observing {
+        stream.inherit_operation(parent);
+    }
     let _ = crate::release::reconcile_landing(
         registry,
         &located,
@@ -4730,14 +4766,15 @@ fn warn_unreconciled<T>(
 /// establish is established again by the comparison this publication is about to
 /// make, and a publication refused because a question about the host could not be
 /// asked would be a worse answer than one that simply asks nobody.
-fn take_up_a_late_merge(context: &Context<'_>) {
+fn take_up_a_late_merge(context: &Context<'_>, stream: &Stream) {
     let Ok(registry) = store::load() else {
         return;
     };
-    let _ = crate::status::landing_of_within(
+    let _ = crate::status::landing_of_within_observed(
         &registry,
         &context.branch,
         Some(&context.resolution.key),
         Some(context.hosting),
+        stream.in_operation().then_some(stream),
     );
 }

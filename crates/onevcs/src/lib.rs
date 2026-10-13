@@ -102,6 +102,7 @@ mod review;
 pub mod rules;
 mod rules_apply;
 mod session;
+mod significance;
 mod stack_base;
 mod standings;
 mod status;
@@ -130,7 +131,8 @@ pub use declaration::{
 pub use error::{Error, Result};
 pub use event::{
     ArtifactId, ArtifactRef, Dimensions, Envelope, EventFilter, EventKind, EventMatcher, Labels,
-    MatchFields, Phase, PhaseOf, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
+    MatchFields, Phase, PhaseOf, Significance, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS,
+    SOURCE_WORD,
 };
 pub use export::{
     export, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL, EXPORT_AUTHOR_NAME, EXPORT_SUBJECT,
@@ -146,12 +148,13 @@ pub use integrate::{
 };
 pub use landed::{Landed, LandingEvidence};
 pub use ops::{
-    import_branch, integrate, publish_branch, read_artifact, recover, register_checkout,
-    registered_identities, repositories, resolve_repository, rules_check, sweep, sync, work_status,
-    BasePush, BranchPublishRequest, CheckoutAudit, GateAudit, ImportRequest, IntegrateRequest,
-    MatchedRule, MergePathCoverage, RecoverRequest, RegisteredCheckout, RegisteredRepository,
-    Registration, RequiredChecksAnswer, ResolvedPolicy, ResolvedRepository, RulesCheck,
-    StatusReport, Sweeping, Synced, TrailerPrefixSource,
+    import_branch, integrate, integrate_in_operation, publish_branch, publish_branch_in_operation,
+    read_artifact, recover, recover_in_operation, register_checkout, registered_identities,
+    repositories, resolve_repository, rules_check, sweep, sync, work_status, BasePush,
+    BranchPublishRequest, CheckoutAudit, DirectOperation, GateAudit, ImportRequest,
+    IntegrateRequest, MatchedRule, MergePathCoverage, OperationHandle, RecoverRequest,
+    RegisteredCheckout, RegisteredRepository, Registration, RequiredChecksAnswer, ResolvedPolicy,
+    ResolvedRepository, RulesCheck, StatusReport, Sweeping, Synced, TrailerPrefixSource,
 };
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
@@ -195,7 +198,7 @@ pub use standings::{
     RetargetOutcome, RetargetRequest, Retargeted, ReviewStandings, ReviewStandingsRequest,
     ReviewTarget,
 };
-pub use stream::{EventLine, EventLines, EventStream};
+pub use stream::{EventLine, EventLines, EventStream, OperationEvents};
 pub use sweep::Report as SweepReport;
 pub use vcs::{Git, Vcs};
 pub use workspaces::{first_matching, Bound, Span};

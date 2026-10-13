@@ -58,6 +58,7 @@ pub struct Stream {
     /// The publication attempt the gate runs recorded through this stream belong
     /// to, once one has been recorded — see [`Stream::emit_gate_run`].
     attempt: Option<u32>,
+    operation: Option<Emitter>,
 }
 
 impl Stream {
@@ -80,7 +81,46 @@ impl Stream {
             labels,
             emitter,
             attempt: None,
+            operation: None,
         })
+    }
+
+    pub(crate) fn operation(
+        &mut self,
+        operation: &crate::ops::OperationHandle,
+        identity: &str,
+    ) -> Result<()> {
+        self.label("identity", identity);
+        self.label("operation_id", operation.id());
+        let path = operation.directory()?.join("events.ndjson");
+        self.operation = Some(emitter(operation.id(), &path, &self.labels));
+        Ok(())
+    }
+
+    pub(crate) fn inherit_operation(&mut self, parent: &Stream) {
+        if let Some(operation) = &parent.operation {
+            for key in ["identity", "operation_id"] {
+                if let Some(value) = parent.labels.extra.get(key).and_then(Value::as_str) {
+                    self.label(key, value);
+                }
+            }
+            self.operation = Some(operation.clone().with_labels(self.labels.clone()));
+        }
+    }
+
+    pub(crate) fn in_operation(&self) -> bool {
+        self.operation.is_some()
+    }
+
+    pub(crate) fn base_arrived(&mut self, base: &str, commit: &str, branches: &[String]) {
+        if self.in_operation() {
+            let Value::Object(payload) =
+                serde_json::json!({"base": base, "commit": commit, "branches": branches})
+            else {
+                unreachable!("object literal")
+            };
+            self.emit(EventKind::BaseArrived, payload);
+        }
     }
 
     /// Open (or create) the stream one repository's release activity is recorded
@@ -114,22 +154,6 @@ impl Stream {
         self.emit_with(kind, payload, Vec::new());
     }
 
-    /// Append the record of one push, at the phase the branch it updated decides.
-    ///
-    /// The one kind whose phase is not a fact about the kind: a push of the session's
-    /// own branch is the work being made, and a push of the base a squash landed on
-    /// or of the base a merge train advanced is that work being integrated. Which of
-    /// the two it was is known where the push is made and nowhere else, so it arrives
-    /// from there rather than being inferred from a payload afterwards.
-    pub fn emit_push(
-        &mut self,
-        phase: Phase,
-        payload: Map<String, Value>,
-        artifacts: Vec<ArtifactRef>,
-    ) {
-        self.append_stamped(EventKind::Push, phase, payload, artifacts);
-    }
-
     /// Start a publication attempt: the next gate run recorded here is numbered
     /// afresh, and every one after it in the same attempt shares that number.
     pub fn begin_attempt(&mut self) {
@@ -158,6 +182,7 @@ impl Stream {
             run.gate.phase(),
             run.payload(attempt),
             Vec::new(),
+            run.verdict.into(),
         );
     }
 
@@ -198,7 +223,38 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
     ) {
-        self.append_stamped(kind, phase_of(kind), payload, artifacts);
+        self.append_stamped(
+            kind,
+            phase_of(kind),
+            payload,
+            artifacts,
+            crate::event::EmissionResult::Success,
+        );
+    }
+
+    pub(crate) fn emit_result(
+        &mut self,
+        kind: EventKind,
+        payload: Map<String, Value>,
+        artifacts: Vec<ArtifactRef>,
+        result: crate::event::EmissionResult,
+    ) {
+        self.append_stamped(kind, phase_of(kind), payload, artifacts, result);
+    }
+
+    pub(crate) fn push_result(
+        &mut self,
+        phase: Phase,
+        payload: Map<String, Value>,
+        artifacts: Vec<ArtifactRef>,
+        accepted: bool,
+    ) {
+        let result = if accepted {
+            crate::event::EmissionResult::Success
+        } else {
+            crate::event::EmissionResult::Failed
+        };
+        self.append_stamped(EventKind::Push, phase, payload, artifacts, result);
     }
 
     fn append_stamped(
@@ -207,7 +263,30 @@ impl Stream {
         phase: Phase,
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
+        result: crate::event::EmissionResult,
     ) {
+        let significance = crate::event::significance(kind, result);
+        let stamp = serde_json::to_value(significance).expect("significance is a wire word");
+        self.labels
+            .extra
+            .insert("significance".to_owned(), stamp.clone());
+        self.emitter = emitter(&self.id, &self.path, &self.labels);
+        if let Some(operation) = &self.operation {
+            self.operation = Some(operation.clone().with_labels(self.labels.clone()));
+        }
+        if let Some(operation) = &self.operation {
+            if let Err(unrecorded) = operation.try_emit_stamped(
+                kind,
+                Dimensions::at(phase),
+                payload.clone(),
+                artifacts.clone(),
+            ) {
+                eprintln!(
+                    "onevcs: warning: cannot record operation event: {}",
+                    unrecorded.error
+                );
+            }
+        }
         let Err(unrecorded) =
             self.emitter
                 .try_emit_stamped(kind, Dimensions::at(phase), payload, artifacts)
@@ -237,6 +316,98 @@ fn emitter(id: &str, path: &std::path::Path, labels: &Labels) -> Emitter {
     Emitter::shared(id, Source::from(SOURCE_WORD), path)
         .with_version(ENVELOPE_VERSION)
         .with_labels(labels.clone())
+}
+
+/// A cursor over one prepared invocation, independent of its writer's liveness.
+#[derive(Debug)]
+pub struct OperationEvents {
+    operation: crate::ops::OperationHandle,
+    offset: u64,
+    identity: String,
+}
+
+impl OperationEvents {
+    /// Read from this invocation's first event, even before its writer starts.
+    pub fn open(operation: &crate::ops::OperationHandle) -> Result<Self> {
+        Ok(Self {
+            operation: crate::ops::OperationHandle::open(operation.id())?,
+            offset: 0,
+            identity: operation.repository()?,
+        })
+    }
+
+    /// Continue from an opaque cursor belonging to this invocation.
+    pub fn resume(operation: &crate::ops::OperationHandle, cursor: &str) -> Result<Self> {
+        let mut reader = Self::open(operation)?;
+        let prefix = format!("{}:", operation.id());
+        reader.offset = cursor
+            .strip_prefix(&prefix)
+            .and_then(|offset| offset.parse().ok())
+            .ok_or_else(|| error::invalid("cursor does not belong to this operation"))?;
+        let path = operation.directory()?.join("events.ndjson");
+        let bytes = std::fs::read(&path).map_err(error::at("validate operation cursor", &path))?;
+        let offset = usize::try_from(reader.offset)
+            .map_err(|_| error::invalid("operation cursor is too large"))?;
+        if offset > bytes.len() || (offset != 0 && bytes[offset - 1] != b'\n') {
+            return Err(error::invalid(
+                "operation cursor is not a complete record boundary",
+            ));
+        }
+        Ok(reader)
+    }
+
+    /// Return new complete envelopes; an empty batch makes no completion claim.
+    pub fn read(&mut self) -> Result<Vec<Envelope>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = self.operation.directory()?.join("events.ndjson");
+        let mut file =
+            std::fs::File::open(&path).map_err(error::at("open operation events", &path))?;
+        file.seek(SeekFrom::Start(self.offset))
+            .map_err(error::at("seek operation events", &path))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(error::at("read operation events", &path))?;
+        let mut events = Vec::new();
+        let mut consumed = 0;
+        for record in bytes.split_inclusive(|byte| *byte == b'\n') {
+            if record.last() != Some(&b'\n') {
+                break;
+            }
+            let envelope: Envelope = serde_json::from_slice(record)
+                .map_err(error::at("parse operation event", &path))?;
+            if envelope
+                .labels
+                .extra
+                .get("identity")
+                .and_then(Value::as_str)
+                != Some(self.identity.as_str())
+                || envelope.stream != self.operation.id()
+                || envelope
+                    .labels
+                    .extra
+                    .get("operation_id")
+                    .and_then(Value::as_str)
+                    != Some(self.operation.id())
+            {
+                return Err(error::invalid("event does not belong to its operation"));
+            }
+            let stamp = envelope.labels.extra.get("significance").ok_or_else(|| {
+                error::invalid("operation event is missing its producer significance stamp")
+            })?;
+            serde_json::from_value::<crate::event::Significance>(stamp.clone()).map_err(
+                |error| crate::error::invalid(format!("invalid event significance: {error}")),
+            )?;
+            events.push(envelope);
+            consumed += record.len() as u64;
+        }
+        self.offset += consumed;
+        Ok(events)
+    }
+
+    /// Persist the position after the last returned record.
+    pub fn cursor(&self) -> String {
+        format!("{}:{}", self.operation.id(), self.offset)
+    }
 }
 
 /// A cursor over one session's stream, handing back only what is new.
@@ -581,11 +752,22 @@ impl EventStream {
                 continue;
             };
             let envelope = known.envelope;
+            let mut matching = envelope.clone();
+            if let Some(stamp) = matching.labels.extra.get("significance") {
+                serde_json::from_value::<crate::event::Significance>(stamp.clone()).map_err(
+                    |error| crate::error::invalid(format!("invalid event significance: {error}")),
+                )?;
+            } else {
+                matching.labels.extra.insert(
+                    "significance".to_owned(),
+                    Value::String("progress".to_owned()),
+                );
+            }
             // Filtered last, and only after both refusals above: a filter says which
             // events a consumer wants, never which lines of the file are worth
             // reading. A stream that is not what a writer left is a refusal whichever
             // events were asked for.
-            if !self.filter.matches(&envelope) {
+            if !self.filter.matches(&matching) {
                 continue;
             }
             // Dropped in silence, and only ever a phase this session cannot produce:
@@ -1085,5 +1267,160 @@ mod tests {
             envelopes[1]["kind"], "session-closed",
             "the last record is the one the healing writer wrote:\n{written}"
         );
+    }
+    #[test]
+    fn operation_progress_cursor_holds_partial_records_and_reports_invalid_stamps_without_loss() {
+        use std::io::Write;
+        let _home = inhabit();
+        // Corrupt and future records have no public writer; this fixture exercises
+        // the reader's actual filesystem boundary beside the real-operation journeys.
+        let repo = _home.path().join("repository");
+        std::fs::create_dir(&repo).expect("repository directory");
+        crate::git::checked(&["init"], Some(&repo)).expect("real git repository");
+        let origin = crate::Url::from_file_path(&repo).expect("absolute local identity");
+        let registered =
+            crate::ops::register_checkout(&repo, Some(&origin)).expect("registered identity");
+        let operation =
+            crate::ops::OperationHandle::prepare(&crate::ops::DirectOperation::Integrate {
+                repository: registered.identity.clone(),
+            })
+            .expect("prepared invocation");
+        let directory = operation.directory().expect("private fixture directory");
+        let path = directory.join("events.ndjson");
+        let mut file = std::fs::File::create(&path).expect("actual stream file");
+        let mut reader = OperationEvents::open(&operation).expect("reader");
+        let record = serde_json::json!({"v":1,"ts":"2026-01-01T00:00:00.000Z","stream":operation.id(),"seq":1,"source":"vcs","kind":"future-kind","phase":"integrate","labels":{"identity":registered.identity,"operation_id":operation.id(),"significance":"milestone"},"payload":{"future":"preserved"},"artifacts":[]});
+        let bytes = serde_json::to_vec(&record).expect("record bytes");
+        file.write_all(&bytes[..bytes.len() / 2])
+            .expect("partial append");
+        let initial = reader.cursor();
+        assert!(reader.read().expect("partial record is held").is_empty());
+        assert_eq!(reader.cursor(), initial);
+        file.write_all(&bytes[bytes.len() / 2..])
+            .expect("remaining append");
+        assert!(reader.read().expect("newline still absent").is_empty());
+        file.write_all(b"\n").expect("complete append");
+        let complete = reader.read().expect("future kind is handed on");
+        assert_eq!(complete.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&complete[0]).expect("original envelope"),
+            record
+        );
+        let cursor = reader.cursor();
+        let mut bad = record.clone();
+        bad["seq"] = serde_json::json!(2);
+        bad["labels"]["significance"] = serde_json::json!("important");
+        writeln!(file, "{bad}").expect("malformed stamp");
+        assert!(reader
+            .read()
+            .expect_err("invalid stamp refuses")
+            .to_string()
+            .contains("significance"));
+        assert_eq!(
+            reader.cursor(),
+            cursor,
+            "failed batch never consumes records"
+        );
+        assert!(OperationEvents::resume(&operation, &format!("{}:1", operation.id())).is_err());
+        assert!(
+            OperationEvents::resume(&operation, &format!("{}:unknown", operation.id())).is_err()
+        );
+        assert!(OperationEvents::resume(
+            &operation,
+            &format!("{}:18446744073709551615", operation.id())
+        )
+        .is_err());
+        std::fs::write(&path, format!("{record}\n{record}\n")).expect("repair malformed tail");
+        let mut resumed = OperationEvents::resume(&operation, &cursor).expect("saved cursor");
+        assert_eq!(resumed.read().expect("one repaired record").len(), 1);
+        assert!(resumed.read().expect("drained, not completed").is_empty());
+        let mut unstamped = record.clone();
+        unstamped["labels"]
+            .as_object_mut()
+            .expect("labels")
+            .remove("significance");
+        std::fs::write(&path, format!("{unstamped}\n")).expect("missing operation stamp");
+        assert!(OperationEvents::open(&operation)
+            .expect("reader")
+            .read()
+            .expect_err("operation records require a producer stamp")
+            .to_string()
+            .contains("significance"));
+        let mut wrong_identity = record.clone();
+        wrong_identity["labels"]["identity"] = json!("/different/repository");
+        std::fs::write(&path, format!("{wrong_identity}\n")).expect("foreign identity fixture");
+        assert!(OperationEvents::open(&operation)
+            .expect("reader")
+            .read()
+            .expect_err("foreign identity refuses")
+            .to_string()
+            .contains("does not belong"));
+        std::fs::write(
+            directory.join("operation.json"),
+            serde_json::json!({"version":2,"operation":{"kind":"integrate","repository":registered.identity}}).to_string(),
+        )
+        .expect("future manifest");
+        assert!(crate::ops::OperationHandle::open(operation.id())
+            .expect_err("unknown storage schema")
+            .to_string()
+            .contains("schema version 2"));
+        for selector in [
+            json!({"kind":"publish-branch","repository":registered.identity,"branch":""}),
+            json!({"kind":"integrate","repository":"unregistered"}),
+        ] {
+            std::fs::write(
+                directory.join("operation.json"),
+                json!({"version":1,"operation":selector}).to_string(),
+            )
+            .expect("malformed selector fixture");
+            assert!(
+                crate::ops::OperationHandle::open(operation.id()).is_err(),
+                "persisted selector invariants are rechecked"
+            );
+        }
+    }
+    #[test]
+    fn operation_progress_legacy_significance_matching_preserves_bytes_and_rejects_malformed_stamps(
+    ) {
+        let _home = inhabit();
+        let token = "s-significance";
+        let mut stream = Stream::open(token).expect("real stream writer");
+        stream.emit(EventKind::ChangeOpened, Map::new());
+        let path = path_for(token).expect("private fixture path");
+        let text = std::fs::read_to_string(&path).expect("producer record");
+        let mut legacy: Value = serde_json::from_str(text.trim()).expect("record");
+        legacy["labels"]
+            .as_object_mut()
+            .expect("labels")
+            .remove("significance");
+        let bytes = format!("{legacy}\n");
+        std::fs::write(&path, &bytes).expect("legacy unstamped fixture");
+        let progress = EventFilter::parse("include: [{significance: progress}]")
+            .expect("significance matcher");
+        let mut reader =
+            EventStream::open_filtered(&SessionToken(token.to_owned()), progress.clone())
+                .expect("reader adapter");
+        let batch = reader.read().expect("legacy matches progress");
+        assert_eq!(batch.len(), 1);
+        assert!(!batch[0].labels.extra.contains_key("significance"));
+        assert!(
+            !progress.matches(&batch[0]),
+            "raw matching intentionally has no vocabulary default hook"
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("legacy bytes"), bytes);
+        for stamp in [json!("important"), json!(3), Value::Null] {
+            let mut malformed = legacy.clone();
+            malformed["labels"]["significance"] = stamp;
+            std::fs::write(&path, format!("{malformed}\n")).expect("malformed legacy record");
+            let filter = EventFilter::parse("include: [{significance: milestone}]")
+                .expect("a filter that would omit progress");
+            let mut reader = EventStream::open_filtered(&SessionToken(token.to_owned()), filter)
+                .expect("stream still opens");
+            assert!(reader
+                .read()
+                .expect_err("invalid stamp is reported even if filtered out")
+                .to_string()
+                .contains("significance"));
+        }
     }
 }

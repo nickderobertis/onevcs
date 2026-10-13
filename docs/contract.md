@@ -422,9 +422,10 @@ or empty — and matches no `exclude` matcher. Matcher fields are all optional a
 conjoin within one matcher: `source` is the envelope's source family, by exact
 equality; `kind` is a glob over the event kind's kebab-case wire string, so
 `change-*` is `change-opened`, `change-check`, and `change-merged`; and `run_id`,
-`node`, `step`, `member`, and `persona` are exact equality against the envelope's
+`node`, `step`, `member`, `persona`, and `significance` are exact equality against the envelope's
 reserved `labels` keys, where a matcher naming a label the envelope did not stamp
-does not match it. A `source` word this crate does not produce is admitted and
+does not match it. The significance amendment below adds its reader-only legacy
+default. A `source` word this crate does not produce is admitted and
 matches none of its envelopes, because `Source` is the bus core's open newtype.
 Deliberately **not** in the grammar: `stream`, which is a producing process's id
 rather than a family, and payload fields, which differ per kind. The filter types
@@ -441,7 +442,7 @@ impl EventStream {                           // `open`, `session`, `read` unchan
 pub struct EventFilter { pub include: Vec<EventMatcher>, pub exclude: Vec<EventMatcher> }
 pub struct EventMatcher { pub source: Option<Source>, pub kind: Option<String>,
                           pub fields: MatchFields }
-pub struct MatchFields { pub phase: Option<Phase>, pub run_id: Option<String>,
+pub struct MatchFields { pub significance: Option<Significance>, pub phase: Option<Phase>, pub run_id: Option<String>,
                          pub node: Option<String>, pub step: Option<String>,
                          pub member: Option<String>, pub persona: Option<String> }
 impl EventFilter {
@@ -1214,7 +1215,7 @@ development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
-             stack-base-assembled base-merge
+             stack-base-assembled base-merge base-arrived
 review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
@@ -5714,6 +5715,105 @@ request answered 304 nothing. The e2e fake `gh` world answers the same query and
 Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopened`.
 
 
+
+## Prepared direct operation progress (#388)
+
+The following additive public APIs are re-exported from `lib.rs`. Their authoritative
+Rust declarations live in `ops.rs` and `stream.rs`.
+
+```rust
+pub enum DirectOperation {
+    PublishBranch { repository: String, branch: String },
+    Recover { repository: String, branch: String },
+    Integrate { repository: String },
+}
+pub struct OperationHandle { /* opaque, cloneable invocation identity */ }
+impl OperationHandle {
+    pub fn prepare(operation: &DirectOperation) -> Result<Self>;
+    pub fn open(id: &str) -> Result<Self>;
+    pub fn id(&self) -> &str;
+}
+pub struct OperationEvents { /* opaque cursor */ }
+impl OperationEvents {
+    pub fn open(operation: &OperationHandle) -> Result<Self>;
+    pub fn resume(operation: &OperationHandle, cursor: &str) -> Result<Self>;
+    pub fn read(&mut self) -> Result<Vec<Envelope>>;
+    pub fn cursor(&self) -> String;
+}
+pub fn publish_branch_in_operation(providers: &Providers<'_>, request: &BranchPublishRequest, operation: &OperationHandle) -> Result<PublishOutcome>;
+pub fn recover_in_operation(providers: &Providers<'_>, request: &RecoverRequest, operation: &OperationHandle) -> Result<PublishOutcome>;
+pub fn integrate_in_operation(request: &IntegrateRequest, operation: &OperationHandle) -> Result<Integration>;
+#[non_exhaustive]
+pub enum Significance { Milestone, Blocker, Progress }
+```
+
+Preparation reserves a unique invocation without git or host side effects. Repository
+selectors are normalized registered identities; branches are nonempty. Integration
+matches the actual cwd identity. Only the matching additive entry point can claim a
+handle, exactly once; mismatched selectors, unknown handles and repeated claims refuse
+before git or host side effects. Concurrent preparations with identical selectors remain
+distinct. Handles can be opened before execution and after return or writer death.
+
+The operation reader starts at the first event, returns only new complete envelopes in
+append order (including unknown future kinds), and advances only through returned
+records. Empty reads make no completion claim. Resume validates cursor pairing and
+record boundaries. Every emitted invocation event carries string `identity` and
+`operation_id` labels, including child gate and merge records. Operation storage is
+private; consumers use this reader rather than deriving paths. Existing synchronous
+entry points, session readers and CLI operands retain their behavior; existing event
+stores remain authoritative beside the new invocation store. After a crash complete
+records remain readable; the engine determines death.
+
+Significance is a reserved textual label and travels as a kebab-case string in
+`Labels.extra`, beside the existing phase,
+without a new strict envelope field. `MatchFields.significance: Option<Significance>`
+is optional and omitted when absent. **This matcher field addition breaks exhaustive
+Rust struct literals and requires a pre-1.0 minor release (`feat!`).**
+The approved `BaseArrived` addition also widens the exhaustive `EventKind` enum. Legacy unstamped
+records mean progress for significance matching through the `EventStream` reader/filter
+adapter; direct `EventFilter::matches` on a raw unstamped envelope does not apply that
+default. Labels serialization and legacy round-trip bytes stay unchanged. Invalid stamps
+report an error. Every operation record requires a producer stamp; the unstamped
+legacy default applies to existing session streams.
+Consumers use the producer's stamp, including unknown future kinds, rather than a kind
+list. The engine provides the final-result milestone and the death blocker; a onevcs
+step completion is progress, not a second final result.
+
+Event kinds added: `base-arrived`.
+
+For local publication and integration, `base-arrived` records one actual base arrival
+per invocation with `{base, commit, branches}`, where branches are ordered. A hosted
+landing records `change-merged` with its existing payload and never also records
+`base-arrived`. Merge-step detail remains `merge-completed` progress.
+
+The producer classification table is exhaustive over current kinds:
+
+| Kinds | Ordinary classification | Typed conditional result |
+| --- | --- | --- |
+| change-opened, change-drafted, change-merged, base-arrived | milestone | One actual base arrival, not each train member or merge step |
+| checks-settled | blocker | milestone for passed or passed-with-skipped |
+| sync-conflict, draft-kept-for-review | blocker | A conflict or a required person |
+| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale) |
+| gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
+| stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
+| base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
+| release-probed | progress | blocker for not-answered; released and no-release remain progress |
+| branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
+| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
+
+Required check significance uses the watch's existing cached declaration, falling
+back to the host's per-check marking only when that declaration is unavailable.
+Original check payloads remain unchanged and no additional host read is made.
+
+For every kind, typed failure or refusal overrides its ordinary classification to
+blocker, including for base-merge. The current producer emits no failed base-merge
+event: real merge conflicts arrive as sync-conflict, stamped blocker and visible in
+the manager's milestone/blocker view. The universal typed-failure override is held
+to the producer function by the exhaustive contract test, while the actual conflict
+path is proven by the real-git operation journey.
+Lock waits requiring no person remain progress. Retired recognized kinds
+remain readable and inert. Errors with no onevcs event become the engine's
+landing-refused blocker; no per-check evidence is fabricated.
 
 ## Repository-declared pool maintenance
 
