@@ -3698,7 +3698,7 @@ including its refusal of a draft reason by name.
 `warn_on_early_lift` (shipped default `true`). Each key falls back on its own: the matched
 rule's, then `default:`'s, then the shipped default — as `publication` and `approvals`
 fall back. An unknown key inside `drafts:`, or a value that is not a boolean, is refused by
-name where the file is loaded. It is admitted at rules-file version 3 and later **with no
+name where the file is loaded; a `drafts:` set to null reads as absent. It is admitted at rules-file version 3 and later **with no
 version bump**: the rules file declares no `deny_unknown_fields`, so an older onevcs
 sharing the host ignores the block and opens ready change requests, which is exactly the
 pre-draft behaviour; a file declaring version 1 or 2 and naming `drafts:` is refused by
@@ -4039,8 +4039,9 @@ default:
   override, unchanged) → the matched rule's → `default:`'s → 3600. It is the bound the
   whole watch of a change request's checks holds, and it is validated before the push,
   as the environment's bound is. An unknown key inside `checks:`, a `checks:` that is
-  not a mapping, and a wait outside the accepted range are refused by name where the
-  file is loaded, naming the key and that range. The accepted range is greater than 0
+  neither a mapping nor null, and a wait outside the accepted range are refused by name
+  where the file is loaded, naming the key and that range; a `checks:` or `base_merge:`
+  set to null reads as absent, so the next layer decides. The accepted range is greater than 0
   and at most 1,000,000,000 seconds (about 31 years): a ceiling chosen so a watch's
   deadline, now plus the wait, is always representable. The same range bounds
   `ONEVCS_CHECKS_TIMEOUT_SECONDS`, which is refused naming itself.

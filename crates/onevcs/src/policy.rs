@@ -486,27 +486,13 @@ fn refuse_removed_gate(path: &Path, document: &serde_json::Value) -> Result<()> 
 /// statement of which keys there are, and an operator is told the rule and the key
 /// rather than that something somewhere "expected a boolean".
 fn refuse_malformed_drafts(path: &Path, document: &serde_json::Value) -> Result<()> {
-    let mut found: Vec<(String, &serde_json::Value)> = Vec::new();
-    if let Some(drafts) = document
-        .get("default")
-        .and_then(|policy| policy.get("drafts"))
-    {
-        found.push(("default".to_owned(), drafts));
-    }
-    if let Some(serde_json::Value::Array(rules)) = document.get("rules") {
-        for (index, rule) in rules.iter().enumerate() {
-            if let Some(drafts) = rule.get("drafts") {
-                found.push((format!("rule {}", index + 1), drafts));
-            }
-        }
-    }
     let refused = |where_: &str, what: String| Error::Invalid {
         reason: format!(
             "the rules file at {} is malformed: {where_} drafts: {what}",
             path.display()
         ),
     };
-    for (where_, drafts) in found {
+    for (where_, drafts) in policy_keys(document, "drafts") {
         let serde_json::Value::Object(fields) = drafts else {
             return Err(refused(&where_, "is not a mapping".to_owned()));
         };
@@ -535,17 +521,22 @@ fn refuse_malformed_drafts(path: &Path, document: &serde_json::Value) -> Result<
 
 /// Every place the schema puts a policy key — `default:` and each rule — with the
 /// value it holds there, named the way a refusal names it.
+///
+/// A key set to null is passed over: every one of them is optional, and the typed read
+/// takes an explicit null as the key being absent, so a walk that refused one would
+/// refuse a document the shape reads.
 fn policy_keys<'d>(
     document: &'d serde_json::Value,
     key: &str,
 ) -> Vec<(String, &'d serde_json::Value)> {
+    let set = |policy: &'d serde_json::Value| policy.get(key).filter(|value| !value.is_null());
     let mut found = Vec::new();
-    if let Some(value) = document.get("default").and_then(|policy| policy.get(key)) {
+    if let Some(value) = document.get("default").and_then(set) {
         found.push(("default".to_owned(), value));
     }
     if let Some(serde_json::Value::Array(rules)) = document.get("rules") {
         for (index, rule) in rules.iter().enumerate() {
-            if let Some(value) = rule.get(key) {
+            if let Some(value) = set(rule) {
                 found.push((format!("rule {}", index + 1), value));
             }
         }
