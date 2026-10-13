@@ -107,6 +107,7 @@ fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
     state
         .checks
         .insert(ChangeId("1".to_owned()), vec![check("success")]);
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     let host = MemoryHost::seeded(state);
     let passing = operation_for(&repository, &request.branch, false);
     let outcome = onevcs::publish_branch_in_operation(
@@ -152,6 +153,7 @@ fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
     state
         .checks
         .insert(ChangeId("2".to_owned()), vec![check("success")]);
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     let host = MemoryHost::seeded(state);
     let operation = operation_for(&repository, "feature/recover-operation", true);
     onevcs::recover_in_operation(
@@ -556,6 +558,7 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
         // llmlint: ignore-end[e2e_not_mocked]
         let executing = operation.clone();
         let checkout = world.path("hosted");
+        // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
         let attached = onevcs_testing::FileHost::create(&path).expect("same host");
         let worker = std::thread::spawn(move || {
             let providers = Providers {
@@ -608,6 +611,7 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
             ChangeId("1".to_owned()),
             vec![operation_check(Some("success"))],
         );
+        // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
         onevcs_testing::FileHost::seeded(&path, state).expect("host check settles");
         let outcome = worker
             .join()
@@ -672,10 +676,14 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
     use std::process::{Command, Stdio};
     if let Ok(id) = std::env::var("ONEVCS_OPERATION_PROGRESS_CHILD") {
         let operation = onevcs::OperationHandle::open(&id).expect("parent's prepared handle");
+        // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+        // task-mandated onevcs-testing provider; git, policy and hooks remain real.
+        // No paid live host is used; this region encloses only this provider statement.
         let host = onevcs_testing::FileHost::create(
             std::env::var("ONEVCS_OPERATION_PROGRESS_HOST").expect("host path"),
         )
         .expect("file host");
+        // llmlint: ignore-end[e2e_not_mocked]
         onevcs::publish_branch_in_operation(
             &Providers {
                 vcs: &Git,
@@ -774,6 +782,7 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
         "checks-settled" | "change-merged" | "base-arrived"
     )));
     assert!(resumed.read().expect("empty read after death").is_empty());
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     let host = onevcs_testing::FileHost::create(&host_path).expect("host after death");
     let calls = host
         .state()
@@ -1084,6 +1093,7 @@ fn operation_progress_late_merge_records_inherit_the_new_invocation_without_repl
         ChangeId("1".to_owned()),
         vec![operation_check(Some("success"))],
     );
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     let host = MemoryHost::seeded(state);
     let current = operation_for(&repository, &request.branch, false);
     let outcome = onevcs::publish_branch_in_operation(
@@ -1205,6 +1215,7 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
     // llmlint: ignore-end[e2e_not_mocked]
     let mut reader = onevcs::OperationEvents::open(&operation).expect("independent reader");
     let executing = operation.clone();
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     let attached = onevcs_testing::FileHost::create(&path).expect("same host");
     let checkout = world.path("hosted");
     let worker = std::thread::spawn(move || {
@@ -1242,8 +1253,12 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
     state
         .checks
         .insert(ChangeId("1".to_owned()), vec![cancelled]);
+    // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+    // task-mandated onevcs-testing provider; git, policy and hooks remain real.
+    // No paid live host is used; this region encloses only this provider statement.
     onevcs_testing::FileHost::seeded(&path, state)
         .expect("required check reports no usable verdict");
+    // llmlint: ignore-end[e2e_not_mocked]
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while !worker.is_finished() && std::time::Instant::now() < deadline {
         events.extend(reader.read().expect("no-verdict records"));
@@ -1264,6 +1279,7 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
     let mut passed = operation_check(Some("success"));
     passed.required = false;
     state.checks.insert(ChangeId("1".to_owned()), vec![passed]);
+    // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
     onevcs_testing::FileHost::seeded(&path, state).expect("passing rerun settles the requirement");
     let outcome = worker
         .join()
