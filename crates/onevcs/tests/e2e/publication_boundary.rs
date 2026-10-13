@@ -1307,3 +1307,55 @@ fn a_destination_in_scope_whose_refresh_fails_contributes_its_own_committed_term
         "the host was written"
     );
 }
+
+#[test]
+fn committed_root_and_nested_workspace_terms_screen_publication_before_remote_writes() {
+    for manifest in ["Cargo.toml", "package.json"] {
+        let host = Boundary::new("{publication: change-open, approvals: required}");
+        let (root, nested) = if manifest == "Cargo.toml" {
+            ("[package]\nname = \"root-secret-kit\"\n[workspace]\nmembers = [\"././\", \"nested\"]\n",
+             "[package]\nname = \"nested-secret-kit\"\n")
+        } else {
+            (
+                r#"{"name":"root-secret-kit","workspaces":{"packages":["././","nested"]}}"#,
+                r#"{"name":"nested-secret-kit"}"#,
+            )
+        };
+        host.private(
+            "hiddenco/meadowlark",
+            &[(manifest, root), (&format!("nested/{manifest}"), nested)],
+        );
+        for (branch, content) in [
+            ("root-term", "root-secret-kit"),
+            ("nested-term", "nested-secret-kit"),
+            ("neutral", "a generic example"),
+        ] {
+            let (token, worktree) = host.session(branch);
+            write(&worktree, "examples/workspace.md", content);
+            commit(&host.world, &worktree, "docs: add an example");
+            let before = host.origin_refs();
+            let calls = host.world.host_calls().len();
+            let output = host.publish(&token, &["--draft"]);
+            if branch == "neutral" {
+                host.published(
+                    &output,
+                    &before,
+                    "a root workspace permits neutral publication",
+                );
+                assert!(host.world.host_calls()[calls..]
+                    .iter()
+                    .any(|call| call.starts_with("pr create")));
+            } else {
+                host.refused(
+                    &output,
+                    "an added line",
+                    &before,
+                    "a derived workspace package term",
+                );
+                assert!(!host.world.host_calls()[calls..]
+                    .iter()
+                    .any(|call| call.starts_with("pr create")));
+            }
+        }
+    }
+}
