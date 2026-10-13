@@ -165,6 +165,10 @@ mod lifecycle;
 // The additive operation API is a library interface; these journeys use real git
 // and only the existing third-party hosting provider boundary.
 #[cfg(unix)]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] what these journeys test is
+// the onevcs crate's own publication, recovery, integration and stream code, which is
+// exactly the edge onevcs-e2e has; they reach no live service, and each runs in 0.4–2.6s
+// against local git, under the gate_runs and publication_watch journeys beside them.
 mod operation_progress;
 // Linux only: it counts a directory's own `opendir` calls through `inotify`, which
 // only Linux has. Its head carries the reason the counting is outside the process,

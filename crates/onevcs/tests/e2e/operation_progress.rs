@@ -1369,3 +1369,87 @@ fn operation_progress_real_base_merge_conflict_is_a_blocker_in_the_manager_view(
         .filter(|event| event.kind.as_str() == "base-merge")
         .all(|event| !manager.matches(event)));
 }
+
+#[test]
+fn operation_progress_a_stream_an_earlier_build_wrote_reads_as_progress_and_a_malformed_stamp_is_reported(
+) {
+    // `stream-v0.23.0.ndjson` is a real session's stream as 0.23.0 wrote it, before
+    // any producer stamped a significance. The public session reader is what a
+    // consumer filters it through, so that is what reads it here.
+    let (stream, answers) = crate::filter::pre_adoption_stream();
+    let token = answers["stream"]
+        .as_str()
+        .expect("the stream names its token");
+    assert!(
+        !stream.contains("\"significance\""),
+        "the earlier build stamped nothing"
+    );
+    let world = World::new();
+    inhabit(&world);
+    let path = world.home().join("streams").join(format!("{token}.ndjson"));
+    std::fs::create_dir_all(path.parent().expect("a streams directory")).expect("streams");
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test: a
+    // record an earlier build left under this host's state root, in a shape no interface
+    // of this build writes. Every read below goes through the public reader.
+    std::fs::write(&path, &stream).expect("the earlier build's stream, where it left it");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let session = onevcs::SessionToken(token.to_owned());
+    let read = |filter: &str| {
+        onevcs::EventStream::open_filtered(
+            &session,
+            onevcs::EventFilter::parse(filter).expect("a significance filter"),
+        )
+        .expect("the reader opens")
+        .read()
+    };
+
+    let everything = onevcs::EventStream::open(&session)
+        .expect("the reader opens")
+        .read()
+        .expect("the earlier build's stream reads");
+    let progress = read("include: [{significance: progress}]").expect("legacy reads as progress");
+    assert_eq!(
+        progress, everything,
+        "every unstamped record matches progress, unchanged"
+    );
+    assert!(progress
+        .iter()
+        .any(|event| event.kind.as_str() == "change-opened"));
+    assert!(progress
+        .iter()
+        .all(|event| !event.labels.extra.contains_key("significance")));
+    // A kind a stamping producer would call a milestone is not reclassified from its
+    // kind: the stamp is the producer's, and this record carries none.
+    assert!(
+        read("include: [{significance: milestone}, {significance: blocker}]")
+            .expect("legacy reads")
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the stream"),
+        stream,
+        "reading moves no byte"
+    );
+
+    // A stamp that is not one of the three words is reported, never promoted — even
+    // where the filter would have passed the record over.
+    let last = stream.lines().last().expect("a last record");
+    let mut malformed: serde_json::Value = serde_json::from_str(last).expect("an envelope");
+    malformed["seq"] = serde_json::Value::from(malformed["seq"].as_u64().expect("a seq") + 1);
+    malformed["labels"]["significance"] = serde_json::json!("important");
+    // llmlint: ignore-block[tests_mirror_real_usage] no producer of this build writes a
+    // stamp outside its own vocabulary, so the record a newer or broken writer would
+    // leave is appended the way that writer would append it.
+    std::fs::write(&path, format!("{stream}{malformed}\n")).expect("an appended record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    for filter in [
+        "include: [{significance: progress}]",
+        "include: [{significance: milestone}]",
+    ] {
+        let refused = read(filter).expect_err("an invalid stamp is reported");
+        assert!(
+            refused.to_string().contains("invalid event significance"),
+            "{filter}: {refused}"
+        );
+    }
+}
