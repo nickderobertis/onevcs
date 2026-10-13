@@ -1794,6 +1794,7 @@ fn publish_locally(
                 object(json!({"identity": identity, "sha": sha, "base": context.target.base()}));
             gate_run::landed(&mut completed, Some(ended), &sha);
             stream.emit(EventKind::MergeCompleted, completed);
+            stream.base_arrived(context.target.base(), &sha, &[context.branch.to_string()]);
             record_baselines(context, &sha, stream);
             Ok(PublishOutcome::Merged(Sha(sha)))
         })();
@@ -3523,7 +3524,7 @@ impl<'a> Watcher<'a> {
                     ),
                 }
             }
-            stream.emit_with(
+            stream.emit_result(
                 EventKind::ChangeCheck,
                 object(json!({
                     "name": check.name,
@@ -3534,6 +3535,10 @@ impl<'a> Watcher<'a> {
                     "state": check.state(),
                 })),
                 artifacts,
+                crate::event::EmissionResult::Check {
+                    required: check.required,
+                    state: check.state(),
+                },
             );
             self.reported.retain(|(name, _)| name != &check.name);
             self.reported.push((check.name.clone(), now));
@@ -3676,7 +3681,12 @@ impl<'a> Watcher<'a> {
                 json!({"read_from": "host-marking", "because": because}),
             );
         }
-        stream.emit(EventKind::ChecksSettled, payload);
+        stream.emit_result(
+            EventKind::ChecksSettled,
+            payload,
+            Vec::new(),
+            crate::event::EmissionResult::Gate(ruled),
+        );
         self.record_gate(stream, ruled, standing);
     }
 }
@@ -4372,7 +4382,12 @@ pub(crate) fn record_push(
             Some(Err(_)) | None => None,
         },
     };
-    stream.emit_push(phase, payload, artifact.into_iter().collect());
+    stream.push_result(
+        phase,
+        payload,
+        artifact.into_iter().collect(),
+        pushed.accepted(),
+    );
     Ok(evidence)
 }
 

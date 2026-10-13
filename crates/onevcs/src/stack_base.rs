@@ -636,7 +636,12 @@ fn record_assembly(stream: &mut Stream, request: &StackBaseRequest, assembled: &
         "head": assembled.head,
         "outcome": assembled.outcome.wire(),
     }));
-    stream.emit(EventKind::StackBaseAssembled, payload);
+    let result = if matches!(assembled.outcome, StackBaseOutcome::Conflicted { .. }) {
+        crate::event::EmissionResult::Failed
+    } else {
+        crate::event::EmissionResult::Success
+    };
+    stream.emit_result(EventKind::StackBaseAssembled, payload, Vec::new(), result);
 }
 
 /// The remote-tracking ref a branch of the origin is read through.

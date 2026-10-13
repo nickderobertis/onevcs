@@ -124,6 +124,8 @@ pub enum EventKind {
     /// The change request merged; carries its URL, the commit it landed at as `sha`
     /// and as `landing`, and `landed_at`, when the base received it.
     ChangeMerged,
+    /// One local invocation reached its actual base, carrying base, commit and ordered branches.
+    BaseArrived,
     /// The change request entered the host's merge queue.
     MergeQueued,
     /// The merge the host had queued completed; carries the commit it landed at as
@@ -215,6 +217,93 @@ pub enum EventKind {
     MergeArmed,
 }
 
+/// How much attention an event asks of its consumer, stamped by its producer.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[non_exhaustive]
+#[serde(rename_all = "kebab-case")]
+pub enum Significance {
+    /// A change opened, its checks passed, or its landing reached its base.
+    Milestone,
+    /// An attempted action failed, was refused, or needs a person.
+    Blocker,
+    /// Ordinary running or successful detail.
+    Progress,
+}
+
+/// Typed producer evidence; payload strings never decide significance.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum EmissionResult {
+    Success,
+    Failed,
+    Check {
+        required: bool,
+        state: crate::host::CheckState,
+    },
+    Gate(crate::gate_run::Ruling),
+}
+
+/// The single classification table for every kind this producer writes.
+pub(crate) fn significance(kind: EventKind, result: EmissionResult) -> Significance {
+    use crate::gate_run::Ruling;
+    use crate::host::CheckState;
+    let blocked = match result {
+        EmissionResult::Failed => true,
+        EmissionResult::Check { required, state } => {
+            required && matches!(state, CheckState::Failed | CheckState::NoVerdict)
+        }
+        EmissionResult::Gate(Ruling::Failed | Ruling::NoVerdict) => true,
+        EmissionResult::Success
+        | EmissionResult::Gate(Ruling::Passed | Ruling::PassedWithSkipped) => false,
+    };
+    if blocked {
+        return Significance::Blocker;
+    }
+    match kind {
+        EventKind::ChangeOpened
+        | EventKind::ChangeDrafted
+        | EventKind::ChangeMerged
+        | EventKind::BaseArrived => Significance::Milestone,
+        EventKind::ChecksSettled => match result {
+            EmissionResult::Gate(Ruling::Passed | Ruling::PassedWithSkipped) => {
+                Significance::Milestone
+            }
+            _ => Significance::Blocker,
+        },
+        EventKind::SyncConflict | EventKind::DraftKeptForReview => Significance::Blocker,
+        EventKind::SessionOpened
+        | EventKind::Fetch
+        | EventKind::LockWait
+        | EventKind::LockAcquired
+        | EventKind::CommitPreserved
+        | EventKind::BranchPreserved
+        | EventKind::Push
+        | EventKind::DraftLifted
+        | EventKind::DraftLiftedEarly
+        | EventKind::ChangeDescribed
+        | EventKind::ChangeCheck
+        | EventKind::MergeQueued
+        | EventKind::MergeCompleted
+        | EventKind::RecoveryAttested
+        | EventKind::SessionClosed
+        | EventKind::ReleaseProbed
+        | EventKind::ReleaseAcknowledged
+        | EventKind::ReleaseObserved
+        | EventKind::BranchSuperseded
+        | EventKind::BranchRetired
+        | EventKind::GateRun
+        | EventKind::ReviewCommentsRead
+        | EventKind::ReviewReplyPosted
+        | EventKind::StackBaseAssembled
+        | EventKind::ChangeStandingsRead
+        | EventKind::ChangeRetargeted
+        | EventKind::ChangeReopened
+        | EventKind::BaseMerge
+        | EventKind::MergeArmed => Significance::Progress,
+    }
+}
+
 impl EventKind {
     /// The kebab-case string this kind travels as, which is what a filter's
     /// `kind` glob is matched against and what an envelope's `kind` carries.
@@ -241,6 +330,7 @@ impl EventKind {
             EventKind::ChangeDescribed => "change-described",
             EventKind::ChangeCheck => "change-check",
             EventKind::ChangeMerged => "change-merged",
+            EventKind::BaseArrived => "base-arrived",
             EventKind::MergeQueued => "merge-queued",
             EventKind::MergeCompleted => "merge-completed",
             EventKind::RecoveryAttested => "recovery-attested",
@@ -322,7 +412,7 @@ impl PhaseOf for Phase {
             // it happens before that branch may enter one at all.
             | EventKind::RecoveryAttested
             | EventKind::SessionClosed => Phase::Development,
-            EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict => {
+            EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict | EventKind::BaseArrived => {
                 Phase::Integrate
             }
             // Bringing the base into the branch, or deciding not to, is the step a sync
@@ -367,7 +457,7 @@ impl PhaseOf for Phase {
 /// The phase an event of this kind is stamped at when its producer names none.
 ///
 /// The kinds whose phase their producer decides are a push and a gate run, and
-/// [`Stream::emit_push`](crate::stream::Stream::emit_push) and
+/// [`Stream::push_result`](crate::stream::Stream::push_result) and
 /// [`Stream::emit_gate_run`](crate::stream::Stream::emit_gate_run) are where every
 /// one in this crate decides it. A push reaching here instead — or a line an older
 /// build wrote before there was a phase — is read at the phase a session's own
@@ -482,6 +572,114 @@ impl Line {
         match self {
             Line::Known(known) => &known.envelope.stream,
             Line::Unknown(header) => &header.stream,
+        }
+    }
+}
+
+#[cfg(test)]
+mod significance_contract_tests {
+    use super::*;
+
+    #[test]
+    fn operation_progress_producer_reconciles_the_complete_documented_table_and_typed_results() {
+        let doc = include_str!("../../../docs/contract.md");
+        let table = doc
+            .split("The producer classification table is exhaustive over current kinds:")
+            .nth(1)
+            .expect("classification contract")
+            .split("For every kind,")
+            .next()
+            .expect("classification rows");
+        let mut tested = std::collections::BTreeSet::new();
+        for row in table.lines().filter(|line| {
+            line.starts_with("| ") && !line.starts_with("| Kinds") && !line.starts_with("| ---")
+        }) {
+            let columns: Vec<_> = row.split('|').collect();
+            let expected: Significance =
+                serde_json::from_value(serde_json::Value::String(columns[2].trim().to_owned()))
+                    .expect("documented significance");
+            for word in columns[1].split(',').map(str::trim) {
+                let kind: EventKind =
+                    serde_json::from_value(serde_json::Value::String(word.to_owned()))
+                        .expect("every documented kind exists");
+                assert!(tested.insert(word.to_owned()), "{word} is classified twice");
+                assert_eq!(
+                    significance(kind, EmissionResult::Success),
+                    expected,
+                    "{word}"
+                );
+                assert_eq!(
+                    significance(kind, EmissionResult::Failed),
+                    Significance::Blocker,
+                    "failure override for {word}"
+                );
+            }
+        }
+        // Count the actual enum's declarations rather than a second maintained list.
+        let source = include_str!("event.rs");
+        let variants = source
+            .split("pub enum EventKind {")
+            .nth(1)
+            .expect("event kind enum")
+            .split("\n}")
+            .next()
+            .expect("enum body")
+            .lines()
+            .filter(|line| line.trim().ends_with(',') && !line.trim().starts_with("///"))
+            .count();
+        assert_eq!(
+            tested.len(),
+            variants,
+            "every current kind has exactly one row"
+        );
+        use crate::host::CheckState;
+        for state in [
+            CheckState::Passed,
+            CheckState::Skipped,
+            CheckState::Pending,
+            CheckState::Failed,
+            CheckState::NoVerdict,
+        ] {
+            for required in [true, false] {
+                let expected =
+                    if required && matches!(state, CheckState::Failed | CheckState::NoVerdict) {
+                        Significance::Blocker
+                    } else {
+                        Significance::Progress
+                    };
+                assert_eq!(
+                    significance(
+                        EventKind::ChangeCheck,
+                        EmissionResult::Check { required, state }
+                    ),
+                    expected
+                );
+            }
+        }
+        use crate::gate_run::Ruling;
+        for ruling in [
+            Ruling::Passed,
+            Ruling::PassedWithSkipped,
+            Ruling::Failed,
+            Ruling::NoVerdict,
+        ] {
+            let passed = matches!(ruling, Ruling::Passed | Ruling::PassedWithSkipped);
+            assert_eq!(
+                significance(EventKind::GateRun, EmissionResult::Gate(ruling)),
+                if passed {
+                    Significance::Progress
+                } else {
+                    Significance::Blocker
+                }
+            );
+            assert_eq!(
+                significance(EventKind::ChecksSettled, EmissionResult::Gate(ruling)),
+                if passed {
+                    Significance::Milestone
+                } else {
+                    Significance::Blocker
+                }
+            );
         }
     }
 }

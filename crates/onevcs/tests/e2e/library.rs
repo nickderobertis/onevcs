@@ -7374,3 +7374,396 @@ fn a_consumer_assembles_a_stack_base_over_the_testing_hosts_and_opens_nothing_on
         "{refused}"
     );
 }
+
+fn operation_for(repository: &str, branch: &str, recovering: bool) -> onevcs::OperationHandle {
+    let operation = if recovering {
+        onevcs::DirectOperation::Recover {
+            repository: repository.to_owned(),
+            branch: branch.to_owned(),
+        }
+    } else {
+        onevcs::DirectOperation::PublishBranch {
+            repository: repository.to_owned(),
+            branch: branch.to_owned(),
+        }
+    };
+    onevcs::OperationHandle::prepare(&operation).expect("a prepared invocation")
+}
+
+fn operation_batch(operation: &onevcs::OperationHandle, identity: &str) -> Vec<onevcs::Envelope> {
+    let reopened = onevcs::OperationHandle::open(operation.id()).expect("persisted invocation");
+    let mut reader = onevcs::OperationEvents::open(&reopened).expect("operation reader");
+    let batch = reader.read().expect("complete invocation records");
+    assert!(!batch.is_empty(), "a real operation emitted evidence");
+    for event in &batch {
+        assert_eq!(event.labels.extra["identity"], identity);
+        assert_eq!(event.labels.extra["operation_id"], operation.id());
+        assert!(event.dimensions.phase.is_some());
+        serde_json::from_value::<onevcs::Significance>(event.labels.extra["significance"].clone())
+            .expect("producer significance");
+    }
+    let mut resumed = onevcs::OperationEvents::resume(&reopened, &reader.cursor())
+        .expect("a cursor from this invocation");
+    assert!(resumed.read().expect("drained invocation").is_empty());
+    batch
+}
+
+#[test]
+fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, identity) = hosted(&world, REVIEWED);
+    let repository = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("registered identity")
+        .identity;
+    world.install_pre_push(&world.path("hosted"), "exit 0");
+    let finished = worked(&world, "feature/operation");
+    onevcs::close_session(&Providers::real(), &finished.token).expect("closed session");
+    let check = |conclusion: &str| Check {
+        name: "gate".to_owned(),
+        status: "completed".to_owned(),
+        conclusion: Some(conclusion.to_owned()),
+        required: true,
+        head: None,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    };
+    let failed_host = MemoryHost::seeded(HostState {
+        checks: [(ChangeId("1".to_owned()), vec![check("failure")])]
+            .into_iter()
+            .collect(),
+        ..HostState::default()
+    });
+    let request = onevcs::BranchPublishRequest {
+        repo: world.path("hosted"),
+        branch: "feature/operation".to_owned(),
+        title: None,
+        body: None,
+        policy: None,
+        term_scope: Default::default(),
+    };
+    let failed = operation_for(&repository, &request.branch, false);
+    let first = onevcs::publish_branch_in_operation(
+        &Providers {
+            vcs: &Git,
+            hosting: &failed_host,
+        },
+        &request,
+        &failed,
+    );
+    assert!(
+        first.is_err() || matches!(first, Ok(PublishOutcome::Failed { .. })),
+        "{first:?}"
+    );
+    let batch = operation_batch(&failed, &repository);
+    assert!(batch
+        .iter()
+        .any(|event| event.kind.as_str() == "change-check"
+            && event.labels.extra["significance"] == "blocker"));
+    let mut state = failed_host.state();
+    state
+        .checks
+        .insert(ChangeId("1".to_owned()), vec![check("success")]);
+    let host = MemoryHost::seeded(state);
+    let passing = operation_for(&repository, &request.branch, false);
+    let outcome = onevcs::publish_branch_in_operation(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &request,
+        &passing,
+    )
+    .expect("a new passing attempt");
+    assert!(
+        matches!(outcome, PublishOutcome::ChangeReviewDraft(_)),
+        "{outcome:?}"
+    );
+    let batch = operation_batch(&passing, &repository);
+    for (kind, significance) in [
+        ("change-check", "progress"),
+        ("checks-settled", "milestone"),
+        ("draft-kept-for-review", "blocker"),
+    ] {
+        assert!(
+            batch.iter().any(|event| event.kind.as_str() == kind
+                && event.labels.extra["significance"] == significance),
+            "missing {kind}: {batch:?}"
+        );
+    }
+    assert!(onevcs::publish_branch_in_operation(
+        &Providers {
+            vcs: &Git,
+            hosting: &host
+        },
+        &request,
+        &passing
+    )
+    .is_err());
+    let interrupted = open(&Git, "feature/recover-operation");
+    std::fs::write(interrupted.worktree.join("recovery.txt"), "interrupted\n").expect("work");
+    Git.preserve(&interrupted, onevcs::Provenance::IncompleteStep)
+        .expect("preserved work");
+    onevcs::close_session(&Providers::real(), &interrupted.token).expect("closed session");
+    let mut state = host.state();
+    state
+        .checks
+        .insert(ChangeId("2".to_owned()), vec![check("success")]);
+    let host = MemoryHost::seeded(state);
+    let operation = operation_for(&repository, "feature/recover-operation", true);
+    onevcs::recover_in_operation(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &onevcs::RecoverRequest {
+            repo: world.path("hosted"),
+            branch: "feature/recover-operation".to_owned(),
+            title: Some(subject("feat: recover operation")),
+            body: None,
+            term_scope: Default::default(),
+        },
+        &operation,
+    )
+    .expect("recovery publishes");
+    assert!(operation_batch(&operation, &repository)
+        .iter()
+        .any(|event| event.kind.as_str() == "recovery-attested"));
+    assert_eq!(
+        identity,
+        Git.resolve_identity("hosted").expect("same identity")
+    );
+}
+
+#[test]
+fn operation_progress_reader_sees_a_live_local_publication_and_resumes_without_replay() {
+    let world = World::new();
+    inhabit(&world);
+    hosted(&world, LOCAL);
+    let repository = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("identity")
+        .identity;
+    let session = worked(&world, "feature/live-operation");
+    onevcs::close_session(&Providers::real(), &session.token).expect("closed session");
+    let reached = world.path("hook-reached");
+    let release = world.path("hook-release");
+    world.install_pre_push(&world.path("hosted"), &format!("touch '{}'\nfor i in $(seq 1 1000); do [ -f '{}' ] && exit 0; sleep 0.02; done\nexit 1", reached.display(), release.display()));
+    let operation = operation_for(&repository, "feature/live-operation", false);
+    let other = operation_for(&repository, "feature/live-operation", false);
+    assert_ne!(operation.id(), other.id());
+    let mut reader = onevcs::OperationEvents::open(&operation).expect("reader before writer");
+    assert!(reader.read().expect("no records yet").is_empty());
+    assert!(onevcs::OperationEvents::resume(&other, &reader.cursor()).is_err());
+    let executing = operation.clone();
+    let checkout = world.path("hosted");
+    let worker = std::thread::spawn(move || {
+        onevcs::publish_branch_in_operation(
+            &Providers::real(),
+            &onevcs::BranchPublishRequest {
+                repo: checkout,
+                branch: "feature/live-operation".to_owned(),
+                title: None,
+                body: None,
+                policy: None,
+                term_scope: Default::default(),
+            },
+            &executing,
+        )
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !reached.exists() && !worker.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let live = reader.read().expect("events while call runs");
+    let held = reached.exists() && !worker.is_finished();
+    std::fs::write(&release, "continue").expect("release the actual git hook");
+    let outcome = worker
+        .join()
+        .expect("library worker")
+        .expect("local publication");
+    assert!(
+        held,
+        "real hook held the synchronous call open: {outcome:?}"
+    );
+    assert!(
+        !live.is_empty(),
+        "actual operation events were visible before return"
+    );
+    let mut resumed =
+        onevcs::OperationEvents::resume(&operation, &reader.cursor()).expect("live cursor");
+    let after = resumed.read().expect("new records after return");
+    assert!(after.iter().any(|event| event.kind.as_str() == "gate-run"
+        && event.labels.extra["significance"] == "progress"));
+    let all = operation_batch(&operation, &repository);
+    assert_eq!(live.into_iter().chain(after).collect::<Vec<_>>(), all);
+    assert!(onevcs::OperationEvents::open(&other)
+        .expect("other invocation")
+        .read()
+        .expect("unclaimed invocation")
+        .is_empty());
+}
+
+#[test]
+fn operation_progress_concurrent_identical_selectors_and_shared_branch_names_are_isolated() {
+    let world = World::new();
+    inhabit(&world);
+    hosted(&world, LOCAL);
+    let first = world.path("hosted");
+    let origin = world.bare_origin("second");
+    let second = world.clone_of(&origin, "second");
+    onevcs::register_checkout(&second, None).expect("second identity");
+    for checkout in [&first, &second] {
+        world.git(checkout, &["switch", "-c", "feature/shared"]);
+        world.commit_file(checkout, "shared.txt", "new\n", "feat: shared work");
+        world.git(checkout, &["switch", "main"]);
+        world.install_pre_push(checkout, "exit 0");
+    }
+    let identity = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("identity")
+        .identity;
+    let other_identity = onevcs::resolve_repository(&Providers::real(), "second")
+        .expect("identity")
+        .identity;
+    let handles = [
+        operation_for(&identity, "feature/shared", false),
+        operation_for(&identity, "feature/shared", false),
+        operation_for(&other_identity, "feature/shared", false),
+    ];
+    let mut workers = Vec::new();
+    for (handle, checkout) in handles
+        .iter()
+        .cloned()
+        .zip([first.clone(), first.clone(), second])
+    {
+        workers.push(std::thread::spawn(move || {
+            onevcs::publish_branch_in_operation(
+                &Providers::real(),
+                &onevcs::BranchPublishRequest {
+                    repo: checkout,
+                    branch: "feature/shared".to_owned(),
+                    title: None,
+                    body: None,
+                    policy: None,
+                    term_scope: Default::default(),
+                },
+                &handle,
+            )
+        }));
+    }
+    for worker in workers {
+        worker
+            .join()
+            .expect("concurrent worker")
+            .expect("publication runs");
+    }
+    for (handle, repository) in handles.iter().zip([&identity, &identity, &other_identity]) {
+        let all = operation_batch(handle, repository);
+        assert!(all.windows(2).all(|events| events[0].seq < events[1].seq));
+        for other in &handles {
+            if handle.id() != other.id() {
+                assert!(onevcs::OperationEvents::resume(
+                    other,
+                    &onevcs::OperationEvents::open(handle)
+                        .expect("reader")
+                        .cursor()
+                )
+                .is_err());
+            }
+        }
+    }
+    let wrong_kind = operation_for(&identity, "feature/shared", true);
+    let before = world.git(&first, &["rev-parse", "HEAD"]);
+    let mismatch = onevcs::publish_branch_in_operation(
+        &Providers::real(),
+        &onevcs::BranchPublishRequest {
+            repo: first.clone(),
+            branch: "feature/shared".to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+            term_scope: Default::default(),
+        },
+        &wrong_kind,
+    )
+    .expect_err("wrong kind cannot claim");
+    assert!(
+        mismatch.to_string().contains("does not match"),
+        "{mismatch}"
+    );
+    assert_eq!(world.git(&first, &["rev-parse", "HEAD"]), before);
+    assert!(onevcs::OperationEvents::open(&wrong_kind)
+        .expect("unclaimed handle")
+        .read()
+        .expect("no events")
+        .is_empty());
+    assert!(onevcs::OperationHandle::open("../operation").is_err());
+    assert!(onevcs::OperationHandle::open("o-unknown").is_err());
+}
+
+#[test]
+fn operation_progress_three_branch_integration_matches_the_actual_cwd_identity() {
+    let world = World::new();
+    inhabit(&world);
+    hosted(&world, LOCAL);
+    let checkout = world.path("hosted");
+    let identity = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("identity")
+        .identity;
+    for index in 1..=3 {
+        let branch = format!("feature/train-{index}");
+        world.git(&checkout, &["switch", "-c", &branch, "main"]);
+        world.commit_file(
+            &checkout,
+            &format!("train-{index}.txt"),
+            "work\n",
+            &format!("feat: train member {index}"),
+        );
+        world.git(&checkout, &["switch", "main"]);
+    }
+    world.install_pre_push(&checkout, "exit 0");
+    let operation = onevcs::OperationHandle::prepare(&onevcs::DirectOperation::Integrate {
+        repository: identity.clone(),
+    })
+    .expect("prepared train");
+    let previous = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(&checkout).expect("integration cwd");
+    let outcome = onevcs::integrate_in_operation(
+        &onevcs::IntegrateRequest {
+            branches: (1..=3)
+                .map(|index| format!("feature/train-{index}"))
+                .collect(),
+            push: onevcs::BasePush::Push,
+            term_scope: Default::default(),
+        },
+        &operation,
+    );
+    std::env::set_current_dir(previous).expect("restore cwd");
+    let integrated = outcome.expect("real integration train");
+    assert_eq!(integrated.branches.len(), 3);
+    assert!(integrated.ending.pushed());
+    let batch = operation_batch(&operation, &identity);
+    assert!(batch.iter().any(|event| event.kind.as_str() == "push"));
+    assert!(batch
+        .iter()
+        .filter(|event| event.kind.as_str() == "merge-completed")
+        .all(|event| event.labels.extra["significance"] == "progress"));
+    assert_eq!(
+        batch
+            .iter()
+            .filter(|event| event.kind.as_str() == "base-arrived"
+                && event.labels.extra["significance"] == "milestone")
+            .count(),
+        1
+    );
+    assert_eq!(
+        batch
+            .iter()
+            .filter(|event| event.kind.as_str() == "merge-completed")
+            .count(),
+        3
+    );
+    for index in 1..=3 {
+        assert!(checkout.join(format!("train-{index}.txt")).exists());
+    }
+}

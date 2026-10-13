@@ -49,6 +49,7 @@ pub const RESERVED_LABELS: &[Reserved] = &[
     Reserved::text("step"),
     Reserved::text("member"),
     Reserved::text("persona"),
+    Reserved::text("significance"),
 ];
 
 /// The reserved top-level dimensions: `phase` alone.
@@ -223,6 +224,9 @@ pub struct Labels {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MatchFields {
+    /// The producer's significance stamp; legacy unstamped records mean progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub significance: Option<crate::event::Significance>,
     /// The phase the envelope was stamped at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
