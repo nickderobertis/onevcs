@@ -2453,10 +2453,12 @@ fn the_real_capture_lane_and_all_alias_destinations_match_the_configuration() {
         })
         .collect();
     // llmlint: ignore-end[tests_mirror_real_usage]
+    // llmlint: ignore[tests_mirror_real_usage] Reject an empty parsed alias set so the cross-architecture drift gate cannot pass vacuously; invoking the real helper below proves the current host separately.
     assert!(
         !destinations.is_empty(),
         "architecture helper has no aliases"
     );
+    // llmlint: ignore[tests_mirror_real_usage] This alias/config drift assertion covers architectures unavailable on the current host without mocking uname; the real helper invocation below separately proves this host’s configured lane.
     assert_eq!(
         destinations, lanes,
         "architecture aliases drifted from configured lanes"
@@ -2477,11 +2479,11 @@ fn the_real_capture_lane_and_all_alias_destinations_match_the_configuration() {
 /// The removed setup must stay removed, including in clones whose previous setup
 /// left core.hooksPath pointing at the repository's sole hook directory.
 #[test]
-fn ordinary_pushes_with_the_previous_hooks_path_do_not_capture_screenshots() {
+fn bootstrap_schedules_no_hooks_and_ordinary_pushes_do_not_capture_screenshots() {
     let root = workspace_root();
     let world = tempfile::tempdir().expect("a local push world");
     let graph_path = world.path().join("bootstrap-graph.json");
-    // llmlint: ignore[tests_mirror_real_usage] The task amendment explicitly requires real setup dry-run/task expansion instead of full toolchain installation because no hook setup remains. Ordinary pushes below exercise the actual Git hook boundary from the previous setup state.
+    // llmlint: ignore[tests_mirror_real_usage] Setup expansion verifies hook removal without installing unrelated toolchains. Ordinary pushes below exercise the actual Git hook boundary from the previous setup state.
     let expansion = Command::new("just")
         .args(["nx", "run-many", "-t", "bootstrap", "--parallel=1"])
         .arg(format!("--graph={}", graph_path.display()))
@@ -2493,7 +2495,7 @@ fn ordinary_pushes_with_the_previous_hooks_path_do_not_capture_screenshots() {
         "bootstrap task expansion: {}",
         String::from_utf8_lossy(&expansion.stderr)
     );
-    // llmlint: ignore-block[tests_mirror_real_usage] The task amendment requires observing real setup task expansion and dry-run commands, deliberately excluding unrelated toolchain installation. This region reads that real output to assert no hook is scheduled; the unsuppressed pushes below prove Git behavior.
+    // llmlint: ignore-block[tests_mirror_real_usage] This region reads real setup task expansion and dry-run output to assert no hook is scheduled without installing unrelated toolchains; the unsuppressed pushes below prove Git behavior.
     let graph: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&graph_path).expect("expanded bootstrap graph"),
     )
@@ -2502,9 +2504,6 @@ fn ordinary_pushes_with_the_previous_hooks_path_do_not_capture_screenshots() {
         .as_object()
         .expect("scheduled tasks");
     assert!(!tasks.is_empty(), "setup expansion scheduled no tasks");
-    // The task amendment deliberately excludes full toolchain installation:
-    // hook setup is gone, so real task expansion and pushes from the previous
-    // hooksPath state prove the removal without installing unrelated toolchains.
     assert!(
         !tasks.contains_key("workspace:bootstrap"),
         "setup schedules the obsolete workspace hook installer"
@@ -2534,8 +2533,6 @@ fn ordinary_pushes_with_the_previous_hooks_path_do_not_capture_screenshots() {
             String::from_utf8_lossy(&expanded.stdout),
             String::from_utf8_lossy(&expanded.stderr)
         );
-        // The amendment's dry-run proof checks actual scheduled commands while
-        // deliberately leaving unrelated toolchain installation to bootstrap users.
         for obsolete in [
             "install-hooks",
             "hooksPath",
