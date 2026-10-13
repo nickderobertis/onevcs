@@ -13,7 +13,7 @@ try:
     target = inputs.target(sys.argv[1])
     wheels = inputs.directory(sys.argv[2])
     output = inputs.directory(sys.argv[3])
-    wheel, = wheels.glob("*.whl")
+    wheel = inputs.one(wheels.glob("*.whl"), "compiled wheel")
     executable = "onevcs.exe" if "windows" in target else "onevcs"
     with zipfile.ZipFile(wheel) as packed:
         names = [name for name in packed.namelist() if name.endswith(f".data/scripts/{executable}")]

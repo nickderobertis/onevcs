@@ -41,6 +41,13 @@ def directory(value):
     return path
 
 
+def one(items, label):
+    values = list(items)
+    if len(values) != 1:
+        fail(f"expected exactly one {label}; found {len(values)}")
+    return values[0]
+
+
 def diagnostic(error):
     print(f"release packaging: {error}\nACTION: rebuild the workflow-declared target, then restage its artifacts", file=sys.stderr)
     return 1

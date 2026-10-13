@@ -52,6 +52,7 @@ export function history() {
             author = "nickderobertis",
             title = "chore: release",
             malformed = false,
+            malformedData = false,
             head = refs[kind],
             eventName = "pull_request",
         } = {},
@@ -71,6 +72,11 @@ export function history() {
                 },
             },
         };
+        if (malformedData) {
+            event.repository.full_name = 1;
+            event.pull_request.head.repo.full_name = 1;
+            event.pull_request.head.ref = ["release-plz-forged"];
+        }
         const path = join(dir, "event.json");
         writeFileSync(path, malformed ? "{" : JSON.stringify(event));
         return JSON.parse(
@@ -106,6 +112,10 @@ test("real git semantic classifier admits only same-repo release versions", () =
     const h = history();
     try {
         assert.equal(h.classify("version").isReleaseOnly, true);
+        assert.equal(
+            h.classify("version", { malformedData: true }).macosRequired,
+            true,
+        );
         assert.equal(
             h.classify("version", { author: "github-actions[bot]" })
                 .isReleaseOnly,
@@ -157,11 +167,7 @@ test("carriers drive production command over GitHub success/failure/cancel/skip/
                     .status,
                 0,
             );
-            if (lane === "install")
-                assert.notEqual(
-                    invoke({ ...needs, gate: { result } }).status,
-                    0,
-                );
+            assert.notEqual(invoke({ ...needs, gate: { result } }).status, 0);
         }
         const omitted = {
             ...needs,

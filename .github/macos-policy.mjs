@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Only release-plz's same-repository branch plus a semantic diff authorizes omission.
 // The PAT author is also the human maintainer, so login/title confer no authority.
@@ -20,7 +21,9 @@ export function classify(
         return answer(false, false, "non-PR event");
     if (!pr) return answer(false, true, "unknown PR input requires coverage");
     if (
-        !event.repository?.full_name ||
+        typeof event.repository?.full_name !== "string" ||
+        !event.repository.full_name ||
+        typeof pr.head?.ref !== "string" ||
         pr.head?.repo?.full_name !== event.repository.full_name ||
         !/^release-plz-/.test(pr.head?.ref || "")
     )
@@ -29,6 +32,7 @@ export function classify(
         const git = (...args) =>
             execFileSync("git", args, {
                 encoding: "utf8",
+                stdio: ["pipe", "pipe", "pipe"],
                 maxBuffer: 20 * 1024 * 1024,
             });
         // Resolve refs before constructing object:path arguments, reject option-like refs.
@@ -62,7 +66,12 @@ export function classify(
             }
             const result = execFileSync(
                 "python3",
-                [new URL("./version-only.py", import.meta.url).pathname, path],
+                [
+                    fileURLToPath(
+                        new URL("./version-only.py", import.meta.url),
+                    ),
+                    path,
+                ],
                 {
                     input: JSON.stringify({ before, after }),
                     encoding: "utf8",

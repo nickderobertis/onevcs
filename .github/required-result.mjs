@@ -15,19 +15,13 @@ try {
     ) {
         throw new Error("missing classification outputs");
     }
-    if (
-        lane === "install" &&
-        outputs.rust === "true" &&
-        needs.gate?.result !== "success"
-    )
-        throw new Error("install: gate failed/cancelled/missing");
+    if (outputs.rust === "true" && needs.gate?.result !== "success")
+        throw new Error(`${lane}: gate failed/cancelled/missing`);
     if (required) {
         if (needs["macos-pr"]?.result !== "success")
             throw new Error(
                 `${lane}: required Mac proof failed/cancelled/missing`,
             );
-        if (lane === "install" && needs.gate?.result !== "success")
-            throw new Error("install: gate failed/cancelled/missing");
         console.log(`${lane}: Mac assertions passed`);
     } else {
         if (needs["macos-pr"]?.result !== "skipped")
