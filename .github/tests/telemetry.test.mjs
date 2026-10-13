@@ -47,3 +47,36 @@ test("reporting commands reject missing or malformed telemetry without rerunning
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test("budget verdict adapter validates real checker JSON outcomes", () => {
+    for (const report of [
+        null,
+        [],
+        {},
+        { results: [null] },
+        { results: [{ id: [], verdict: "within", error: null }] },
+        { results: [{ id: "budget", verdict: "within", error: {} }] },
+        {
+            results: [
+                { id: "budget", verdict: "error", error: "failed measurement" },
+            ],
+        },
+        { results: [{ id: "budget", verdict: "over", error: null }] },
+    ]) {
+        const result = spawnSync("node", [".github/budget-verdict.mjs"], {
+            input: JSON.stringify(report),
+            encoding: "utf8",
+        });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /ACTION:/);
+    }
+    const good = spawnSync("node", [".github/budget-verdict.mjs"], {
+        input: JSON.stringify({
+            schema_version: 1,
+            results: [{ id: "budget", verdict: "within", error: null }],
+        }),
+        encoding: "utf8",
+    });
+    assert.equal(good.status, 0);
+    assert.match(good.stdout, /within budget/);
+});
