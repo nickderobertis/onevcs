@@ -29,8 +29,8 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 
 use onevcs::{
-    ArtifactId, Dimensions, Envelope, Error, EventKind, Labels, Phase, PhaseOf, Result, Source,
-    SOURCE_WORD,
+    ArtifactId, Dimensions, Envelope, Error, EventKind, Labels, Phase, PhaseOf, Result,
+    Significance, Source, SOURCE_WORD,
 };
 
 /// The envelope schema version this crate emits, as `onevcs` emits it.
@@ -53,6 +53,55 @@ pub(crate) struct Emission {
     pub payload: Map<String, Value>,
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// The significance `onevcs` stamps on an event of this kind, for the outcome a
+/// provider here records it at.
+///
+/// `onevcs`'s producer table is private, so this is a mirror of it — and narrower
+/// than it, because every event a provider records is the successful form of its
+/// kind: `checks-settled` is recorded only for `passed` or `passed-with-skipped`, and
+/// nothing here records a failed or refused attempt. The match names every kind, so
+/// a kind added next door is a decision here rather than a silent default, and
+/// `honesty.rs` there holds what a provider stamps to what the real backend stamps.
+fn significance(kind: EventKind) -> Significance {
+    match kind {
+        EventKind::ChangeOpened
+        | EventKind::ChangeDrafted
+        | EventKind::ChangeMerged
+        | EventKind::BaseArrived
+        | EventKind::ChecksSettled => Significance::Milestone,
+        EventKind::DraftKeptForReview | EventKind::SyncConflict => Significance::Blocker,
+        EventKind::SessionOpened
+        | EventKind::Fetch
+        | EventKind::LockWait
+        | EventKind::LockAcquired
+        | EventKind::CommitPreserved
+        | EventKind::BranchPreserved
+        | EventKind::Push
+        | EventKind::DraftLifted
+        | EventKind::DraftLiftedEarly
+        | EventKind::ChangeDescribed
+        | EventKind::ChangeCheck
+        | EventKind::MergeQueued
+        | EventKind::MergeCompleted
+        | EventKind::RecoveryAttested
+        | EventKind::SessionClosed
+        | EventKind::ReleaseProbed
+        | EventKind::ReleaseAcknowledged
+        | EventKind::ReleaseObserved
+        | EventKind::BranchSuperseded
+        | EventKind::BranchRetired
+        | EventKind::GateRun
+        | EventKind::ReviewCommentsRead
+        | EventKind::ReviewReplyPosted
+        | EventKind::StackBaseAssembled
+        | EventKind::ChangeStandingsRead
+        | EventKind::ChangeRetargeted
+        | EventKind::ChangeReopened
+        | EventKind::BaseMerge
+        | EventKind::MergeArmed => Significance::Progress,
+    }
+}
 
 /// The state root, resolved the way `onevcs` resolves it.
 pub(crate) fn state_root() -> Result<PathBuf> {
@@ -128,6 +177,12 @@ fn append(emission: &Emission) -> Result<()> {
             .extra
             .insert("identity".to_owned(), Value::String(identity.clone()));
     }
+    labels.extra.insert(
+        "significance".to_owned(),
+        serde_json::to_value(significance(emission.kind)).map_err(|e| Error::Invalid {
+            reason: format!("cannot serialize a significance: {e}"),
+        })?,
+    );
     let envelope = Envelope {
         v: ENVELOPE_VERSION,
         ts: timestamp(),
