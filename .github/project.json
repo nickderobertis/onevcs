@@ -1,0 +1,55 @@
+{
+  "name": "github-workflows",
+  "projectType": "application",
+  "tags": ["scope:repo", "lang:javascript"],
+  "namedInputs": {
+    "workflowSource": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/release-*",
+      "{workspaceRoot}/scripts/npm-build.mjs",
+      "{workspaceRoot}/npm/**/*",
+      "{workspaceRoot}/screencomp.toml",
+      "{workspaceRoot}/pyproject.toml",
+      "{workspaceRoot}/release-targets.toml",
+      "sharedGlobals"
+    ]
+  },
+  "targets": {
+    "bootstrap": {
+      "command": "bash .github/bootstrap.sh"
+    },
+    "test": {
+      "command": "node --test .github/tests/*.test.mjs",
+      "cache": false,
+      "inputs": ["workflowSource"],
+      "outputs": ["{projectRoot}/.telemetry/macos-policy.json"],
+      "dependsOn": ["bootstrap"]
+    },
+    "test-quick": {
+      "command": "node --test .github/tests/*.test.mjs",
+      "cache": false,
+      "inputs": ["workflowSource"],
+      "dependsOn": ["bootstrap"]
+    },
+    "lint": {
+      "command": ".github/bin/actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/published-smoke.yml",
+      "inputs": ["workflowSource"],
+      "dependsOn": ["bootstrap"]
+    },
+    "typecheck": {
+      "command": "node .github/check-syntax.mjs",
+      "inputs": ["workflowSource"],
+      "dependsOn": ["bootstrap"]
+    },
+    "budgets": {
+      "command": "just _github-workflows-budgets",
+      "dependsOn": ["test"],
+      "cache": false,
+      "inputs": ["workflowSource"]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": ["lint", "typecheck", "budgets"]
+    }
+  }
+}

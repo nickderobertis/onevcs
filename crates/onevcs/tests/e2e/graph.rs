@@ -25,7 +25,8 @@ use std::process::{Command, Output};
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` journeys
 /// carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 6] = [
+const GATE_PROJECTS: [&str; 7] = [
+    "github-workflows",
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
@@ -246,11 +247,11 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
         ),
         (
             "npm/onevcs/bin/onevcs.js",
-            &["onevcs-contract", "onevcs-scripts-e2e"][..],
+            &["github-workflows", "onevcs-contract", "onevcs-scripts-e2e"][..],
         ),
         (
             ".github/workflows/ci.yml",
-            &["onevcs-contract", "onevcs-scripts-e2e"][..],
+            &["github-workflows", "onevcs-contract", "onevcs-scripts-e2e"][..],
         ),
     ] {
         checkout.branch_changing("change", &[path]);
@@ -276,7 +277,10 @@ fn a_change_under_crates_reaches_the_crate_and_every_tier_that_reads_it() {
     );
     assert_eq!(
         projects_running(&tasks, "test"),
-        set(&GATE_PROJECTS),
+        set(&GATE_PROJECTS)
+            .into_iter()
+            .filter(|project| project != "github-workflows")
+            .collect(),
         "a change to the crate's source selected {tasks:?}"
     );
 }

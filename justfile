@@ -502,3 +502,7 @@ screenshots-bless: screenshots
 [positional-arguments]
 lint-llm-diff base="origin/main" *nx_args:
     @./scripts/llmlint-diff.sh "$@"
+
+# Workflow scheduling reports use the same released checker as the root budgets.
+_github-workflows-budgets:
+    @set -o pipefail; "{{onebudgetspec-root}}/bin/onebudgetspec" check .github/budgets.yaml --json | node .github/budget-verdict.mjs

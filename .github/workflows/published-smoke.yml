@@ -9,8 +9,9 @@ name: Published smoke
 # nothing else in this repository installs from a registry between releases.
 #
 # So this runs the identical `scripts/smoke-published.sh` those jobs run, against
-# `latest` rather than a tag, on Linux, both macOS architectures, and Windows,
-# every time `release.yml` finishes. The registry's own idea of the version (`pip
+# `latest` rather than a tag, on Linux and Windows whenever release.yml finishes.
+# Darwin local installs run before publication in release.yml; an explicitly
+# opted-in manual diagnostic here can request one Mac runner. The registry's own idea of the version (`pip
 # show`, `npm view`) is what the binary is held to, so a package whose metadata
 # and payload disagree fails here rather than confusing someone reading
 # `--version`.
@@ -64,15 +65,16 @@ on:
   # A dist-tag pointing at a build that never shipped is exactly what a publish
   # that stopped between its steps leaves behind.
   workflow_run:
-    workflows: [Release]
-    types: [completed]
+    workflows: [ Release ]
+    types: [ completed ]
   # The manual entry point — after a registry incident, or to confirm a fix
   # without waiting for the next release.
   workflow_dispatch:
-
-# Nothing by default. The smoke jobs ask for `contents: read` because they check
-# out the smoke script and read public registries anonymously; only `report` may
-# write, and only issues.
+    inputs:
+      macos-diagnostic:
+        description: Explicit Mac registry diagnostic, outside the automatic lifecycle
+        type: boolean
+        default: false
 permissions: {}
 
 concurrency:
@@ -90,7 +92,9 @@ jobs:
       # Every platform reports: the first red leg must not hide a second.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+        os:
+          - ubuntu-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -136,7 +140,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+        os:
+          - ubuntu-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -188,7 +194,7 @@ jobs:
     # and both smoke jobs *skipped* — the state of a repository that publishes to
     # neither registry — is not a failure either.
     if: ${{ failure() }}
-    needs: [pypi, npm]
+    needs: [ pypi, npm, macos-diagnostic ]
     permissions:
       # The checkout below is why the script this runs is in the workspace at all;
       # issues are the only thing this workflow writes, and only from here.
@@ -218,5 +224,79 @@ jobs:
             and re-cutting it is the usual fix.
 
             Triggered by: ${{ github.event.workflow_run.html_url || 'a manual dispatch' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+            github.run_id }}
         run: bash scripts/report-workflow-failure.sh
+  macos-diagnostic:
+    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.macos-diagnostic == true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        if: vars.PYPI_PUBLISH == 'true'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        if: vars.PYPI_PUBLISH == 'true'
+      - name: Install the latest published wheel
+        id: install
+        run: |
+          if ! pip install --upgrade onevcs-cli; then
+            echo "::error::PyPI on $RUNNER_OS/$RUNNER_ARCH: pip install onevcs-cli failed"
+            echo "ACTION: check https://pypi.org/project/onevcs-cli/ for a yanked or missing wheel for this platform" >&2
+            exit 1
+          fi
+          version="$(pip show onevcs-cli | sed -n 's/^Version: //p' | tr -d '\r')"
+          if [ -z "$version" ]; then
+            echo "::error::PyPI on $RUNNER_OS/$RUNNER_ARCH: onevcs-cli installed but reports no version"
+            echo "ACTION: inspect the wheel's metadata — pip show found no Version field" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+        if: vars.PYPI_PUBLISH == 'true'
+      - name: Smoke-test what PyPI served
+        env:
+          VERSION: ${{ steps.install.outputs.version }}
+        run: |
+          bash scripts/smoke-published.sh \
+            --expect-version "$VERSION" \
+            --label "PyPI onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
+        if: vars.PYPI_PUBLISH == 'true'
+      - uses: actions/checkout@v4
+        if: vars.NPM_PUBLISH == 'true'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+        if: vars.NPM_PUBLISH == 'true'
+      - name: Install the latest published package
+        id: npm-install
+        run: |
+          version="$(npm view onevcs-cli version 2>/dev/null | tr -d '\r')"
+          if [ -z "$version" ]; then
+            echo "::error::npm on $RUNNER_OS/$RUNNER_ARCH: the registry serves no version of onevcs-cli"
+            echo "ACTION: check https://www.npmjs.com/package/onevcs-cli — the latest dist-tag may be unset or the package unpublished" >&2
+            exit 1
+          fi
+          # Pinned to what `npm view` just reported so the version asserted below is
+          # the one that was installed, even if latest moves mid-run. That pin is
+          # also why this install retries: `npm view` and the install resolve
+          # independently, so a version published minutes ago can be on the edge one
+          # read and not the other.
+          bash scripts/retry-install.sh \
+            --label "npm onevcs-cli $version on $RUNNER_OS/$RUNNER_ARCH" \
+            --action "the platform package for this runner is missing or unpublished; check the onevcs-cli-* packages" \
+            -- npm install -g --prefer-online "onevcs-cli@${version}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+        if: vars.NPM_PUBLISH == 'true'
+      - name: Smoke-test what npm served
+        env:
+          VERSION: ${{ steps.npm-install.outputs.version }}
+        run: |
+          bash scripts/smoke-published.sh \
+            --expect-version "$VERSION" \
+            --label "npm onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
+        if: vars.NPM_PUBLISH == 'true'

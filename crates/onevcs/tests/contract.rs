@@ -5672,11 +5672,22 @@ fn every_copy_of_the_platform_target_table_agrees() {
         .cloned()
         .collect();
 
-    let from_release: BTreeSet<String> = release
+    let mut from_release: BTreeSet<String> = release
         .lines()
         .filter_map(|line| line.trim().strip_prefix("- target: "))
         .map(str::to_owned)
         .collect();
+
+    // Darwin targets share one runner and are declared in that job's environment,
+    // rather than one matrix row (and runner instance) per target.
+    let release_doc = workflow(".github/workflows/release.yml");
+    let jobs = workflow_jobs(&release_doc);
+    let darwin = jobs["build-darwin"]
+        .get("env")
+        .and_then(|env| env.get("DARWIN_TARGETS"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .expect("the Darwin builder declares its targets");
+    from_release.extend(darwin.split_whitespace().map(str::to_owned));
 
     assert_eq!(
         packages_from_assembler, packages_from_launcher,
@@ -6052,8 +6063,9 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
     // A required context no pull request reports blocks every merge, and one that
     // waits on an optional job is only as required as that job is. So each fixed
     // context is a job of ci.yml — which runs on every pull request with no path
-    // filter — and none of them `needs` a job that is not itself one of them or
-    // `changes`, the affected-selection job every one of them is scoped by.
+    // filter. Direct proofs depend only on required jobs or changes. The Mac
+    // carriers use always() and explicitly inspect their optional lane's outcome;
+    // subprocess journeys in .github/tests hold that result propagation.
     let ci = workflow(".github/workflows/ci.yml");
     assert!(
         workflow_events(&ci).contains("pull_request"),
@@ -6096,9 +6108,35 @@ fn every_fixed_status_check_context_is_reported_on_a_pull_request() {
             "{context} is conditioned on the gate tier ({condition}), so a pull request the \
              sweep runs on would not report it"
         );
+        let carrier_lane = match id.as_str() {
+            "cross-macos" => Some("cross"),
+            "install-macos" => Some("install"),
+            _ => None,
+        };
+        if let Some(lane) = carrier_lane {
+            assert_eq!(condition, "${{ always() }}", "{context} must always report");
+            let steps = job
+                .get("steps")
+                .and_then(serde_yaml_ng::Value::as_sequence)
+                .expect("a carrier has result-handling steps");
+            assert!(
+                steps.iter().any(|step| {
+                    step.get("run").and_then(serde_yaml_ng::Value::as_str)
+                        == Some(
+                            format!("node .github/required-result.mjs {lane} \"$NEEDS\"").as_str(),
+                        )
+                        && step
+                            .get("env")
+                            .and_then(|env| env.get("NEEDS"))
+                            .and_then(serde_yaml_ng::Value::as_str)
+                            == Some("${{ toJSON(needs) }}")
+                }),
+                "{context} must inspect explicit needs results"
+            );
+        }
         for need in job_needs(job) {
             assert!(
-                gating.contains(&need),
+                gating.contains(&need) || (carrier_lane.is_some() && need == "macos-pr"),
                 "{context} needs {need:?}, which is no required context — it can leave {context} \
                  unreported"
             );
@@ -6208,8 +6246,8 @@ fn the_suppressions_comment_runs_on_this_repositorys_pull_requests_and_skips_for
 
 #[test]
 fn the_required_checks_agents_md_names_are_the_jobs_reporting_the_fixed_contexts() {
-    // AGENTS.md states the required checks by job, which is how a reader meets
-    // them; `FIXED_CONTEXTS` states them by the context each job reports. The two
+    // AGENTS.md groups required display names by their platform-neutral stem;
+    // `FIXED_CONTEXTS` states the full context each job reports. The two
     // are one list in two spellings, so they are reconciled here rather than kept
     // together by convention. The screenshot comparison is reported by a reusable
     // workflow rather than by a job of ci.yml, and is held by the test above.
@@ -6230,11 +6268,16 @@ fn the_required_checks_agents_md_names_are_the_jobs_reporting_the_fixed_contexts
     let ci = workflow(".github/workflows/ci.yml");
     let mut reporting = BTreeSet::new();
     for (id, job) in workflow_jobs(&ci) {
-        if job_contexts(&id, &job)
-            .iter()
-            .any(|context| FIXED_CONTEXTS.contains(&context.as_str()))
-        {
-            reporting.insert(id);
+        for context in job_contexts(&id, &job) {
+            if FIXED_CONTEXTS.contains(&context.as_str()) {
+                reporting.insert(
+                    context
+                        .split(" (")
+                        .next()
+                        .expect("a display name")
+                        .to_owned(),
+                );
+            }
         }
     }
     assert_eq!(
