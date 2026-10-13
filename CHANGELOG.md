@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0](https://github.com/nickderobertis/onevcs/compare/v0.49.0...v0.50.0) - 2026-10-13
+
+### Added
+
+- *(pool)* [**breaking**] run the maintenance command a repository declares in onevcs.toml ([#400](https://github.com/nickderobertis/onevcs/pull/400))
+
+### Fixed
+
+- *(hooks)* remove CI-duplicated pre-push checks ([#386](https://github.com/nickderobertis/onevcs/pull/386))
+
 ## [0.49.0](https://github.com/nickderobertis/onevcs/compare/v0.48.1...v0.49.0) - 2026-10-12
 
 ### Fixed
