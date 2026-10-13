@@ -1,7 +1,10 @@
 {
   "name": "github-workflows",
   "projectType": "application",
-  "tags": ["scope:repo", "lang:javascript"],
+  "tags": [
+    "scope:repo",
+    "lang:javascript"
+  ],
   "namedInputs": {
     "workflowSource": [
       "{projectRoot}/**/*",
@@ -21,35 +24,51 @@
     "test": {
       "command": "node --test .github/tests/*.test.mjs",
       "cache": false,
-      "inputs": ["workflowSource"],
-      "outputs": ["{projectRoot}/.telemetry/macos-policy.json"],
-      "dependsOn": ["bootstrap"]
+      "inputs": [
+        "workflowSource"
+      ],
+      "outputs": [
+        "{projectRoot}/.telemetry/macos-policy.json"
+      ],
+      "dependsOn": [
+        "bootstrap"
+      ]
     },
     "test-quick": {
       "command": "node --test .github/tests/*.test.mjs",
       "cache": false,
-      "inputs": ["workflowSource"],
-      "dependsOn": ["bootstrap"]
+      "inputs": [
+        "workflowSource"
+      ],
+      "dependsOn": [
+        "bootstrap"
+      ]
     },
     "lint": {
-      "command": ".github/bin/actionlint .github/workflows/*.yml",
-      "inputs": ["workflowSource"],
-      "dependsOn": ["bootstrap"]
-    },
-    "typecheck": {
-      "command": "node .github/check-syntax.mjs",
-      "inputs": ["workflowSource"],
-      "dependsOn": ["bootstrap"]
+      "command": "bash .github/lint.sh",
+      "inputs": [
+        "workflowSource"
+      ],
+      "dependsOn": [
+        "bootstrap"
+      ]
     },
     "budgets": {
       "command": "just _github-workflows-budgets",
-      "dependsOn": ["test"],
+      "dependsOn": [
+        "test"
+      ],
       "cache": false,
-      "inputs": ["workflowSource"]
+      "inputs": [
+        "workflowSource"
+      ]
     },
     "check": {
       "executor": "nx:noop",
-      "dependsOn": ["lint", "typecheck", "budgets"]
+      "dependsOn": [
+        "lint",
+        "budgets"
+      ]
     }
   }
 }

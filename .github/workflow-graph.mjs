@@ -158,9 +158,14 @@ function reusable(call) {
     if (call.startsWith("./"))
         return YAML.parse(readFileSync(call.slice(2), "utf8"));
     const item = inventory[call];
-    if (!item?.sha256 || !item?.workflow)
+    if (!item?.sha256 || typeof item?.source !== "string")
         throw new Error(`unresolved reusable workflow ${call}`);
-    return item.workflow;
+    const parts = call.match(/^([^/]+)\/([^/]+)\/(.+)@([^@]+)$/);
+    if (!parts || item.url !== `https://raw.githubusercontent.com/${parts[1]}/${parts[2]}/${parts[4]}/${parts[3]}`)
+        throw new Error(`vendored reusable source URL mismatch for ${call}`);
+    if (createHash("sha256").update(item.source).digest("hex") !== item.sha256)
+        throw new Error(`vendored reusable source SHA-256 mismatch for ${call}`);
+    return YAML.parse(item.source);
 }
 const matrixCache = new Map();
 function screencompMatrix(inputs) {
