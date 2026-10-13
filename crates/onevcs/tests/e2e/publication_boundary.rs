@@ -1334,7 +1334,11 @@ fn committed_root_and_nested_workspace_terms_screen_publication_before_remote_wr
             write(&worktree, "examples/workspace.md", content);
             commit(&host.world, &worktree, "docs: add an example");
             let before = host.origin_refs();
-            let calls = host.world.host_calls().len();
+            let request = host.world.path("gh-state/pr-1.env");
+            assert!(
+                !request.exists(),
+                "no change request exists before publication"
+            );
             let output = host.publish(&token, &["--draft"]);
             if branch == "neutral" {
                 host.published(
@@ -1342,9 +1346,8 @@ fn committed_root_and_nested_workspace_terms_screen_publication_before_remote_wr
                     &before,
                     "a root workspace permits neutral publication",
                 );
-                assert!(host.world.host_calls()[calls..]
-                    .iter()
-                    .any(|call| call.starts_with("pr create")));
+                assert_eq!(host.world.change_request(1)["PR_HEAD"], branch);
+                assert_eq!(host.world.change_request(1)["DRAFT"], "true");
             } else {
                 host.refused(
                     &output,
@@ -1352,9 +1355,7 @@ fn committed_root_and_nested_workspace_terms_screen_publication_before_remote_wr
                     &before,
                     "a derived workspace package term",
                 );
-                assert!(!host.world.host_calls()[calls..]
-                    .iter()
-                    .any(|call| call.starts_with("pr create")));
+                assert!(!request.exists(), "refusal created a change request");
             }
         }
     }

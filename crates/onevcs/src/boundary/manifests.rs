@@ -202,7 +202,9 @@ impl Committed<'_> {
 /// Normalize relative member paths without consulting the worktree. An empty
 /// normalized path names the root only when the input explicitly names it.
 fn member_path(pattern: &str) -> Option<String> {
-    if pattern.is_empty() || Path::new(pattern).is_absolute() {
+    // Windows paths rooted without a drive are not absolute, but still cannot
+    // name a member relative to the committed repository tree.
+    if pattern.is_empty() || Path::new(pattern).has_root() {
         return None;
     }
     let segments: Vec<_> = pattern
@@ -344,6 +346,10 @@ mod tests {
         }
         assert_eq!(member_path("./crates/*/"), Some("crates/*".into()));
         for pattern in ["", "..", "../outside", "nested/../outside", "/outside", "/"] {
+            assert_eq!(member_path(pattern), None);
+        }
+        #[cfg(windows)]
+        for pattern in [r"\outside", r"C:\outside", r"\\server\share\outside"] {
             assert_eq!(member_path(pattern), None);
         }
     }
