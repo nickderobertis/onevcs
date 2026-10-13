@@ -122,17 +122,12 @@ impl Committed<'_> {
 
     /// Every committed directory a member pattern names, as paths from the root.
     fn expand(&self, pattern: &str) -> Result<Vec<String>, Failure> {
-        let segments: Vec<&str> = pattern
-            .trim_start_matches("./")
-            .trim_end_matches('/')
-            .split('/')
-            .filter(|segment| !segment.is_empty() && *segment != ".")
-            .collect();
-        if segments.is_empty() || segments.contains(&"..") {
-            return Err(format!(
-                "member pattern {pattern:?} is not inside the repository"
-            ));
+        let normalized = member_path(pattern)
+            .ok_or_else(|| format!("member pattern {pattern:?} is not inside the repository"))?;
+        if normalized.is_empty() {
+            return Ok(vec![String::new()]);
         }
+        let segments = normalized.split('/');
         let mut found = vec![(String::new(), self.tree.clone())];
         for segment in segments {
             let mut next = Vec::new();
@@ -169,24 +164,30 @@ impl Committed<'_> {
         excluded: &[String],
         manifest: &str,
     ) -> Result<Vec<String>, Failure> {
-        let excluded: Vec<&str> = excluded
+        let excluded: Vec<String> = excluded
             .iter()
-            .map(|path| path.trim_start_matches("./").trim_end_matches('/'))
-            .collect();
+            .map(|path| {
+                member_path(path)
+                    .ok_or_else(|| format!("exclude pattern {path:?} is not inside the repository"))
+            })
+            .collect::<Result<_, _>>()?;
         let mut texts = Vec::new();
         for pattern in patterns {
             let literal = !pattern.contains('*');
             let mut directories = self.expand(pattern)?;
-            directories.retain(|directory| !excluded.contains(&directory.as_str()));
-            if literal && excluded.contains(&pattern.trim_start_matches("./").trim_end_matches('/'))
-            {
+            directories.retain(|directory| !excluded.contains(directory));
+            if literal && member_path(pattern).is_some_and(|path| excluded.contains(&path)) {
                 continue;
             }
             if literal && directories.is_empty() {
                 return Err(format!("member {pattern:?} is not committed"));
             }
             for directory in directories {
-                let path = format!("{directory}/{manifest}");
+                let path = if directory.is_empty() {
+                    manifest.to_owned()
+                } else {
+                    format!("{directory}/{manifest}")
+                };
                 match self.text(&path)? {
                     Some(text) => texts.push(text),
                     None if literal => return Err(format!("{path} is not committed")),
@@ -196,6 +197,24 @@ impl Committed<'_> {
         }
         Ok(texts)
     }
+}
+
+/// Normalize relative member paths without consulting the worktree. An empty
+/// normalized path names the root only when the input explicitly names it.
+fn member_path(pattern: &str) -> Option<String> {
+    // Windows paths rooted without a drive are not absolute, but still cannot
+    // name a member relative to the committed repository tree.
+    if pattern.is_empty() || Path::new(pattern).has_root() {
+        return None;
+    }
+    let segments: Vec<_> = pattern
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
+    if segments.contains(&"..") {
+        return None;
+    }
+    Some(segments.join("/"))
 }
 
 fn toml_table(path: &str, text: &str) -> Result<toml::Table, Failure> {
@@ -311,4 +330,27 @@ fn python(committed: &Committed<'_>, packages: &mut BTreeSet<String>) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::member_path;
+
+    #[test]
+    fn member_paths_normalize_root_and_nested_spellings_without_accepting_escape() {
+        for pattern in [".", "./", "././"] {
+            assert_eq!(member_path(pattern), Some(String::new()));
+        }
+        for pattern in ["nested", "./nested/", "././nested/./"] {
+            assert_eq!(member_path(pattern), Some("nested".into()));
+        }
+        assert_eq!(member_path("./crates/*/"), Some("crates/*".into()));
+        for pattern in ["", "..", "../outside", "nested/../outside", "/outside", "/"] {
+            assert_eq!(member_path(pattern), None);
+        }
+        #[cfg(windows)]
+        for pattern in [r"\outside", r"C:\outside", r"\\server\share\outside"] {
+            assert_eq!(member_path(pattern), None);
+        }
+    }
 }
