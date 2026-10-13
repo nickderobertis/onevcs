@@ -511,8 +511,8 @@ pub(crate) fn parse(path: &Path, raw: &str) -> Result<WorkspacesFile> {
     };
     let document: serde_json::Value = yaml::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too, for
-    // the reason the other two host files do it: which keys a document may carry is a
-    // fact about the version it declares. Only a version *below* this one is refused.
+    // the reason the other host files do it: which keys a document may carry is a fact
+    // about the version it declares. Only a version *below* this one is refused.
     if let Some(declared) = yaml::declared_version(&document) {
         if declared < u64::from(VERSION) {
             return Err(error::invalid(format!(

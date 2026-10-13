@@ -445,8 +445,8 @@ fn spent_gates(document: &serde_json::Value) -> usize {
 /// a second verifier beside the repository's own merge path and threw its answer
 /// away, and a file still carrying one is asking for something version
 /// `GATE_REMOVED_VERSION` took away. It is looked for exactly where the schema used
-/// to put one, which is where `drop_gate` takes it from at the versions that still
-/// had it; a `gate:` anywhere else is a key like any other.
+/// to put one, which is where `spent_gates` counts it at the versions that still had
+/// it; a `gate:` anywhere else is a key like any other.
 fn refuse_removed_gate(path: &Path, document: &serde_json::Value) -> Result<()> {
     let named = |value: Option<&serde_json::Value>, where_: String| match value {
         Some(serde_json::Value::Object(fields)) if fields.contains_key("gate") => Some(where_),
