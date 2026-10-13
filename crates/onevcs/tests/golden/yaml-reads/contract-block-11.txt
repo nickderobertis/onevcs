@@ -1,0 +1,62 @@
+Ok(
+    RulesFile {
+        version: 4,
+        trailer_prefix: None,
+        rules: [
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "hiddenco",
+                    ),
+                    name: None,
+                    path: None,
+                },
+                publication: None,
+                approvals: None,
+                drafts: None,
+                visibility: Some(
+                    Private,
+                ),
+                base_merge: None,
+                checks: None,
+            },
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "sample-owner",
+                    ),
+                    name: Some(
+                        "openwidget",
+                    ),
+                    path: None,
+                },
+                publication: None,
+                approvals: None,
+                drafts: None,
+                visibility: Some(
+                    Public,
+                ),
+                base_merge: None,
+                checks: None,
+            },
+        ],
+        default: Policy {
+            publication: ChangeOpen,
+            approvals: Required,
+            drafts: None,
+            base_merge: None,
+            checks: None,
+        },
+    },
+)
+Ok(
+    Ok(
+        (),
+    ),
+)

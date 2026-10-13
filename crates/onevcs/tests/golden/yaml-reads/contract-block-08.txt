@@ -1,0 +1,6 @@
+Ok(
+    BranchesFile {
+        version: 1,
+        prefix: "nick/",
+    },
+)

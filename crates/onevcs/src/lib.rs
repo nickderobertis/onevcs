@@ -117,6 +117,7 @@ mod verified;
 mod vocabulary;
 mod workspace;
 pub mod workspaces;
+mod yaml;
 
 pub use boundary::{
     boundary_schema, check_public_output, check_public_output_with_evidence, inspect_repository,

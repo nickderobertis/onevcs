@@ -1,0 +1,54 @@
+Ok(
+    RulesFile {
+        version: 3,
+        trailer_prefix: None,
+        rules: [
+            Rule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "acme-corp",
+                    ),
+                    name: Some(
+                        "legacy",
+                    ),
+                    path: None,
+                },
+                publication: None,
+                approvals: None,
+                drafts: Some(
+                    Drafts {
+                        disabled: Some(
+                            true,
+                        ),
+                        warn_on_early_lift: None,
+                    },
+                ),
+                visibility: None,
+                base_merge: None,
+                checks: None,
+            },
+        ],
+        default: Policy {
+            publication: ChangeOpen,
+            approvals: Required,
+            drafts: Some(
+                Drafts {
+                    disabled: None,
+                    warn_on_early_lift: Some(
+                        false,
+                    ),
+                },
+            ),
+            base_merge: None,
+            checks: None,
+        },
+    },
+)
+Ok(
+    Ok(
+        (),
+    ),
+)

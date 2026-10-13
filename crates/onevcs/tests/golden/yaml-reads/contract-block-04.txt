@@ -1,0 +1,61 @@
+Ok(
+    ReleasesFile {
+        version: 1,
+        repositories: [
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                adoption: Some(
+                    Published,
+                ),
+                default_target: Some(
+                    "crate",
+                ),
+                declaration: None,
+                targets: [
+                    ReleaseTarget {
+                        name: "crate",
+                        release: Automated {
+                            probe: Shell {
+                                shell: "npm view onevcs-cli version",
+                                timeout_seconds: 60,
+                            },
+                        },
+                        adoption_instructions: None,
+                    },
+                    ReleaseTarget {
+                        name: "wheel",
+                        release: Automated {
+                            probe: Script {
+                                script: "scripts/probe-released-wheel.sh",
+                                args: [],
+                                timeout_seconds: 60,
+                            },
+                        },
+                        adoption_instructions: None,
+                    },
+                    ReleaseTarget {
+                        name: "container",
+                        release: HumanStep {
+                            action: "Push the image to the internal registry and record the tag.",
+                        },
+                        adoption_instructions: None,
+                    },
+                ],
+            },
+        ],
+        default: ReleaseDefault {
+            adoption: Fast,
+        },
+    },
+)

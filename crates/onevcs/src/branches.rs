@@ -28,7 +28,7 @@
 //! anything, and `SessionRequest::branch` — which names a branch to *continue* — is
 //! never prefixed, suffixed or re-sanitized.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -110,13 +110,19 @@ pub(crate) fn load() -> Result<(BranchesFile, FileSource)> {
             path.display()
         ))
     })?;
+    Ok((parse(&path, &raw)?, FileSource::File(path)))
+}
+
+/// One branches document's text, held to every check a loaded one is. `path` is what a
+/// refusal names the document by.
+pub(crate) fn parse(path: &Path, raw: &str) -> Result<BranchesFile> {
     let malformed = |failure: serde_yaml_ng::Error| {
         error::invalid(format!(
             "the branches file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too,
     // for the reason the other host files do it: which keys a document may carry is
     // a fact about the version it declares. Only a version *below* this one is
@@ -133,8 +139,7 @@ pub(crate) fn load() -> Result<(BranchesFile, FileSource)> {
             )));
         }
     }
-    let file: BranchesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    Ok((file, FileSource::File(path)))
+    serde_yaml_ng::from_value(document).map_err(malformed)
 }
 
 /// Resolve the prefix every branch this open cuts is put in front of, highest layer

@@ -1,0 +1,4 @@
+# A sanitized copy of a real host file: each private repository's owner and name,
+# and the user name, is a placeholder of the same shape; every other byte is as the host had it.
+version: 1
+prefix: user/

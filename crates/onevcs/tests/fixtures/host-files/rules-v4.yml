@@ -1,0 +1,245 @@
+# Derived from rules-v3.yml, which is itself a sanitized real host file: declared at version 4,
+# with `drafts:` on two rules and the default and `visibility:` on one. Every other byte is the same.
+# How each repository on this host publishes a change.
+#
+# `onevcs` reads this file from `$ONEVCS_HOME/rules.yml` (`~/.onevcs/rules.yml` by
+# default); `just repos-apply` installs this tracked copy there. Editing *this*
+# file and re-running that recipe is how routing changes — there is no command that
+# writes a policy, and `onevcs rules check <repo>` reports which rule a repository
+# matched and the policy that followed.
+#
+# First match wins, and every rule here names one repository outright. A repository
+# no rule matches falls through to `default:`, which is the reviewed path — so
+# forgetting a rule costs a pull request nobody asked for rather than a direct merge
+# nobody reviewed. `just repos-apply` fails on any registered checkout that lands
+# there, because the default is safe but is not this host's policy for any of them.
+#
+# The two fields carry what the pre-adoption registry held per identity:
+#
+# | pre-adoption                        | here                        |
+# | ----------------------------------- | --------------------------- |
+# | `workflow: local`, strategy direct  | `publication: local-direct` |
+# | `workflow: remote`, strategy auto   | `publication: change-auto`  |
+# | `workflow: remote`, strategy none   | `publication: change-open`  |
+# | `repo_type: single-owner`           | `approvals: none`           |
+# | `repo_type: team`                   | `approvals: required`       |
+#
+# `tests/e2e/test_repo_registry_apply_e2e.py` holds every row of that mapping against
+# `tests/fixtures/pre-adoption-repos.json`, so a rule edited to disagree with the
+# registry this host was migrated from fails the gate rather than changing a merge
+# path quietly.
+#
+# ## What verifies a change, now that nothing here does
+#
+# This file used to carry a third field. A `gate:` named a command `onevcs` ran in
+# the branch's own clone before it would publish, and **onevcs 0.11.0 removed the
+# concept**: a rule and the default are `{publication, approvals}`, and a stray
+# `gate:` at `version: 3` is refused by name as an unknown field. Versions 1 and 2
+# still parse — a `gate:` there is accepted, ignored, and reported once on stderr — so
+# a host that has not migrated keeps publishing rather than breaking.
+#
+# Since onevcs 0.36.0 a rule may also carry an optional `drafts:` mapping. This file
+# names none, because no identity on this host is known to skip CI on drafts, so every
+# change request a publication opens is a draft while its required checks run and what
+# a green one becomes follows from `publication` and `approvals`, as onevcs's
+# `docs/contract.md` states (`onevcs rules check <repo>` prints the resolved lines).
+#
+# The verifier that remains is the repository's own, and it is the one that could
+# always refuse the merge:
+#
+#   - **Remote-publishing identities** — every rule below but the `local-direct`
+#     ones — merge when GitHub's required status checks pass. Those checks are the
+#     merge path. A
+#     second tier run here front-ran them and threw the answer away: it judged a
+#     tree the required checks were about to judge again, on a different runner,
+#     and its verdict bound nothing. Where it ran *less* than they do it was worse
+#     than nothing, because it read as verification — a `nick-derobertis-site`
+#     branch passed this file's gate, published as PR #77, and sat blocked on the
+#     required `llmlint` check that gate never ran.
+#   - **The `local-direct` identities** — open no change request, so they have no
+#     required checks. Verification instead comes from an executable `pre-push` hook,
+#     when the checkout has one, which `onevcs` reaches by carrying the lender's
+#     `core.hooksPath` into the disposable publication clone. `ai-orchestrator` has
+#     that hook; `private-repo-a`' is the committed `.githooks/pre-push` running its own
+#     `just check`, active once its checkout's `core.hooksPath` points at it;
+#     `spanish-language-tutor` has none yet, so its merge-path audit truthfully
+#     reports no coverage.
+#
+# `just repos --audit-gate-coverage` reports what those required checks are, per
+# identity, read off each repository's own branch protection and rulesets at the
+# moment it is asked — there is no tracked copy of that list: with
+# nothing here front-running them, *every* required check is one only the merge path
+# runs, and every one of them can refuse a merge. That is not a loss of coverage —
+# it is the coverage stated honestly for the first time.
+#
+# One thing this removal does **not** touch, because the two are easy to confuse:
+# `onevcs repos`'s third column is `Identity.gate`, the registry's own detection of
+# what a checkout verifies with. That is a property of a checkout rather than a
+# policy this file sets, and it stays.
+version: 4
+
+# The prefix every provenance trailer key on a preserved branch is spelled under.
+# `onevcs` writes `Onevcs-` when nothing configures one, but every branch this host
+# has preserved — and every recovery attestation already on a base branch here —
+# carries `Orchestrator-`, which is the spelling `AGENTS.md` documents. A marker
+# written under a prefix the host is not configured with is neither read nor
+# ignored: it is reported as unrecognized and refused publication, so leaving this
+# unset strands every preserved branch that predates the adoption.
+trailer_prefix: Orchestrator-
+
+rules:
+  # Local-first publication paths: merged in the local checkout and pushed, never
+  # through a pull request. `local-direct` is the only policy here that opens no
+  # change request, so these are the rules to be most careful editing. Their
+  # verifier is a hook, when present, rather than a set of required checks.
+  - match: {host: github.com, owner: nickderobertis, name: ai-orchestrator}
+    publication: local-direct
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: private-repo-a}
+    publication: local-direct
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: allowlister}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: allowlister-remote}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: allowlister-terminal-approval-plugin}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: crozier}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: dero-skills}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: private-repo-b}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: github-graphql-node-count}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: github-secrets}
+    publication: change-auto
+    approvals: none
+
+  # Its base branch is `master`, which the audit names beside the checks it reports
+  # for it: the required checks are the ones declared on the branch a change here
+  # actually merges into.
+  - match: {host: github.com, owner: nickderobertis, name: nick-derobertis-site}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: llmlint}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: notignored}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: oneagentgraph}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onebudgetspec}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: oneharness}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: oneharness-ui}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onejudge}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onemessagebus}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline-ui}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onetaskgraph}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: printobserver}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: screencomp}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: skilltest}
+    publication: change-auto
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: spanish-language-tutor}
+    publication: local-direct
+    approvals: none
+
+  - match: {host: github.com, owner: nickderobertis, name: private-repo-c}
+    publication: change-auto
+    approvals: none
+    drafts: {disabled: true}
+
+  # The team repositories on this host, every one of them owned by `team-org`.
+  # `change-open` with `approvals: required` keeps the pull request a draft once its
+  # checks are green, for its own user's review, and that user lifting it is what puts
+  # somebody else in the path; re-registering one of them as either of the rows above
+  # is how a direct merge happens where a review was intended.
+  - match: {host: github.com, owner: team-org, name: team-repo-a}
+    publication: change-open
+    approvals: required
+    visibility: private
+    drafts:
+      warn_on_early_lift: false
+
+  - match: {host: github.com, owner: team-org, name: team-repo-b}
+    publication: change-open
+    approvals: required
+
+  - match: {host: github.com, owner: team-org, name: team-repo-c}
+    publication: change-open
+    approvals: required
+
+  - match: {host: github.com, owner: team-org, name: team-repo-d}
+    publication: change-open
+    approvals: required
+
+  - match: {host: github.com, owner: team-org, name: team-repo-e}
+    publication: change-open
+    approvals: required
+
+# The policy for a repository no rule above names: reviewed, approved, and verified
+# by the host's own required checks. This is `onevcs`'s own built-in default,
+# restated so that reading this file tells you what an unlisted repository gets.
+default:
+  publication: change-open
+  approvals: required
+  drafts: {warn_on_early_lift: true}

@@ -1,0 +1,3 @@
+Ok(
+    "{\n  \"include\": [\n    {\n      \"source\": \"vcs\",\n      \"kind\": \"gate-*\"\n    }\n  ],\n  \"exclude\": [\n    {\n      \"kind\": \"lock-wait\"\n    }\n  ]\n}",
+)

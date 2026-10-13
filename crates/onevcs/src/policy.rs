@@ -380,6 +380,14 @@ pub fn load(registry: &Registry) -> Result<(RulesFile, RulesSource)> {
 /// it declares, the keys that version has, the shape, and the combinations no policy
 /// can honour. `path` is what a refusal names the document by.
 pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
+    let file = read(path, raw)?;
+    validate(path, &file)?;
+    Ok(file)
+}
+
+/// One rules document's text read as the shape its version has, before the
+/// combinations no policy can honour are refused.
+pub(crate) fn read(path: &Path, raw: &str) -> Result<RulesFile> {
     let path = path.to_path_buf();
     let malformed = |e: serde_yaml_ng::Error| Error::Invalid {
         reason: format!("the rules file at {} is malformed: {e}", path.display()),
@@ -411,9 +419,7 @@ pub fn parse(path: &Path, raw: &str) -> Result<RulesFile> {
     refuse_malformed_drafts(&path, &document)?;
     refuse_malformed_base_merge(&path, &document)?;
     refuse_malformed_checks(&path, &document)?;
-    let file: RulesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    validate(&path, &file)?;
-    Ok(file)
+    serde_yaml_ng::from_value(document).map_err(malformed)
 }
 
 /// The version a document declares, before anything about its shape is enforced.

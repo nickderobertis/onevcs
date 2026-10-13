@@ -1,0 +1,250 @@
+Ok(
+    ReleasesFile {
+        version: 1,
+        repositories: [
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "ai-orchestrator",
+                    ),
+                    path: None,
+                },
+                adoption: Some(
+                    Published,
+                ),
+                default_target: None,
+                declaration: None,
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onevcs",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneagentgraph",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onejudge",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "cli",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "oneharness",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "cli-wheel",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onetaskgraph",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onepipeline-ui",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi-cli",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onemessagebus",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "onebudgetspec",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "pypi",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+            ReleaseRule {
+                match: RuleMatch {
+                    host: Some(
+                        "github.com",
+                    ),
+                    owner: Some(
+                        "nickderobertis",
+                    ),
+                    name: Some(
+                        "llmlint",
+                    ),
+                    path: None,
+                },
+                adoption: None,
+                default_target: Some(
+                    "cli",
+                ),
+                declaration: Some(
+                    Merge,
+                ),
+                targets: [],
+            },
+        ],
+        default: ReleaseDefault {
+            adoption: Fast,
+        },
+    },
+)

@@ -1,0 +1,125 @@
+# A sanitized copy of a real host file: each private repository's owner and name,
+# and the user name, is a placeholder of the same shape; every other byte is as the host had it.
+# How many warm worktree slots each repository keeps, and what maintains them: the
+# shared default every host starts from, never the last word on any one host.
+#
+# `onevcs` reads a workspaces file from `$ONEVCS_HOME/workspaces.yml`
+# (`~/.onevcs/workspaces.yml` by default). `just repos-apply` installs one there beside
+# the rules and releases files, composed from this tracked file **overlaid by the host's
+# own** `${XDG_CONFIG_HOME:-$HOME/.config}/ai-orchestrator/workspaces.yml` — the
+# directory `claude-identities.env` lives in, outside every checkout — when that file
+# exists, and from this file alone when it does not. The host file has this schema and
+# version and is partial: its `default` keys replace this `default`'s key by key, and
+# each of its `rules` entries replaces the rule here with an identical `match` or is
+# appended. **A host sets its own pool size there, never by editing this file**: the
+# pool a host can afford is a fact about its disk, and a tracked file edited per host
+# would be a per-host fork of one source. `orchestrator/workspaces_overlay.py` states
+# the overlay rule; the composed document is what is validated through `onevcs pool
+# status` in a scratch home before it replaces anything, so a document `onevcs` cannot
+# load replaces nothing. `onevcs pool status <repo>` reports what one repository
+# resolves out of the installed file, and `onevcs pool prune <repo>` empties that
+# repository's idle slots. Nothing here is read by the `onevcs` before the pool — an
+# older release sharing the host opens and closes sessions exactly as before.
+#
+# ## What a pool is
+#
+# A `session open` on a pooled identity takes an idle warm slot when one exists, cuts one
+# while fewer than `pool` exist, and otherwise overflows into a disposable run root under
+# `runs/` as every session did before; a `session close` on a slot *returns* it — detached
+# onto the base, reset, cleaned of untracked files but not of ignored ones — so the next
+# session on that slot finds the build output still there. The pool is lazy: an identity
+# that only ever has one concurrent task only ever gets one worktree.
+#
+#   - `pool: N` is how many slots an identity may keep; `pool: 0` is pooling off, every
+#     session fresh under `runs/`. `overflow` is how many sessions are admitted past the
+#     pool — `unlimited`, or a bound that refuses the next open with `PoolExhausted`,
+#     which the adopted engine holds a node on (`workspace-wait`) rather than failing it.
+#     `pool: 0` with `overflow: 0` admits nothing and is refused where the file loads.
+#     The shared default is `pool: 1`: one warm slot per identity, and a host that can
+#     afford more raises it in its host file.
+#   - `--pool 0` on one `session open` (or a node's `onepipeline.pool: 0`) places that one
+#     session fresh under `runs/` and still spends the overflow; it sheds no warm slot,
+#     because surplus is measured against this file's `pool` alone.
+#   - `delete` names worktree-relative paths removed on every return: state that would
+#     otherwise leak from one session into the next on the same slot.
+#   - `maintain` is the argv `onevcs pool maintain` runs in each idle slot's worktree, no
+#     shell, under `timeout` (default `30m`); the adopted engine's idle branch calls it
+#     on the schedule `config/onepipeline.maintenance.yaml` names, and stamps the attempt
+#     on the slot as `last_maintained`. A command the host lacks would fail on every
+#     such tick, which is why `scripts/session-setup.sh` installs `cargo-sweep` and
+#     `tests/test_workspaces_file.py` holds every command's first word to `PATH`.
+#
+# ## The lender consequence
+#
+# A slot is bound to the execution checkout it was cut from — its lender — and is never
+# handed to a session opened on another checkout of the same identity, because a branch
+# the hand-back could not copy may reference objects only the old lender holds. So an
+# identity with several execution checkouts spends its pool one slot per lender: size
+# `pool` per lender you alternate, not per identity. `ai-orchestrator` alternates two
+# (`ai-orchestrator-isolated` and `-isolated-2`), so at the shared `pool: 1` only the
+# lender that cuts the slot first is ever warm and every session on the other lender
+# overflows into a run root; a host that alternates both gives this identity `pool: 2`
+# in its host file, one warm slot each.
+#
+# ## The Rust identities
+#
+# Every rule carrying `maintain` names an identity whose registered checkout carries a
+# `Cargo.toml` at its root — read off this host's checkouts, not assumed, by
+# `tests/test_workspaces_file.py`'s `reads_checkouts` tier. A Rust identity this file
+# gives no rule is reported there by name as drift and never fails: a sibling becoming
+# Rust in its own repository is not a defect here, and the rule-less maintenance that
+# would follow it is `onevcs`'s to derive, so the rules below are the list.
+# `cargo sweep --time 7` removes build artifacts a week unused, which is what keeps a
+# warm `target/` from turning the disk-wear fix into a disk-space problem.
+version: 1
+default:
+  pool: 1
+  overflow: unlimited
+rules:
+  - match: {host: github.com, owner: nickderobertis, name: ai-orchestrator}
+    # The innermost stage's log under `.logs/`, which is gitignored and would otherwise
+    # read as the next session's own.
+    delete: [".logs/"]
+
+  - match: {host: github.com, owner: nickderobertis, name: llmlint}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: oneagentgraph}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: oneharness}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: oneharness-ui}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onejudge}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onemessagebus}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onepipeline-ui}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onevcs}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: allowlister}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: allowlister-remote}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: crozier}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onetaskgraph}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: printobserver}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: screencomp}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: notignored}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: allowlister-terminal-approval-plugin}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: github-secrets}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: skilltest}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: nickderobertis, name: onebudgetspec}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+  - match: {host: github.com, owner: team-org, name: team-repo-b}
+    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}

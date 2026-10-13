@@ -102,13 +102,19 @@ pub fn load() -> Result<ReleasesFile> {
             path.display()
         ))
     })?;
+    parse(&path, &raw)
+}
+
+/// One release-targets document's text, held to every check a loaded one is. `path` is
+/// what a refusal names the document by.
+pub(crate) fn parse(path: &Path, raw: &str) -> Result<ReleasesFile> {
     let malformed = |failure: serde_yaml_ng::Error| {
         error::invalid(format!(
             "the release-targets file at {} is malformed: {failure}",
             path.display()
         ))
     };
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).map_err(malformed)?;
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(malformed)?;
     // The version is read before the shape is enforced, and refused before it too:
     // which keys a document may carry is a fact about the version it declares, so a
     // version this build does not read is answered as that rather than as whichever
@@ -129,7 +135,7 @@ pub fn load() -> Result<ReleasesFile> {
         }
     }
     let file: ReleasesFile = serde_yaml_ng::from_value(document).map_err(malformed)?;
-    validate(&path, &file)?;
+    validate(path, &file)?;
     Ok(file)
 }
 
