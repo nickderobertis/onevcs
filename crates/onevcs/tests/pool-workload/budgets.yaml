@@ -1,0 +1,14 @@
+schema_version: 1
+budgets:
+  # Basis: estimate. Measurement source: telemetry. Check runtime: about 2 seconds.
+  - id: pool-maintain-overhead-seconds
+    measure: reported
+    command: [node, pool-maintain-budget.mjs]
+    unit: seconds
+    direction: max
+    threshold: 10
+    description: >-
+      Wall seconds one real maintenance pass adds outside its declared command,
+      over one idle slot holding about 170,000 entries in nested directories.
+      Includes declaration resolution, claiming, both allocated-block measurements
+      and recording. Detail reports each phase's seconds and both entry counts.

@@ -1138,3 +1138,665 @@ fn a_session_record_this_host_cannot_read_refuses_a_maintenance_run_and_claims_n
     assert_eq!(runs_in(&first), 1, "{report}");
     assert_eq!(runs_in(&second), 1, "{report}");
 }
+
+/// Commit repository configuration to the publication base after slots exist.
+fn declare(fixture: &Fixture, body: &str) {
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "onevcs.toml",
+        body,
+        "chore: declare slot maintenance",
+    );
+}
+
+/// A declaration's script writes only its own marker; no build layout is involved.
+fn declared_marker(fixture: &Fixture, name: &str, ending: &str) -> PathBuf {
+    install(
+        &fixture.world,
+        &format!("bin/{name}.sh"),
+        &format!("#!/bin/sh\nprintf declared > {name}\n{ending}\n"),
+    )
+}
+
+fn config(script: &Path, timeout: &str) -> String {
+    format!(
+        "schema_version = 1\n[pool.maintain]\ncommand = [{:?}]\ntimeout = {timeout:?}\n",
+        script.display().to_string()
+    )
+}
+
+#[test]
+fn repository_maintenance_resolution_uses_publication_base_and_blocks_unreadable() {
+    for mode in [
+        "absent",
+        "host",
+        "declared",
+        "both",
+        "empty-table",
+        "malformed",
+        "removed",
+    ] {
+        let (fixture, _) = fixture_with(2, 2, &["ok"], "30m");
+        let host = declared_marker(&fixture, "host-marker", "exit 0");
+        crate::pool::configure_workspaces(&fixture.world, format!("version: 1\ndefault: {{pool: 2}}\nrules:\n  - match: {{path: {:?}}}\n    maintain: {{command: [{:?}]}}\n", fixture.checkout.display().to_string(), host.display().to_string()));
+        if matches!(mode, "absent" | "declared") {
+            crate::pool::configure_workspaces(&fixture.world, "version: 1\ndefault: {pool: 2}\n");
+        }
+        let script = declared_marker(&fixture, "repository-marker", "exit 0");
+        match mode {
+            "declared" | "both" => declare(&fixture, &config(&script, "30m")),
+            "empty-table" => declare(&fixture, "schema_version = 1\n"),
+            "malformed" => declare(&fixture, "schema_version = 1\nunknown = true\n"),
+            "removed" => {
+                std::fs::remove_dir_all(&fixture.checkout).expect("remove publication checkout")
+            }
+            _ => {}
+        }
+        // A slot's declaration must never decide its own maintenance.
+        for number in 1..=2 {
+            std::fs::write(
+                slot_dir(&fixture, number).join("worktree/onevcs.toml"),
+                config(&host, "30m"),
+            )
+            .expect("slot declaration");
+        }
+        let (code, report) = maintain(&fixture, &[]);
+        assert_eq!(code, 0);
+        let source = match mode {
+            "absent" => "undeclared",
+            "declared" | "both" => "declared",
+            "malformed" | "removed" => "unreadable",
+            _ => "host-rule",
+        };
+        let listed = status(&fixture);
+        assert_eq!(listed["maintenance"]["source"], source, "{mode}");
+        if source == "declared" {
+            assert_eq!(
+                listed["maintenance"]["from"],
+                fixture.checkout.join("onevcs.toml").display().to_string()
+            );
+        }
+        if source == "host-rule" {
+            assert!(listed["maintenance"]["from"]
+                .as_str()
+                .expect("host layer")
+                .contains("rule 1 of"));
+        }
+        let human = fixture
+            .world
+            .onevcs()
+            .args(["pool", "status", "project"])
+            .output()
+            .expect("human status");
+        assert!(human.status.success());
+        let human = String::from_utf8_lossy(&human.stdout);
+        let maintenance_line = match source {
+            "declared" => format!(
+                "maintenance: {} (timeout 30m) — declared in {}",
+                serde_json::to_string(&vec![script.display().to_string()]).expect("argv"),
+                fixture.checkout.join("onevcs.toml").display()
+            ),
+            "host-rule" => format!(
+                "maintenance: {} (timeout 30m) — {}",
+                serde_json::to_string(&vec![host.display().to_string()]).expect("argv"),
+                listed["maintenance"]["from"].as_str().expect("host layer")
+            ),
+            "undeclared" => "maintenance: none declared".to_owned(),
+            _ => format!(
+                "maintenance: unreadable — {}",
+                listed["maintenance"]["reason"].as_str().expect("reason")
+            ),
+        };
+        assert!(
+            human.contains(&format!("{maintenance_line}\n")),
+            "{mode}: {human}"
+        );
+        if source == "unreadable" {
+            let reason = report["identities"][0]["outcome"]["maintenance-unreadable"]["reason"]
+                .as_str()
+                .expect("unreadable reason");
+            assert!(reason.contains(&fixture.checkout.display().to_string()));
+            if mode == "malformed" {
+                assert!(reason.contains("line 2"));
+            }
+            let human_pass = fixture
+                .world
+                .onevcs()
+                .args(["pool", "maintain", "project"])
+                .output()
+                .expect("human refusal report");
+            assert!(String::from_utf8_lossy(&human_pass.stdout)
+                .contains(&format!("— maintenance unreadable: {reason}")));
+        } else if source == "undeclared" {
+            assert_eq!(report["identities"][0]["outcome"], "no-maintain-command");
+        }
+        for number in 1..=2 {
+            let worktree = slot_dir(&fixture, number).join("worktree");
+            assert_eq!(
+                worktree.join("repository-marker").exists(),
+                source == "declared",
+                "{mode}"
+            );
+            assert_eq!(
+                worktree.join("host-marker").exists(),
+                source == "host-rule",
+                "{mode}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pool_declaration_reads_roots_files_versions_and_refuses_invalid_input() {
+    let world = World::new();
+    let root = world.path("declaration");
+    std::fs::create_dir_all(&root).expect("declaration root");
+    let file = root.join("onevcs.toml");
+    let run = |path: &Path, json: bool| {
+        let mut command = world.onevcs();
+        command.args(["pool", "declaration"]).arg(path);
+        if json {
+            command.arg("--json");
+        }
+        command.output().expect("declaration binary")
+    };
+    let absent = run(&root, false);
+    assert!(!absent.status.success());
+    assert!(String::from_utf8_lossy(&absent.stderr).contains(&root.display().to_string()));
+    let named_root = root.join("onevcs.toml-root").join("onevcs.toml");
+    std::fs::create_dir_all(&named_root)
+        .expect("a repository root named after the configuration file");
+    for (document, expected) in [
+        ("schema_version = 1\n[pool.maintain]\ncommand = [\"scripts/maintain-slot.sh\", \"--flag\"]\n", true),
+        ("schema_version = 2\nextra = true\n[pool.maintain]\ncommand = [\"scripts/maintain-slot.sh\", \"--flag\"]\nextra = 3\n", true),
+        ("schema_version = 1\n", false),
+    ] {
+        std::fs::write(&file, document).expect("configuration");
+        std::fs::write(named_root.join("onevcs.toml"), document).expect("named root configuration");
+        for path in [&root, &file, &named_root] {
+            let output = run(path, false);
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(String::from_utf8_lossy(&output.stdout), if expected { "pool maintenance: [\"scripts/maintain-slot.sh\",\"--flag\"] (timeout 30m)\n" } else { "pool maintenance: none declared (no [pool.maintain] table)\n" });
+            let output = run(path, true);
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+            assert_eq!(json, if expected { serde_json::json!({"command":["scripts/maintain-slot.sh", "--flag"], "timeout":"30m"}) } else { serde_json::Value::Null });
+        }
+    }
+    for document in [
+        "schema_version = 1\nunknown = 2\n",
+        "schema_version = 1\n[unknown]\na = 2\n",
+        "schema_version = 1\n[pool]\nunknown = true\n",
+        "schema_version = 1\n[pool.maintain]\ncommand = [\"true\"]\nunknown = true\n",
+        "schema_version = 1\n\"unknown\" = true\n",
+        "schema_version = 0\n",
+        "schema_version = 1\n[pool.maintain]\ncommand = []\n",
+        "schema_version = 1\n[pool.maintain]\ncommand = [\"\"]\n",
+        "schema_version = 1\n[pool.maintain]\ncommand = [\"true\"]\ntimeout = \"bad\"\n",
+        "[pool.maintain]\ncommand = [\"true\"]\n",
+        "schema_version = \"bad\"\n",
+    ] {
+        std::fs::write(&file, document).expect("invalid configuration");
+        let output = run(&file, false);
+        assert!(!output.status.success(), "{document}");
+        let reason = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            reason.contains(&file.display().to_string()) && reason.contains("line"),
+            "{reason}"
+        );
+    }
+}
+
+/// An independent inode walk, using allocated blocks rather than logical file lengths.
+fn allocated(root: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fn walk(path: &Path, seen: &mut std::collections::HashSet<(u64, u64)>) -> u64 {
+        let metadata = std::fs::symlink_metadata(path).expect("measure fixture");
+        if !seen.insert((metadata.dev(), metadata.ino())) {
+            return 0;
+        }
+        let children = if metadata.is_dir() {
+            std::fs::read_dir(path)
+                .expect("directory")
+                .map(|entry| walk(&entry.expect("entry").path(), seen))
+                .sum()
+        } else {
+            0
+        };
+        metadata.blocks() * 512 + children
+    }
+    walk(root, &mut std::collections::HashSet::new())
+}
+
+#[test]
+fn declared_maintenance_measures_allocations_links_and_failed_commands() {
+    use std::os::unix::fs::{symlink, MetadataExt};
+    for fail in [false, true] {
+        let (fixture, _) = fixture_with(1, 1, &["ok"], "30m");
+        let worktree = slot_dir(&fixture, 1).join("worktree");
+        let script = install(
+            &fixture.world,
+            "bin/remove.sh",
+            if fail {
+                "#!/bin/sh\nrm payload\nexit 7\n"
+            } else {
+                "#!/bin/sh\nrm payload\n"
+            },
+        );
+        declare(&fixture, &config(&script, "30m"));
+        std::fs::write(worktree.join("payload"), vec![42u8; 1024 * 1024]).expect("non sparse file");
+        let removed = std::fs::metadata(worktree.join("payload"))
+            .expect("payload")
+            .blocks()
+            * 512;
+        std::fs::write(worktree.join("linked"), vec![33u8; 8192]).expect("linked file");
+        std::fs::hard_link(worktree.join("linked"), worktree.join("linked-again"))
+            .expect("hard link");
+        let outside = fixture.world.path("outside");
+        std::fs::create_dir(&outside).expect("outside directory");
+        std::fs::write(outside.join("large"), vec![1u8; 1024 * 1024]).expect("outside payload");
+        symlink(&outside, worktree.join("outside-link")).expect("symlink");
+        let before = allocated(&worktree);
+        let (code, report) = maintain(&fixture, &[]);
+        let after = allocated(&worktree);
+        let ran = &report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"];
+        assert_eq!(
+            ran["disk"],
+            serde_json::json!({"before_bytes":before,"after_bytes":after})
+        );
+        assert_eq!(before - after, removed);
+        assert_eq!(code, i32::from(fail));
+        assert_eq!(
+            ran["outcome"],
+            if fail {
+                serde_json::json!({"failed":{"exit":7}})
+            } else {
+                serde_json::json!("succeeded")
+            }
+        );
+        assert!(outside.join("large").exists());
+        // A second human pass also measures the command that now fails to remove the file.
+        let output = fixture
+            .world
+            .onevcs()
+            .args(["pool", "maintain"])
+            .output()
+            .expect("human maintain");
+        assert!(
+            (1000..1_000_000).contains(&after),
+            "fixture fits kB rendering"
+        );
+        let display = format!(
+            ", worktree {:.1} kB → {:.1} kB",
+            after as f64 / 1000.0,
+            after as f64 / 1000.0
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&display));
+    }
+}
+
+#[test]
+fn declared_commands_preserve_safety_timeout_and_repository_relative_execution() {
+    let (fixture, _) = fixture_with(3, 3, &["ok"], "30m");
+    let script = declared_marker(&fixture, "safe-marker", "exit 0");
+    declare(&fixture, &config(&script, "30m"));
+    let (token, active, _) = open(&fixture, &[]);
+    let unavailable = slot_dir(&fixture, 2);
+    use sha2::{Digest, Sha256};
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(format!("run:{}", unavailable.display()).as_bytes())
+    );
+    // This is the real advisory lease boundary: no CLI leaves an idle slot leased
+    // after returning, so an external holder takes the same shared lock while the
+    // compiled maintenance command meets it. No lock or state reader is mocked.
+    // llmlint: ignore[tests_mirror_real_usage] an idle slot held by an external process is produced through its real shared occupancy lease.
+    let occupied = World::occupy_shared(
+        &fixture
+            .world
+            .home()
+            .join("locks")
+            .join(format!("{digest}.lock")),
+    );
+    let (_, report) = maintain(&fixture, &[]);
+    let slots = report["identities"][0]["outcome"]["slots"]
+        .as_array()
+        .expect("slots");
+    assert!(slots[0]["outcome"]["in-use"].is_object());
+    assert!(slots[1]["outcome"]["unavailable"].is_object());
+    assert!(!active.join("safe-marker").exists());
+    assert!(!unavailable.join("worktree/safe-marker").exists());
+    assert!(slot_dir(&fixture, 3).join("worktree/safe-marker").exists());
+    drop(occupied);
+    close(&fixture, &token);
+
+    let fixture = pooled("version: 1\ndefault: {pool: 1}\n");
+    // Both the publication and slot carry the real tracked relative script.
+    let scripts = fixture.checkout.join("scripts");
+    std::fs::create_dir(&scripts).expect("scripts");
+    let tracked = scripts.join("maintain-slot.sh");
+    std::fs::write(&tracked, "#!/bin/sh\nprintf repository > relative-marker\n")
+        .expect("tracked script");
+    std::fs::set_permissions(&tracked, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    declare(
+        &fixture,
+        "schema_version = 1\n[pool.maintain]\ncommand = [\"scripts/maintain-slot.sh\"]\n",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
+    let (token, worktree, _) = open(&fixture, &[]);
+    close(&fixture, &token);
+    let decoy = install(
+        &fixture.world,
+        "elsewhere/scripts/maintain-slot.sh",
+        "#!/bin/sh\nprintf decoy > decoy-marker\n",
+    );
+    let output = fixture
+        .world
+        .onevcs()
+        .current_dir(
+            decoy
+                .parent()
+                .expect("scripts")
+                .parent()
+                .expect("elsewhere"),
+        )
+        .args(["pool", "maintain", "--json"])
+        .output()
+        .expect("relative maintenance");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("relative-marker")).expect("repository marker"),
+        "repository"
+    );
+    assert!(!worktree.join("decoy-marker").exists());
+    std::fs::remove_file(worktree.join("relative-marker")).expect("remove the first pass marker");
+    let relative_home = fixture
+        .world
+        .onevcs()
+        .env("ONEVCS_HOME", ".onevcs")
+        .args(["pool", "maintain", "--json"])
+        .output()
+        .expect("maintenance with a relative state root");
+    assert!(
+        relative_home.status.success(),
+        "relative state root must still resolve the executable against the slot: {}",
+        String::from_utf8_lossy(&relative_home.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("relative-marker")).expect("second pass marker"),
+        "repository"
+    );
+
+    let slow = declared_marker(&fixture, "timeout-marker", "sleep 5");
+    declare(&fixture, &config(&slow, "1s"));
+    let start = Instant::now();
+    let (code, report) = maintain(&fixture, &[]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"]["outcome"],
+        "timed-out"
+    );
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(worktree.join("timeout-marker").exists());
+}
+
+#[test]
+fn declared_identity_lock_observes_command_entry_and_release_barriers() {
+    let (fixture, _) = fixture_with(1, 1, &["ok"], "30m");
+    let entered = fixture.world.path("entered");
+    let release = fixture.world.path("release-command");
+    let events = fixture.world.path("barrier-events");
+    let script = install(&fixture.world, "bin/barrier.sh", &format!("#!/bin/sh\necho enter >> '{}'\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\necho release >> '{}'\n", events.display(), entered.display(), release.display(), events.display()));
+    declare(&fixture, &config(&script, "30m"));
+    let mut command = fixture.world.onevcs_std();
+    command
+        .args(["pool", "maintain", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let first = command.spawn().expect("first maintenance");
+    wait_until("declared command entry", || entered.exists());
+    let (_, report) = maintain(&fixture, &[]);
+    assert_eq!(
+        report["identities"][0]["outcome"]["claimed"]["by_pid"],
+        first.id()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&events).expect("entry events"),
+        "enter\n"
+    );
+    std::fs::write(&release, "release").expect("release barrier");
+    assert!(first
+        .wait_with_output()
+        .expect("first finishes")
+        .status
+        .success());
+    let (code, _) = maintain(&fixture, &[]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(&events).expect("ordered events"),
+        "enter\nrelease\nenter\nrelease\n"
+    );
+}
+
+#[test]
+fn measurement_refusals_warn_without_changing_declared_command_outcomes() {
+    for before in [true, false] {
+        for fail in [true, false] {
+            let (fixture, _) = fixture_with(1, 1, &["ok"], "30m");
+            let worktree = slot_dir(&fixture, 1).join("worktree");
+            let denied = worktree.join("denied");
+            std::fs::create_dir(&denied).expect("denied directory");
+            std::fs::write(denied.join("file"), "payload").expect("denied entry");
+            if before {
+                std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0))
+                    .expect("deny before");
+            }
+            let script = install(
+                &fixture.world,
+                "bin/denial.sh",
+                &format!(
+                    "#!/bin/sh\nprintf ran > denial-marker\nchmod {} denied\nexit {}\n",
+                    if before { "755" } else { "000" },
+                    if fail { 7 } else { 0 }
+                ),
+            );
+            declare(&fixture, &config(&script, "30m"));
+            let output = fixture
+                .world
+                .onevcs()
+                .args(["pool", "maintain", "--json"])
+                .output()
+                .expect("maintenance");
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755))
+                .expect("restore permissions");
+            assert_eq!(output.status.code(), Some(i32::from(fail)));
+            assert!(worktree.join("denial-marker").exists());
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("report");
+            let ran = &report["identities"][0]["outcome"]["slots"][0]["outcome"]["ran"];
+            assert_eq!(ran["disk"], serde_json::Value::Null);
+            assert_eq!(
+                ran["outcome"],
+                if fail {
+                    serde_json::json!({"failed":{"exit":7}})
+                } else {
+                    serde_json::json!("succeeded")
+                }
+            );
+            let warning = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                warning.contains("slot 1")
+                    && warning.contains("Permission denied")
+                    && warning.contains("cannot measure"),
+                "{warning}"
+            );
+        }
+    }
+}
+
+#[test]
+fn maintenance_telemetry_paths_are_refused_without_changing_the_command() {
+    let (fixture, _) = fixture_with(1, 1, &["ok"], "30m");
+    let script = declared_marker(&fixture, "telemetry-marker", "exit 0");
+    declare(&fixture, &config(&script, "30m"));
+    let output = fixture
+        .world
+        .onevcs()
+        .args(["pool", "maintain", "--json"])
+        .env("ONEVCS_POOL_MAINTAIN_TELEMETRY", "relative-record.json")
+        .output()
+        .expect("maintenance");
+    assert!(output.status.success());
+    assert!(slot_dir(&fixture, 1)
+        .join("worktree/telemetry-marker")
+        .exists());
+    assert!(!fixture.world.path("relative-record.json").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("absolute regular file path"));
+    let help = fixture
+        .world
+        .onevcs()
+        .args(["pool", "declaration", "--help"])
+        .output()
+        .expect("declaration help");
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("onevcs.toml") && !help.contains("release-targets.toml"));
+}
+
+#[test]
+fn unreadable_declaration_metadata_and_contents_block_host_commands() {
+    let real_git = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|directory| directory.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("the real git executable");
+    for metadata_refusal in [false, true] {
+        let (fixture, _) = fixture_with(1, 1, &["ok"], "30m");
+        let host = declared_marker(&fixture, "unreadable-host-marker", "exit 0");
+        crate::pool::configure_workspaces(&fixture.world, maintained(&host, 1, &[], "30m"));
+        let declared = declared_marker(&fixture, "unreadable-declared-marker", "exit 0");
+        declare(&fixture, &config(&declared, "30m"));
+        let worktree = slot_dir(&fixture, 1).join("worktree");
+        let document = fixture.checkout.join("onevcs.toml");
+        let checkout_mode = std::fs::metadata(&fixture.checkout)
+            .expect("checkout mode")
+            .permissions();
+        let document_mode = std::fs::metadata(&document)
+            .expect("document mode")
+            .permissions();
+        // Forward every query to real git. Revoking directory search after its last
+        // base-branch query creates a real EACCES at the following metadata boundary;
+        // no checkout answer, file read or declaration reader is substituted.
+        // llmlint: ignore[e2e_not_mocked] The layer under test is the real declaration filesystem lookup, not Git transport. This wrapper forwards every argv, stdout and exit status to the real git executable, then revokes directory search so the reader itself receives EACCES; no Git answer or filesystem read is fabricated.
+        let wrapper = install(
+            &fixture.world,
+            "denial/git",
+            r#"#!/bin/sh
+"$ONEVCS_REAL_GIT" "$@"
+result=$?
+if [ "$PWD" = "$ONEVCS_DECLARATION_CHECKOUT" ] && [ "$*" = "rev-parse --abbrev-ref HEAD" ]; then
+  chmod 000 "$PWD"
+fi
+exit "$result"
+"#,
+        );
+        for verb in ["maintain", "status"] {
+            let mut command = fixture.world.onevcs();
+            command.args(["pool", verb, "project", "--json"]);
+            if metadata_refusal {
+                let paths =
+                    std::iter::once(wrapper.parent().expect("wrapper directory").to_path_buf())
+                        .chain(std::env::split_paths(
+                            &std::env::var_os("PATH").expect("PATH"),
+                        ))
+                        .collect::<Vec<_>>();
+                command
+                    .env("PATH", std::env::join_paths(paths).expect("wrapper PATH"))
+                    .env("ONEVCS_REAL_GIT", &real_git)
+                    .env("ONEVCS_DECLARATION_CHECKOUT", &fixture.checkout);
+            } else {
+                std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o000))
+                    .expect("deny document reads");
+            }
+            let output = command.output();
+            std::fs::set_permissions(&fixture.checkout, checkout_mode.clone())
+                .expect("restore checkout search");
+            std::fs::set_permissions(&document, document_mode.clone())
+                .expect("restore declaration read");
+            let output = output.expect("real binary");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("report");
+            let reason = if verb == "maintain" {
+                report["identities"][0]["outcome"]["maintenance-unreadable"]["reason"]
+                    .as_str()
+                    .expect("unreadable outcome")
+            } else {
+                assert_eq!(report["maintenance"]["source"], "unreadable");
+                report["maintenance"]["reason"]
+                    .as_str()
+                    .expect("unreadable source")
+            };
+            assert!(
+                reason.contains(&document.display().to_string())
+                    && reason.contains("Permission denied"),
+                "{reason}"
+            );
+            assert_eq!(
+                reason.starts_with("cannot read"),
+                metadata_refusal,
+                "the metadata and content refusals cross different real boundaries: {reason}"
+            );
+            assert!(!worktree.join("unreadable-host-marker").exists());
+            assert!(!worktree.join("unreadable-declared-marker").exists());
+        }
+    }
+}
+
+#[test]
+fn host_default_maintenance_is_reported_when_the_matching_rule_declares_none() {
+    let (fixture, _) = fixture_with(2, 2, &["ok"], "30m");
+    let script = declared_marker(&fixture, "default-host-marker", "exit 0");
+    let mut workspaces = maintained(&script, 2, &[], "30m");
+    workspaces.push_str(&format!(
+        "rules:\n  - match: {{path: {:?}}}\n    pool: 2\n",
+        fixture.checkout.display().to_string()
+    ));
+    crate::pool::configure_workspaces(&fixture.world, workspaces);
+    let (code, report) = maintain(&fixture, &[]);
+    assert_eq!(code, 0, "{report}");
+    for number in 1..=2 {
+        assert_eq!(
+            std::fs::read_to_string(
+                slot_dir(&fixture, number).join("worktree/default-host-marker")
+            )
+            .expect("the default host command actually ran"),
+            "declared"
+        );
+    }
+    let listed = status(&fixture);
+    let from = format!(
+        "default: of {}",
+        fixture.world.home().join("workspaces.yml").display()
+    );
+    assert_eq!(
+        listed["maintenance"],
+        serde_json::json!({"source":"host-rule","from":from,"command":[script.display().to_string()],"timeout":"30m","reason":null})
+    );
+    let human = fixture
+        .world
+        .onevcs()
+        .args(["pool", "status", "project"])
+        .output()
+        .expect("human status");
+    assert!(human.status.success());
+    let argv = serde_json::to_string(&vec![script.display().to_string()]).expect("argv");
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains(&format!("maintenance: {argv} (timeout 30m) — {from}\n")));
+}

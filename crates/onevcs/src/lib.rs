@@ -96,6 +96,7 @@ pub mod registry;
 mod release;
 pub mod releases;
 mod remainder;
+pub mod repository_config;
 mod retire;
 mod review;
 pub mod rules;
@@ -154,8 +155,8 @@ pub use ops::{
 };
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
-    IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotMaintenance,
-    SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
+    IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotDisk,
+    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
 };
 pub use preserve::{Preservation, PreserveRequest, Preserved};
 pub use providers::Providers;

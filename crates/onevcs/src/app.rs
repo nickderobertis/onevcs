@@ -128,6 +128,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         },
         Command::Pool { command } => match command {
             PoolCommand::Status(args) => pool_status(args),
+            PoolCommand::Declaration { path, json } => pool_declaration(path, *json),
             PoolCommand::Prune(args) => pool_prune(args),
             PoolCommand::Maintain(args) => pool_maintain(args),
         },
@@ -399,6 +400,28 @@ fn pool_status(args: &PoolStatusArgs) -> Result<u8> {
     if args.json {
         return print_json(&status);
     }
+    match &status.maintenance {
+        crate::repository_config::MaintenanceSource::Declared {
+            document,
+            maintenance,
+        } => println!(
+            "maintenance: {} (timeout {}) — declared in {}",
+            serde_json::to_string(&maintenance.command).expect("an argv serializes"),
+            maintenance.timeout,
+            document.display()
+        ),
+        crate::repository_config::MaintenanceSource::HostRule { from, maintenance } => println!(
+            "maintenance: {} (timeout {}) — {from}",
+            serde_json::to_string(&maintenance.command).expect("an argv serializes"),
+            maintenance.timeout
+        ),
+        crate::repository_config::MaintenanceSource::Undeclared { .. } => {
+            println!("maintenance: none declared")
+        }
+        crate::repository_config::MaintenanceSource::Unreadable { reason } => {
+            println!("maintenance: unreadable — {reason}")
+        }
+    }
     let capacity = &status.capacity;
     println!("identity: {}", capacity.identity);
     println!(
@@ -516,6 +539,11 @@ fn pool_maintain(args: &PoolMaintainArgs) -> Result<u8> {
             crate::IdentityOutcome::NoMaintainCommand => {
                 println!("{} — no maintain command", identity.identity);
             }
+            // llmlint: ignore-block[cli_output_contract] This is an identity row in the successful command's maintenance report, alongside NoMaintainCommand and Claimed, not a command error. The structured outcome stays unchanged and exit 0 follows the manager's contract ruling, so its human rendering belongs on stdout.
+            crate::IdentityOutcome::MaintenanceUnreadable { reason } => {
+                println!("{} — maintenance unreadable: {reason}", identity.identity)
+            }
+            // llmlint: ignore-end[cli_output_contract]
             crate::IdentityOutcome::NoSlots => println!("{} — no slots", identity.identity),
             crate::IdentityOutcome::Claimed { by_pid } => println!(
                 "{} — claimed: another pool maintain (pid {by_pid}) is maintaining it right now",
@@ -551,8 +579,9 @@ fn describe_slot_outcome(outcome: &crate::SlotOutcome) -> String {
             outcome,
             duration_ms,
             log,
+            disk,
         } => format!(
-            "ran: {} in {duration_ms} ms{}",
+            "ran: {} in {duration_ms} ms{}{}",
             match outcome {
                 crate::MaintenanceOutcome::Succeeded => "succeeded".to_owned(),
                 crate::MaintenanceOutcome::Failed { exit: Some(exit) } => {
@@ -566,7 +595,14 @@ fn describe_slot_outcome(outcome: &crate::SlotOutcome) -> String {
             match log {
                 Some(log) => format!(", log: onevcs artifact cat {}", log.0),
                 None => String::new(),
-            }
+            },
+            disk.as_ref()
+                .map(|disk| format!(
+                    ", worktree {} → {}",
+                    crate::sweep::describe_bytes(disk.before_bytes),
+                    crate::sweep::describe_bytes(disk.after_bytes)
+                ))
+                .unwrap_or_default()
         ),
     }
 }
@@ -2622,4 +2658,21 @@ fn yes_or_no(answer: bool) -> &'static str {
 
 fn serialization(failure: serde_json::Error) -> Error {
     error::invalid(format!("cannot serialize the result: {failure}"))
+}
+
+/// Render the repository maintenance declaration without registration.
+fn pool_declaration(path: &std::path::Path, json: bool) -> Result<u8> {
+    let maintenance = crate::repository_config::read_repository_maintenance(path)?;
+    if json {
+        return print_json(&maintenance);
+    }
+    match maintenance {
+        Some(maintenance) => println!(
+            "pool maintenance: {} (timeout {})",
+            serde_json::to_string(&maintenance.command).expect("an argv serializes"),
+            maintenance.timeout
+        ),
+        None => println!("pool maintenance: none declared (no [pool.maintain] table)"),
+    }
+    Ok(0)
 }

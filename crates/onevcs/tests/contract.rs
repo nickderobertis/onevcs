@@ -3651,6 +3651,10 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
             "release declaration",
             operation!(onevcs::read_release_declaration),
         ),
+        (
+            "pool declaration",
+            operation!(onevcs::repository_config::read_repository_maintenance),
+        ),
         ("pool status", operation!(onevcs::pool_status)),
         ("pool prune", operation!(onevcs::pool_prune)),
         ("pool maintain", operation!(onevcs::pool_maintain)),
@@ -7036,30 +7040,36 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
     assert_eq!(
         maintain.command,
         MaintenanceCommand {
-            program: "cargo".to_owned(),
-            args: vec!["sweep".to_owned(), "--time".to_owned(), "7".to_owned()],
+            program: "scripts/maintain-slot.sh".to_owned(),
+            args: vec!["--flag".to_owned()],
         },
         "the sequence is read as the program and its arguments, spawned with no shell"
     );
-    assert_eq!(maintain.command.argv(), ["cargo", "sweep", "--time", "7"]);
+    assert_eq!(
+        maintain.command.argv(),
+        ["scripts/maintain-slot.sh", "--flag"]
+    );
     // The two public fields, read directly: the first element of the sequence is the
     // program and *only* the rest are its arguments — the split a spawn depends on,
     // and the one a consumer reads by name.
-    assert_eq!(maintain.command.program, "cargo");
-    assert_eq!(maintain.command.args, ["sweep", "--time", "7"]);
+    assert_eq!(maintain.command.program, "scripts/maintain-slot.sh");
+    assert_eq!(maintain.command.args, ["--flag"]);
     let direct: MaintenanceCommand =
-        serde_yaml_ng::from_str("[\"cargo\", \"sweep\", \"--time\", \"7\"]")
+        serde_yaml_ng::from_str("[\"scripts/maintain-slot.sh\", \"--flag\"]")
             .expect("a command deserializes from the sequence a document spells");
-    assert_eq!(direct.program, "cargo", "the first element is the program");
+    assert_eq!(
+        direct.program, "scripts/maintain-slot.sh",
+        "the first element is the program"
+    );
     assert_eq!(
         direct.args,
-        ["sweep", "--time", "7"],
+        ["--flag"],
         "and the remaining elements are its arguments, none of them dropped"
     );
     assert_eq!(
         serde_yaml_ng::to_value(&direct).expect("it serializes"),
         serde_yaml_ng::Value::Sequence(
-            ["cargo", "sweep", "--time", "7"]
+            ["scripts/maintain-slot.sh", "--flag"]
                 .into_iter()
                 .map(serde_yaml_ng::Value::from)
                 .collect()
@@ -7114,7 +7124,7 @@ fn the_workspaces_fixture_round_trips_and_its_absent_keys_are_the_shipped_defaul
     assert_eq!(
         as_value["rules"][0]["maintain"]["command"],
         serde_yaml_ng::Value::Sequence(
-            ["cargo", "sweep", "--time", "7"]
+            ["scripts/maintain-slot.sh", "--flag"]
                 .into_iter()
                 .map(serde_yaml_ng::Value::from)
                 .collect()
@@ -7278,6 +7288,9 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         admitted: true,
     };
     let status = PoolStatus {
+        maintenance: onevcs::repository_config::MaintenanceSource::Undeclared {
+            looked_in: PathBuf::from("/checkout"),
+        },
         capacity: capacity.clone(),
         slots: vec![
             SlotStatus {
@@ -7418,7 +7431,7 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         "pub overflow_in_use: u32, pub admits: Bound,",
         "pub admitted: bool }",
         "pub fn pool_status(repo: &str) -> Result<PoolStatus>;",
-        "pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus> }",
+        "pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus>, pub maintenance: MaintenanceSource }",
         "pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,",
         "pub state: SlotState, pub last_maintained: Option<String>,",
         "pub last_outcome: Option<MaintenanceOutcome> }",
@@ -7493,6 +7506,7 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
                             outcome: MaintenanceOutcome::Failed { exit: Some(3) },
                             duration_ms: 1_200,
                             log: Some(ArtifactId("a-1".to_owned())),
+                            disk: None,
                         },
                     },
                 ]),
@@ -7521,7 +7535,7 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
                 "holder": "a process is still working inside it: pid 9"}}},
             {"number": 4, "outcome": {"broken": {"reason": "its clone is missing"}}},
             {"number": 5, "outcome": {"ran": {
-                "outcome": {"failed": {"exit": 3}}, "duration_ms": 1200, "log": "a-1"}}},
+                "outcome": {"failed": {"exit": 3}}, "duration_ms": 1200, "log": "a-1", "disk": null}}},
         ]),
         "a slot's outcome is externally tagged in kebab case, as the amendment spells it"
     );
@@ -7553,7 +7567,7 @@ fn the_amendment_declares_the_maintain_surface_it_added() {
         "InUse { session: SessionToken },",
         "Unavailable { holder: String },",
         "Broken { reason: String },",
-        "Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }",
+        "Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId>, disk: Option<SlotDisk> } }",
     ] {
         assert!(
             declarations.contains(declared),
@@ -9435,4 +9449,195 @@ fn the_draft_hold_amendment_declares_what_a_host_says_is_running_and_the_code_ha
         text.contains(&format!("**reused for up to {seconds:.0} seconds**")),
         "the amendment no longer states the {seconds:.0}-second reuse window"
     );
+}
+
+#[test]
+fn repository_maintenance_surface_and_wire_follow_the_contract() {
+    use onevcs::repository_config::{
+        read_repository_maintenance, validate_repository_config, MaintenanceSource, FILE,
+    };
+    assert_eq!(FILE, "onevcs.toml");
+    let _: fn(&Path) -> onevcs::Result<Option<onevcs::workspaces::Maintenance>> =
+        read_repository_maintenance;
+    let _: fn(&str, &str) -> onevcs::Result<Option<onevcs::workspaces::Maintenance>> =
+        validate_repository_config;
+    let maintenance = validate_repository_config(
+        "schema_version = 1\n[pool.maintain]\ncommand = [\"scripts/maintain-slot.sh\"]\n",
+        "fixture",
+    )
+    .expect("valid declaration")
+    .expect("maintenance");
+    for (source, value) in [
+        (
+            MaintenanceSource::Declared {
+                document: PathBuf::from("/repo/onevcs.toml"),
+                maintenance: maintenance.clone(),
+            },
+            json!({"source":"declared","from":"/repo/onevcs.toml","command":["scripts/maintain-slot.sh"],"timeout":"30m","reason":null}),
+        ),
+        (
+            MaintenanceSource::HostRule {
+                from: "rule 3 of /host/workspaces.yml".to_owned(),
+                maintenance,
+            },
+            json!({"source":"host-rule","from":"rule 3 of /host/workspaces.yml","command":["scripts/maintain-slot.sh"],"timeout":"30m","reason":null}),
+        ),
+        (
+            MaintenanceSource::Undeclared {
+                looked_in: PathBuf::from("/repo"),
+            },
+            json!({"source":"undeclared","from":"/repo","command":null,"timeout":null,"reason":null}),
+        ),
+        (
+            MaintenanceSource::Unreadable {
+                reason: "cannot read /repo".to_owned(),
+            },
+            json!({"source":"unreadable","from":null,"command":null,"timeout":null,"reason":"cannot read /repo"}),
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_value(&source).expect("source serializes"),
+            value
+        );
+        assert_eq!(
+            serde_json::from_value::<MaintenanceSource>(value).expect("source reads"),
+            source
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
+        let maintenance = validate_repository_config(
+            "schema_version = 1\n[pool.maintain]\ncommand = [\"true\"]\n",
+            "fixture",
+        )
+        .expect("configuration")
+        .expect("command");
+        for source in [
+            MaintenanceSource::Undeclared {
+                looked_in: path.clone(),
+            },
+            MaintenanceSource::Declared {
+                document: path,
+                maintenance,
+            },
+        ] {
+            assert!(
+                serde_json::to_value(source).is_err(),
+                "refuse a path JSON cannot round-trip instead of silently replacing bytes"
+            );
+        }
+    }
+    for malformed in [
+        json!({"source":"unknown"}),
+        json!({"source":"declared","from":"/repo","command":["true"],"timeout":"30m","reason":"unexpected"}),
+        json!({"source":"host-rule","from":"rule 1","command":["true"]}),
+        json!({"source":"undeclared","from":"/repo","command":["true"]}),
+        json!({"source":"undeclared","from":"/repo","timeout":"30m"}),
+        json!({"source":"undeclared","from":"/repo","reason":"unexpected"}),
+        json!({"source":"undeclared","from":"/repo","extra":true}),
+        json!({"source":"unreadable","reason":"refused","from":"/repo"}),
+        json!({"source":"unreadable","reason":"refused","command":["true"]}),
+        json!({"source":"unreadable","reason":"refused","timeout":"30m"}),
+    ] {
+        assert!(
+            serde_json::from_value::<MaintenanceSource>(malformed.clone()).is_err(),
+            "refuse source-inconsistent wire data: {malformed}"
+        );
+    }
+    let unreadable = IdentityOutcome::MaintenanceUnreadable {
+        reason: "cannot read /repo".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(&unreadable).expect("outcome serializes"),
+        json!({"maintenance-unreadable":{"reason":"cannot read /repo"}})
+    );
+    let ran = SlotOutcome::Ran {
+        outcome: MaintenanceOutcome::Succeeded,
+        duration_ms: 10,
+        log: None,
+        disk: Some(onevcs::SlotDisk {
+            before_bytes: 8192,
+            after_bytes: 4096,
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(&ran).expect("ran serializes"),
+        json!({"ran":{"outcome":"succeeded","duration_ms":10,"log":null,"disk":{"before_bytes":8192,"after_bytes":4096}}})
+    );
+    let contract = repo_file("docs/contract.md");
+    for item in ["pub const FILE: &str = \"onevcs.toml\";", "pub fn read_repository_maintenance(path: &Path) -> Result<Option<Maintenance>>;", "pub fn validate_repository_config(document: &str, origin: &str) -> Result<Option<Maintenance>>;", "pub enum MaintenanceSource", "pub struct SlotDisk { pub before_bytes: u64, pub after_bytes: u64 }"] {
+        assert!(contract.contains(item), "missing contract item {item}");
+    }
+}
+
+#[test]
+fn repository_maintenance_documentation_summaries_follow_the_contract_source() {
+    fn summary(document: &str) -> &str {
+        document
+            .split_once("<!-- repository-maintenance-summary:start -->")
+            .expect("summary start")
+            .1
+            .split_once("<!-- repository-maintenance-summary:end -->")
+            .expect("summary end")
+            .0
+    }
+    let contract = repo_file("docs/contract.md");
+    for document in ["docs/inferred-surface.md", "DESIGN.md", "README.md"] {
+        assert_eq!(
+            summary(&repo_file(document)),
+            summary(&contract),
+            "{document} must follow the contract's maintenance summary"
+        );
+    }
+    let guidance = repo_file("crates/onevcs/AGENTS.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = contract.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (canonical, fact) in [
+        ("onevcs pool declaration PATH", "onevcs pool declaration PATH"),
+        ("onevcs.toml", "onevcs.toml"), ("schema_version = 1", "schema_version = 1"),
+        ("[pool.maintain]", "[pool.maintain]"), ("non-empty `command`", "non-empty `command`"),
+        ("`timeout`", "`timeout`"), ("`Span`", "`Span`"), ("default `30m`", "default `30m`"),
+        ("Version 1 refuses unknown keys and tables", "refuse unknown version-1 keys"),
+        ("later versions ignore unknown keys", "ignore later schemas' unknown keys"),
+        ("publication checkout on its base branch", "publication checkout on its base branch"),
+        ("never a slot or session", "never a slot or session"),
+        ("repository command first, then the matching host workspaces rule or `default:` when the file or table is absent, otherwise nothing", "repository → host rule/default → none"),
+        ("Unreadable files or checkouts block fallback", "Unreadable runs nothing and blocks fallback"),
+        ("no default command", "no default command"),
+        ("PoolStatus.maintenance", "PoolStatus.maintenance"), ("MaintenanceUnreadable", "MaintenanceUnreadable"),
+        ("SlotOutcome::Ran.disk", "SlotOutcome::Ran.disk"), ("before_bytes", "before_bytes"), ("after_bytes", "after_bytes"),
+        ("each inode once", "each inode once"), ("following no symlink", "no symlink followed"), ("inside the claim", "inside the claim"),
+        ("Measurement errors warn and leave disk null without changing the outcome", "Measurement failures warn and leave disk null without changing command outcomes"),
+        ("`duration_ms` times the command alone", "`duration_ms` is command time alone"),
+        ("worktree <before> → <after>", "worktree <before> → <after>"),
+    ] {
+        assert!(source.contains(canonical), "contract must still state {canonical}");
+        assert!(guidance.contains(fact), "crate guidance must follow {canonical}: {fact}");
+    }
+    assert!(guidance.contains("../../docs/contract.md"));
+}
+
+#[test]
+fn release_sweep_runs_disjoint_workloads_after_its_quality_gate() {
+    let workflow: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&repo_file(".github/workflows/ci.yml")).expect("workflow YAML");
+    let runs: Vec<_> = workflow["jobs"]["sweep"]["steps"]
+        .as_sequence()
+        .expect("sweep steps")
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect();
+    let gate = runs
+        .iter()
+        .position(|run| *run == "just ci-tier run -t check")
+        .expect("quality gate");
+    let workload = runs
+        .iter()
+        .position(|run| *run == "just workload")
+        .expect("release sweep runs workloads");
+    assert!(workload > gate);
 }

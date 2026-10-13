@@ -196,8 +196,7 @@ every session fresh, as it always has; `--pool N` and `--overflow N|unlimited` o
 open override its resolution for that session alone.
 
 A warm slot that is never swept grows without bound, so the workspaces file may also
-name what maintenance *is* per identity — `maintain: {command: ["cargo", "sweep",
-"--time", "7"], timeout: 30m}` — and `onevcs pool maintain [REPO] [--older-than SPAN]
+name what maintenance *is* per identity — `maintain: {command: ["scripts/maintain-slot.sh", "--flag"], timeout: 30m}` — and `onevcs pool maintain [REPO] [--older-than SPAN]
 [--json]` runs it in each idle slot's worktree, one slot at a time, claiming the slot
 so a `session open` goes elsewhere rather than waiting, and records the attempt on
 the slot. `onevcs` holds no schedule: *when* to maintain is the caller's — a driver's
@@ -429,3 +428,30 @@ just gate        # check, plus the diff-scoped LLM-judge tier — the pre-push b
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+
+## Repository-declared pool maintenance
+
+<!-- repository-maintenance-summary:start -->
+`onevcs.toml` at the repository root declares `schema_version = 1` and optional
+`[pool.maintain]`: required non-empty `command` argv with a non-empty program,
+optional `timeout` using the workspaces `Span` grammar (default `30m`). Version 1
+refuses unknown keys and tables; later versions ignore unknown keys. Missing or
+non-integer versions are refused with the document and line.
+
+Resolve from the publication checkout on its base branch, never a slot or session:
+repository command first, then the matching host workspaces rule or `default:` when
+the file or table is absent, otherwise nothing. Unreadable files or checkouts block
+fallback. onevcs has no default command and knows no build tool or output layout.
+Use `onevcs pool declaration PATH [--json]` to validate a root or file without
+registration. Example argv: `["scripts/maintain-slot.sh", "--flag"]`.
+
+`PoolStatus.maintenance` reports declared, host-rule, undeclared or unreadable;
+its JSON fields are `source`, `from`, `command`, `timeout`, `reason` (unused fields
+null). `IdentityOutcome::MaintenanceUnreadable { reason }` runs nothing.
+`SlotOutcome::Ran.disk: Option<SlotDisk>` reports allocated `before_bytes` and
+`after_bytes`, counting each inode once and following no symlink, inside the claim
+around the command even on failure. Measurement errors warn and leave disk null
+without changing the outcome; `duration_ms` times the command alone. Human slot
+lines append `, worktree <before> → <after>` in sweep's byte format.
+<!-- repository-maintenance-summary:end -->
