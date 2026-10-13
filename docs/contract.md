@@ -2077,13 +2077,13 @@ default:
   pool: 0               # non-negative integer; 0 = pooling off, every session fresh
   overflow: unlimited   # `unlimited` or a non-negative integer; sessions admitted past the pool
   delete: []            # worktree-relative paths deleted on every return (state that would leak)
-  # maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}   # what maintenance is
+  # maintain: {command: ["scripts/maintain-slot.sh", "--flag"], timeout: 30m}   # what maintenance is
 rules:
   - match: {host: github.com, owner: nickderobertis, name: onevcs}
     pool: 2
     overflow: 4
     delete: [".logs/"]
-    maintain: {command: ["cargo", "sweep", "--time", "7"], timeout: 30m}
+    maintain: {command: ["scripts/maintain-slot.sh", "--flag"], timeout: 30m}
 ```
 
 The shipped default is `pool: 0`, `overflow: unlimited`, `delete: []` and no
@@ -2154,7 +2154,7 @@ pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u
     pub overflow_in_use: u32, pub admits: Bound,   // how many more opens the identity admits now
     pub admitted: bool }                           // whether *this* request would be placed now
 pub fn pool_status(repo: &str) -> Result<PoolStatus>;
-pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus> }
+pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus>, pub maintenance: MaintenanceSource }
 pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,
     pub state: SlotState, pub last_maintained: Option<String>,   // RFC3339
     pub last_outcome: Option<MaintenanceOutcome> }
@@ -2265,9 +2265,8 @@ Two existing kinds gain a field. `session-opened` gains an additive `placement` 
 `{"kind": "slot", "slot": N, "created": bool}` or `{"kind": "run-root"}`, on every
 implementation — and `session-closed` gains `returned: {"slot": N}` on a slot return.
 
-**Maintaining the pool.** A warm slot that is never swept grows without bound — a Rust
-`target/` accumulates every build it has ever made — which would turn the disk-wear
-fix into a disk-space problem. So the one imperative maintenance verb runs the
+**Maintaining the pool.** A warm slot can accumulate output indefinitely, which
+would turn the disk-wear fix into a disk-space problem. So the one imperative maintenance verb runs the
 identity's `maintain.command` in each **idle** slot's worktree under the identity's
 `timeout`, and records on the slot that it ran. **`onevcs` holds no schedule** and
 keeps no state beyond the slot record: *when* to maintain is the caller's — a driver's
@@ -2283,6 +2282,7 @@ pub struct MaintainReport { pub identities: Vec<IdentityMaintenance> }
 pub struct IdentityMaintenance { pub identity: String, pub outcome: IdentityOutcome }
 pub enum IdentityOutcome {
     NoMaintainCommand,               // the resolved policy names no `maintain`
+    MaintenanceUnreadable { reason: String }, // unreadable declaration blocks fallback
     NoSlots,                         // nothing has cut a slot for this identity
     Claimed { by_pid: u32 },         // another maintain holds this identity right now
     Slots(Vec<SlotMaintenance>) }
@@ -2293,7 +2293,7 @@ pub enum SlotOutcome {
     Unavailable { holder: String },   // busy, not broken: a live claim, an occupancy it
                                       // could not take, or a process working inside it
     Broken { reason: String },        // an unusable clone, worktree or record
-    Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId> } }
+    Ran { outcome: MaintenanceOutcome, duration_ms: u64, log: Option<ArtifactId>, disk: Option<SlotDisk> } }
 ```
 
 ```
@@ -5815,6 +5815,75 @@ Lock waits requiring no person remain progress. Retired recognized kinds
 remain readable and inert. Errors with no onevcs event become the engine's
 landing-refused blocker; no per-check evidence is fabricated.
 
+## Repository-declared pool maintenance
+
+<!-- repository-maintenance-summary:start -->
+`onevcs.toml` at the repository root declares `schema_version = 1` and optional
+`[pool.maintain]`: required non-empty `command` argv with a non-empty program,
+optional `timeout` using the workspaces `Span` grammar (default `30m`). Version 1
+refuses unknown keys and tables; later versions ignore unknown keys. Missing or
+non-integer versions are refused with the document and line.
+
+Resolve from the publication checkout on its base branch, never a slot or session:
+repository command first, then the matching host workspaces rule or `default:` when
+the file or table is absent, otherwise nothing. Unreadable files or checkouts block
+fallback. onevcs has no default command and knows no build tool or output layout.
+Use `onevcs pool declaration PATH [--json]` to validate a root or file without
+registration. Example argv: `["scripts/maintain-slot.sh", "--flag"]`.
+
+`PoolStatus.maintenance` reports declared, host-rule, undeclared or unreadable;
+its JSON fields are `source`, `from`, `command`, `timeout`, `reason` (unused fields
+null). `IdentityOutcome::MaintenanceUnreadable { reason }` runs nothing.
+`SlotOutcome::Ran.disk: Option<SlotDisk>` reports allocated `before_bytes` and
+`after_bytes`, counting each inode once and following no symlink, inside the claim
+around the command even on failure. Measurement errors warn and leave disk null
+without changing the outcome; `duration_ms` times the command alone. Human slot
+lines append `, worktree <before> → <after>` in sweep's byte format.
+<!-- repository-maintenance-summary:end -->
+
+A repository tracks `onevcs.toml` at its root, with `schema_version = 1` and
+optional `[pool.maintain]`: required `command = ["scripts/maintain-slot.sh", "--flag"]`
+and optional `timeout = "30m"` (the workspaces `Span` grammar, default 30m).
+The argv must name a non-empty program. Version 1 refuses unknown keys and tables;
+later versions ignore unknown keys. Missing or non-integer versions are refused,
+with document and line. `onevcs pool declaration PATH [--json]` reads a root or file
+without registration; no maintenance table prints none declared (JSON `null`).
+
+Every `pool maintain` pass and `pool status` resolves maintenance from the registered
+publication checkout on its base branch, never from a slot or session branch:
+repository declaration first, then the matching host workspace rule or `default:`
+when the file or table is absent, otherwise nothing. An unreadable declaration or
+publication checkout blocks fallback. onevcs has no default command and knows no
+build tool or output layout.
+
+`PoolStatus.maintenance` reports `MaintenanceSource`: declared (document and command),
+host-rule (host layer and command), undeclared (directory searched), or unreadable
+(reason). JSON carries `source`, `from`, `command`, `timeout` and `reason`, with
+unused fields null. Human status reports the command, timeout and source, or none
+or unreadable. `IdentityOutcome::MaintenanceUnreadable { reason }` serializes as
+`{"maintenance-unreadable":{"reason":"..."}}`; `NoMaintainCommand` means neither
+layer declares maintenance.
+
+`SlotOutcome::Ran.disk: Option<SlotDisk>` holds `before_bytes` and `after_bytes`:
+allocated blocks of the whole worktree, counted once per inode without following
+symlinks, measured inside its claim around the command regardless of its outcome.
+Measurement failures warn naming the slot and leave disk null without changing the
+command outcome. The human slot line appends `, worktree <before> → <after>` in the
+sweep byte format. `duration_ms` still measures the command alone.
+
+```rust
+// onevcs::repository_config
+pub const FILE: &str = "onevcs.toml";
+pub fn read_repository_maintenance(path: &Path) -> Result<Option<Maintenance>>;
+pub fn validate_repository_config(document: &str, origin: &str) -> Result<Option<Maintenance>>;
+pub enum MaintenanceSource {
+    Declared { document: PathBuf, maintenance: Maintenance },
+    HostRule { from: String, maintenance: Maintenance },
+    Undeclared { looked_in: PathBuf },
+    Unreadable { reason: String },
+}
+pub struct SlotDisk { pub before_bytes: u64, pub after_bytes: u64 }
+```
 
 ---
 

@@ -1600,3 +1600,18 @@ journey turns down so a bound can be *proved* rather than waited out.
   own shape, never a particular consumer's spelling, and `recoverable`,
   `integrate`, and `recover` each name what they found. Special-casing a prefix
   value would be this crate learning a consumer's vocabulary, which it must not.
+
+
+## Repository-declared pool maintenance
+
+<!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers] This task explicitly requires the subtree summary of the onevcs.toml schema, resolution, report fields and read verb here; the fact-presence drift gate ties it to docs/contract.md. The manager approved this narrow exception after the required terse guidance was still refused. -->
+Keep [the contract](../../docs/contract.md) as the full statement; validate with `onevcs pool declaration PATH [--json]`.
+`onevcs.toml` has `schema_version = 1`, optional `[pool.maintain]`, required non-empty `command` argv/program,
+and optional `timeout` (`Span`, default `30m`); refuse unknown version-1 keys and ignore later schemas' unknown keys.
+Read the publication checkout on its base branch, never a slot or session; resolve repository → host rule/default → none.
+Unreadable runs nothing and blocks fallback; onevcs has no default command. Example: `["scripts/maintain-slot.sh"]`.
+Keep `PoolStatus.maintenance`'s source and `IdentityOutcome::MaintenanceUnreadable` visible to readers.
+`SlotOutcome::Ran.disk` holds `before_bytes`/`after_bytes`: allocated blocks, each inode once, no symlink followed, inside the claim.
+Measurement failures warn and leave disk null without changing command outcomes; `duration_ms` is command time alone.
+The human line appends `, worktree <before> → <after>` in sweep's byte format; never teach maintenance a build tool's layout.
+<!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers] -->

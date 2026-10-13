@@ -139,15 +139,13 @@ close something, or open with `--overflow unlimited`.
 
 ## Maintaining a slot is a verb, and the schedule is the caller's
 
-The user's words: "we should also design a hook that can be run on idle slots
-opportunistically up to a schedule so users can configure that to cargo sweep or
-whatever else per identity"; "it's weird for onevcs to have cron config if it's not
-doing anything with cron"; "it should be a persistent schedule and recorded time last
-done not every x time within a run as maintenance intervals will usually be longer
-than dag run times".
+Maintenance is an opportunistic operation a caller can schedule per identity.
+The schedule belongs to that caller, rather than to a tool that runs no cron.
+The last attempt is recorded persistently because maintenance intervals can be
+longer than the caller's run, so an interval cannot be counted within that run.
 
 So `onevcs` owns *what* maintenance is per identity — `maintain.command` and its
-`timeout` in `workspaces.yml` — and the fact of when it last ran, on the slot record,
+`timeout` in the publication base’s `onevcs.toml`, falling back to `workspaces.yml` only when undeclared — and the fact of when it last ran, on the slot record,
 and nothing else. **It holds no schedule.** A schedule would be cron configuration in
 a tool that runs no cron: the process that knows when a host is idle is the caller —
 a driver's idle branch, a cron entry, a person — so `onevcs pool maintain
@@ -169,3 +167,30 @@ run that claimed every idle slot at once would turn the pool's headroom into a q
 under the placement lock and the placement lock is never held across a command, so
 an `open` meeting a claimed slot takes another or falls through to create or
 overflow, exactly as it would meet a session.
+
+
+## Repository-declared pool maintenance
+
+<!-- repository-maintenance-summary:start -->
+`onevcs.toml` at the repository root declares `schema_version = 1` and optional
+`[pool.maintain]`: required non-empty `command` argv with a non-empty program,
+optional `timeout` using the workspaces `Span` grammar (default `30m`). Version 1
+refuses unknown keys and tables; later versions ignore unknown keys. Missing or
+non-integer versions are refused with the document and line.
+
+Resolve from the publication checkout on its base branch, never a slot or session:
+repository command first, then the matching host workspaces rule or `default:` when
+the file or table is absent, otherwise nothing. Unreadable files or checkouts block
+fallback. onevcs has no default command and knows no build tool or output layout.
+Use `onevcs pool declaration PATH [--json]` to validate a root or file without
+registration. Example argv: `["scripts/maintain-slot.sh", "--flag"]`.
+
+`PoolStatus.maintenance` reports declared, host-rule, undeclared or unreadable;
+its JSON fields are `source`, `from`, `command`, `timeout`, `reason` (unused fields
+null). `IdentityOutcome::MaintenanceUnreadable { reason }` runs nothing.
+`SlotOutcome::Ran.disk: Option<SlotDisk>` reports allocated `before_bytes` and
+`after_bytes`, counting each inode once and following no symlink, inside the claim
+around the command even on failure. Measurement errors warn and leave disk null
+without changing the outcome; `duration_ms` times the command alone. Human slot
+lines append `, worktree <before> → <after>` in sweep's byte format.
+<!-- repository-maintenance-summary:end -->

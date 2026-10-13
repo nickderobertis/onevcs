@@ -850,3 +850,177 @@ fn the_schema_command_prints_the_checked_in_versioned_schemas() {
         assert!(printed.pointer(path).is_some(), "{path}");
     }
 }
+
+/// A workspace declaration in either supported manifest family.
+fn workspace_files(family: usize, member: &str, exclude: Option<&str>) -> Vec<(String, String)> {
+    if family == 0 {
+        let exclusion = exclude
+            .map(|value| format!("exclude = [{value:?}]\n"))
+            .unwrap_or_default();
+        vec![
+            ("Cargo.toml".into(), format!("[package]\nname = \"root-secret-kit\"\n[workspace]\nmembers = [{member:?}, \"nested\"]\n{exclusion}")),
+            ("nested/Cargo.toml".into(), "[package]\nname = \"nested-secret-kit\"\n".into()),
+        ]
+    } else {
+        let packages = json!([member, "nested"]);
+        let workspaces = if family == 1 {
+            packages
+        } else {
+            json!({"packages": packages})
+        };
+        vec![
+            (
+                "package.json".into(),
+                json!({"name": "@secret/root-secret-kit", "workspaces": workspaces}).to_string(),
+            ),
+            (
+                "nested/package.json".into(),
+                json!({"name": "@secret/nested-secret-kit"}).to_string(),
+            ),
+        ]
+    }
+}
+
+#[test]
+fn root_workspace_members_read_committed_terms_despite_dirty_files_and_symlinks() {
+    for family in 0..3 {
+        for member in [".", "./", "././"] {
+            let host = Boundary::new("{publication: local-direct, approvals: none}");
+            let files = workspace_files(family, member, None);
+            let borrowed: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str()))
+                .collect();
+            let checkout = host.private("hiddenco/meadowlark", &borrowed);
+            let verify = || {
+                assert!(host.text("a generic example", None).passed());
+                for term in ["root-secret-kit", "nested-secret-kit"] {
+                    assert!(
+                        host.text(term, None).refused(),
+                        "{family}: {member}: {term}"
+                    );
+                }
+                assert!(host.text("replacement-only-kit", None).passed());
+            };
+            verify();
+            for (path, _) in &files {
+                std::fs::write(
+                    checkout.join(path),
+                    if family == 0 {
+                        "[package]\nname = \"replacement-only-kit\"\n"
+                    } else {
+                        r#"{"name": "replacement-only-kit"}"#
+                    },
+                )
+                .expect("a dirty manifest");
+            }
+            verify();
+            let outside = host.repository(
+                "otherhold/thirdkeep",
+                &[
+                    ("Cargo.toml", "[package]\nname = \"replacement-only-kit\"\n"),
+                    ("package.json", r#"{"name": "replacement-only-kit"}"#),
+                ],
+            );
+            std::fs::remove_dir_all(checkout.join("nested")).expect("remove worktree member");
+            std::os::unix::fs::symlink(&outside, checkout.join("nested"))
+                .expect("a worktree symlink");
+            std::fs::remove_file(checkout.join(&files[0].0)).expect("remove root manifest");
+            std::os::unix::fs::symlink(outside.join(&files[0].0), checkout.join(&files[0].0))
+                .expect("a root manifest symlink");
+            verify();
+        }
+    }
+}
+
+#[test]
+fn unsafe_workspace_members_never_alias_the_committed_root() {
+    for family in 0..3 {
+        for member in ["", "..", "../outside", "outside", "/"] {
+            let host = Boundary::new("{publication: local-direct, approvals: none}");
+            let outside = host.repository(
+                "otherhold/thirdkeep",
+                &[
+                    ("Cargo.toml", "[package]\nname = \"outside-secret-kit\"\n"),
+                    ("package.json", r#"{"name": "outside-secret-kit"}"#),
+                ],
+            );
+            let pattern = if member == "/" {
+                outside.to_str().expect("a UTF-8 path")
+            } else {
+                member
+            };
+            let files = workspace_files(family, pattern, None);
+            let borrowed: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str()))
+                .collect();
+            let checkout = host.private("hiddenco/meadowlark", &borrowed);
+            if member == "outside" {
+                std::os::unix::fs::symlink(&outside, checkout.join("outside"))
+                    .expect("an outside member");
+                host.world.git(&checkout, &["add", "-A"]);
+                host.world.git(
+                    &checkout,
+                    &["commit", "-q", "-m", "chore: declare symlink member"],
+                );
+            }
+            assert!(
+                host.text("a generic example", None).unavailable(),
+                "{family}: {pattern}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cargo_root_exclusion_uses_equivalent_current_directory_spelling() {
+    let host = Boundary::new("{publication: local-direct, approvals: none}");
+    let files = workspace_files(0, "././", Some("."));
+    let borrowed: Vec<_> = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    host.private("hiddenco/meadowlark", &borrowed);
+    assert!(host.text("a generic example", None).passed());
+    assert!(host.text("nested-secret-kit", None).refused());
+    // Cargo's root package is derived independently of workspace membership.
+    assert!(host.text("root-secret-kit", None).refused());
+}
+
+#[test]
+fn python_root_names_remain_committed_without_uv_member_discovery() {
+    let host = Boundary::new("{publication: local-direct, approvals: none}");
+    let checkout = host.private("hiddenco/meadowlark", &[
+        ("pyproject.toml", "[project]\nname = \"python-secret-kit\"\n[tool.poetry]\nname = \"poetry-secret-kit\"\n[tool.uv.workspace]\nmembers = [\"nested\"]\n"),
+        ("nested/pyproject.toml", "[project]\nname = \"uv-undiscovered-kit\"\n"),
+    ]);
+    std::fs::write(checkout.join("pyproject.toml"), "[project]\nname = \"replacement-only-kit\"\n[tool.poetry]\nname = \"replacement-poetry-kit\"\n").expect("a dirty Python manifest");
+    for term in ["python-secret-kit", "poetry-secret-kit"] {
+        assert!(host.text(term, None).refused());
+    }
+    for term in [
+        "replacement-only-kit",
+        "replacement-poetry-kit",
+        "uv-undiscovered-kit",
+    ] {
+        assert!(host.text(term, None).passed());
+    }
+}
+
+#[test]
+fn invalid_cargo_exclusions_make_the_boundary_unavailable() {
+    for exclude in ["", "..", "../outside", "/outside"] {
+        let host = Boundary::new("{publication: local-direct, approvals: none}");
+        let files = workspace_files(0, ".", Some(exclude));
+        let borrowed: Vec<_> = files
+            .iter()
+            .map(|(path, text)| (path.as_str(), text.as_str()))
+            .collect();
+        host.private("hiddenco/meadowlark", &borrowed);
+        assert!(
+            host.text("a generic example", None).unavailable(),
+            "{exclude:?}"
+        );
+    }
+}
