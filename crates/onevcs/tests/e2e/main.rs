@@ -45,11 +45,12 @@ mod change;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod branches;
+// Concurrent CLI publications configure the same real git lender.
+#[cfg(unix)]
+mod borrower_config;
 // Unix only: the public boundary, through `boundary check`, `inspect` and `schema`,
 // over real repositories and the substituted `gh` that answers a repository's
 // visibility. Its own header carries the reason in full.
-#[cfg(unix)]
-mod borrower_config;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod boundary;
@@ -159,10 +160,10 @@ mod labels;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod library;
-// The additive operation API is a library interface; these journeys use real git
-// and only the existing third-party hosting provider boundary.
 #[cfg(unix)]
 mod lifecycle;
+// The additive operation API is a library interface; these journeys use real git
+// and only the existing third-party hosting provider boundary.
 #[cfg(unix)]
 mod operation_progress;
 // Linux only: it counts a directory's own `opendir` calls through `inotify`, which

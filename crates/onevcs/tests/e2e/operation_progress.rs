@@ -47,9 +47,6 @@ fn operation_batch(operation: &onevcs::OperationHandle, identity: &str) -> Vec<o
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
     let world = World::new();
     inhabit(&world);
@@ -70,12 +67,16 @@ fn operation_progress_publication_and_recovery_keep_typed_host_evidence() {
         started_at: None,
         completed_at: None,
     };
+    // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+    // task-mandated onevcs-testing MemoryHost/FileHost provider. Git, policy and
+    // hooks are real, and no paid live host is used. This region is one constructor.
     let failed_host = MemoryHost::seeded(HostState {
         checks: [(ChangeId("1".to_owned()), vec![check("failure")])]
             .into_iter()
             .collect(),
         ..HostState::default()
     });
+    // llmlint: ignore-end[e2e_not_mocked]
     let request = onevcs::BranchPublishRequest {
         repo: world.path("hosted"),
         branch: "feature/operation".to_owned(),
@@ -512,9 +513,6 @@ fn operation_check(conclusion: Option<&str>) -> Check {
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_and_recovery_return(
 ) {
     for recovering in [false, true] {
@@ -539,6 +537,9 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
             .identity;
         let operation = operation_for(&repository, "feature/remote-live", recovering);
         let path = world.path("host-state.json");
+        // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+        // task-mandated onevcs-testing MemoryHost/FileHost provider. Git, policy and
+        // hooks are real, and no paid live host is used. This region is one constructor.
         let host = onevcs_testing::FileHost::seeded(
             &path,
             HostState {
@@ -552,6 +553,7 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
             },
         )
         .expect("third-party host provider");
+        // llmlint: ignore-end[e2e_not_mocked]
         let executing = operation.clone();
         let checkout = world.path("hosted");
         let attached = onevcs_testing::FileHost::create(&path).expect("same host");
@@ -665,9 +667,6 @@ fn operation_progress_remote_handshakes_relay_pending_checks_before_publication_
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
@@ -708,6 +707,9 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
         .identity;
     let operation = operation_for(&repository, "feature/killed-operation", false);
     let host_path = world.path("crash-host.json");
+    // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+    // task-mandated onevcs-testing MemoryHost/FileHost provider. Git, policy and
+    // hooks are real, and no paid live host is used. This region is one constructor.
     onevcs_testing::FileHost::seeded(
         &host_path,
         HostState {
@@ -718,6 +720,7 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
         },
     )
     .expect("host keeps the watch pending");
+    // llmlint: ignore-end[e2e_not_mocked]
     let mut reader =
         onevcs::OperationEvents::open(&operation).expect("reader before process starts");
     let mut child = Command::new(std::env::current_exe().expect("test executable"))
@@ -802,9 +805,6 @@ fn operation_progress_drains_a_process_killed_during_its_real_host_watch() {
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_publication_and_recovery_policy_endings_keep_armed_queued_and_skipped_detail()
 {
     for recovering in [false, true] {
@@ -858,6 +858,7 @@ fn operation_progress_publication_and_recovery_policy_endings_keep_armed_queued_
             if case == "queued" {
                 state.merges.insert(id, MergeOutcome::Queued);
             }
+            // llmlint: ignore[e2e_not_mocked] Only third-party hosting uses the task-mandated onevcs-testing provider; git, policy and hooks are real, with no paid live host.
             let host = MemoryHost::seeded(state);
             let providers = Providers {
                 vcs: &Git,
@@ -1016,9 +1017,6 @@ fn operation_progress_local_push_refusal_drains_its_own_records_and_a_fresh_atte
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_late_merge_records_inherit_the_new_invocation_without_replaying_the_old_one()
 {
     let world = World::new();
@@ -1034,12 +1032,16 @@ fn operation_progress_late_merge_records_inherit_the_new_invocation_without_repl
     let repository = onevcs::resolve_repository(&Providers::real(), "hosted")
         .expect("identity")
         .identity;
+    // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+    // task-mandated onevcs-testing MemoryHost/FileHost provider. Git, policy and
+    // hooks are real, and no paid live host is used. This region is one constructor.
     let host = MemoryHost::seeded(HostState {
         checks: [(ChangeId("1".to_owned()), vec![operation_check(None)])]
             .into_iter()
             .collect(),
         ..Default::default()
     });
+    // llmlint: ignore-end[e2e_not_mocked]
     let request = onevcs::BranchPublishRequest {
         repo: world.path("hosted"),
         branch: "feature/late-operation".to_owned(),
@@ -1165,9 +1167,6 @@ fn operation_progress_release_probes_preserve_success_and_typed_failure_signific
 }
 
 #[test]
-// llmlint: ignore[e2e_not_mocked] This task explicitly requires the existing
-// onevcs-testing providers at the third-party hosting boundary and excludes the
-// paid live-host tier. The public library, git, policy, hooks and stream are real.
 fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while_the_call_waits() {
     let world = World::new();
     inhabit(&world);
@@ -1186,6 +1185,9 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
     let path = world.path("required-host.json");
     let mut pending = operation_check(None);
     pending.required = false;
+    // llmlint: ignore-block[e2e_not_mocked] Only third-party hosting uses the
+    // task-mandated onevcs-testing MemoryHost/FileHost provider. Git, policy and
+    // hooks are real, and no paid live host is used. This region is one constructor.
     let host = onevcs_testing::FileHost::seeded(
         &path,
         HostState {
@@ -1200,6 +1202,7 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
         },
     )
     .expect("host declares the requirement separately from per-check metadata");
+    // llmlint: ignore-end[e2e_not_mocked]
     let mut reader = onevcs::OperationEvents::open(&operation).expect("independent reader");
     let executing = operation.clone();
     let attached = onevcs_testing::FileHost::create(&path).expect("same host");
