@@ -1300,3 +1300,72 @@ fn operation_progress_declared_required_no_verdict_is_visible_as_a_blocker_while
         .any(|event| event.kind.as_str() == "checks-settled"
             && event.labels.extra["significance"] == "milestone"));
 }
+
+#[test]
+fn operation_progress_real_base_merge_conflict_is_a_blocker_in_the_manager_view() {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _) = hosted(
+        &world,
+        "{publication: local-direct, approvals: none, base_merge: on-conflict}",
+    );
+    let session = open(&Git, "feature/conflict-operation");
+    world.commit_file(
+        &session.worktree,
+        "shared.txt",
+        "from the branch\n",
+        "feat: conflicting branch work",
+    );
+    onevcs::close_session(&Providers::real(), &session.token).expect("closed session");
+    let other = world.clone_of(&origin, "changed-base");
+    world.commit_file(
+        &other,
+        "shared.txt",
+        "from the base\n",
+        "feat: conflicting base work",
+    );
+    world.git(&other, &["push", "origin", "main"]);
+    let repository = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("identity")
+        .identity;
+    let operation = operation_for(&repository, "feature/conflict-operation", false);
+    let result = onevcs::publish_branch_in_operation(
+        &Providers::real(),
+        &onevcs::BranchPublishRequest {
+            repo: world.path("hosted"),
+            branch: "feature/conflict-operation".to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+            term_scope: Default::default(),
+        },
+        &operation,
+    );
+    let kind = match &result {
+        Err(error) => FailureKind::of(error),
+        Ok(PublishOutcome::Failed { kind, .. }) => *kind,
+        _ => panic!("a real merge conflict did not stop publication: {result:?}"),
+    };
+    assert_eq!(kind, FailureKind::SyncConflict);
+    let records = operation_batch(&operation, &repository);
+    assert!(records
+        .iter()
+        .any(|event| event.kind.as_str() == "base-merge"
+            && event.payload["decision"] == "merged"
+            && event.labels.extra["significance"] == "progress"));
+    let conflict = records
+        .iter()
+        .find(|event| event.kind.as_str() == "sync-conflict")
+        .expect("actual conflict event");
+    assert_eq!(conflict.labels.extra["significance"], "blocker");
+    // The default manager's attention is the two producer-owned significance words,
+    // with progress remaining detail. No kind list reclassifies a producer record.
+    let manager =
+        onevcs::EventFilter::parse("include: [{significance: milestone}, {significance: blocker}]")
+            .expect("manager significance view");
+    assert!(manager.matches(conflict));
+    assert!(records
+        .iter()
+        .filter(|event| event.kind.as_str() == "base-merge")
+        .all(|event| !manager.matches(event)));
+}

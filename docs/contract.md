@@ -5796,7 +5796,7 @@ The producer classification table is exhaustive over current kinds:
 | change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale) |
 | gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
 | stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
-| base-merge | progress | blocker for conflict or refusal; merged and skipped remain progress |
+| base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
 | release-probed | progress | blocker for not-answered; released and no-release remain progress |
 | branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
 | session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
@@ -5806,7 +5806,12 @@ back to the host's per-check marking only when that declaration is unavailable.
 Original check payloads remain unchanged and no additional host read is made.
 
 For every kind, typed failure or refusal overrides its ordinary classification to
-blocker. Lock waits requiring no person remain progress. Retired recognized kinds
+blocker, including for base-merge. The current producer emits no failed base-merge
+event: real merge conflicts arrive as sync-conflict, stamped blocker and visible in
+the manager's milestone/blocker view. The universal typed-failure override is held
+to the producer function by the exhaustive contract test, while the actual conflict
+path is proven by the real-git operation journey.
+Lock waits requiring no person remain progress. Retired recognized kinds
 remain readable and inert. Errors with no onevcs event become the engine's
 landing-refused blocker; no per-check evidence is fabricated.
 
