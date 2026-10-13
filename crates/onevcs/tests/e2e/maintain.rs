@@ -1514,6 +1514,23 @@ fn declared_commands_preserve_safety_timeout_and_repository_relative_execution()
         "repository"
     );
     assert!(!worktree.join("decoy-marker").exists());
+    std::fs::remove_file(worktree.join("relative-marker")).expect("remove the first pass marker");
+    let relative_home = fixture
+        .world
+        .onevcs()
+        .env("ONEVCS_HOME", ".onevcs")
+        .args(["pool", "maintain", "--json"])
+        .output()
+        .expect("maintenance with a relative state root");
+    assert!(
+        relative_home.status.success(),
+        "relative state root must still resolve the executable against the slot: {}",
+        String::from_utf8_lossy(&relative_home.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("relative-marker")).expect("second pass marker"),
+        "repository"
+    );
 
     let slow = declared_marker(&fixture, "timeout-marker", "sleep 5");
     declare(&fixture, &config(&slow, "1s"));
@@ -1673,6 +1690,7 @@ fn unreadable_declaration_metadata_and_contents_block_host_commands() {
         // Forward every query to real git. Revoking directory search after its last
         // base-branch query creates a real EACCES at the following metadata boundary;
         // no checkout answer, file read or declaration reader is substituted.
+        // llmlint: ignore[e2e_not_mocked] The layer under test is the real declaration filesystem lookup, not Git transport. This wrapper forwards every argv, stdout and exit status to the real git executable, then revokes directory search so the reader itself receives EACCES; no Git answer or filesystem read is fabricated.
         let wrapper = install(
             &fixture.world,
             "denial/git",
@@ -1739,4 +1757,46 @@ exit "$result"
             assert!(!worktree.join("unreadable-declared-marker").exists());
         }
     }
+}
+
+#[test]
+fn host_default_maintenance_is_reported_when_the_matching_rule_declares_none() {
+    let (fixture, _) = fixture_with(2, 2, &["ok"], "30m");
+    let script = declared_marker(&fixture, "default-host-marker", "exit 0");
+    let mut workspaces = maintained(&script, 2, &[], "30m");
+    workspaces.push_str(&format!(
+        "rules:\n  - match: {{path: {:?}}}\n    pool: 2\n",
+        fixture.checkout.display().to_string()
+    ));
+    crate::pool::configure_workspaces(&fixture.world, workspaces);
+    let (code, report) = maintain(&fixture, &[]);
+    assert_eq!(code, 0, "{report}");
+    for number in 1..=2 {
+        assert_eq!(
+            std::fs::read_to_string(
+                slot_dir(&fixture, number).join("worktree/default-host-marker")
+            )
+            .expect("the default host command actually ran"),
+            "declared"
+        );
+    }
+    let listed = status(&fixture);
+    let from = format!(
+        "default: of {}",
+        fixture.world.home().join("workspaces.yml").display()
+    );
+    assert_eq!(
+        listed["maintenance"],
+        serde_json::json!({"source":"host-rule","from":from,"command":[script.display().to_string()],"timeout":"30m","reason":null})
+    );
+    let human = fixture
+        .world
+        .onevcs()
+        .args(["pool", "status", "project"])
+        .output()
+        .expect("human status");
+    assert!(human.status.success());
+    let argv = serde_json::to_string(&vec![script.display().to_string()]).expect("argv");
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains(&format!("maintenance: {argv} (timeout 30m) — {from}\n")));
 }

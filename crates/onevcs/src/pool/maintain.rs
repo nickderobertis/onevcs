@@ -500,19 +500,22 @@ fn run(worktree: &Path, maintenance: &Maintenance) -> Ran {
     let bound = maintenance.timeout.as_duration();
     let program = &maintenance.command.program;
     let executable = if program.chars().any(std::path::is_separator) {
-        worktree.join(program)
+        std::path::absolute(worktree).map(|root| root.join(program))
     } else {
-        PathBuf::from(program)
+        Ok(PathBuf::from(program))
     };
-    let mut command = Command::new(executable);
-    command
-        .args(&maintenance.command.args)
-        .current_dir(worktree)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    git::detach_process_group(&mut command);
-    let mut child = match command.spawn() {
+    let spawned = executable.and_then(|executable| {
+        let mut command = Command::new(executable);
+        command
+            .args(&maintenance.command.args)
+            .current_dir(worktree)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        git::detach_process_group(&mut command);
+        command.spawn()
+    });
+    let mut child = match spawned {
         Ok(child) => child,
         Err(failure) => {
             return Ran {
