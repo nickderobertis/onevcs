@@ -360,6 +360,103 @@ fn generic_and_public_names_narrow_to_the_qualified_name_and_a_public_owner_is_n
 }
 
 #[test]
+fn conventional_test_and_tooling_package_names_narrow_while_distinctive_ones_stay_terms() {
+    let host = Boundary::new("{publication: local-direct, approvals: none}");
+    // Packages named the way repositories name their test, tooling and workspace-support
+    // packages — a scoped workspace member, hyphenated names, names carrying digits —
+    // declared beside a distinctive package and a compound no entry spells.
+    host.private(
+        "hiddenco/quietharbor",
+        &[
+            (
+                "package.json",
+                r#"{"name": "quietharbor-web", "workspaces": ["tests/e2e", "packages/*"]}"#,
+            ),
+            ("tests/e2e/package.json", r#"{"name": "@sample/e2e"}"#),
+            ("packages/i18n/package.json", r#"{"name": "i18n"}"#),
+            ("packages/lint/package.json", r#"{"name": "eslint-config"}"#),
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+            (
+                "crates/test-utils/Cargo.toml",
+                "[package]\nname = \"test-utils\"\n",
+            ),
+            ("crates/k8s/Cargo.toml", "[package]\nname = \"k8s\"\n"),
+            (
+                "crates/engine/Cargo.toml",
+                "[package]\nname = \"stillwater-engine\"\n",
+            ),
+            (
+                "crates/compound/Cargo.toml",
+                "[package]\nname = \"e2e-harness\"\n",
+            ),
+            ("pyproject.toml", "[project]\nname = \"testkit\"\n"),
+        ],
+    );
+    // A repository named by an entry, under an owner whose login is one too.
+    host.private("canary/e2e", &[]);
+
+    for passed in [
+        "run the e2e suite",
+        "add a test-utils helper",
+        "the i18n strings",
+        "k8s manifests",
+        "extend eslint-config",
+        "testkit fixtures",
+    ] {
+        let checked = host.text(passed, None);
+        assert!(checked.passed(), "{passed:?} must pass: {}", checked.stdout);
+    }
+    let checked = host.check(
+        "public",
+        &json!({"paths": [
+            "crates/sample/tests/e2e/new_case.rs",
+            "tests/e2e/package.json",
+            "crates/test-utils/src/lib.rs",
+            "packages/i18n/en.json",
+            "deploy/k8s/service.yaml",
+        ]}),
+    );
+    assert!(checked.passed(), "{}", checked.stdout);
+
+    for refused in [
+        // Each narrowed name still narrows to its repository's qualified name.
+        "see hiddenco/quietharbor",
+        "github.com/hiddenco/quietharbor.git",
+        // A distinctive package beside the generic ones.
+        "the stillwater-engine crate",
+        "the quietharbor-web app",
+        // Every segment of `e2e-harness` is an entry and the compound is not.
+        "the e2e-harness runner",
+        // The owner owns nothing public, so its login is a term although it is an entry.
+        "a canary release",
+        "see canary/e2e",
+    ] {
+        let checked = host.text(refused, None);
+        assert!(
+            checked.refused(),
+            "{refused:?} must refuse: {}",
+            checked.stdout
+        );
+    }
+    for refused in [
+        "crates/stillwater-engine/src/lib.rs",
+        "tests/e2e-harness/main.rs",
+    ] {
+        let checked = host.check("public", &json!({"paths": [refused]}));
+        assert!(
+            checked.refused(),
+            "{refused:?} must refuse: {}",
+            checked.stdout
+        );
+        assert!(
+            checked.stdout.contains("\"surface\":\"path\""),
+            "{}",
+            checked.stdout
+        );
+    }
+}
+
+#[test]
 fn every_supported_manifest_names_package_terms_from_its_committed_tree_alone() {
     let host = Boundary::new("{publication: local-direct, approvals: none}");
     let checkout = host.private(
