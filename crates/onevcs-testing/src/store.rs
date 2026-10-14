@@ -6,6 +6,7 @@
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
@@ -170,9 +171,28 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
                 self.path.display()
             ),
         })?;
-        std::fs::write(&self.path, format!("{json}\n")).map_err(|e| Error::Invalid {
-            reason: format!("cannot write {}: {e}", self.path.display()),
-        })
+        // A sibling file renamed over the document, never a truncate-and-write in
+        // place: a provider in another thread or process reads this document while a
+        // journey re-seeds it, and a read that lands between the truncate and the
+        // write sees an empty file and refuses it as the wrong shape. The name is
+        // unique to this save so two concurrent writers never share one.
+        static SAVES: AtomicU64 = AtomicU64::new(0);
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            SAVES.fetch_add(1, Ordering::Relaxed)
+        ));
+        let staged = self.path.with_file_name(name);
+        std::fs::write(&staged, format!("{json}\n"))
+            .and_then(|()| std::fs::rename(&staged, &self.path))
+            .map_err(|e| {
+                // Best effort: the error below is the one that matters.
+                let _ = std::fs::remove_file(&staged);
+                Error::Invalid {
+                    reason: format!("cannot write {}: {e}", self.path.display()),
+                }
+            })
     }
 }
 
