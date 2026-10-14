@@ -1360,3 +1360,39 @@ fn committed_root_and_nested_workspace_terms_screen_publication_before_remote_wr
         }
     }
 }
+
+#[test]
+fn a_conventional_test_package_name_publishes_and_a_distinctive_one_beside_it_does_not() {
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    host.private(
+        "hiddenco/meadowlark",
+        &[
+            (
+                "package.json",
+                r#"{"name": "meadowlark-site", "workspaces": ["tests/e2e"]}"#,
+            ),
+            ("tests/e2e/package.json", r#"{"name": "@sample/e2e"}"#),
+        ],
+    );
+    // No `--scope`: terms come from every private repository the registry holds.
+    for (branch, content) in [
+        ("conventional", "run the e2e suite\n"),
+        ("distinctive", "drive it the way meadowlark-site does\n"),
+    ] {
+        let (token, worktree) = host.session(branch);
+        write(&worktree, "crates/sample/tests/e2e/new_case.rs", content);
+        commit(&host.world, &worktree, "test: add a new case");
+        let before = host.origin_refs();
+        // The conventional change opened the first change request.
+        let request = host.world.path("gh-state/pr-2.env");
+        let output = host.publish(&token, &["--draft"]);
+        if branch == "conventional" {
+            host.published(&output, &before, "a conventional test path and word");
+            assert_eq!(host.world.change_request(1)["PR_HEAD"], branch);
+            assert_eq!(host.world.change_request(1)["DRAFT"], "true");
+        } else {
+            host.refused(&output, "an added line", &before, "a distinctive package");
+            assert!(!request.exists(), "refusal created a change request");
+        }
+    }
+}

@@ -4990,8 +4990,14 @@ member pattern may use `*` within a path segment. A manifest that does not parse
 member named literally whose manifest is not committed, make the check unavailable.
 
 The generic-word list is data: `crates/onevcs/src/boundary/generic-words.txt`, headed
-`# onevcs generic words, version 1`, several thousand common English and software words,
-one per line, sorted. Changing it changes which names narrow, and moves its version.
+`# onevcs generic words, version 2`, several thousand common English and software words
+and the conventional names of test, tooling and workspace-support packages (`e2e`,
+`test-utils`, `i18n`), one entry per line, sorted and unique. An entry is lowercase ASCII
+letters and digits, optionally joined by single interior hyphens —
+`[a-z0-9]+(-[a-z0-9]+)*` — and narrows only a term equal to it as a whole once
+normalized and folded: a compound is never generic because each of its segments is, so
+`e2e-harness` is a term while `e2e` and `harness` are not. Changing it changes which names
+narrow, and moves its version; version 2 admitted digits and hyphens in an entry.
 
 A repository may commit `private-terms.toml` at its root:
 

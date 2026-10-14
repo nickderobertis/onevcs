@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use onevcs::{ChangeId, ChangeSpec, CheckSource, Hosting, MergeOutcome, MergePolicy, RemoteHost};
 use onevcs_testing::{FileHost, HostState, MemoryHost};
 
-use crate::support::{green_check, Home};
+use crate::support::{full_host_state, green_check, Home};
 
 /// What a publication opens for a branch.
 fn spec(head: &str) -> ChangeSpec {
@@ -546,5 +546,47 @@ fn a_host_describes_a_change_request_and_answers_the_description_it_holds() {
         factory.state().expect("readable").described.len(),
         2,
         "a refused description records nothing"
+    );
+}
+
+#[test]
+fn a_file_backed_host_read_while_a_journey_reseeds_it_never_sees_a_partial_document() {
+    // A publication polls the host from its own thread while the journey driving it
+    // re-seeds the host's document to move a check on. Every read in between must
+    // see one whole document or the other — never the empty file a truncate leaves
+    // before the write lands, which the reader refuses as the wrong shape.
+    let home = Home::new();
+    let path = home.path("raced-host.json");
+    let state = full_host_state();
+    let reader = FileHost::seeded(&path, state.clone()).expect("seed the raced host");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let done = std::sync::Arc::clone(&done);
+        let path = path.clone();
+        std::thread::spawn(move || {
+            for _ in 0..400 {
+                FileHost::seeded(&path, state.clone()).expect("re-seed the raced host");
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let mut reads = 0_u32;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        if let Err(error) = reader.state() {
+            panic!("read {reads} raced a save and saw a partial document: {error}");
+        }
+        reads += 1;
+    }
+    writer.join().expect("the re-seeding thread");
+    assert!(reads > 0, "the reader never ran while the writer did");
+    let staged: Vec<_> = std::fs::read_dir(path.parent().expect("a state directory"))
+        .expect("list the state directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("raced-host.json."))
+        .collect();
+    assert!(
+        staged.is_empty(),
+        "a staged save was left behind: {staged:?}"
     );
 }

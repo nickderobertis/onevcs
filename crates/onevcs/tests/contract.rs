@@ -9065,32 +9065,96 @@ fn the_private_terms_fixture_is_the_declaration_this_build_reads() {
 #[test]
 fn the_shipped_generic_word_list_is_versioned_sorted_and_dictionary_scale() {
     let list = repo_file("crates/onevcs/src/boundary/generic-words.txt");
+    generic_word_list_holds_its_format(&list).unwrap_or_else(|why| panic!("{why}"));
     let header = list.lines().next().expect("a header");
-    assert_eq!(header, "# onevcs generic words, version 1");
     assert!(
         regions().0.contains(&format!("headed\n`{header}`"))
             || regions().0.contains(&format!("`{header}`")),
         "the amendment states the list's version"
+    );
+    assert!(
+        regions().0.contains("`[a-z0-9]+(-[a-z0-9]+)*`"),
+        "the amendment states the entry format"
     );
     let words: Vec<&str> = list
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
     assert!(words.len() >= 5000, "{} words", words.len());
-    assert!(
-        words.windows(2).all(|pair| pair[0] < pair[1]),
-        "sorted and unique"
-    );
-    assert!(words
-        .iter()
-        .all(|word| word.bytes().all(|byte| byte.is_ascii_lowercase())));
-    for generic in ["docs", "server", "core", "app", "the"] {
+    for generic in [
+        "docs",
+        "server",
+        "core",
+        "app",
+        "the", // version 1
+        "e2e",
+        "e2e-tests",
+        "test-utils",
+        "testkit",
+        "i18n",
+        "a11y",
+        "k8s",
+        "playwright",
+        "eslint-config",
+        "conftest",
+        "protos", // version 2
+    ] {
         assert!(words.binary_search(&generic).is_ok(), "{generic}");
     }
+    // A compound of entries is not itself one: nothing narrows segment by segment.
+    assert!(words.binary_search(&"e2e-harness").is_err());
+
+    // The check above refuses the two ways the list could drift from its format.
+    let version_1 = list.replacen("version 2", "version 1", 1);
+    assert!(generic_word_list_holds_its_format(&version_1).is_err_and(|why| why.contains("header")));
+    for outside in [
+        "Upper",
+        "trailing-",
+        "double--hyphen",
+        "snake_case",
+        "-leading",
+    ] {
+        let widened = format!("{list}{outside}\n");
+        assert!(
+            generic_word_list_holds_its_format(&widened).is_err_and(|why| why.contains(outside)),
+            "{outside:?} is outside the entry pattern"
+        );
+    }
+    assert!(generic_word_list_holds_its_format(&format!("{list}zzz\nzzz\n")).is_err());
     // The packaged crate carries it: a word list the build reads and the archive
     // leaves out is a crate that does not compile from crates.io.
     let manifest = repo_file("crates/onevcs/Cargo.toml");
     assert!(manifest.contains("\"src/boundary/generic-words.txt\""));
+}
+
+/// Whether `list` is a version 2 generic-word list: its header, every entry matching
+/// `[a-z0-9]+(-[a-z0-9]+)*`, and the entries sorted and unique.
+fn generic_word_list_holds_its_format(list: &str) -> Result<(), String> {
+    let header = list.lines().next().unwrap_or_default();
+    if header != "# onevcs generic words, version 2" {
+        return Err(format!("the header is {header:?}"));
+    }
+    let words: Vec<&str> = list
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    if let Some(outside) = words.iter().find(|word| {
+        !word.split('-').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+    }) {
+        return Err(format!("{outside:?} is outside the entry pattern"));
+    }
+    if let Some(pair) = words.windows(2).find(|pair| pair[0] >= pair[1]) {
+        return Err(format!(
+            "{:?} then {:?} is not sorted and unique",
+            pair[0], pair[1]
+        ));
+    }
+    Ok(())
 }
 
 #[test]

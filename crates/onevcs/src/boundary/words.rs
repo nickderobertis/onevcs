@@ -2,10 +2,12 @@
 //!
 //! A repository called `docs`, or a package called `server`, would refuse every
 //! public write that used the word, so a name that is an ordinary English or software
-//! word is matched only as the fully qualified `owner/name`. The list is data rather
-//! than code — `generic-words.txt` beside this file, versioned by its own header — so
-//! it can grow without a change here, and the version it is at is part of what
-//! `docs/contract.md` states.
+//! word, or the conventional name of a test or tooling package such as `e2e` or
+//! `test-utils`, is matched only as the fully qualified `owner/name`. An entry narrows
+//! only the name equal to it as a whole, never a compound of entries. The list is data
+//! rather than code — `generic-words.txt` beside this file, versioned by its own header
+//! — so it can grow without a change here, and the version it is at and the format of
+//! its entries are part of what `docs/contract.md` states.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
