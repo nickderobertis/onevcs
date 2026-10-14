@@ -1,8 +1,11 @@
-# onevcs generic words, version 1
-# One lowercase word per line, sorted. A bare repository or package name on this list is
-# matched only as its fully qualified owner/name. Changing the list changes which names
-# narrow, so a change to it moves the version above and is stated in docs/contract.md.
+# onevcs generic words, version 2
+# One entry per line, sorted and unique: lowercase ASCII letters and digits, optionally
+# joined by single interior hyphens. A bare repository or package name equal to an entry
+# is matched only as its fully qualified owner/name; a compound is never generic because
+# its segments are. Changing the list changes which names narrow, so a change to it moves
+# the version above and is stated in docs/contract.md.
 a
+a11y
 abi
 abilities
 ability
@@ -16,6 +19,7 @@ abstract
 academic
 accept
 acceptable
+acceptance
 accepted
 accepting
 accepts
@@ -993,6 +997,7 @@ camped
 camping
 camps
 can
+canary
 cancel
 canceled
 canceling
@@ -1507,6 +1512,7 @@ confront
 confronted
 confronting
 confronts
+conftest
 confuse
 confused
 confuses
@@ -1830,6 +1836,7 @@ cycle
 cycled
 cycles
 cycling
+cypress
 d
 daemon
 daemons
@@ -2367,6 +2374,8 @@ dwarf
 dwarfs
 dynamic
 e
+e2e
+e2e-tests
 each
 eager
 eagle
@@ -2615,6 +2624,8 @@ escape
 escaped
 escapes
 escaping
+eslint
+eslint-config
 especially
 essay
 essays
@@ -2842,6 +2853,8 @@ fairy
 faith
 faithful
 faiths
+fake
+fakes
 fall
 fallback
 fallen
@@ -3319,6 +3332,7 @@ goes
 going
 gold
 golden
+goldens
 gone
 good
 goodbye
@@ -3486,6 +3500,7 @@ harmed
 harmful
 harming
 harms
+harness
 has
 hash
 hashes
@@ -3680,6 +3695,7 @@ husbands
 hypotheses
 hypothesis
 i
+i18n
 iam
 ice
 ices
@@ -3909,6 +3925,7 @@ instruments
 insurance
 insurances
 integration
+integration-tests
 integrations
 integrity
 intelligence
@@ -4032,6 +4049,7 @@ jars
 jeans
 jellyfish
 jellyfishes
+jest
 jewel
 jewels
 job
@@ -4078,6 +4096,7 @@ just
 justice
 jwt
 k
+k8s
 kata
 katas
 keen
@@ -4145,6 +4164,7 @@ known
 knows
 kv
 l
+l10n
 lab
 label
 labeled
@@ -4323,6 +4343,7 @@ linker
 linkers
 linking
 links
+lint
 linter
 linters
 lion
@@ -4359,6 +4380,8 @@ loader
 loaders
 loading
 loads
+loadtest
+loadtests
 loan
 loans
 lobster
@@ -4696,6 +4719,7 @@ mlops
 mmo
 mobile
 mobility
+mocha
 mock
 mocks
 modal
@@ -5424,6 +5448,7 @@ players
 playground
 playing
 plays
+playwright
 pleasant
 please
 pleased
@@ -5594,6 +5619,7 @@ pretend
 pretended
 pretending
 pretends
+prettier
 pretty
 prevent
 prevented
@@ -5725,8 +5751,10 @@ protest
 protested
 protesting
 protests
+proto
 protocol
 protocols
+protos
 prototype
 prototypes
 proud
@@ -5797,6 +5825,7 @@ putting
 puzzle
 puzzles
 pwa
+pytest
 q
 qa
 qualification
@@ -6019,6 +6048,7 @@ registering
 registers
 registries
 registry
+regression
 regressor
 regressors
 regret
@@ -6836,6 +6866,7 @@ snowed
 snowing
 snows
 so
+soak
 sober
 soccer
 soccers
@@ -7110,6 +7141,7 @@ storing
 storm
 storms
 story
+storybook
 stove
 stoves
 straight
@@ -7427,13 +7459,18 @@ terrible
 territories
 territory
 test
+test-helpers
+test-utils
 testbed
 testbench
+testdata
 tested
 testimonies
 testimony
 testing
+testkit
 tests
+testutils
 text
 textbook
 textbooks
@@ -7734,6 +7771,7 @@ truth
 truths
 try
 trying
+tsconfig
 tsv
 ttl
 tts
@@ -7969,6 +8007,7 @@ visualizers
 vital
 vitamin
 vitamins
+vitest
 vivid
 vm
 vms
@@ -8265,6 +8304,7 @@ wrote
 www
 x
 xml
+xtask
 y
 yaml
 yard
