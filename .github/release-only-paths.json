@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "changelogs": [
+    "CHANGELOG.md",
+    "crates/onevcs-testing/CHANGELOG.md"
+  ],
+  "semantic": [
+    "crates/onevcs/Cargo.toml",
+    "crates/onevcs-testing/Cargo.toml",
+    "Cargo.lock",
+    "compat/Cargo.lock"
+  ]
+}

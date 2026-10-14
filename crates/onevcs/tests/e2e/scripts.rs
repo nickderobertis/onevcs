@@ -1014,9 +1014,9 @@ fn a_script_the_macos_legs_run_still_reports_where_the_shell_has_no_bash_four_bu
     // `mapfile` is a bash 4 builtin, macOS ships bash 3.2, and a script that reaches
     // for one there aborts on that line — *before* the message it exists to print.
     // Which is how this repository's macOS job went red on a run every Linux job
-    // called green. `retry-install.sh` is the script most exposed to it: the verify
-    // legs of `release.yml` and `published-smoke.yml` run it on `macos-latest` and
-    // `macos-15-intel`, so that shell is where a red matrix leg is read from.
+    // called green. `retry-install.sh` is the script most exposed to it: the opt-in
+    // macOS diagnostic in `published-smoke.yml` runs it on `macos-latest`, so that
+    // shell is where a red diagnostic is read from.
     //
     // Proved by running the committed script in a shell that has neither builtin,
     // rather than by reading the script for them.

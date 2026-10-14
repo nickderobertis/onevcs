@@ -14,33 +14,14 @@ name: Release
 # workflow — a tag or release created by the default GITHUB_TOKEN triggers
 # nothing, and the release would silently ship no artifacts.
 #
-#   * test          — the complete deterministic gate, so untested artifacts never
-#                     publish.
-#   * upload        — build each target on a native runner and attach the archive
-#                     + sha256 checksum to the Release, for a direct download.
-#   * publish-crate — idempotent crates.io publish; self-activates the day
-#                     CARGO_REGISTRY_TOKEN is set.
-#   * build-wheels  — wrap the prebuilt binary in per-platform PyPI wheels with
-#                     maturin (the ruff/uv pattern). Runs unconditionally, so a
-#                     packaging break reddens the release even while publishing is
-#                     switched off.
-#   * publish-pypi  — upload those wheels to onevcs-cli with the PYPI_TOKEN
-#                     secret, gated on the PYPI_PUBLISH repo variable.
-#   * verify-pypi   — on Linux, both macOS architectures, and Windows,
-#                     pip-install the exact version just published and run
-#                     scripts/smoke-published.sh over it.
-#   * build-npm     — wrap the same prebuilt binary in per-platform npm packages
-#                     (onevcs-cli-<platform>-<arch>) via scripts/npm-build.mjs.
-#                     Unconditional, same rationale as the wheels.
-#   * publish-npm   — publish the platform packages, then the launcher that
-#                     depends on them, with the NPM_TOKEN secret, gated on the
-#                     NPM_PUBLISH repo variable.
-#   * verify-npm    — the same, on the same matrix, for `npm install -g`.
-#
-# Every verify job runs the version at publish time only. `published-smoke.yml`
-# runs the identical script against whatever the registries serve as `latest`,
-# triggered by this workflow completing, so a half-finished publish and rot that
-# sets in afterwards both surface without anyone looking.
+# Linux/Windows keep their existing archive, wheel and npm builds and registry
+# verification. build-darwin compiles the one macOS target, Apple Silicon, natively,
+# stages all three forms from that binary, and installs/runs the local wheel and
+# launcher before publish-pypi/publish-npm can proceed. Intel macOS is no longer
+# built: the launcher refuses it by name rather than resolving a missing package. upload-darwin only moves
+# its checked archives and checksums to the Release, from a Linux runner.
+# published-smoke.yml repeats registry verification on Linux/Windows after this
+# workflow completes; its Mac diagnostic is manual and defaults off.
 #
 # The version is never written here: every artifact takes it from
 # crates/onevcs/Cargo.toml (maturin via `dynamic = ["version"]`, npm via
@@ -54,7 +35,7 @@ name: Release
 # can be, by running on every real release, and everything they call that *can* be driven
 # locally is: scripts/smoke-published.sh runs over the compiled binary in
 # crates/onevcs/tests/e2e/smoke.rs, and the same install-then-smoke path runs on all
-# three platforms in ci.yml's `install` job.
+# three platforms through ci.yml's platform install jobs and macos-pr lane.
 #
 # llmlint: ignore-file[live_tier_compiles_and_requires_credential] the publish and verify
 # jobs are deliberately switched by the PYPI_PUBLISH / NPM_PUBLISH repository variables,
@@ -68,7 +49,7 @@ name: Release
 
 on:
   release:
-    types: [published]
+    types: [ published ]
 
 # Nothing by default: the jobs that read the repository ask for `contents: read`
 # themselves, and the ones that only move artifacts between jobs or install from a
@@ -139,15 +120,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native runners per target so nothing needs cross-compilation.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -177,7 +153,7 @@ jobs:
   # Kept out of release-plz (publish = false there) so versioning/tagging stays
   # decoupled from the registry push.
   publish-crate:
-    needs: [guard, test]
+    needs: [ guard, test ]
     if: ${{ needs.guard.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -213,15 +189,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Mirrors the binary `upload` matrix: native runners per target.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -249,7 +220,9 @@ jobs:
   # Trusted Publishing: this project publishes with repo secrets, so no OIDC
   # identity is registered on PyPI and `id-token: write` would buy nothing.
   publish-pypi:
-    needs: build-wheels
+    needs:
+      - build-wheels
+      - build-darwin
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -285,12 +258,9 @@ jobs:
   # runs against the build under test, so what a release asserts cannot drift from
   # what ships.
   #
-  # Four legs for five targets: `pip install` resolves a *different wheel* per
-  # platform AND architecture, so the matrix is keyed on the pair, not the OS.
-  # `macos-latest` is arm64 — `macos-15-intel` is the leg that installs the
-  # `x86_64-apple-darwin` wheel. The one target with no leg is
-  # `aarch64-unknown-linux-gnu`: setup-python's arm64 Linux support is not
-  # something a release is the place to discover.
+  # Darwin installs run locally in build-darwin before publication. The remaining
+  # registry probes retain Linux/Windows coverage. ARM Linux keeps its existing
+  # build coverage without adding a setup-python registry-install leg.
   verify-pypi:
     name: verify-pypi (${{ matrix.os }})
     needs: publish-pypi
@@ -300,7 +270,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+        os:
+          - ubuntu-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -361,10 +333,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -399,13 +367,26 @@ jobs:
         with:
           name: npm-${{ matrix.target }}
           path: npm-artifacts/*.tgz
+      - uses: actions/setup-python@v5
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-just
+        if: matrix.os == 'ubuntu-latest'
+      - name: Native packaging journey before publication
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTFLAGS: -D warnings
+        run: just release-packaging
 
   # npm publishing activates when the NPM_PUBLISH repository variable is 'true'.
   # `registry-url` makes setup-node write an .npmrc that authenticates with
   # NODE_AUTH_TOKEN, so `npm publish` is token-authenticated (an npm automation
   # token with publish rights to onevcs-cli and its platform packages).
   publish-npm:
-    needs: build-npm
+    needs:
+      - build-npm
+      - build-darwin
     permissions:
       contents: read
     if: ${{ vars.NPM_PUBLISH == 'true' }}
@@ -467,7 +448,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+        os:
+          - ubuntu-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -500,3 +483,54 @@ jobs:
           bash scripts/smoke-published.sh \
             --expect-version "$ver" \
             --label "npm onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH"
+  build-darwin:
+    env:
+      DARWIN_TARGETS: aarch64-apple-darwin
+    needs: test
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the Apple Silicon binary once; package and run before publication
+        env:
+          RUSTFLAGS: -D warnings
+        run: |-
+          bash scripts/release-darwin.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives-aarch64-apple-darwin
+          path: dist/aarch64-apple-darwin/archives/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-aarch64-apple-darwin
+          path: dist/aarch64-apple-darwin/wheels/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-aarch64-apple-darwin
+          path: dist/aarch64-apple-darwin/npm/*.tgz
+          if-no-files-found: error
+  upload-darwin:
+    needs: build-darwin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archives-*
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" dist/* --repo "$REPO" --clobber

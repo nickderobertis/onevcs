@@ -2,15 +2,57 @@
   "name": "onevcs-scripts-e2e",
   "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
-  "tags": ["scope:e2e", "lang:rust"],
-  "implicitDependencies": ["onevcs"],
+  "tags": [
+    "scope:e2e",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "onevcs"
+  ],
   "targets": {
     "test": {
       "command": "just _scripts-e2e-test",
-      "inputs": ["scriptsSuiteInputs"],
-      "outputs": ["{workspaceRoot}/target/coverage/onevcs-scripts-e2e.profdata"]
+      "inputs": [
+        "scriptsSuiteInputs"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/onevcs-scripts-e2e.profdata"
+      ]
     },
-    "test-quick": { "command": "just _scripts-e2e-test-quick", "inputs": ["scriptsSuiteInputs"] },
-    "check": { "executor": "nx:noop", "dependsOn": ["test"] }
+    "test-quick": {
+      "command": "just _scripts-e2e-test-quick",
+      "inputs": [
+        "scriptsSuiteInputs"
+      ]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test"
+      ]
+    },
+    "release-packaging": {
+      "command": "bash scripts/release-native-journey.sh",
+      "cache": false,
+      "inputs": [
+        "{workspaceRoot}/scripts/release-{native-journey,stage,archive,payload-check,local-install}.*",
+        "{workspaceRoot}/scripts/npm-build.mjs",
+        "{workspaceRoot}/scripts/smoke-published.sh",
+        "{workspaceRoot}/npm/onevcs/**/*",
+        "{workspaceRoot}/pyproject.toml",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs/build.rs",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/rust-toolchain.toml",
+        "{workspaceRoot}/README.md",
+        "{workspaceRoot}/LICENSE",
+        "{workspaceRoot}/CHANGELOG.md",
+        "{workspaceRoot}/scripts/release_inputs.py",
+        "{workspaceRoot}/scripts/release-wheel-binary.py",
+        "{workspaceRoot}/.github/workflows/release.yml"
+      ]
+    }
   }
 }

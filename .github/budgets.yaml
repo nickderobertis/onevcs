@@ -1,0 +1,28 @@
+schema_version: 1
+budgets:
+  # The brief explicitly requests both jobs/run and Mac-spending runs/change bounds;
+  # the manager approved separate budgets for these two scheduling constraints.
+  - id: onevcs-macos-jobs-per-run
+    measure: reported
+    command: [bash, -c, 'cd .. && exec node .github/macos-budget.mjs --metric jobs-per-run --telemetry .github/.telemetry/macos-policy.json']
+    unit: jobs
+    direction: max
+    threshold: 1
+    description: >-
+      Maximum resolved Mac job instances per workflow run, measured from offline
+      workflow telemetry. Separate scheduling bounds are explicitly approved by
+      the manager. Inner measure reason: one run can occupy several shared Mac
+      slots even when the lifecycle run count stays within its bound.
+  # The brief explicitly requests both jobs/run and Mac-spending runs/change bounds;
+  # the manager approved separate budgets for these two scheduling constraints.
+  - id: onevcs-macos-runs-per-change
+    measure: reported
+    command: [bash, -c, 'cd .. && exec node .github/macos-budget.mjs --metric runs-per-change --telemetry .github/.telemetry/macos-policy.json']
+    unit: runs
+    direction: max
+    threshold: 2
+    description: >-
+      Maximum Mac-spending runs in the complete automatic single-push lifecycle,
+      measured from offline workflow telemetry; manual diagnostics are excluded.
+      The brief explicitly requests both jobs/run and Mac-spending runs/change
+      bounds; the manager approved separate budgets for these constraints.

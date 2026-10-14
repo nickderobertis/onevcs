@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "target": "aarch64-apple-darwin",
+  "version": "0.0.0",
+  "archive_payload_sha256": "d517817a5179760e8de894e72cf816459159bd375a6b99e04948c71de9e37a00",
+  "wheel_payload_sha256": "d517817a5179760e8de894e72cf816459159bd375a6b99e04948c71de9e37a00",
+  "npm_payload_sha256": "d517817a5179760e8de894e72cf816459159bd375a6b99e04948c71de9e37a00"
+}

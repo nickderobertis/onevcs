@@ -8,7 +8,7 @@ name: CI
 # that tells the two apart. The live tier is not here at all: smoke.yml.
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
 # Least privilege: most jobs only need to read the repo.
@@ -39,6 +39,7 @@ jobs:
     outputs:
       rust: ${{ steps.affected.outputs.rust }}
       tier: ${{ steps.tier.outputs.tier }}
+      macos_required: ${{ steps.macos.outputs.macos_required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,6 +60,14 @@ jobs:
       - name: Which gate tier this commit owes
         id: tier
         run: echo "tier=$(just ci-tier select)" >> "$GITHUB_OUTPUT"
+      - name: Classify Mac coverage
+        id: macos
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |-
+          policy="$(node .github/macos-policy.mjs classify --event "$GITHUB_EVENT_PATH" --base "$BASE" --head "$HEAD")"
+          echo "macos_required=$(node -e 'console.log(JSON.parse(process.argv[1]).macosRequired)' "$policy")" >> "$GITHUB_OUTPUT"
 
   # The gate on a clean checkout: bootstrap from scratch, then the deterministic
   # gate (format, clippy, every test tier, the coverage threshold over their
@@ -97,21 +106,20 @@ jobs:
       - name: Committed generated files are up to date
         run: git diff --exit-code -- Cargo.lock package-lock.json
 
-  # Prove the artifact builds and its tests pass on macOS and Windows (without the
-  # coverage threshold, which is enforced on Linux).
+  # Windows keeps its own cross-platform proof. macos-pr combines the former
+  # cross/install assertions sequentially; the Linux carriers retain their names.
   cross:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -124,6 +132,7 @@ jobs:
         run: just bootstrap
       - name: Quality gate (format, lint, every offline tier)
         run: just check-quick
+    name: cross (windows-latest)
 
   # The declared MSRV is a promise to consumers, so prove it rather than document
   # it: a floor that only lives in Cargo.toml drifts the first time a dependency
@@ -239,46 +248,17 @@ jobs:
         # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] The task explicitly requires this release-only workload after the quality gate. Check graphs contain no workload task (proved by graph.rs), so this runs the disjoint performance journey and budget, not a second sweep of any already-gated check.
         run: just workload
 
-  # Prove the end-user install path on every platform: install the binary the
-  # documented way and smoke-test the real artifact with the same script the
-  # release verify jobs run against PyPI and npm. `cargo install --path` is the
-  # same code path as the documented `cargo install onevcs`, minus the registry
-  # fetch — so the path users take is exercised on every PR, not only after a
-  # release.
-  install:
-    needs: [changes, gate]
-    if: needs.changes.outputs.rust == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      # On a PR the change is not on the remote yet, so `--path` is the only way to
-      # install *this* revision.
-      - name: Install (this revision)
-        run: cargo install --path crates/onevcs --locked
-      - name: Smoke-test the installed binary
-        run: |
-          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
-          bash scripts/smoke-published.sh \
-            --expect-version "$version" \
-            --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
-
   # The README's install one-liner, run verbatim. It can only resolve code that is
   # already on the remote, so it runs on main rather than on PRs — where the
-  # `install` job above proves the same path against the branch's own revision.
+  # platform install proofs here exercise the branch's own revision.
   install-documented:
     if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os:
+          - ubuntu-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -288,7 +268,8 @@ jobs:
       # Named explicitly: the repository root is a virtual workspace manifest, so
       # `cargo install --git` has to be told which package to build.
       - name: Install (the command the README gives users)
-        run: cargo install --git https://github.com/nickderobertis/onevcs onevcs --locked
+        run: cargo install --git https://github.com/nickderobertis/onevcs onevcs
+          --locked
       - name: Smoke-test the installed binary
         run: |
           onevcs --version
@@ -355,3 +336,128 @@ jobs:
             exit 1
           fi
           just lint-llm-diff origin/main
+  macos-pr:
+    needs:
+      - changes
+      - gate
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.macos_required ==
+      'true'
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: ./.github/actions/setup-just
+      - name: Bootstrap
+        run: just bootstrap
+      - name: Quality gate (format, lint, every offline tier)
+        # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] This is the baseline macOS lane's own check, kept verbatim because Linux cannot prove macOS-native behaviour; it waits on gate as the old macOS install lane did.
+        run: just check-quick
+      - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo install --path crates/onevcs --locked
+      - name: Smoke-test the installed binary
+        run: |
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
+          bash scripts/smoke-published.sh \
+            --expect-version "$version" \
+            --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
+      - name: Documented git install at this revision
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |-
+          cargo install --git "file://$GITHUB_WORKSPACE" --rev "$(git rev-parse HEAD)" onevcs --locked --force
+          onevcs --version
+          onevcs --help >/dev/null
+  cross-macos:
+    name: cross (macos-latest)
+    needs:
+      - changes
+      - macos-pr
+      - gate
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Report Mac proof or authorized omission
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/required-result.mjs cross "$NEEDS"
+  install-macos:
+    name: install (macos-latest)
+    needs:
+      - changes
+      - macos-pr
+      - gate
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Report Mac proof or authorized omission
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/required-result.mjs install "$NEEDS"
+  install-ubuntu:
+    needs:
+      - changes
+      - gate
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo install --path crates/onevcs --locked
+      - name: Smoke-test the installed binary
+        run: |
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
+          bash scripts/smoke-published.sh \
+            --expect-version "$version" \
+            --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
+    name: install (ubuntu-latest)
+  install-windows:
+    needs:
+      - changes
+      - gate
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Install (this revision)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo install --path crates/onevcs --locked
+      - name: Smoke-test the installed binary
+        run: |
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
+          bash scripts/smoke-published.sh \
+            --expect-version "$version" \
+            --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
+    name: install (windows-latest)

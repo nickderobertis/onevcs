@@ -305,8 +305,9 @@ npm install -g onevcs-cli # a prebuilt binary, no Rust toolchain
 ```
 
 All three install the same `onevcs` binary. Prebuilt binaries exist for Linux
-(x64, arm64), macOS (x64, arm64), and Windows (x64); every release also attaches
-the archives and their `.sha256` checksums for a direct download.
+(x64, arm64), macOS on Apple Silicon (arm64), and Windows (x64); every release also
+attaches the archives and their `.sha256` checksums for a direct download. Intel
+macOS binaries are no longer published — `cargo install onevcs` builds one there.
 
 ## Use
 

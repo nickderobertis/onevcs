@@ -153,7 +153,13 @@ fn npm_install(scratch: &Path, with_platform_package: bool) -> PathBuf {
 /// own would be a test mutating the host it runs on, which this suite has already
 /// done once — see `tests/e2e/state_root.rs`, whose guard is why there is one
 /// spawn helper in this file rather than several.
-fn run_installed(project: &Path, argv: &[&str]) -> std::process::Output {
+///
+/// `env` is extra environment for the launcher's own Node process.
+fn run_installed(
+    project: &Path,
+    argv: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> std::process::Output {
     let home = project
         .parent()
         .expect("the project was installed inside a scratch directory")
@@ -162,6 +168,7 @@ fn run_installed(project: &Path, argv: &[&str]) -> std::process::Output {
     Command::new(project.join("node_modules/.bin").join(INSTALLED_COMMAND))
         .args(argv)
         .env("ONEVCS_HOME", &home)
+        .envs(env.iter().copied())
         // A caller runs the command from wherever they are, not from the project
         // it was installed into.
         .current_dir(workspace_root())
@@ -174,7 +181,7 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let project = npm_install(scratch.path(), true);
 
-    let version = run_installed(&project, &["--version"]);
+    let version = run_installed(&project, &["--version"], &[]);
     assert!(version.status.success(), "{version:?}");
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
@@ -185,14 +192,14 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     // The exit code a caller depends on has to survive the launcher's spawn, and so
     // does a command that actually does something: `repos` reads the state root and
     // reports what it found.
-    let listed = run_installed(&project, &["repos"]);
+    let listed = run_installed(&project, &["repos"], &[]);
     assert!(listed.status.success(), "{listed:?}");
     assert!(
         !String::from_utf8_lossy(&listed.stdout).trim().is_empty(),
         "{listed:?}"
     );
 
-    let refused = run_installed(&project, &["resolve", "nothing-is-registered-as-this"]);
+    let refused = run_installed(&project, &["resolve", "nothing-is-registered-as-this"], &[]);
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("not a registered repository"),
@@ -200,7 +207,7 @@ fn the_installed_npm_command_runs_the_binary_its_platform_package_carries() {
     );
 
     // And so does a usage error, which is a different code from a different layer.
-    let misused = run_installed(&project, &["teleport"]);
+    let misused = run_installed(&project, &["teleport"], &[]);
     assert_eq!(misused.status.code(), Some(2), "{misused:?}");
 }
 
@@ -209,7 +216,7 @@ fn an_install_that_omitted_optional_dependencies_says_what_to_do() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let project = npm_install(scratch.path(), false);
 
-    let missing = run_installed(&project, &["--version"]);
+    let missing = run_installed(&project, &["--version"], &[]);
     assert_eq!(missing.status.code(), Some(1), "{missing:?}");
 
     let stderr = String::from_utf8_lossy(&missing.stderr);
@@ -224,6 +231,44 @@ fn an_install_that_omitted_optional_dependencies_says_what_to_do() {
     assert!(
         stderr.contains("pip install onevcs-cli") && stderr.contains("cargo install onevcs"),
         "the launcher must offer the install paths that do work:\n{stderr}"
+    );
+}
+
+#[test]
+fn an_intel_mac_is_refused_by_name_rather_than_sent_after_a_missing_package() {
+    // Intel macOS binaries are discontinued, so no platform package exists for it
+    // and npm installs the launcher alone — exactly the `--omit=optional` tree.
+    // The launcher reads its host from Node, and this host is not an Intel Mac, so
+    // Node's report of the host is the one thing doubled: a preload sets
+    // `process.platform` and `process.arch` before the launcher runs.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let project = npm_install(scratch.path(), false);
+    let preload = scratch.path().join("intel-mac.cjs");
+    // llmlint: ignore-block[e2e_not_mocked,tests_mirror_real_usage] The only real Intel macOS host is a GitHub Intel runner, which is exactly the Mac capacity this repository stopped spending and the platform it stopped shipping. Everything else is real — the packed launcher, the npm install, the installed command, its exit code and stderr; only Node's report of the host, a third-party boundary, is doubled.
+    std::fs::write(
+        &preload,
+        "Object.defineProperty(process, 'platform', { value: 'darwin' });\n\
+         Object.defineProperty(process, 'arch', { value: 'x64' });\n",
+    )
+    .expect("the host preload");
+    let mut options = std::ffi::OsString::from("--require=");
+    options.push(&preload);
+
+    let refused = run_installed(&project, &["--version"], &[("NODE_OPTIONS", &options)]);
+    // llmlint: ignore-end[e2e_not_mocked,tests_mirror_real_usage]
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("Intel macOS is no longer supported"),
+        "the launcher must say Intel macOS is unsupported:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Apple Silicon") && stderr.contains("cargo install onevcs"),
+        "the launcher must name what is supported and the install that still works:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("is not installed") && !stderr.contains("pip install"),
+        "the launcher must not send an Intel Mac after a package or wheel that does not exist:\n{stderr}"
     );
 }
 

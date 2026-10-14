@@ -260,7 +260,7 @@ not tell you:
   `HOME` and no credential, so it reads public registries and nothing else, and an
   identifier it does not recognise is *not answered* rather than empty — a `covers`
   entry included, because that is what makes something covered not a wait. And the
-  five per-platform npm packages are not targets: they exist only for the launcher
+  four per-platform npm packages are not targets: they exist only for the launcher
   to resolve at its own exact version, so `npm:onevcs-cli` is the whole wait and
   they are its `covers` list. `tests/contract.rs` derives what this repository
   publishes from the release workflow and the manifests and holds the declaration to
