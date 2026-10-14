@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.19.1...onevcs-testing-v0.19.2) - 2026-10-14
+
+### Fixed
+
+- *(boundary)* narrow conventional test and tooling package names ([#407](https://github.com/nickderobertis/onevcs/pull/407))
+
 ## [0.19.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.18.2...onevcs-testing-v0.19.0) - 2026-10-13
 
 ### Added
