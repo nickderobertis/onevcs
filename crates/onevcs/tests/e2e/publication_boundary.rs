@@ -1381,7 +1381,7 @@ fn a_conventional_test_package_name_publishes_and_a_distinctive_one_beside_it_do
     ] {
         let (token, worktree) = host.session(branch);
         write(&worktree, "crates/sample/tests/e2e/new_case.rs", content);
-        commit(&host.world, &worktree, "test: add an e2e case");
+        commit(&host.world, &worktree, "test: add a new case");
         let before = host.origin_refs();
         // The conventional change opened the first change request.
         let request = host.world.path("gh-state/pr-2.env");
