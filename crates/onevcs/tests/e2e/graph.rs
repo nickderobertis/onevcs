@@ -142,6 +142,11 @@ impl Checkout {
         ] {
             command.env_remove(variable);
         }
+        // No daemon, as `scripts/nx.sh` runs Nx: a journey that calls `npx nx`
+        // directly would otherwise leave one resident per throwaway copy, and a daemon
+        // that cannot get a file watcher (a host out of inotify instances) fails the
+        // project graph outright.
+        command.env("NX_DAEMON", "false");
         command
     }
 
