@@ -213,7 +213,7 @@ _audit-test:
 # `scripts-suites` are the `e2e` modules whose subject is this repository's own
 # scripts, packaging, workflows and project graph rather than the crate: they read
 # `scripts/`, `npm/` and `.github/`, so they are the tier a change there reaches.
-scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root)::/)"
+scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root|pool_maintenance)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
 unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload) | binary(pool-workload))"

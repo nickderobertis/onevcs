@@ -193,6 +193,10 @@ mod llmlint_cache;
 #[cfg(unix)]
 mod open_conflict;
 mod packaging;
+// Unix only: it runs this repository's bash measurement script over a one-crate slot.
+// Its own header carries the reason.
+#[cfg(unix)]
+mod pool_maintenance;
 // Unix only: real slots under a real state root, cut and returned through the binary,
 // with the typed surface's in-process journeys at its end; its own header carries the
 // reason.

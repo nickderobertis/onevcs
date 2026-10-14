@@ -20,14 +20,16 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 1
 
-# The pruner reports to whatever file ONEBUDGETSPEC_RESULT names, so only pass (d)
-# may see it: the backlog pass is evidence, never the figure.
-result="${ONEBUDGETSPEC_RESULT-}"
-unset ONEBUDGETSPEC_RESULT
-
 profile="target/debug"
 records="target/budget-records/pool-maintenance"
 mkdir -p "$records"
+
+# The pruner reports to whatever file ONEBUDGETSPEC_RESULT names, so only pass (d)
+# may see it: the backlog pass is evidence, never the figure. Run by hand, with no
+# budget check asking, the report goes to the records instead.
+result="${ONEBUDGETSPEC_RESULT:-$records/result.json}"
+unset ONEBUDGETSPEC_RESULT
+: >"$result"
 
 fail() {
   echo "measure.sh: $1" >&2
@@ -35,8 +37,10 @@ fail() {
   exit 1
 }
 
-command -v cargo-prune-superseded >/dev/null 2>&1 \
-  || fail "cargo-prune-superseded is not on PATH" "run 'just bootstrap', then retry"
+for tool in cargo-prune-superseded just node cargo-nextest; do
+  command -v "$tool" >/dev/null 2>&1 \
+    || fail "$tool is not on PATH" "run 'just bootstrap', then retry"
+done
 
 # Every build entry the pruner selects among, one per line: the profile's
 # `deps/`, `.fingerprint/`, `build/` and `incremental/` children.
@@ -52,7 +56,8 @@ seconds() { date +%s.%N; }
 
 # (a) Clear the backlog, untimed as far as the figure goes.
 started="$(seconds)"
-just pool-maintenance >&2
+just pool-maintenance >&2 \
+  || fail "the untimed backlog pass of 'just pool-maintenance' failed" "run 'just pool-maintenance' in $root and read its error"
 backlog="$(awk -v a="$started" -v b="$(seconds)" 'BEGIN { printf "%.3f", b - a }')"
 
 # (b) This repository's own packages, read from the workspace rather than listed.
@@ -67,8 +72,13 @@ done <<<"$packages"
 entries >"$records/before-alternative.txt"
 # The oldest entry the ordinary build may still be using, so the backdated builds
 # are older than it and the ordinary build stays each unit's newest.
-oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
-cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2
+# A slot that has never built has none.
+oldest=""
+if [ -d "$profile" ]; then
+  oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
+fi
+cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2 \
+  || fail "the alternative test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
 entries >"$records/after-alternative.txt"
 LC_ALL=C comm -13 "$records/before-alternative.txt" "$records/after-alternative.txt" >"$records/alternative.txt"
 [ -s "$records/alternative.txt" ] \
@@ -84,15 +94,15 @@ while IFS= read -r entry; do
 done <"$records/alternative.txt"
 
 # (c) The ordinary gate test build: the one each unit's newest build comes from.
-cargo nextest run --workspace --locked --no-run >&2
+cargo nextest run --workspace --locked --no-run >&2 \
+  || fail "the ordinary test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
 entries >"$records/before-pass.txt"
 
 # (d) The timed pass, which alone reports the figure.
-if [ -n "$result" ]; then
-  ONEBUDGETSPEC_RESULT="$result" just pool-maintenance >&2
-else
-  just pool-maintenance >&2
-fi
+ONEBUDGETSPEC_RESULT="$result" just pool-maintenance >&2 \
+  || fail "the timed pass of 'just pool-maintenance' failed" "run 'just pool-maintenance' in $root and read its error"
+[ -s "$result" ] \
+  || fail "the timed pass wrote no onebudgetspec report to $result" "check that the installed cargo-prune-superseded is the release the justfile pins ('just bootstrap')"
 entries >"$records/after-pass.txt"
 
 LC_ALL=C comm -23 "$records/before-pass.txt" "$records/after-pass.txt" >"$records/removed.txt"
@@ -110,12 +120,12 @@ lost="$(LC_ALL=C comm -23 "$records/ordinary.txt" "$records/after-pass.txt")"
 echo "measure.sh: removed $(wc -l <"$records/removed.txt") entries, every one the alternative build's; kept all $(wc -l <"$records/ordinary.txt") of the ordinary build's (lists in $records/)" >&2
 
 # The backlog pass's seconds join the pruner's own detail as separate evidence.
-if [ -n "$result" ]; then
-  BACKLOG="$backlog" node -e '
-    const fs = require("fs");
-    const path = process.argv[1];
-    const reported = JSON.parse(fs.readFileSync(path, "utf8"));
-    reported.detail = `${reported.detail ?? ""}; untimed backlog pass seconds (not counted): ${process.env.BACKLOG}`;
-    fs.writeFileSync(path, JSON.stringify(reported));
-  ' "$result"
-fi
+# shellcheck disable=SC2016 # the single-quoted program is JavaScript, expanded by node, not bash
+BACKLOG="$backlog" node -e '
+  const fs = require("fs");
+  const path = process.argv[1];
+  const reported = JSON.parse(fs.readFileSync(path, "utf8"));
+  reported.detail = `${reported.detail ?? ""}; untimed backlog pass seconds (not counted): ${process.env.BACKLOG}`;
+  fs.writeFileSync(path, JSON.stringify(reported));
+  console.error(`measure.sh: timed pass ${reported.value} seconds (${reported.detail})`);
+' "$result" || fail "the pruner's report at $result is not the onebudgetspec JSON it should be" "read $result and the installed cargo-prune-superseded's version"
