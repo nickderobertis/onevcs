@@ -62,7 +62,8 @@ backlog="$(awk -v a="$started" -v b="$(seconds)" 'BEGIN { printf "%.3f", b - a }
 
 # (b) This repository's own packages, read from the workspace rather than listed.
 packages="$(cargo metadata --no-deps --format-version 1 --locked \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).packages.map(p=>p.name).join("\n")))')"
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).packages.map(p=>p.name).join("\n")))')" \
+  || fail "cargo metadata could not read this workspace" "run 'cargo metadata --no-deps --locked' in $root and read its error"
 [ -n "$packages" ] || fail "cargo metadata named no workspace package" "run 'cargo metadata --no-deps' in $root and read its error"
 alternative=()
 while IFS= read -r package; do
