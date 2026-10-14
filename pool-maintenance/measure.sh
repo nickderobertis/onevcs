@@ -67,7 +67,7 @@ done <<<"$packages"
 entries >"$records/before-alternative.txt"
 # The oldest entry the ordinary build may still be using, so the backdated builds
 # are older than it and the ordinary build stays each unit's newest.
-oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' 2>/dev/null | sort -n | head -n1)"
+oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
 cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2
 entries >"$records/after-alternative.txt"
 LC_ALL=C comm -13 "$records/before-alternative.txt" "$records/after-alternative.txt" >"$records/alternative.txt"

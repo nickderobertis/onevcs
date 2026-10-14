@@ -74,10 +74,20 @@ impl Checkout {
         self.commit(&format!("change {paths:?}"));
     }
 
-    /// Append one line to a file, in the comment syntax its kind reads as inert.
+    /// Append one line to a file, in the comment syntax its kind reads as inert. A
+    /// JSON file Nx reads takes a comment inside its root object, since none may
+    /// follow it.
     fn append(&self, relative: &str) {
         use std::io::Write;
 
+        if relative.ends_with(".json") {
+            let path = self.root.join(relative);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{relative} is in the copy: {e}"));
+            std::fs::write(&path, text.replacen("{\n", "{\n  // a change\n", 1))
+                .expect("the copy is writable");
+            return;
+        }
         let line = if relative.ends_with(".rs") || relative.ends_with(".js") {
             "// a change\n"
         } else if relative.ends_with(".md") {
@@ -525,5 +535,105 @@ fn pool_workload_is_absent_from_every_check_graph_and_present_only_when_requeste
     assert_eq!(
         projects_running(&workloads, "workload"),
         set(&["onevcs-pool-workload"])
+    );
+}
+
+#[test]
+fn pool_maintenance_budget_is_absent_from_every_per_change_graph_and_run_by_the_release_sweep() {
+    // The measurement builds the repository twice, so no per-change path may reach
+    // it: neither `check` over every project, nor the cross-platform tier, nor the
+    // affected run over a change to the crate, the measurement or the project graph.
+    let pool = |tasks: &BTreeSet<String>| -> BTreeSet<String> {
+        tasks
+            .iter()
+            .filter(|task| task.starts_with("pool-maintenance:"))
+            .cloned()
+            .collect()
+    };
+    let checkout = Checkout::new();
+    for program in [
+        &["npx", "nx", "run-many", "-t", "check"][..],
+        &[
+            "npx",
+            "nx",
+            "run-many",
+            "-t",
+            "format-check,lint,test-quick",
+        ][..],
+    ] {
+        let tasks = checkout.selected(program, &[]);
+        assert!(pool(&tasks).is_empty(), "{program:?} selected {tasks:?}");
+    }
+    for (branch, path) in [
+        ("source-only", "crates/onevcs/src/lib.rs"),
+        ("measurement-only", "pool-maintenance/measure.sh"),
+        ("budget-only", "pool-maintenance/budgets.yaml"),
+        ("project-only", "pool-maintenance/project.json"),
+        ("declaration-only", "onevcs.toml"),
+        ("graph-only", "nx.json"),
+    ] {
+        checkout.branch_changing(branch, &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "check"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert!(
+            pool(&tasks).is_empty(),
+            "a change to {path} selected {tasks:?}"
+        );
+    }
+
+    // Asked for by name, the recipe the release sweep runs selects the measurement.
+    let requested = checkout.selected(&["npx", "nx", "run", "pool-maintenance:budgets-host"], &[]);
+    assert_eq!(requested, set(&["pool-maintenance:budgets-host"]));
+    let recipe = checkout
+        .just(&["--dry-run", "pool-maintenance-budget"], &[])
+        .stderr;
+    assert!(
+        recipe.contains("run pool-maintenance:budgets-host"),
+        "the recipe runs the project's budget check:\n{recipe}"
+    );
+
+    // And the release sweep runs that recipe after its quality gate, and is the only
+    // CI job that does.
+    let workflow: serde_json::Value = serde_saphyr::from_str(
+        &std::fs::read_to_string(checkout.root.join(".github/workflows/ci.yml"))
+            .expect("CI's workflow is in the copy"),
+    )
+    .expect("CI's workflow is YAML");
+    let jobs = workflow["jobs"].as_object().expect("the workflow has jobs");
+    let runs = |job: &serde_json::Value| -> Vec<String> {
+        job["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step["run"].as_str().map(str::trim).map(str::to_owned))
+            .collect()
+    };
+    let budgeted: Vec<&String> = jobs
+        .iter()
+        .filter(|(_, job)| {
+            runs(job)
+                .iter()
+                .any(|run| run == "just pool-maintenance-budget")
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(budgeted, ["sweep"], "jobs running the budget: {budgeted:?}");
+    let sweep = runs(&jobs["sweep"]);
+    let gate = sweep
+        .iter()
+        .position(|run| run == "just ci-tier run -t check");
+    let budget = sweep
+        .iter()
+        .position(|run| run == "just pool-maintenance-budget");
+    assert!(
+        matches!((gate, budget), (Some(gate), Some(budget)) if gate < budget),
+        "the sweep runs its gate, then the budget: {sweep:?}"
+    );
+    assert_eq!(
+        jobs["sweep"]["if"].as_str(),
+        Some("needs.changes.outputs.tier == 'sweep'"),
+        "the sweep is the release pull request's alone"
     );
 }
