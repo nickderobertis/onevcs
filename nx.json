@@ -42,7 +42,8 @@
       "{workspaceRoot}/llmlint.yml",
       "{workspaceRoot}/oneharness.toml",
       "{workspaceRoot}/shots/baseline/**/*",
-      "{workspaceRoot}/docs/screenshots/**/*"
+      "{workspaceRoot}/docs/screenshots/**/*",
+      "{workspaceRoot}/pool-maintenance/**/*"
     ],
     "contractInputs": [
       "crateSource",
@@ -82,6 +83,10 @@
     "test-quick": { "cache": true, "parallelism": false, "inputs": ["crateSource"] },
     "coverage": { "cache": true, "parallelism": false },
     "check": { "cache": false, "dependsOn": ["format-check", "lint", "test", "doc"] },
+    // A project's budgets: `budgets` the deterministic ones, `budgets-host` those
+    // labelled `host`, which read the host's clock and are never replayed.
+    "budgets": { "cache": false },
+    "budgets-host": { "cache": false },
     "lint-llm-diff": {
       "cache": true,
       "outputs": ["{workspaceRoot}/.logs/lint-llm-diff.log"],

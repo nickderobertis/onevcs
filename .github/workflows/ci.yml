@@ -247,6 +247,9 @@ jobs:
       - name: Host-sized workloads
         # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] The task explicitly requires this release-only workload after the quality gate. Check graphs contain no workload task (proved by graph.rs), so this runs the disjoint performance journey and budget, not a second sweep of any already-gated check.
         run: just workload
+      - name: Pool maintenance pass time
+        # llmlint: ignore[no_second_broader_sweep_over_an_already_gated_commit] The task requires this release-only budget after the quality gate. It builds the repository twice to time one steady-state pruning pass, and no check graph contains it (proved by graph.rs), so it is the disjoint maintenance measurement rather than a second sweep of any already-gated check.
+        run: just pool-maintenance-budget
 
   # The README's install one-liner, run verbatim. It can only resolve code that is
   # already on the remote, so it runs on main rather than on PRs — where the
