@@ -576,8 +576,16 @@ fn what_a_listing_read_answers_one_read_and_any_write_to_the_change_request_forg
     };
     let views = |from: usize| reads_since(&hosted, from).views;
 
-    // Each field answers one read from the listing; the second read of it asks.
+    // A clone of the host is the same host with nothing read in passing: it asks,
+    // and the original's listing still answers the original once.
     let change = listed(&host);
+    let before = hosted.world.host_calls().len();
+    let cloned = host.clone();
+    assert_eq!(cloned, host, "a host is its repository");
+    assert!(cloned.is_draft(&change).expect("draft state"));
+    assert_eq!(views(before), 1, "the clone asked");
+
+    // Each field answers one read from the listing; the second read of it asks.
     let before = hosted.world.host_calls().len();
     assert!(host.is_draft(&change).expect("draft state"));
     assert_eq!(
