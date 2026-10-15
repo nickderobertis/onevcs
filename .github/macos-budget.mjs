@@ -29,13 +29,19 @@ try {
         );
     if (
         !record.scenarios.every((s) => object(s) && Array.isArray(s.rows)) ||
-        !record.lifecycles.every((l) => object(l) && Array.isArray(l.spending))
+        !record.lifecycles.every(
+            (l) =>
+                object(l) &&
+                Array.isArray(l.spending) &&
+                Array.isArray(l.events) &&
+                Array.isArray(l.workflow_runs),
+        )
     )
         throw new Error(
-            "telemetry scenario rows and lifecycle spending must be arrays",
+            "telemetry scenario rows and lifecycle events/runs/spending must be arrays",
         );
     if (
-        record.schema_version !== 1 ||
+        record.schema_version !== 2 ||
         record.source_digest !== sourceDigest() ||
         record.event_classes.length !== 12 ||
         !record.scenarios.length ||
