@@ -547,6 +547,91 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     );
 }
 
+/// One write to a change request, made through the host under test.
+type Write<'h> = dyn Fn(&onevcs::ChangeRequest) + 'h;
+
+#[test]
+fn what_a_listing_read_answers_one_read_and_any_write_to_the_change_request_forgets_it() {
+    // The real `GitHub`, in this process, against the substituted `gh`: what a listing
+    // says of a change request answers the next read of each field once, and never a
+    // read after something was written to it.
+    use onevcs::RemoteHost;
+    let hosted = Hosted::new(OPEN);
+    let token = hosted.change("feature/listed", "feat: add the listed thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    std::env::set_var("ONEVCS_GH", hosted.world.path("bin/gh"));
+    std::env::set_var("ONEVCS_FAKE_GH_STATE", hosted.world.path("gh-state"));
+    let host = onevcs::GitHub::new("acme-corp/hosted").expect("a repository");
+    let listed = |host: &onevcs::GitHub| {
+        host.find_changes("feature/listed", "main")
+            .expect("the host lists")
+            .into_iter()
+            .next()
+            .expect("the draft is open")
+    };
+    let views = |from: usize| reads_since(&hosted, from).views;
+
+    // Each field answers one read from the listing; the second read of it asks.
+    let change = listed(&host);
+    let before = hosted.world.host_calls().len();
+    assert!(host.is_draft(&change).expect("draft state"));
+    assert_eq!(
+        host.change_description(&change)
+            .expect("a description")
+            .title,
+        "feat: add the listed thing"
+    );
+    assert_eq!(views(before), 0, "both answered by the listing");
+    assert!(host.is_draft(&change).expect("draft state"));
+    assert_eq!(
+        views(before),
+        1,
+        "a draft state already read is asked again"
+    );
+    host.change_description(&change).expect("a description");
+    assert_eq!(views(before), 2, "so is a description");
+
+    // Every write forgets what was listed, whether or not the host took it, so the
+    // reads after it see the change request as it now stands.
+    let writes: [(&str, &Write<'_>); 5] = [
+        ("describe", &|change| {
+            host.describe_change(change, None, "described since the listing")
+                .expect("the host takes the description");
+        }),
+        ("merge", &|change| {
+            let _ = host.merge(change, onevcs::MergePolicy::ChangeOpen);
+        }),
+        ("retarget", &|change| {
+            let _ = host.retarget_change(&change.id, "main", None);
+        }),
+        ("reopen", &|change| {
+            let _ = host.reopen_change(&change.id);
+        }),
+        ("ready", &|change| {
+            host.ready_for_review(change).expect("the host lifts it");
+        }),
+    ];
+    for (write, act) in writes {
+        let change = listed(&host);
+        act(&change);
+        let before = hosted.world.host_calls().len();
+        let draft = host.is_draft(&change).expect("draft state");
+        let description = host.change_description(&change).expect("a description");
+        assert_eq!(views(before), 2, "{write}: both read afresh");
+        assert_eq!(description.body, "described since the listing", "{write}");
+        assert_eq!(
+            draft,
+            write != "ready",
+            "{write}: the draft state as it now stands"
+        );
+    }
+}
+
 #[test]
 fn a_held_draft_over_a_change_open_for_review_is_refused_before_anything_is_pushed() {
     // A change the host holds open for review can land, so asking to hold it back

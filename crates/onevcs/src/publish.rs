@@ -1632,7 +1632,7 @@ fn sync(
                 identity: &context.resolution.key,
                 hosting: context.hosting,
                 // A publication's own sync: nobody else brings the base in.
-                caller_merges: false,
+                brought_in: crate::base_merge::BaseBroughtIn::Here,
             },
         )?;
         crate::base_merge::record(stream, &context.branch, context.target.base(), &decision);

@@ -1633,6 +1633,69 @@ fn replies_read_the_visibility_this_host_recorded_and_probe_only_where_none_is()
 }
 
 #[test]
+fn a_reply_to_a_repository_recorded_private_is_let_through_and_one_the_host_would_not_answer_is_screened(
+) {
+    // Recorded private: the one answer that lets a reply through unchecked, read with no
+    // probe, exactly as a probe answering private let it through.
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    host.private("hiddenco/quietharbor", &[]);
+    host.private("sample-owner/closedwidget", &[]);
+    let reviews = host.world.serve_reviews("sample-owner/closedwidget");
+    reviews.pull(1);
+    let asked = reviews.conversation(1, VIEWER, "Where is this from?");
+    let change = "https://github.com/sample-owner/closedwidget/pull/1";
+    let recorded = visibility_probes(&host.world, "sample-owner/closedwidget");
+    let posted = replied(&reply(
+        &host.world,
+        change,
+        &asked,
+        "k",
+        &["--body", "Ported from quietharbor.", "--json"],
+    ));
+    assert_eq!(posted["existing"], false);
+    assert_eq!(
+        visibility_probes(&host.world, "sample-owner/closedwidget"),
+        recorded,
+        "a recorded private repository is not probed"
+    );
+
+    // Registered while the host would not say, and still not saying: nothing recorded
+    // stands in, so each reply probes, and an unanswered probe is screened as a public
+    // destination is — never let through on a recording it does not have.
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    host.private("hiddenco/quietharbor", &[]);
+    let vague = host.repository("sample-owner/vaguewidget", &[]);
+    crate::boundary::register(&host.world, &vague, "sample-owner/vaguewidget");
+    let reviews = host.world.serve_reviews("sample-owner/vaguewidget");
+    reviews.pull(1);
+    let asked = reviews.conversation(1, VIEWER, "Where is this from?");
+    let change = "https://github.com/sample-owner/vaguewidget/pull/1";
+    let before = visibility_probes(&host.world, "sample-owner/vaguewidget");
+    for key in ["k-1", "k-2"] {
+        let refused = reply(
+            &host.world,
+            change,
+            &asked,
+            key,
+            &["--body", "Ported from quietharbor."],
+        );
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("public output carries a term of a private repository in its body"),
+            "{stderr}"
+        );
+        assert_neutral(&stderr);
+    }
+    assert_eq!(
+        visibility_probes(&host.world, "sample-owner/vaguewidget"),
+        before + 2,
+        "an unanswered visibility is asked again at each reply"
+    );
+    assert_eq!(posts(&host.world), 0);
+}
+
+#[test]
 fn a_session_names_its_own_change_request_and_records_on_its_own_stream() {
     let host = Boundary::new("{publication: change-open, approvals: required}");
     let (token, worktree) = host.session("reviewed");

@@ -1344,7 +1344,7 @@ pub(crate) fn open_with(
         publication: &resolution.publication,
         placed,
         on_conflict: OnMerge::asked_by(request),
-        caller_merges: request.caller_merges_base,
+        brought_in: crate::base_merge::BaseBroughtIn::asked_by(request),
         base_merge,
         resolution: &resolution,
         registry,
@@ -1843,7 +1843,7 @@ fn merge_resumed_base(
         &integrated,
         &record.base,
         &record.branch,
-        request.caller_merges_base,
+        crate::base_merge::BaseBroughtIn::asked_by(request),
     )?;
     // `decide` answers `merged` under `always` only for a base that moved; one the
     // branch already carries is a `skipped` that says so under either setting.
@@ -2084,9 +2084,9 @@ struct Cut<'a> {
     on_conflict: OnMerge,
     /// Whether a continuation is merged with its base at all.
     base_merge: BaseMerge,
-    /// Whether the caller merges a base that merges cleanly itself, so the host is
-    /// not asked whether it requires an up-to-date branch.
-    caller_merges: bool,
+    /// Who brings a base that merges cleanly in, and so whether the host is asked
+    /// whether it requires an up-to-date branch.
+    brought_in: crate::base_merge::BaseBroughtIn,
     /// The identity, whose rules decide when a moved base is merged and whose host is
     /// asked whether it requires an up-to-date branch.
     resolution: &'a Resolution,
@@ -2132,7 +2132,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         placed,
         on_conflict,
         base_merge,
-        caller_merges,
+        brought_in,
         resolution,
         registry,
     } = *cut;
@@ -2186,7 +2186,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
             &integrated,
             base,
             branch,
-            caller_merges,
+            brought_in,
         )?),
         BaseMerge::Leave => None,
     };
@@ -2223,7 +2223,7 @@ fn decide_base_merge(
     integrated: &str,
     base: &Ref,
     branch: &Ref,
-    caller_merges: bool,
+    brought_in: crate::base_merge::BaseBroughtIn,
 ) -> Result<crate::base_merge::Decision> {
     crate::base_merge::decide(
         setting,
@@ -2234,7 +2234,7 @@ fn decide_base_merge(
             branch,
             identity: &resolution.key,
             hosting: crate::Providers::real().hosting,
-            caller_merges,
+            brought_in,
         },
     )
 }
