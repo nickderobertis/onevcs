@@ -709,11 +709,11 @@ function scriptPushes(where, path, args, text) {
         .replace(/\\\n/g, " ");
     const pushes = [...body.matchAll(/\bgit\s+push\b[^\n]*/g)];
     return pushes.map(([line]) => {
-        const ref = line.match(/\borigin\s+"?HEAD:refs\/heads\/([^"\s]+)"?/)?.[1];
+        const ref = line.match(/\borigin\s+\x22?HEAD:refs\/heads\/([^\x22\s]+)\x22?/)?.[1];
         if (!ref)
             throw new Error(`${where}: unresolved push in ${path}: ${line.trim()}`);
         const commit =
-            body.match(/\bcommit\b[^\n]*?-a?m\s+"([^"]+)"/)?.[1] ?? null;
+            body.match(/\bcommit\b[^\n]*?-a?m\s+\x22([^\x22]+)\x22/)?.[1] ?? null;
         const variable = ref.match(/^\$\{?(\w+)\}?$/)?.[1];
         if (!variable) {
             if (ref.includes("$"))
@@ -744,7 +744,7 @@ function checkoutPushStartsWorkflows(where, row, upTo) {
         throw new Error(`${where}: a script pushes with no persisted checkout credential`);
     return tokenStarts(where, checkout.with?.token ?? "${{ github.token }}");
 }
-const unquote = (word) => word.replace(/^"(.*)"$/, "$1");
+const unquote = (word) => word.replace(/^\x22(.*)\x22$/, "$1");
 const carried = (ev) => ({
     pypi: ev.pypi,
     npm: ev.npm,
@@ -790,7 +790,7 @@ function effects(run, ev, config) {
                 }
             }
             const output = RELEASE_PR.test(step.run)
-                ? step.run.match(/>\s*("?[^\s"]+"?)\s*$/m)?.[1]
+                ? step.run.match(/>\s*(\x22?[^\s\x22]+\x22?)\s*$/m)?.[1]
                 : undefined;
             // After a release on the same push it reports no PR (`{"prs": []}`).
             if (output && pushed && released) written.set(unquote(output), null);
