@@ -206,7 +206,8 @@ work is still being made. Seven things are easy to undo.
 - **A listing's extra fields answer reads only inside `host::within_one_operation`.**
   An operation that lists a change request and then reads it opens one, as `publish::run`,
   `resume` and the `change` verbs do; outside one, `GitHub` reads the host every call.
-  The held-draft single-read trade-off is the contract's to state.
+  A held draft's republication lists before *and* after its push on purpose: the second
+  listing is what sees a person lift or close the draft while the push ran.
 - **A title on `describe_change` is a `Subject`, held to the `commit-msg` hook
   through the session's worktree** — the same `publish::hold_to_repository_policy`
   a publication asks. A worktree that is not a git checkout (a supplied `Vcs`'s) has

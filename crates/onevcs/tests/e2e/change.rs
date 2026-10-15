@@ -456,9 +456,10 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     assert_eq!(read["title"], "feat: add the reread thing");
     assert_eq!(read["body"], "");
 
-    // A held draft republished over it: the one listing before the push, which both
-    // refuses a change open for review and finds the draft the landing adopts — no
-    // second listing after the push, no view, and one visibility probe.
+    // A held draft republished over it: one listing on each side of the push — the
+    // one before it refuses a change open for review before anything is pushed, the
+    // one after it sees whether a person lifted or closed the draft while the push
+    // ran — no view, and one visibility probe.
     hosted.world.commit_file(
         &worktree,
         "two.txt",
@@ -476,7 +477,7 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     assert_eq!(
         reads_since(&hosted, before),
         Reads {
-            lists: 1,
+            lists: 2,
             views: 0,
             probes: 1
         }
@@ -798,8 +799,13 @@ fn one_github_reused_across_operations_never_answers_one_from_anothers_listing()
 }
 
 /// A held draft whose push runs a `pre-push` hook that does `move` to change request 1
-/// on the host while the push is in flight, answering what it printed and what it read.
-fn republished_while_the_host_moves(hosted: &Hosted, token: &str, change: &str) -> (String, Reads) {
+/// on the host while the push is in flight, answering how the publication ended and what
+/// it read.
+fn republished_while_the_host_moves(
+    hosted: &Hosted,
+    token: &str,
+    change: &str,
+) -> (std::process::Output, Reads) {
     let state = hosted.world.path("gh-state");
     let worktree = std::path::PathBuf::from(
         status(hosted, token)["session"]["worktree"]
@@ -817,26 +823,21 @@ fn republished_while_the_host_moves(hosted: &Hosted, token: &str, change: &str) 
         "feat: more of the raced thing",
     );
     let before = hosted.world.host_calls().len();
-    let assert = hosted
+    let output = hosted
         .world
         .onevcs()
         .args(["publish", token, "--draft"])
-        .assert()
-        .success();
-    (
-        String::from_utf8_lossy(&assert.get_output().stdout).into_owned(),
-        reads_since(hosted, before),
-    )
+        .output()
+        .expect("onevcs runs");
+    (output, reads_since(hosted, before))
 }
 
 #[test]
-fn one_read_per_republication_cannot_see_the_host_move_during_the_push() {
-    // The conflict the single read makes, demonstrated rather than exempted. A held
-    // draft republished with one read of its change request reads it before the push —
-    // which is what refuses a change open for review before anything is pushed. The
-    // build before it read the change request a second time after the push and refused,
-    // or opened a new draft, on what the host did meanwhile; one read cannot see that,
-    // so "read once" and "every refusal and result as before" cannot both hold here.
+fn a_held_draft_republication_reads_again_after_its_push_and_sees_the_host_move() {
+    // Why a held draft's republication reads its change request on both sides of the
+    // push rather than once: the read before it refuses a change open for review before
+    // anything is pushed, and only the read after it can see a person lift or close the
+    // draft while the push ran — which a single read would report as still held.
     for (moved, then) in [("ready-1", "lifted"), ("closed-1", "closed")] {
         let hosted = Hosted::new(OPEN);
         let token = hosted.change("feature/raced", "feat: add the raced thing");
@@ -846,34 +847,47 @@ fn one_read_per_republication_cannot_see_the_host_move_during_the_push() {
             .args(["publish", &token, "--draft"])
             .assert()
             .success();
-        let (printed, reads) = republished_while_the_host_moves(&hosted, &token, moved);
-        // One read, before the push, which found the draft still a draft.
-        assert_eq!((reads.lists, reads.views), (1, 0), "{then}");
+        let (output, reads) = republished_while_the_host_moves(&hosted, &token, moved);
         // The premise: the host moved while the push ran.
         assert!(hosted.world.path("gh-state").join(moved).exists(), "{then}");
-        // What one read reports: the draft held, as the read before the push saw it.
-        // The two-read build ended the lifted case as a pushed, unverified merge path
-        // naming the change open for review (exit 1, the branch on the origin), and in
-        // the closed case listed again, found nothing open, and opened a second draft.
-        assert!(
-            printed.contains("https://github.com/acme-corp/hosted/pull/1")
-                && printed.contains("open as a draft"),
-            "{then}: {printed}"
-        );
-        assert_eq!(
-            hosted
-                .world
-                .host_calls()
-                .iter()
-                .filter(|call| call.starts_with("pr create"))
-                .count(),
-            1,
-            "{then}: no second draft was opened"
-        );
-        // The next read sees the host as it now stands.
+        // Two listings, one each side of the push, and no view of the change request
+        // they found; a new draft opened in its place is asked whether it is one.
+        let views = match then {
+            "lifted" => 0,
+            _ => 1,
+        };
+        assert_eq!((reads.lists, reads.views), (2, views), "{then}");
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let refused = String::from_utf8_lossy(&output.stderr);
+        let opened = hosted
+            .world
+            .host_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count();
         match then {
-            "lifted" => assert_eq!(shown(&hosted, &token)["draft"], false),
-            _ => assert_eq!(shown(&hosted, &token), Value::Null),
+            // The lifted draft is open for review now, and the publication says so
+            // rather than reporting it held.
+            "lifted" => {
+                assert_eq!(output.status.code(), Some(1), "{then}: {printed}{refused}");
+                assert!(
+                    refused.contains("https://github.com/acme-corp/hosted/pull/1")
+                        && refused.contains("open for review"),
+                    "{then}: {refused}"
+                );
+                assert!(!printed.contains("open as a draft"), "{then}: {printed}");
+                assert_eq!(opened, 1, "{then}: no second draft was opened");
+            }
+            // The closed draft is gone, so the work is held as a new draft.
+            _ => {
+                assert!(output.status.success(), "{then}: {refused}");
+                assert!(
+                    printed.contains("https://github.com/acme-corp/hosted/pull/2")
+                        && printed.contains("open as a draft"),
+                    "{then}: {printed}"
+                );
+                assert_eq!(opened, 2, "{then}: a second draft was opened");
+            }
         }
     }
 }

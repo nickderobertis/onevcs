@@ -5777,20 +5777,17 @@ A publication that adopts an existing change request therefore reads it with one
 list` — not a list and then a view of its draft state — and `session_change` with one
 rather than a list and two views.
 
-**A held draft republished reads its change request once, and the cost is stated.** A
-publication holding a draft (`draft` set) over a change request the host already has reads
-it once, before its push: that read refuses a change open for review before anything is
-pushed, exactly as before, and the draft it finds is the one the landing adopts and
-reports, with no second listing or draft-state read after the push. What a single read
-cannot see is the host moving *during* the push. The build before this one read the change
-request again after the push, so a draft lifted while the push ran ended as a pushed,
-unverified merge path naming the change open for review (exit `1`), and a draft closed
-while it ran was replaced by a second draft. With one read, both report the draft held, as
-the read before the push saw it, and the next read or publication sees the host as it then
-stands. "Read once" and "every refusal and result as before" cannot both hold for a host
-that moves during the push; this amendment chooses the single read, and
-`one_read_per_republication_cannot_see_the_host_move_during_the_push` in
-`tests/e2e/change.rs` demonstrates both cases. No public item is added.
+**A held draft republished reads its change request twice, once on each side of its
+push.** A publication holding a draft (`draft` set) over a change request the host already
+has lists it before its push, which refuses a change open for review before anything is
+pushed, and lists it again after the push, which is the authoritative read: a draft a
+person lifted while the push ran ends as a pushed, unverified merge path naming the change
+open for review (exit `1`), and one closed while it ran is replaced by a new draft. Each
+listing answers that side's draft-state read, so neither is followed by a `gh pr view`.
+That second read is kept on purpose — detecting the host moving during the push is worth
+one listing — and it is the one exception to a change request being read once per call;
+`a_held_draft_republication_reads_again_after_its_push_and_sees_the_host_move` in
+`tests/e2e/change.rs` holds both cases. No public item is added.
 
 Event kinds added: none.
 
