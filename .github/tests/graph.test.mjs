@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    writeFileSync,
+    readFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import {
     resolveScenario,
     resolveRun,
@@ -8,7 +15,10 @@ import {
     matrixRows,
     sourceDigest,
     expression,
+    lifecycle,
+    glob,
 } from "../workflow-graph.mjs";
+import { classify as classifyEvent } from "../macos-policy.mjs";
 import { history } from "./policy.test.mjs";
 const classes = [
     ["pr-opened", "pull_request", "opened", "main"],
@@ -37,11 +47,44 @@ const protectedNames = [
     "pr-title",
     "visual-docs / report (x86_64, shots/current, shots/verify, Visual docs)",
 ];
+// Classify each derived event the way its workflow run does: a pull request by
+// the real classifier over a generated git history, anything else by its name.
+function classifier(h) {
+    const cache = new Map();
+    return (ev) => {
+        if (ev.event !== "pull_request")
+            return classifyEvent(null, "", "", ev.event);
+        const key = JSON.stringify([ev.diff, ev.fork, ev.headBranch]);
+        if (!cache.has(key))
+            cache.set(
+                key,
+                h.classify(ev.diff, {
+                    fork: ev.fork,
+                    branch: ev.headBranch,
+                    eventName: "pull_request",
+                }),
+            );
+        return cache.get(key);
+    };
+}
+// The one human action of a lifecycle: push an ordinary branch to a pull request
+// and merge it. Everything after it is derived from the workflow files.
+const change = (diff, fork, publication) => ({
+    event: "pull_request",
+    action: "synchronize",
+    branch: "main",
+    headBranch: "feature",
+    diff,
+    fork,
+    ...publication,
+    merge: { title: "feat: an ordinary change" },
+});
 test("actual workflow/call graph over event, diff, ownership and publication combinations records telemetry", () => {
     mkdirSync(".github/.telemetry", { recursive: true });
     const h = history();
     const scenarios = [];
     const classifications = new Map();
+    const sources = workflows();
     try {
         for (const [id, event, action, branch] of classes)
             for (const diff of ["source", "version", "dependency"])
@@ -59,7 +102,8 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                                     pypi,
                                     npm,
                                     crate,
-                                    upstream: workflows()["release.yml"].name,
+                                    releaseToken: true,
+                                    upstream: sources["release.yml"].name,
                                     diagnostic:
                                         id === "manual-opt-in"
                                             ? true
@@ -79,7 +123,11 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                                         }),
                                     );
                                 const classification = classifications.get(key);
-                                let rows = resolveScenario(s, classification);
+                                let rows = resolveScenario(
+                                    s,
+                                    classification,
+                                    sources,
+                                );
                                 if (event === "pull_request") {
                                     const names = rows.map((r) => r.name);
                                     for (const name of protectedNames)
@@ -127,71 +175,85 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                                 scenarios.push({ ...s, classification, rows });
                             }
         const lifecycles = [];
+        const classify = classifier(h);
         for (const diff of ["source", "version", "dependency"])
             for (const fork of [false, true])
                 for (const pypi of [false, true])
                     for (const npm of [false, true])
-                        for (const crate of [false, true]) {
-                            const selects = [
-                                "pr-synchronize",
-                                "base-push",
-                                "release-pr-merge",
-                                "release-tag",
-                                "release-published",
-                                "downstream",
-                            ];
-                            const sequence = selects.map((id) =>
-                                scenarios.find(
-                                    (s) =>
-                                        s.id === id &&
-                                        s.diff === diff &&
-                                        s.fork === fork &&
-                                        s.pypi === pypi &&
-                                        s.npm === npm &&
-                                        s.crate === crate,
-                                ),
-                            );
-                            // A release-only PR is a separate run; its merge and publication share the tag tree.
-                            sequence.splice(
-                                2,
-                                0,
-                                scenarios.find(
-                                    (s) =>
-                                        s.id === "pr-opened" &&
-                                        s.diff === "version" &&
-                                        !s.fork &&
-                                        s.pypi === pypi &&
-                                        s.npm === npm &&
-                                        s.crate === crate,
-                                ),
-                            );
-                            const spending = sequence.flatMap((s, index) =>
-                                [
-                                    ...new Set(
-                                        s.rows
-                                            .filter((r) => r.macos)
-                                            .map((r) => r.workflow),
-                                    ),
-                                ].map((workflow) => ({
-                                    event: s.id,
-                                    workflow,
-                                    index,
-                                    jobs: s.rows.filter(
-                                        (r) =>
-                                            r.macos && r.workflow === workflow,
-                                    ),
-                                })),
-                            );
-                            lifecycles.push({
-                                diff,
-                                fork,
-                                pypi,
-                                npm,
-                                crate,
-                                runs: spending.length,
-                                spending,
-                            });
-                        }
+                        for (const crate of [false, true])
+                            for (const releaseToken of [false, true]) {
+                                const derived = lifecycle(
+                                    change(diff, fork, {
+                                        pypi,
+                                        npm,
+                                        crate,
+                                        releaseToken,
+                                    }),
+                                    { classify, sources },
+                                );
+                                lifecycles.push({
+                                    diff,
+                                    fork,
+                                    pypi,
+                                    npm,
+                                    crate,
+                                    releaseToken,
+                                    ...derived,
+                                });
+                            }
+        // What the derivation found, for the configuration the repository runs.
+        const live = (diff) =>
+            lifecycles.find(
+                (l) => l.diff === diff && !l.fork && l.pypi && l.npm && l.releaseToken,
+            );
+        assert.deepEqual(
+            live("source").events.map((e) => e.label),
+            [
+                "pr-synchronize",
+                "base-push",
+                "pr-closed",
+                "pr-opened",
+                "pr-synchronize",
+                "release-pr-merge",
+                "pr-closed",
+                "release-tag",
+                "release-published",
+                "downstream",
+            ],
+        );
+        assert.deepEqual(
+            live("source").spending.map((s) => [s.event, s.workflow]),
+            [
+                ["pr-synchronize", "ci.yml"],
+                ["release-published", "release.yml"],
+            ],
+        );
+        // A version bump merged by hand is tagged by that push; no release PR follows.
+        assert.equal(
+            live("version").events.some((e) => e.head?.startsWith("release-plz-")),
+            false,
+        );
+        const releaseRun = live("source").workflow_runs.find(
+            (r) => r.workflow === "release.yml",
+        );
+        for (const form of ["archives", "wheels", "npm"])
+            assert.equal(
+                releaseRun.artifacts.find(
+                    (a) => a.artifact === `${form}-aarch64-apple-darwin`,
+                )?.producer,
+                "release.yml:build-darwin",
+            );
+        assert.equal(
+            releaseRun.artifacts.every((a) => a.scope === "tag" && a.producer),
+            true,
+        );
+        for (const l of lifecycles)
+            for (const run of l.workflow_runs)
+                assert.equal(
+                    run.artifacts.every((a) => a.producer),
+                    true,
+                    `${run.workflow} rebuilds an artifact`,
+                );
         const maxJobs = Math.max(
             0,
             ...scenarios.flatMap((s) =>
@@ -201,9 +263,12 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                             .length,
                 ),
             ),
+            ...lifecycles.flatMap((l) =>
+                l.workflow_runs.map((run) => run.mac_jobs),
+            ),
         );
         const record = {
-            schema_version: 1,
+            schema_version: 2,
             source_digest: sourceDigest(),
             event_classes: classes.map((c) => c[0]),
             scenarios,
@@ -223,6 +288,16 @@ test("actual workflow/call graph over event, diff, ownership and publication com
     } finally {
         h.cleanup();
     }
+});
+test("filter and artifact patterns follow Actions' glob subset and refuse the rest", () => {
+    assert.equal(glob("v*", "v1.2.3"), true);
+    assert.equal(glob("release/*", "release/a"), true);
+    assert.equal(glob("release/*", "release/a/b"), false);
+    assert.equal(glob("release/**", "release/a/b"), true);
+    assert.equal(glob("v1.2", "v1x2"), false);
+    assert.equal(glob("wheels-*", "wheels-aarch64-apple-darwin"), true);
+    for (const pattern of ["!main", "[ab]", "v?", "v+", 3])
+        assert.throws(() => glob(pattern, "main"), /unsupported pattern/);
 });
 test("unknown runner/call/matrix expressions are explicit failures", () => {
     const s = { event: "pull_request", pypi: true, npm: true };
@@ -307,5 +382,532 @@ test("actual pull-request trigger defaults exclude close and draft lift from CI"
             rows.filter((row) => row.macos),
             [],
         );
+    }
+});
+
+// Each edit below is to a workflow file's own trigger, condition or artifact
+// dependency; the lifecycle is derived again from the edited files.
+test("editing a trigger, condition or artifact dependency changes the derived runs per change", () => {
+    const h = history();
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const runs = (sources, diff = "source") =>
+            lifecycle(change(diff, false, live), { classify, sources });
+        const edit = (mutate) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return sources;
+        };
+        const baseline = runs(workflows());
+        assert.equal(baseline.runs, 2);
+
+        // Trigger: Release also starting on the tag release-plz pushes.
+        const onTag = runs(
+            edit((s) => (s["release.yml"].on.push = { tags: ["v*"] })),
+        );
+        assert.equal(onTag.runs, 3);
+        assert.deepEqual(
+            onTag.spending.map((x) => x.event),
+            ["pr-synchronize", "release-tag", "release-published"],
+        );
+        // Trigger: no automatic event fans out to Release at all.
+        assert.equal(
+            runs(edit((s) => (s["release.yml"].on = { workflow_dispatch: null })))
+                .runs,
+            1,
+        );
+        // Trigger: published smoke subscribed to a name nothing carries.
+        const unsubscribed = runs(
+            edit((s) => (s["published-smoke.yml"].on.workflow_run.workflows = ["Nope"])),
+        );
+        assert.equal(
+            unsubscribed.events.some((e) => e.label === "downstream"),
+            false,
+        );
+
+        // Condition: the diagnostic lane no longer limited to an explicit dispatch.
+        const always = runs(
+            edit(
+                (s) =>
+                    (s["published-smoke.yml"].jobs["macos-diagnostic"].if =
+                        "github.event_name == 'workflow_run' || inputs.macos-diagnostic == true"),
+            ),
+        );
+        assert.equal(always.runs, 3);
+        assert.equal(always.spending.at(-1).workflow, "published-smoke.yml");
+        // Condition: the Mac lane no longer asking the classifier, so the
+        // version-only release PR and both base pushes spend a Mac run too.
+        const unclassified = runs(
+            edit(
+                (s) =>
+                    (s["ci.yml"].jobs["macos-pr"].if =
+                        "needs.changes.outputs.rust == 'true'"),
+            ),
+        );
+        assert.deepEqual(
+            unclassified.spending.map((x) => x.event),
+            [
+                "pr-synchronize",
+                "base-push",
+                "pr-opened",
+                "pr-synchronize",
+                "release-pr-merge",
+                "release-published",
+            ],
+        );
+        // Effect: an automatic dispatch cannot opt into the diagnostic unseen.
+        const dispatched = runs(
+            edit((s) =>
+                s["release.yml"].jobs["upload-darwin"].steps.push({
+                    env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+                    run: "gh workflow run published-smoke.yml -f macos-diagnostic=true",
+                }),
+            ),
+        );
+        assert.equal(dispatched.runs, 3);
+        assert.equal(
+            dispatched.spending.at(-1).event,
+            "manual-opt-in",
+        );
+
+        // Artifact: a downstream job reusing the release run's Darwin archive.
+        const reuse = {
+            "runs-on": "ubuntu-latest",
+            steps: [
+                {
+                    uses: "actions/download-artifact@v4",
+                    with: {
+                        pattern: "archives-*",
+                        "run-id": "${{ github.event.workflow_run.id }}",
+                    },
+                },
+            ],
+        };
+        const reused = runs(
+            edit((s) => (s["published-smoke.yml"].jobs.inspect = reuse)),
+        );
+        assert.equal(reused.runs, 2);
+        const edge = reused.workflow_runs
+            .find((r) => r.workflow === "published-smoke.yml")
+            .artifacts.find((a) => a.artifact === "archives-aarch64-apple-darwin");
+        assert.equal(edge.producer, "release.yml:build-darwin");
+        assert.equal(edge.scope, "tag");
+        // The same job without the upstream run's id finds nothing in its own run,
+        // so a published-smoke run would have to rebuild it — on a Mac.
+        const rebuilt = runs(
+            edit((s) => {
+                s["published-smoke.yml"].jobs.inspect = structuredClone(reuse);
+                s["published-smoke.yml"].jobs.producer = {
+                    "runs-on": "ubuntu-latest",
+                    if: "github.event_name == 'workflow_dispatch'",
+                    steps: [
+                        {
+                            uses: "actions/upload-artifact@v4",
+                            with: { name: "archives-aarch64-apple-darwin" },
+                        },
+                    ],
+                };
+                s["published-smoke.yml"].jobs.inspect.needs = ["producer"];
+                s["published-smoke.yml"].jobs.inspect.if = "always()";
+                delete s["published-smoke.yml"].jobs.inspect.steps[0].with["run-id"];
+            }),
+        );
+        assert.equal(rebuilt.runs, 3);
+        assert.equal(rebuilt.spending.at(-1).jobs[0].rebuild, true);
+        // In the release run: Darwin wheels no longer reached through `needs`.
+        const unordered = runs(
+            edit((s) =>
+                (s["release.yml"].jobs["publish-pypi"].needs = ["build-wheels"]),
+            ),
+        );
+        assert.equal(
+            unordered.spending.find((x) => x.workflow === "release.yml").jobs
+                .length,
+            2,
+        );
+        // A download nothing could have produced is an error, not a zero.
+        assert.throws(
+            () =>
+                runs(
+                    edit((s) =>
+                        s["release.yml"].jobs["upload-darwin"].steps.unshift({
+                            uses: "actions/download-artifact@v4",
+                            with: { pattern: "missing-*" },
+                        }),
+                    ),
+                ),
+            /artifact missing-\* has no producer/,
+        );
+        // Filters the model does not evaluate are refused rather than ignored.
+        assert.throws(
+            () =>
+                runs(
+                    edit((s) => (s["ci.yml"].on.push.paths = ["crates/**"])),
+                ),
+            /unsupported push filter paths/,
+        );
+    } finally {
+        h.cleanup();
+    }
+});
+
+test("lifecycle derivation refuses what it cannot trace instead of counting it as zero", () => {
+    const h = history();
+    const scratch = mkdtempSync(
+        join(
+            process.env.ONEPIPELINE_NODE_SCRATCH_DIR || ".github/.telemetry",
+            "release-plz-",
+        ),
+    );
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const derive = (mutate, options = {}) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), {
+                classify,
+                sources,
+                ...options,
+            });
+        };
+        const download = (wf, job, step) => (s) =>
+            s[wf].jobs[job].steps.unshift({
+                uses: "actions/download-artifact@v4",
+                ...step,
+            });
+        assert.throws(
+            () =>
+                derive(
+                    download("release.yml", "upload-darwin", {
+                        with: { pattern: "archives-*", "run-id": "${{ inputs.run }}" },
+                    }),
+                ),
+            /unresolved artifact run-id/,
+        );
+        assert.throws(
+            () =>
+                derive(
+                    download("ci.yml", "gate", {
+                        with: {
+                            pattern: "archives-*",
+                            "run-id": "${{ github.event.workflow_run.id }}",
+                        },
+                    }),
+                ),
+            /no workflow_run event supplied/,
+        );
+        assert.throws(
+            () => derive(download("release.yml", "upload-darwin", { with: {} })),
+            /needs a name or pattern/,
+        );
+        const releaseStep = (s) =>
+            s["release-plz.yml"].jobs["release-plz"].steps.find((step) =>
+                /release-plz release --/.test(step.run || ""),
+            );
+        assert.throws(
+            () => derive((s) => delete releaseStep(s).env),
+            /names no GITHUB_TOKEN/,
+        );
+        assert.throws(
+            () =>
+                derive(
+                    (s) =>
+                        (releaseStep(s).env.GITHUB_TOKEN = "${{ env.TOKEN }}"),
+                ),
+            /unresolved effect token/,
+        );
+        // Released with the run's own token: no tag or release event starts Release.
+        const ownToken = derive((s) => {
+            for (const step of s["release-plz.yml"].jobs["release-plz"].steps)
+                if (step.env?.GITHUB_TOKEN)
+                    step.env.GITHUB_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
+        });
+        assert.equal(ownToken.runs, 1);
+        assert.equal(
+            ownToken.events.some((e) => e.label === "release-published"),
+            false,
+        );
+        // A workflow that starts itself on completion never settles.
+        assert.throws(
+            () =>
+                derive((s) =>
+                    s["published-smoke.yml"].on.workflow_run.workflows.push(
+                        "Published smoke",
+                    ),
+                ),
+            /did not settle within 64 events/,
+        );
+        for (const [toml, message] of [
+            ["workspace = 1\n", /must be a table/],
+            ["[workspace]\npr_branch_prefix = 3\n", /pr_branch_prefix must be a non-empty string/],
+            ["[workspace]\npr_name = \"\"\n", /pr_name must be a non-empty string/],
+            ["[workspace]\ngit_release_enable = \"no\"\n", /git_release_enable must be a boolean/],
+            ["[workspace]\ngit_tag_name = \"v1\"\n", /must contain \{\{ version \}\}/],
+        ]) {
+            const path = join(scratch, "release-plz.toml");
+            writeFileSync(path, toml);
+            assert.throws(() => derive(() => {}, { releasePlz: path }), message);
+        }
+        // An override in the file is what the derivation uses.
+        const path = join(scratch, "release-plz.toml");
+        writeFileSync(path, "[workspace]\ngit_release_enable = false\n");
+        assert.equal(derive(() => {}, { releasePlz: path }).runs, 1);
+        writeFileSync(
+            path,
+            '[workspace]\npr_branch_prefix = "cut-"\npr_name = "chore: cut"\ngit_tag_name = "onevcs-{{ version }}"\n',
+        );
+        const renamed = derive(() => {}, { releasePlz: path });
+        assert.equal(
+            renamed.events.find((e) => e.label === "pr-opened").head,
+            "cut-2026",
+        );
+        assert.equal(
+            renamed.events.find((e) => e.label === "release-pr-merge").commit,
+            "chore: cut",
+        );
+        assert.equal(
+            renamed.events.find((e) => e.label === "release-tag").tag,
+            "onevcs-1.2.3",
+        );
+        // The classifier admits only release-plz's own prefix, so a renamed
+        // release branch is an ordinary PR: its opening and the carried lockfile
+        // push each spend a Mac run.
+        assert.deepEqual(
+            renamed.spending.map((x) => [x.event, x.workflow]),
+            [
+                ["pr-synchronize", "ci.yml"],
+                ["pr-opened", "ci.yml"],
+                ["pr-synchronize", "ci.yml"],
+                ["release-published", "release.yml"],
+            ],
+        );
+        // The run's own token in its `github.token` spelling starts nothing either.
+        assert.equal(
+            derive((s) => {
+                for (const step of s["release-plz.yml"].jobs["release-plz"].steps)
+                    if (step.env?.GITHUB_TOKEN)
+                        step.env.GITHUB_TOKEN = "${{ github.token }}";
+            }).runs,
+            1,
+        );
+        // The guard is executed, not assumed: one that always reports disabled
+        // leaves release-plz idle whatever secret is present.
+        assert.equal(
+            derive(
+                (s) =>
+                    (s["release-plz.yml"].jobs.guard.steps[0].run =
+                        'echo "enabled=false" >> "$GITHUB_OUTPUT"'),
+            ).runs,
+            1,
+        );
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
+        h.cleanup();
+    }
+});
+
+// release-plz.yml's carry step runs scripts/release-pr-carry.sh, whose `git push`
+// onto the release PR's head is read from the script itself.
+test("the lockfile carry's push onto the release PR is a derived synchronize run", () => {
+    const h = history();
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const carry = "scripts/release-pr-carry.sh";
+        const real = readFileSync(carry, "utf8");
+        const derive = ({ mutate = () => {}, script = real } = {}) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), {
+                classify,
+                sources,
+                readScript: (path) =>
+                    path === carry ? script : readFileSync(path, "utf8"),
+            });
+        };
+        const releaseHead = (l) =>
+            l.events.filter((e) => e.head === "release-plz-2026");
+        const baseline = derive();
+        assert.deepEqual(
+            releaseHead(baseline).map((e) => [e.label, e.cause]),
+            [
+                ["pr-opened", "release-plz.yml:release-plz"],
+                [
+                    "pr-synchronize",
+                    "release-plz.yml:release-plz via scripts/release-pr-carry.sh",
+                ],
+                ["release-pr-merge", "merge of release-plz-2026"],
+                ["pr-closed", "merge of release-plz-2026"],
+            ],
+        );
+        const sync = releaseHead(baseline)[1];
+        assert.equal(sync.commit, "chore: carry compat/Cargo.lock to the release version");
+        // The authorized version-only head stays Mac-free after the carry, and
+        // its runs reuse artifacts built for that exact head.
+        const syncRuns = baseline.workflow_runs.filter((r) => r.index === sync.index);
+        assert.deepEqual(
+            syncRuns.map((r) => r.workflow).sort(),
+            ["ci.yml", "notignored.yml", "smoke.yml", "visual-docs.yml"],
+        );
+        assert.equal(syncRuns.every((r) => r.mac_jobs === 0), true);
+        const edges = syncRuns.flatMap((r) => r.artifacts);
+        assert.ok(edges.length > 0);
+        assert.equal(
+            edges.every((a) => a.scope === "exact-head" && a.producer),
+            true,
+        );
+        assert.equal(baseline.runs, 2);
+
+        // Removing the push removes the run.
+        const noPush = derive({
+            script: real.replace(/^git push[^\n]*\\\n[^\n]*\n/m, ""),
+        });
+        assert.notEqual(noPush.events.length, baseline.events.length);
+        assert.deepEqual(
+            releaseHead(noPush).map((e) => e.label),
+            ["pr-opened", "release-pr-merge", "pr-closed"],
+        );
+        // The step no longer running the script removes it too.
+        const noStep = derive({
+            mutate: (s) =>
+                (s["release-plz.yml"].jobs["release-plz"].steps = s[
+                    "release-plz.yml"
+                ].jobs["release-plz"].steps.filter(
+                    (step) => !(step.run || "").includes(carry),
+                )),
+        });
+        assert.deepEqual(
+            releaseHead(noStep).map((e) => e.label),
+            ["pr-opened", "release-pr-merge", "pr-closed"],
+        );
+        // Pushed with the run's own token, the commit starts nothing.
+        const ownToken = derive({
+            mutate: (s) =>
+                (s["release-plz.yml"].jobs["release-plz"].steps[0].with.token =
+                    "${{ github.token }}"),
+        });
+        assert.equal(
+            releaseHead(ownToken).some((e) => e.label === "pr-synchronize"),
+            false,
+        );
+        // Retargeted to another branch, it is a push there, not a synchronize.
+        const elsewhere = derive({
+            script: real.replace('"HEAD:refs/heads/$branch"', '"HEAD:refs/heads/elsewhere"'),
+        });
+        assert.equal(
+            releaseHead(elsewhere).some((e) => e.label === "pr-synchronize"),
+            false,
+        );
+        assert.equal(
+            elsewhere.events.some(
+                (e) => e.event === "push" && e.cause.endsWith(carry),
+            ),
+            true,
+        );
+        // Pushes this model cannot attribute are refused, never dropped.
+        for (const [script, mutate, message] of [
+            [real.replace('"HEAD:refs/heads/$branch"', '"HEAD:refs/heads/$other"'), () => {}, /unresolved pushed ref \$other/],
+            [real.replace('origin "HEAD:refs/heads/$branch"', "--all"), () => {}, /unresolved push/],
+            [
+                real,
+                (s) =>
+                    (s["release-plz.yml"].jobs["release-plz"].steps[0].with[
+                        "persist-credentials"
+                    ] = false),
+                /no persisted checkout credential/,
+            ],
+        ])
+            assert.throws(() => derive({ script, mutate }), message);
+    } finally {
+        h.cleanup();
+    }
+});
+
+test("step conditions, non-Darwin rebuilds, merge styles and malformed guards are derived or refused", () => {
+    const h = history();
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const derive = (mutate) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), { classify, sources });
+        };
+        const release = (l) =>
+            l.spending.find((x) => x.workflow === "release.yml").jobs;
+        const releaseRun = (l) =>
+            l.workflow_runs.find((r) => r.workflow === "release.yml");
+        // An upload whose own condition is false provides nothing: the Darwin
+        // wheel has to be rebuilt, on a Mac, inside the release run.
+        const skippedUpload = derive((s) => {
+            const upload = s["release.yml"].jobs["build-darwin"].steps.find(
+                (step) => step.with?.name === "wheels-aarch64-apple-darwin",
+            );
+            upload.if = "github.event_name == 'workflow_dispatch'";
+        });
+        assert.deepEqual(
+            release(skippedUpload).map((j) => j.job),
+            ["build-darwin", "publish-pypi (rebuild wheels-aarch64-apple-darwin)"],
+        );
+        // Linux packages no longer ordered before npm publication are rebuilt on
+        // the consumer's own Linux runner: counted as rebuilds, not as Mac jobs.
+        const linux = derive(
+            (s) => (s["release.yml"].jobs["publish-npm"].needs = ["build-darwin"]),
+        );
+        const rebuilt = releaseRun(linux).artifacts.filter((a) => !a.producer);
+        assert.deepEqual(
+            rebuilt.map((a) => a.artifact).sort(),
+            [
+                "npm-aarch64-unknown-linux-gnu",
+                "npm-x86_64-pc-windows-msvc",
+                "npm-x86_64-unknown-linux-gnu",
+            ],
+        );
+        assert.equal(releaseRun(linux).mac_jobs, 1);
+        assert.equal(linux.runs, 2);
+        // A merge commit rather than a squash lands under GitHub's merge title.
+        const merged = derive((s) => {
+            const step = s["release-plz.yml"].jobs["release-plz"].steps.find(
+                (step) => /gh pr merge/.test(step.run || ""),
+            );
+            step.run = step.run.replace("--squash", "--merge");
+        });
+        assert.equal(
+            merged.events.find((e) => e.label === "release-pr-merge").commit,
+            "Merge pull request from release-plz-2026",
+        );
+        // The carry pointed at a file no release-pr step wrote is refused.
+        assert.throws(
+            () =>
+                derive((s) => {
+                    const step = s["release-plz.yml"].jobs["release-plz"].steps.find(
+                        (step) => /release-pr-carry/.test(step.run || ""),
+                    );
+                    step.run = step.run.replace("release-pr.json", "other.json");
+                }),
+            /other\.json, which no release-pr step wrote/,
+        );
+        // A dispatch to a workflow that does not exist is refused.
+        assert.throws(
+            () =>
+                derive((s) =>
+                    s["release.yml"].jobs["upload-darwin"].steps.push({
+                        run: "gh workflow run missing.yml",
+                    }),
+                ),
+            /dispatches missing\.yml, which is not a workflow here/,
+        );
+        // Guards: an undoubled secret, a malformed output line, an unwritten output.
+        const guard = (s) => s["release-plz.yml"].jobs.guard.steps[0];
+        for (const [mutate, message] of [
+            [(s) => (guard(s).env.TOKEN = "${{ secrets.UNKNOWN }}"), /secret UNKNOWN/],
+            [(s) => (guard(s).run = 'echo "garbage" >> "$GITHUB_OUTPUT"'), /malformed output line/],
+            [(s) => (guard(s).run = 'echo "other=true" >> "$GITHUB_OUTPUT"'), /guard output enabled was never written/],
+        ])
+            assert.throws(() => derive(mutate), message);
+    } finally {
+        h.cleanup();
     }
 });

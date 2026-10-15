@@ -14,6 +14,7 @@
       "{workspaceRoot}/screencomp.toml",
       "{workspaceRoot}/pyproject.toml",
       "{workspaceRoot}/release-targets.toml",
+      "{workspaceRoot}/release-plz.toml",
       "sharedGlobals"
     ]
   },
