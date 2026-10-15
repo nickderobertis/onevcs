@@ -595,6 +595,7 @@ function releasePlzConfig(path) {
         tag: tag.replace("{{ version }}", "1.2.3"),
     };
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 // Actions starts no workflow for an event made with the run's own token, except
 // a dispatch. A token is a whole `${{ secrets.NAME }}` or `${{ github.token }}`;
 // anything else is an error, never a guess about what it can start.
@@ -627,6 +628,12 @@ function effects(run, ev, config) {
             if (typeof step.run !== "string" || !stepRuns(row, step)) continue;
             const cause = `${run.workflow}:${row.job}`;
             const pushed = ev.event === "push" && ev.branch !== "tag";
+            // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] which
+            // of `release` and `release-pr` acts on a push is release-plz's rule as its
+            // documentation states it, and only a forge shows it acting. The offline
+            // half, `release-plz update`, is driven for real at the pinned version by
+            // the `release_pr` journeys; these two branches are what no offline tier
+            // can run.
             // A pushed version bump has no tag yet, so release-plz tags it.
             if (RELEASE.test(step.run) && pushed && ev.diff === "version") {
                 released = true;
@@ -663,6 +670,7 @@ function effects(run, ev, config) {
                     out.push(pr);
                 }
             }
+            // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
             if (AUTO_MERGE.test(step.run))
                 for (const pr of opened)
                     pr.merge = {
