@@ -456,9 +456,9 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     assert_eq!(read["title"], "feat: add the reread thing");
     assert_eq!(read["body"], "");
 
-    // A held draft republished over it: one listing on each side of the push — the
-    // check that refuses early before it, the authoritative one after — no view, and
-    // one visibility probe.
+    // A held draft republished over it: the one listing before the push, which both
+    // refuses a change open for review and finds the draft the landing adopts — no
+    // second listing after the push, no view, and one visibility probe.
     hosted.world.commit_file(
         &worktree,
         "two.txt",
@@ -476,12 +476,17 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     assert_eq!(
         reads_since(&hosted, before),
         Reads {
-            lists: 2,
+            lists: 1,
             views: 0,
             probes: 1
         }
     );
     assert_eq!(hosted.world.events_of(&token, "change-drafted").len(), 2);
+    assert_eq!(
+        hosted.branch_on_origin("feature/reread").as_deref(),
+        Some(hosted.world.git(&worktree, &["rev-parse", "HEAD"]).trim()),
+        "the republication pushed"
+    );
 
     // The publication that adopts it: one listing, no view of what the listing
     // already said, and one visibility probe — and the same landing as ever.
@@ -547,15 +552,16 @@ fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probe
     );
 }
 
-/// One write to a change request, made through the host under test.
-type Write<'h> = dyn Fn(&onevcs::ChangeRequest) + 'h;
+/// Make change request 1 a draft again, and rewrite its body, as a person on the host
+/// would — between two reads somebody made of it.
+fn changed_on_the_host(hosted: &Hosted, body: &str) {
+    let state = hosted.world.path("gh-state");
+    let _ = std::fs::remove_file(state.join("ready-1"));
+    std::fs::write(state.join("pr-1.body"), format!("{body}\n")).expect("the host's record");
+}
 
 #[test]
-fn what_a_listing_read_answers_one_read_and_any_write_to_the_change_request_forgets_it() {
-    // The real `GitHub`, in this process, against the substituted `gh`: what a listing
-    // says of a change request answers the next read of each field once, and never a
-    // read after something was written to it.
-    use onevcs::RemoteHost;
+fn a_listing_answers_reads_inside_its_own_operation_and_never_a_later_one() {
     let hosted = Hosted::new(OPEN);
     let token = hosted.change("feature/listed", "feat: add the listed thing");
     hosted
@@ -564,79 +570,158 @@ fn what_a_listing_read_answers_one_read_and_any_write_to_the_change_request_forg
         .args(["publish", &token, "--draft"])
         .assert()
         .success();
+
+    // Inside one operation: `change ready` over the held draft answers its draft check
+    // from the listing, lifts it, and — the lift being a write — reads the change back
+    // with one view rather than from what was listed before it.
+    let before = hosted.world.host_calls().len();
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &token, "--json"])
+        .assert()
+        .success();
+    let readied: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one JSON object");
+    assert_eq!(readied["draft"], false, "read back after the lift");
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 1,
+            views: 1,
+            probes: 0
+        }
+    );
+
+    // An answer is spent by the read it answers: over a change that is not a draft,
+    // the lift's check takes the listed draft state, and the report's own read of it
+    // asks the host again.
+    let before = hosted.world.host_calls().len();
+    hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &token])
+        .assert()
+        .success();
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 1,
+            views: 1,
+            probes: 0
+        }
+    );
+
+    // A `GitHub` a caller holds and reuses for reads of its own is never answered from
+    // a listing it made earlier: the host moved in between, and every read sees it.
+    use onevcs::RemoteHost;
     std::env::set_var("ONEVCS_GH", hosted.world.path("bin/gh"));
     std::env::set_var("ONEVCS_FAKE_GH_STATE", hosted.world.path("gh-state"));
     let host = onevcs::GitHub::new("acme-corp/hosted").expect("a repository");
-    let listed = |host: &onevcs::GitHub| {
-        host.find_changes("feature/listed", "main")
-            .expect("the host lists")
-            .into_iter()
-            .next()
-            .expect("the draft is open")
-    };
-    let views = |from: usize| reads_since(&hosted, from).views;
-
-    // A clone of the host is the same host with nothing read in passing: it asks,
-    // and the original's listing still answers the original once.
-    let change = listed(&host);
+    let change = host
+        .find_changes("feature/listed", "main")
+        .expect("the host lists")
+        .into_iter()
+        .next()
+        .expect("the change is open");
+    changed_on_the_host(&hosted, "rewritten by a person");
     let before = hosted.world.host_calls().len();
-    let cloned = host.clone();
-    assert_eq!(cloned, host, "a host is its repository");
-    assert!(cloned.is_draft(&change).expect("draft state"));
-    assert_eq!(views(before), 1, "the clone asked");
-
-    // Each field answers one read from the listing; the second read of it asks.
-    let before = hosted.world.host_calls().len();
-    assert!(host.is_draft(&change).expect("draft state"));
+    assert!(
+        host.is_draft(&change).expect("draft state"),
+        "the draft state as the host now holds it, not as it was listed"
+    );
     assert_eq!(
         host.change_description(&change)
             .expect("a description")
-            .title,
-        "feat: add the listed thing"
+            .body,
+        "rewritten by a person"
     );
-    assert_eq!(views(before), 0, "both answered by the listing");
-    assert!(host.is_draft(&change).expect("draft state"));
-    assert_eq!(
-        views(before),
-        1,
-        "a draft state already read is asked again"
-    );
-    host.change_description(&change).expect("a description");
-    assert_eq!(views(before), 2, "so is a description");
+    assert_eq!(reads_since(&hosted, before).views, 2, "both asked the host");
+    // A clone is the same host and starts with nothing read.
+    let cloned = host.clone();
+    assert_eq!(cloned, host, "a host is its repository");
+    assert!(cloned.is_draft(&change).expect("draft state"));
+    assert_eq!(reads_since(&hosted, before).views, 3);
+}
 
-    // Every write forgets what was listed, whether or not the host took it, so the
-    // reads after it see the change request as it now stands.
-    let writes: [(&str, &Write<'_>); 5] = [
-        ("describe", &|change| {
-            host.describe_change(change, None, "described since the listing")
-                .expect("the host takes the description");
-        }),
-        ("merge", &|change| {
-            let _ = host.merge(change, onevcs::MergePolicy::ChangeOpen);
-        }),
-        ("retarget", &|change| {
-            let _ = host.retarget_change(&change.id, "main", None);
-        }),
-        ("reopen", &|change| {
-            let _ = host.reopen_change(&change.id);
-        }),
-        ("ready", &|change| {
-            host.ready_for_review(change).expect("the host lifts it");
-        }),
-    ];
-    for (write, act) in writes {
-        let change = listed(&host);
-        act(&change);
-        let before = hosted.world.host_calls().len();
-        let draft = host.is_draft(&change).expect("draft state");
-        let description = host.change_description(&change).expect("a description");
-        assert_eq!(views(before), 2, "{write}: both read afresh");
-        assert_eq!(description.body, "described since the listing", "{write}");
-        assert_eq!(
-            draft,
-            write != "ready",
-            "{write}: the draft state as it now stands"
+/// A held draft whose push runs a `pre-push` hook that does `move` to change request 1
+/// on the host while the push is in flight, answering what it printed and what it read.
+fn republished_while_the_host_moves(hosted: &Hosted, token: &str, change: &str) -> (String, Reads) {
+    let state = hosted.world.path("gh-state");
+    let worktree = std::path::PathBuf::from(
+        status(hosted, token)["session"]["worktree"]
+            .as_str()
+            .expect("the session's worktree"),
+    );
+    hosted.world.install_pre_push(
+        &worktree,
+        &format!("touch '{}'", state.join(change).display()),
+    );
+    hosted.world.commit_file(
+        &worktree,
+        "two.txt",
+        "two\n",
+        "feat: more of the raced thing",
+    );
+    let before = hosted.world.host_calls().len();
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", token, "--draft"])
+        .assert()
+        .success();
+    (
+        String::from_utf8_lossy(&assert.get_output().stdout).into_owned(),
+        reads_since(hosted, before),
+    )
+}
+
+#[test]
+fn one_read_per_republication_cannot_see_the_host_move_during_the_push() {
+    // The conflict the single read makes, demonstrated rather than exempted. A held
+    // draft republished with one read of its change request reads it before the push —
+    // which is what refuses a change open for review before anything is pushed. The
+    // build before it read the change request a second time after the push and refused,
+    // or opened a new draft, on what the host did meanwhile; one read cannot see that,
+    // so "read once" and "every refusal and result as before" cannot both hold here.
+    for (moved, then) in [("ready-1", "lifted"), ("closed-1", "closed")] {
+        let hosted = Hosted::new(OPEN);
+        let token = hosted.change("feature/raced", "feat: add the raced thing");
+        hosted
+            .world
+            .onevcs()
+            .args(["publish", &token, "--draft"])
+            .assert()
+            .success();
+        let (printed, reads) = republished_while_the_host_moves(&hosted, &token, moved);
+        // One read, before the push, which found the draft still a draft.
+        assert_eq!((reads.lists, reads.views), (1, 0), "{then}");
+        // The premise: the host moved while the push ran.
+        assert!(hosted.world.path("gh-state").join(moved).exists(), "{then}");
+        // What one read reports: the draft held, as the read before the push saw it.
+        // The two-read build ended the lifted case as a pushed, unverified merge path
+        // naming the change open for review (exit 1, the branch on the origin), and in
+        // the closed case listed again, found nothing open, and opened a second draft.
+        assert!(
+            printed.contains("https://github.com/acme-corp/hosted/pull/1")
+                && printed.contains("open as a draft"),
+            "{then}: {printed}"
         );
+        assert_eq!(
+            hosted
+                .world
+                .host_calls()
+                .iter()
+                .filter(|call| call.starts_with("pr create"))
+                .count(),
+            1,
+            "{then}: no second draft was opened"
+        );
+        // The next read sees the host as it now stands.
+        match then {
+            "lifted" => assert_eq!(shown(&hosted, &token)["draft"], false),
+            _ => assert_eq!(shown(&hosted, &token), Value::Null),
+        }
     }
 }
 

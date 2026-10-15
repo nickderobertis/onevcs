@@ -1257,6 +1257,16 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 /// publication of the same session that still resolved the recorded stack would
 /// compare the branch against a branch below it that has landed and gone.
 fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishOutcome, Target)> {
+    // One operation, so what the host lists of a change request here answers this
+    // publication's next read of it and nobody else's.
+    crate::host::within_one_operation(|| publish_resolving(context, stream))
+}
+
+/// [`run_resolving`], inside its operation.
+fn publish_resolving(
+    context: &Context<'_>,
+    stream: &mut Stream,
+) -> Result<(PublishOutcome, Target)> {
     // Input, rejected at its boundary: before the fetch, before the sync, and before
     // anything reaches a remote. A draft is a state of a *change request*, so a
     // publication that opens none cannot be in it, and a reason nobody can read is
@@ -2079,11 +2089,12 @@ fn publish_as_change(
     // where the branch would already be on the remote and the refusal would read as a
     // merge path nobody could verify.
     refuse_an_unhosted_identity(&context.resolution.key)?;
-    if let Some(reason) = &context.draft {
-        if let Some(refusal) = refuse_a_draft_over_a_reviewed_change(context, reason) {
-            return Err(refusal);
-        }
-    }
+    // What the one read of the change request before the push found, carried to the
+    // landing after it rather than read again: see [`HeldDraft`].
+    let held = match &context.draft {
+        Some(reason) => held_draft_before_the_push(context, reason)?,
+        None => None,
+    };
     // Every change policy watches its checks now, `change-open` included, so every one
     // is held to the knobs that bound the watch — before anything is pushed.
     context.checks_wait.effective()?;
@@ -2205,7 +2216,7 @@ fn publish_as_change(
         return Ok(land_deferred(context, stream, adopt));
     }
     match pushed_at.as_deref() {
-        Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned())),
+        Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned()), held),
         None => Err(crate::error::invalid(format!(
             "{:?} was pushed and this worktree will not say which commit it is at, so which of \
              the host's checks are about what was just pushed cannot be decided",
@@ -2310,6 +2321,7 @@ fn land_as_change(
     stream: &mut Stream,
     subject: &str,
     pushed: &Sha,
+    held: Option<HeldDraft>,
 ) -> Result<PublishOutcome> {
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;
@@ -2319,11 +2331,32 @@ fn land_as_change(
     let author = host.authenticated_user()?;
     let lifecycle = !context.drafts.disabled;
 
+    if let Some(HeldDraft(change)) = held {
+        // The draft the read before the push found, at the commit this publication
+        // just pushed onto its head — the push was accepted, so that is where it is.
+        let change = ChangeRequest {
+            head_sha: pushed.clone(),
+            ..change
+        };
+        record_boundary(context, &change, pushed);
+        return land_opened_change(
+            context,
+            stream,
+            host.as_ref(),
+            &author,
+            &change,
+            Adopted::HeldDraft,
+            pushed,
+        );
+    }
     let existing = host.find_changes(&context.branch, context.target.base())?;
     // Whether the host already held this change request: with the lifecycle off,
     // that decides whether there can be a draft to lift, since a change this
     // publication just opened without a reason is one nobody drafted.
-    let adopted = !existing.is_empty();
+    let adopted = match existing.is_empty() {
+        true => Adopted::Opened,
+        false => Adopted::Found,
+    };
     let change = match existing.into_iter().next() {
         Some(change) => change,
         None => host.open_change(ChangeSpec {
@@ -2367,6 +2400,16 @@ pub(crate) fn resume(
     pushed: &Sha,
     stream: &mut Stream,
 ) -> Result<PublishOutcome> {
+    crate::host::within_one_operation(|| resume_within(context, change, pushed, stream))
+}
+
+/// [`resume`], inside its operation.
+fn resume_within(
+    context: &Context<'_>,
+    change: &ChangeRequest,
+    pushed: &Sha,
+    stream: &mut Stream,
+) -> Result<PublishOutcome> {
     context.checks_wait.effective()?;
     gh::checks_poll()?;
     crate::host::check_source_names_a_source()?;
@@ -2389,7 +2432,7 @@ pub(crate) fn resume(
             host.as_ref(),
             &author,
             change,
-            true,
+            Adopted::Found,
             pushed,
         )
     })()
@@ -2440,7 +2483,7 @@ fn land_opened_change(
     host: &dyn RemoteHost,
     author: &str,
     change: &ChangeRequest,
-    adopted: bool,
+    adopted: Adopted,
     pushed: &Sha,
 ) -> Result<PublishOutcome> {
     let lifecycle = !context.drafts.disabled;
@@ -2456,12 +2499,12 @@ fn land_opened_change(
     );
 
     if let Some(reason) = &context.draft {
-        return hold_as_draft(context, host, change, reason, stream);
+        return hold_as_draft(context, host, change, reason, stream, adopted);
     }
     let drafted = if lifecycle {
         await_as_draft(host, change, stream)?
     } else {
-        if adopted {
+        if adopted != Adopted::Opened {
             lift_any_draft(host, change, stream)?;
         }
         false
@@ -2784,6 +2827,7 @@ fn hold_as_draft(
     change: &ChangeRequest,
     reason: &DraftReason,
     stream: &mut Stream,
+    adopted: Adopted,
 ) -> Result<PublishOutcome> {
     // Asked of the host rather than assumed from having said `--draft`, and the two
     // cases it separates are both real: a host whose `open_change` was written before
@@ -2792,7 +2836,10 @@ fn hold_as_draft(
     // and inventing one would be a public item nobody approved. Either way the answer
     // is the same refusal, because either way the change on the host can land while
     // its caller believes it cannot.
-    if !host.is_draft(change)? {
+    //
+    // A draft this publication's read before the push found is the one answer that is
+    // not asked again: that read is this call's one read of the change request.
+    if adopted != Adopted::HeldDraft && !host.is_draft(change)? {
         return Err(already_open_for_review(context, change, reason));
     }
     // The publication record, and the only place the reason is written: see
@@ -2828,37 +2875,68 @@ fn already_open_for_review(
     ))
 }
 
-/// Refuse a draft over a change request the host already has open for review, before
-/// anything reaches the remote.
+/// How the change request a publication lands came to be open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Adopted {
+    /// This publication opened it, so nobody drafted it but this publication.
+    Opened,
+    /// The host already held it, found after the push.
+    Found,
+    /// The host already held it as a draft, found by the read before the push — this
+    /// call's one read of it.
+    HeldDraft,
+}
+
+/// The draft a held-draft publication's read before the push found, carried to its
+/// landing after the push as that call's snapshot of the change request.
 ///
-/// The same question [`hold_as_draft`] asks after the change is adopted, asked at the
-/// boundary as well — because everything past the publishing push is reported as a
-/// merge path this build could not read, and this is not one of those. The merge path
-/// ruled on the push perfectly well; what stopped the publication is a state the host
-/// *answered*, and an operator told their push is unverified would go looking for a
-/// failure that never happened.
+/// One read per call is what a quota-bound caller pays for a republication, so the
+/// landing does not list the change request again or ask its draft state again. What
+/// that gives up is any change on the host between the read and the end of the push —
+/// the draft lifted, or closed — which a second read used to notice: such a draft is
+/// reported held as the read saw it, and the next publication or read sees the host as
+/// it then stands (`docs/contract.md` records this, and
+/// `tests/e2e/change.rs` holds both sides of it).
+struct HeldDraft(ChangeRequest);
+
+/// The one read before the push of a publication holding a draft: refuse it over a
+/// change request the host already has open for review, before anything reaches the
+/// remote, and otherwise answer the draft it found for the landing to adopt.
 ///
-/// **Only a definite answer refuses.** A host this build has no implementation for,
-/// one that cannot be reached, and one that will not say whether a change is a draft
-/// are each left exactly where they are met today — after the push, by the paths that
-/// already handle them — so this can only ever move a refusal *earlier*, never invent
-/// one. `hold_as_draft` stays the authoritative check for the same reason it existed
-/// before this: a host may take `--draft` and open an ordinary change anyway.
-fn refuse_a_draft_over_a_reviewed_change(
+/// Refusing here rather than after the push matters because everything past the
+/// publishing push is reported as a merge path this build could not read, and this is
+/// not one of those. The merge path ruled on the push perfectly well; what stopped the
+/// publication is a state the host *answered*, and an operator told their push is
+/// unverified would go looking for a failure that never happened.
+///
+/// **Only a definite answer refuses or is carried.** A host this build has no
+/// implementation for, one that cannot be reached, and one that will not say whether a
+/// change is a draft are each left exactly where they are met today — after the push,
+/// where the landing reads the host itself — so this can only ever move a refusal
+/// *earlier*, never invent one. A change this publication opens is still asked whether
+/// it is a draft after it is opened: a host may take `--draft` and open an ordinary
+/// change anyway.
+fn held_draft_before_the_push(
     context: &Context<'_>,
     reason: &DraftReason,
-) -> Option<Error> {
-    let host = change_host(&context.resolution.key)
+) -> Result<Option<HeldDraft>> {
+    let Some(host) = change_host(&context.resolution.key)
         .ok()
-        .and_then(|slug| context.hosting.for_repo(&slug).ok())?;
-    let open = host
+        .and_then(|slug| context.hosting.for_repo(&slug).ok())
+    else {
+        return Ok(None);
+    };
+    let Some(open) = host
         .find_changes(&context.branch, context.target.base())
-        .ok()?
-        .into_iter()
-        .next()?;
+        .ok()
+        .and_then(|found| found.into_iter().next())
+    else {
+        return Ok(None);
+    };
     match host.is_draft(&open) {
-        Ok(false) => Some(already_open_for_review(context, &open, reason)),
-        _ => None,
+        Ok(false) => Err(already_open_for_review(context, &open, reason)),
+        Ok(true) => Ok(Some(HeldDraft(open))),
+        Err(_) => Ok(None),
     }
 }
 

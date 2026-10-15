@@ -5765,17 +5765,32 @@ as before.
 
 **A change request is read once per call.** GitHub's `find_changes` asks `gh pr list` for
 each change request's draft state, title and body beside the fields it always read — one
-query, at the same charge — and the next `is_draft` or `change_description` of that change
-request on the same host answers from it, once, rather than with another `gh pr view`;
-`change_description` asks the draft state beside the description for the same reason. A
-write to the change request (`ready_for_review`, `describe_change`, `merge`,
-`retarget_change`, `reopen_change`) forgets what was listed about it, and an answer is
-spent by the read it answers, so a later read asks the host again. A publication that
-adopts an existing change request therefore reads it with one `gh pr list` — not a list and
-then a view of its draft state — and `session_change` reads it with one `gh pr list` rather
-than a list and two views. A held-draft publication over an existing change request reads
-it once on each side of its push, since its check before the push only moves a refusal
-earlier and the read after the push stays the authoritative one. No public item is added.
+query, at the same charge — and, inside one operation of this crate's (a publication, a
+resumed publication, `session_change`, `describe_change`, `ready_change`), the next
+`is_draft` or `change_description` of that change request on the same host answers from
+it, once, rather than with another `gh pr view`; `change_description` asks the draft state
+beside the description for the same reason. An answer is spent by the read it answers,
+`ready_for_review` and `describe_change` forget what was listed about the change request
+they wrote, and nothing listed is kept outside an operation or answered to another one: a
+caller holding a `GitHub` and using it directly reads the host at every call, as before.
+A publication that adopts an existing change request therefore reads it with one `gh pr
+list` — not a list and then a view of its draft state — and `session_change` with one
+rather than a list and two views.
+
+**A held draft republished reads its change request once, and the cost is stated.** A
+publication holding a draft (`draft` set) over a change request the host already has reads
+it once, before its push: that read refuses a change open for review before anything is
+pushed, exactly as before, and the draft it finds is the one the landing adopts and
+reports, with no second listing or draft-state read after the push. What a single read
+cannot see is the host moving *during* the push. The build before this one read the change
+request again after the push, so a draft lifted while the push ran ended as a pushed,
+unverified merge path naming the change open for review (exit `1`), and a draft closed
+while it ran was replaced by a second draft. With one read, both report the draft held, as
+the read before the push saw it, and the next read or publication sees the host as it then
+stands. "Read once" and "every refusal and result as before" cannot both hold for a host
+that moves during the push; this amendment chooses the single read, and
+`one_read_per_republication_cannot_see_the_host_move_during_the_push` in
+`tests/e2e/change.rs` demonstrates both cases. No public item is added.
 
 Event kinds added: none.
 

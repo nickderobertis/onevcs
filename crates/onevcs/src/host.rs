@@ -989,19 +989,51 @@ pub struct GitHub {
 /// [`RemoteHost::is_draft`], [`RemoteHost::change_description`] — is answered from the
 /// call that already obtained it rather than by another `gh pr view`.
 ///
-/// Each answer is spent by the read it answers: a later read of the same field asks
-/// the host again, so nothing here outlives the moment it describes. A write to the
-/// change request forgets what was listed about it. What a host has read in passing is
-/// not part of which host it is, so a clone starts with nothing and two hosts compare
-/// by their repository alone.
+/// Kept only inside one operation of this crate's ([`within_one_operation`]), and
+/// answered only to a read inside that same operation: a caller holding one `GitHub` and
+/// using it directly, or across operations of its own, is never answered from a
+/// listing it made earlier, so nothing a listing saw reaches a later caller. Each answer
+/// is spent by the read it answers, and a write a verb reads the change request back
+/// after — `ready_for_review`, `describe_change` — forgets what was listed about it.
+/// What a host has read in passing is not part of which host it is, so a clone starts
+/// with nothing and two hosts compare by their repository alone.
 #[derive(Default)]
 struct Listed(std::sync::Mutex<BTreeMap<String, ListedChange>>);
 
-/// What one listing said about one change request, each half until it is read.
-#[derive(Default)]
+/// What one listing said about one change request, each half until it is read, and the
+/// operation it was read in.
 struct ListedChange {
+    operation: u64,
     draft: Option<bool>,
     description: Option<Description>,
+}
+
+std::thread_local! {
+    /// The operation this thread is inside, where it is inside one.
+    static OPERATION: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The next operation's number, unique for the life of the process.
+static NEXT_OPERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Run `operation` as one operation of this crate's: what a `GitHub` host lists inside it
+/// may answer the reads made inside it, and nothing outside it. An operation run inside
+/// another is part of the outer one.
+pub(crate) fn within_one_operation<T>(operation: impl FnOnce() -> T) -> T {
+    if OPERATION.with(std::cell::Cell::get).is_some() {
+        return operation();
+    }
+    /// Ends the operation however `operation` returns, a panic included.
+    struct Ended;
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            OPERATION.with(|current| current.set(None));
+        }
+    }
+    let number = NEXT_OPERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OPERATION.with(|current| current.set(Some(number)));
+    let _ended = Ended;
+    operation()
 }
 
 impl Listed {
@@ -1015,21 +1047,46 @@ impl Listed {
         act(&mut held)
     }
 
-    /// Keep what a read said about change request `id`, replacing anything older.
+    /// Keep what a read said about change request `id` for the rest of the current
+    /// operation, replacing anything older; outside an operation, keep nothing.
     fn keep(&self, id: &str, draft: Option<bool>, description: Option<Description>) {
-        self.with(|listed| {
-            listed.insert(id.to_owned(), ListedChange { draft, description });
+        let operation = OPERATION.with(std::cell::Cell::get);
+        self.with(|listed| match operation {
+            Some(operation) => {
+                listed.insert(
+                    id.to_owned(),
+                    ListedChange {
+                        operation,
+                        draft,
+                        description,
+                    },
+                );
+            }
+            None => {
+                listed.remove(id);
+            }
         });
     }
 
-    /// The draft state kept for `id`, spent by this read.
-    fn take_draft(&self, id: &str) -> Option<bool> {
-        self.with(|listed| listed.get_mut(id).and_then(|kept| kept.draft.take()))
+    /// What was kept for `id` in the current operation, if anything.
+    fn kept_now<'l>(
+        listed: &'l mut BTreeMap<String, ListedChange>,
+        id: &str,
+    ) -> Option<&'l mut ListedChange> {
+        let operation = OPERATION.with(std::cell::Cell::get)?;
+        listed
+            .get_mut(id)
+            .filter(|kept| kept.operation == operation)
     }
 
-    /// The description kept for `id`, spent by this read.
+    /// The draft state kept for `id` in this operation, spent by this read.
+    fn take_draft(&self, id: &str) -> Option<bool> {
+        self.with(|listed| Self::kept_now(listed, id).and_then(|kept| kept.draft.take()))
+    }
+
+    /// The description kept for `id` in this operation, spent by this read.
     fn take_description(&self, id: &str) -> Option<Description> {
-        self.with(|listed| listed.get_mut(id).and_then(|kept| kept.description.take()))
+        self.with(|listed| Self::kept_now(listed, id).and_then(|kept| kept.description.take()))
     }
 
     /// Forget everything kept for `id`, because something was written to it.
@@ -2072,7 +2129,6 @@ impl RemoteHost for GitHub {
     }
 
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
-        self.listed.forget(&cr.id.0);
         match policy {
             MergePolicy::LocalDirect | MergePolicy::ChangeOpen => Ok(MergeOutcome::Open),
             MergePolicy::ChangeAuto => {
@@ -2421,13 +2477,11 @@ impl RemoteHost for GitHub {
         base: &str,
         body: Option<&str>,
     ) -> Result<ReadCost> {
-        self.listed.forget(&change.0);
         standings::github::retarget(&self.repo, change, base, body)
     }
 
     /// One REST request — see `standings::github`.
     fn reopen_change(&self, change: &ChangeId) -> Result<ReadCost> {
-        self.listed.forget(&change.0);
         standings::github::reopen(&self.repo, change)
     }
 
