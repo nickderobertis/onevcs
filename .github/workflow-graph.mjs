@@ -676,6 +676,9 @@ function startsWorkflows(run, row, step) {
     const where = `${run.workflow}:${row.job}`;
     if (token === undefined)
         throw new Error(`${where}: an effect step names no GITHUB_TOKEN/GH_TOKEN`);
+    return tokenStarts(where, token);
+}
+function tokenStarts(where, token) {
     const named = String(token).match(
         /^\$\{\{\s*(?:secrets\.([A-Za-z_][A-Za-z0-9_]*)|(github\.token))\s*\}\}$/,
     );
@@ -683,6 +686,55 @@ function startsWorkflows(run, row, step) {
         throw new Error(`${where}: unresolved effect token ${JSON.stringify(token)}`);
     return !named[2] && named[1] !== "GITHUB_TOKEN";
 }
+// A `git push` inside a repository script a step runs is read from that script:
+// uncommented `git push origin "HEAD:refs/heads/<ref>"` lines, where `<ref>` is a
+// literal or a variable the script assigns from the head branch release-plz's
+// `-o json` output names. The push authenticates with what the job's
+// `actions/checkout` persisted, so that token decides whether it starts runs.
+function scriptPushes(where, path, args, text) {
+    const body = text
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n")
+        .replace(/\\\n/g, " ");
+    const pushes = [...body.matchAll(/\bgit\s+push\b[^\n]*/g)];
+    return pushes.map(([line]) => {
+        const ref = line.match(/\borigin\s+"?HEAD:refs\/heads\/([^"\s]+)"?/)?.[1];
+        if (!ref)
+            throw new Error(`${where}: unresolved push in ${path}: ${line.trim()}`);
+        const commit =
+            body.match(/\bcommit\b[^\n]*?-a?m\s+"([^"]+)"/)?.[1] ?? null;
+        const variable = ref.match(/^\$\{?(\w+)\}?$/)?.[1];
+        if (!variable) {
+            if (ref.includes("$"))
+                throw new Error(`${where}: unresolved pushed ref ${ref} in ${path}`);
+            return { branch: ref, commit };
+        }
+        const source = body.match(
+            new RegExp(
+                `^\\s*${variable}="\\$\\(jq -r '\\.prs\\[0\\]\\.head_branch[^']*' "\\$(\\w+)"\\)"`,
+                "m",
+            ),
+        )?.[1];
+        const position = source
+            ? body.match(new RegExp(`^\\s*${source}="\\$(\\d)"`, "m"))?.[1]
+            : undefined;
+        if (!position || args[Number(position) - 1] === undefined)
+            throw new Error(`${where}: unresolved pushed ref ${ref} in ${path}`);
+        return { file: args[Number(position) - 1], commit };
+    });
+}
+function checkoutToken(where, row, upTo) {
+    const steps = stepsOf(row);
+    const checkout = steps
+        .slice(0, steps.indexOf(upTo))
+        .filter((step) => /^actions\/checkout@/.test(step.uses || ""))
+        .at(-1);
+    if (!checkout || checkout.with?.["persist-credentials"] === false)
+        throw new Error(`${where}: a script pushes with no persisted checkout credential`);
+    return tokenStarts(where, checkout.with?.token ?? "${{ github.token }}");
+}
+const unquote = (word) => word.replace(/^"(.*)"$/, "$1");
 const carried = (ev) => ({
     pypi: ev.pypi,
     npm: ev.npm,
@@ -696,6 +748,7 @@ function effects(run, ev, config) {
     for (const row of run.rows) {
         if (!row.scheduled || row.rebuild) continue;
         const opened = [];
+        const written = new Map();
         for (const step of stepsOf(row)) {
             if (typeof step.run !== "string" || !stepRuns(row, step)) continue;
             const cause = `${run.workflow}:${row.job}`;
@@ -726,14 +779,22 @@ function effects(run, ev, config) {
                         });
                 }
             }
+            const output = RELEASE_PR.test(step.run)
+                ? step.run.match(/>\s*("?[^\s"]+"?)\s*$/m)?.[1]
+                : undefined;
+            // After a release on the same push it reports no PR (`{"prs": []}`).
+            if (output && pushed && released) written.set(unquote(output), null);
             if (RELEASE_PR.test(step.run) && pushed && !released) {
+                const headBranch = `${config.prefix}2026`;
+                if (output)
+                    written.set(unquote(output), { headBranch, base: ev.branch });
                 if (startsWorkflows(run, row, step)) {
                     const pr = {
                         ...carried(ev),
                         event: "pull_request",
                         action: "opened",
                         branch: ev.branch,
-                        headBranch: `${config.prefix}2026`,
+                        headBranch,
                         fork: false,
                         diff: "version",
                         cause,
@@ -743,8 +804,60 @@ function effects(run, ev, config) {
                 }
             }
             // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+            for (const [, path, rest] of step.run.matchAll(
+                /\bbash\s+(scripts\/[\w./-]+\.sh)\b([^\n]*)/g,
+            )) {
+                const args = rest.trim().split(/\s+/).filter(Boolean).map(unquote);
+                for (const push of scriptPushes(
+                    cause,
+                    path,
+                    args,
+                    config.readScript(path),
+                )) {
+                    if (!checkoutToken(cause, row, step)) continue;
+                    if (push.file === undefined) {
+                        out.push({
+                            ...carried(ev),
+                            event: "push",
+                            action: null,
+                            branch: push.branch,
+                            headCommit: push.commit,
+                            diff: "source",
+                            cause: `${cause} via ${path}`,
+                        });
+                        continue;
+                    }
+                    const pr = written.get(push.file);
+                    if (pr === null) continue;
+                    if (!pr)
+                        throw new Error(
+                            `${cause}: ${path} pushes to the head named in ${push.file}, which no release-pr step wrote`,
+                        );
+                    // A commit on an open pull request's head is a synchronize of
+                    // it; the carried lockfile keeps its diff version-only.
+                    const synchronized = {
+                        ...carried(ev),
+                        event: "pull_request",
+                        action: "synchronize",
+                        branch: pr.base,
+                        headBranch: pr.headBranch,
+                        fork: false,
+                        diff: "version",
+                        headCommit: push.commit,
+                        cause: `${cause} via ${path}`,
+                    };
+                    opened.push(synchronized);
+                    out.push(synchronized);
+                }
+            }
             if (AUTO_MERGE.test(step.run))
-                for (const pr of opened)
+                // The merge lands the head as the last push left it.
+                for (const pr of opened.filter(
+                    (pr, i) =>
+                        !opened
+                            .slice(i + 1)
+                            .some((later) => later.headBranch === pr.headBranch),
+                ))
                     pr.merge = {
                         title: /--squash/.test(step.run)
                             ? config.title
@@ -806,9 +919,10 @@ export function lifecycle(
         sources = workflows(),
         limit = 64,
         releasePlz = "release-plz.toml",
+        readScript = (path) => readFileSync(path, "utf8"),
     },
 ) {
-    const config = releasePlzConfig(releasePlz);
+    const config = { ...releasePlzConfig(releasePlz), readScript };
     const subscribed = new Set(
         Object.values(sources).flatMap((wf) =>
             typeof wf.on === "object" && !Array.isArray(wf.on)

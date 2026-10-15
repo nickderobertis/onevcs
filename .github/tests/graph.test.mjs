@@ -213,6 +213,7 @@ test("actual workflow/call graph over event, diff, ownership and publication com
                 "base-push",
                 "pr-closed",
                 "pr-opened",
+                "pr-synchronize",
                 "release-pr-merge",
                 "pr-closed",
                 "release-tag",
@@ -450,6 +451,7 @@ test("editing a trigger, condition or artifact dependency changes the derived ru
                 "pr-synchronize",
                 "base-push",
                 "pr-opened",
+                "pr-synchronize",
                 "release-pr-merge",
                 "release-published",
             ],
@@ -670,8 +672,17 @@ test("lifecycle derivation refuses what it cannot trace instead of counting it a
             "onevcs-1.2.3",
         );
         // The classifier admits only release-plz's own prefix, so a renamed
-        // release branch is an ordinary PR and spends a Mac run of its own.
-        assert.equal(renamed.runs, 3);
+        // release branch is an ordinary PR: its opening and the carried lockfile
+        // push each spend a Mac run.
+        assert.deepEqual(
+            renamed.spending.map((x) => [x.event, x.workflow]),
+            [
+                ["pr-synchronize", "ci.yml"],
+                ["pr-opened", "ci.yml"],
+                ["pr-synchronize", "ci.yml"],
+                ["release-published", "release.yml"],
+            ],
+        );
         // The run's own token in its `github.token` spelling starts nothing either.
         assert.equal(
             derive((s) => {
@@ -693,6 +704,123 @@ test("lifecycle derivation refuses what it cannot trace instead of counting it a
         );
     } finally {
         rmSync(scratch, { recursive: true, force: true });
+        h.cleanup();
+    }
+});
+
+// release-plz.yml's carry step runs scripts/release-pr-carry.sh, whose `git push`
+// onto the release PR's head is read from the script itself.
+test("the lockfile carry's push onto the release PR is a derived synchronize run", () => {
+    const h = history();
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const carry = "scripts/release-pr-carry.sh";
+        const real = readFileSync(carry, "utf8");
+        const derive = ({ mutate = () => {}, script = real } = {}) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), {
+                classify,
+                sources,
+                readScript: (path) =>
+                    path === carry ? script : readFileSync(path, "utf8"),
+            });
+        };
+        const releaseHead = (l) =>
+            l.events.filter((e) => e.head === "release-plz-2026");
+        const baseline = derive();
+        assert.deepEqual(
+            releaseHead(baseline).map((e) => [e.label, e.cause]),
+            [
+                ["pr-opened", "release-plz.yml:release-plz"],
+                [
+                    "pr-synchronize",
+                    "release-plz.yml:release-plz via scripts/release-pr-carry.sh",
+                ],
+                ["release-pr-merge", "merge of release-plz-2026"],
+                ["pr-closed", "merge of release-plz-2026"],
+            ],
+        );
+        const sync = releaseHead(baseline)[1];
+        assert.equal(sync.commit, "chore: carry compat/Cargo.lock to the release version");
+        // The authorized version-only head stays Mac-free after the carry, and
+        // its runs reuse artifacts built for that exact head.
+        const syncRuns = baseline.workflow_runs.filter((r) => r.index === sync.index);
+        assert.deepEqual(
+            syncRuns.map((r) => r.workflow).sort(),
+            ["ci.yml", "notignored.yml", "smoke.yml", "visual-docs.yml"],
+        );
+        assert.equal(syncRuns.every((r) => r.mac_jobs === 0), true);
+        const edges = syncRuns.flatMap((r) => r.artifacts);
+        assert.ok(edges.length > 0);
+        assert.equal(
+            edges.every((a) => a.scope === "exact-head" && a.producer),
+            true,
+        );
+        assert.equal(baseline.runs, 2);
+
+        // Removing the push removes the run.
+        const noPush = derive({
+            script: real.replace(/^git push[^\n]*\\\n[^\n]*\n/m, ""),
+        });
+        assert.notEqual(noPush.events.length, baseline.events.length);
+        assert.deepEqual(
+            releaseHead(noPush).map((e) => e.label),
+            ["pr-opened", "release-pr-merge", "pr-closed"],
+        );
+        // The step no longer running the script removes it too.
+        const noStep = derive({
+            mutate: (s) =>
+                (s["release-plz.yml"].jobs["release-plz"].steps = s[
+                    "release-plz.yml"
+                ].jobs["release-plz"].steps.filter(
+                    (step) => !(step.run || "").includes(carry),
+                )),
+        });
+        assert.deepEqual(
+            releaseHead(noStep).map((e) => e.label),
+            ["pr-opened", "release-pr-merge", "pr-closed"],
+        );
+        // Pushed with the run's own token, the commit starts nothing.
+        const ownToken = derive({
+            mutate: (s) =>
+                (s["release-plz.yml"].jobs["release-plz"].steps[0].with.token =
+                    "${{ github.token }}"),
+        });
+        assert.equal(
+            releaseHead(ownToken).some((e) => e.label === "pr-synchronize"),
+            false,
+        );
+        // Retargeted to another branch, it is a push there, not a synchronize.
+        const elsewhere = derive({
+            script: real.replace('"HEAD:refs/heads/$branch"', '"HEAD:refs/heads/elsewhere"'),
+        });
+        assert.equal(
+            releaseHead(elsewhere).some((e) => e.label === "pr-synchronize"),
+            false,
+        );
+        assert.equal(
+            elsewhere.events.some(
+                (e) => e.event === "push" && e.cause.endsWith(carry),
+            ),
+            true,
+        );
+        // Pushes this model cannot attribute are refused, never dropped.
+        for (const [script, mutate, message] of [
+            [real.replace('"HEAD:refs/heads/$branch"', '"HEAD:refs/heads/$other"'), () => {}, /unresolved pushed ref \$other/],
+            [real.replace('origin "HEAD:refs/heads/$branch"', "--all"), () => {}, /unresolved push/],
+            [
+                real,
+                (s) =>
+                    (s["release-plz.yml"].jobs["release-plz"].steps[0].with[
+                        "persist-credentials"
+                    ] = false),
+                /no persisted checkout credential/,
+            ],
+        ])
+            assert.throws(() => derive({ script, mutate }), message);
+    } finally {
         h.cleanup();
     }
 });
