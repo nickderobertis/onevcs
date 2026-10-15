@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { sourceDigest } from "../workflow-graph.mjs";
 test("reporting commands reject missing or malformed telemetry without rerunning workflows", () => {
     const base =
         process.env.ONEPIPELINE_NODE_SCRATCH_DIR ||
@@ -32,6 +33,45 @@ test("reporting commands reject missing or malformed telemetry without rerunning
             );
             assert.notEqual(result.status, 0);
             assert.match(result.stderr, /ACTION: run github-workflows:test/);
+        }
+        // Complete in shape, so only the named check can be what refuses it.
+        const shaped = {
+            schema_version: 2,
+            source_digest: sourceDigest(),
+            event_classes: Array.from({ length: 12 }, (_, i) => `class-${i}`),
+            scenarios: [{ rows: [] }],
+            lifecycles: [{ spending: [], events: [], workflow_runs: [] }],
+            metrics: { jobs_per_run: 0, runs_per_change: 0 },
+        };
+        const budget = (record) => {
+            writeFileSync(path, JSON.stringify(record));
+            return spawnSync(
+                "node",
+                [
+                    ".github/macos-budget.mjs",
+                    "--metric",
+                    "runs-per-change",
+                    "--telemetry",
+                    path,
+                ],
+                { encoding: "utf8", env: { ...process.env, ONEBUDGETSPEC_RESULT: "" } },
+            );
+        };
+        assert.match(budget(shaped).stderr, /invoke through onebudgetspec/);
+        assert.match(
+            budget({ ...shaped, schema_version: 1 }).stderr,
+            /missing\/stale\/incomplete/,
+        );
+        assert.match(
+            budget({ ...shaped, source_digest: "0".repeat(64) }).stderr,
+            /missing\/stale\/incomplete/,
+        );
+        for (const field of ["events", "workflow_runs", "spending"]) {
+            const lifecycle = { ...shaped.lifecycles[0] };
+            delete lifecycle[field];
+            const result = budget({ ...shaped, lifecycles: [lifecycle] });
+            assert.notEqual(result.status, 0);
+            assert.match(result.stderr, /lifecycle events\/runs\/spending must be arrays/);
         }
         const semantic = spawnSync("python3", [".github/version-only.py"], {
             input: JSON.stringify({

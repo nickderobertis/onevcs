@@ -436,12 +436,11 @@ export function resolveScenario(
         .filter(([file, wf]) => triggered(wf, scenario, file))
         .flatMap(([file, wf]) => {
             const rows = resolveRun(file, wf, scenario, classification);
-            artifacts({ workflow: file, scenario, rows }, null);
+            traceArtifactsAddingRebuilds({ workflow: file, scenario, rows }, null);
             return rows;
         });
 }
 
-// ---- Artifacts: which job consumes what, and whether something made it first ----
 const UPLOAD = /^actions\/upload-artifact@/;
 const DOWNLOAD = /^actions\/download-artifact@/;
 const stepsOf = (row) => row.definition?.steps || [];
@@ -469,8 +468,9 @@ const artifactScope = (run) =>
 // `run-id: github.event.workflow_run.id`. An artifact nothing upstream of the job
 // made is one the job would have to build again, so it is added to the run as a
 // rebuild row — on a Mac when it is a Darwin artifact, because this repository
-// builds those only natively (`scripts/release-darwin.sh`).
-export function artifacts(run, upstream) {
+// builds those only natively (`scripts/release-darwin.sh`). Returns the edges and
+// appends those rebuild rows to `run.rows`.
+export function traceArtifactsAddingRebuilds(run, upstream) {
     const edges = [];
     const own = uploads(run);
     for (const row of [...run.rows]) {
@@ -554,7 +554,6 @@ export function artifacts(run, upstream) {
     return edges;
 }
 
-// ---- Lifecycle: the events one change sets off, read from the workflows ----
 // What a step's command does on GitHub is the third-party boundary this model
 // states rather than executes. Only these commands are read as starting further
 // events; release-plz's own rules (tag a version that has no tag yet, otherwise
@@ -563,31 +562,53 @@ const RELEASE = /\brelease-plz\s+release(?![-\w])/;
 const RELEASE_PR = /\brelease-plz\s+release-pr\b/;
 const AUTO_MERGE = /\bgh\s+pr\s+merge\b[^\n]*--auto/;
 const DISPATCH = /\bgh\s+workflow\s+run\s+(\S+)([^\n]*)/;
-function releasePlzConfig() {
-    const read = `import json,tomllib;print(json.dumps(tomllib.load(open("release-plz.toml","rb")).get("workspace",{})))`;
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] release-plz's
+// branch prefix and PR title are the forge-side half of its behaviour: they appear
+// only when the pinned tool opens a pull request on GitHub, which no offline tier can
+// do, and `release-plz.toml` names neither, so the documented defaults are stated
+// here once and an override in that file is read instead. Both are what this
+// repository's release PRs have always carried (`release-plz-*` heads, squashed as
+// `chore: release`), and the workflow's own guard and auto-merge selector restate them.
+function releasePlzConfig(path) {
+    const read = `import json,sys,tomllib;print(json.dumps(tomllib.load(open(sys.argv[1],"rb")).get("workspace",{})))`;
     const workspace = JSON.parse(
-        execFileSync("python3", ["-c", read], { encoding: "utf8" }),
+        execFileSync("python3", ["-c", read, path], { encoding: "utf8" }),
     );
+    const text = (key, fallback) => {
+        const value = workspace?.[key] ?? fallback;
+        if (typeof value !== "string" || !value.trim())
+            throw new Error(`${path}: [workspace] ${key} must be a non-empty string`);
+        return value;
+    };
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace))
+        throw new Error(`${path}: [workspace] must be a table`);
+    const release = workspace.git_release_enable ?? true;
+    if (typeof release !== "boolean")
+        throw new Error(`${path}: [workspace] git_release_enable must be a boolean`);
+    const tag = text("git_tag_name", "v{{ version }}");
+    if (!tag.includes("{{ version }}"))
+        throw new Error(`${path}: [workspace] git_tag_name must contain {{ version }}`);
     return {
-        // release-plz's documented defaults where the file names none.
-        prefix: workspace.pr_branch_prefix ?? "release-plz-",
-        title: workspace.pr_name ?? "chore: release",
-        release: workspace.git_release_enable !== false,
-        tag: (workspace.git_tag_name ?? "v{{ version }}").replace(
-            "{{ version }}",
-            "1.2.3",
-        ),
+        prefix: text("pr_branch_prefix", "release-plz-"),
+        title: text("pr_name", "chore: release"),
+        release,
+        tag: tag.replace("{{ version }}", "1.2.3"),
     };
 }
 // Actions starts no workflow for an event made with the run's own token, except
-// a dispatch; an effect whose token cannot be read is an error, never a guess.
+// a dispatch. A token is a whole `${{ secrets.NAME }}` or `${{ github.token }}`;
+// anything else is an error, never a guess about what it can start.
 function startsWorkflows(run, row, step) {
     const token = step.env?.GITHUB_TOKEN ?? step.env?.GH_TOKEN;
+    const where = `${run.workflow}:${row.job}`;
     if (token === undefined)
-        throw new Error(
-            `${run.workflow}:${row.job}: an effect step names no GITHUB_TOKEN/GH_TOKEN`,
-        );
-    return !/secrets\.GITHUB_TOKEN|github\.token/.test(String(token));
+        throw new Error(`${where}: an effect step names no GITHUB_TOKEN/GH_TOKEN`);
+    const named = String(token).match(
+        /^\$\{\{\s*(?:secrets\.([A-Za-z_][A-Za-z0-9_]*)|(github\.token))\s*\}\}$/,
+    );
+    if (!named)
+        throw new Error(`${where}: unresolved effect token ${JSON.stringify(token)}`);
+    return !named[2] && named[1] !== "GITHUB_TOKEN";
 }
 const carried = (ev) => ({
     pypi: ev.pypi,
@@ -698,8 +719,16 @@ function label(ev, config) {
 // they make, a merge becomes a base push, a completed run becomes a
 // `workflow_run` for every workflow subscribed to it, and every artifact a job
 // downloads is traced to the run that made it.
-export function lifecycle(root, { classify, sources = workflows(), limit = 64 }) {
-    const config = releasePlzConfig();
+export function lifecycle(
+    root,
+    {
+        classify,
+        sources = workflows(),
+        limit = 64,
+        releasePlz = "release-plz.toml",
+    },
+) {
+    const config = releasePlzConfig(releasePlz);
     const subscribed = new Set(
         Object.values(sources).flatMap((wf) =>
             typeof wf.on === "object" && !Array.isArray(wf.on)
@@ -732,7 +761,10 @@ export function lifecycle(root, { classify, sources = workflows(), limit = 64 })
                 scenario: ev,
                 rows: resolveRun(file, wf, ev, classification),
             };
-            run.artifacts = artifacts(run, ev.upstreamRun ?? null);
+            run.artifacts = traceArtifactsAddingRebuilds(
+                run,
+                ev.upstreamRun ?? null,
+            );
             runs.push(run);
             queue.push(...effects(run, ev, config));
             const name = wf.name ?? `.github/workflows/${file}`;

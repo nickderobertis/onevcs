@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    rmSync,
+    writeFileSync,
+    readFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import {
     resolveScenario,
     resolveRun,
@@ -528,6 +535,114 @@ test("editing a trigger, condition or artifact dependency changes the derived ru
             /unsupported push filter paths/,
         );
     } finally {
+        h.cleanup();
+    }
+});
+
+test("lifecycle derivation refuses what it cannot trace instead of counting it as zero", () => {
+    const h = history();
+    const scratch = mkdtempSync(
+        join(
+            process.env.ONEPIPELINE_NODE_SCRATCH_DIR || ".github/.telemetry",
+            "release-plz-",
+        ),
+    );
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const derive = (mutate, options = {}) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), {
+                classify,
+                sources,
+                ...options,
+            });
+        };
+        const download = (wf, job, step) => (s) =>
+            s[wf].jobs[job].steps.unshift({
+                uses: "actions/download-artifact@v4",
+                ...step,
+            });
+        assert.throws(
+            () =>
+                derive(
+                    download("release.yml", "upload-darwin", {
+                        with: { pattern: "archives-*", "run-id": "${{ inputs.run }}" },
+                    }),
+                ),
+            /unresolved artifact run-id/,
+        );
+        assert.throws(
+            () =>
+                derive(
+                    download("ci.yml", "gate", {
+                        with: {
+                            pattern: "archives-*",
+                            "run-id": "${{ github.event.workflow_run.id }}",
+                        },
+                    }),
+                ),
+            /no workflow_run event supplied/,
+        );
+        assert.throws(
+            () => derive(download("release.yml", "upload-darwin", { with: {} })),
+            /needs a name or pattern/,
+        );
+        const releaseStep = (s) =>
+            s["release-plz.yml"].jobs["release-plz"].steps.find((step) =>
+                /release-plz release --/.test(step.run || ""),
+            );
+        assert.throws(
+            () => derive((s) => delete releaseStep(s).env),
+            /names no GITHUB_TOKEN/,
+        );
+        assert.throws(
+            () =>
+                derive(
+                    (s) =>
+                        (releaseStep(s).env.GITHUB_TOKEN = "${{ env.TOKEN }}"),
+                ),
+            /unresolved effect token/,
+        );
+        // Released with the run's own token: no tag or release event starts Release.
+        const ownToken = derive((s) => {
+            for (const step of s["release-plz.yml"].jobs["release-plz"].steps)
+                if (step.env?.GITHUB_TOKEN)
+                    step.env.GITHUB_TOKEN = "${{ secrets.GITHUB_TOKEN }}";
+        });
+        assert.equal(ownToken.runs, 1);
+        assert.equal(
+            ownToken.events.some((e) => e.label === "release-published"),
+            false,
+        );
+        // A workflow that starts itself on completion never settles.
+        assert.throws(
+            () =>
+                derive((s) =>
+                    s["published-smoke.yml"].on.workflow_run.workflows.push(
+                        "Published smoke",
+                    ),
+                ),
+            /did not settle within 64 events/,
+        );
+        for (const [toml, message] of [
+            ["workspace = 1\n", /must be a table/],
+            ["[workspace]\npr_branch_prefix = 3\n", /pr_branch_prefix must be a non-empty string/],
+            ["[workspace]\npr_name = \"\"\n", /pr_name must be a non-empty string/],
+            ["[workspace]\ngit_release_enable = \"no\"\n", /git_release_enable must be a boolean/],
+            ["[workspace]\ngit_tag_name = \"v1\"\n", /must contain \{\{ version \}\}/],
+        ]) {
+            const path = join(scratch, "release-plz.toml");
+            writeFileSync(path, toml);
+            assert.throws(() => derive(() => {}, { releasePlz: path }), message);
+        }
+        // An override in the file is what the derivation uses.
+        const path = join(scratch, "release-plz.toml");
+        writeFileSync(path, "[workspace]\ngit_release_enable = false\n");
+        assert.equal(derive(() => {}, { releasePlz: path }).runs, 1);
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
         h.cleanup();
     }
 });
