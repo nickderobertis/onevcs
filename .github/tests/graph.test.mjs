@@ -824,3 +824,90 @@ test("the lockfile carry's push onto the release PR is a derived synchronize run
         h.cleanup();
     }
 });
+
+test("step conditions, non-Darwin rebuilds, merge styles and malformed guards are derived or refused", () => {
+    const h = history();
+    try {
+        const classify = classifier(h);
+        const live = { pypi: true, npm: true, crate: true, releaseToken: true };
+        const derive = (mutate) => {
+            const sources = structuredClone(workflows());
+            mutate(sources);
+            return lifecycle(change("source", false, live), { classify, sources });
+        };
+        const release = (l) =>
+            l.spending.find((x) => x.workflow === "release.yml").jobs;
+        const releaseRun = (l) =>
+            l.workflow_runs.find((r) => r.workflow === "release.yml");
+        // An upload whose own condition is false provides nothing: the Darwin
+        // wheel has to be rebuilt, on a Mac, inside the release run.
+        const skippedUpload = derive((s) => {
+            const upload = s["release.yml"].jobs["build-darwin"].steps.find(
+                (step) => step.with?.name === "wheels-aarch64-apple-darwin",
+            );
+            upload.if = "github.event_name == 'workflow_dispatch'";
+        });
+        assert.deepEqual(
+            release(skippedUpload).map((j) => j.job),
+            ["build-darwin", "publish-pypi (rebuild wheels-aarch64-apple-darwin)"],
+        );
+        // Linux packages no longer ordered before npm publication are rebuilt on
+        // the consumer's own Linux runner: counted as rebuilds, not as Mac jobs.
+        const linux = derive(
+            (s) => (s["release.yml"].jobs["publish-npm"].needs = ["build-darwin"]),
+        );
+        const rebuilt = releaseRun(linux).artifacts.filter((a) => !a.producer);
+        assert.deepEqual(
+            rebuilt.map((a) => a.artifact).sort(),
+            [
+                "npm-aarch64-unknown-linux-gnu",
+                "npm-x86_64-pc-windows-msvc",
+                "npm-x86_64-unknown-linux-gnu",
+            ],
+        );
+        assert.equal(releaseRun(linux).mac_jobs, 1);
+        assert.equal(linux.runs, 2);
+        // A merge commit rather than a squash lands under GitHub's merge title.
+        const merged = derive((s) => {
+            const step = s["release-plz.yml"].jobs["release-plz"].steps.find(
+                (step) => /gh pr merge/.test(step.run || ""),
+            );
+            step.run = step.run.replace("--squash", "--merge");
+        });
+        assert.equal(
+            merged.events.find((e) => e.label === "release-pr-merge").commit,
+            "Merge pull request from release-plz-2026",
+        );
+        // The carry pointed at a file no release-pr step wrote is refused.
+        assert.throws(
+            () =>
+                derive((s) => {
+                    const step = s["release-plz.yml"].jobs["release-plz"].steps.find(
+                        (step) => /release-pr-carry/.test(step.run || ""),
+                    );
+                    step.run = step.run.replace("release-pr.json", "other.json");
+                }),
+            /other\.json, which no release-pr step wrote/,
+        );
+        // A dispatch to a workflow that does not exist is refused.
+        assert.throws(
+            () =>
+                derive((s) =>
+                    s["release.yml"].jobs["upload-darwin"].steps.push({
+                        run: "gh workflow run missing.yml",
+                    }),
+                ),
+            /dispatches missing\.yml, which is not a workflow here/,
+        );
+        // Guards: an undoubled secret, a malformed output line, an unwritten output.
+        const guard = (s) => s["release-plz.yml"].jobs.guard.steps[0];
+        for (const [mutate, message] of [
+            [(s) => (guard(s).env.TOKEN = "${{ secrets.UNKNOWN }}"), /secret UNKNOWN/],
+            [(s) => (guard(s).run = 'echo "garbage" >> "$GITHUB_OUTPUT"'), /malformed output line/],
+            [(s) => (guard(s).run = 'echo "other=true" >> "$GITHUB_OUTPUT"'), /guard output enabled was never written/],
+        ])
+            assert.throws(() => derive(mutate), message);
+    } finally {
+        h.cleanup();
+    }
+});

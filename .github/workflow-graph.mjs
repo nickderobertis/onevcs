@@ -271,6 +271,10 @@ function secretPresence(job, present) {
             const env = Object.fromEntries(
                 Object.entries(step.env || {}).map(([name, value]) => {
                     const secret = String(value).match(/secrets\.(\w+)/)[1];
+                    if (!(secret in present))
+                        throw new Error(
+                            `guard step ${step.id} reads secret ${secret}, which the model does not double`,
+                        );
                     return [name, present[secret] ? "doubled-secret" : ""];
                 }),
             );
@@ -278,21 +282,27 @@ function secretPresence(job, present) {
                 env: { PATH: process.env.PATH, ...env, GITHUB_OUTPUT: output },
                 stdio: ["ignore", "ignore", "ignore"],
             });
-            const written = readFileSync(output, "utf8");
+            const lines = readFileSync(output, "utf8")
+                .split(/\r?\n/)
+                .filter(Boolean);
+            for (const line of lines)
+                if (!/^[A-Za-z_][\w-]*=/.test(line))
+                    throw new Error(
+                        `guard step ${step.id} wrote a malformed output line ${JSON.stringify(line)}`,
+                    );
             steps[step.id] = {
                 outputs: Object.fromEntries(
-                    written
-                        .split(/\r?\n/)
-                        .filter(Boolean)
-                        .map((line) => line.split(/=(.*)/s).slice(0, 2)),
+                    lines.map((line) => line.split(/=(.*)/s).slice(0, 2)),
                 ),
             };
         }
         const outputs = Object.fromEntries(
-            Object.entries(job.outputs).map(([name, value]) => [
-                name,
-                String(interpolate(value, { steps })),
-            ]),
+            Object.entries(job.outputs).map(([name, value]) => {
+                const resolved = interpolate(value, { steps });
+                if (resolved === null || resolved === undefined)
+                    throw new Error(`guard output ${name} was never written`);
+                return [name, String(resolved)];
+            }),
         );
         presenceCache.set(key, outputs);
         return outputs;
@@ -724,7 +734,7 @@ function scriptPushes(where, path, args, text) {
         return { file: args[Number(position) - 1], commit };
     });
 }
-function checkoutToken(where, row, upTo) {
+function checkoutPushStartsWorkflows(where, row, upTo) {
     const steps = stepsOf(row);
     const checkout = steps
         .slice(0, steps.indexOf(upTo))
@@ -814,7 +824,7 @@ function effects(run, ev, config) {
                     args,
                     config.readScript(path),
                 )) {
-                    if (!checkoutToken(cause, row, step)) continue;
+                    if (!checkoutPushStartsWorkflows(cause, row, step)) continue;
                     if (push.file === undefined) {
                         out.push({
                             ...carried(ev),
@@ -874,6 +884,10 @@ function effects(run, ev, config) {
                     ),
                 );
                 const target = dispatch[1].replace(/^\.github\/workflows\//, "");
+                if (!(target in config.sources))
+                    throw new Error(
+                        `${cause}: dispatches ${target}, which is not a workflow here`,
+                    );
                 out.push({
                     ...carried(ev),
                     event: "workflow_dispatch",
@@ -922,7 +936,7 @@ export function lifecycle(
         readScript = (path) => readFileSync(path, "utf8"),
     },
 ) {
-    const config = { ...releasePlzConfig(releasePlz), readScript };
+    const config = { ...releasePlzConfig(releasePlz), readScript, sources };
     const subscribed = new Set(
         Object.values(sources).flatMap((wf) =>
             typeof wf.on === "object" && !Array.isArray(wf.on)
