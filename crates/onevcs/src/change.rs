@@ -115,7 +115,6 @@ pub fn describe_change(
     crate::host::within_one_operation(|| describe_within(providers, token, description))
 }
 
-/// [`describe_change`], inside its operation.
 fn describe_within(
     providers: &Providers<'_>,
     token: &SessionToken,

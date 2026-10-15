@@ -1262,7 +1262,6 @@ fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishO
     crate::host::within_one_operation(|| publish_resolving(context, stream))
 }
 
-/// [`run_resolving`], inside its operation.
 fn publish_resolving(
     context: &Context<'_>,
     stream: &mut Stream,
@@ -2403,7 +2402,6 @@ pub(crate) fn resume(
     crate::host::within_one_operation(|| resume_within(context, change, pushed, stream))
 }
 
-/// [`resume`], inside its operation.
 fn resume_within(
     context: &Context<'_>,
     change: &ChangeRequest,
