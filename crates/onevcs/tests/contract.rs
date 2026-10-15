@@ -8291,7 +8291,10 @@ fn the_caller_merges_base_amendment_declares_its_field_and_omits_it_when_unasked
     assert!(round.caller_merges_base);
     let read: SessionRequest =
         serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
-    assert!(!read.caller_merges_base, "the default asks the host as before");
+    assert!(
+        !read.caller_merges_base,
+        "the default asks the host as before"
+    );
 
     let usage = usage_in(&regions().0)
         .into_iter()

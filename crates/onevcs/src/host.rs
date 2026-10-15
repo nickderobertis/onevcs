@@ -969,15 +969,95 @@ pub enum MergeOutcome {
 
 /// The GitHub implementation of [`RemoteHost`], driven through `gh`.
 ///
-/// Every method is one `gh` invocation, and the program that answers as `gh` is the
-/// seam a journey substitutes: GitHub's decisioning is what a test replaces, never
-/// the git underneath it.
+/// Every method is one `gh` invocation — or none, where a listing already answered it
+/// (see `Listed`) — and the program that answers as `gh` is the seam a journey
+/// substitutes: GitHub's decisioning is what a test replaces, never the git underneath
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHub {
     /// The `owner/name` slug every call is addressed to. Private, so the only way
     /// to hold one is to have had it accepted by [`GitHub::new`] — every `gh`
     /// invocation below trusts it as the repository it addresses.
     repo: String,
+    /// What a listing already read about each change request beyond what a
+    /// [`ChangeRequest`] carries, kept for the one read that asks it next.
+    listed: Listed,
+}
+
+/// The draft state and description a `gh pr list` answered beside each change request
+/// it found, by number, so the read a caller makes next of that same change request —
+/// [`RemoteHost::is_draft`], [`RemoteHost::change_description`] — is answered from the
+/// call that already obtained it rather than by another `gh pr view`.
+///
+/// Each answer is spent by the read it answers: a later read of the same field asks
+/// the host again, so nothing here outlives the moment it describes. A write to the
+/// change request forgets what was listed about it. What a host has read in passing is
+/// not part of which host it is, so a clone starts with nothing and two hosts compare
+/// by their repository alone.
+#[derive(Default)]
+struct Listed(std::sync::Mutex<BTreeMap<String, ListedChange>>);
+
+/// What one listing said about one change request, each half until it is read.
+#[derive(Default)]
+struct ListedChange {
+    draft: Option<bool>,
+    description: Option<Description>,
+}
+
+impl Listed {
+    fn with<T>(&self, act: impl FnOnce(&mut BTreeMap<String, ListedChange>) -> T) -> T {
+        // A panic while the map was held leaves nothing half-written that matters: at
+        // worst an answer is asked of the host again.
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        act(&mut held)
+    }
+
+    /// Keep what a read said about change request `id`, replacing anything older.
+    fn keep(&self, id: &str, draft: Option<bool>, description: Option<Description>) {
+        self.with(|listed| {
+            listed.insert(id.to_owned(), ListedChange { draft, description });
+        });
+    }
+
+    /// The draft state kept for `id`, spent by this read.
+    fn take_draft(&self, id: &str) -> Option<bool> {
+        self.with(|listed| listed.get_mut(id).and_then(|kept| kept.draft.take()))
+    }
+
+    /// The description kept for `id`, spent by this read.
+    fn take_description(&self, id: &str) -> Option<Description> {
+        self.with(|listed| listed.get_mut(id).and_then(|kept| kept.description.take()))
+    }
+
+    /// Forget everything kept for `id`, because something was written to it.
+    fn forget(&self, id: &str) {
+        self.with(|listed| {
+            listed.remove(id);
+        });
+    }
+}
+
+impl Clone for Listed {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Listed {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Listed {}
+
+impl std::fmt::Debug for Listed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Listed")
+    }
 }
 
 impl GitHub {
@@ -1002,7 +1082,10 @@ impl GitHub {
                 "{repo:?} does not name one repository as owner/name"
             )));
         }
-        Ok(Self { repo })
+        Ok(Self {
+            repo,
+            listed: Listed::default(),
+        })
     }
 
     /// The names of the checks the host says block the merge.
@@ -1896,7 +1979,10 @@ impl RemoteHost for GitHub {
             "--state",
             "open",
             "--json",
-            "number,url,state,headRefOid",
+            // The draft state and the description too, which the caller of a listing
+            // asks next of what it found — a publication adopting a change request, a
+            // session reading its own — and which cost nothing more in the one query.
+            "number,url,state,headRefOid,isDraft,title,body",
         ])?;
         let value = gh::json(&raw)?;
         let items = value
@@ -1912,10 +1998,24 @@ impl RemoteHost for GitHub {
                 .and_then(|value| value.as_u64())
                 .ok_or_else(|| invalid(format!("gh pr list returned no number: {raw:?}")))?
                 .to_string();
+            let head_sha = head_sha(item)?;
+            let text = |name: &str| item.get(name).and_then(serde_json::Value::as_str);
+            let description = match (text("title"), text("body")) {
+                (Some(title), Some(body)) => Some(Description {
+                    title: title.to_owned(),
+                    body: body.to_owned(),
+                }),
+                _ => None,
+            };
+            self.listed.keep(
+                &number,
+                item.get("isDraft").and_then(serde_json::Value::as_bool),
+                description,
+            );
             changes.push(ChangeRequest {
                 id: ChangeId(number),
                 url: parsed,
-                head_sha: head_sha(item)?,
+                head_sha,
                 base: base.to_owned(),
             });
         }
@@ -1972,6 +2072,7 @@ impl RemoteHost for GitHub {
     }
 
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
+        self.listed.forget(&cr.id.0);
         match policy {
             MergePolicy::LocalDirect | MergePolicy::ChangeOpen => Ok(MergeOutcome::Open),
             MergePolicy::ChangeAuto => {
@@ -2004,6 +2105,7 @@ impl RemoteHost for GitHub {
 
     fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
         addressable(&cr.id.0, "change request id")?;
+        self.listed.forget(&cr.id.0);
         gh::invoke(&["pr", "ready", &cr.id.0, "--repo", &self.repo]).map(|_| ())
     }
 
@@ -2015,6 +2117,7 @@ impl RemoteHost for GitHub {
     /// directory that goes when this returns, and `gh` reads it before then.
     fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()> {
         addressable(&cr.id.0, "change request id")?;
+        self.listed.forget(&cr.id.0);
         let scratch = tempfile::tempdir().map_err(|failure| {
             invalid(format!(
                 "could not create a scratch directory to hand the body of {} to gh: {failure}",
@@ -2042,7 +2145,11 @@ impl RemoteHost for GitHub {
         gh::invoke(&args).map(|_| ())
     }
 
-    /// One `gh pr view`, reading exactly the two fields a description is.
+    /// One `gh pr view`, reading the two fields a description is — or none, where the
+    /// listing that found the change request already read them.
+    ///
+    /// The view asks the draft state beside them, and keeps it for the
+    /// [`is_draft`](RemoteHost::is_draft) that a caller reporting the change asks next.
     ///
     /// A response missing either is refused rather than read as empty: "the change
     /// request has no body" and "the host would not say what the body is" are
@@ -2050,7 +2157,10 @@ impl RemoteHost for GitHub {
     /// would otherwise start from a blank the host never answered.
     fn change_description(&self, cr: &ChangeRequest) -> Result<Description> {
         addressable(&cr.id.0, "change request id")?;
-        let view = self.view(&cr.id.0, "title,body")?;
+        if let Some(listed) = self.listed.take_description(&cr.id.0) {
+            return Ok(listed);
+        }
+        let view = self.view(&cr.id.0, "title,body,isDraft")?;
         let read = |name: &str| {
             view.get(name)
                 .and_then(serde_json::Value::as_str)
@@ -2063,10 +2173,16 @@ impl RemoteHost for GitHub {
                     ))
                 })
         };
-        Ok(Description {
+        let description = Description {
             title: read("title")?,
             body: read("body")?,
-        })
+        };
+        self.listed.keep(
+            &cr.id.0,
+            view.get("isDraft").and_then(serde_json::Value::as_bool),
+            None,
+        );
+        Ok(description)
     }
 
     /// One `gh api repos/{owner}/{name}`, reading the two fields GitHub states a
@@ -2090,7 +2206,9 @@ impl RemoteHost for GitHub {
         }
     }
 
-    /// One `gh pr view`, reading the one field the host decides a draft by.
+    /// One `gh pr view`, reading the one field the host decides a draft by — or none,
+    /// where the read that found the change request or described it just now already
+    /// answered it.
     ///
     /// A response that does not carry it is refused rather than read as "not a
     /// draft": what this decides is whether a change may be asked to merge, and
@@ -2098,6 +2216,9 @@ impl RemoteHost for GitHub {
     /// lands work somebody held back.
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
         addressable(&cr.id.0, "change request id")?;
+        if let Some(listed) = self.listed.take_draft(&cr.id.0) {
+            return Ok(listed);
+        }
         let view = self.view(&cr.id.0, "isDraft")?;
         view.get("isDraft")
             .and_then(serde_json::Value::as_bool)
@@ -2300,11 +2421,13 @@ impl RemoteHost for GitHub {
         base: &str,
         body: Option<&str>,
     ) -> Result<ReadCost> {
+        self.listed.forget(&change.0);
         standings::github::retarget(&self.repo, change, base, body)
     }
 
     /// One REST request — see `standings::github`.
     fn reopen_change(&self, change: &ChangeId) -> Result<ReadCost> {
+        self.listed.forget(&change.0);
         standings::github::reopen(&self.repo, change)
     }
 

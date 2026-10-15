@@ -5729,7 +5729,7 @@ Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopene
 `onevcs-quota-reads`). One busy review round of onepipeline's review-feedback rework
 measured 171 GitHub quota units against a budget of 45, and about half of them were reads
 this crate made inside one caller's work whose answer that caller already held, or that
-the same call had already obtained. Such reads are removed. Every refusal, guard
+the same call had already obtained. Three such reads are removed. Every refusal, guard
 decision and published result stays what it was; only the number of host reads changes.
 
 **A session whose caller merges the base itself.** Under `base_merge: on-conflict` the
@@ -5762,6 +5762,20 @@ there, recording what it learns for the next reply. So a round's replies to one 
 repository probe at most once between them. A destination recorded public is screened as
 before, and one recorded private, or declared private by a rule, is let through unchecked
 as before.
+
+**A change request is read once per call.** GitHub's `find_changes` asks `gh pr list` for
+each change request's draft state, title and body beside the fields it always read — one
+query, at the same charge — and the next `is_draft` or `change_description` of that change
+request on the same host answers from it, once, rather than with another `gh pr view`;
+`change_description` asks the draft state beside the description for the same reason. A
+write to the change request (`ready_for_review`, `describe_change`, `merge`,
+`retarget_change`, `reopen_change`) forgets what was listed about it, and an answer is
+spent by the read it answers, so a later read asks the host again. A publication that
+adopts an existing change request therefore reads it with one `gh pr list` — not a list and
+then a view of its draft state — and `session_change` reads it with one `gh pr list` rather
+than a list and two views. A held-draft publication over an existing change request reads
+it once on each side of its push, since its check before the push only moves a refusal
+earlier and the read after the push stays the authoritative one. No public item is added.
 
 Event kinds added: none.
 

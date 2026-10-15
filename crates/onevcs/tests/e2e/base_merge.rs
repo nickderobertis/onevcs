@@ -935,7 +935,10 @@ fn an_open_whose_caller_merges_the_base_itself_reads_none_of_the_bases_branch_ru
             "strict: {strict}: the branch is left at its tip for the caller to merge"
         );
         let decision = opened_decision(&hosted.world, &token);
-        assert_eq!(decision["decision"], "skipped", "strict: {strict}: {decision}");
+        assert_eq!(
+            decision["decision"], "skipped",
+            "strict: {strict}: {decision}"
+        );
         assert!(
             decision["because"]
                 .as_str()
@@ -966,8 +969,5 @@ fn an_open_whose_caller_merges_the_base_itself_reads_none_of_the_bases_branch_ru
         rule_reads_since(&hosted.world, before),
         Vec::<String>::new()
     );
-    assert_eq!(
-        opened_decision(&hosted.world, &token)["decision"],
-        "merged"
-    );
+    assert_eq!(opened_decision(&hosted.world, &token)["decision"], "merged");
 }

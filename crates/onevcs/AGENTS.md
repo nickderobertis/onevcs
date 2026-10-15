@@ -203,6 +203,13 @@ work is still being made. Seven things are easy to undo.
 - **A described body is an artifact, never a payload field.** `change-described`
   names the artifact id and the title where one replaced it; the body is prose of
   unbounded size. The host is handed exactly the caller's bytes.
+- **A listing answers the next read of what it found, once.** `GitHub::find_changes`
+  asks `gh pr list` for `isDraft,title,body` too, and the next `is_draft` or
+  `change_description` of that change request on the same host is answered from it
+  (`host::Listed`) rather than by another `gh pr view`; each answer is spent by the read
+  it answers, and every write to the change request forgets it. A quota budget a
+  consumer measures counts those views — `a_change_request_a_call_adopts_or_reads_…` in
+  `tests/e2e/change.rs` holds the counts.
 - **A title on `describe_change` is a `Subject`, held to the `commit-msg` hook
   through the session's worktree** — the same `publish::hold_to_repository_policy`
   a publication asks. A worktree that is not a git checkout (a supplied `Vcs`'s) has

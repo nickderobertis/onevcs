@@ -379,6 +379,174 @@ fn a_held_draft_is_republished_and_lifted_by_the_reasonless_publication() {
     assert_eq!(status(&hosted, &token)["session"]["state"], "closed");
 }
 
+/// What one call asked the host about the change request `hosted` publishes, from the
+/// `from`-th call on: its listings by head, its views of what it says or whether it is
+/// a draft, and its repository's visibility probes.
+#[derive(Debug, PartialEq, Eq)]
+struct Reads {
+    lists: usize,
+    views: usize,
+    probes: usize,
+}
+
+fn reads_since(hosted: &Hosted, from: usize) -> Reads {
+    let calls: Vec<String> = hosted.world.host_calls().into_iter().skip(from).collect();
+    let fields = |call: &str| {
+        call.split_whitespace()
+            .skip_while(|word| *word != "--json")
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Reads {
+        lists: calls
+            .iter()
+            .filter(|call| call.starts_with("pr list"))
+            .count(),
+        views: calls
+            .iter()
+            .filter(|call| call.starts_with("pr view"))
+            .filter(|call| {
+                let asked = fields(call);
+                asked
+                    .split(',')
+                    .any(|field| matches!(field, "isDraft" | "title" | "body"))
+            })
+            .count(),
+        probes: calls
+            .iter()
+            .filter(|call| *call == "api repos/acme-corp/hosted")
+            .count(),
+    }
+}
+
+#[test]
+fn a_change_request_a_call_adopts_or_reads_is_read_once_and_its_visibility_probed_once() {
+    // A review round republishes and reads each draft it reworks, and each of those
+    // read the change request several times over — a listing by head, then a view of
+    // its title and body, then one of its draft state — where the listing can answer
+    // all three in the one query.
+    let hosted = Hosted::new(OPEN);
+    let token = hosted.change("feature/reread", "feat: add the reread thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    let worktree = std::path::PathBuf::from(
+        status(&hosted, &token)["session"]["worktree"]
+            .as_str()
+            .expect("the session's worktree"),
+    );
+
+    // The session reading its own change request: one listing, and nothing viewed.
+    let before = hosted.world.host_calls().len();
+    let read = shown(&hosted, &token);
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 1,
+            views: 0,
+            probes: 0
+        }
+    );
+    assert_eq!(read["url"], "https://github.com/acme-corp/hosted/pull/1");
+    assert_eq!(read["draft"], true);
+    assert_eq!(read["title"], "feat: add the reread thing");
+    assert_eq!(read["body"], "");
+
+    // A held draft republished over it: one listing on each side of the push — the
+    // check that refuses early before it, the authoritative one after — no view, and
+    // one visibility probe.
+    hosted.world.commit_file(
+        &worktree,
+        "two.txt",
+        "two\n",
+        "feat: more of the reread thing",
+    );
+    let before = hosted.world.host_calls().len();
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("open as a draft"));
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 2,
+            views: 0,
+            probes: 1
+        }
+    );
+    assert_eq!(hosted.world.events_of(&token, "change-drafted").len(), 2);
+
+    // The publication that adopts it: one listing, no view of what the listing
+    // already said, and one visibility probe — and the same landing as ever.
+    let before = hosted.world.host_calls().len();
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "change request open at https://github.com/acme-corp/hosted/pull/1",
+        ));
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 1,
+            views: 0,
+            probes: 1
+        }
+    );
+    assert_eq!(hosted.world.events_of(&token, "draft-lifted").len(), 1);
+    assert_eq!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count(),
+        1,
+        "the draft was adopted rather than opened again"
+    );
+
+    // Once written to, the change request is read afresh: a description reads it back
+    // with one view, its draft state beside its title and body.
+    let evidence = hosted.world.path("evidence.md");
+    std::fs::write(&evidence, EVIDENCE).expect("a body file");
+    let before = hosted.world.host_calls().len();
+    let assert = hosted
+        .world
+        .onevcs()
+        .args([
+            "change",
+            "describe",
+            &token,
+            "--body-file",
+            &evidence.to_string_lossy(),
+            "--json",
+        ])
+        .assert()
+        .success();
+    let described: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("one JSON object");
+    assert_eq!(described["body"], EVIDENCE);
+    assert_eq!(described["draft"], false, "the publication lifted it");
+    assert_eq!(
+        reads_since(&hosted, before),
+        Reads {
+            lists: 1,
+            views: 1,
+            probes: 1
+        }
+    );
+}
+
 #[test]
 fn a_held_draft_over_a_change_open_for_review_is_refused_before_anything_is_pushed() {
     // A change the host holds open for review can land, so asking to hold it back
