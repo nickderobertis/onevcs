@@ -5754,6 +5754,15 @@ merged exactly as before — left for the session, or refused under `refuse_conf
 onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 ```
 
+**A reply reads the visibility this host recorded.** `reply_to_comment`'s public-boundary
+check reads the destination's visibility as the deferred-check publication reads it — a
+rule's declared visibility, else the host's answer recorded at an earlier write (one whose
+`observation` and `visibility` are both known) — and probes the host only where neither is
+there, recording what it learns for the next reply. So a round's replies to one registered
+repository probe at most once between them. A destination recorded public is screened as
+before, and one recorded private, or declared private by a rule, is let through unchecked
+as before.
+
 Event kinds added: none.
 
 

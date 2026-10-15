@@ -59,6 +59,27 @@ pub fn guard_fields(
     if !visibility::screens_writes(hosting, destination)? {
         return Ok(());
     }
+    screen_fields(fields, scope)
+}
+
+/// [`guard_fields`] for a write a caller makes many of to one repository — a reply to
+/// a comment: the destination's visibility is the one this host recorded, under the
+/// rule [`guard_publication_unasked`] reads it by, and the host is probed only where
+/// nothing is recorded to go on.
+pub fn guard_fields_unless_recorded(
+    hosting: &dyn Hosting,
+    destination: &str,
+    fields: &[(Surface, &str)],
+    scope: &TermScope,
+) -> Result<()> {
+    if !visibility::screens_writes_unless_recorded(hosting, destination)? {
+        return Ok(());
+    }
+    screen_fields(fields, scope)
+}
+
+/// Screen short fields against every private repository `scope` selects.
+fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()> {
     let started = Instant::now();
     let mut evidence = Vec::new();
     let mut phases = Phases::default();

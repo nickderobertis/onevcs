@@ -90,22 +90,43 @@ pub fn screens_writes(hosting: &dyn Hosting, key: &str) -> Result<bool> {
 /// failed — is screened whenever it is hosted, which is the direction a write that
 /// could reach a public repository is never let through in.
 pub fn screens_writes_unasked(key: &str) -> Result<bool> {
+    Ok(screens_writes_as_recorded(key)?.unwrap_or_else(|| store::normalize(key).hosted.is_some()))
+}
+
+/// Whether a write to `key` must be screened, asking the host only where this host
+/// holds no answer to go on — a reply to a comment, which a busy review round makes
+/// many of to one repository.
+///
+/// The answer [`screens_writes_unasked`] reads wherever it has one — a rule's, or the
+/// host's answer recorded at an earlier write — and otherwise [`screens_writes`],
+/// whose probe records what it learns for the next write to read. A local-only
+/// identity is never probed either way.
+pub fn screens_writes_unless_recorded(hosting: &dyn Hosting, key: &str) -> Result<bool> {
+    match screens_writes_as_recorded(key)? {
+        Some(screens) => Ok(screens),
+        None => screens_writes(hosting, key),
+    }
+}
+
+/// Whether a write to `key` must be screened by what this host already holds: a rule's
+/// declared visibility, or an answer recorded at an earlier write. `None` where neither
+/// is there — never asked, or a probe that failed.
+fn screens_writes_as_recorded(key: &str) -> Result<Option<bool>> {
     let registry = store::load()?;
     let (file, source) = policy::load(&registry)?;
     let checkout = checkout_of(&registry, key)
         .map(Path::to_path_buf)
         .unwrap_or_default();
     if let Some(declared) = declared(&file, &source, key, &checkout) {
-        return Ok(declared.effective() == Visibility::Public);
+        return Ok(Some(declared.effective() == Visibility::Public));
     }
-    let hosted = store::normalize(key).hosted.is_some();
     Ok(match registry.identities.get(key) {
         Some(identity)
             if !identity.observation.is_unknown() && !identity.visibility.is_unknown() =>
         {
-            identity.visibility.effective() == Visibility::Public
+            Some(identity.visibility.effective() == Visibility::Public)
         }
-        _ => hosted,
+        _ => None,
     })
 }
 
