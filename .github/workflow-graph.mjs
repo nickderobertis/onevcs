@@ -131,10 +131,21 @@ export function sourceDigest() {
     }
     return hash.digest("hex");
 }
+// Actions' filter patterns and download-artifact's names, in the subset these
+// workflows use: `*` is any run of characters but `/`, `**` any run at all.
+// Negation, `?`, `+` and character classes would change what matches, so a
+// pattern carrying one is refused rather than read as a literal.
 export function glob(pattern, name) {
+    if (typeof pattern !== "string" || !/^[\w.*/-]+$/.test(pattern))
+        throw new Error(`unsupported pattern ${JSON.stringify(pattern)}`);
     const body = pattern
-        .split("*")
-        .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+        .split("**")
+        .map((part) =>
+            part
+                .split("*")
+                .map((text) => text.replace(/[.]/g, "\\."))
+                .join("[^/]*"),
+        )
         .join(".*");
     return new RegExp(`^${body}$`).test(name);
 }
@@ -223,6 +234,68 @@ function screencompMatrix(inputs) {
         const matrix = JSON.parse(line.slice(7));
         matrixCache.set(key, matrix);
         return matrix;
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+// A job that only turns secrets into outputs is run for real: its shell steps
+// execute with each secret doubled as present or empty, and its declared
+// outputs are read back from what they wrote.
+function reportsSecretPresence(job) {
+    return (
+        job.outputs &&
+        job.steps?.length &&
+        job.steps.every(
+            (step) =>
+                typeof step.run === "string" &&
+                step.id &&
+                !step.uses &&
+                Object.values(step.env || {}).every((value) =>
+                    /^\$\{\{\s*secrets\.\w+\s*\}\}$/.test(String(value)),
+                ),
+        )
+    );
+}
+const presenceCache = new Map();
+function secretPresence(job, present) {
+    const key = JSON.stringify([job, present]);
+    if (presenceCache.has(key)) return presenceCache.get(key);
+    const scratch =
+        process.env.ONEPIPELINE_NODE_SCRATCH_DIR || ".github/.telemetry";
+    mkdirSync(scratch, { recursive: true });
+    const dir = mkdtempSync(scratch + "/guard-");
+    try {
+        const steps = {};
+        for (const step of job.steps) {
+            const output = `${dir}/${step.id}`;
+            const env = Object.fromEntries(
+                Object.entries(step.env || {}).map(([name, value]) => {
+                    const secret = String(value).match(/secrets\.(\w+)/)[1];
+                    return [name, present[secret] ? "doubled-secret" : ""];
+                }),
+            );
+            execFileSync("bash", ["-c", step.run], {
+                env: { PATH: process.env.PATH, ...env, GITHUB_OUTPUT: output },
+                stdio: ["ignore", "ignore", "ignore"],
+            });
+            const written = readFileSync(output, "utf8");
+            steps[step.id] = {
+                outputs: Object.fromEntries(
+                    written
+                        .split(/\r?\n/)
+                        .filter(Boolean)
+                        .map((line) => line.split(/=(.*)/s).slice(0, 2)),
+                ),
+            };
+        }
+        const outputs = Object.fromEntries(
+            Object.entries(job.outputs).map(([name, value]) => [
+                name,
+                String(interpolate(value, { steps })),
+            ]),
+        );
+        presenceCache.set(key, outputs);
+        return outputs;
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
@@ -328,12 +401,11 @@ export function resolveRun(
                             ? "sweep"
                             : "affected",
                     };
-                // Both guards report a secret's presence; doubled at that boundary.
-                if (id === "guard")
-                    outcomes[id].outputs = {
-                        publish: String(scenario.crate),
-                        enabled: String(scenario.releaseToken ?? false),
-                    };
+                if (result === "success" && reportsSecretPresence(job))
+                    outcomes[id].outputs = secretPresence(job, {
+                        CARGO_REGISTRY_TOKEN: scenario.crate,
+                        RELEASE_PLZ_TOKEN: scenario.releaseToken,
+                    });
                 if (id === "arches")
                     outcomes[id].outputs = {
                         matrix: JSON.stringify(screencompMatrix(inputs)),
@@ -758,6 +830,8 @@ export function lifecycle(
             event: ev.event,
             action: ev.action ?? null,
             head: ev.headBranch ?? null,
+            commit: ev.headCommit ?? null,
+            tag: ev.branch === "tag" ? ev.tag : null,
             cause: ev.cause,
         });
         const classification = classify(ev);

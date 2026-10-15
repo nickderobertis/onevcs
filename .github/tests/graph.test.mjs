@@ -16,6 +16,7 @@ import {
     sourceDigest,
     expression,
     lifecycle,
+    glob,
 } from "../workflow-graph.mjs";
 import { classify as classifyEvent } from "../macos-policy.mjs";
 import { history } from "./policy.test.mjs";
@@ -286,6 +287,16 @@ test("actual workflow/call graph over event, diff, ownership and publication com
     } finally {
         h.cleanup();
     }
+});
+test("filter and artifact patterns follow Actions' glob subset and refuse the rest", () => {
+    assert.equal(glob("v*", "v1.2.3"), true);
+    assert.equal(glob("release/*", "release/a"), true);
+    assert.equal(glob("release/*", "release/a/b"), false);
+    assert.equal(glob("release/**", "release/a/b"), true);
+    assert.equal(glob("v1.2", "v1x2"), false);
+    assert.equal(glob("wheels-*", "wheels-aarch64-apple-darwin"), true);
+    for (const pattern of ["!main", "[ab]", "v?", "v+", 3])
+        assert.throws(() => glob(pattern, "main"), /unsupported pattern/);
 });
 test("unknown runner/call/matrix expressions are explicit failures", () => {
     const s = { event: "pull_request", pypi: true, npm: true };
@@ -641,6 +652,45 @@ test("lifecycle derivation refuses what it cannot trace instead of counting it a
         const path = join(scratch, "release-plz.toml");
         writeFileSync(path, "[workspace]\ngit_release_enable = false\n");
         assert.equal(derive(() => {}, { releasePlz: path }).runs, 1);
+        writeFileSync(
+            path,
+            '[workspace]\npr_branch_prefix = "cut-"\npr_name = "chore: cut"\ngit_tag_name = "onevcs-{{ version }}"\n',
+        );
+        const renamed = derive(() => {}, { releasePlz: path });
+        assert.equal(
+            renamed.events.find((e) => e.label === "pr-opened").head,
+            "cut-2026",
+        );
+        assert.equal(
+            renamed.events.find((e) => e.label === "release-pr-merge").commit,
+            "chore: cut",
+        );
+        assert.equal(
+            renamed.events.find((e) => e.label === "release-tag").tag,
+            "onevcs-1.2.3",
+        );
+        // The classifier admits only release-plz's own prefix, so a renamed
+        // release branch is an ordinary PR and spends a Mac run of its own.
+        assert.equal(renamed.runs, 3);
+        // The run's own token in its `github.token` spelling starts nothing either.
+        assert.equal(
+            derive((s) => {
+                for (const step of s["release-plz.yml"].jobs["release-plz"].steps)
+                    if (step.env?.GITHUB_TOKEN)
+                        step.env.GITHUB_TOKEN = "${{ github.token }}";
+            }).runs,
+            1,
+        );
+        // The guard is executed, not assumed: one that always reports disabled
+        // leaves release-plz idle whatever secret is present.
+        assert.equal(
+            derive(
+                (s) =>
+                    (s["release-plz.yml"].jobs.guard.steps[0].run =
+                        'echo "enabled=false" >> "$GITHUB_OUTPUT"'),
+            ).runs,
+            1,
+        );
     } finally {
         rmSync(scratch, { recursive: true, force: true });
         h.cleanup();
