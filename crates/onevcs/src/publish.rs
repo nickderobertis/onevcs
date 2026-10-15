@@ -1631,6 +1631,8 @@ fn sync(
                 branch: &context.branch,
                 identity: &context.resolution.key,
                 hosting: context.hosting,
+                // A publication's own sync: nobody else brings the base in.
+                caller_merges: false,
             },
         )?;
         crate::base_merge::record(stream, &context.branch, context.target.base(), &decision);

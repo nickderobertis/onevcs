@@ -13,7 +13,8 @@
 //!   through [`RemoteHost::requires_up_to_date`](crate::RemoteHost::requires_up_to_date);
 //!   a host that would refuse to merge a branch behind its base is given one that is
 //!   not, and a host whose answer cannot be read is too, since that is the direction
-//!   that behaves as before.
+//!   that behaves as before. A session whose caller merges the base itself is not
+//!   asked: that caller is what brings the branch up to date.
 //!
 //! Otherwise the branch stays at its tip: no merge commit, and no check the host runs
 //! is restarted for a merge nothing asked for. The host's own merge of the change
@@ -134,6 +135,10 @@ pub(crate) struct Merging<'a> {
     pub identity: &'a str,
     /// Where the host is reached.
     pub hosting: &'a dyn Hosting,
+    /// The caller merges a base that merges cleanly into the branch itself, so the
+    /// host is not asked whether it requires an up-to-date branch: a session opened
+    /// over [`SessionRequest::caller_merges_base`](crate::SessionRequest::caller_merges_base).
+    pub caller_merges: bool,
 }
 
 /// Decide whether `asked.integrated` is merged into `asked.branch` under `setting`.
@@ -158,6 +163,12 @@ pub(crate) fn decide(setting: BaseMerge, asked: &Merging<'_>) -> Result<Decision
         return Ok(Decision::merge(format!(
             "{base} conflicts with the branch, so the conflict is resolved before anything is \
              published"
+        )));
+    }
+    if asked.caller_merges {
+        return Ok(Decision::skip(format!(
+            "{base} merges cleanly and the caller merges the base itself, so the branch stays at \
+             its tip and the host is not asked whether it requires an up-to-date branch"
         )));
     }
     match requires_up_to_date(asked) {

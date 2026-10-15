@@ -881,3 +881,93 @@ fn carries_its_base(policy: &str) {
         "{policy}: {decision}"
     );
 }
+
+/// The reads of the base's branch rules the host answered from the `from`-th call on:
+/// the rulesets and the classic protection `requires_up_to_date` asks.
+fn rule_reads_since(world: &World, from: usize) -> Vec<String> {
+    world
+        .host_calls()
+        .into_iter()
+        .skip(from)
+        .filter(|call| call.contains("/rules/branches/") || call.contains("/protection"))
+        .collect()
+}
+
+#[test]
+fn an_open_whose_caller_merges_the_base_itself_reads_none_of_the_bases_branch_rules() {
+    // A caller that merges a moved base itself — a restack — brings the branch up to
+    // date whatever the host requires, so asking the host whether it requires that is
+    // a read the caller's own work already answers, once per session opened.
+    let rule_reads = [
+        "api repos/acme-corp/hosted/rules/branches/main",
+        "api repos/acme-corp/hosted/branches/main/protection/required_status_checks",
+    ];
+
+    // Without the declaration, the open asks exactly what it always asked.
+    let hosted = Hosted::new(AUTO);
+    let tip = moved_under(&hosted, "base.txt", "the base moved\n");
+    let before = hosted.world.host_calls().len();
+    let (token, worktree, _) = open(&hosted, &[]);
+    assert_eq!(rule_reads_since(&hosted.world, before), rule_reads);
+    assert_eq!(hosted.world.git(&worktree, &["rev-parse", "HEAD"]), tip);
+    let decision = opened_decision(&hosted.world, &token);
+    assert_eq!(decision["decision"], "skipped", "{decision}");
+
+    // With it, the same open of the same moved base asks nothing about the rules — even
+    // of a host that requires an up-to-date branch, which the caller is about to make.
+    for strict in [false, true] {
+        let hosted = Hosted::new(AUTO);
+        if strict {
+            hosted.world.host_requires_up_to_date("rulesets");
+        }
+        let tip = moved_under(&hosted, "base.txt", "the base moved\n");
+        let before = hosted.world.host_calls().len();
+        let (token, worktree, printed) = open(&hosted, &["--caller-merges-base"]);
+        assert_eq!(
+            rule_reads_since(&hosted.world, before),
+            Vec::<String>::new(),
+            "strict: {strict}"
+        );
+        assert!(printed.get("conflict").is_none(), "{printed}");
+        assert_eq!(
+            hosted.world.git(&worktree, &["rev-parse", "HEAD"]),
+            tip,
+            "strict: {strict}: the branch is left at its tip for the caller to merge"
+        );
+        let decision = opened_decision(&hosted.world, &token);
+        assert_eq!(decision["decision"], "skipped", "strict: {strict}: {decision}");
+        assert!(
+            decision["because"]
+                .as_str()
+                .is_some_and(|said| said.contains("the caller merges the base itself")),
+            "strict: {strict}: {decision}"
+        );
+
+        // A resumption of that session over a base that moved again asks nothing either.
+        move_base(&hosted, "later.txt", "the base moved again\n", "later");
+        let before = hosted.world.host_calls().len();
+        let (resumed, _, _) = open(&hosted, &["--caller-merges-base"]);
+        assert_eq!(resumed, token, "the premise: the session was resumed");
+        assert_eq!(
+            rule_reads_since(&hosted.world, before),
+            Vec::<String>::new(),
+            "strict: {strict}"
+        );
+    }
+
+    // A base that conflicts is still merged and left for the session, declaration or
+    // not: the declaration stands in for the host's answer, never for a conflict.
+    let hosted = Hosted::new(AUTO);
+    moved_under(&hosted, "branch.txt", "the base's own branch.txt\n");
+    let before = hosted.world.host_calls().len();
+    let (token, _, printed) = open(&hosted, &["--caller-merges-base"]);
+    assert!(printed.get("conflict").is_some(), "{printed}");
+    assert_eq!(
+        rule_reads_since(&hosted.world, before),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        opened_decision(&hosted.world, &token)["decision"],
+        "merged"
+    );
+}

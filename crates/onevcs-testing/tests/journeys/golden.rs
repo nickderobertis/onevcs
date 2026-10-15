@@ -617,6 +617,7 @@ fn a_version_16_document_reads_its_retirements_with_no_cause_and_is_written_back
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -686,6 +687,7 @@ fn a_version_15_document_keeps_its_failures_and_is_written_back_at_this_one() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written = std::fs::read_to_string(&vcs_path).expect("a document");
@@ -759,6 +761,7 @@ fn a_version_14_document_reads_its_sessions_as_opened_clean_and_is_written_back_
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -841,6 +844,7 @@ fn a_version_13_document_publishes_under_the_lifecycle_and_is_written_back_at_th
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -916,6 +920,7 @@ fn a_version_12_document_reads_its_rows_as_unclassified_and_is_written_back_at_t
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -993,6 +998,7 @@ fn a_version_11_document_reads_its_rows_as_unlabelled_and_is_written_back_at_thi
         overflow: None,
         labels: std::collections::BTreeMap::from([("run".to_owned(), "r-7".to_owned())]),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -1064,6 +1070,7 @@ fn a_version_10_document_reads_its_rows_with_no_origin_and_is_written_back_at_th
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written = std::fs::read_to_string(&vcs_path).expect("a document");
@@ -1146,6 +1153,7 @@ fn a_version_9_document_keeps_its_failures_and_is_written_back_at_this_one() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
     let written: serde_json::Value =
@@ -1271,6 +1279,7 @@ fn a_version_8_document_is_read_and_written_back_at_this_one() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the seeded repository");
 

@@ -3739,6 +3739,7 @@ mod unknown_causes {
                 overflow: None,
                 labels: Default::default(),
                 refuse_conflicts: false,
+                caller_merges_base: false,
             })
             .expect("a session over the branch")
     }

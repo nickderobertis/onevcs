@@ -81,6 +81,7 @@ fn published(vcs: &MemoryVcs, host: &MemoryHost, home: &Home) -> (PublishOutcome
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session");
     let outcome = vcs

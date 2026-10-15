@@ -2688,7 +2688,7 @@ answer to act on.
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 onevcs session holders REPO [--label KEY=VALUE]... [--json]
 ```
 
@@ -3101,7 +3101,7 @@ pub mod branches {                                       // the host setting, be
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 ```
 
 Event kinds added: none.
@@ -3961,7 +3961,7 @@ always did, now carrying the object below, and says on stderr in one line that t
 session opened with a merge in progress.
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 ```
 
 ```json
@@ -5721,6 +5721,40 @@ request answered 304 nothing. The e2e fake `gh` world answers the same query and
 
 Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopened`.
 
+
+
+### A read whose answer the caller already holds is not made again
+
+**Recorded as the user's ruling, relayed by the manager** (plan node
+`onevcs-quota-reads`). One busy review round of onepipeline's review-feedback rework
+measured 171 GitHub quota units against a budget of 45, and about half of them were reads
+this crate made inside one caller's work whose answer that caller already held, or that
+the same call had already obtained. Such reads are removed. Every refusal, guard
+decision and published result stays what it was; only the number of host reads changes.
+
+**A session whose caller merges the base itself.** Under `base_merge: on-conflict` the
+only host read a continued or resumed branch's open makes is whether the base requires an
+up-to-date branch (`RemoteHost::requires_up_to_date` — the base's rulesets, then its
+classic protection), and its answer only ever merges a base that already merges cleanly.
+A caller that merges a moved base itself — onepipeline's restack — says so on the
+request, and an open carrying it makes no such read: a base that merges cleanly is left
+for the caller, the branch opens at its tip, and the `base_merge` its `session-opened`
+records is `skipped` saying the caller merges the base itself. A base that conflicts is
+merged exactly as before — left for the session, or refused under `refuse_conflicts` — and
+`base_merge: always` is unchanged. A request without the field behaves exactly as before.
+
+```rust
+// One declared type gains one field:
+//   SessionRequest  pub caller_merges_base: bool          // serde default false; omitted when false
+```
+
+**The command line.** `session open` gains `--caller-merges-base`, which sets the field.
+
+```
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
+```
+
+Event kinds added: none.
 
 
 ## Prepared direct operation progress (#388)

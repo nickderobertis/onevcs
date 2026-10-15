@@ -137,6 +137,7 @@ fn a_session_that_refuses_conflicts_opens_clean_and_reports_none() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: true,
+            caller_merges_base: false,
         })
         .expect("the library's opt-out opens a clean session too");
     assert_eq!(again.conflict, None);
@@ -176,6 +177,7 @@ fn preserved_work_is_what_recoverable_reports() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session over a known repository");
 
@@ -271,6 +273,7 @@ fn preserving_the_same_branch_twice_reports_it_once() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session named by its identity key");
 
@@ -328,6 +331,7 @@ fn a_session_is_adopted_back_out_of_the_state_that_recorded_it() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session");
 
@@ -445,6 +449,7 @@ fn a_name_to_cut_is_taken_as_the_branch_and_naming_both_is_refused() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect_err("a request naming both is refused");
     let said = refused.to_string();

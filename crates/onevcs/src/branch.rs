@@ -544,6 +544,8 @@ impl Landing {
                     branch: &self.branch,
                     identity: &self.resolution.key,
                     hosting,
+                    // A publication's own sync: nobody else brings the base in.
+                    caller_merges: false,
                 },
             )?;
             crate::base_merge::record(stream, &self.branch, &self.change_base, &decision);

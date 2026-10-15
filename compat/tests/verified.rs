@@ -241,6 +241,7 @@ fn the_previous_release_reads_and_publishes_over_a_state_root_holding_a_verified
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("this build opens a session");
     commit(&session.worktree, "verified.txt", "verified\n");

@@ -390,6 +390,7 @@ fn the_seam_refuses_when_asked_to_and_hands_the_conflict_back_when_not() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts,
+        caller_merges_base: false,
     };
 
     let refused = Git
@@ -426,6 +427,7 @@ fn the_seam_refuses_to_preserve_a_session_whose_merge_is_unfinished() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the default opens over the merge");
     assert!(session.conflict.is_some(), "the premise: {session:?}");

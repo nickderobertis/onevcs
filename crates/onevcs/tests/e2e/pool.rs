@@ -1616,6 +1616,7 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
             overflow,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the capacity is answered")
     };

@@ -110,6 +110,22 @@ pub struct SessionRequest {
     // the crate turns it into its own two-variant choice where the open acts on it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refuse_conflicts: bool,
+    /// The caller merges a moved base into the continued branch itself, so the open
+    /// does not ask the host whether the base requires an up-to-date branch.
+    ///
+    /// Under `base_merge: on-conflict` that question is the only host read a
+    /// continued or resumed branch's open makes, and its answer only ever merges a
+    /// base that already merges cleanly — which a caller that brings the base in
+    /// itself does anyway. With this set, such a base is left for the caller and the
+    /// branch opens at its tip; a base that conflicts is still merged as it always
+    /// was, and `base_merge: always` is unchanged. `false` — the default, and what a
+    /// request that never names it reads as — asks the host exactly as before.
+    /// Omitted when `false`.
+    // llmlint: ignore[invalid_states_unrepresentable] the amendment fixes this field as
+    // `caller_merges_base: bool`, omitted when false, beside `refuse_conflicts`; both
+    // values are valid requests, and the open turns it into the decision's own input.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caller_merges_base: bool,
 }
 
 /// The handle a session is adopted, published, and closed by.

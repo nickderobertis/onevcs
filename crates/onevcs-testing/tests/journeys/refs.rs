@@ -79,6 +79,7 @@ fn provider_accepts(vcs: &MemoryVcs, name: &str) -> bool {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .is_ok()
 }

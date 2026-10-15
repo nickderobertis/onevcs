@@ -154,6 +154,7 @@ pub(crate) fn open(vcs: &dyn Vcs, branch: &str) -> Session {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session over the registered repository")
 }
@@ -262,6 +263,7 @@ fn a_publication_through_the_providers_reports_a_failure_as_an_outcome() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session");
 
@@ -310,6 +312,7 @@ fn the_command_says_nothing_about_a_branch_the_repository_side_never_held() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session");
 
@@ -2175,6 +2178,7 @@ fn the_release_entry_points_answer_values_and_the_adoption_chain_resolves_throug
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session opens");
     world.commit_file(&session.worktree, "thing.txt", "work\n", "feat: work");
@@ -6545,6 +6549,7 @@ fn the_branch_operations_answer_values_where_their_commands_print_prose() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session over the registered repository");
     fixture.world.commit_file(
