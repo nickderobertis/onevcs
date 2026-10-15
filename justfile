@@ -213,7 +213,7 @@ _audit-test:
 # `scripts-suites` are the `e2e` modules whose subject is this repository's own
 # scripts, packaging, workflows and project graph rather than the crate: they read
 # `scripts/`, `npm/` and `.github/`, so they are the tier a change there reaches.
-scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root)::/)"
+scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root|pool_maintenance)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
 unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload) | binary(pool-workload))"
@@ -523,3 +523,34 @@ _pool-workload:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_POOL_WORKLOAD_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test pool-workload --locked --status-level fail {{recovery-no-tests}}
     @"{{onebudgetspec-root}}/bin/onebudgetspec" check crates/onevcs/tests/pool-workload/budgets.yaml
+
+# --- Pool maintenance (onevcs.toml declares it; onevcs runs it in idle warm slots) ---
+
+# The released pruner the maintenance runs, pinned once; bootstrap installs exactly it.
+prune-superseded-version := "0.1.1"
+
+# Every directory this repository's cargo builds write to: the `target-dir` that
+# `.cargo/config.toml` sets, which the `compat/` workspace beneath it inherits.
+pool-maintenance-targets := "target"
+
+# Remove superseded cargo builds older than two days, keeping each unit's newest.
+pool-maintenance:
+    @cargo-prune-superseded --keep-within 2d {{pool-maintenance-targets}}
+
+# The `pool-maintenance:bootstrap` target. Skips the install when that release is the
+# one already on PATH.
+_pool-maintenance-bootstrap:
+    @[ "$(cargo-prune-superseded --version 2>/dev/null)" = "cargo-prune-superseded {{prune-superseded-version}}" ] \
+      || cargo install --locked --quiet cargo-prune-superseded --version {{prune-superseded-version}} \
+      || { echo "cargo-prune-superseded {{prune-superseded-version}} could not be installed; check network access to crates.io, then re-run 'just bootstrap'" >&2; exit 1; }
+
+# Builds the repository twice, so no per-change target reaches it: the release sweep
+# runs it after its gate, and anyone may run it by name.
+# Measure one steady-state pool maintenance pass against its host budget.
+pool-maintenance-budget:
+    @bash scripts/nx.sh run pool-maintenance:budgets-host
+
+_pool-maintenance-budgets:
+    @[ -x "{{onebudgetspec-root}}/bin/onebudgetspec" ] \
+      || { echo "onebudgetspec {{onebudgetspec-version}} is missing; run 'just bootstrap', then retry" >&2; exit 1; }
+    @"{{onebudgetspec-root}}/bin/onebudgetspec" check pool-maintenance/budgets.yaml --label host

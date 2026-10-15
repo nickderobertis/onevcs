@@ -1,0 +1,18 @@
+{
+  "name": "pool-maintenance",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:pool-maintenance", "lang:bash"],
+  "targets": {
+    "bootstrap": {
+      "command": "just _pool-maintenance-bootstrap"
+    },
+    // No `check` target, and no target of another project names this one: the
+    // measurement builds the repository twice, so only the release sweep, after its
+    // gate, asks for it by name (`just pool-maintenance-budget`).
+    "budgets-host": {
+      "command": "just _pool-maintenance-budgets",
+      "options": { "cwd": "." }
+    }
+  }
+}
