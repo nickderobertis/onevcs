@@ -865,8 +865,24 @@ case "$subcommand" in
           separator=","
           continue ;;
       esac
-      printf '%s{"number":%s,"url":"%s","state":"%s","headRefOid":"%s"}' \
+      printf '%s{"number":%s,"url":"%s","state":"%s","headRefOid":"%s"' \
         "$separator" "$PR_NUMBER" "$PR_URL" "$PR_STATE" "$PR_HEAD_SHA"
+      # The draft state and the description, where the listing asked for them — as
+      # `gh` answers exactly the fields it was asked for, and as `view` below answers
+      # them, the malformed answers that leave one out included.
+      listed() { case ",$json_fields," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+      if listed isDraft && [ "$malformed" != "no-draft-state" ]; then
+        listed_draft=false
+        if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then listed_draft=true; fi
+        printf ',"isDraft":%s' "$listed_draft"
+      fi
+      if listed title && [ -f "$STATE/pr-$PR_NUMBER.title" ]; then
+        printf ',"title":%s' "$(json_recorded "$STATE/pr-$PR_NUMBER.title")"
+      fi
+      if listed body && [ -f "$STATE/pr-$PR_NUMBER.body" ] && [ "$malformed" != "no-description" ]; then
+        printf ',"body":%s' "$(json_recorded "$STATE/pr-$PR_NUMBER.body")"
+      fi
+      printf '}'
       separator=","
     done
     printf ']\n'

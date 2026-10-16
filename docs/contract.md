@@ -2688,7 +2688,7 @@ answer to act on.
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 onevcs session holders REPO [--label KEY=VALUE]... [--json]
 ```
 
@@ -3101,7 +3101,7 @@ pub mod branches {                                       // the host setting, be
 ```
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 ```
 
 Event kinds added: none.
@@ -3961,7 +3961,7 @@ always did, now carrying the object below, and says on stderr in one line that t
 session opened with a merge in progress.
 
 ```
-onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts]
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
 ```
 
 ```json
@@ -5721,6 +5721,75 @@ request answered 304 nothing. The e2e fake `gh` world answers the same query and
 
 Event kinds added: `change-standings-read`, `change-retargeted`, `change-reopened`.
 
+
+
+### A read whose answer the caller already holds is not made again
+
+**Recorded as the user's ruling, relayed by the manager** (plan node
+`onevcs-quota-reads`). One busy review round of onepipeline's review-feedback rework
+measured 171 GitHub quota units against a budget of 45, and about half of them were reads
+this crate made inside one caller's work whose answer that caller already held, or that
+the same call had already obtained. Three such reads are removed. Every refusal, guard
+decision and published result stays what it was; only the number of host reads changes.
+
+**A session whose caller merges the base itself.** Under `base_merge: on-conflict` the
+only host read a continued or resumed branch's open makes is whether the base requires an
+up-to-date branch (`RemoteHost::requires_up_to_date` — the base's rulesets, then its
+classic protection), and its answer only ever merges a base that already merges cleanly.
+A caller that merges a moved base itself — onepipeline's restack — says so on the
+request, and an open carrying it makes no such read: a base that merges cleanly is left
+for the caller, the branch opens at its tip, and the `base_merge` its `session-opened`
+records is `skipped` saying the caller merges the base itself. A base that conflicts is
+merged exactly as before — left for the session, or refused under `refuse_conflicts` — and
+`base_merge: always` is unchanged. A request without the field behaves exactly as before.
+
+```rust
+// One declared type gains one field:
+//   SessionRequest  pub caller_merges_base: bool          // serde default false; omitted when false
+```
+
+**The command line.** `session open` gains `--caller-merges-base`, which sets the field.
+
+```
+onevcs session open REPO [--branch B] [--branch-name N] [--branch-prefix P] [--base B] [--execution-checkout ALIAS] [--pool N] [--overflow N|unlimited] [--label KEY=VALUE]... [--refuse-conflicts] [--caller-merges-base]
+```
+
+**A reply reads the visibility this host recorded.** `reply_to_comment`'s public-boundary
+check reads the destination's visibility as the deferred-check publication reads it — a
+rule's declared visibility, else the host's answer recorded at an earlier write (one whose
+`observation` and `visibility` are both known) — and probes the host only where neither is
+there, recording what it learns for the next reply. So a round's replies to one registered
+repository probe at most once between them. A destination recorded public is screened as
+before, and one recorded private, or declared private by a rule, is let through unchecked
+as before.
+
+**A change request is read once per call.** GitHub's `find_changes` asks `gh pr list` for
+each change request's draft state, title and body beside the fields it always read — one
+query, at the same charge — and, inside one operation of this crate's (a publication, a
+resumed publication, `session_change`, `describe_change`, `ready_change`), the next
+`is_draft` or `change_description` of that change request on the same host answers from
+it, once, rather than with another `gh pr view`; `change_description` asks the draft state
+beside the description for the same reason. An answer is spent by the read it answers,
+`ready_for_review` and `describe_change` forget what was listed about the change request
+they wrote, and nothing listed is kept outside an operation or answered to another one: a
+caller holding a `GitHub` and using it directly reads the host at every call, as before.
+A publication that adopts an existing change request therefore reads it with one `gh pr
+list` — not a list and then a view of its draft state — and `session_change` with one
+rather than a list and two views.
+
+**A held draft republished reads its change request twice, once on each side of its
+push.** A publication holding a draft (`draft` set) over a change request the host already
+has lists it before its push, which refuses a change open for review before anything is
+pushed, and lists it again after the push, which is the authoritative read: a draft a
+person lifted while the push ran ends as a pushed, unverified merge path naming the change
+open for review (exit `1`), and one closed while it ran is replaced by a new draft. Each
+listing answers that side's draft-state read, so neither is followed by a `gh pr view`.
+That second read is kept on purpose — detecting the host moving during the push is worth
+one listing — and it is the one exception to a change request being read once per call;
+`a_held_draft_republication_reads_again_after_its_push_and_sees_the_host_move` in
+`tests/e2e/change.rs` holds both cases. No public item is added.
+
+Event kinds added: none.
 
 
 ## Prepared direct operation progress (#388)

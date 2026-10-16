@@ -1257,6 +1257,15 @@ pub fn run(context: &Context<'_>, stream: &mut Stream) -> Result<PublishOutcome>
 /// publication of the same session that still resolved the recorded stack would
 /// compare the branch against a branch below it that has landed and gone.
 fn run_resolving(context: &Context<'_>, stream: &mut Stream) -> Result<(PublishOutcome, Target)> {
+    // One operation, so what the host lists of a change request here answers this
+    // publication's next read of it and nobody else's.
+    crate::host::within_one_operation(|| publish_resolving(context, stream))
+}
+
+fn publish_resolving(
+    context: &Context<'_>,
+    stream: &mut Stream,
+) -> Result<(PublishOutcome, Target)> {
     // Input, rejected at its boundary: before the fetch, before the sync, and before
     // anything reaches a remote. A draft is a state of a *change request*, so a
     // publication that opens none cannot be in it, and a reason nobody can read is
@@ -1631,6 +1640,8 @@ fn sync(
                 branch: &context.branch,
                 identity: &context.resolution.key,
                 hosting: context.hosting,
+                // A publication's own sync: nobody else brings the base in.
+                brought_in: crate::base_merge::BaseBroughtIn::Here,
             },
         )?;
         crate::base_merge::record(stream, &context.branch, context.target.base(), &decision);
@@ -2360,6 +2371,15 @@ fn land_as_change(
 /// opened one — the same outcomes, the same events, and a red check ending it as one
 /// does there. It is an adopted change, because it is one: the host already held it.
 pub(crate) fn resume(
+    context: &Context<'_>,
+    change: &ChangeRequest,
+    pushed: &Sha,
+    stream: &mut Stream,
+) -> Result<PublishOutcome> {
+    crate::host::within_one_operation(|| resume_within(context, change, pushed, stream))
+}
+
+fn resume_within(
     context: &Context<'_>,
     change: &ChangeRequest,
     pushed: &Sha,

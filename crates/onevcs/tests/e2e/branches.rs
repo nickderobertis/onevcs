@@ -608,6 +608,7 @@ fn request(branch: Option<&str>, name: Option<&str>, prefix: Option<&str>) -> Se
         overflow: None,
         labels: BTreeMap::new(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     }
 }
 

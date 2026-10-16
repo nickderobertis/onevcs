@@ -1344,6 +1344,7 @@ pub(crate) fn open_with(
         publication: &resolution.publication,
         placed,
         on_conflict: OnMerge::asked_by(request),
+        brought_in: crate::base_merge::BaseBroughtIn::asked_by(request),
         base_merge,
         resolution: &resolution,
         registry,
@@ -1842,6 +1843,7 @@ fn merge_resumed_base(
         &integrated,
         &record.base,
         &record.branch,
+        crate::base_merge::BaseBroughtIn::asked_by(request),
     )?;
     // `decide` answers `merged` under `always` only for a base that moved; one the
     // branch already carries is a `skipped` that says so under either setting.
@@ -2082,6 +2084,9 @@ struct Cut<'a> {
     on_conflict: OnMerge,
     /// Whether a continuation is merged with its base at all.
     base_merge: BaseMerge,
+    /// Who brings a base that merges cleanly in, and so whether the host is asked
+    /// whether it requires an up-to-date branch.
+    brought_in: crate::base_merge::BaseBroughtIn,
     /// The identity, whose rules decide when a moved base is merged and whose host is
     /// asked whether it requires an up-to-date branch.
     resolution: &'a Resolution,
@@ -2127,6 +2132,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         placed,
         on_conflict,
         base_merge,
+        brought_in,
         resolution,
         registry,
     } = *cut;
@@ -2180,6 +2186,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
             &integrated,
             base,
             branch,
+            brought_in,
         )?),
         BaseMerge::Leave => None,
     };
@@ -2207,7 +2214,8 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
 ///
 /// The host is the real one: a session is opened through the repository side alone,
 /// and the only thing asked of the host is whether it requires an up-to-date branch —
-/// a refusal of which merges, as every open before the setting did.
+/// a refusal of which merges, as every open before the setting did. A request whose
+/// caller merges the base itself is not asked even that.
 fn decide_base_merge(
     setting: RulesBaseMerge,
     resolution: &Resolution,
@@ -2215,6 +2223,7 @@ fn decide_base_merge(
     integrated: &str,
     base: &Ref,
     branch: &Ref,
+    brought_in: crate::base_merge::BaseBroughtIn,
 ) -> Result<crate::base_merge::Decision> {
     crate::base_merge::decide(
         setting,
@@ -2225,6 +2234,7 @@ fn decide_base_merge(
             branch,
             identity: &resolution.key,
             hosting: crate::Providers::real().hosting,
+            brought_in,
         },
     )
 }
@@ -3393,6 +3403,7 @@ mod reclaim_race {
                 overflow: None,
                 labels: Default::default(),
                 refuse_conflicts: false,
+                caller_merges_base: false,
             })
             .expect("a session opens")
     }

@@ -491,6 +491,14 @@ pub struct SessionOpenArgs {
     // option the contract does not name.
     #[arg(long)]
     pub refuse_conflicts: bool,
+    /// The caller merges a moved base into a continued branch itself: a base that
+    /// merges cleanly is left for it, and the host is not asked whether the base
+    /// requires an up-to-date branch.
+    // llmlint: ignore[invalid_states_unrepresentable] a presence flag, which is all the
+    // amendment's `--caller-merges-base` spells, rendered straight into the
+    // contract-fixed `SessionRequest::caller_merges_base: bool`.
+    #[arg(long)]
+    pub caller_merges_base: bool,
 }
 
 /// A session token, for the commands that take nothing else.

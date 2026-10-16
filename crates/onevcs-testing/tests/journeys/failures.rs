@@ -72,6 +72,7 @@ fn a_state_root_that_cannot_hold_a_stream_does_not_fail_the_operation() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the session opens even though its event cannot be written");
     vcs.preserve(&session, Provenance::Complete)
@@ -162,6 +163,7 @@ fn an_unusable_state_root_is_refused_by_name() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session");
     assert!(fallback
@@ -363,6 +365,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
                 overflow: None,
                 labels: Default::default(),
                 refuse_conflicts: false,
+                caller_merges_base: false,
             })
             .err()
             .unwrap_or_else(|| panic!("{name:?} is a name git would not accept"));
@@ -384,6 +387,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .is_err());
     assert!(
@@ -405,6 +409,7 @@ fn a_branch_name_git_would_not_accept_is_refused_where_the_session_asks_for_it()
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .unwrap_or_else(|e| panic!("{name:?} is a name git accepts: {e}"));
     }
@@ -461,6 +466,7 @@ fn a_file_backed_session_needs_somewhere_to_put_its_worktree() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect_err("nowhere to put the worktree");
 

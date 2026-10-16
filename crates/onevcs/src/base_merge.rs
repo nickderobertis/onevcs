@@ -13,7 +13,8 @@
 //!   through [`RemoteHost::requires_up_to_date`](crate::RemoteHost::requires_up_to_date);
 //!   a host that would refuse to merge a branch behind its base is given one that is
 //!   not, and a host whose answer cannot be read is too, since that is the direction
-//!   that behaves as before.
+//!   that behaves as before. A session whose caller merges the base itself is not
+//!   asked: that caller is what brings the branch up to date.
 //!
 //! Otherwise the branch stays at its tip: no merge commit, and no check the host runs
 //! is restarted for a merge nothing asked for. The host's own merge of the change
@@ -119,6 +120,27 @@ pub(crate) fn record(stream: &mut Stream, branch: &str, base: &str, decision: &D
     stream.emit(EventKind::BaseMerge, payload);
 }
 
+/// Who brings a moved base that merges cleanly into the branch, which decides whether
+/// the host is asked if it requires an up-to-date branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseBroughtIn {
+    /// This crate, where the host requires it: the host is asked.
+    Here,
+    /// The caller, which merges the base itself: the host is not asked.
+    ByCaller,
+}
+
+impl BaseBroughtIn {
+    /// What a session request says, through
+    /// [`SessionRequest::caller_merges_base`](crate::SessionRequest::caller_merges_base).
+    pub(crate) fn asked_by(request: &crate::SessionRequest) -> Self {
+        match request.caller_merges_base {
+            true => Self::ByCaller,
+            false => Self::Here,
+        }
+    }
+}
+
 /// Everything one decision reads: where the branch is, what it would be merged with,
 /// and how to ask the host.
 pub(crate) struct Merging<'a> {
@@ -134,6 +156,8 @@ pub(crate) struct Merging<'a> {
     pub identity: &'a str,
     /// Where the host is reached.
     pub hosting: &'a dyn Hosting,
+    /// Who brings a cleanly merging base in, and so whether the host is asked.
+    pub brought_in: BaseBroughtIn,
 }
 
 /// Decide whether `asked.integrated` is merged into `asked.branch` under `setting`.
@@ -158,6 +182,12 @@ pub(crate) fn decide(setting: BaseMerge, asked: &Merging<'_>) -> Result<Decision
         return Ok(Decision::merge(format!(
             "{base} conflicts with the branch, so the conflict is resolved before anything is \
              published"
+        )));
+    }
+    if asked.brought_in == BaseBroughtIn::ByCaller {
+        return Ok(Decision::skip(format!(
+            "{base} merges cleanly and the caller merges the base itself, so the branch stays at \
+             its tip and the host is not asked whether it requires an up-to-date branch"
         )));
     }
     match requires_up_to_date(asked) {

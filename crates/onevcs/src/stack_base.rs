@@ -543,6 +543,7 @@ fn open(registry: &Registry, request: &StackBaseRequest) -> Result<Opening> {
             overflow: None,
             labels: request.labels.clone(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         },
         BaseMerge::Leave,
     )

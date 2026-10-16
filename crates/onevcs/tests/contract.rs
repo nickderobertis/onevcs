@@ -2176,6 +2176,7 @@ fn the_declared_implementations_satisfy_the_declared_traits() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     };
     let change = ChangeRequest {
         id: ChangeId("42".to_owned()),
@@ -2570,6 +2571,7 @@ fn the_reported_shapes_serialize_the_way_a_json_consumer_reads_them() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session request serializes"),
         json!({
@@ -7353,6 +7355,7 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         overflow: Some(Bound::Unlimited),
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     };
     assert_eq!(
         serde_json::to_value(&request).expect("serializes")["overflow"],
@@ -8100,6 +8103,7 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session request serializes"),
         json!({"repo": "onevcs", "branch": null, "base": null, "execution_checkout": null})
@@ -8116,6 +8120,7 @@ fn the_two_new_request_fields_are_omitted_when_a_caller_names_neither() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .expect("a session request serializes");
     assert_eq!(named["branch_name"], json!("ENG-123/aio-adopt-op"));
@@ -8216,6 +8221,7 @@ fn refusing_conflicts_is_omitted_from_a_request_that_does_not_ask_for_it() {
         overflow: None,
         labels: Default::default(),
         refuse_conflicts,
+        caller_merges_base: false,
     };
     assert_eq!(
         serde_json::to_value(request(false)).expect("a session request serializes"),
@@ -8247,6 +8253,58 @@ fn the_conflicted_open_amendment_spells_exactly_the_flags_session_open_takes() {
                     .all(|line| line.starts_with("onevcs session open "))
         })
         .expect("the conflicted-open amendment spells the `session open` usage on its own");
+    assert_eq!(
+        spelled_flags(&usage),
+        parser_flags(&["session", "open"]),
+        "the amendment's `session open` usage and the parser disagree about its flags"
+    );
+}
+
+#[test]
+fn the_caller_merges_base_amendment_declares_its_field_and_omits_it_when_unasked() {
+    let declarations = amendment_declaring("SessionRequest  pub caller_merges_base");
+    assert!(
+        declarations.contains("SessionRequest  pub caller_merges_base: bool"),
+        "the amendment no longer declares the field: {declarations}"
+    );
+    let request = |caller_merges_base| SessionRequest {
+        repo: "onevcs".to_owned(),
+        branch: None,
+        branch_name: None,
+        branch_prefix: None,
+        base: None,
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts: false,
+        caller_merges_base,
+    };
+    // A request that does not ask is byte for byte the object it always was.
+    assert_eq!(
+        serde_json::to_value(request(false)).expect("a session request serializes"),
+        json!({"repo": "onevcs", "branch": null, "base": null, "execution_checkout": null})
+    );
+    let asked = serde_json::to_value(request(true)).expect("a session request serializes");
+    assert_eq!(asked["caller_merges_base"], json!(true));
+    let round: SessionRequest = serde_json::from_value(asked).expect("it reads back");
+    assert!(round.caller_merges_base);
+    let read: SessionRequest =
+        serde_json::from_value(json!({"repo": "onevcs"})).expect("an older request reads");
+    assert!(
+        !read.caller_merges_base,
+        "the default asks the host as before"
+    );
+
+    let usage = usage_in(&regions().0)
+        .into_iter()
+        .rfind(|body| {
+            body.contains("--caller-merges-base")
+                && body
+                    .lines()
+                    .all(|line| line.starts_with("onevcs session open "))
+        })
+        .expect("the amendment spells the `session open` usage on its own");
     assert_eq!(
         spelled_flags(&usage),
         parser_flags(&["session", "open"]),

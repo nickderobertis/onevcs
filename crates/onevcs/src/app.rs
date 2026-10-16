@@ -829,6 +829,7 @@ fn session_open(args: &SessionOpenArgs, providers: &Providers<'_>) -> Result<u8>
         // not a label is answered before a session is cut for it.
         labels: label::parse_all(&args.label)?,
         refuse_conflicts: args.refuse_conflicts,
+        caller_merges_base: args.caller_merges_base,
     };
     let _ = &registry;
     let session = providers.vcs.open_session(request)?;

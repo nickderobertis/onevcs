@@ -127,6 +127,7 @@ fn an_embedding_caller_enumerates_holders_and_acts_on_one_without_spawning_the_b
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -237,6 +238,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the embedding process opens a real session")
         .token;
@@ -254,6 +256,7 @@ fn holders_reports_live_and_stale_open_and_closed_sessions_without_mutating_stat
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("the embedding process opens a real session")
         .token
@@ -977,6 +980,7 @@ fn launch(repo: &str, branch: &str, acknowledged: &[&str]) -> std::result::Resul
         overflow: None,
         labels: Default::default(),
         refuse_conflicts: false,
+        caller_merges_base: false,
     })
     .map_err(|refused| format!("{refused}"))
 }

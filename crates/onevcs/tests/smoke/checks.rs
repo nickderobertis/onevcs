@@ -123,6 +123,7 @@ fn the_real_checks_on_a_real_pull_request_are_read_and_their_log_fetched() {
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .expect("a session over the scratch repository");
     let token = SessionToken(session.token.0.clone());

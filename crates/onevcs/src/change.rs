@@ -89,11 +89,13 @@ pub fn session_change(
     providers: &Providers<'_>,
     token: &SessionToken,
 ) -> Result<Option<SessionChange>> {
-    let session = Addressed::of(providers, token)?;
-    let Some(change) = session.find()? else {
-        return Ok(None);
-    };
-    session.read(&change).map(Some)
+    crate::host::within_one_operation(|| {
+        let session = Addressed::of(providers, token)?;
+        let Some(change) = session.find()? else {
+            return Ok(None);
+        };
+        session.read(&change).map(Some)
+    })
 }
 
 /// Replace the session's change request's description, and report the change as it
@@ -106,6 +108,14 @@ pub fn session_change(
 /// otherwise. The body is stored as an artifact and the `change-described` event
 /// names it, so `onevcs artifact cat ID` reads back exactly what was written.
 pub fn describe_change(
+    providers: &Providers<'_>,
+    token: &SessionToken,
+    description: &ChangeDescription,
+) -> Result<SessionChange> {
+    crate::host::within_one_operation(|| describe_within(providers, token, description))
+}
+
+fn describe_within(
     providers: &Providers<'_>,
     token: &SessionToken,
     description: &ChangeDescription,
@@ -191,11 +201,13 @@ fn record_description(
 /// asked for nothing and reported as it stands — idempotent because the host
 /// decides, exactly as the publication's lift is.
 pub fn ready_change(providers: &Providers<'_>, token: &SessionToken) -> Result<SessionChange> {
-    let session = Addressed::of(providers, token)?;
-    let change = session.require()?;
-    let mut stream = session.stream()?;
-    publish::lift_any_draft(session.host.as_ref(), &change, &mut stream)?;
-    session.read(&change)
+    crate::host::within_one_operation(|| {
+        let session = Addressed::of(providers, token)?;
+        let change = session.require()?;
+        let mut stream = session.stream()?;
+        publish::lift_any_draft(session.host.as_ref(), &change, &mut stream)?;
+        session.read(&change)
+    })
 }
 
 /// One session, resolved as far as the host that answers for its change request.

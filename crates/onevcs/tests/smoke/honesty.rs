@@ -195,6 +195,7 @@ fn ready_to_publish(
             overflow: None,
             labels: Default::default(),
             refuse_conflicts: false,
+            caller_merges_base: false,
         })
         .unwrap_or_else(|error| panic!("{side} opens a session over {identity}: {error}"));
     assert_eq!(session.base, "main", "{side} cut the branch from main");

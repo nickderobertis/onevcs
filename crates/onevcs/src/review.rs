@@ -316,8 +316,10 @@ pub fn reply_to_comment(providers: &Providers<'_>, request: &ReplyRequest) -> Re
     };
     let body = compose(&request.body, &marker);
     // A reply is written to the host as it is, so it is held to the boundary before
-    // the host is asked anything that could write.
-    crate::boundary::evidence::guard_fields(
+    // the host is asked anything that could write. A round answers many comments on one
+    // repository, so the visibility this host recorded stands for each reply, and the
+    // host is asked only where nothing is recorded.
+    crate::boundary::evidence::guard_fields_unless_recorded(
         providers.hosting,
         &addressed.identity,
         &[(Surface::Body, body.as_str())],
