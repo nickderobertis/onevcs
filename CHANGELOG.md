@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0](https://github.com/nickderobertis/onevcs/compare/v0.51.3...v0.52.0) - 2026-10-16
+
+### Performance
+
+- *(host)* skip host reads a caller already answered when opening sessions, replying and republishing ([#434](https://github.com/nickderobertis/onevcs/pull/434))
+
 ## [0.51.2](https://github.com/nickderobertis/onevcs/compare/v0.51.1...v0.51.2) - 2026-10-14
 
 ### Fixed
