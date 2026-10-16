@@ -997,11 +997,12 @@ pub struct GitHub {
 /// after — `ready_for_review`, `describe_change` — forgets what was listed about it.
 /// What a host has read in passing is not part of which host it is, so a clone starts
 /// with nothing and two hosts compare by their repository alone.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Listed(std::sync::Mutex<BTreeMap<String, ListedChange>>);
 
 /// What one listing said about one change request, each half until it is read, and the
 /// operation it was read in.
+#[derive(Debug)]
 struct ListedChange {
     operation: u64,
     draft: Option<bool>,
@@ -1018,21 +1019,21 @@ static NEXT_OPERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 
 /// Run `operation` as one operation of this crate's: what a `GitHub` host lists inside it
 /// may answer the reads made inside it, and nothing outside it. An operation run inside
-/// another is part of the outer one.
+/// another is part of the outer one, which goes on once it returns.
 pub(crate) fn within_one_operation<T>(operation: impl FnOnce() -> T) -> T {
-    if OPERATION.with(std::cell::Cell::get).is_some() {
-        return operation();
-    }
-    /// Ends the operation however `operation` returns, a panic included.
-    struct Ended;
+    /// Puts back the operation this one was run inside, or none, however `operation`
+    /// returns, a panic included.
+    struct Ended(Option<u64>);
     impl Drop for Ended {
         fn drop(&mut self) {
-            OPERATION.with(|current| current.set(None));
+            OPERATION.with(|current| current.set(self.0));
         }
     }
-    let number = NEXT_OPERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let outer = OPERATION.with(std::cell::Cell::get);
+    let number =
+        outer.unwrap_or_else(|| NEXT_OPERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     OPERATION.with(|current| current.set(Some(number)));
-    let _ended = Ended;
+    let _ended = Ended(outer);
     operation()
 }
 
@@ -1110,12 +1111,6 @@ impl PartialEq for Listed {
 }
 
 impl Eq for Listed {}
-
-impl std::fmt::Debug for Listed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Listed")
-    }
-}
 
 impl GitHub {
     /// Address this host at one repository, named `owner/name`.
