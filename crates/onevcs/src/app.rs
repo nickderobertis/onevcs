@@ -248,7 +248,6 @@ fn host_answer<T: serde::Serialize>(answer: crate::host_query::HostQueryResult<T
     }
 }
 
-/// Render `onevcs host release-changes`.
 fn host_release_changes(args: &HostReleaseChangesArgs) -> Result<u8> {
     host_answer(crate::host_query::release_changes(
         &crate::host_query::ReleaseChangesRequest {
@@ -259,7 +258,6 @@ fn host_release_changes(args: &HostReleaseChangesArgs) -> Result<u8> {
     ))
 }
 
-/// Render `onevcs host change-checks`.
 fn host_change_checks(args: &HostChangeChecksArgs) -> Result<u8> {
     host_answer(crate::host_query::change_checks(
         &crate::host_query::ChangeChecksRequest {
@@ -271,7 +269,6 @@ fn host_change_checks(args: &HostChangeChecksArgs) -> Result<u8> {
     ))
 }
 
-/// Render `onevcs host commit-runs`.
 fn host_commit_runs(args: &HostCommitRunsArgs) -> Result<u8> {
     let commit = match (&args.commit, &args.tag) {
         (Some(sha), _) => crate::host_query::CommitSelector::Commit(sha.clone()),
@@ -288,7 +285,6 @@ fn host_commit_runs(args: &HostCommitRunsArgs) -> Result<u8> {
     ))
 }
 
-/// Render `onevcs host run-jobs`.
 fn host_run_jobs(args: &HostRunJobsArgs) -> Result<u8> {
     host_answer(crate::host_query::run_jobs(
         &crate::host_query::RunJobsRequest {

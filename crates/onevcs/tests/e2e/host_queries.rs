@@ -583,8 +583,7 @@ fn release_changes_maps_every_commit_of_v0_72_0_to_its_pull_request_in_three_rea
 
 /// What the selection rule keeps at each of v0.72.0's pull request heads: the latest
 /// `pull_request` run per workflow created at or before the merge, by workflow name.
-/// Worked out with jq over the recordings; the completion report shows the runs it
-/// drops.
+/// Worked out with jq over the recordings, independently of the code under test.
 const SELECTED: [(u64, [u64; 5]); 3] = [
     (
         914,
