@@ -296,6 +296,41 @@ integration posted as a check run or a commit status is invisible to such a toke
 and a credential that can read neither source is refused rather than reported as
 having no checks.
 
+### Read-only host queries
+
+`onevcs host` answers, as one versioned JSON document, the questions a CI/CD time budget
+asks of GitHub — with the selection rules inside onevcs, so no consumer re-derives them:
+
+```
+onevcs host release-changes --repo OWNER/NAME --tag TAG [--previous-tag TAG]
+onevcs host change-checks   --repo OWNER/NAME --change NUMBER --head SHA [--merged-at TIMESTAMP]
+onevcs host commit-runs     --repo OWNER/NAME (--commit SHA | --tag TAG) [--event EVENT]...
+onevcs host run-jobs        --repo OWNER/NAME --run ID
+onevcs host schema --json
+```
+
+- `release-changes` lists every commit between the previous release and `TAG` with the
+  merged pull request whose merge commit it is, and those pull requests. The previous tag
+  is the first earlier published release of the same `<prefix>MAJOR.MINOR.PATCH` form in
+  GitHub's releases listing; **a repository that publishes an older line after a newer one
+  names `--previous-tag`.** A squash- or merge-committed repository maps every commit; **a
+  rebase-merged one, or a commit pushed without a pull request, reports `"change": null`.**
+- `change-checks` reports the latest `pull_request` run per workflow at a pull request's
+  head, created at or before its merge, each with its latest attempt's jobs — so re-run
+  attempts, duplicate runs at one head and post-merge `closed` runs never count.
+- `commit-runs` reports every run GitHub recorded at a commit (an annotated tag is
+  dereferenced), optionally of the given events; `run-jobs` reports a run's latest
+  attempt's jobs.
+
+Every answer carries `cost`, listing each REST request the query made. The queries touch
+nothing under `$ONEVCS_HOME`, need no registered checkout, and run from any directory. The
+token is `GITHUB_TOKEN`, else `GH_TOKEN` (`actions: read`, `contents: read`,
+`pull-requests: read`); with neither the query exits 1 without asking GitHub. **`ONEVCS_GH`
+naming a program that answers `gh api --include` is the supported way to replay recorded
+responses**, as the journeys in `crates/onevcs/tests/e2e/host_queries.rs` do. Exit `0` is an
+answer, `2` an invalid invocation, and `1` anything else, with one line on stderr naming the
+reason and the API path. [`docs/contract.md`](docs/contract.md) states the whole surface.
+
 ## Install
 
 ```console

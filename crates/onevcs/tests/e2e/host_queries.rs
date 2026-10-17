@@ -680,6 +680,54 @@ fn change_checks_reports_each_pull_requests_latest_runs_per_workflow_before_its_
 }
 
 #[test]
+fn a_workflow_that_ran_twice_at_one_head_counts_once_as_its_latest_run() {
+    // #914's head ran Visual docs twice: before its merge, and again four seconds
+    // after it. Asked with no merge time, both are candidates, and only the later one
+    // is kept.
+    let replay = Replay::new("onepipeline-v0.72.0");
+    let head = "62631f7c3936c095c6973f5108e9265360466e84";
+    let listing = recorded(
+        "onepipeline-release-v0.72.0",
+        &format!("head_sha_{}", &head[..30]),
+    );
+    let visual: Vec<u64> = listing["body"]["workflow_runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .filter(|run| run["name"] == "Visual docs")
+        .map(|run| run["id"].as_u64().expect("an id"))
+        .collect();
+    assert_eq!(
+        visual,
+        [38_553_288_934, 38_534_306_473],
+        "the premise: two runs of one workflow"
+    );
+    let (answer, served) = replay.answer(&[
+        "change-checks",
+        "--repo",
+        ONEPIPELINE,
+        "--change",
+        "914",
+        "--head",
+        head,
+    ]);
+    assert_eq!(
+        ids(&answer["runs"]),
+        [
+            38_534_306_223,
+            38_534_306_114,
+            38_534_306_078,
+            38_553_288_934,
+            38_534_306_075
+        ],
+        "one run per workflow: Visual docs' latest"
+    );
+    let jobs = recording("recorded-for-host-queries/onepipeline-run-38553288934-jobs.json");
+    assert_eq!(ids(&answer["runs"][3]["jobs"]), ids(&jobs["body"]["jobs"]));
+    assert_eq!(served.len(), 6);
+}
+
+#[test]
 fn commit_runs_at_v0_72_0_reports_exactly_its_push_and_release_runs() {
     let replay = Replay::new("onepipeline-v0.72.0");
     let (answer, served) = replay.answer(&[
@@ -914,6 +962,36 @@ fn the_previous_release_is_found_by_following_link_to_the_listings_second_page()
         ],
         "the listing's Link followed once, verbatim"
     );
+}
+
+#[test]
+fn closed_pull_requests_stop_paging_once_every_commit_is_mapped() {
+    let replay = Replay::new("mapped-before-the-previous-tag");
+    let page =
+        recording("recorded-for-host-queries/onepipeline-pulls-closed-per-page-17-page-1.json");
+    // The premise: the page names a next one, and its last pull request was updated
+    // after v0.71.1's commit, so the other stopping rule does not apply.
+    assert!(page["headers"]["link"]
+        .as_str()
+        .expect("a Link")
+        .contains("rel=\"next\""));
+    let compare = recorded("onepipeline-release-v0.72.0", "compare_");
+    let previous = compare["body"]["base_commit"]["commit"]["committer"]["date"]
+        .as_str()
+        .expect("a date");
+    let last = page["body"]
+        .as_array()
+        .expect("pulls")
+        .last()
+        .expect("a last pull request");
+    assert!(last["updated_at"].as_str().expect("updated") > previous);
+    let (answer, served) = release_v0_72_0(&replay);
+    assert_eq!(served.len(), 3, "no further page is asked for: {served:?}");
+    assert!(answer["commits"]
+        .as_array()
+        .expect("commits")
+        .iter()
+        .all(|c| c["change"].is_u64()));
 }
 
 #[test]

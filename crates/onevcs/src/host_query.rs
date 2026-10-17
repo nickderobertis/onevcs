@@ -15,7 +15,7 @@
 //!   `$ONEVCS_HOME` — absent, or holding a registry another verb would migrate —
 //!   exactly as it was. The repository is the `OWNER/NAME` the caller names, never an
 //!   identity resolved through the registry, and the host is `gh`, never `Hosting`.
-//! - **Every request is counted where it is made.** [`Reader::get`] is the only call
+//! - **Every request is counted where it is made.** `Reader::get` is the only call
 //!   that reaches GitHub, and it appends the request to the answer's `cost` before
 //!   asking, so a request a query makes and does not report cannot exist.
 //! - **A read that failed is never an empty list.** Every list in an answer is `[]`
