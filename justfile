@@ -412,7 +412,8 @@ _release-pr-journeys:
 lint-llm-diff-journeys:
     @bash scripts/nx.sh run onevcs-lint-llm-diff:journeys
 
-# The `onevcs-lint-llm-diff:journeys` target's body.
+# Nx runs this, never a person: run directly it skips the target's cache key, so a
+# pass would not be replayed and a change to what the tier reads would not re-run it.
 _lint-llm-diff-journeys:
     @cargo nextest run --workspace --locked -E 'binary(lint_llm_diff)' --status-level fail
 
