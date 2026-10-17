@@ -1,0 +1,16 @@
+{
+  "about": "Run 38757714990's 71 jobs of every attempt, recorded at 30 a page as three pages linked by Link headers. The first is served for the request run-jobs makes, and the others for the Links that name them.",
+  "serve": [
+    {
+      "recording": "onepipeline-jobs-paginated-38757714990/repos_nickderobertis_onepipeline_actions_runs_38757714990_jobs__per_page_30_filter_all__28682e086c.json",
+      "for": "repos/nickderobertis/onepipeline/actions/runs/38757714990/jobs?per_page=100&filter=latest",
+      "why": "a listing that spans three linked pages"
+    },
+    {
+      "recording": "onepipeline-jobs-paginated-38757714990/repositories_1327438417_actions_runs_38757714990_jobs__per_page_30_filter_all_page_2__a65c645293.json"
+    },
+    {
+      "recording": "onepipeline-jobs-paginated-38757714990/repositories_1327438417_actions_runs_38757714990_jobs__per_page_30_filter_all_page_3__6ed8c81a46.json"
+    }
+  ]
+}

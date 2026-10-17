@@ -1,0 +1,29 @@
+{
+ "body": {
+  "node_id": "REF_kwDOTx8aUbFyZWZzL3RhZ3MvdjAuNzIuMA",
+  "object": {
+   "sha": "e977119caef9328ab82c860a4c0699943192b04c",
+   "type": "tag",
+   "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/tags/e977119caef9328ab82c860a4c0699943192b04c"
+  },
+  "ref": "refs/tags/v0.72.0",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/refs/tags/v0.72.0"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:05:23 GMT",
+  "etag": "\"c0c0ecfef12949d29a11eeac9c623820262b4bb4351b6daec7a65bcfc6084f4e\"",
+  "last-modified": "Thu, 15 Oct 2026 22:18:45 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4734",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "266"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/ref/tags/v0.72.0"
+ },
+ "status": 200
+}

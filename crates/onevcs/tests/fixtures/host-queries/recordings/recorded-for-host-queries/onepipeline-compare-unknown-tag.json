@@ -1,0 +1,22 @@
+{
+ "body": {
+  "documentation_url": "https://docs.github.com/rest/commits/commits#compare-two-commits",
+  "message": "Not Found",
+  "status": "404"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 00:46:13 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "3706",
+  "x-ratelimit-reset": "1792198343",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "1294"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/compare/v0.71.1...v0.0.0-unreleased?per_page=100"
+ },
+ "status": 404
+}

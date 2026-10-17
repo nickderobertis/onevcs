@@ -15,13 +15,14 @@ use crate::cli::{
     ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
     ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReopenArgs,
     ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs, Command, EventsArgs,
-    ExportArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs,
-    PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs,
-    RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
-    ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
-    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StackBaseArgs,
-    StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs, HostReleaseChangesArgs,
+    HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs,
+    PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs,
+    RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand,
+    ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs,
+    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
+    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -142,6 +143,13 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             BoundaryCommand::Schema(args) => boundary_schema(args),
         },
         Command::Export(args) => export(args, providers),
+        Command::Host { command } => match command {
+            HostCommand::ReleaseChanges(args) => host_release_changes(args),
+            HostCommand::ChangeChecks(args) => host_change_checks(args),
+            HostCommand::CommitRuns(args) => host_commit_runs(args),
+            HostCommand::RunJobs(args) => host_run_jobs(args),
+            HostCommand::Schema(args) => host_schema(args),
+        },
     }
 }
 
@@ -216,6 +224,85 @@ fn boundary_schema(_args: &BoundarySchemaArgs) -> Result<u8> {
     println!(
         "{}",
         serde_json::to_string_pretty(&crate::boundary::boundary_schema()).map_err(serialization)?
+    );
+    Ok(0)
+}
+
+/// Print a host query's answer, or its one-line reason and exit 1.
+///
+/// A query's failure is never `Error`'s: every one of them is exit 1, and the
+/// publication vocabulary `Error` maps onto exit codes through is not this verb's.
+fn host_answer<T: serde::Serialize>(answer: crate::host_query::HostQueryResult<T>) -> Result<u8> {
+    match answer {
+        Ok(answer) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&answer).map_err(serialization)?
+            );
+            Ok(0)
+        }
+        Err(error) => {
+            eprintln!("onevcs: {error}");
+            Ok(1)
+        }
+    }
+}
+
+/// Render `onevcs host release-changes`.
+fn host_release_changes(args: &HostReleaseChangesArgs) -> Result<u8> {
+    host_answer(crate::host_query::release_changes(
+        &crate::host_query::ReleaseChangesRequest {
+            repository: args.repo.clone(),
+            tag: args.tag.clone(),
+            previous_tag: args.previous_tag.clone(),
+        },
+    ))
+}
+
+/// Render `onevcs host change-checks`.
+fn host_change_checks(args: &HostChangeChecksArgs) -> Result<u8> {
+    host_answer(crate::host_query::change_checks(
+        &crate::host_query::ChangeChecksRequest {
+            repository: args.repo.clone(),
+            change: args.change,
+            head: args.head.clone(),
+            merged_at: args.merged_at.clone(),
+        },
+    ))
+}
+
+/// Render `onevcs host commit-runs`.
+fn host_commit_runs(args: &HostCommitRunsArgs) -> Result<u8> {
+    let commit = match (&args.commit, &args.tag) {
+        (Some(sha), _) => crate::host_query::CommitSelector::Commit(sha.clone()),
+        (None, Some(tag)) => crate::host_query::CommitSelector::Tag(tag.clone()),
+        // clap's group requires exactly one of the two.
+        (None, None) => return Err(error::invalid("name --commit or --tag")),
+    };
+    host_answer(crate::host_query::commit_runs(
+        &crate::host_query::CommitRunsRequest {
+            repository: args.repo.clone(),
+            commit,
+            events: args.event.clone(),
+        },
+    ))
+}
+
+/// Render `onevcs host run-jobs`.
+fn host_run_jobs(args: &HostRunJobsArgs) -> Result<u8> {
+    host_answer(crate::host_query::run_jobs(
+        &crate::host_query::RunJobsRequest {
+            repository: args.repo.clone(),
+            run: args.run,
+        },
+    ))
+}
+
+/// Render `onevcs host schema`: the four answers' JSON schemas, versioned.
+fn host_schema(_args: &HostSchemaArgs) -> Result<u8> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::host_query::host_schema()).map_err(serialization)?
     );
     Ok(0)
 }

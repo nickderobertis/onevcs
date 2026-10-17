@@ -5961,6 +5961,152 @@ pub enum MaintenanceSource {
 pub struct SlotDisk { pub before_bytes: u64, pub after_bytes: u64 }
 ```
 
+## Read-only host queries: `onevcs host`
+
+Four queries answer, as JSON, the version-control questions a CI/CD time budget asks of
+GitHub: which merged pull requests a release carries, which checks a pull request finally
+ran, which workflow runs GitHub recorded at a commit, and which jobs a run's latest attempt
+ran. The **selection rules live here**, so no consumer re-derives them; the queries carry no
+budget arithmetic — no durations, counts, maxima or thresholds — and name no particular
+repository. This section is the cross-repository statement of the surface; the Rust answer
+types in `onevcs::host_query` are what `host schema --json` is generated from, and
+`tests/golden/host-schema-v1.json` is its checked-in copy.
+
+```
+onevcs host release-changes --repo OWNER/NAME --tag TAG [--previous-tag TAG] [--json]
+onevcs host change-checks --repo OWNER/NAME --change NUMBER --head SHA [--merged-at TIMESTAMP] [--json]
+onevcs host commit-runs --repo OWNER/NAME (--commit SHA | --tag TAG) [--event EVENT]... [--json]
+onevcs host run-jobs --repo OWNER/NAME --run ID [--json]
+onevcs host schema --json
+```
+
+**Common to the four queries.**
+
+- **Output.** One JSON document on stdout, the only form an answer takes (`--json` is
+  accepted and changes nothing), carrying `"schema_version": 1` and
+  `"repository": "OWNER/NAME"`. Timestamps are GitHub's RFC 3339 UTC strings, passed
+  through unchanged.
+- **Absence is explicit, never an omission.** Every key is always present. A list is `[]`
+  only when GitHub answered and recorded none; a field is `null` only where this section
+  says so. A read that failed is never reported as an empty list: it is an exit 1.
+- **The state root is untouched.** The queries open no registry, rules file, lock, session
+  or event store, read and write nothing under `$ONEVCS_HOME`, need no registered checkout,
+  and run from any directory. A `$ONEVCS_HOME` that is absent, empty, or holds a registry
+  at an older schema that any other verb would migrate is left exactly as it was.
+- **Authentication.** The token is `GITHUB_TOKEN`, else `GH_TOKEN`, and is handed to `gh`
+  as `GH_TOKEN`. With neither set and non-empty, the query exits 1 saying to set one,
+  without invoking `gh`. The token needs `actions: read`, `contents: read` and
+  `pull-requests: read`.
+- **The host.** Every read is `gh api` through the `gh` seam, so **`ONEVCS_GH` names the
+  program standing in for `gh`, as for every other verb — the supported way to replay
+  recorded responses.** It is invoked as `gh api --include --method GET <request>` and must
+  print the status line, the headers and the body as `gh` does, and exit non-zero with an
+  error status. `gh` must be on `PATH` otherwise.
+- **Pagination.** Every list is read at `per_page=100`, following the `Link` header's
+  `rel="next"` URL verbatim, until it is whole or, where a query says so, until it has what
+  it needs.
+- **Cost.** Every answer carries `cost`:
+  `{"graphql_points": 0, "rest_requests": <integer>, "requests": [<request>, ...]}`, the
+  shape of the review read's `ReadCost` plus the list. `requests` lists every REST request
+  the query made, in order, each as the path and query string it asked for (`repos/...`,
+  and for a followed `Link` the URL's own path and query, such as `repositories/<id>/...`);
+  `rest_requests` is its length. No request is made that a query's reads below do not name.
+- **Exit status.** `0` answered. `2` an invalid invocation: clap's usage error, or `--repo`
+  not `OWNER/NAME`, `--change` or `--run` not a positive integer, `--commit` or `--head` not
+  40 hex characters, `--merged-at` not an RFC 3339 timestamp. `1` everything else, with
+  stdout empty and one line on stderr naming the reason and the API path: no token, `gh`
+  missing or failing, an API error status (a 404 says the tag, comparison, run or commit was
+  not found), or a response missing a field this section reads.
+
+**The objects.** A **run**: `id`, `workflow_id`, `workflow_name` (GitHub's `name`), `event`,
+`head_sha`, `head_branch` (or `null`), `run_attempt`, `status`, `conclusion` (or `null`),
+`created_at`, `run_started_at` (or `null`), `updated_at`. A **job**: `id`, `run_id`,
+`run_attempt`, `name`, `workflow_name`, `status`, `conclusion` (or `null`), `runner_name`
+(`null` where GitHub reports none or an empty name, so a job cancelled before a runner took
+it has `null`), `runner_os` (`"Linux"`, `"Windows"` or `"macOS"`, from the first of `labels`
+beginning `ubuntu`/`linux`, `windows` or `macos` case-insensitively, else `null`), `labels`,
+`created_at`, `started_at` (or `null`), `completed_at` (or `null`). A **change**: `number`,
+`title`, `state`, `base_ref`, `head_sha` (its last head commit), `created_at`, `merged_at`
+(or `null`), `merge_commit_sha` (or `null`). No other field of GitHub's responses is
+reported.
+
+**`release-changes`** — the merged pull requests a release tag carries, in three reads in
+the common case.
+
+1. **The releases listing** (`releases?per_page=100`), newest first, paged only until `TAG`
+   and the previous tag are both found. The previous tag is `--previous-tag`, else the first
+   release after `TAG` in the listing's own order that is published, not a draft, and whose
+   tag has the same `<prefix>MAJOR.MINOR.PATCH` form (the prefix is everything before the
+   version, such as `v`) with a lower version; paging stops as soon as it is found. With none
+   it exits 1 naming `--previous-tag`. For a repository that releases one line at a time
+   this is the highest lower version; one that publishes an older line after a newer one
+   names `--previous-tag`. With `--previous-tag` given this read is skipped.
+2. **The comparison** `compare/<previous>...<tag>?per_page=100`. `commits` lists every
+   commit of it, oldest first, as `{"sha", "change"}`; `commit` is its last commit — the
+   commit the tag names, an annotated tag dereferenced by GitHub, never a tag object — and
+   `previous_commit` is its base commit.
+3. **The closed pull requests** (`pulls?state=closed&sort=updated&direction=desc&per_page=100`),
+   paged only until every commit of the range is mapped or a page's last pull request was
+   last updated before the previous tag's commit. A commit's `change` is the number of the
+   merged pull request whose `merge_commit_sha` is that commit, else `null`. **So a squash-
+   or merge-committed repository maps every commit, and a rebase-merged one — or a commit
+   pushed with no pull request — reports `null`.**
+
+`changes` lists each distinct mapped pull request once, as a change object, in commit order;
+the release pull request is among them. Answer: `{"schema_version", "repository", "tag",
+"commit", "previous_tag", "previous_commit", "commits", "changes", "cost"}`.
+
+**`change-checks`** — a pull request's final checks, from the head and merge time
+`release-changes` reported, in one read plus one per selected run.
+
+1. **The runs at `--head`** (`actions/runs?per_page=100&head_sha=<head>&event=pull_request`).
+   Its runs are those whose `event` is `pull_request` (GitHub narrows the listing, and every
+   run is checked again), created at or before `--merged-at` when given, so a post-merge
+   `closed` run is excluded. Of those, only the latest-created run per `workflow_id` is kept,
+   so a duplicate run at one head counts once. They are ordered by `workflow_name`. The pull
+   request itself is not read.
+2. **One read per selected run, its jobs** (`filter=latest`): each run carries `jobs`, the
+   jobs of its latest attempt, so an earlier attempt's jobs never appear.
+
+`--change` labels the answer and is not checked against GitHub. Answer: `{"schema_version",
+"repository", "change", "runs", "cost"}`, where `change` is `{"number", "head_sha",
+"merged_at"}` as given (`merged_at` `null` when not given) and each run is a run object plus
+`jobs`. `runs: []` means GitHub holds no such run at that head; a run with `jobs: []` means
+its job listing came back empty. A pull request whose head ran one workflow costs 2 requests.
+
+**`commit-runs`** — the runs GitHub recorded at a commit, by event, in one read. The commit
+is `--commit`, or `--tag` resolved through `git/ref/tags/<tag>` with each annotated tag
+dereferenced through `git/tags/<sha>`, which costs the reads that resolution takes. **The
+runs at the commit** (`actions/runs?per_page=100&head_sha=<commit>`): every run, filtered to
+the `--event` values when any are given, ordered by `created_at`. Nothing is deduplicated and
+nothing is attributed by a timing window. Answer: `{"schema_version", "repository",
+"commit", "events", "runs", "cost"}`, where `events` is the `--event` values given, `[]` for
+every event.
+
+**`run-jobs`** — the jobs of a run's latest attempt
+(`actions/runs/<id>/jobs?per_page=100&filter=latest`), in GitHub's order; the run object
+itself is not read. Answer: `{"schema_version", "repository", "run_id", "jobs", "cost"}`. An
+unknown run exits 1 as not found. A job still in progress is reported as GitHub reports it.
+
+**`host schema --json`** prints `{"schema_version": 1, "release-changes", "change-checks",
+"commit-runs", "run-jobs"}`, each the JSON Schema of that answer, generated from the Rust
+definitions the way `boundary schema --json` is.
+
+```rust
+// onevcs::host_query — each a typed operation the matching `onevcs host` verb renders.
+pub const HOST_QUERY_SCHEMA_VERSION: u32 = 1;
+pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<ReleaseChanges>;
+pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChecks>;
+pub fn commit_runs(request: &CommitRunsRequest) -> HostQueryResult<CommitRuns>;
+pub fn run_jobs(request: &RunJobsRequest) -> HostQueryResult<RunJobs>;
+pub fn host_schema() -> serde_json::Value;
+pub struct HostQueryError { pub reason: String }
+pub type HostQueryResult<T> = std::result::Result<T, HostQueryError>;
+pub struct RepositorySlug; pub struct CommitSha; pub struct PositiveId; pub struct Timestamp;
+pub enum CommitSelector { Commit(CommitSha), Tag(String) }
+pub struct QueryCost { pub graphql_points: u32, pub rest_requests: u32, pub requests: Vec<String> }
+```
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

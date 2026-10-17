@@ -1,0 +1,827 @@
+{
+  "schema_version": 1,
+  "release-changes": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "ReleaseChanges",
+    "description": "What `onevcs host release-changes` answers.",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "description": "Always 1.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      },
+      "repository": {
+        "description": "`OWNER/NAME`.",
+        "type": "string"
+      },
+      "tag": {
+        "description": "The release's tag.",
+        "type": "string"
+      },
+      "commit": {
+        "description": "The commit the tag names.",
+        "type": "string"
+      },
+      "previous_tag": {
+        "description": "The tag the range starts after.",
+        "type": "string"
+      },
+      "previous_commit": {
+        "description": "The commit the previous tag names.",
+        "type": "string"
+      },
+      "commits": {
+        "description": "Every commit of the range, oldest first.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ReleaseCommit"
+        }
+      },
+      "changes": {
+        "description": "Each distinct mapped pull request, in commit order.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Change"
+        }
+      },
+      "cost": {
+        "description": "The requests this answer cost.",
+        "$ref": "#/$defs/QueryCost"
+      }
+    },
+    "required": [
+      "schema_version",
+      "repository",
+      "tag",
+      "commit",
+      "previous_tag",
+      "previous_commit",
+      "commits",
+      "changes",
+      "cost"
+    ],
+    "$defs": {
+      "ReleaseCommit": {
+        "description": "One commit of a release's range.",
+        "type": "object",
+        "properties": {
+          "sha": {
+            "description": "The commit.",
+            "type": "string"
+          },
+          "change": {
+            "description": "The merged pull request whose merge commit it is, or `null`.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "sha"
+        ]
+      },
+      "Change": {
+        "description": "A pull request.",
+        "type": "object",
+        "properties": {
+          "number": {
+            "description": "Its number.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "title": {
+            "description": "Its title.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Its state.",
+            "type": "string"
+          },
+          "base_ref": {
+            "description": "The branch it targets.",
+            "type": "string"
+          },
+          "head_sha": {
+            "description": "Its last head commit, as GitHub reports it.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "When it was opened.",
+            "type": "string"
+          },
+          "merged_at": {
+            "description": "When it merged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "merge_commit_sha": {
+            "description": "The commit its merge made.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "number",
+          "title",
+          "state",
+          "base_ref",
+          "head_sha",
+          "created_at"
+        ]
+      },
+      "QueryCost": {
+        "description": "The requests a query made, in the shape of the review read's cost plus the list.",
+        "type": "object",
+        "properties": {
+          "graphql_points": {
+            "description": "GraphQL points spent: always 0, since these queries make no GraphQL request.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "rest_requests": {
+            "description": "REST requests made: the length of `requests`.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "requests": {
+            "description": "Every REST request made, in order, as the path and query string asked for.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "graphql_points",
+          "rest_requests",
+          "requests"
+        ]
+      }
+    }
+  },
+  "change-checks": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "ChangeChecks",
+    "description": "What `onevcs host change-checks` answers.",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "description": "Always 1.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      },
+      "repository": {
+        "description": "`OWNER/NAME`.",
+        "type": "string"
+      },
+      "change": {
+        "description": "The change request, as given.",
+        "$ref": "#/$defs/ChangeLabel"
+      },
+      "runs": {
+        "description": "The latest `pull_request` run per workflow at the head, by workflow name.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/CheckedRun"
+        }
+      },
+      "cost": {
+        "description": "The requests this answer cost.",
+        "$ref": "#/$defs/QueryCost"
+      }
+    },
+    "required": [
+      "schema_version",
+      "repository",
+      "change",
+      "runs",
+      "cost"
+    ],
+    "$defs": {
+      "ChangeLabel": {
+        "description": "The change request a `change-checks` answer is about, as given.",
+        "type": "object",
+        "properties": {
+          "number": {
+            "description": "Its number.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "head_sha": {
+            "description": "Its head commit.",
+            "type": "string"
+          },
+          "merged_at": {
+            "description": "When it merged, or `null` when not given.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "number",
+          "head_sha"
+        ]
+      },
+      "CheckedRun": {
+        "description": "A selected run with its latest attempt's jobs.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The run's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "workflow_id": {
+            "description": "The workflow's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "workflow_name": {
+            "description": "The workflow's name.",
+            "type": "string"
+          },
+          "event": {
+            "description": "The event that triggered it.",
+            "type": "string"
+          },
+          "head_sha": {
+            "description": "The commit it ran at.",
+            "type": "string"
+          },
+          "head_branch": {
+            "description": "The branch it ran on, where GitHub reports one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_attempt": {
+            "description": "Its latest attempt.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "status": {
+            "description": "Its status.",
+            "type": "string"
+          },
+          "conclusion": {
+            "description": "Its conclusion, once it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "When it was created.",
+            "type": "string"
+          },
+          "run_started_at": {
+            "description": "When its latest attempt started, where GitHub reports it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "description": "When it was last updated.",
+            "type": "string"
+          },
+          "jobs": {
+            "description": "Its latest attempt's jobs.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Job"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "workflow_id",
+          "workflow_name",
+          "event",
+          "head_sha",
+          "run_attempt",
+          "status",
+          "created_at",
+          "updated_at",
+          "jobs"
+        ]
+      },
+      "Job": {
+        "description": "A job of a workflow run's attempt.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The job's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "run_id": {
+            "description": "Its run's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "run_attempt": {
+            "description": "The attempt it belongs to.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "workflow_name": {
+            "description": "Its workflow's name.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Its status.",
+            "type": "string"
+          },
+          "conclusion": {
+            "description": "Its conclusion, once it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runner_name": {
+            "description": "The runner that took it; `null` where GitHub reports none or an empty name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runner_os": {
+            "description": "The operating system its first OS-naming label names.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunnerOs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "labels": {
+            "description": "Its labels.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "description": "When it was created.",
+            "type": "string"
+          },
+          "started_at": {
+            "description": "When it started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "description": "When it completed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "run_attempt",
+          "name",
+          "workflow_name",
+          "status",
+          "labels",
+          "created_at"
+        ]
+      },
+      "RunnerOs": {
+        "description": "The operating system a job's labels name.",
+        "oneOf": [
+          {
+            "description": "A label beginning `ubuntu` or `linux`.",
+            "type": "string",
+            "const": "Linux"
+          },
+          {
+            "description": "A label beginning `windows`.",
+            "type": "string",
+            "const": "Windows"
+          },
+          {
+            "description": "A label beginning `macos`.",
+            "type": "string",
+            "const": "macOS"
+          }
+        ]
+      },
+      "QueryCost": {
+        "description": "The requests a query made, in the shape of the review read's cost plus the list.",
+        "type": "object",
+        "properties": {
+          "graphql_points": {
+            "description": "GraphQL points spent: always 0, since these queries make no GraphQL request.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "rest_requests": {
+            "description": "REST requests made: the length of `requests`.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "requests": {
+            "description": "Every REST request made, in order, as the path and query string asked for.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "graphql_points",
+          "rest_requests",
+          "requests"
+        ]
+      }
+    }
+  },
+  "commit-runs": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "CommitRuns",
+    "description": "What `onevcs host commit-runs` answers.",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "description": "Always 1.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      },
+      "repository": {
+        "description": "`OWNER/NAME`.",
+        "type": "string"
+      },
+      "commit": {
+        "description": "The commit.",
+        "type": "string"
+      },
+      "events": {
+        "description": "The `--event` values given; `[]` for every event.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "runs": {
+        "description": "Every run at the commit of those events, by creation.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Run"
+        }
+      },
+      "cost": {
+        "description": "The requests this answer cost.",
+        "$ref": "#/$defs/QueryCost"
+      }
+    },
+    "required": [
+      "schema_version",
+      "repository",
+      "commit",
+      "events",
+      "runs",
+      "cost"
+    ],
+    "$defs": {
+      "Run": {
+        "description": "A workflow run, as GitHub recorded it.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The run's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "workflow_id": {
+            "description": "The workflow's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "workflow_name": {
+            "description": "The workflow's name.",
+            "type": "string"
+          },
+          "event": {
+            "description": "The event that triggered it.",
+            "type": "string"
+          },
+          "head_sha": {
+            "description": "The commit it ran at.",
+            "type": "string"
+          },
+          "head_branch": {
+            "description": "The branch it ran on, where GitHub reports one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_attempt": {
+            "description": "Its latest attempt.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "status": {
+            "description": "Its status.",
+            "type": "string"
+          },
+          "conclusion": {
+            "description": "Its conclusion, once it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "When it was created.",
+            "type": "string"
+          },
+          "run_started_at": {
+            "description": "When its latest attempt started, where GitHub reports it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "description": "When it was last updated.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workflow_id",
+          "workflow_name",
+          "event",
+          "head_sha",
+          "run_attempt",
+          "status",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "QueryCost": {
+        "description": "The requests a query made, in the shape of the review read's cost plus the list.",
+        "type": "object",
+        "properties": {
+          "graphql_points": {
+            "description": "GraphQL points spent: always 0, since these queries make no GraphQL request.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "rest_requests": {
+            "description": "REST requests made: the length of `requests`.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "requests": {
+            "description": "Every REST request made, in order, as the path and query string asked for.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "graphql_points",
+          "rest_requests",
+          "requests"
+        ]
+      }
+    }
+  },
+  "run-jobs": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RunJobs",
+    "description": "What `onevcs host run-jobs` answers.",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "description": "Always 1.",
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      },
+      "repository": {
+        "description": "`OWNER/NAME`.",
+        "type": "string"
+      },
+      "run_id": {
+        "description": "The run.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      },
+      "jobs": {
+        "description": "Its latest attempt's jobs, in GitHub's order.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Job"
+        }
+      },
+      "cost": {
+        "description": "The requests this answer cost.",
+        "$ref": "#/$defs/QueryCost"
+      }
+    },
+    "required": [
+      "schema_version",
+      "repository",
+      "run_id",
+      "jobs",
+      "cost"
+    ],
+    "$defs": {
+      "Job": {
+        "description": "A job of a workflow run's attempt.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The job's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "run_id": {
+            "description": "Its run's id.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "run_attempt": {
+            "description": "The attempt it belongs to.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "workflow_name": {
+            "description": "Its workflow's name.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Its status.",
+            "type": "string"
+          },
+          "conclusion": {
+            "description": "Its conclusion, once it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runner_name": {
+            "description": "The runner that took it; `null` where GitHub reports none or an empty name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runner_os": {
+            "description": "The operating system its first OS-naming label names.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunnerOs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "labels": {
+            "description": "Its labels.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "description": "When it was created.",
+            "type": "string"
+          },
+          "started_at": {
+            "description": "When it started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "description": "When it completed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "run_attempt",
+          "name",
+          "workflow_name",
+          "status",
+          "labels",
+          "created_at"
+        ]
+      },
+      "RunnerOs": {
+        "description": "The operating system a job's labels name.",
+        "oneOf": [
+          {
+            "description": "A label beginning `ubuntu` or `linux`.",
+            "type": "string",
+            "const": "Linux"
+          },
+          {
+            "description": "A label beginning `windows`.",
+            "type": "string",
+            "const": "Windows"
+          },
+          {
+            "description": "A label beginning `macos`.",
+            "type": "string",
+            "const": "macOS"
+          }
+        ]
+      },
+      "QueryCost": {
+        "description": "The requests a query made, in the shape of the review read's cost plus the list.",
+        "type": "object",
+        "properties": {
+          "graphql_points": {
+            "description": "GraphQL points spent: always 0, since these queries make no GraphQL request.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "rest_requests": {
+            "description": "REST requests made: the length of `requests`.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "requests": {
+            "description": "Every REST request made, in order, as the path and query string asked for.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "graphql_points",
+          "rest_requests",
+          "requests"
+        ]
+      }
+    }
+  }
+}

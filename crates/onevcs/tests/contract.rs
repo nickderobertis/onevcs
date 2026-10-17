@@ -3670,6 +3670,20 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("boundary schema", operation!(onevcs::boundary_schema)),
         ("export", operation!(onevcs::export)),
         ("rules apply", operation!(onevcs::rules_apply)),
+        (
+            "host release-changes",
+            operation!(onevcs::host_query::release_changes),
+        ),
+        (
+            "host change-checks",
+            operation!(onevcs::host_query::change_checks),
+        ),
+        (
+            "host commit-runs",
+            operation!(onevcs::host_query::commit_runs),
+        ),
+        ("host run-jobs", operation!(onevcs::host_query::run_jobs)),
+        ("host schema", operation!(onevcs::host_query::host_schema)),
     ]
 }
 
