@@ -1,0 +1,29 @@
+{
+ "body": {
+  "node_id": "MDM6UmVmMjMyNTI5ODpyZWZzL3RhZ3MvdjIuNi4xMS10cmVl",
+  "object": {
+   "sha": "5dc01c595e6c6ec9ccda4f6f69c131c0dd945f8c",
+   "type": "tag",
+   "url": "https://api.github.com/repos/torvalds/linux/git/tags/5dc01c595e6c6ec9ccda4f6f69c131c0dd945f8c"
+  },
+  "ref": "refs/tags/v2.6.11-tree",
+  "url": "https://api.github.com/repos/torvalds/linux/git/refs/tags/v2.6.11-tree"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:39:35 GMT",
+  "etag": "W/\"48f5e5d57415a3c64d011ef123146be0cc35507f80e023760304b5a3a615f556\"",
+  "last-modified": "Sat, 17 Oct 2026 04:27:47 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4419",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "581"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/torvalds/linux/git/ref/tags/v2.6.11-tree"
+ },
+ "status": 200
+}

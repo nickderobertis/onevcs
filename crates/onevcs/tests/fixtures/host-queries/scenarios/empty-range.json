@@ -1,0 +1,8 @@
+{
+  "about": "GitHub's comparison of v0.72.0 with itself, which lists no commit.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/onepipeline-compare-empty-range.json"
+    }
+  ]
+}

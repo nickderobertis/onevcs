@@ -68,6 +68,7 @@ mod git;
 mod guidance;
 mod home;
 mod host;
+pub mod host_query;
 mod ids;
 mod import;
 mod integrate;

@@ -1,0 +1,8 @@
+{
+  "about": "A Zig run whose jobs were queued for self-hosted runners labelled self-hosted, Linux, riscv64, and never taken by one.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/zig-run-37141763192-jobs.json"
+    }
+  ]
+}

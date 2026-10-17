@@ -1,0 +1,19 @@
+{
+  "about": "The releases listing recorded at five a page, so its first page ends at v0.72.0 with no lower release of its form and its second begins at v0.71.1; the first page is served for the request the query makes and the second for the Link it names.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/onepipeline-releases-per-page-5-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/releases?per_page=100",
+      "why": "a first page holding the tag and no lower release"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-releases-per-page-5-page-2.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_compare_v0_71_1_v0_72_0__per_page_100__1118b16acb.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-page-1.json"
+    }
+  ]
+}
