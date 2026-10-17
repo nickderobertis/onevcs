@@ -590,3 +590,46 @@ fn a_file_backed_host_read_while_a_journey_reseeds_it_never_sees_a_partial_docum
         "a staged save was left behind: {staged:?}"
     );
 }
+
+#[test]
+fn two_file_backed_handles_writing_at_once_keep_every_write() {
+    // A publication's provider writes the host's document from its own thread — a
+    // ledger entry per poll — while the journey driving it writes the same document
+    // through a second handle to move a check on. Each write reads, acts and saves;
+    // one that saves over a document it read before the other's save landed puts the
+    // other's write back out, and a check the journey settled is pending again.
+    let home = Home::new();
+    let path = home.path("shared-host.json");
+    FileHost::seeded(&path, HostState::default()).expect("seed the shared host");
+    let head = |writer: &str, index: usize| onevcs::Sha(format!("{writer}-{index:03}"));
+    let writers: Vec<_> = ["provider", "journey"]
+        .into_iter()
+        .map(|writer| {
+            let host = FileHost::create(&path).expect("a handle on the shared host");
+            std::thread::spawn(move || {
+                for index in 0..100 {
+                    host.set_head_checks(&head(writer, index), vec![green_check("gate")])
+                        .expect("a write through this handle");
+                }
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().expect("a writing thread");
+    }
+
+    let kept = FileHost::create(&path)
+        .expect("a handle on the shared host")
+        .state()
+        .expect("readable")
+        .head_checks;
+    let lost: Vec<_> = ["provider", "journey"]
+        .into_iter()
+        .flat_map(|writer| (0..100).map(move |index| head(writer, index)))
+        .filter(|head| !kept.contains_key(head))
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "writes another handle saved over: {lost:?}"
+    );
+}
