@@ -50,7 +50,8 @@ entries() {
     [ -d "$profile/$kind" ] || continue
     # `-printf` is GNU find's; BSD find (macOS) has none, so strip the parent here.
     find "$profile/$kind" -mindepth 1 -maxdepth 1 \
-      | awk -v parent="$profile/$kind/" -v kind="$kind/" '{ print kind substr($0, length(parent) + 1) }'
+      | awk -v parent="$profile/$kind/" -v kind="$kind/" '{ print kind substr($0, length(parent) + 1) }' \
+      || fail "could not list the build entries under $profile/$kind" "check that $root/$profile/$kind is readable, then retry"
   done | LC_ALL=C sort
 }
 
@@ -88,7 +89,8 @@ if [ -d "$profile" ]; then
         for (const path of s.split("\0").filter(Boolean))
           console.log(require("fs").lstatSync(path).mtimeMs / 1000);
       });' \
-    | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
+    | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')" \
+    || fail "could not read the modification times under $profile" "check that $root/$profile is readable and node is the one 'just bootstrap' installs, then retry"
 fi
 cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2 \
   || fail "the alternative test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
@@ -108,9 +110,11 @@ local_stamp="$(node -e '
   const d = new Date(Number(process.argv[1]) * 1000);
   const p = (n) => String(n).padStart(2, "0");
   console.log(`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}.${p(d.getSeconds())}`);
-' "$stamp")"
+' "$stamp")" \
+  || fail "could not format the backdating time $stamp for touch" "check that node is the one 'just bootstrap' installs, then retry"
 while IFS= read -r entry; do
-  find "$profile/$entry" -exec touch -h -t "$local_stamp" {} +
+  find "$profile/$entry" -exec touch -h -t "$local_stamp" {} + \
+    || fail "could not backdate the alternative build's entry $profile/$entry" "check that $root/$profile/$entry is writable, then retry"
 done <"$records/alternative.txt"
 
 # (c) The ordinary gate test build: the one each unit's newest build comes from.
