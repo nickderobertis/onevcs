@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Stand-in for the paid model call: the `oneharness` llmlint is pointed at.
+
+`--version` and `config` are handed to the real oneharness installed beside
+llmlint, so the judge's fingerprint reads the real harness configuration. Only
+`run`, the judge call, is answered here: it is appended to `$STANDIN_CALLS` as
+one JSON line naming the rules asked about, and answered by `$STANDIN_VERDICT`:
+
+- `pass`: every rule holds.
+- `fail`: the first rule asked about is violated at `$STANDIN_FILE` line 1.
+- `none`: a reply answering none of the rules.
+- `some`: a reply answering only the first rule.
+"""
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+if not args or args[0] != "run":
+    real = os.environ["STANDIN_ONEHARNESS"]
+    os.execv(real, [real, *args])
+
+schema_path = args[args.index("--schema") + 1]
+with open(schema_path, encoding="utf-8") as handle:
+    schema = json.load(handle)
+rules = list(schema["properties"])
+with open(os.environ["STANDIN_CALLS"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({"rules": rules}) + "\n")
+
+verdict = os.environ.get("STANDIN_VERDICT", "pass")
+if verdict not in ("pass", "fail", "none", "some"):
+    sys.exit(f"stand-in oneharness: unknown STANDIN_VERDICT {verdict!r}")
+answers = {}
+for position, rule in enumerate(rules):
+    fields = schema["properties"][rule]["properties"]
+    holds = not (verdict == "fail" and position == 0)
+    answer = {"name": rule}
+    if "rationale" in fields:
+        answer["rationale"] = "stand-in verdict"
+    if "relevant" in fields:
+        answer["relevant"] = True
+    answer["holds"] = holds
+    answer["violations"] = (
+        []
+        if holds
+        else [{"file": os.environ["STANDIN_FILE"], "line": 1, "message": "stand-in finding"}]
+    )
+    answers[rule] = answer
+if verdict == "none":
+    answers = {}
+elif verdict == "some":
+    answers = dict(list(answers.items())[:1])
+
+print(
+    json.dumps(
+        {
+            "schema_version": "0.1",
+            "oneharness_version": "stand-in",
+            "results": [
+                {
+                    "harness": "claude-code",
+                    "status": "ok",
+                    "exit_code": 0,
+                    "structured": answers,
+                    "schema_valid": True,
+                    "schema_attempts": 1,
+                    "schema_error": None,
+                    "error": None,
+                }
+            ],
+        }
+    )
+)

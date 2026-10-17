@@ -121,8 +121,8 @@ mod gate_runs;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod filter;
-// Unix only: it copies this checkout the way `llmlint_cache` does and drives the real
-// Nx over it, through POSIX scripts. Its own header carries the reason the caching
+// Unix only: it copies this checkout, shares its Nx install through a symlink, and
+// drives the real Nx over it, through POSIX scripts. Its own header carries the reason the caching
 // journey counts runs of two recipes it replaces.
 #[cfg(unix)]
 mod graph;
@@ -182,11 +182,6 @@ mod listings;
 // process *group*, which has no portable spelling. Its own header carries the reason.
 #[cfg(unix)]
 mod maintain;
-// Unix only: it copies this checkout, shares its Nx install through a symlink, and
-// resolves the judged tier's `llmlint` off PATH — all POSIX. Its own header carries
-// the reason the judge it resolves is one this suite installs.
-#[cfg(unix)]
-mod llmlint_cache;
 // Unix only: a continued branch whose base conflicts with it, opened over the merge and
 // then published, preserved, adopted, closed, swept and retired through the binary, on
 // `world.rs`'s POSIX fixture and in real slots. Its own header carries the reason.

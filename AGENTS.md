@@ -109,35 +109,22 @@ not tell you:
   `--workspace` commands twice.
 - **The tests are split into Nx projects by what they read, not by crate**:
   `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract`,
-  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` outside
-  `check`. A script or workflow change reaches the scripts and contract tiers, not
+  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` and the cached
+  `onevcs-lint-llm-diff` journeys outside `check`. A script or workflow change reaches the scripts and contract tiers, not
   the crate's unit tier. `workspace` (the root `project.json`) holds the judged
   tier below and the uncached `msrv` and `deps-check`, outside `check` too.
 - **Coverage is enforced once, at 95%, over the union of the instrumented tiers**
   (`onevcs:coverage`), never by one tier alone.
-- **`just lint-llm-diff` is memoized, and the memo is the whole mechanism.** The
-  judge is non-deterministic and judges every file in the base-to-head diff rather
-  than the hunk that changed, so an uncached tier is an independent roll per gate
-  run — one invocation on one tree has reported both "0 failed" and a finding. The
-  recipe therefore runs the cached Nx `workspace:lint-llm-diff` target
-  (`scripts/llmlint-judge.sh`), keyed on the whole workspace, the *resolved* base
-  commit, and `scripts/llmlint-fingerprint.sh` — the installed llmlint version plus
-  the effective merged config, which is what notices a plugin fetched from outside
-  this repository. Both ends resolve the judge through
-  `scripts/llmlint-runtime-env.sh`, because `llmlint config` renders
-  `LLMLINT_ONEHARNESS_BIN`: a fingerprint read under the caller's environment keys
-  one judged diff differently per caller, and Nx scores a runtime input that exits
-  non-zero as *no contribution* rather than as an error, so a fingerprint a caller
-  can break replays a verdict the judge configuration has moved on from — which is
-  why the recipe asks for it first and refuses when it cannot be produced. Only a
-  clean run is cached, because Nx caches successful tasks only, so findings and a
-  broken toolchain are both judged again. `just lint-llm-diff <base>
-  --skip-nx-cache` is the one supported re-judge, deliberately per-invocation; an
-  ambient `NX_SKIP_NX_CACHE`/`NX_DISABLE_NX_CACHE` is reported and ignored by this
-  tier, because it would re-roll the judge from every unrelated command. The target
-  sets `usePty: false`: Nx's pseudo-terminal reader drops a fast task's output
-  outright often enough to catch in a test loop, and this tier's terminal output
-  *is* its verdict.
+- **`just lint-llm-diff` is plain llmlint under Nx's own cache.** The cached
+  `workspace:lint-llm-diff` target runs `llmlint --diff` against the base the recipe
+  resolves to a commit, keyed on the tracked tree, `LLMLINT_DIFF_BASE_SHA` and
+  `llmlint fingerprint`, so a pass replays only for the same tree, base and judge,
+  and a failure is never cached; `--skip-nx-cache` after the base re-judges. The
+  recipe runs Nx with `NX_RUN_COMMANDS_DIRECTLY=false`, because Nx otherwise loses a
+  fast-failing task's output when its stdout is not a terminal, and Nx stays on
+  23.1.x at or after 23.1.2 (an earlier one truncates a piped replay, a later one
+  prints nothing inline to an AI agent). `just lint-llm-diff-journeys` holds all of
+  it to the real Nx and the installed llmlint.
 - **`just screenshots` is informational and lives outside both**, like `deps-check`,
   `semver-check` and `smoke-real`. It drives the real release binary against a scratch
   host built the way the e2e tier builds one and renders each scene to a deterministic

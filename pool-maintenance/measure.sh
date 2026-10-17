@@ -48,11 +48,13 @@ entries() {
   local kind
   for kind in deps .fingerprint build incremental; do
     [ -d "$profile/$kind" ] || continue
-    find "$profile/$kind" -mindepth 1 -maxdepth 1 -printf "$kind/%f\n"
+    find "$profile/$kind" -mindepth 1 -maxdepth 1 | sed "s|^$profile/||"
   done | LC_ALL=C sort
 }
 
-seconds() { date +%s.%N; }
+# Node rather than GNU `date +%N`, `find -printf` or `touch -d @N`, wherever a
+# figure or a timestamp is needed, so the script runs on a BSD userland (macOS) too.
+seconds() { node -e 'console.log((Date.now() / 1000).toFixed(3))'; }
 
 # (a) Clear the backlog, untimed as far as the figure goes.
 started="$(seconds)"
@@ -76,7 +78,14 @@ entries >"$records/before-alternative.txt"
 # A slot that has never built has none.
 oldest=""
 if [ -d "$profile" ]; then
-  oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
+  oldest="$(find "$profile" -mindepth 2 -print0 | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      const fs = require("fs");
+      const times = s.split("\0").filter(Boolean).map((p) => fs.lstatSync(p).mtimeMs / 1000);
+      if (times.length) process.stdout.write(String(Math.floor(times.reduce((a, b) => Math.min(a, b)))));
+    });
+  ')" || fail "could not read the build entry times under $profile" "check that nothing else is building in $root, then retry"
 fi
 cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2 \
   || fail "the alternative test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
@@ -90,8 +99,16 @@ stamp="$(( $(date +%s) - 3 * 24 * 60 * 60 ))"
 if [ -n "$oldest" ] && [ "${oldest%.*}" -le "$stamp" ]; then
   stamp="$(( ${oldest%.*} - 60 ))"
 fi
+# `touch -t` takes local time, which is how node's Date reads it back here.
+# shellcheck disable=SC2016 # the single-quoted program is JavaScript, expanded by node, not bash
+touched="$(node -e '
+  const d = new Date(Number(process.argv[1]) * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  console.log(`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}.${p(d.getSeconds())}`);
+' "$stamp")" || fail "could not turn $stamp into a touch timestamp" "run 'node --version' in $root to check node runs, then retry"
 while IFS= read -r entry; do
-  find "$profile/$entry" -exec touch -h -d "@$stamp" {} +
+  find "$profile/$entry" -exec touch -h -t "$touched" {} + \
+    || fail "could not backdate $profile/$entry to $touched" "check that $profile/$entry is writable and nothing else is building in $root, then retry"
 done <"$records/alternative.txt"
 
 # (c) The ordinary gate test build: the one each unit's newest build comes from.
