@@ -58,9 +58,12 @@ fn copy_checkout(destination: &Path) {
         .output()
         .expect("git must be on PATH to list this checkout");
     assert!(listing.status.success(), "git ls-files must succeed");
-    let listing = String::from_utf8_lossy(&listing.stdout).into_owned();
+    let listing = String::from_utf8(listing.stdout)
+        .expect("every path in this checkout must be UTF-8 for a journey to copy it exactly");
     for relative in listing.split('\0').filter(|entry| !entry.is_empty()) {
         let from = source.join(relative);
+        // Skipped: a tracked file deleted in this worktree (which the next commit
+        // would not carry either) and anything that is not a regular file.
         if !from.is_file() {
             continue;
         }
