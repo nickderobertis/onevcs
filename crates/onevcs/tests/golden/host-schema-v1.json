@@ -14,8 +14,7 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string",
-        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        "type": "string"
       },
       "tag": {
         "description": "The release's tag.",
@@ -193,8 +192,7 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string",
-        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        "type": "string"
       },
       "change": {
         "description": "The change request, as given.",
@@ -506,8 +504,7 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string",
-        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        "type": "string"
       },
       "commit": {
         "description": "The commit.",
@@ -672,8 +669,7 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string",
-        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        "type": "string"
       },
       "run_id": {
         "description": "The run.",

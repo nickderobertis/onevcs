@@ -1,0 +1,11 @@
+{
+  "about": "Linux's v2.6.11-tree: an annotated tag whose object is a tree, not a commit.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/linux-tag-v2.6.11-tree.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/linux-tag-object-5dc01c5.json"
+    }
+  ]
+}

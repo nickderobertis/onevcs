@@ -30,7 +30,9 @@ included) and its body, re-serialised without whitespace in its recorded key ord
   empty comparison of v0.72.0 with itself, and GitHub's 404 and 401 answers;
   `skilltest`'s v0.13.0 range, whose last commit was pushed with no pull request, and that
   tag, which is lightweight, with the runs at its commit; `onejudge`'s releases, whose tags
-  moved from `v` to `onejudge-v`; and a
+  moved from `v` to `onejudge-v`; `k3s-io/k3s`'s `v1.28.3+k3s2`, a tag whose name needs
+  percent-encoding, with the empty runs listing at its commit; `torvalds/linux`'s
+  `v2.6.11-tree`, an annotated tag of a tree; and a
   `nick-derobertis-site` pull request head whose Visual docs run failed to start, the only
   run with an empty job listing in the public repositories surveyed.
 

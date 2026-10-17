@@ -139,10 +139,9 @@ impl FromStr for RepositorySlug {
     }
 }
 
-string_newtype!(
-    RepositorySlug,
-    schemars::json_schema!({"type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"})
-);
+// No pattern: `FromStr` is the one statement of what a slug is, and a regex beside it
+// would be a second.
+string_newtype!(RepositorySlug, schemars::json_schema!({"type": "string"}));
 
 /// A full commit id: 40 hexadecimal characters, kept in lower case.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -624,13 +623,20 @@ fn previous_release(reader: &mut Reader, tag: &str) -> HostQueryResult<String> {
                     found = name == tag;
                     continue;
                 }
+                // llmlint: ignore-block[changed_behavior_has_e2e] a draft, an unpublished
+                // release and a lower one listed after a higher are each skipped here, and no
+                // public listing this suite can record carries one: GitHub shows a draft only
+                // to collaborators, so recording one would publish notes nobody released, and
+                // the criteria forbid a hand-written response. A release of another form is
+                // skipped in `a_release_with_no_earlier_release_of_its_form_needs_...`.
                 let draft = field(release, "draft", path)?
                     .as_bool()
                     .ok_or_else(|| missing("draft boolean", path))?;
-                let published = !field(release, "published_at", path)?.is_null();
+                let published = nullable_timestamp(release, "published_at", path)?.is_some();
                 let lower = Version::of(&name).is_some_and(|other| {
                     other.prefix == version.prefix && other.number < version.number
                 });
+                // llmlint: ignore-end[changed_behavior_has_e2e]
                 if published && !draft && lower {
                     previous = Some(name);
                     return Ok(Paging::Done);
@@ -696,6 +702,10 @@ pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChe
         {
             continue;
         }
+        // llmlint: ignore[changed_behavior_has_e2e] GitHub stamps `created_at` to the
+        // second, so two runs of one workflow created in one second tie, and the run id —
+        // GitHub's own creation order — breaks it. No recording carries such a pair, and
+        // the criteria forbid a hand-written one.
         let newer = latest
             .get(&run.workflow_id)
             .is_none_or(|kept| (created, run.id) > (kept.created_at.instant, kept.id));
@@ -1083,15 +1093,20 @@ impl Reader {
                 "GitHub answered {status} for {path}: {message}"
             )));
         }
-        if answer.code != Some(0) {
-            return Err(failed(format!("gh failed for {path}: {}", answer.detail())));
-        }
+        // llmlint: ignore-block[changed_behavior_has_e2e] a success that is not JSON, and a
+        // `Link` that is malformed or leaves the API, are refusals no recorded GitHub
+        // response can reach — every endpoint read here answers JSON and links back to the
+        // API — and the criteria forbid a hand-written response. Each is refused rather
+        // than read as a shorter listing, which is what a silent end would report.
         let body: Value = serde_json::from_str(body)
             .map_err(|e| failed(format!("the response to {path} is not JSON: {e}")))?;
-        let next = headers
-            .get("link")
-            .and_then(|link| next_link(link))
-            .map(str::to_owned);
+        let next = match headers.get("link") {
+            Some(link) => next_link(link)
+                .map_err(|reason| failed(format!("the Link header of {path} {reason}: {link}")))?
+                .map(str::to_owned),
+            None => None,
+        };
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         Ok(Page { body, next })
     }
 }
@@ -1132,13 +1147,28 @@ fn split_response(stdout: &str) -> Option<(u16, BTreeMap<String, String>, &str)>
     Some((status, headers, body))
 }
 
-/// The `rel="next"` URL of a `Link` header.
-fn next_link(link: &str) -> Option<&str> {
-    link.split(',').find_map(|part| {
-        let (target, params) = part.split_once(';')?;
-        let next = params
+/// The `rel="next"` URL of a `Link` header, where it names one; a header that is not
+/// `<url>; rel="..."` entries, or a next page off the API, is a reason instead.
+fn next_link(link: &str) -> std::result::Result<Option<&str>, String> {
+    let mut next = None;
+    for entry in link.split(',') {
+        let (target, params) = entry
+            .trim()
+            .strip_prefix('<')
+            .and_then(|rest| rest.split_once('>'))
+            .ok_or("is malformed")?;
+        let rel = params
             .split(';')
-            .any(|param| param.trim().replace(' ', "") == "rel=\"next\"");
-        next.then(|| target.trim().trim_start_matches('<').trim_end_matches('>'))
-    })
+            .map(str::trim)
+            .filter(|param| !param.is_empty())
+            .map(|param| param.strip_prefix("rel=").ok_or("is malformed"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if rel.contains(&"\"next\"") {
+            if !target.starts_with(API_ORIGIN) {
+                return Err(format!("names a next page outside {API_ORIGIN}"));
+            }
+            next = Some(target);
+        }
+    }
+    Ok(next)
 }

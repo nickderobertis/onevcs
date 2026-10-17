@@ -1115,6 +1115,64 @@ fn a_release_with_no_earlier_release_of_its_form_needs_its_previous_tag_named() 
 }
 
 #[test]
+fn a_tag_name_is_percent_encoded_into_the_path_it_asks_for() {
+    let replay = Replay::new("encoded-tag");
+    let (answer, served) = replay.answer(&[
+        "commit-runs",
+        "--repo",
+        "k3s-io/k3s",
+        "--tag",
+        "v1.28.3+k3s2",
+    ]);
+    assert_eq!(served[0], "repos/k3s-io/k3s/git/ref/tags/v1.28.3%2Bk3s2");
+    assert_eq!(answer["commit"], "bbafb86e91ae3682a1811119d136203957df9061");
+    assert_eq!(
+        answer["runs"],
+        serde_json::json!([]),
+        "GitHub recorded no run there"
+    );
+}
+
+#[test]
+fn a_tag_that_names_no_commit_exits_1_naming_what_it_names() {
+    let replay = Replay::new("tag-of-a-tree");
+    let stderr = replay.refusal(&[
+        "commit-runs",
+        "--repo",
+        "torvalds/linux",
+        "--tag",
+        "v2.6.11-tree",
+    ]);
+    assert!(
+        stderr.contains("the tag v2.6.11-tree names a tree, not a commit"),
+        "{stderr}"
+    );
+    assert_eq!(
+        replay.served().len(),
+        2,
+        "the ref, then the annotated tag it names"
+    );
+}
+
+#[test]
+fn a_tag_the_releases_listing_does_not_hold_exits_1_naming_it() {
+    let replay = Replay::new("prefix-change");
+    let stderr = replay.refusal(&[
+        "release-changes",
+        "--repo",
+        "nickderobertis/onejudge",
+        "--tag",
+        "v9.9.9",
+    ]);
+    assert!(
+        stderr.contains(
+            "the release tag v9.9.9 was not found in repos/nickderobertis/onejudge/releases"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_range_with_no_commit_exits_1_naming_the_comparison() {
     let replay = Replay::new("empty-range");
     let stderr = replay.refusal(&[
