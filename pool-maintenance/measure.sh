@@ -48,7 +48,9 @@ entries() {
   local kind
   for kind in deps .fingerprint build incremental; do
     [ -d "$profile/$kind" ] || continue
-    find "$profile/$kind" -mindepth 1 -maxdepth 1 -printf "$kind/%f\n"
+    # `-printf` is GNU find's; BSD find (macOS) has none, so strip the parent here.
+    find "$profile/$kind" -mindepth 1 -maxdepth 1 \
+      | awk -v parent="$profile/$kind/" -v kind="$kind/" '{ print kind substr($0, length(parent) + 1) }'
   done | LC_ALL=C sort
 }
 
@@ -76,7 +78,17 @@ entries >"$records/before-alternative.txt"
 # A slot that has never built has none.
 oldest=""
 if [ -d "$profile" ]; then
-  oldest="$(find "$profile" -mindepth 2 -printf '%T@\n' | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
+  # Each entry's own mtime in epoch seconds, read by node because GNU and BSD find
+  # and stat spell it differently.
+  # shellcheck disable=SC2016 # the single-quoted program is JavaScript, expanded by node, not bash
+  oldest="$(find "$profile" -mindepth 2 -print0 \
+    | node -e '
+      let s = "";
+      process.stdin.setEncoding("utf8").on("data", (d) => (s += d)).on("end", () => {
+        for (const path of s.split("\0").filter(Boolean))
+          console.log(require("fs").lstatSync(path).mtimeMs / 1000);
+      });' \
+    | awk 'NR == 1 || $1 < min { min = $1 } END { if (NR) printf "%d", min }')"
 fi
 cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2 \
   || fail "the alternative test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
@@ -90,8 +102,15 @@ stamp="$(( $(date +%s) - 3 * 24 * 60 * 60 ))"
 if [ -n "$oldest" ] && [ "${oldest%.*}" -le "$stamp" ]; then
   stamp="$(( ${oldest%.*} - 60 ))"
 fi
+# `touch -d @SECONDS` is GNU's; `-t` in local time is the form BSD touch shares.
+# shellcheck disable=SC2016 # the single-quoted program is JavaScript, expanded by node, not bash
+local_stamp="$(node -e '
+  const d = new Date(Number(process.argv[1]) * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  console.log(`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}.${p(d.getSeconds())}`);
+' "$stamp")"
 while IFS= read -r entry; do
-  find "$profile/$entry" -exec touch -h -d "@$stamp" {} +
+  find "$profile/$entry" -exec touch -h -t "$local_stamp" {} +
 done <"$records/alternative.txt"
 
 # (c) The ordinary gate test build: the one each unit's newest build comes from.
