@@ -305,6 +305,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # The journeys below are a Rust test binary run through nextest.
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       # oneharness.toml's primary harness. Without a harness binary on PATH,
       # llmlint has nothing to drive and the job would fail with no findings —
       # which reads like a clean run. Pinned rather than floating: an upstream
@@ -321,6 +326,11 @@ jobs:
         run: just setup-llmlint
       - name: Validate llmlint config
         run: just lint-llm-validate --diff-base origin/main
+      # The recipe below, through the real Nx and this llmlint with a stand-in for
+      # the model call: a replay only for the same tree, base and judge, and a
+      # failure that reaches this log.
+      - name: Judged-tier journeys
+        run: just lint-llm-diff-journeys
       - name: Lint changed files
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

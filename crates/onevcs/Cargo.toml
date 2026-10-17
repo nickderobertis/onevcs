@@ -156,6 +156,14 @@ path = "tests/smoke/main.rs"
 name = "release_pr"
 path = "tests/release_pr/main.rs"
 
+# `just lint-llm-diff` driven through the real Nx and the real installed llmlint.
+# Its own binary for the reason `release_pr` is: the offline tiers do not install
+# llmlint, so they exclude it by name and CI's `llmlint` job runs it
+# (`just lint-llm-diff-journeys`) after `just setup-llmlint`.
+[[test]]
+name = "lint_llm_diff"
+path = "tests/lint_llm_diff/main.rs"
+
 # Host-sized recovery measurement has its own affected project and producer edge.
 [[test]]
 name = "recovery-workload"

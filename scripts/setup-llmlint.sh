@@ -40,9 +40,11 @@ set -uo pipefail
 # branch's changes, treats a plain `--diff-base <ref>` as three-dot/merge-base
 # (0.3.15), and ships the deterministic `validate` gate — config structure +
 # `llmlint: ignore` directives + fragment version bumps — that `just
-# lint-llm-validate` runs with no model call (0.3.17), and bundles config_lint v1.2
-# so `line_localizable_rules_require_attribution` is enforced (0.3.23).
-readonly LLMLINT_MIN="0.3.23"
+# lint-llm-validate` runs with no model call (0.3.17), bundles config_lint v1.2
+# so `line_localizable_rules_require_attribution` is enforced (0.3.23), and prints
+# the `llmlint fingerprint` judge digest `just lint-llm-diff`'s cache is keyed on,
+# refusing a judge reply that leaves a selected rule unanswered (0.4.11).
+readonly LLMLINT_MIN="0.4.11"
 readonly BIN_DIR="$HOME/.local/bin"
 
 log() { printf 'setup-llmlint: %s\n' "$*" >&2; }

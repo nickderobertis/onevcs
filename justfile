@@ -207,16 +207,17 @@ _audit-test:
 # four below select every test but the `smoke` binary's, which needs a GitHub
 # credential and a scratch repository and is run by `just smoke-real` alone, and
 # the `release_pr` binary's, which needs the pinned `release-plz` and is run by
-# `just release-pr-journeys` — and no test twice. Excluded by name rather than by
+# `just release-pr-journeys`, and the `lint_llm_diff` binary's, which needs the
+# installed llmlint and is run by `just lint-llm-diff-journeys` — and no test twice. Excluded by name rather than by
 # `#[ignore]`, so no journey in either is ever a skipped test.
 #
 # `scripts-suites` are the `e2e` modules whose subject is this repository's own
 # scripts, packaging, workflows and project graph rather than the crate: they read
 # `scripts/`, `npm/` and `.github/`, so they are the tier a change there reaches.
-scripts-suites := "test(/^(scripts|packaging|llmlint_cache|graph|coverage|smoke|state_root|pool_maintenance)::/)"
+scripts-suites := "test(/^(scripts|packaging|graph|coverage|smoke|state_root|pool_maintenance)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
-unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(recovery-workload) | binary(pool-workload))"
+unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(lint_llm_diff) | binary(recovery-workload) | binary(pool-workload))"
 # `onevcs-e2e:test` — the binary's journeys.
 e2e-tier := "binary(e2e) & not " + scripts-suites
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
@@ -403,6 +404,19 @@ release-pr-journeys:
 _release-pr-journeys:
     @cargo nextest run --workspace --locked -E 'binary(release_pr)' --status-level fail
 
+# The journeys over `just lint-llm-diff`, through the real Nx and the installed
+# llmlint with a stand-in for the model call, so outside `check`, which does not
+# install llmlint. CI's `llmlint` job runs this after `just setup-llmlint`. It runs as
+# the cached `onevcs-lint-llm-diff:journeys` target, keyed on what the tier reads.
+# Drive the judged tier's recipe over a throwaway copy of this repository.
+lint-llm-diff-journeys:
+    @bash scripts/nx.sh run onevcs-lint-llm-diff:journeys
+
+# Nx runs this, never a person: run directly it skips the target's cache key, so a
+# pass would not be replayed and a change to what the tier reads would not re-run it.
+_lint-llm-diff-journeys:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked -E 'binary(lint_llm_diff)' --status-level fail
+
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
 # The uncached `workspace:msrv` target, outside `check`: it needs that toolchain.
@@ -480,28 +494,28 @@ screenshots-bless: screenshots
     @bash scripts/bless-baseline.sh
     @echo "baseline refreshed for the $(bash scripts/host-arch.sh) lane; commit shots/baseline/ + docs/screenshots/"
 
-# The blocking `llmlint` PR check; `just gate` runs it before you push.
-#
-# It routes through the cached Nx `workspace:lint-llm-diff` target rather than
-# calling llmlint directly, because the judge is non-deterministic and the unit it
-# judges is the whole base-to-head diff: without a memo, every worker gate, every
-# publication gate and every CI run over one tree is an independent roll, and rolls
-# of one branch have named a different rule each time. An unchanged tree judged
-# against an unchanged base replays its own recorded verdict instead.
-#
-# The name and the argument shape are unchanged, so nothing that calls this has to
-# change; what the trailing arguments reach is Nx rather than llmlint, which is how
-# one tier is re-judged on purpose: `just lint-llm-diff <base> --skip-nx-cache`.
-# scripts/llmlint-diff.sh carries the rest — what is keyed, what is cached, and why
-# an ambient global cache skip is reported and ignored here.
-#
-# `[positional-arguments]` rather than `{{nx_args}}`: interpolation would splice the
-# caller's words into this line for the shell to parse, and what they are allowed to
-# be is the script's decision, made against each argument as it arrived.
+# The blocking `llmlint` PR check; `just gate` runs it before you push. It runs the
+# cached Nx `workspace:lint-llm-diff` target, which is the llmlint CLI itself, keyed
+# on the tree, the resolved base commit and `llmlint fingerprint`; arguments after
+# the base are Nx's, so `just lint-llm-diff <base> --skip-nx-cache` re-judges.
 # llmlint scoped to the files this branch changed since it forked from main.
 [positional-arguments]
 lint-llm-diff base="origin/main" *nx_args:
-    @./scripts/llmlint-diff.sh "$@"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base_sha="$(git rev-parse --verify --quiet "$1^{commit}")" || {
+      echo "lint-llm-diff: '$1' does not resolve to a commit" >&2
+      exit 1
+    }
+    shift
+    echo "lint-llm-diff: judging against base $base_sha"
+    # Nx resolves a run-commands task on its child's `exit` before reading its pipes,
+    # so a fast-failing task's output is lost when Nx's stdout is not a terminal; the
+    # spike-nx-output-loss report measured none lost with this set. Remove it once Nx
+    # collects run-commands output on `close`.
+    export NX_RUN_COMMANDS_DIRECTLY=false
+    LLMLINT_DIFF_BASE_SHA="$base_sha" ONEVCS_NX_SHOW_OUTPUT=1 \
+      exec bash scripts/nx.sh run workspace:lint-llm-diff "$@"
 
 # Provision the private workflow tooling through the same bootstrap recipe convention.
 _github-workflows-bootstrap:
