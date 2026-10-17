@@ -415,7 +415,7 @@ lint-llm-diff-journeys:
 # Nx runs this, never a person: run directly it skips the target's cache key, so a
 # pass would not be replayed and a change to what the tier reads would not re-run it.
 _lint-llm-diff-journeys:
-    @cargo nextest run --workspace --locked -E 'binary(lint_llm_diff)' --status-level fail
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked -E 'binary(lint_llm_diff)' --status-level fail
 
 # Reads the floor from Cargo.toml's `rust-version`; that toolchain must be
 # installed (`rustup toolchain install <version>`). Warnings are errors here too.
