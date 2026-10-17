@@ -833,6 +833,13 @@ fn latest_jobs(reader: &mut Reader, run: u64) -> HostQueryResult<Vec<Job>> {
 
 // A field this contract reads that a response lacks is a failure naming it, never a
 // default: a defaulted field is how a plausible wrong figure starts.
+//
+// llmlint: ignore-block[changed_behavior_has_e2e] each helper below also refuses a field
+// that is present with the wrong type — a non-string, a non-integer id, a non-list, a
+// commit id or timestamp that does not parse, a non-string label. GitHub's REST schema
+// never sends one, no recording carries one, and the criteria forbid a hand-written
+// response; the same helpers' refusals of an absent field and of a non-list response are
+// proven by `a_response_missing_a_field_the_answer_reads_exits_1_naming_it`.
 
 fn missing(name: &str, path: &str) -> HostQueryError {
     failed(format!("the response to {path} has no {name}"))
@@ -950,6 +957,8 @@ fn job(value: &Value, path: &str) -> HostQueryResult<Job> {
         completed_at: nullable_timestamp(value, "completed_at", path)?,
     })
 }
+
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// The operating system the first label naming one names.
 fn runner_os(labels: &[String]) -> Option<RunnerOs> {

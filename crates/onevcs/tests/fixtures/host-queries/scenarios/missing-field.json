@@ -1,10 +1,15 @@
 {
-  "about": "A releases page served where a job listing is asked for: a real response that lacks the field the query reads.",
+  "about": "Real responses served where another is asked for: a releases page for a job listing, which has no jobs list, and a job listing for the releases, which is not a list.",
   "serve": [
     {
       "recording": "recorded-for-host-queries/onepipeline-releases-per-page-5-page-1.json",
       "for": "repos/nickderobertis/onepipeline/actions/runs/38795754984/jobs?per_page=100&filter=latest",
       "why": "a response with no jobs list"
+    },
+    {
+      "recording": "onepipeline-ci-run-38795754984/repos_nickderobertis_onepipeline_actions_runs_38795754984_jobs__per_page_100_filter_latest__6b53e477b4.json",
+      "for": "repos/nickderobertis/onepipeline/releases?per_page=100",
+      "why": "a response that is an object where a list is read"
     }
   ]
 }

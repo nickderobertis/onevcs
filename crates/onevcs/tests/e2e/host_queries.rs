@@ -491,12 +491,21 @@ fn a_job_listing_spanning_three_linked_pages_is_reported_whole_and_in_order() {
         ],
         "each further page is the Link the previous one named, followed verbatim"
     );
-    let expected: Vec<u64> = pages
+    let expected: Vec<Value> = pages
         .iter()
-        .flat_map(|page| ids(&page["body"]["jobs"]))
+        .flat_map(|page| page["body"]["jobs"].as_array().expect("jobs").clone())
         .collect();
     assert_eq!(expected.len(), 71);
-    assert_eq!(ids(&answer["jobs"]), expected);
+    let jobs = answer["jobs"].as_array().expect("jobs");
+    assert_eq!(jobs.len(), expected.len());
+    for (reported, recorded) in jobs.iter().zip(&expected) {
+        assert_job_is_recorded(reported, recorded);
+    }
+    let unlabelled = jobs
+        .iter()
+        .find(|job| job["labels"] == serde_json::json!([]))
+        .expect("the listing holds a job with no labels");
+    assert_eq!(unlabelled["runner_os"], Value::Null, "no label names an OS");
 }
 
 /// `release-changes` for v0.72.0, which the change-checks journeys take their heads
@@ -1254,6 +1263,12 @@ fn a_response_missing_a_field_the_answer_reads_exits_1_naming_it() {
     let stderr = replay.refusal(&["run-jobs", "--repo", ONEPIPELINE, "--run", "38795754984"]);
     assert!(stderr.contains("has no jobs"), "{stderr}");
     assert!(stderr.contains(&jobs_path(38_795_754_984)), "{stderr}");
+    let stderr = replay.refusal(&["release-changes", "--repo", ONEPIPELINE, "--tag", "v0.72.0"]);
+    assert!(stderr.contains("is not a list"), "{stderr}");
+    assert!(
+        stderr.contains(&format!("repos/{ONEPIPELINE}/releases?per_page=100")),
+        "{stderr}"
+    );
 }
 
 #[test]
