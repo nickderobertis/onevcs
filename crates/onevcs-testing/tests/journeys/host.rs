@@ -633,3 +633,93 @@ fn two_file_backed_handles_writing_at_once_keep_every_write() {
         "writes another handle saved over: {lost:?}"
     );
 }
+
+#[test]
+fn a_journey_reseeding_a_file_backed_host_while_its_provider_writes_is_never_saved_over() {
+    // The shape a publication meets: its provider writes the host's document on every
+    // poll while the journey re-seeds it to settle a check. Whatever the provider
+    // writes next, the re-seed is what it writes on top of — never the document it
+    // read before the re-seed landed.
+    let home = Home::new();
+    let path = home.path("reseeded-host.json");
+    let reseed = |round: usize| {
+        let mut state = HostState::default();
+        state.head_checks.insert(
+            onevcs::Sha(format!("reseed-{round:03}")),
+            vec![green_check("gate")],
+        );
+        state
+    };
+    let journey = FileHost::seeded(&path, reseed(0)).expect("seed the polled host");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let provider = {
+        let done = std::sync::Arc::clone(&done);
+        let host = FileHost::create(&path).expect("the provider's handle");
+        std::thread::spawn(move || {
+            let mut poll = 0_usize;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                host.set_head_checks(&onevcs::Sha(format!("poll-{poll}")), Vec::new())
+                    .expect("a provider write");
+                poll += 1;
+            }
+            poll
+        })
+    };
+    let mut lost = Vec::new();
+    for round in 1..200 {
+        FileHost::seeded(&path, reseed(round)).expect("re-seed the polled host");
+        let held = journey.state().expect("readable").head_checks;
+        if !held.contains_key(&onevcs::Sha(format!("reseed-{round:03}"))) {
+            lost.push(round);
+        }
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let polls = provider.join().expect("the provider thread");
+    assert!(
+        polls > 0,
+        "the provider never wrote while the journey re-seeded"
+    );
+    assert!(
+        lost.is_empty(),
+        "re-seeds a provider write saved over: {lost:?}"
+    );
+}
+
+#[test]
+fn handles_attaching_to_a_document_nobody_wrote_yet_never_save_over_the_first_write() {
+    // Two invocations started together over a path nothing has written: one attaches
+    // and writes at once, the other is still attaching. Its empty fallback is for a
+    // document that is not there, never one written over a document that now is.
+    let home = Home::new();
+    let lost: Vec<_> = (0..100)
+        .filter(|round| {
+            let path = home.path(format!("attached-{round}.json"));
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let writer = {
+                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    FileHost::create(&path)
+                        .expect("the first handle")
+                        .set_head_checks(&onevcs::Sha("written".to_owned()), Vec::new())
+                        .expect("its first write");
+                })
+            };
+            let attacher = std::thread::spawn(move || {
+                start.wait();
+                FileHost::create(&path).expect("the second handle")
+            });
+            writer.join().expect("the writing thread");
+            let host = attacher.join().expect("the attaching thread");
+            !host
+                .state()
+                .expect("readable")
+                .head_checks
+                .contains_key(&onevcs::Sha("written".to_owned()))
+        })
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "rounds whose first write an attaching handle saved over: {lost:?}"
+    );
+}
