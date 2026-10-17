@@ -85,7 +85,7 @@ if [ -d "$profile" ]; then
       const times = s.split("\0").filter(Boolean).map((p) => fs.lstatSync(p).mtimeMs / 1000);
       if (times.length) process.stdout.write(String(Math.floor(times.reduce((a, b) => Math.min(a, b)))));
     });
-  ')"
+  ')" || fail "could not read the build entry times under $profile" "check that nothing else is building in $root, then retry"
 fi
 cargo nextest run --workspace --locked --no-run "${alternative[@]}" >&2 \
   || fail "the alternative test build failed" "run 'cargo nextest run --workspace --locked --no-run' in $root and fix its error"
