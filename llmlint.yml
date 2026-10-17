@@ -14,6 +14,10 @@ files:
     # outside the workspace; Cargo rewrites it on a lock update, so it cannot carry a
     # suppression that survives one.
     - "compat/Cargo.lock"
+    # Recorded third-party GitHub API responses, served byte for byte by the host-query
+    # journeys, so they can carry no suppression; their patches quote other
+    # repositories' llmlint directives. The scenario sidecars and README stay judged.
+    - "crates/onevcs/tests/fixtures/host-queries/recordings/**"
 rationales: true
 # No `agents` block: the harness/model are NOT pinned here. `oneharness.toml`
 # (composed alongside this file) selects them in fallback mode — codex + gpt-6.1-sol
