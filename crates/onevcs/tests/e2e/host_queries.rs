@@ -1297,6 +1297,46 @@ fn a_gh_that_cannot_run_exits_1_naming_the_request() {
     assert!(stderr.contains(&jobs_path(38_795_754_984)), "{stderr}");
 }
 
+#[test]
+fn a_gh_that_fails_without_answering_exits_1_naming_the_request() {
+    // `false` is a real program that exits 1 and prints nothing, the way `gh` does when
+    // it fails before any request reaches GitHub.
+    let replay = Replay::new("onepipeline-v0.72.0");
+    let output = replay
+        .command(&replay.dir.path().join("home"))
+        .env("ONEVCS_GH", "false")
+        .env("GH_TOKEN", TOKEN)
+        .args([
+            "host",
+            "run-jobs",
+            "--repo",
+            ONEPIPELINE,
+            "--run",
+            "38795754984",
+        ])
+        .output()
+        .expect("ran");
+    let stderr = refused(&output);
+    assert!(
+        stderr.contains("gh failed") && stderr.contains(&jobs_path(38_795_754_984)),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_tag_with_no_version_needs_its_previous_tag_named() {
+    let replay = Replay::new("onepipeline-v0.72.0");
+    let stderr = replay.refusal(&["release-changes", "--repo", ONEPIPELINE, "--tag", "nightly"]);
+    assert!(
+        stderr.contains("--previous-tag") && stderr.contains("\"nightly\""),
+        "{stderr}"
+    );
+    assert!(
+        replay.lines("invocations").is_empty(),
+        "nothing can be derived, so nothing is asked"
+    );
+}
+
 /// Every file under `root`, by relative path, with its bytes.
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
