@@ -14,16 +14,17 @@
 //! Selection is read from Nx's own task graph (`--graph=<file>`), which Nx writes
 //! instead of running the tasks; the caching journey runs its tasks for real, with
 //! the bodies of the two recipes it runs replaced by counters, because counting
-//! runs is the only way to tell a replayed task from a re-run one — the same
-//! technique `llmlint_cache.rs` uses for the judged tier.
+//! runs is the only way to tell a replayed task from a re-run one.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::support::workspace_root;
+
 /// Every project that carries the gate's `check` target: what the release PR's
-/// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` journeys
-/// carry none; `workspace` holds the judged lint and the repo-level targets, which
+/// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
+/// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
 const GATE_PROJECTS: [&str; 8] = [
     "github-workflows",
@@ -35,6 +36,49 @@ const GATE_PROJECTS: [&str; 8] = [
     "onevcs-pool-workload",
     "onevcs-scripts-e2e",
 ];
+
+/// Copy exactly what Nx would hash — everything git would commit from here — and
+/// point the copy at this checkout's own Nx install.
+///
+/// `node_modules` is ignored state Nx itself needs and far too large to copy, so it
+/// is a symlink out to this workspace's install; every gate run provisions it
+/// through `scripts/nx.sh`, and a journey that arrived without one says so rather
+/// than spending a network install per copy.
+fn copy_checkout(destination: &Path) {
+    let source = workspace_root();
+    let listing = Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(&source)
+        .output()
+        .expect("git must be on PATH to list this checkout");
+    assert!(listing.status.success(), "git ls-files must succeed");
+    let listing = String::from_utf8_lossy(&listing.stdout).into_owned();
+    for relative in listing.split('\0').filter(|entry| !entry.is_empty()) {
+        let from = source.join(relative);
+        if !from.is_file() {
+            continue;
+        }
+        let to = destination.join(relative);
+        std::fs::create_dir_all(to.parent().expect("a file has a parent"))
+            .expect("the copy is writable");
+        std::fs::copy(&from, &to).expect("a tracked file is readable");
+    }
+
+    let modules = source.join("node_modules");
+    assert!(
+        modules.is_dir(),
+        "this workspace's Nx install must exist before these journeys copy a checkout \
+         that shares it — run 'just bootstrap'"
+    );
+    std::os::unix::fs::symlink(&modules, destination.join("node_modules"))
+        .expect("the copy can share this workspace's Nx install");
+}
 
 /// A throwaway copy of this checkout, committed once as `main` and with
 /// `origin/main` pointing there, so a branch made on top of it has a merge base
@@ -53,7 +97,7 @@ impl Checkout {
         let root = scratch.path().join("checkout");
         let outside = scratch.path().join("outside");
         std::fs::create_dir_all(&outside).expect("a directory beside the copy");
-        crate::llmlint_cache::copy_checkout(&root);
+        copy_checkout(&root);
         let checkout = Self {
             _scratch: scratch,
             root,
@@ -340,7 +384,12 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
         set(&GATE_PROJECTS),
         "the release PR's sweep selected {swept:?}"
     );
-    for live in ["onevcs-live", "onevcs-release-pr", "workspace"] {
+    for live in [
+        "onevcs-live",
+        "onevcs-release-pr",
+        "onevcs-lint-llm-diff",
+        "workspace",
+    ] {
         assert!(
             !swept
                 .iter()
@@ -451,7 +500,7 @@ fn a_tier_runs_again_for_a_change_to_what_it_reads_and_is_replayed_otherwise() {
     // reports that difference in a form a test can read, and the real tiers' bodies
     // would spend minutes per run proving nothing more about the key. The target
     // declarations, `nx.json`, `scripts/nx.sh`, Nx and its cache are all the real
-    // ones; only the two recipe bodies are counters, as in `llmlint_cache.rs`.
+    // ones; only the two recipe bodies are counters.
     let unit = checkout.outside.join("onevcs-runs");
     let contract = checkout.outside.join("onevcs-contract-runs");
     count_runs_of(&checkout, "_unit-test", &unit);

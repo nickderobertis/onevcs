@@ -1,0 +1,23 @@
+{
+  "name": "onevcs-lint-llm-diff",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["scope:llmlint", "lang:rust"],
+  "targets": {
+    "journeys": {
+      "//": "llmlint: ignore[new_projects_keep_the_graph_uniform] not `test`: `just test` and `just check` fan `test` across the graph and stay offline without llmlint, which these journeys drive for real, so this suite is reached by `just lint-llm-diff-journeys` from CI's `llmlint` job alone.",
+      "command": "just _lint-llm-diff-journeys",
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/nx.json",
+        "{workspaceRoot}/project.json",
+        "{workspaceRoot}/justfile",
+        "{workspaceRoot}/scripts/nx.sh",
+        "{workspaceRoot}/llmlint.yml",
+        "{workspaceRoot}/oneharness.toml",
+        { "runtime": "llmlint fingerprint" }
+      ]
+    }
+  }
+}

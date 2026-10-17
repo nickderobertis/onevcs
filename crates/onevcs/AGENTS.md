@@ -967,8 +967,8 @@ defect only the `cross` job sees.
 ## The test binaries are run by tier projects that own no source
 
 The `project.json` files under `tests/` — `onevcs-e2e`, `onevcs-scripts-e2e`,
-`onevcs-contract`, `onevcs-release-pr`, `onevcs-live` — are Nx projects with no
-crate of their own: each runs a nextest filterset (the `*-tier` variables in the
+`onevcs-contract`, `onevcs-release-pr`, `onevcs-lint-llm-diff`, `onevcs-live` — are
+Nx projects with no crate of their own: each runs a nextest filterset (the `*-tier` variables in the
 `justfile`) over this crate's existing test binaries, so a test belongs to a tier by
 which binary and module it is in, never by where its project file sits. Three rules
 follow:
