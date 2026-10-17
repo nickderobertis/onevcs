@@ -1579,13 +1579,12 @@ to undo.
 - **`Reader::get` is the only request, and it records itself first**, so `cost.requests` is
   every request made. The journeys hold it equal to what the replay served *and* to fixed
   totals (27 for v0.72.0, 6 + 2 per pull request for the new shape): a new read moves both.
-- **The selection rules are the product.** Latest `pull_request` run per `workflow_id`
-  created at or before the merge; `filter=latest` jobs; annotated tags dereferenced; closed
-  pull requests paged until every commit is mapped or the page passes the previous tag's
-  commit. Each rule has a journey that fails when it is broken.
+- **Every selection rule has a journey that fails without it**, and was watched failing.
+  A rule that changes moves its journey, the amendment's text and its field block in the
+  same change; the field block is held to the generated schema in `tests/contract.rs`.
 - **The fixtures are real responses, scrubbed.** `tests/fixtures/host-queries/` holds
-  GitHub's own recordings, served by sidecar; one is assembled, by leaving runs out, and
-  says so. Record a missing response read-only with `gh api --include --method GET` from a
+  GitHub's own recordings, served by sidecar; an entry that serves one for another request,
+  or leaves runs out of it, says why. Record a missing response read-only with `gh api --include --method GET` from a
   public repository and run `onevcs boundary check --destination public` over it before
   committing — a private name in a commit message is what the first scrub removed.
 

@@ -25,8 +25,12 @@ included) and its body, re-serialised without whitespace in its recorded key ord
   requests (and the same listing at seventeen a page, whose first page ends after v0.71.1's
   commit), its releases listing at five a page (so the previous release is on page 2), an
   empty `pull_request` listing at the release commit, the jobs of the Visual docs run #914's
-  head ran again just after its merge, and GitHub's 404 and 401 answers;
-  `skilltest`'s v0.13.0 range, whose last commit was pushed with no pull request; and a
+  head ran again just after its merge, the same closed pull requests at five a page and
+  #914's head's runs at two a page (so each listing is followed through its `Link`s), the
+  empty comparison of v0.72.0 with itself, and GitHub's 404 and 401 answers;
+  `skilltest`'s v0.13.0 range, whose last commit was pushed with no pull request, and that
+  tag, which is lightweight, with the runs at its commit; `onejudge`'s releases, whose tags
+  moved from `v` to `onejudge-v`; and a
   `nick-derobertis-site` pull request head whose Visual docs run failed to start, the only
   run with an empty job listing in the public repositories surveyed.
 
@@ -42,5 +46,6 @@ originals. `onevcs boundary check --destination public` passes every file here.
 
 `scenarios/*.json` say what one replay serves: each entry names a recording, served for the
 request it recorded unless `for` names another, and `keep_runs` leaves every other run out
-of a runs listing (with `total_count` set to match) — the only way an answer is assembled,
-and each one says `why`.
+of a runs listing (with `total_count` set to match). Those two are the only ways a replay
+departs from what GitHub answered to the request asked, and every entry using either says
+`why`.

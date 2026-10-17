@@ -1,0 +1,10 @@
+{
+  "about": "A releases page served where a job listing is asked for: a real response that lacks the field the query reads.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/onepipeline-releases-per-page-5-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/actions/runs/38795754984/jobs?per_page=100&filter=latest",
+      "why": "a response with no jobs list"
+    }
+  ]
+}

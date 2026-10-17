@@ -1,0 +1,29 @@
+{
+ "body": {
+  "node_id": "REF_kwDOS2giJ7FyZWZzL3RhZ3MvdjAuMTMuMA",
+  "object": {
+   "sha": "b7d6cf9e7803b4ea3ec1f5f18ce67ba546fffab4",
+   "type": "commit",
+   "url": "https://api.github.com/repos/nickderobertis/skilltest/git/commits/b7d6cf9e7803b4ea3ec1f5f18ce67ba546fffab4"
+  },
+  "ref": "refs/tags/v0.13.0",
+  "url": "https://api.github.com/repos/nickderobertis/skilltest/git/refs/tags/v0.13.0"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:27:18 GMT",
+  "etag": "W/\"715ab55cdae7a34c26f3809f2635561471de1d3caf142577d0106598e8eedcba\"",
+  "last-modified": "Thu, 15 Oct 2026 12:57:03 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4616",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "384"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/skilltest/git/ref/tags/v0.13.0"
+ },
+ "status": 200
+}

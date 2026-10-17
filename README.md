@@ -329,7 +329,7 @@ token is `GITHUB_TOKEN`, else `GH_TOKEN` (`actions: read`, `contents: read`,
 naming a program that answers `gh api --include` is the supported way to replay recorded
 responses**, as the journeys in `crates/onevcs/tests/e2e/host_queries.rs` do. Exit `0` is an
 answer, `2` an invalid invocation, and `1` anything else, with one line on stderr naming the
-reason and the API path. [`docs/contract.md`](docs/contract.md) states the whole surface.
+reason and the API path.
 
 ## Install
 

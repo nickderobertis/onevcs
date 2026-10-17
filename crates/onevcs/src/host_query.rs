@@ -22,12 +22,13 @@
 //!   only where GitHub answered and recorded none; anything else is a
 //!   [`HostQueryError`], exit 1.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -37,11 +38,13 @@ use crate::gh;
 /// The `schema_version` every answer and `onevcs host schema` carry.
 pub const HOST_QUERY_SCHEMA_VERSION: u32 = 1;
 
-/// The page size every list is read at.
 const PER_PAGE: u32 = 100;
 
-/// The two variables a token is taken from, in order.
 const TOKEN_VARIABLES: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
+
+/// Where every request goes, and the only origin a `Link` may send a next page to: a
+/// URL anywhere else would be handed to `gh` with the caller's token.
+const API_ORIGIN: &str = "https://api.github.com/";
 
 /// Why a query has no answer: exit 1, with this one line on stderr.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +72,39 @@ fn failed(reason: impl Into<String>) -> HostQueryError {
     }
 }
 
-// ---------------------------------------------------------------------------------
-// Validated inputs. Each is parsed at the command line, so an invalid one is clap's
-// usage error (exit 2) and never reaches GitHub.
-// ---------------------------------------------------------------------------------
+/// The three validated strings below are written and read as plain JSON strings; this
+/// is their shared rendering, and the schema says what each one is.
+macro_rules! string_newtype {
+    ($name:ident, $schema:expr) => {
+        impl Serialize for $name {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                String::deserialize(deserializer)?
+                    .parse()
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn inline_schema() -> bool {
+                true
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                $schema
+            }
+        }
+    };
+}
 
 /// A GitHub repository as `OWNER/NAME`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,8 +139,13 @@ impl FromStr for RepositorySlug {
     }
 }
 
+string_newtype!(
+    RepositorySlug,
+    schemars::json_schema!({"type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"})
+);
+
 /// A full commit id: 40 hexadecimal characters, kept in lower case.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommitSha(String);
 
 impl CommitSha {
@@ -132,6 +169,11 @@ impl FromStr for CommitSha {
     }
 }
 
+string_newtype!(
+    CommitSha,
+    schemars::json_schema!({"type": "string", "pattern": "^[0-9a-f]{40}$"})
+);
+
 /// A positive integer naming a change request or a workflow run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PositiveId(u64);
@@ -154,7 +196,8 @@ impl FromStr for PositiveId {
     }
 }
 
-/// An RFC 3339 timestamp, kept as written beside the instant it names.
+/// An RFC 3339 timestamp, kept as written beside the instant it names, so an answer
+/// passes GitHub's own string through unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timestamp {
     written: String,
@@ -165,6 +208,11 @@ impl Timestamp {
     /// The timestamp as written.
     pub fn as_str(&self) -> &str {
         &self.written
+    }
+
+    /// The instant it names.
+    pub fn instant(&self) -> OffsetDateTime {
+        self.instant
     }
 }
 
@@ -181,9 +229,10 @@ impl FromStr for Timestamp {
     }
 }
 
-// ---------------------------------------------------------------------------------
-// Requests.
-// ---------------------------------------------------------------------------------
+string_newtype!(
+    Timestamp,
+    schemars::json_schema!({"type": "string", "format": "date-time"})
+);
 
 /// What `onevcs host release-changes` asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,10 +288,6 @@ pub struct RunJobsRequest {
     pub run: PositiveId,
 }
 
-// ---------------------------------------------------------------------------------
-// Answers. These are the source the schema is generated from.
-// ---------------------------------------------------------------------------------
-
 /// The requests a query made, in the shape of the review read's cost plus the list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueryCost {
@@ -254,6 +299,10 @@ pub struct QueryCost {
     pub requests: Vec<String>,
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] an event, a status, a conclusion
+// and a pull request's state are GitHub's open vocabularies, passed through unchanged:
+// GitHub has added values to each (`startup_failure`, `stale`, `merge_group`), and a
+// closed enum here would turn the next one into a failed read of a run that exists.
 /// A workflow run, as GitHub recorded it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Run {
@@ -266,7 +315,7 @@ pub struct Run {
     /// The event that triggered it.
     pub event: String,
     /// The commit it ran at.
-    pub head_sha: String,
+    pub head_sha: CommitSha,
     /// The branch it ran on, where GitHub reports one.
     pub head_branch: Option<String>,
     /// Its latest attempt.
@@ -276,11 +325,11 @@ pub struct Run {
     /// Its conclusion, once it has one.
     pub conclusion: Option<String>,
     /// When it was created.
-    pub created_at: String,
+    pub created_at: Timestamp,
     /// When its latest attempt started, where GitHub reports it.
-    pub run_started_at: Option<String>,
+    pub run_started_at: Option<Timestamp>,
     /// When it was last updated.
-    pub updated_at: String,
+    pub updated_at: Timestamp,
 }
 
 /// The operating system a job's labels name.
@@ -319,11 +368,11 @@ pub struct Job {
     /// Its labels.
     pub labels: Vec<String>,
     /// When it was created.
-    pub created_at: String,
+    pub created_at: Timestamp,
     /// When it started.
-    pub started_at: Option<String>,
+    pub started_at: Option<Timestamp>,
     /// When it completed.
-    pub completed_at: Option<String>,
+    pub completed_at: Option<Timestamp>,
 }
 
 /// A pull request.
@@ -338,20 +387,21 @@ pub struct Change {
     /// The branch it targets.
     pub base_ref: String,
     /// Its last head commit, as GitHub reports it.
-    pub head_sha: String,
+    pub head_sha: CommitSha,
     /// When it was opened.
-    pub created_at: String,
+    pub created_at: Timestamp,
     /// When it merged.
-    pub merged_at: Option<String>,
+    pub merged_at: Option<Timestamp>,
     /// The commit its merge made.
-    pub merge_commit_sha: Option<String>,
+    pub merge_commit_sha: Option<CommitSha>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// One commit of a release's range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseCommit {
     /// The commit.
-    pub sha: String,
+    pub sha: CommitSha,
     /// The merged pull request whose merge commit it is, or `null`.
     pub change: Option<u64>,
 }
@@ -362,15 +412,15 @@ pub struct ReleaseChanges {
     /// Always 1.
     pub schema_version: u32,
     /// `OWNER/NAME`.
-    pub repository: String,
+    pub repository: RepositorySlug,
     /// The release's tag.
     pub tag: String,
     /// The commit the tag names.
-    pub commit: String,
+    pub commit: CommitSha,
     /// The tag the range starts after.
     pub previous_tag: String,
     /// The commit the previous tag names.
-    pub previous_commit: String,
+    pub previous_commit: CommitSha,
     /// Every commit of the range, oldest first.
     pub commits: Vec<ReleaseCommit>,
     /// Each distinct mapped pull request, in commit order.
@@ -385,9 +435,9 @@ pub struct ChangeLabel {
     /// Its number.
     pub number: u64,
     /// Its head commit.
-    pub head_sha: String,
+    pub head_sha: CommitSha,
     /// When it merged, or `null` when not given.
-    pub merged_at: Option<String>,
+    pub merged_at: Option<Timestamp>,
 }
 
 /// A selected run with its latest attempt's jobs.
@@ -406,7 +456,7 @@ pub struct ChangeChecks {
     /// Always 1.
     pub schema_version: u32,
     /// `OWNER/NAME`.
-    pub repository: String,
+    pub repository: RepositorySlug,
     /// The change request, as given.
     pub change: ChangeLabel,
     /// The latest `pull_request` run per workflow at the head, by workflow name.
@@ -421,9 +471,9 @@ pub struct CommitRuns {
     /// Always 1.
     pub schema_version: u32,
     /// `OWNER/NAME`.
-    pub repository: String,
+    pub repository: RepositorySlug,
     /// The commit.
-    pub commit: String,
+    pub commit: CommitSha,
     /// The `--event` values given; `[]` for every event.
     pub events: Vec<String>,
     /// Every run at the commit of those events, by creation.
@@ -438,7 +488,7 @@ pub struct RunJobs {
     /// Always 1.
     pub schema_version: u32,
     /// `OWNER/NAME`.
-    pub repository: String,
+    pub repository: RepositorySlug,
     /// The run.
     pub run_id: u64,
     /// Its latest attempt's jobs, in GitHub's order.
@@ -458,10 +508,6 @@ pub fn host_schema() -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------------
-// The queries.
-// ---------------------------------------------------------------------------------
-
 /// The merged pull requests a release tag carries.
 pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<ReleaseChanges> {
     let mut reader = Reader::new(&request.repository)?;
@@ -471,32 +517,27 @@ pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<Relea
         None => previous_release(&mut reader, &request.tag)?,
     };
 
-    // Read 2: the comparison, whole.
     let range = format!("{}...{}", encode(&previous_tag), encode(&request.tag));
-    let mut next = Some(format!("repos/{repo}/compare/{range}?per_page={PER_PAGE}"));
     let what = format!("the comparison {previous_tag}...{}", request.tag);
-    let mut shas: Vec<String> = Vec::new();
-    let mut previous: Option<(String, OffsetDateTime)> = None;
-    while let Some(path) = next {
-        let page = reader.get(&path, &what)?;
-        if previous.is_none() {
-            let base = field(&page.body, "base_commit", &path)?;
-            let sha = string(base, "sha", &path)?;
-            let committed = field(
-                field(field(base, "commit", &path)?, "committer", &path)?,
-                "date",
-                &path,
-            )?;
-            let committed = instant(committed, "base_commit.commit.committer.date", &path)?;
-            previous = Some((sha, committed));
-        }
-        for commit in array(&page.body, "commits", &path)? {
-            shas.push(string(commit, "sha", &path)?);
-        }
-        next = page.next;
-    }
+    let mut shas: Vec<CommitSha> = Vec::new();
+    let mut previous: Option<(CommitSha, Timestamp)> = None;
+    reader.walk(
+        format!("repos/{repo}/compare/{range}?per_page={PER_PAGE}"),
+        &what,
+        |body, path| {
+            if previous.is_none() {
+                let base = field(body, "base_commit", path)?;
+                let committer = field(field(base, "commit", path)?, "committer", path)?;
+                previous = Some((sha(base, "sha", path)?, timestamp(committer, "date", path)?));
+            }
+            for commit in array(body, "commits", path)? {
+                shas.push(sha(commit, "sha", path)?);
+            }
+            Ok(Paging::More)
+        },
+    )?;
     let (previous_commit, previous_time) =
-        previous.ok_or_else(|| failed("the comparison was never read"))?;
+        previous.ok_or_else(|| failed(format!("{what} was never read")))?;
     let commit = shas.last().cloned().ok_or_else(|| {
         failed(format!(
             "{what} lists no commit, so {} names no commit after {previous_tag}",
@@ -504,39 +545,35 @@ pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<Relea
         ))
     })?;
 
-    // Read 3: closed pull requests, most recently updated first, until every commit
-    // is mapped or the listing has passed the previous tag's commit.
-    let mut wanted: BTreeSet<&str> = shas.iter().map(String::as_str).collect();
-    let mut merged: BTreeMap<String, Change> = BTreeMap::new();
-    let mut next = Some(format!(
-        "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page={PER_PAGE}"
-    ));
-    while let Some(path) = next {
-        let page = reader.get(&path, "the closed pull requests")?;
-        let pulls = top_array(&page.body, &path)?;
-        for pull in pulls {
-            let change = change(pull, &path)?;
-            if change.merged_at.is_none() {
-                continue;
-            }
-            if let Some(sha) = &change.merge_commit_sha {
-                if wanted.remove(sha.as_str()) {
-                    merged.insert(sha.clone(), change);
+    // The closed pull requests, most recently updated first, until every commit is
+    // mapped or the listing has passed the previous tag's commit.
+    let mut wanted: BTreeSet<&CommitSha> = shas.iter().collect();
+    let mut merged: BTreeMap<CommitSha, Change> = BTreeMap::new();
+    reader.walk(
+        format!("repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page={PER_PAGE}"),
+        "the closed pull requests",
+        |body, path| {
+            let pulls = top_array(body, path)?;
+            for pull in pulls {
+                let change = change(pull, path)?;
+                let Some(commit) = change.merge_commit_sha.clone() else {
+                    continue;
+                };
+                if change.merged_at.is_some() && wanted.remove(&commit) {
+                    merged.insert(commit, change);
                 }
             }
-        }
-        let passed = match pulls.last() {
-            Some(last) => {
-                instant(field(last, "updated_at", &path)?, "updated_at", &path)? < previous_time
-            }
-            None => true,
-        };
-        next = if wanted.is_empty() || passed {
-            None
-        } else {
-            page.next
-        };
-    }
+            let passed = match pulls.last() {
+                Some(last) => timestamp(last, "updated_at", path)?.instant < previous_time.instant,
+                None => true,
+            };
+            Ok(if wanted.is_empty() || passed {
+                Paging::Done
+            } else {
+                Paging::More
+            })
+        },
+    )?;
 
     let mut commits = Vec::with_capacity(shas.len());
     let mut changes: Vec<Change> = Vec::new();
@@ -554,7 +591,7 @@ pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<Relea
     }
     Ok(ReleaseChanges {
         schema_version: HOST_QUERY_SCHEMA_VERSION,
-        repository: repo.to_owned(),
+        repository: request.repository.clone(),
         tag: request.tag.clone(),
         commit,
         previous_tag,
@@ -565,8 +602,8 @@ pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<Relea
     })
 }
 
-/// Read 1 of `release-changes`: the first release after `tag` in the listing's own
-/// order that is published, not a draft, and of the same form with a lower version.
+/// The first release after `tag` in the listing's own order that is published, not a
+/// draft, and of the same form with a lower version.
 fn previous_release(reader: &mut Reader, tag: &str) -> HostQueryResult<String> {
     let Some(version) = Version::of(tag) else {
         return Err(failed(format!(
@@ -574,39 +611,44 @@ fn previous_release(reader: &mut Reader, tag: &str) -> HostQueryResult<String> {
              can be derived; name one with --previous-tag"
         )));
     };
-    let repo = reader.repository.clone();
-    let mut next = Some(format!("repos/{repo}/releases?per_page={PER_PAGE}"));
+    let listing = format!("repos/{}/releases", reader.repository);
     let mut found = false;
-    while let Some(path) = next {
-        let page = reader.get(&path, "the releases")?;
-        for release in top_array(&page.body, &path)? {
-            let name = string(release, "tag_name", &path)?;
-            if !found {
-                found = name == tag;
-                continue;
+    let mut previous = None;
+    reader.walk(
+        format!("{listing}?per_page={PER_PAGE}"),
+        "the releases",
+        |body, path| {
+            for release in top_array(body, path)? {
+                let name = string(release, "tag_name", path)?;
+                if !found {
+                    found = name == tag;
+                    continue;
+                }
+                let draft = field(release, "draft", path)?
+                    .as_bool()
+                    .ok_or_else(|| missing("draft boolean", path))?;
+                let published = !field(release, "published_at", path)?.is_null();
+                let lower = Version::of(&name).is_some_and(|other| {
+                    other.prefix == version.prefix && other.number < version.number
+                });
+                if published && !draft && lower {
+                    previous = Some(name);
+                    return Ok(Paging::Done);
+                }
             }
-            let draft = field(release, "draft", &path)?
-                .as_bool()
-                .ok_or_else(|| missing("draft", &path))?;
-            let published = !field(release, "published_at", &path)?.is_null();
-            let lower = Version::of(&name).is_some_and(|other| {
-                other.prefix == version.prefix && other.number < version.number
-            });
-            if published && !draft && lower {
-                return Ok(name);
-            }
-        }
-        next = page.next;
-    }
-    let listing = format!("repos/{repo}/releases");
-    Err(failed(if found {
-        format!(
-            "no published release before {tag} of its form was found in {listing}; name the \
-             previous tag with --previous-tag"
-        )
-    } else {
-        format!("the release tag {tag} was not found in {listing}")
-    }))
+            Ok(Paging::More)
+        },
+    )?;
+    previous.ok_or_else(|| {
+        failed(if found {
+            format!(
+                "no published release before {tag} of its form was found in {listing}; name \
+                 the previous tag with --previous-tag"
+            )
+        } else {
+            format!("the release tag {tag} was not found in {listing}")
+        })
+    })
 }
 
 /// A tag's `<prefix>MAJOR.MINOR.PATCH`.
@@ -617,26 +659,22 @@ struct Version {
 
 impl Version {
     fn of(tag: &str) -> Option<Self> {
-        let start = tag
-            .char_indices()
-            .find(|(i, _)| {
-                let rest = &tag[*i..];
-                let mut parts = rest.split('.');
-                let (Some(a), Some(b), Some(c), None) =
-                    (parts.next(), parts.next(), parts.next(), parts.next())
-                else {
-                    return false;
-                };
-                [a, b, c]
-                    .iter()
-                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-            })?
-            .0;
-        let mut parts = tag[start..].split('.').map(|p| p.parse::<u64>().ok());
-        let number = (parts.next()??, parts.next()??, parts.next()??);
-        Some(Self {
-            prefix: tag[..start].to_owned(),
-            number,
+        let numbers = |rest: &str| -> Option<(u64, u64, u64)> {
+            let mut parts = rest.split('.');
+            let mut next = || {
+                parts
+                    .next()
+                    .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                    .and_then(|p| p.parse().ok())
+            };
+            let number = (next()?, next()?, next()?);
+            parts.next().is_none().then_some(number)
+        };
+        tag.char_indices().find_map(|(start, _)| {
+            numbers(&tag[start..]).map(|number| Self {
+                prefix: tag[..start].to_owned(),
+                number,
+            })
         })
     }
 }
@@ -645,27 +683,27 @@ impl Version {
 /// head, created at or before its merge, each with its latest attempt's jobs.
 pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChecks> {
     let mut reader = Reader::new(&request.repository)?;
-    let head = request.head.as_str();
-    let mut latest: BTreeMap<u64, (OffsetDateTime, Run)> = BTreeMap::new();
-    for (created, run) in runs_at(&mut reader, head, Some("pull_request"))? {
+    let mut latest: BTreeMap<u64, Run> = BTreeMap::new();
+    for run in runs_at(&mut reader, &request.head, Some("pull_request"))? {
         if run.event != "pull_request" {
             continue;
         }
+        let created = run.created_at.instant;
         if request
             .merged_at
             .as_ref()
-            .is_some_and(|m| created > m.instant)
+            .is_some_and(|merged| created > merged.instant)
         {
             continue;
         }
         let newer = latest
             .get(&run.workflow_id)
-            .is_none_or(|(kept, kept_run)| (created, run.id) > (*kept, kept_run.id));
+            .is_none_or(|kept| (created, run.id) > (kept.created_at.instant, kept.id));
         if newer {
-            latest.insert(run.workflow_id, (created, run));
+            latest.insert(run.workflow_id, run);
         }
     }
-    let mut selected: Vec<Run> = latest.into_values().map(|(_, run)| run).collect();
+    let mut selected: Vec<Run> = latest.into_values().collect();
     selected.sort_by(|a, b| {
         (a.workflow_name.as_str(), a.workflow_id).cmp(&(b.workflow_name.as_str(), b.workflow_id))
     });
@@ -676,11 +714,11 @@ pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChe
     }
     Ok(ChangeChecks {
         schema_version: HOST_QUERY_SCHEMA_VERSION,
-        repository: request.repository.as_str().to_owned(),
+        repository: request.repository.clone(),
         change: ChangeLabel {
             number: request.change.get(),
-            head_sha: head.to_owned(),
-            merged_at: request.merged_at.as_ref().map(|m| m.as_str().to_owned()),
+            head_sha: request.head.clone(),
+            merged_at: request.merged_at.clone(),
         },
         runs,
         cost: reader.cost(),
@@ -691,20 +729,20 @@ pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChe
 pub fn commit_runs(request: &CommitRunsRequest) -> HostQueryResult<CommitRuns> {
     let mut reader = Reader::new(&request.repository)?;
     let commit = match &request.commit {
-        CommitSelector::Commit(sha) => sha.as_str().to_owned(),
+        CommitSelector::Commit(sha) => sha.clone(),
         CommitSelector::Tag(tag) => tagged_commit(&mut reader, tag)?,
     };
-    let mut runs: Vec<(OffsetDateTime, Run)> = runs_at(&mut reader, &commit, None)?
+    let mut runs: Vec<Run> = runs_at(&mut reader, &commit, None)?
         .into_iter()
-        .filter(|(_, run)| request.events.is_empty() || request.events.contains(&run.event))
+        .filter(|run| request.events.is_empty() || request.events.contains(&run.event))
         .collect();
-    runs.sort_by_key(|(created, run)| (*created, run.id));
+    runs.sort_by_key(|run| (run.created_at.instant, run.id));
     Ok(CommitRuns {
         schema_version: HOST_QUERY_SCHEMA_VERSION,
-        repository: request.repository.as_str().to_owned(),
+        repository: request.repository.clone(),
         commit,
         events: request.events.clone(),
-        runs: runs.into_iter().map(|(_, run)| run).collect(),
+        runs,
         cost: reader.cost(),
     })
 }
@@ -715,7 +753,7 @@ pub fn run_jobs(request: &RunJobsRequest) -> HostQueryResult<RunJobs> {
     let jobs = latest_jobs(&mut reader, request.run.get())?;
     Ok(RunJobs {
         schema_version: HOST_QUERY_SCHEMA_VERSION,
-        repository: request.repository.as_str().to_owned(),
+        repository: request.repository.clone(),
         run_id: request.run.get(),
         jobs,
         cost: reader.cost(),
@@ -723,19 +761,18 @@ pub fn run_jobs(request: &RunJobsRequest) -> HostQueryResult<RunJobs> {
 }
 
 /// The commit a tag names, through its ref, every annotated tag dereferenced.
-fn tagged_commit(reader: &mut Reader, tag: &str) -> HostQueryResult<String> {
+fn tagged_commit(reader: &mut Reader, tag: &str) -> HostQueryResult<CommitSha> {
     let repo = reader.repository.clone();
-    let path = format!("repos/{repo}/git/ref/tags/{}", encode(tag));
-    let mut object = reader.get(&path, &format!("the tag {tag}"))?;
-    let mut at = path;
+    let mut at = format!("repos/{repo}/git/ref/tags/{}", encode(tag));
+    let mut object = reader.get(&at, &format!("the tag {tag}"))?;
     loop {
         let target = field(&object.body, "object", &at)?;
         let kind = string(target, "type", &at)?;
-        let sha = string(target, "sha", &at)?;
+        let sha = sha(target, "sha", &at)?;
         match kind.as_str() {
             "commit" => return Ok(sha),
             "tag" => {
-                at = format!("repos/{repo}/git/tags/{sha}");
+                at = format!("repos/{repo}/git/tags/{}", sha.as_str());
                 object = reader.get(&at, &format!("the annotated tag {tag}"))?;
             }
             other => {
@@ -747,55 +784,45 @@ fn tagged_commit(reader: &mut Reader, tag: &str) -> HostQueryResult<String> {
     }
 }
 
-/// Every run at a commit, whole, with the instant each was created — of one event
-/// where `event` names it, which GitHub filters before paging and the caller still
-/// checks on every run it keeps.
-fn runs_at(
-    reader: &mut Reader,
-    sha: &str,
-    event: Option<&str>,
-) -> HostQueryResult<Vec<(OffsetDateTime, Run)>> {
+/// Every run at a commit, whole — of one event where `event` names it, which GitHub
+/// filters before paging and the caller still checks on every run it keeps.
+fn runs_at(reader: &mut Reader, sha: &CommitSha, event: Option<&str>) -> HostQueryResult<Vec<Run>> {
     let repo = reader.repository.clone();
+    let sha = sha.as_str();
     let narrowed = event.map_or_else(String::new, |event| format!("&event={event}"));
-    let mut next = Some(format!(
-        "repos/{repo}/actions/runs?per_page={PER_PAGE}&head_sha={sha}{narrowed}"
-    ));
     let mut runs = Vec::new();
-    while let Some(path) = next {
-        let page = reader.get(&path, &format!("the workflow runs at {sha}"))?;
-        for entry in array(&page.body, "workflow_runs", &path)? {
-            let run = run(entry, &path)?;
-            runs.push((
-                instant(field(entry, "created_at", &path)?, "created_at", &path)?,
-                run,
-            ));
-        }
-        next = page.next;
-    }
+    reader.walk(
+        format!("repos/{repo}/actions/runs?per_page={PER_PAGE}&head_sha={sha}{narrowed}"),
+        &format!("the workflow runs at {sha}"),
+        |body, path| {
+            for entry in array(body, "workflow_runs", path)? {
+                runs.push(run(entry, path)?);
+            }
+            Ok(Paging::More)
+        },
+    )?;
     Ok(runs)
 }
 
 /// A run's latest attempt's jobs, whole, in GitHub's order.
 fn latest_jobs(reader: &mut Reader, run: u64) -> HostQueryResult<Vec<Job>> {
     let repo = reader.repository.clone();
-    let mut next = Some(format!(
-        "repos/{repo}/actions/runs/{run}/jobs?per_page={PER_PAGE}&filter=latest"
-    ));
     let mut jobs = Vec::new();
-    while let Some(path) = next {
-        let page = reader.get(&path, &format!("the workflow run {run}"))?;
-        for entry in array(&page.body, "jobs", &path)? {
-            jobs.push(job(entry, &path)?);
-        }
-        next = page.next;
-    }
+    reader.walk(
+        format!("repos/{repo}/actions/runs/{run}/jobs?per_page={PER_PAGE}&filter=latest"),
+        &format!("the workflow run {run}"),
+        |body, path| {
+            for entry in array(body, "jobs", path)? {
+                jobs.push(job(entry, path)?);
+            }
+            Ok(Paging::More)
+        },
+    )?;
     Ok(jobs)
 }
 
-// ---------------------------------------------------------------------------------
-// Reading GitHub's objects. A field this contract reads that a response lacks is a
-// failure naming it, never a default.
-// ---------------------------------------------------------------------------------
+// A field this contract reads that a response lacks is a failure naming it, never a
+// default: a defaulted field is how a plausible wrong figure starts.
 
 fn missing(name: &str, path: &str) -> HostQueryError {
     failed(format!("the response to {path} has no {name}"))
@@ -820,6 +847,38 @@ fn nullable(value: &Value, name: &str, path: &str) -> HostQueryResult<Option<Str
     }
 }
 
+fn parsed<T: FromStr>(value: &Value, name: &str, what: &str, path: &str) -> HostQueryResult<T> {
+    string(value, name, path)?
+        .parse()
+        .map_err(|_| missing(&format!("{name} {what}"), path))
+}
+
+fn nullable_parsed<T: FromStr>(
+    value: &Value,
+    name: &str,
+    what: &str,
+    path: &str,
+) -> HostQueryResult<Option<T>> {
+    nullable(value, name, path)?
+        .map(|text| {
+            text.parse()
+                .map_err(|_| missing(&format!("{name} {what}"), path))
+        })
+        .transpose()
+}
+
+fn sha(value: &Value, name: &str, path: &str) -> HostQueryResult<CommitSha> {
+    parsed(value, name, "commit", path)
+}
+
+fn timestamp(value: &Value, name: &str, path: &str) -> HostQueryResult<Timestamp> {
+    parsed(value, name, "timestamp", path)
+}
+
+fn nullable_timestamp(value: &Value, name: &str, path: &str) -> HostQueryResult<Option<Timestamp>> {
+    nullable_parsed(value, name, "timestamp", path)
+}
+
 fn integer(value: &Value, name: &str, path: &str) -> HostQueryResult<u64> {
     field(value, name, path)?
         .as_u64()
@@ -838,27 +897,20 @@ fn top_array<'a>(value: &'a Value, path: &str) -> HostQueryResult<&'a Vec<Value>
         .ok_or_else(|| failed(format!("the response to {path} is not a list")))
 }
 
-fn instant(value: &Value, name: &str, path: &str) -> HostQueryResult<OffsetDateTime> {
-    value
-        .as_str()
-        .and_then(|text| OffsetDateTime::parse(text, &Rfc3339).ok())
-        .ok_or_else(|| missing(&format!("{name} timestamp"), path))
-}
-
 fn run(value: &Value, path: &str) -> HostQueryResult<Run> {
     Ok(Run {
         id: integer(value, "id", path)?,
         workflow_id: integer(value, "workflow_id", path)?,
         workflow_name: string(value, "name", path)?,
         event: string(value, "event", path)?,
-        head_sha: string(value, "head_sha", path)?,
+        head_sha: sha(value, "head_sha", path)?,
         head_branch: nullable(value, "head_branch", path)?,
         run_attempt: integer(value, "run_attempt", path)?,
         status: string(value, "status", path)?,
         conclusion: nullable(value, "conclusion", path)?,
-        created_at: string(value, "created_at", path)?,
-        run_started_at: nullable(value, "run_started_at", path)?,
-        updated_at: string(value, "updated_at", path)?,
+        created_at: timestamp(value, "created_at", path)?,
+        run_started_at: nullable_timestamp(value, "run_started_at", path)?,
+        updated_at: timestamp(value, "updated_at", path)?,
     })
 }
 
@@ -883,9 +935,9 @@ fn job(value: &Value, path: &str) -> HostQueryResult<Job> {
         runner_name: nullable(value, "runner_name", path)?.filter(|name| !name.is_empty()),
         runner_os: runner_os(&labels),
         labels,
-        created_at: string(value, "created_at", path)?,
-        started_at: nullable(value, "started_at", path)?,
-        completed_at: nullable(value, "completed_at", path)?,
+        created_at: timestamp(value, "created_at", path)?,
+        started_at: nullable_timestamp(value, "started_at", path)?,
+        completed_at: nullable_timestamp(value, "completed_at", path)?,
     })
 }
 
@@ -911,10 +963,10 @@ fn change(value: &Value, path: &str) -> HostQueryResult<Change> {
         title: string(value, "title", path)?,
         state: string(value, "state", path)?,
         base_ref: string(field(value, "base", path)?, "ref", path)?,
-        head_sha: string(field(value, "head", path)?, "sha", path)?,
-        created_at: string(value, "created_at", path)?,
-        merged_at: nullable(value, "merged_at", path)?,
-        merge_commit_sha: nullable(value, "merge_commit_sha", path)?,
+        head_sha: sha(field(value, "head", path)?, "sha", path)?,
+        created_at: timestamp(value, "created_at", path)?,
+        merged_at: nullable_timestamp(value, "merged_at", path)?,
+        merge_commit_sha: nullable_parsed(value, "merge_commit_sha", "commit", path)?,
     })
 }
 
@@ -931,14 +983,16 @@ fn encode(text: &str) -> String {
     encoded
 }
 
-// ---------------------------------------------------------------------------------
-// The one way these queries reach GitHub.
-// ---------------------------------------------------------------------------------
-
 /// One page of a response: its JSON, and the next page's URL where `Link` names one.
 struct Page {
     body: Value,
     next: Option<String>,
+}
+
+/// Whether a listing's reader wants the next page.
+enum Paging {
+    More,
+    Done,
 }
 
 /// `gh api` under the caller's token, counting every request it makes.
@@ -967,13 +1021,31 @@ impl Reader {
         })
     }
 
-    /// What this reader has cost so far.
     fn cost(&self) -> QueryCost {
         QueryCost {
             graphql_points: 0,
             rest_requests: u32::try_from(self.requests.len()).unwrap_or(u32::MAX),
             requests: self.requests.clone(),
         }
+    }
+
+    /// Read a listing from `first`, handing each page to `visit` and following its
+    /// `Link` to the next until there is none or `visit` has what it needs.
+    fn walk(
+        &mut self,
+        first: String,
+        what: &str,
+        mut visit: impl FnMut(&Value, &str) -> HostQueryResult<Paging>,
+    ) -> HostQueryResult<()> {
+        let mut next = Some(first);
+        while let Some(request) = next {
+            let page = self.get(&request, what)?;
+            next = match visit(&page.body, &path_of(&request)?)? {
+                Paging::More => page.next,
+                Paging::Done => None,
+            };
+        }
+        Ok(())
     }
 
     /// Ask GitHub for one page: `request` is an API path, or a `Link` URL verbatim.
@@ -987,12 +1059,13 @@ impl Reader {
         )
         .map_err(|e| failed(format!("could not run gh for {path}: {e}")))?;
         let Some((status, headers, body)) = split_response(&answer.stdout) else {
+            let detail = answer.detail();
             return Err(failed(format!(
                 "gh failed for {path}: {}",
-                if answer.detail().is_empty() {
-                    "it wrote nothing".to_owned()
+                if detail.is_empty() {
+                    "it wrote nothing"
                 } else {
-                    answer.detail()
+                    &detail
                 }
             )));
         };
@@ -1024,24 +1097,19 @@ impl Reader {
 }
 
 /// The path and query string a request asks for: itself for an API path, and the
-/// URL's own for a followed `Link`.
+/// URL's own for a followed `Link`, which must point back at the API.
 fn path_of(request: &str) -> HostQueryResult<String> {
     if !request.contains("://") {
         return Ok(request.to_owned());
     }
-    let url = url::Url::parse(request)
-        .ok()
-        .filter(|url| url.scheme() == "https")
+    request
+        .strip_prefix(API_ORIGIN)
+        .map(str::to_owned)
         .ok_or_else(|| {
             failed(format!(
-                "GitHub named a next page that is not an https URL: {request}"
+                "GitHub named a next page outside {API_ORIGIN}, which is not followed: {request}"
             ))
-        })?;
-    let path = url.path().trim_start_matches('/');
-    Ok(match url.query() {
-        Some(query) => format!("{path}?{query}"),
-        None => path.to_owned(),
-    })
+        })
 }
 
 /// `gh api --include`'s output: the status line, the headers (names in lower case),

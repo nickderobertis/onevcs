@@ -14,7 +14,8 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
       },
       "tag": {
         "description": "The release's tag.",
@@ -22,7 +23,8 @@
       },
       "commit": {
         "description": "The commit the tag names.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
       },
       "previous_tag": {
         "description": "The tag the range starts after.",
@@ -30,7 +32,8 @@
       },
       "previous_commit": {
         "description": "The commit the previous tag names.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
       },
       "commits": {
         "description": "Every commit of the range, oldest first.",
@@ -69,7 +72,8 @@
         "properties": {
           "sha": {
             "description": "The commit.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
           },
           "change": {
             "description": "The merged pull request whose merge commit it is, or `null`.",
@@ -109,25 +113,29 @@
           },
           "head_sha": {
             "description": "Its last head commit, as GitHub reports it.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
           },
           "created_at": {
             "description": "When it was opened.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "merged_at": {
             "description": "When it merged.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "merge_commit_sha": {
             "description": "The commit its merge made.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "pattern": "^[0-9a-f]{40}$"
           }
         },
         "required": [
@@ -185,7 +193,8 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
       },
       "change": {
         "description": "The change request, as given.",
@@ -223,14 +232,16 @@
           },
           "head_sha": {
             "description": "Its head commit.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
           },
           "merged_at": {
             "description": "When it merged, or `null` when not given.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -264,7 +275,8 @@
           },
           "head_sha": {
             "description": "The commit it ran at.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
           },
           "head_branch": {
             "description": "The branch it ran on, where GitHub reports one.",
@@ -292,18 +304,21 @@
           },
           "created_at": {
             "description": "When it was created.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "run_started_at": {
             "description": "When its latest attempt started, where GitHub reports it.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "description": "When it was last updated.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "jobs": {
             "description": "Its latest attempt's jobs.",
@@ -394,21 +409,24 @@
           },
           "created_at": {
             "description": "When it was created.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "started_at": {
             "description": "When it started.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "completed_at": {
             "description": "When it completed.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [
@@ -488,11 +506,13 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
       },
       "commit": {
         "description": "The commit.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$"
       },
       "events": {
         "description": "The `--event` values given; `[]` for every event.",
@@ -548,7 +568,8 @@
           },
           "head_sha": {
             "description": "The commit it ran at.",
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
           },
           "head_branch": {
             "description": "The branch it ran on, where GitHub reports one.",
@@ -576,18 +597,21 @@
           },
           "created_at": {
             "description": "When it was created.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "run_started_at": {
             "description": "When its latest attempt started, where GitHub reports it.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "updated_at": {
             "description": "When it was last updated.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -648,7 +672,8 @@
       },
       "repository": {
         "description": "`OWNER/NAME`.",
-        "type": "string"
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
       },
       "run_id": {
         "description": "The run.",
@@ -744,21 +769,24 @@
           },
           "created_at": {
             "description": "When it was created.",
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "started_at": {
             "description": "When it started.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "completed_at": {
             "description": "When it completed.",
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           }
         },
         "required": [

@@ -6030,6 +6030,32 @@ beginning `ubuntu`/`linux`, `windows` or `macos` case-insensitively, else `null`
 (or `null`), `merge_commit_sha` (or `null`). No other field of GitHub's responses is
 reported.
 
+Every answer's keys, and every object's, in the order an answer writes them, with the
+fields that may be `null` — held to the generated schema by
+`tests/contract.rs::the_host_query_amendment_names_the_fields_the_schema_carries`:
+
+```json
+{
+  "release-changes": ["schema_version", "repository", "tag", "commit", "previous_tag", "previous_commit", "commits", "changes", "cost"],
+  "change-checks": ["schema_version", "repository", "change", "runs", "cost"],
+  "commit-runs": ["schema_version", "repository", "commit", "events", "runs", "cost"],
+  "run-jobs": ["schema_version", "repository", "run_id", "jobs", "cost"],
+  "run": ["id", "workflow_id", "workflow_name", "event", "head_sha", "head_branch", "run_attempt", "status", "conclusion", "created_at", "run_started_at", "updated_at"],
+  "job": ["id", "run_id", "run_attempt", "name", "workflow_name", "status", "conclusion", "runner_name", "runner_os", "labels", "created_at", "started_at", "completed_at"],
+  "change": ["number", "title", "state", "base_ref", "head_sha", "created_at", "merged_at", "merge_commit_sha"],
+  "commit": ["sha", "change"],
+  "change-label": ["number", "head_sha", "merged_at"],
+  "cost": ["graphql_points", "rest_requests", "requests"],
+  "nullable": {
+    "run": ["head_branch", "conclusion", "run_started_at"],
+    "job": ["conclusion", "runner_name", "runner_os", "started_at", "completed_at"],
+    "change": ["merged_at", "merge_commit_sha"],
+    "commit": ["change"],
+    "change-label": ["merged_at"]
+  }
+}
+```
+
 **`release-changes`** — the merged pull requests a release tag carries, in three reads in
 the common case.
 

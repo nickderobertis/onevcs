@@ -423,6 +423,12 @@ fn run_jobs_reports_every_latest_job_of_a_ci_run_as_recorded() {
         .find(|job| job["workflow_name"] == "CI" && job["name"] == "cross (windows-latest)")
         .expect("CI / cross (windows-latest) is reported");
     assert_eq!(cross["runner_os"], "Windows");
+    let mac = jobs
+        .iter()
+        .find(|job| job["name"] == "cross (macos-latest)")
+        .expect("CI / cross (macos-latest) is reported");
+    assert_eq!(mac["runner_os"], "macOS");
+    assert!(jobs.iter().any(|job| job["runner_os"] == "Linux"));
 }
 
 #[test]
@@ -992,6 +998,172 @@ fn closed_pull_requests_stop_paging_once_every_commit_is_mapped() {
         .expect("commits")
         .iter()
         .all(|c| c["change"].is_u64()));
+}
+
+#[test]
+fn every_listing_is_followed_through_its_links_to_the_same_answer() {
+    let whole = Replay::new("onepipeline-v0.72.0");
+    let paged = Replay::new("small-pages");
+    let strip = |mut answer: Value| {
+        answer.as_object_mut().expect("an answer").remove("cost");
+        answer
+    };
+
+    let (expected, _) = release_v0_72_0(&whole);
+    let (answer, served) = release_v0_72_0(&paged);
+    assert_eq!(
+        strip(answer),
+        strip(expected),
+        "the same release, read a page at a time"
+    );
+    let pulls: Vec<&String> = served.iter().filter(|r| r.contains("/pulls?")).collect();
+    assert_eq!(
+        pulls.len(),
+        4,
+        "paged until #914, on page 4, was mapped: {served:?}"
+    );
+    assert!(
+        pulls[1..].iter().all(|r| r.starts_with("repositories/")),
+        "each one a Link"
+    );
+
+    let head = "62631f7c3936c095c6973f5108e9265360466e84";
+    let args = [
+        "change-checks",
+        "--repo",
+        ONEPIPELINE,
+        "--change",
+        "914",
+        "--head",
+        head,
+        "--merged-at",
+        "2026-10-14T10:58:20Z",
+    ];
+    let (expected, _) = whole.answer(&args);
+    let (answer, served) = paged.answer(&args);
+    assert_eq!(
+        strip(answer),
+        strip(expected),
+        "the same runs, read two at a time"
+    );
+    assert_eq!(
+        served.len(),
+        3 + 5,
+        "three pages of runs, then each selected run's jobs"
+    );
+}
+
+#[test]
+fn a_lightweight_tag_names_its_commit_in_one_read() {
+    let replay = Replay::new("lightweight-tag");
+    let (answer, served) = replay.answer(&[
+        "commit-runs",
+        "--repo",
+        "nickderobertis/skilltest",
+        "--tag",
+        "v0.13.0",
+    ]);
+    let tag = recording("recorded-for-host-queries/skilltest-tag-v0.13.0.json");
+    assert_eq!(
+        tag["body"]["object"]["type"], "commit",
+        "the premise: no tag object"
+    );
+    assert_eq!(answer["commit"], tag["body"]["object"]["sha"]);
+    assert_eq!(served.len(), 2, "the ref, then the runs: {served:?}");
+    assert_eq!(answer["events"], serde_json::json!([]));
+    let recorded = recording("recorded-for-host-queries/skilltest-runs-at-b7d6cf9.json");
+    assert_eq!(
+        ids(&answer["runs"]).len(),
+        ids(&recorded["body"]["workflow_runs"]).len()
+    );
+}
+
+#[test]
+fn a_release_with_no_earlier_release_of_its_form_needs_its_previous_tag_named() {
+    // onejudge's tags moved from `v` to `onejudge-v`: the listing holds v0.17.2 after
+    // onejudge-v0.18.0, lower and published, but of another form.
+    let replay = Replay::new("prefix-change");
+    let releases = recording("recorded-for-host-queries/onejudge-releases.json");
+    let tags: Vec<&str> = releases["body"]
+        .as_array()
+        .expect("releases")
+        .iter()
+        .map(|r| r["tag_name"].as_str().expect("a tag"))
+        .collect();
+    let at = tags
+        .iter()
+        .position(|t| *t == "onejudge-v0.18.0")
+        .expect("recorded");
+    assert_eq!(tags[at + 1], "v0.17.2");
+    assert!(!tags[at + 1..].iter().any(|t| t.starts_with("onejudge-v")));
+    let stderr = replay.refusal(&[
+        "release-changes",
+        "--repo",
+        "nickderobertis/onejudge",
+        "--tag",
+        "onejudge-v0.18.0",
+    ]);
+    assert!(
+        stderr.contains("no published release before onejudge-v0.18.0"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--previous-tag"), "{stderr}");
+    assert_eq!(
+        replay.served(),
+        ["repos/nickderobertis/onejudge/releases?per_page=100"]
+    );
+}
+
+#[test]
+fn a_range_with_no_commit_exits_1_naming_the_comparison() {
+    let replay = Replay::new("empty-range");
+    let stderr = replay.refusal(&[
+        "release-changes",
+        "--repo",
+        ONEPIPELINE,
+        "--tag",
+        "v0.72.0",
+        "--previous-tag",
+        "v0.72.0",
+    ]);
+    assert!(
+        stderr.contains("the comparison v0.72.0...v0.72.0 lists no commit"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_response_missing_a_field_the_answer_reads_exits_1_naming_it() {
+    let replay = Replay::new("missing-field");
+    let stderr = replay.refusal(&["run-jobs", "--repo", ONEPIPELINE, "--run", "38795754984"]);
+    assert!(stderr.contains("has no jobs"), "{stderr}");
+    assert!(stderr.contains(&jobs_path(38_795_754_984)), "{stderr}");
+}
+
+#[test]
+fn a_gh_that_prints_something_other_than_a_response_exits_1() {
+    // `echo` is a real program that exits 0 and prints its arguments: output that is
+    // not an HTTP response, from a `gh` that claims success.
+    let replay = Replay::new("onepipeline-v0.72.0");
+    let output = replay
+        .command(&replay.dir.path().join("home"))
+        .env("ONEVCS_GH", "echo")
+        .env("GH_TOKEN", TOKEN)
+        .args([
+            "host",
+            "run-jobs",
+            "--repo",
+            ONEPIPELINE,
+            "--run",
+            "38795754984",
+        ])
+        .output()
+        .expect("ran");
+    let stderr = refused(&output);
+    assert!(
+        stderr.contains("gh failed") && stderr.contains("api --include"),
+        "{stderr}"
+    );
 }
 
 #[test]
