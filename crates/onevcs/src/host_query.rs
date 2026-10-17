@@ -1093,11 +1093,15 @@ impl Reader {
                 "GitHub answered {status} for {path}: {message}"
             )));
         }
-        // llmlint: ignore-block[changed_behavior_has_e2e] a success that is not JSON, and a
-        // `Link` that is malformed or leaves the API, are refusals no recorded GitHub
-        // response can reach — every endpoint read here answers JSON and links back to the
-        // API — and the criteria forbid a hand-written response. Each is refused rather
-        // than read as a shorter listing, which is what a silent end would report.
+        // llmlint: ignore-block[changed_behavior_has_e2e] a `gh` that exits non-zero after
+        // printing a success, a success that is not JSON, and a `Link` that is malformed or
+        // leaves the API are refusals no recorded GitHub response or real `gh` reaches —
+        // every endpoint read here answers JSON and links back to the API — and the
+        // criteria forbid a hand-written response. Each is refused rather than read as an
+        // answer or a shorter listing, which is what accepting it would report.
+        if answer.code != Some(0) {
+            return Err(failed(format!("gh failed for {path}: {}", answer.detail())));
+        }
         let body: Value = serde_json::from_str(body)
             .map_err(|e| failed(format!("the response to {path} is not JSON: {e}")))?;
         let next = match headers.get("link") {

@@ -1173,6 +1173,64 @@ fn a_tag_the_releases_listing_does_not_hold_exits_1_naming_it() {
 }
 
 #[test]
+fn a_comparison_spanning_two_linked_pages_is_read_whole() {
+    let replay = Replay::new("paged-comparison");
+    let (answer, served) = replay.answer(&[
+        "release-changes",
+        "--repo",
+        ONEPIPELINE,
+        "--tag",
+        "v0.73.0",
+        "--previous-tag",
+        "v0.72.0",
+    ]);
+    let pages = [
+        recording(
+            "recorded-for-host-queries/onepipeline-compare-v0.72.0-v0.73.0-per-page-1-page-1.json",
+        ),
+        recording(
+            "recorded-for-host-queries/onepipeline-compare-v0.72.0-v0.73.0-per-page-1-page-2.json",
+        ),
+    ];
+    assert_eq!(
+        served[1],
+        request_of(&pages[1]),
+        "the second page is the first's Link"
+    );
+    assert_eq!(served.len(), 3);
+    let shas: Vec<&Value> = pages
+        .iter()
+        .flat_map(|p| p["body"]["commits"].as_array().expect("commits"))
+        .map(|c| &c["sha"])
+        .collect();
+    assert_eq!(shas.len(), 2);
+    assert_eq!(
+        answer["commits"],
+        serde_json::json!([{"sha": shas[0], "change": 942}, {"sha": shas[1], "change": 925}])
+    );
+    assert_eq!(
+        &answer["commit"], shas[1],
+        "the range's last commit, from the last page"
+    );
+}
+
+#[test]
+fn a_self_hosted_jobs_os_is_its_first_label_naming_one_in_any_case() {
+    let replay = Replay::new("self-hosted-runner");
+    let (answer, _) = replay.answer(&["run-jobs", "--repo", "ziglang/zig", "--run", "37141763192"]);
+    let jobs = answer["jobs"].as_array().expect("jobs");
+    assert_eq!(jobs.len(), 2);
+    for job in jobs {
+        assert_eq!(
+            job["labels"],
+            serde_json::json!(["self-hosted", "Linux", "riscv64"])
+        );
+        assert_eq!(job["runner_os"], "Linux", "{job}");
+        assert_eq!(job["runner_name"], Value::Null, "no runner took it: {job}");
+    }
+}
+
+#[test]
 fn a_range_with_no_commit_exits_1_naming_the_comparison() {
     let replay = Replay::new("empty-range");
     let stderr = replay.refusal(&[

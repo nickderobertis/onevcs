@@ -1,0 +1,341 @@
+{
+ "body": {
+  "ahead_by": 2,
+  "base_commit": {
+   "author": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/19440155?v=4",
+    "events_url": "https://api.github.com/users/nickderobertis/events{/privacy}",
+    "followers_url": "https://api.github.com/users/nickderobertis/followers",
+    "following_url": "https://api.github.com/users/nickderobertis/following{/other_user}",
+    "gists_url": "https://api.github.com/users/nickderobertis/gists{/gist_id}",
+    "gravatar_id": "",
+    "html_url": "https://github.com/nickderobertis",
+    "id": 19440155,
+    "login": "nickderobertis",
+    "node_id": "MDQ6VXNlcjE5NDQwMTU1",
+    "organizations_url": "https://api.github.com/users/nickderobertis/orgs",
+    "received_events_url": "https://api.github.com/users/nickderobertis/received_events",
+    "repos_url": "https://api.github.com/users/nickderobertis/repos",
+    "site_admin": false,
+    "starred_url": "https://api.github.com/users/nickderobertis/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/nickderobertis/subscriptions",
+    "type": "User",
+    "url": "https://api.github.com/users/nickderobertis",
+    "user_view_type": "public"
+   },
+   "comments_url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b/comments",
+   "commit": {
+    "author": {
+     "date": "2026-10-14T22:42:57Z",
+     "email": "whoopnip@gmail.com",
+     "name": "Nick DeRobertis"
+    },
+    "comment_count": 0,
+    "committer": {
+     "date": "2026-10-14T22:42:57Z",
+     "email": "noreply@github.com",
+     "name": "GitHub"
+    },
+    "message": "chore: release v0.72.0 (#919)\n\n## \ud83e\udd16 New release\n\n* `onepipeline`: 0.71.1 -> 0.72.0 (\u26a0 API breaking changes)\n\n### \u26a0 `onepipeline` breaking changes\n\n```text\n--- failure constructible_struct_adds_field: struct exhaustively constructible through public API adds field ---\n\nDescription:\nA pub struct that could be exhaustively constructed with a literal using only public API has a new pub field, breaking existing exhaustive literals.\n        ref: https://doc.rust-lang.org/reference/expressions/struct-expr.html\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/constructible_struct_adds_field.ron\n\nFailed in:\n  field MatchFields.significance in /tmp/.tmpgCklQn/onepipeline/src/vocabulary.rs:264\n\n--- failure enum_variant_added: enum variant added on exhaustive enum ---\n\nDescription:\nA publicly-visible enum without #[non_exhaustive] has a new variant.\n        ref: https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_variant_added.ron\n\nFailed in:\n  variant WatchUntil:LandingProgress in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:1079\n  variant Command:Integrate in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:250\n```\n\n<details><summary><i><b>Changelog</b></i></summary><p>\n\n<blockquote>\n\n##\n[0.72.0](https://github.com/nickderobertis/onepipeline/compare/v0.71.1...v0.72.0)\n- 2026-10-14\n\n### Added\n\n- [**breaking**] supervise manager-started landings through flows\n([#914](https://github.com/nickderobertis/onepipeline/pull/914))\n</blockquote>\n\n\n</p></details>\n\n---\nThis PR was generated with\n[release-plz](https://github.com/release-plz/release-plz/).",
+    "tree": {
+     "sha": "23a8f579a9342cfe8eec20ea420946228cd16b58",
+     "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/trees/23a8f579a9342cfe8eec20ea420946228cd16b58"
+    },
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+    "verification": {
+     "payload": "tree 23a8f579a9342cfe8eec20ea420946228cd16b58\nparent dfde02c3832a6f4fc8bdeaa94477f2194a89cc96\nauthor Nick DeRobertis <whoopnip@gmail.com> 1792017777 -0600\ncommitter GitHub <noreply@github.com> 1792017777 +0000\n\nchore: release v0.72.0 (#919)\n\n## \ud83e\udd16 New release\n\n* `onepipeline`: 0.71.1 -> 0.72.0 (\u26a0 API breaking changes)\n\n### \u26a0 `onepipeline` breaking changes\n\n```text\n--- failure constructible_struct_adds_field: struct exhaustively constructible through public API adds field ---\n\nDescription:\nA pub struct that could be exhaustively constructed with a literal using only public API has a new pub field, breaking existing exhaustive literals.\n        ref: https://doc.rust-lang.org/reference/expressions/struct-expr.html\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/constructible_struct_adds_field.ron\n\nFailed in:\n  field MatchFields.significance in /tmp/.tmpgCklQn/onepipeline/src/vocabulary.rs:264\n\n--- failure enum_variant_added: enum variant added on exhaustive enum ---\n\nDescription:\nA publicly-visible enum without #[non_exhaustive] has a new variant.\n        ref: https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_variant_added.ron\n\nFailed in:\n  variant WatchUntil:LandingProgress in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:1079\n  variant Command:Integrate in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:250\n```\n\n<details><summary><i><b>Changelog</b></i></summary><p>\n\n<blockquote>\n\n##\n[0.72.0](https://github.com/nickderobertis/onepipeline/compare/v0.71.1...v0.72.0)\n- 2026-10-14\n\n### Added\n\n- [**breaking**] supervise manager-started landings through flows\n([#914](https://github.com/nickderobertis/onepipeline/pull/914))\n</blockquote>\n\n\n</p></details>\n\n---\nThis PR was generated with\n[release-plz](https://github.com/release-plz/release-plz/).",
+     "reason": "valid",
+     "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJq0AVxCRC1aQ7uu5UhlAAAirAQACW/v+IX4y+jvjXq205RvPLm\npzlFrtMcVlzfyzjF5ob7DJ1TRawvXBYDWUsTLqoefb8S3Kir6SkKxUJRoeCegl31\nzGMJiF4MYz9jLfva8Q+8/wHC5T+6wAMxTHe1pnfb1rBDnfkVFvGUK6fjT7IlQf7M\nUnvdoa/1T2frYV/33+0DS95CMCMWJieWTz53UveUMigPNKhu5WFxjA/018DUhTYz\nIeffu48g2GriSLgNBgaHTxU+PGomppuIXRkPgrwtfp10qr/2bDnf83tdxk2g5qfR\nZ01xGEEj66WfwHTo/iBnUNpjh+ADK8xWCCHGzc+lzXtuMJlJ8FFMTdCLa0A9VHfW\nNGnOQJEDiz1IvKEQ++AEI8i2Dkmo+ZVc2449SHUG57Nq4kk/bln0VewJkpKxKmmz\nCVm8mY7M5mDSvlSegsmDl3YYNs0PH28MrRBtxYTrr7Ft5pSPIkU0Q76PHd6YTaVE\nZ65msFoR7FbnI1ixh+IuG1Xj9FNpyStIu6ZtHI9Keu3ns8gFJxNnn4vTPsn0dnw/\nnf6IBjksj3ulrbJC77EQd5Kv3XzJWAvmb2PKmeuBGfYm6mifB452tbK19Fd9QNXF\nd+8WmKWngnY/S/Rl5g0gpll+ckaFmTjywPzIn7RecIRp6DmtKVuQThB+QfePx7O4\nNY2E5eaJ7QebI0D4sWgA\n=NJkF\n-----END PGP SIGNATURE-----\n",
+     "verified": true,
+     "verified_at": "2026-10-14T22:42:57Z"
+    }
+   },
+   "committer": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+    "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+    "followers_url": "https://api.github.com/users/web-flow/followers",
+    "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+    "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+    "gravatar_id": "",
+    "html_url": "https://github.com/web-flow",
+    "id": 19864447,
+    "login": "web-flow",
+    "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+    "organizations_url": "https://api.github.com/users/web-flow/orgs",
+    "received_events_url": "https://api.github.com/users/web-flow/received_events",
+    "repos_url": "https://api.github.com/users/web-flow/repos",
+    "site_admin": false,
+    "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+    "type": "User",
+    "url": "https://api.github.com/users/web-flow",
+    "user_view_type": "public"
+   },
+   "html_url": "https://github.com/nickderobertis/onepipeline/commit/d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+   "node_id": "C_kwDOTx8aUdoAKGQ4ZDY3NGYxZjBiNDZmZmY1ODA1NDBhYjcwMTM3ZWJjOTFlNmIxNWI",
+   "parents": [
+    {
+     "html_url": "https://github.com/nickderobertis/onepipeline/commit/dfde02c3832a6f4fc8bdeaa94477f2194a89cc96",
+     "sha": "dfde02c3832a6f4fc8bdeaa94477f2194a89cc96",
+     "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/dfde02c3832a6f4fc8bdeaa94477f2194a89cc96"
+    }
+   ],
+   "sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+   "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b"
+  },
+  "behind_by": 0,
+  "commits": [
+   {
+    "author": {
+     "avatar_url": "https://avatars.githubusercontent.com/u/19440155?v=4",
+     "events_url": "https://api.github.com/users/nickderobertis/events{/privacy}",
+     "followers_url": "https://api.github.com/users/nickderobertis/followers",
+     "following_url": "https://api.github.com/users/nickderobertis/following{/other_user}",
+     "gists_url": "https://api.github.com/users/nickderobertis/gists{/gist_id}",
+     "gravatar_id": "",
+     "html_url": "https://github.com/nickderobertis",
+     "id": 19440155,
+     "login": "nickderobertis",
+     "node_id": "MDQ6VXNlcjE5NDQwMTU1",
+     "organizations_url": "https://api.github.com/users/nickderobertis/orgs",
+     "received_events_url": "https://api.github.com/users/nickderobertis/received_events",
+     "repos_url": "https://api.github.com/users/nickderobertis/repos",
+     "site_admin": false,
+     "starred_url": "https://api.github.com/users/nickderobertis/starred{/owner}{/repo}",
+     "subscriptions_url": "https://api.github.com/users/nickderobertis/subscriptions",
+     "type": "User",
+     "url": "https://api.github.com/users/nickderobertis",
+     "user_view_type": "public"
+    },
+    "comments_url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/60d317d32bf17b5903e4079558fe90c08a345b8f/comments",
+    "commit": {
+     "author": {
+      "date": "2026-10-15T20:39:42Z",
+      "email": "whoopnip@gmail.com",
+      "name": "Nick DeRobertis"
+     },
+     "comment_count": 0,
+     "committer": {
+      "date": "2026-10-15T20:39:42Z",
+      "email": "noreply@github.com",
+      "name": "GitHub"
+     },
+     "message": "feat(deps)!: link the versioned project and document cache (#942)\n\n## What\n\nAdopt onetaskgraph 0.7.0 across the linked store family and matching\nCLI, bringing producer-side project and document caching. Extend the\nexisting engine integration journey to compare project-read results and\nrequests with caching enabled and disabled, retaining its write-back and\nrecovery coverage.\n\n## Why\n\nManagers need the same fresh, quota-saving store behavior in dispatched\ngraph work and the read API as in standalone board reads.\n\n## Additional info\n\nBreaking dependency update: public plan/store types expose the\nproducer\u2019s changed Project, Document, and VersionCoverage surface.\nExisting gh2 task versions require another read after the move to gh3.\nEngine reads remain unpinned and versions remain opaque; no engine-side\ncache or token translation is added.\n\nCo-authored-by: Nick DeRobertis <19440155+nickderobertis@users.noreply.github.com>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+     "tree": {
+      "sha": "b95653a8f34fd14377e84cc55d5046d3f74f3a6f",
+      "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/trees/b95653a8f34fd14377e84cc55d5046d3f74f3a6f"
+     },
+     "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/commits/60d317d32bf17b5903e4079558fe90c08a345b8f",
+     "verification": {
+      "payload": "tree b95653a8f34fd14377e84cc55d5046d3f74f3a6f\nparent d8d674f1f0b46fff580540ab70137ebc91e6b15b\nauthor Nick DeRobertis <whoopnip@gmail.com> 1792096782 -0600\ncommitter GitHub <noreply@github.com> 1792096782 -0600\n\nfeat(deps)!: link the versioned project and document cache (#942)\n\n## What\n\nAdopt onetaskgraph 0.7.0 across the linked store family and matching\nCLI, bringing producer-side project and document caching. Extend the\nexisting engine integration journey to compare project-read results and\nrequests with caching enabled and disabled, retaining its write-back and\nrecovery coverage.\n\n## Why\n\nManagers need the same fresh, quota-saving store behavior in dispatched\ngraph work and the read API as in standalone board reads.\n\n## Additional info\n\nBreaking dependency update: public plan/store types expose the\nproducer\u2019s changed Project, Document, and VersionCoverage surface.\nExisting gh2 task versions require another read after the move to gh3.\nEngine reads remain unpinned and versions remain opaque; no engine-side\ncache or token translation is added.\n\nCo-authored-by: Nick DeRobertis <19440155+nickderobertis@users.noreply.github.com>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+      "reason": "valid",
+      "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJq0ToOCRC1aQ7uu5UhlAAAhOMQAIwjCtMGFLfe0Ybv73IKAxGT\nwRhAnR5dci+bNsOmwlo9umQutfh2VMsXkGaialIlNumrO9euGkrtJ7rHXERuwn5h\nxC4/LhMLw7KQgFfLtAOhKR25lGwKDIe8FwfmXVUhyAxL/aWfB3M8aPgJPFseNkBu\nbZbtsHbvhSAv+rZehmrDfMEBYaBI7gFk2wip/nOjWK2af5sQ0IhB6iuqL3+cb+rk\n44lg2HvPHRxlTw2FS9THR1kJnn58tOxCiqj8/DjyriJtWg0hxrGdJn+3ywevG6LA\nZaVdFK9hnSHh0qn80Btj4GDPb8DBcD8vvd9fd7tBMwtoKPGHQqBGclMuUf5YXw8d\namCQUrc6mVtLyFc6Jtug9FfanMP5QlijOE8eEWt/YRoDWyV/SAzqAlUyZt+5jfIz\ne/273bz2YKdsb3RiOHZLYM8zXQaQcgiCdR2ucy14q8OfOZcCkHnJW75+21TcEDfi\noWROfMZcG03VHUMbiGj9rp9rz2mVbITJ+szslsmS1IWrwOsBBoA6Fm/DVxLE0RUP\nBCYkMxfFTbe54ftqp6ZR+EOPlSTdChiXFBFANn4yW9cY40VQ6Hev4dkQCwDsGgqM\nWnQPfU9WMfh0qL23YG0tO4wzvgMGOO/GzYRUC5n1KPMYzcOztWaJnNLT24v8H+/e\n136MPGR35tlO7J0OID3N\n=KGNi\n-----END PGP SIGNATURE-----\n",
+      "verified": true,
+      "verified_at": "2026-10-15T20:39:43Z"
+     }
+    },
+    "committer": {
+     "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+     "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+     "followers_url": "https://api.github.com/users/web-flow/followers",
+     "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+     "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+     "gravatar_id": "",
+     "html_url": "https://github.com/web-flow",
+     "id": 19864447,
+     "login": "web-flow",
+     "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+     "organizations_url": "https://api.github.com/users/web-flow/orgs",
+     "received_events_url": "https://api.github.com/users/web-flow/received_events",
+     "repos_url": "https://api.github.com/users/web-flow/repos",
+     "site_admin": false,
+     "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+     "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+     "type": "User",
+     "url": "https://api.github.com/users/web-flow",
+     "user_view_type": "public"
+    },
+    "html_url": "https://github.com/nickderobertis/onepipeline/commit/60d317d32bf17b5903e4079558fe90c08a345b8f",
+    "node_id": "C_kwDOTx8aUdoAKDYwZDMxN2QzMmJmMTdiNTkwM2U0MDc5NTU4ZmU5MGMwOGEzNDViOGY",
+    "parents": [
+     {
+      "html_url": "https://github.com/nickderobertis/onepipeline/commit/d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+      "sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+      "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b"
+     }
+    ],
+    "sha": "60d317d32bf17b5903e4079558fe90c08a345b8f",
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/60d317d32bf17b5903e4079558fe90c08a345b8f"
+   }
+  ],
+  "diff_url": "https://github.com/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0.diff",
+  "files": [
+   {
+    "additions": 6,
+    "blob_url": "https://github.com/nickderobertis/onepipeline/blob/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/CHANGELOG.md",
+    "changes": 6,
+    "contents_url": "https://api.github.com/repos/nickderobertis/onepipeline/contents/CHANGELOG.md?ref=f7c96dd7d1fb169f24da2d6b8296065ca0620c30",
+    "deletions": 0,
+    "filename": "CHANGELOG.md",
+    "patch": "@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0\n \n ## [Unreleased]\n \n+## [0.73.0](https://github.com/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0) - 2026-10-15\n+\n+### Added\n+\n+- *(deps)* [**breaking**] link the versioned project and document cache ([#942](https://github.com/nickderobertis/onepipeline/pull/942))\n+\n ## [0.72.0](https://github.com/nickderobertis/onepipeline/compare/v0.71.1...v0.72.0) - 2026-10-14\n \n ### Added",
+    "raw_url": "https://github.com/nickderobertis/onepipeline/raw/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/CHANGELOG.md",
+    "sha": "adb90416eba190093d0f39c71ea57b187e3c7f75",
+    "status": "modified"
+   },
+   {
+    "additions": 21,
+    "blob_url": "https://github.com/nickderobertis/onepipeline/blob/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/Cargo.lock",
+    "changes": 41,
+    "contents_url": "https://api.github.com/repos/nickderobertis/onepipeline/contents/Cargo.lock?ref=f7c96dd7d1fb169f24da2d6b8296065ca0620c30",
+    "deletions": 20,
+    "filename": "Cargo.lock",
+    "patch": "@@ -460,7 +460,7 @@ source = \"registry+https://github.com/rust-lang/crates.io-index\"\n checksum = \"39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb\"\n dependencies = [\n  \"libc\",\n- \"windows-sys 0.59.0\",\n+ \"windows-sys 0.61.2\",\n ]\n \n [[package]]\n@@ -1562,7 +1562,7 @@ dependencies = [\n \n [[package]]\n name = \"onepipeline\"\n-version = \"0.72.0\"\n+version = \"0.73.0\"\n dependencies = [\n  \"async-trait\",\n  \"clap\",\n@@ -1614,9 +1614,9 @@ dependencies = [\n \n [[package]]\n name = \"onetaskgraph-core\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"f8e591073da836bc7923f3596ca222449b0eb3e4e5318f100d32ff465aa23026\"\n+checksum = \"7b876477a477d4bb932792b77b736ca3993b161eea1d6dea1d1344a8b0c53bc4\"\n dependencies = [\n  \"async-trait\",\n  \"chrono\",\n@@ -1630,8 +1630,8 @@ dependencies = [\n  \"schemars\",\n  \"secrecy\",\n  \"serde\",\n+ \"serde-saphyr\",\n  \"serde_json\",\n- \"serde_norway\",\n  \"serde_path_to_error\",\n  \"sha2\",\n  \"thiserror 2.0.20\",\n@@ -1640,9 +1640,9 @@ dependencies = [\n \n [[package]]\n name = \"onetaskgraph-github-projects\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"bb61420d24736cae48d2730616dfe36dc54f35594f4049ff327ec500177a8608\"\n+checksum = \"e6aa69897868dcca01d8e6ff5e4b2599da099154c91b5732009f78957ca9679a\"\n dependencies = [\n  \"async-trait\",\n  \"chrono\",\n@@ -1658,9 +1658,9 @@ dependencies = [\n \n [[package]]\n name = \"onetaskgraph-in-memory\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"c9a932266f98275293793d3f16faeb756e72379f1bb4666bc0aa7626870d5643\"\n+checksum = \"8a1eba5026cfe6bb61fa99a9c940c286231216aa024a0cd4b5b6437a66fe2f03\"\n dependencies = [\n  \"async-trait\",\n  \"chrono\",\n@@ -1672,9 +1672,9 @@ dependencies = [\n \n [[package]]\n name = \"onetaskgraph-linear\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"7c47c81105de231d6bd99e978692100c4ed59b904a4408371a1da0aefbb93503\"\n+checksum = \"6f96de8a4f41612a5faedb245dd23fd7d4145ad1582a9c72501f2d696b92d835\"\n dependencies = [\n  \"async-trait\",\n  \"chrono\",\n@@ -1688,25 +1688,26 @@ dependencies = [\n \n [[package]]\n name = \"onetaskgraph-local-md\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"ed1f6ce4ab482cbd6c5e877e9666e879d4821e3dab5d8aa889cde3fa0a4f7fe4\"\n+checksum = \"c8c7c1591d252c614397814bd9d36b71cf31983cbc6ccec0444dcc4a958d02fb\"\n dependencies = [\n  \"async-trait\",\n  \"chrono\",\n  \"onetaskgraph-plugin-api\",\n  \"schemars\",\n  \"serde\",\n+ \"serde-saphyr\",\n  \"serde_json\",\n- \"serde_norway\",\n+ \"serde_path_to_error\",\n  \"windows-sys 0.61.2\",\n ]\n \n [[package]]\n name = \"onetaskgraph-plugin-api\"\n-version = \"0.6.0\"\n+version = \"0.7.0\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"5c7c22e8c199b941eae89f5223fe99dd4207faa6c6659a55891495baa6213dc6\"\n+checksum = \"a5e1f854c710048fc41889ab66e7841e304d7d0b9fe1dfbdf2587660be2cd36e\"\n dependencies = [\n  \"async-trait\",\n  \"base64 0.22.1\",\n@@ -2098,7 +2099,7 @@ dependencies = [\n  \"errno\",\n  \"libc\",\n  \"linux-raw-sys\",\n- \"windows-sys 0.59.0\",\n+ \"windows-sys 0.61.2\",\n ]\n \n [[package]]\n@@ -2155,7 +2156,7 @@ dependencies = [\n  \"security-framework\",\n  \"security-framework-sys\",\n  \"webpki-root-certs\",\n- \"windows-sys 0.59.0\",\n+ \"windows-sys 0.61.2\",\n ]\n \n [[package]]\n@@ -2557,7 +2558,7 @@ dependencies = [\n  \"getrandom 0.4.3\",\n  \"once_cell\",\n  \"rustix\",\n- \"windows-sys 0.59.0\",\n+ \"windows-sys 0.61.2\",\n ]\n \n [[package]]\n@@ -3123,7 +3124,7 @@ version = \"0.1.11\"\n source = \"registry+https://github.com/rust-lang/crates.io-index\"\n checksum = \"c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22\"\n dependencies = [\n- \"windows-sys 0.59.0\",\n+ \"windows-sys 0.61.2\",\n ]\n \n [[package]]",
+    "raw_url": "https://github.com/nickderobertis/onepipeline/raw/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/Cargo.lock",
+    "sha": "448478747f00f7c90dfebd3c8b35d2e47a7fca47",
+    "status": "modified"
+   },
+   {
+    "additions": 10,
+    "blob_url": "https://github.com/nickderobertis/onepipeline/blob/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/Cargo.toml",
+    "changes": 14,
+    "contents_url": "https://api.github.com/repos/nickderobertis/onepipeline/contents/Cargo.toml?ref=f7c96dd7d1fb169f24da2d6b8296065ca0620c30",
+    "deletions": 4,
+    "filename": "Cargo.toml",
+    "patch": "@@ -1004,18 +1004,24 @@ onevcs-testing = \"0.19.2\"\n # **0.6.0 carries comments across copies and adds per-source caches**. Engine\n # reads remain unpinned, including settlement write-back reads. The plugin API\n # adds public Task and Comment fields and CopyLink, making this a breaking link.\n+#\n+# **0.7.0 caches project and document reads**, adding version fields to the public\n+# Project and Document and `forward_edges` to VersionCoverage: breaking again. Its GitHub\n+# token moves from gh2 to gh3, which never orders a gh2 value, so a task version\n+# recorded before this release costs one more read and is never served from cache; the\n+# engine keeps versions opaque and translates nothing.\n # `justfile`'s `onetaskgraph-version` moves with this release.\n-onetaskgraph-core = \"=0.6.0\"\n-onetaskgraph-plugin-api = \"=0.6.0\"\n-onetaskgraph-local-md = \"=0.6.0\"\n+onetaskgraph-core = \"=0.7.0\"\n+onetaskgraph-plugin-api = \"=0.7.0\"\n+onetaskgraph-local-md = \"=0.7.0\"\n # Not engines: two crates both members use, pinned once so they build against one version.\n # `just engines-current` reads only the engines its script names.\n sha2 = \"0.10\"\n tokio = \"1\"\n \n [package]\n name = \"onepipeline\"\n-version = \"0.72.0\"\n+version = \"0.73.0\"\n edition = \"2021\"\n rust-version.workspace = true\n description = \"Execute a task DAG over oneagentgraph and onevcs, merging their event streams into one.\"",
+    "raw_url": "https://github.com/nickderobertis/onepipeline/raw/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/Cargo.toml",
+    "sha": "1ab7ac614fd6a4d518bdac6038220c387ce7667e",
+    "status": "modified"
+   },
+   {
+    "additions": 1,
+    "blob_url": "https://github.com/nickderobertis/onepipeline/blob/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/justfile",
+    "changes": 2,
+    "contents_url": "https://api.github.com/repos/nickderobertis/onepipeline/contents/justfile?ref=f7c96dd7d1fb169f24da2d6b8296065ca0620c30",
+    "deletions": 1,
+    "filename": "justfile",
+    "patch": "@@ -32,7 +32,7 @@ set positional-arguments := true\n # release into this clone's own build directory, never onto `PATH`, and\n # `tests/linked_engines.rs` fails if this line ever names a release other than the one\n # the lock links.\n-onetaskgraph-version := \"0.6.0\"\n+onetaskgraph-version := \"0.7.0\"\n onetaskgraph-root := justfile_directory() / \"target\" / \"tools\" / (\"onetaskgraph-\" + onetaskgraph-version)\n \n # The budget checker `budgets.yaml` is measured with (`just budgets`), installed at this",
+    "raw_url": "https://github.com/nickderobertis/onepipeline/raw/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/justfile",
+    "sha": "d022c3eb5b430cb7b4d5dd5123040a160997f914",
+    "status": "modified"
+   },
+   {
+    "additions": 36,
+    "blob_url": "https://github.com/nickderobertis/onepipeline/blob/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/tests%2Fe2e%2Fstore.rs",
+    "changes": 38,
+    "contents_url": "https://api.github.com/repos/nickderobertis/onepipeline/contents/tests%2Fe2e%2Fstore.rs?ref=f7c96dd7d1fb169f24da2d6b8296065ca0620c30",
+    "deletions": 2,
+    "filename": "tests/e2e/store.rs",
+    "patch": "@@ -4421,8 +4421,9 @@ fn assertions(source: &str) -> Vec<String> {\n }\n // llmlint: ignore-end[tests_mirror_real_usage]\n \n-/// Enabling the source cache changes neither unpinned plan reads nor settlement\n-/// projections, including a failed settlement followed by recovery.\n+/// Enabling the source cache changes neither unpinned plan reads \u2014 a project read by\n+/// `plan check` and by the launch \u2014 nor settlement projections, including a failed\n+/// settlement followed by recovery.\n #[test]\n fn a_cache_enabled_github_store_reads_and_writes_like_an_uncached_store() {\n     use crate::linear_writeback::{\n@@ -4451,6 +4452,38 @@ fn a_cache_enabled_github_store_reads_and_writes_like_an_uncached_store() {\n             \"sources:\\n  board:\\n    plugin: github-projects\\n    cache:\\n      enabled: {enabled}\\n      dir: cache\\n    config:\\n      owner: generic\\n      project_number: 1\\n      token_env: ONEPIPELINE_LOOPBACK_BOARD_TOKEN\\n      endpoint: {}/graphql\\n      status_mapping:\\n        todo: Todo\\n        queued: Queued\\n        in-progress: In Progress\\n        unknown: Needs Attention\\n        done: Done\\n        cancelled: Canceled\\n\",\n             served.url\n         )).expect(\"store configuration\");\n+        // One project read through the engine's own plan loader, twice: an unpinned read\n+        // is never answered from the cache, so the second costs what the first did.\n+        let project_reads: Vec<_> = (0..2)\n+            .map(|_| {\n+                let before = served.state()[\"requests\"]\n+                    .as_array()\n+                    .expect(\"requests\")\n+                    .len();\n+                let checked = from_the_launch_directory(\n+                    &world,\n+                    &launch,\n+                    &[\"plan\", \"check\", \"board:plan\", \"--json\"],\n+                )\n+                .output()\n+                .expect(\"plan check runs\");\n+                assert_eq!(\n+                    checked.status.code(),\n+                    Some(0),\n+                    \"{}\",\n+                    String::from_utf8_lossy(&checked.stderr)\n+                );\n+                let report: Value =\n+                    serde_json::from_slice(&checked.stdout).expect(\"plan check --json is JSON\");\n+                let state = served.state();\n+                let requests = state[\"requests\"].as_array().expect(\"requests\")[before..]\n+                    .iter()\n+                    .map(|request| request[\"query\"].clone())\n+                    .collect::<Vec<_>>();\n+                assert!(!requests.is_empty(), \"the project read reached the board\");\n+                (report, requests)\n+            })\n+            .collect();\n         let start =\n             from_the_launch_directory(&world, &launch, &[\"start\", \"board:plan\", \"--detach\"]);\n         world.run_on(start, \"start --detach\").exited(0);\n@@ -4563,6 +4596,7 @@ fn a_cache_enabled_github_store_reads_and_writes_like_an_uncached_store() {\n         assert_eq!(result[\"state\"], \"complete\", \"{result}\");\n         let state = served.state();\n         (\n+            project_reads,\n             state[\"issues\"].clone(),\n             state[\"requests\"].as_array().expect(\"requests\").len(),\n             costs,",
+    "raw_url": "https://github.com/nickderobertis/onepipeline/raw/f7c96dd7d1fb169f24da2d6b8296065ca0620c30/tests%2Fe2e%2Fstore.rs",
+    "sha": "bf519bbc659b3d52ddaba5715620c425326b5613",
+    "status": "modified"
+   }
+  ],
+  "html_url": "https://github.com/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0",
+  "merge_base_commit": {
+   "author": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/19440155?v=4",
+    "events_url": "https://api.github.com/users/nickderobertis/events{/privacy}",
+    "followers_url": "https://api.github.com/users/nickderobertis/followers",
+    "following_url": "https://api.github.com/users/nickderobertis/following{/other_user}",
+    "gists_url": "https://api.github.com/users/nickderobertis/gists{/gist_id}",
+    "gravatar_id": "",
+    "html_url": "https://github.com/nickderobertis",
+    "id": 19440155,
+    "login": "nickderobertis",
+    "node_id": "MDQ6VXNlcjE5NDQwMTU1",
+    "organizations_url": "https://api.github.com/users/nickderobertis/orgs",
+    "received_events_url": "https://api.github.com/users/nickderobertis/received_events",
+    "repos_url": "https://api.github.com/users/nickderobertis/repos",
+    "site_admin": false,
+    "starred_url": "https://api.github.com/users/nickderobertis/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/nickderobertis/subscriptions",
+    "type": "User",
+    "url": "https://api.github.com/users/nickderobertis",
+    "user_view_type": "public"
+   },
+   "comments_url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b/comments",
+   "commit": {
+    "author": {
+     "date": "2026-10-14T22:42:57Z",
+     "email": "whoopnip@gmail.com",
+     "name": "Nick DeRobertis"
+    },
+    "comment_count": 0,
+    "committer": {
+     "date": "2026-10-14T22:42:57Z",
+     "email": "noreply@github.com",
+     "name": "GitHub"
+    },
+    "message": "chore: release v0.72.0 (#919)\n\n## \ud83e\udd16 New release\n\n* `onepipeline`: 0.71.1 -> 0.72.0 (\u26a0 API breaking changes)\n\n### \u26a0 `onepipeline` breaking changes\n\n```text\n--- failure constructible_struct_adds_field: struct exhaustively constructible through public API adds field ---\n\nDescription:\nA pub struct that could be exhaustively constructed with a literal using only public API has a new pub field, breaking existing exhaustive literals.\n        ref: https://doc.rust-lang.org/reference/expressions/struct-expr.html\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/constructible_struct_adds_field.ron\n\nFailed in:\n  field MatchFields.significance in /tmp/.tmpgCklQn/onepipeline/src/vocabulary.rs:264\n\n--- failure enum_variant_added: enum variant added on exhaustive enum ---\n\nDescription:\nA publicly-visible enum without #[non_exhaustive] has a new variant.\n        ref: https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_variant_added.ron\n\nFailed in:\n  variant WatchUntil:LandingProgress in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:1079\n  variant Command:Integrate in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:250\n```\n\n<details><summary><i><b>Changelog</b></i></summary><p>\n\n<blockquote>\n\n##\n[0.72.0](https://github.com/nickderobertis/onepipeline/compare/v0.71.1...v0.72.0)\n- 2026-10-14\n\n### Added\n\n- [**breaking**] supervise manager-started landings through flows\n([#914](https://github.com/nickderobertis/onepipeline/pull/914))\n</blockquote>\n\n\n</p></details>\n\n---\nThis PR was generated with\n[release-plz](https://github.com/release-plz/release-plz/).",
+    "tree": {
+     "sha": "23a8f579a9342cfe8eec20ea420946228cd16b58",
+     "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/trees/23a8f579a9342cfe8eec20ea420946228cd16b58"
+    },
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+    "verification": {
+     "payload": "tree 23a8f579a9342cfe8eec20ea420946228cd16b58\nparent dfde02c3832a6f4fc8bdeaa94477f2194a89cc96\nauthor Nick DeRobertis <whoopnip@gmail.com> 1792017777 -0600\ncommitter GitHub <noreply@github.com> 1792017777 +0000\n\nchore: release v0.72.0 (#919)\n\n## \ud83e\udd16 New release\n\n* `onepipeline`: 0.71.1 -> 0.72.0 (\u26a0 API breaking changes)\n\n### \u26a0 `onepipeline` breaking changes\n\n```text\n--- failure constructible_struct_adds_field: struct exhaustively constructible through public API adds field ---\n\nDescription:\nA pub struct that could be exhaustively constructed with a literal using only public API has a new pub field, breaking existing exhaustive literals.\n        ref: https://doc.rust-lang.org/reference/expressions/struct-expr.html\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/constructible_struct_adds_field.ron\n\nFailed in:\n  field MatchFields.significance in /tmp/.tmpgCklQn/onepipeline/src/vocabulary.rs:264\n\n--- failure enum_variant_added: enum variant added on exhaustive enum ---\n\nDescription:\nA publicly-visible enum without #[non_exhaustive] has a new variant.\n        ref: https://doc.rust-lang.org/cargo/reference/semver.html#enum-variant-new\n       impl: https://github.com/obi1kenobi/cargo-semver-checks/tree/v0.51.0/src/lints/enum_variant_added.ron\n\nFailed in:\n  variant WatchUntil:LandingProgress in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:1079\n  variant Command:Integrate in /tmp/.tmpgCklQn/onepipeline/src/cli.rs:250\n```\n\n<details><summary><i><b>Changelog</b></i></summary><p>\n\n<blockquote>\n\n##\n[0.72.0](https://github.com/nickderobertis/onepipeline/compare/v0.71.1...v0.72.0)\n- 2026-10-14\n\n### Added\n\n- [**breaking**] supervise manager-started landings through flows\n([#914](https://github.com/nickderobertis/onepipeline/pull/914))\n</blockquote>\n\n\n</p></details>\n\n---\nThis PR was generated with\n[release-plz](https://github.com/release-plz/release-plz/).",
+     "reason": "valid",
+     "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJq0AVxCRC1aQ7uu5UhlAAAirAQACW/v+IX4y+jvjXq205RvPLm\npzlFrtMcVlzfyzjF5ob7DJ1TRawvXBYDWUsTLqoefb8S3Kir6SkKxUJRoeCegl31\nzGMJiF4MYz9jLfva8Q+8/wHC5T+6wAMxTHe1pnfb1rBDnfkVFvGUK6fjT7IlQf7M\nUnvdoa/1T2frYV/33+0DS95CMCMWJieWTz53UveUMigPNKhu5WFxjA/018DUhTYz\nIeffu48g2GriSLgNBgaHTxU+PGomppuIXRkPgrwtfp10qr/2bDnf83tdxk2g5qfR\nZ01xGEEj66WfwHTo/iBnUNpjh+ADK8xWCCHGzc+lzXtuMJlJ8FFMTdCLa0A9VHfW\nNGnOQJEDiz1IvKEQ++AEI8i2Dkmo+ZVc2449SHUG57Nq4kk/bln0VewJkpKxKmmz\nCVm8mY7M5mDSvlSegsmDl3YYNs0PH28MrRBtxYTrr7Ft5pSPIkU0Q76PHd6YTaVE\nZ65msFoR7FbnI1ixh+IuG1Xj9FNpyStIu6ZtHI9Keu3ns8gFJxNnn4vTPsn0dnw/\nnf6IBjksj3ulrbJC77EQd5Kv3XzJWAvmb2PKmeuBGfYm6mifB452tbK19Fd9QNXF\nd+8WmKWngnY/S/Rl5g0gpll+ckaFmTjywPzIn7RecIRp6DmtKVuQThB+QfePx7O4\nNY2E5eaJ7QebI0D4sWgA\n=NJkF\n-----END PGP SIGNATURE-----\n",
+     "verified": true,
+     "verified_at": "2026-10-14T22:42:57Z"
+    }
+   },
+   "committer": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+    "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+    "followers_url": "https://api.github.com/users/web-flow/followers",
+    "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+    "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+    "gravatar_id": "",
+    "html_url": "https://github.com/web-flow",
+    "id": 19864447,
+    "login": "web-flow",
+    "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+    "organizations_url": "https://api.github.com/users/web-flow/orgs",
+    "received_events_url": "https://api.github.com/users/web-flow/received_events",
+    "repos_url": "https://api.github.com/users/web-flow/repos",
+    "site_admin": false,
+    "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+    "type": "User",
+    "url": "https://api.github.com/users/web-flow",
+    "user_view_type": "public"
+   },
+   "html_url": "https://github.com/nickderobertis/onepipeline/commit/d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+   "node_id": "C_kwDOTx8aUdoAKGQ4ZDY3NGYxZjBiNDZmZmY1ODA1NDBhYjcwMTM3ZWJjOTFlNmIxNWI",
+   "parents": [
+    {
+     "html_url": "https://github.com/nickderobertis/onepipeline/commit/dfde02c3832a6f4fc8bdeaa94477f2194a89cc96",
+     "sha": "dfde02c3832a6f4fc8bdeaa94477f2194a89cc96",
+     "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/dfde02c3832a6f4fc8bdeaa94477f2194a89cc96"
+    }
+   ],
+   "sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+   "url": "https://api.github.com/repos/nickderobertis/onepipeline/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b"
+  },
+  "patch_url": "https://github.com/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0.patch",
+  "permalink_url": "https://github.com/nickderobertis/onepipeline/compare/nickderobertis:d8d674f...nickderobertis:f7c96dd",
+  "status": "ahead",
+  "total_commits": 2,
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:45:07 GMT",
+  "etag": "W/\"6b78f88f59f8de575e9ae2ea194023c3bf482a6b154c3f2614f56389a4dbbf39\"",
+  "last-modified": "Thu, 15 Oct 2026 22:10:58 GMT",
+  "link": "<https://api.github.com/repositories/1327438417/compare/v0.72.0...v0.73.0?per_page=1&page=2>; rel=\"last\", <https://api.github.com/repositories/1327438417/compare/v0.72.0...v0.73.0?per_page=1&page=2>; rel=\"next\", <https://api.github.com/repositories/1327438417/compare/v0.72.0...v0.73.0?per_page=1&page=1>; rel=\"first\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4368",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "632"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0?per_page=1"
+ },
+ "status": 200
+}
