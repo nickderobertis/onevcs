@@ -1,0 +1,79 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/check-runs/112670758618",
+    "completed_at": "2026-10-08T06:56:03Z",
+    "conclusion": "cancelled",
+    "created_at": "2026-10-07T06:56:02Z",
+    "head_branch": "main",
+    "head_sha": "e9076aa57c37811872990a446a5bda0617aa4bf6",
+    "html_url": "https://github.com/MinecraftJack64/Karel-Survival/actions/runs/37584281959/job/112670758618",
+    "id": 112670758618,
+    "labels": [
+     "ubuntu-latest",
+     "windows-latest"
+    ],
+    "name": "build",
+    "node_id": "CR_kwDOOlh6Zc8AAAAaO7NW2g",
+    "run_attempt": 1,
+    "run_id": 37584281959,
+    "run_url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/actions/runs/37584281959",
+    "runner_group_id": 0,
+    "runner_group_name": "",
+    "runner_id": 0,
+    "runner_name": "",
+    "started_at": "2026-10-07T06:56:02Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/actions/jobs/112670758618",
+    "workflow_name": "Java CI with Gradle"
+   },
+   {
+    "check_run_url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/check-runs/112670758764",
+    "completed_at": "2026-10-08T06:56:03Z",
+    "conclusion": "cancelled",
+    "created_at": "2026-10-07T06:56:02Z",
+    "head_branch": "main",
+    "head_sha": "e9076aa57c37811872990a446a5bda0617aa4bf6",
+    "html_url": "https://github.com/MinecraftJack64/Karel-Survival/actions/runs/37584281959/job/112670758764",
+    "id": 112670758764,
+    "labels": [
+     "ubuntu-latest",
+     "windows-latest"
+    ],
+    "name": "dependency-submission",
+    "node_id": "CR_kwDOOlh6Zc8AAAAaO7NXbA",
+    "run_attempt": 1,
+    "run_id": 37584281959,
+    "run_url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/actions/runs/37584281959",
+    "runner_group_id": 0,
+    "runner_group_name": "",
+    "runner_id": 0,
+    "runner_name": "",
+    "started_at": "2026-10-07T06:56:02Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/actions/jobs/112670758764",
+    "workflow_name": "Java CI with Gradle"
+   }
+  ],
+  "total_count": 2
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 22:47:44 GMT",
+  "etag": "W/\"9e691b8e8aca4b874292d38fbd89a460469d5c471867d940d6858fcac46e1976\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "3761",
+  "x-ratelimit-reset": "1792278361",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "1239"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/MinecraftJack64/Karel-Survival/actions/runs/37584281959/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

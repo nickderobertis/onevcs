@@ -797,6 +797,41 @@ fn commit_runs_at_v0_72_0_reports_exactly_its_push_and_release_runs() {
 }
 
 #[test]
+fn a_commit_given_in_upper_case_is_asked_for_and_answered_in_lower_case() {
+    let replay = Replay::new("onepipeline-v0.72.0");
+    let upper = RELEASE_COMMIT.to_ascii_uppercase();
+    let (answer, served) =
+        replay.answer(&["commit-runs", "--repo", ONEPIPELINE, "--commit", &upper]);
+    assert_eq!(served, [runs_path(RELEASE_COMMIT)]);
+    assert_eq!(answer["commit"], RELEASE_COMMIT);
+
+    let pulls = recording("recorded-for-host-queries/onepipeline-pulls-closed-page-1.json");
+    let pull = pulls["body"]
+        .as_array()
+        .expect("pull requests")
+        .iter()
+        .find(|pull| pull["number"] == 914)
+        .expect("#914 is recorded");
+    let head = pull["head"]["sha"].as_str().expect("a head");
+    let merged = pull["merged_at"].as_str().expect("merged");
+    let upper = head.to_ascii_uppercase();
+    let (answer, served) = replay.answer(&[
+        "change-checks",
+        "--repo",
+        ONEPIPELINE,
+        "--change",
+        "914",
+        "--head",
+        &upper,
+        "--merged-at",
+        merged,
+    ]);
+    assert_eq!(served[0], pull_request_runs_path(head));
+    assert_eq!(answer["change"]["head_sha"], head);
+    assert_eq!(ids(&answer["runs"]), SELECTED[0].1);
+}
+
+#[test]
 fn the_v0_72_0_release_and_its_pull_requests_cost_27_requests() {
     // The read shape the figures script makes per release, priced from the
     // recordings: release-changes, commit-runs at the release commit, the jobs of each
@@ -1239,6 +1274,30 @@ fn a_self_hosted_jobs_os_is_its_first_label_naming_one_in_any_case() {
 }
 
 #[test]
+fn a_job_whose_labels_name_two_systems_runs_on_the_first_one() {
+    let replay = Replay::new("competing-os-labels");
+    let (answer, served) = replay.answer(&[
+        "run-jobs",
+        "--repo",
+        "MinecraftJack64/Karel-Survival",
+        "--run",
+        "37584281959",
+    ]);
+    assert_eq!(served.len(), 1);
+    let jobs = answer["jobs"].as_array().expect("jobs");
+    assert_eq!(jobs.len(), 2);
+    for job in jobs {
+        assert_eq!(
+            job["labels"],
+            serde_json::json!(["ubuntu-latest", "windows-latest"])
+        );
+        assert_eq!(job["runner_os"], "Linux", "the first label decides: {job}");
+        assert_eq!(job["runner_name"], Value::Null, "no runner took it: {job}");
+        assert_eq!(job["conclusion"], "cancelled", "{job}");
+    }
+}
+
+#[test]
 fn a_range_with_no_commit_exits_1_naming_the_comparison() {
     let replay = Replay::new("empty-range");
     let stderr = replay.refusal(&[
@@ -1326,6 +1385,50 @@ fn a_commit_no_pull_request_merged_answers_a_null_change() {
         "every other commit is a merged pull request's: {commits:?}"
     );
     assert_eq!(answer["changes"].as_array().expect("changes").len(), 5);
+}
+
+#[test]
+fn closed_pull_requests_stop_paging_once_past_the_previous_tags_commit() {
+    let replay = Replay::new("cutoff-before-every-commit-is-mapped");
+    let page =
+        recording("recorded-for-host-queries/skilltest-pulls-closed-per-page-12-page-1.json");
+    assert!(
+        page["headers"]["link"]
+            .as_str()
+            .expect("a Link header")
+            .contains("rel=\"next\""),
+        "the page the paging stops at links another"
+    );
+    let (answer, served) = replay.answer(&[
+        "release-changes",
+        "--repo",
+        "nickderobertis/skilltest",
+        "--tag",
+        "v0.13.0",
+        "--previous-tag",
+        "v0.12.2",
+    ]);
+    assert_eq!(
+        served,
+        [
+            "repos/nickderobertis/skilltest/compare/v0.12.2...v0.13.0?per_page=100",
+            "repos/nickderobertis/skilltest/pulls?state=closed&sort=updated&direction=desc&per_page=100",
+        ],
+        "the next page is never asked for"
+    );
+    let commits = answer["commits"].as_array().expect("commits");
+    assert_eq!(commits.len(), 6);
+    assert!(
+        commits.last().expect("a last commit")["change"].is_null(),
+        "the commit with no pull request is still unmapped when the paging stops"
+    );
+    assert_eq!(
+        commits[..5]
+            .iter()
+            .map(|c| c["change"].as_u64().expect("a change"))
+            .collect::<Vec<_>>(),
+        [75, 79, 82, 85, 86]
+    );
 }
 
 #[test]
@@ -1506,9 +1609,20 @@ fn the_token_is_github_token_else_gh_token_and_neither_asks_nothing() {
         .args(run)
         .assert()
         .success();
+    replay
+        .command(&home)
+        .env("GITHUB_TOKEN", "")
+        .env("GH_TOKEN", "gh-token-beside-an-empty-github-token")
+        .args(run)
+        .assert()
+        .success();
     assert_eq!(
         replay.lines("tokens"),
-        ["from-github-token", "only-gh-token"]
+        [
+            "from-github-token",
+            "only-gh-token",
+            "gh-token-beside-an-empty-github-token"
+        ]
     );
 }
 

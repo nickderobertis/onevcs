@@ -1,0 +1,13 @@
+{
+  "about": "skilltest's v0.13.0 range, whose last commit has no pull request, beside its closed pull requests recorded at twelve a page: the first page ends on #68, updated before v0.12.2's commit, and still links a next page, so only the previous tag's time stops the paging there.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/skilltest-compare-v0.12.2-v0.13.0.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/skilltest-pulls-closed-per-page-12-page-1.json",
+      "for": "repos/nickderobertis/skilltest/pulls?state=closed&sort=updated&direction=desc&per_page=100",
+      "why": "a page that passes the previous tag's commit with a commit still unmapped and a next page linked"
+    }
+  ]
+}
