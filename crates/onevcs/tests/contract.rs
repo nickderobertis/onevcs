@@ -3893,6 +3893,54 @@ fn the_host_query_amendment_names_the_fields_the_schema_carries() {
 }
 
 #[test]
+fn the_readme_spells_the_host_queries_as_the_amendment_does() {
+    // The README's tour of `onevcs host` restates the amendment's command lines, its
+    // token order and permissions, its replay seam and its exit statuses. The
+    // amendment's usage block is held to the parser by `documented_commands`; this
+    // holds the README's copy to the amendment. The README leaves out `[--json]`,
+    // which changes nothing, and wraps its prose, so both are compared folded.
+    let fold = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let readme = repo_file("README.md");
+    let lines = |usage: &str| -> Vec<String> {
+        usage
+            .lines()
+            .map(|line| fold(&line.replace(" [--json]", "")))
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
+    let usage_of = |doc: &str, whose: &str| -> String {
+        usage_in(doc)
+            .into_iter()
+            .find(|block| block.contains("onevcs host release-changes"))
+            .unwrap_or_else(|| panic!("{whose} spells the host queries' usage"))
+    };
+    assert_eq!(
+        lines(&usage_of(&readme, "the README")),
+        lines(&usage_of(&regions().0, "the amendment")),
+        "README.md and docs/contract.md spell the host queries differently"
+    );
+    let (readme, amendment) = (fold(&readme), fold(&regions().0));
+    for stated in [
+        "The token is `GITHUB_TOKEN`, else `GH_TOKEN`",
+        "`actions: read`, `contents: read`",
+        "`pull-requests: read`",
+        "`ONEVCS_GH`",
+        "gh api --include",
+    ] {
+        assert!(
+            readme.contains(stated) && amendment.contains(stated),
+            "README.md and docs/contract.md must both state {stated:?} about the host queries"
+        );
+    }
+    assert!(
+        amendment.contains("**Exit status.** `0` answered. `2` an invalid invocation")
+            && amendment.contains("`1` everything else, with stdout empty and one line on stderr naming the reason and the API path")
+            && readme.contains("Exit `0` is an answer, `2` an invalid invocation, and `1` anything else, with one line on stderr naming the reason and the API path"),
+        "README.md and docs/contract.md disagree about what the host queries exit with"
+    );
+}
+
+#[test]
 fn the_host_query_amendment_declares_the_operations_the_verbs_render() {
     use onevcs::host_query::*;
     let _: fn(&ReleaseChangesRequest) -> HostQueryResult<ReleaseChanges> = release_changes;
