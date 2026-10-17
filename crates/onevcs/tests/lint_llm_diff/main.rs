@@ -223,13 +223,11 @@ impl Reported {
         self.says(&format!("lint-llm-diff: judging against base {base}"))
     }
 
-    /// Nx replayed the task rather than running it.
     #[track_caller]
     fn replayed(&self) -> &Self {
         self.says(NX_REPLAYED).says(NX_ONE_HIT)
     }
 
-    /// Nx ran the task rather than replaying it.
     #[track_caller]
     fn ran(&self) -> &Self {
         self.silent_about(NX_REPLAYED).silent_about(NX_ONE_HIT)
@@ -373,6 +371,25 @@ fn a_first_pass_is_judged_and_an_unchanged_tree_base_and_judge_replay_it() {
         1,
         "no new judge call: {replayed}"
     );
+}
+
+#[test]
+fn skip_nx_cache_after_the_base_re_judges_a_cached_pass() {
+    let checkout = Checkout::new();
+    let judged = checkout.lint(&checkout.first, &[], "pass");
+    judged.succeeded().ran();
+    checkout
+        .lint(&checkout.first, &[], "pass")
+        .succeeded()
+        .replayed();
+    assert_eq!(checkout.judge_calls().len(), 1);
+
+    let rejudged = checkout.lint(&checkout.first, &["--skip-nx-cache"], "fail");
+    rejudged
+        .failed()
+        .ran()
+        .says(&format!("{CHANGED}:1: stand-in finding"));
+    assert_eq!(checkout.judge_calls().len(), 2, "judged again: {rejudged}");
 }
 
 #[test]
