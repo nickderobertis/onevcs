@@ -1565,6 +1565,30 @@ branch. `rules apply` is strict where `policy::load` is lenient — it refuses a
 types do not read back — because a misspelt key an operator believes is installed is
 worse than a refusal.
 
+## `onevcs host` asks GitHub and nothing else
+
+`host_query.rs` is `onevcs host release-changes|change-checks|commit-runs|run-jobs|schema`,
+the read-only queries a CI/CD time budget makes; the amendment in `docs/contract.md` is the
+surface, and other repositories' budget nodes name its command lines. Four things are easy
+to undo.
+
+- **No state root, no registry, no `Hosting`.** The repository is the caller's
+  `OWNER/NAME` and the host is `gh` through `gh::attempt_with_env`. A query that resolved an
+  identity would migrate a CI job's registry on contact; `the_queries_leave_the_state_root_exactly_as_they_found_it`
+  holds every file byte for byte.
+- **`Reader::get` is the only request, and it records itself first**, so `cost.requests` is
+  every request made. The journeys hold it equal to what the replay served *and* to fixed
+  totals (27 for v0.72.0, 6 + 2 per pull request for the new shape): a new read moves both.
+- **The selection rules are the product.** Latest `pull_request` run per `workflow_id`
+  created at or before the merge; `filter=latest` jobs; annotated tags dereferenced; closed
+  pull requests paged until every commit is mapped or the page passes the previous tag's
+  commit. Each rule has a journey that fails when it is broken.
+- **The fixtures are real responses, scrubbed.** `tests/fixtures/host-queries/` holds
+  GitHub's own recordings, served by sidecar; one is assembled, by leaving runs out, and
+  says so. Record a missing response read-only with `gh api --include --method GET` from a
+  public repository and run `onevcs boundary check --destination public` over it before
+  committing — a private name in a commit message is what the first scrub removed.
+
 ## Everything durable lives under one state root
 
 `ONEVCS_HOME` (otherwise `~/.onevcs`) holds the registry document, the advisory
