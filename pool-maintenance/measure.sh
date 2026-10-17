@@ -105,9 +105,10 @@ touched="$(node -e '
   const d = new Date(Number(process.argv[1]) * 1000);
   const p = (n) => String(n).padStart(2, "0");
   console.log(`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}.${p(d.getSeconds())}`);
-' "$stamp")"
+' "$stamp")" || fail "could not turn $stamp into a touch timestamp" "run 'node --version' in $root to check node runs, then retry"
 while IFS= read -r entry; do
-  find "$profile/$entry" -exec touch -h -t "$touched" {} +
+  find "$profile/$entry" -exec touch -h -t "$touched" {} + \
+    || fail "could not backdate $profile/$entry to $touched" "check that $profile/$entry is writable and nothing else is building in $root, then retry"
 done <"$records/alternative.txt"
 
 # (c) The ordinary gate test build: the one each unit's newest build comes from.
