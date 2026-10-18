@@ -498,6 +498,9 @@ fn bounded(
     detach_process_group(&mut command);
 
     let mut child = command.spawn().map_err(unspawnable)?;
+    // Only a run its caller can stop is adopted: that is the run whose descendants are
+    // owed an end it chose, rather than the one a fired bound gives them.
+    let tree = stop.map(|_| Tree::adopt(&child));
 
     // Bytes are handed over as they are read, rather than only at EOF. The child's
     // exit is the lifetime signal; end of stream only lets a reader retire early —
@@ -513,7 +516,7 @@ fn bounded(
     let collected = match wait_for_exit(&mut child, started, bound, &endings, stop) {
         Waited::Exited(collected) => collected,
         Waited::Stopped => {
-            end_stopped(&mut child);
+            end_stopped(&mut child, tree.as_ref());
             let out = out_reader.finish();
             let err = err_reader.finish();
             return Ok(Ran {
@@ -1302,19 +1305,149 @@ pub(crate) fn terminate_group(child: &Child) {
     }
 }
 
-/// End a command its caller stopped: every process in its own group, as
-/// [`terminate_group`] does, and then the command itself, collected.
+/// End a command its caller stopped, and every process it started, collected.
 ///
 /// What a caller that stopped a command on purpose is owed: when this returns, no
 /// process the command started — a hook's own descendants included — is still
-/// running, which on Unix is waited for rather than assumed. A platform with no group
-/// teardown ends the command alone, exactly as a fired bound does there.
-fn end_stopped(child: &mut Child) {
-    terminate_group(child);
+/// running, and that is waited for rather than assumed. On Unix the tree is the
+/// command's own process group; on Windows it is the job [`Tree::adopt`] put it in.
+fn end_stopped(child: &mut Child, tree: Option<&Tree>) {
+    #[cfg(unix)]
+    {
+        let _ = tree;
+        terminate_group(child);
+    }
+    #[cfg(windows)]
+    if let Some(tree) = tree {
+        tree.terminate();
+    }
     let _ = child.kill();
     let _ = child.wait();
     #[cfg(unix)]
     await_group_empty(child.id());
+    #[cfg(windows)]
+    if let Some(tree) = tree {
+        tree.await_empty();
+    }
+}
+
+/// The processes a stoppable command starts, as a handle that can end them all.
+///
+/// On Unix that handle is the process group [`detach_process_group`] already gave the
+/// command, so there is nothing more to hold.
+#[cfg(unix)]
+struct Tree;
+
+#[cfg(unix)]
+impl Tree {
+    fn adopt(_child: &Child) -> Self {
+        Tree
+    }
+}
+
+/// The processes a stoppable command starts, as a handle that can end them all.
+///
+/// Windows has no process group to signal, so the command is put in a job object of
+/// its own the moment it is spawned, and every process it starts afterwards — git's
+/// hook, and that hook's descendants — is born into the same job. Terminating the job
+/// ends all of them. A command that could not be put in one (an older Windows that
+/// refuses a nested job) holds `None`, and is ended alone, as a fired bound ends it.
+///
+/// The command runs for the instant between its spawn and its adoption; nothing git
+/// starts on a push is started before it has reached the remote, so a hook is never
+/// born outside the job.
+#[cfg(windows)]
+struct Tree(Option<windows_sys::Win32::Foundation::HANDLE>);
+
+#[cfg(windows)]
+impl Tree {
+    fn adopt(child: &Child) -> Self {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        // SAFETY: an anonymous job with default security, and the handle of a child
+        // this process spawned and still owns. A job that cannot be assigned is
+        // closed before it is dropped.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Tree(None);
+            }
+            if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
+                CloseHandle(job);
+                return Tree(None);
+            }
+            Tree(Some(job))
+        }
+    }
+
+    fn terminate(&self) {
+        if let Some(job) = self.0 {
+            // SAFETY: a job handle this value owns and has not closed.
+            unsafe {
+                windows_sys::Win32::System::JobObjects::TerminateJobObject(job, 1);
+            }
+        }
+    }
+
+    /// Wait until the job has no live process left, for at most [`REAP_BOUND`].
+    fn await_empty(&self) {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+        let Some(job) = self.0 else {
+            return;
+        };
+        let deadline = Instant::now() + REAP_BOUND;
+        loop {
+            // SAFETY: a job handle this value owns, and an out structure of exactly the
+            // size the class asks for.
+            let active = unsafe {
+                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+                let asked = QueryInformationJobObject(
+                    job,
+                    JobObjectBasicAccountingInformation,
+                    (&raw mut info).cast(),
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                );
+                // A job that will not answer is one nothing more can be learned from.
+                if asked == 0 {
+                    0
+                } else {
+                    info.ActiveProcesses
+                }
+            };
+            if active == 0 || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(EXIT_POLL);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Tree {
+    fn drop(&mut self) {
+        if let Some(job) = self.0 {
+            // SAFETY: the job handle this value owns, closed once.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+            }
+        }
+    }
+}
+
+/// Neither Unix nor Windows: no tree to hold, and a stopped command is ended alone.
+#[cfg(not(any(unix, windows)))]
+struct Tree;
+
+#[cfg(not(any(unix, windows)))]
+impl Tree {
+    fn adopt(_child: &Child) -> Self {
+        Tree
+    }
 }
 
 /// Wait until the process group `leader` led has no member left, for at most
@@ -1336,8 +1469,8 @@ fn await_group_empty(leader: u32) {
     }
 }
 
-/// The longest [`await_group_empty`] waits for a killed group to empty.
-#[cfg(unix)]
+/// The longest a stopped command's tree is waited on to empty.
+#[cfg(any(unix, windows))]
 const REAP_BOUND: Duration = Duration::from_secs(5);
 
 #[cfg(not(unix))]
