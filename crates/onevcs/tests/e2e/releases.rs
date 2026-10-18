@@ -3351,3 +3351,97 @@ fn a_retired_landings_url_names_its_own_repository_where_two_identities_retired_
     let answered: Value = serde_json::from_slice(&assert.get_output().stdout).expect("a document");
     assert_eq!(answered["state"], "not-released", "{answered}");
 }
+
+// llmlint: ignore-block[e2e_not_mocked] the remote host's own decisioning — when a
+// held change merges — is the one boundary an offline gate cannot drive, and this
+// suite's substituted `gh` answers it, as it does for the journey above this one. The
+// binary, its registry, its event streams and the real bare origin are all real; what
+// is asserted is that no host question this journey could script was asked.
+#[test]
+fn an_acknowledgement_never_takes_up_a_late_merge_it_would_be_recording() {
+    // A change request this host opened and stopped watching while its check ran: the
+    // host lands it the next time it is asked about it, and an acknowledgement — which
+    // records what a person says, against a landing already on the record or one the
+    // host attests for a change request nothing here recorded — is not what asks.
+    let hosted = Hosted::new(AUTOMATED_READY);
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: hosted}}\n    adoption: published\n    \
+             targets:\n{CONTAINER}"
+        ),
+    )
+    .expect("a release-targets file");
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let token = hosted.change("feature/outlived", "feat: land after the watcher exits");
+    hosted
+        .world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    let base = hosted.world.git(&hosted.origin, &["rev-parse", "main"]);
+
+    for reference in [token.as_str(), "https://github.com/acme-corp/hosted/pull/1"] {
+        hosted
+            .world
+            .onevcs()
+            .args([
+                "release",
+                "acknowledge",
+                reference,
+                "--target",
+                "container",
+                "--version",
+                "1.0.0",
+            ])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("has not landed"));
+    }
+    assert!(
+        hosted.world.events_of(&token, "change-merged").is_empty(),
+        "no landing was recorded"
+    );
+    assert_eq!(
+        hosted.world.git(&hosted.origin, &["rev-parse", "main"]),
+        base,
+        "and the host was never asked the question that lands it"
+    );
+
+    // A read that does ask takes it up, and then the acknowledgement has its landing.
+    hosted
+        .world
+        .onevcs()
+        .args(["status", "feature/outlived"])
+        .assert()
+        .success();
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "release",
+            "acknowledge",
+            &token,
+            "--target",
+            "container",
+            "--version",
+            "1.0.0",
+        ])
+        .assert()
+        .success();
+}
+// llmlint: ignore-end[e2e_not_mocked]

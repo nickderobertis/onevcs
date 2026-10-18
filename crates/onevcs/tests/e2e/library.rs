@@ -101,7 +101,7 @@ pub(crate) fn stderr_of(act: impl FnOnce()) -> String {
 
 /// Run `act` with this process's standard output redirected, and hand back what it
 /// wrote there.
-fn stdout_of(act: impl FnOnce()) -> String {
+pub(crate) fn stdout_of(act: impl FnOnce()) -> String {
     written_to(libc::STDOUT_FILENO, act)
 }
 

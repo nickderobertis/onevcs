@@ -1252,6 +1252,56 @@ pub(crate) fn landing_of_within_observed(
     hosting: Option<&dyn Hosting>,
     observing: Option<&crate::stream::Stream>,
 ) -> Result<LandingOf> {
+    landing_asking(
+        registry,
+        reference,
+        repo,
+        Asking {
+            late_merge: hosting,
+            attesting: hosting,
+        },
+        observing,
+    )
+}
+
+/// The landing of one reference, asking a host only whether a change request no stream
+/// here records landed — never about a late merge, which is a record this host writes.
+///
+/// What `release acknowledge` asks: it records what a *person* says carries a landing,
+/// against the landing already on the record or the one the repository's host attests.
+pub(crate) fn landing_attested(
+    registry: &Registry,
+    reference: &str,
+    hosting: &dyn Hosting,
+) -> Result<LandingOf> {
+    landing_asking(
+        registry,
+        reference,
+        None,
+        Asking {
+            late_merge: None,
+            attesting: Some(hosting),
+        },
+        None,
+    )
+}
+
+/// Which questions a landing read may put to a host, each `None` where it puts none.
+struct Asking<'h> {
+    /// Whether a change request a `checks-unsettled` close stopped watching has merged.
+    late_merge: Option<&'h dyn Hosting>,
+    /// Whether a change request no stream here records merged into its base.
+    attesting: Option<&'h dyn Hosting>,
+}
+
+fn landing_asking(
+    registry: &Registry,
+    reference: &str,
+    repo: Option<&str>,
+    asking: Asking<'_>,
+    observing: Option<&crate::stream::Stream>,
+) -> Result<LandingOf> {
+    let hosting = asking.late_merge;
     // Resolved before anything is searched, so a repository this host does not know is
     // refused as the unregistered repository it is rather than silently widening the
     // question to every identity there is.
@@ -1265,7 +1315,14 @@ pub(crate) fn landing_of_within_observed(
     // of *copies* git would not read, and a caller deciding whether an undecided
     // landing is safe to act on is asking about those and nothing else.
     let mut unreadable = Vec::new();
-    let (work, _) = resolve(registry, reference, &streams, within, &mut unreadable)?;
+    let Resolved { work, attested, .. } = resolve(
+        registry,
+        reference,
+        &streams,
+        within,
+        asking.attesting,
+        &mut unreadable,
+    )?;
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, _) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
@@ -1329,10 +1386,15 @@ pub(crate) fn landing_of_within_observed(
     // repository that holds that commit is the checkout every publication
     // fast-forwards — so that is the copy that answers for it.
     let decided = carrier.map(|(_, _, verdict)| verdict.clone());
-    let carrier = match (carrier, &retired) {
-        (Some((repo, _, _)), _) => Some(repo.clone()),
-        (None, Some(_)) => Some(resolution.publication.clone()),
-        (None, None) => None,
+    let carrier = match (carrier, &retired, &attested) {
+        (Some((repo, _, _)), _, _) => Some(repo.clone()),
+        (None, Some(_), _) | (None, None, Some(_)) => Some(resolution.publication.clone()),
+        (None, None, None) => None,
+    };
+    let decided = decided.or(retired);
+    let decided = match &attested {
+        Some(attested) => Some(attested.over(decided)),
+        None => decided,
     };
     Ok(LandingOf {
         reference: reference.to_owned(),
@@ -1344,7 +1406,7 @@ pub(crate) fn landing_of_within_observed(
         // behind a release of work that may never have landed.
         landed: match answering.broken.is_some() {
             true => Landed::Unknown,
-            false => decided.or(retired).unwrap_or(Landed::Unknown),
+            false => decided.unwrap_or(Landed::Unknown),
         },
         carrier,
         lent,
@@ -1368,7 +1430,18 @@ pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resul
 fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    let (work, kind) = resolve(registry, reference, &streams, None, &mut notes)?;
+    let Resolved {
+        work,
+        kind,
+        attested,
+    } = resolve(
+        registry,
+        reference,
+        &streams,
+        None,
+        Some(hosting),
+        &mut notes,
+    )?;
 
     let resolution = store::resolve(registry, &work.identity)?;
     let (file, source) = policy::load(registry)?;
@@ -1408,7 +1481,10 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     // watching is decided *in* this read: it becomes a recorded landing, the word
     // below is the word a record fixes, and the next step is recomputed from it.
     reconcile_late_merge(registry, &work, &mut told, &carrying, hosting, None);
-    let change_url = told.change_url.clone();
+    let change_url = told
+        .change_url
+        .clone()
+        .or_else(|| attested.as_ref().map(|attested| attested.url.to_string()));
     let draft = told.draft.clone();
     let described = told.described.clone();
     let on_origin = told.on_origin.clone();
@@ -1479,6 +1555,11 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
                 report.proof.as_ref(),
             ))
         });
+    }
+    // A change request no stream here records is answered by what its host attests,
+    // wherever nothing here found the landing itself.
+    if let Some(attested) = &attested {
+        verdict = Some(attested.over(verdict));
     }
     // …and a chain of retries this host cannot follow overrides whatever a copy of
     // the branch said. Undecidable rather than decided, in both directions: a `no`
@@ -3935,6 +4016,58 @@ pub(crate) fn recorded_branches(streams: &[Recorded], identity: &str) -> BTreeSe
     named
 }
 
+/// The work one reference names, the spelling it was given in, and — for a change
+/// request no stream on this host records — what its host attests about its landing.
+struct Resolved {
+    work: Work,
+    kind: RefKind,
+    attested: Option<Attested>,
+}
+
+impl Resolved {
+    /// Work this host's own records and copies answered for.
+    fn local(work: Work, kind: RefKind) -> Self {
+        Resolved {
+            work,
+            kind,
+            attested: None,
+        }
+    }
+}
+
+/// A landing the registered repository's host attests and nothing on this host
+/// recorded: the change request it reports merged into the registered base, and the
+/// commit it merged as, which that base carries.
+struct Attested {
+    url: Url,
+    /// What it is evidence as: a recorded landing where this host has it on the record
+    /// now, and the change request the host reports merged where that could not be
+    /// written.
+    evidence: landed::LandingEvidence,
+}
+
+impl Attested {
+    /// The answer it gives where no copy or record here decided a landing.
+    fn landed(&self) -> Landed {
+        Landed::Yes {
+            evidence: self.evidence.clone(),
+        }
+    }
+
+    /// The answer a read gives about this change request: what a copy or record here
+    /// decided where it found the landing, and the host's attestation otherwise.
+    ///
+    /// A copy of the same branch *name* here that decided `no` or `unknown` does not
+    /// outweigh the host: the question was about this change request, and the host is
+    /// what says it merged.
+    fn over(&self, decided: Option<Landed>) -> Landed {
+        match decided {
+            Some(found @ (Landed::Yes { .. } | Landed::InPart { .. })) => found,
+            _ => self.landed(),
+        }
+    }
+}
+
 /// Read one reference as the work it names.
 ///
 /// The four spellings are tried in the order the surface documents them, and the
@@ -3948,17 +4081,27 @@ pub(crate) fn recorded_branches(streams: &[Recorded], identity: &str) -> BTreeSe
 /// named a repository is answered about *that* repository or refused, so a session
 /// token or a change request belonging to another identity cannot come back under the
 /// name of the one asked about.
+///
+/// `attesting` is the host a change request no stream here records is put to, where the
+/// caller has one: see [`attest`].
 fn resolve(
     registry: &Registry,
     reference: &str,
     streams: &[Recorded],
     within: Option<&str>,
+    attesting: Option<&dyn Hosting>,
     notes: &mut Vec<String>,
-) -> Result<(Work, RefKind)> {
+) -> Result<Resolved> {
     if reference.starts_with("http://") || reference.starts_with("https://") {
-        return change_url(registry, reference, streams, within)
-            .and_then(|work| in_scope(work, reference, within))
-            .map(|work| (work, RefKind::ChangeUrl));
+        return change_url(registry, reference, streams, within, attesting).and_then(
+            |(work, attested)| {
+                Ok(Resolved {
+                    work: in_scope(work, reference, within)?,
+                    kind: RefKind::ChangeUrl,
+                    attested,
+                })
+            },
+        );
     }
     if let Ok(record) = workspace::load(reference) {
         return in_scope(
@@ -3969,30 +4112,34 @@ fn resolve(
             reference,
             within,
         )
-        .map(|work| (work, RefKind::SessionToken));
+        .map(|work| Resolved::local(work, RefKind::SessionToken));
     }
     // Through the conversion that decides branch names, so what is searched for is a
     // ref rather than the part of a command line that sat where one would.
     if let Ok(named) = Ref::try_from(reference.to_owned()) {
         let found = by_branch(registry, &named, within)?;
         if !found.is_empty() {
-            return one(found, reference, "branch").map(|work| (work, RefKind::Branch));
+            return one(found, reference, "branch")
+                .map(|work| Resolved::local(work, RefKind::Branch));
         }
         // A branch nothing holds any more is still one this host knows, where it
         // recorded retiring it: what became of the work is exactly what is asked.
         let retired = retired_under(streams, &named, within);
         if !retired.is_empty() {
-            return one(retired, reference, "branch").map(|work| (work, RefKind::Branch));
+            return one(retired, reference, "branch")
+                .map(|work| Resolved::local(work, RefKind::Branch));
         }
     }
     if reference.len() >= 7 && reference.chars().all(|c| c.is_ascii_hexdigit()) {
         let landed = by_landing(registry, streams, reference, within)?;
         if !landed.is_empty() {
-            return one(landed, reference, "commit").map(|work| (work, RefKind::Commit));
+            return one(landed, reference, "commit")
+                .map(|work| Resolved::local(work, RefKind::Commit));
         }
         let found = by_commit(registry, reference, within, notes)?;
         if !found.is_empty() {
-            return one(found, reference, "commit").map(|work| (work, RefKind::Commit));
+            return one(found, reference, "commit")
+                .map(|work| Resolved::local(work, RefKind::Commit));
         }
     }
     // A kind of its own, and the one place it is answered: a consumer that falls back
@@ -4060,33 +4207,35 @@ fn one(found: Vec<Work>, reference: &str, spelling: &str) -> Result<Work> {
     })
 }
 
-/// The work whose change request one URL names.
+/// The work whose change request one URL names, and what its host attests where no
+/// stream here records it.
 fn change_url(
     registry: &Registry,
     url: &str,
     streams: &[Recorded],
     within: Option<&str>,
-) -> Result<Work> {
-    let recorded = streams
-        .iter()
-        .find(|record| {
-            record.proofs.values().any(|proofs| {
-                proofs
-                    .opened
-                    .as_ref()
-                    .is_some_and(|opened| opened.value.url == url)
-            })
+    attesting: Option<&dyn Hosting>,
+) -> Result<(Work, Option<Attested>)> {
+    let recorded = streams.iter().find(|record| {
+        record.proofs.values().any(|proofs| {
+            proofs
+                .opened
+                .as_ref()
+                .is_some_and(|opened| opened.value.url == url)
         })
+    });
+    let Some(recorded) = recorded else {
         // Unresolvable rather than invalid, and one of the four: a URL nothing here
         // opened is a reference this host cannot resolve, which is what a consumer
-        // falling back from one spelling to another routes on.
-        .ok_or_else(|| Error::UnresolvableReference {
-            reference: url.to_owned(),
-            reason: format!(
-                "no change request at {url} was opened through `onevcs` on this host, so nothing \
-                 here records which branch it carries. Ask about the branch by name instead"
-            ),
-        })?;
+        // falling back from one spelling to another routes on — unless the host the
+        // repository is registered on attests that it landed.
+        return match attesting {
+            Some(hosting) => {
+                attest(registry, url, hosting).map(|(work, attested)| (work, Some(attested)))
+            }
+            None => Err(unrecorded(url, "")),
+        };
+    };
     let branch = recorded.branch.clone().ok_or_else(|| Error::Invalid {
         reason: format!(
             "the event stream for {token:?} records the change request at {url} and names no \
@@ -4122,10 +4271,13 @@ fn change_url(
     let owner = scope.and_then(|scope| scope.identity_in(registry));
     let labelled = matches!(scope, Some(Scope::Labelled(_)));
     if let (Some(identity), true, false) = (&owner, labelled, branch_keyed(&recorded.token)) {
-        return Ok(Work {
-            identity: identity.clone(),
-            branch,
-        });
+        return Ok((
+            Work {
+                identity: identity.clone(),
+                branch,
+            },
+            None,
+        ));
     }
     // A branch-keyed verb's stream is one per branch *name*, so whose work the URL is
     // decides only where to look: the identity is the one whose checkouts hold the
@@ -4174,7 +4326,140 @@ fn change_url(
             },
         });
     }
-    one(found, url, "change request")
+    one(found, url, "change request").map(|work| (work, None))
+}
+
+/// The refusal for a change request no stream on this host records, saying `why` the
+/// host did not settle it where the host was asked.
+fn unrecorded(url: &str, why: &str) -> Error {
+    Error::UnresolvableReference {
+        reference: url.to_owned(),
+        reason: format!(
+            "no change request at {url} was opened through `onevcs` on this host, so nothing \
+             here records which branch it carries{why}. Ask about the branch by name instead"
+        ),
+    }
+}
+
+/// Resolve a change request no stream on this host records through the host its
+/// registered repository is on, accepting it only as a landing that host attests.
+///
+/// Work opened from another host's session, or before this host kept records, has no
+/// opening here to name its branch — and a release hold waiting on it would wait for
+/// ever. So the host is asked where it stands: a change request it reports merged into
+/// the registered base, at a commit that base carries, resolves to its head branch in
+/// that repository, with that commit as its landing — recorded here as a standings read
+/// records one, so the record is what answers. Anything else — still open,
+/// closed without merging, merged into another branch, or merged at a commit the base
+/// does not carry — is still refused, as a reference naming no work here, with what the
+/// host said; and so is one whose repository is not registered or whose host could not
+/// be asked.
+fn attest(registry: &Registry, url: &str, hosting: &dyn Hosting) -> Result<(Work, Attested)> {
+    let refuse = |why: String| unrecorded(url, &format!(", and {why}"));
+    let Ok(parsed) = crate::review::ChangeUrl::parse(url) else {
+        return Err(unrecorded(url, ""));
+    };
+    let Ok(resolution) = store::resolve(registry, &parsed.identity) else {
+        return Err(unrecorded(url, ""));
+    };
+    let Some(slug) = gh::slug(&resolution.key) else {
+        return Err(refuse(format!(
+            "{key:?} is not a {host} repository, so no host this build asks answers for it",
+            key = resolution.key,
+            host = gh::HOST,
+        )));
+    };
+    let base = git::default_branch(&resolution.publication, "origin")?;
+    let asked = ChangeId(parsed.number.clone());
+    let host = hosting
+        .for_repo(&slug)
+        .map_err(|error| refuse(format!("its host could not say where it stands: {error}")))?;
+    let standing = host
+        .change_standings(&base, std::slice::from_ref(&asked))
+        .map_err(|error| refuse(format!("its host could not say where it stands: {error}")))?
+        .standings
+        .into_iter()
+        .next()
+        // The host's answer is input: one about another repository's change request of
+        // the same number, or another change request of this one, is not about this one,
+        // and is neither accepted nor recorded under its name.
+        .filter(|standing| {
+            crate::review::ChangeUrl::parse(standing.url.as_str()).is_ok_and(|answered| {
+                answered.number == parsed.number
+                    && answered.identity.eq_ignore_ascii_case(&parsed.identity)
+            })
+        })
+        .ok_or_else(|| refuse("its host answered nothing about it".to_owned()))?;
+    let commit = match &standing.state {
+        crate::standings::ChangeState::Merged { into, commit, .. } if *into == base => commit,
+        crate::standings::ChangeState::Merged { into, .. } => {
+            return Err(refuse(format!(
+                "its host reports it merged into {into}, not into {base}, the base of {key}, so \
+                 it has not landed",
+                key = resolution.key,
+            )))
+        }
+        crate::standings::ChangeState::Closed { .. } => {
+            return Err(refuse(format!(
+                "its host reports it closed without merging, so it never landed on {base}"
+            )))
+        }
+        _ => {
+            return Err(refuse(format!(
+                "its host reports it open and unmerged, so it has not landed on {base}"
+            )))
+        }
+    };
+    // The host's word is input, and it goes on to git as a revision: what is not an
+    // object id names no commit, and one the base does not carry is no landing on it —
+    // asked of the checkout every publication fast-forwards, once more after bringing
+    // it up to the origin's base where it has not yet seen the merge.
+    let on_base = |commit: &ObjectId| {
+        vcs::base_commit(&resolution.publication, &base).is_some_and(|tip| {
+            git::known_to_reach(&resolution.publication, commit.as_str(), &tip.0).unwrap_or(false)
+        })
+    };
+    let landed = ObjectId::parse(&commit.0).filter(|commit| {
+        on_base(commit)
+            || (publish::fast_forward_publication(&resolution.publication, &base).is_ok()
+                && on_base(commit))
+    });
+    let Some(commit) = landed else {
+        return Err(refuse(format!(
+            "its host reports it merged at {commit}, which {base} as {publication} has it does \
+             not carry, so it is no landing there",
+            commit = commit.0,
+            publication = resolution.publication.display(),
+        )));
+    };
+    let branch = Ref::try_from(standing.head_branch.clone()).map_err(|reason| Error::Invalid {
+        reason: format!(
+            "the host reports the change request at {url} merged from {reason}, so nothing here \
+             can name the work it carried"
+        ),
+    })?;
+    // Kept as the landing it is, the way a standings read keeps one, so what answers is
+    // a record of it rather than the host's word alone.
+    let commit = crate::host::Sha(commit.as_str().to_owned());
+    let recorded =
+        crate::standings::record_attested(registry, &resolution, host, &standing, &commit);
+    let evidence = match recorded {
+        true => landed::LandingEvidence::RecordedLanding { commit },
+        false => landed::LandingEvidence::ChangeRequest {
+            commit,
+            change_url: standing.url.clone(),
+        },
+    };
+    Ok((
+        Work {
+            identity: resolution.key,
+            branch,
+        },
+        Attested {
+            url: standing.url,
+            evidence,
+        },
+    ))
 }
 
 /// Every identity holding a branch of this name.

@@ -1101,10 +1101,14 @@ pub fn acknowledge(
     named: &TargetName,
     version: &str,
     supersede: bool,
+    hosting: &dyn Hosting,
 ) -> Result<Acknowledgement> {
-    // No host: an acknowledgement records what a *person* says carries a landing,
-    // and the landing it records against is the one already on the record.
-    let landing = status::landing_of(registry, reference, None)?;
+    // The host is asked one question and only where nothing here records the change
+    // request: whether it landed. An acknowledgement records what a *person* says
+    // carries a landing, and the landing it records against is the one already on the
+    // record or the one the repository's host attests — never a late merge of a
+    // change request this host opened and stopped watching.
+    let landing = status::landing_attested(registry, reference, hosting)?;
     let located = for_repository(registry, &landing.identity)?;
     let target = located.releases.select(Some(named))?;
     let commit = match &landing.landed {

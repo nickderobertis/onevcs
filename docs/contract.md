@@ -2796,7 +2796,8 @@ can name no work here: nothing answers to it at all — no change request `onevc
 no session token it printed, no branch a checkout or run clone of a registered identity
 holds, and no commit one of those branches carries — in both of that refusal's spellings,
 the whole-host one and the one narrowed to a named repository; a change-request URL no
-`onevcs` on this host opened; and a change-request URL whose branch no checkout or run
+`onevcs` on this host opened and whose repository's host does not attest that it landed
+(see the next section); and a change-request URL whose branch no checkout or run
 clone holds, again in both spellings.
 
 **A record this host holds and cannot read is not a reference this host cannot resolve**,
@@ -2814,6 +2815,47 @@ Error::UnresolvableReference { reference: String, reason: String }
     // reason: exactly what `Invalid` carried; the CLI prints it under the same
     // `invalid input:` prefix and exits 2
 ```
+
+Event kinds added: none.
+
+### A change request another host opened resolves through the registered repository's host
+
+A change-request URL no stream on this host records used to be refused outright, so work
+a session on *another* host opened and landed — or work landed before this host kept
+records — could never serve as a landing here, and a release hold waiting on it answered
+`not-answered` until somebody edited the graph by hand.
+
+**Where no local record answers, the registered repository's host is asked.** `onevcs
+status`, `onevcs release status` and `onevcs release acknowledge`, given a change-request
+URL in a registered repository that no stream here records opening, read that change
+request's standing from the host — the `RemoteHost::change_standings` read, against the
+repository's registered base — and accept it only as a landing the host attests: merged
+**into the registered base**, at a commit that base carries in the publication checkout
+(fast-forwarded once where it has not yet seen the merge). That resolves the reference
+to the change request's head branch in that repository, with the merge commit as its
+landing. The landing is recorded the way a standings read records a merge into the root —
+a `change-merged` on the change request's own stream, the release baselines captured
+under the existing rules — so `landed.evidence` is `recorded-landing` naming that commit,
+and `change-request` naming it and the URL only where the record could not be written.
+A record or a copy here that already decided a landing for the branch still answers
+first; the host never overrides a landing found locally, only the absence of one.
+
+**Anything else is still refused, as the reference naming no work here it always was**:
+`Error::UnresolvableReference`, the same `invalid input:` line and exit `2`, the reason
+beginning with the words it always did and then saying what the host reported — still
+open and unmerged, closed without merging, merged into another branch, or merged at a
+commit the base does not carry — or that the host could not say. A URL in a repository
+this host has not registered, or on a host no implementation here asks, is refused as
+before. A merged head branch git would not accept as a name is a malformed answer rather
+than an unknown reference, and keeps `Error::Invalid`. No flag is added.
+
+**Which entry points ask.** The command line asks the host it was handed;
+`release_status` and `acknowledge_release` ask the real host, as `release_status`
+already did for a late merge. `release acknowledge` asks the host this one question and
+not the late-merge one, so it still writes no record of a merge this host opened and
+stopped watching. `landing_status` takes no `Providers` and asks no host, so it refuses an
+unrecorded URL as before. A resumed publication's `publication-resumed` and every other
+local record are read exactly as they were; the host is asked only when none answers.
 
 Event kinds added: none.
 
