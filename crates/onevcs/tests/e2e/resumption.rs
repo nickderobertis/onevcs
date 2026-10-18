@@ -771,7 +771,6 @@ fn verified_and_red_on_a_supplied_host(world: &World) -> HostState {
     verified_and_red_on_a_supplied_host_under(world, AUTOMATED)
 }
 
-/// The same under the rules `rules` names.
 fn verified_and_red_on_a_supplied_host_under(world: &World, rules: &str) -> HostState {
     let (_origin, _identity) = library::hosted(world, rules);
     let counter = world.path("hook-runs");
@@ -822,7 +821,6 @@ fn host_check(conclusion: &str) -> onevcs::Check {
     }
 }
 
-/// `onevcs publish-branch` of the branch, through the library, on `hosting`.
 fn publish_through(hosting: &dyn onevcs::Hosting) -> onevcs::Result<PublishOutcome> {
     onevcs::publish_branch(
         &Providers { vcs: &Git, hosting },
@@ -877,7 +875,6 @@ fn base_moves(world: &World, file: &str) -> String {
     library::origin_tip(world, &origin, "main").expect("the base")
 }
 
-/// The `base-merge` decisions the branch's stream records.
 fn base_merge_decisions(world: &World) -> Vec<String> {
     world
         .events_of(MOVED_STREAM, "base-merge")
