@@ -143,6 +143,11 @@ mod honesty;
 mod hook_environment;
 #[cfg(unix)]
 mod host;
+// Unix only: the program that replays GitHub's recorded responses as `gh` is POSIX
+// shell. Its own header carries the reason it is the one boundary doubled.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod host_queries;
 // Linux and Windows: it takes a duplicate of another process's pipe, which is
 // `/proc/<pid>/fd/1` on one and `DuplicateHandle` on the other, and macOS offers an
 // unrelated process neither of those. Its own header carries the reason in full.

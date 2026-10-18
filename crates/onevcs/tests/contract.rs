@@ -3670,6 +3670,20 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("boundary schema", operation!(onevcs::boundary_schema)),
         ("export", operation!(onevcs::export)),
         ("rules apply", operation!(onevcs::rules_apply)),
+        (
+            "host release-changes",
+            operation!(onevcs::host_query::release_changes),
+        ),
+        (
+            "host change-checks",
+            operation!(onevcs::host_query::change_checks),
+        ),
+        (
+            "host commit-runs",
+            operation!(onevcs::host_query::commit_runs),
+        ),
+        ("host run-jobs", operation!(onevcs::host_query::run_jobs)),
+        ("host schema", operation!(onevcs::host_query::host_schema)),
     ]
 }
 
@@ -3789,6 +3803,169 @@ fn every_command_renders_a_typed_library_operation() {
              {operation} — the table says it renders that operation"
         );
     }
+}
+
+/// The properties a generated object schema names, in order, and which may be `null`.
+fn schema_fields(schema: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let properties = schema["properties"].as_object().expect("an object schema");
+    let nullable = properties
+        .iter()
+        .filter(|(_, property)| {
+            property["type"]
+                .as_array()
+                .is_some_and(|types| types.iter().any(|t| t == "null"))
+                || property["anyOf"]
+                    .as_array()
+                    .is_some_and(|any| any.iter().any(|s| s["type"] == "null"))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    (properties.keys().cloned().collect(), nullable)
+}
+
+#[test]
+fn the_host_query_amendment_names_the_fields_the_schema_carries() {
+    // docs/contract.md states the four answers' shapes for the repositories that read
+    // them; the Rust types are what `host schema --json` is generated from. Each list
+    // in the amendment's block is held to the generated schema, both ways and in order.
+    let block: serde_json::Value =
+        serde_json::from_str(&amendment_block_declaring("json", "\"release-changes\""))
+            .expect("the host-query amendment's field block is JSON");
+    let schema = onevcs::host_query::host_schema();
+    let names = |key: &str| -> Vec<String> {
+        block[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("the block lists {key}"))
+            .iter()
+            .map(|name| name.as_str().expect("a field name").to_owned())
+            .collect()
+    };
+    let nullable = |key: &str| -> Vec<String> {
+        block["nullable"][key]
+            .as_array()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| name.as_str().expect("a field name").to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let objects = [
+        ("release-changes", &schema["release-changes"]),
+        ("change-checks", &schema["change-checks"]),
+        ("commit-runs", &schema["commit-runs"]),
+        ("run-jobs", &schema["run-jobs"]),
+        ("run", &schema["commit-runs"]["$defs"]["Run"]),
+        ("job", &schema["run-jobs"]["$defs"]["Job"]),
+        ("change", &schema["release-changes"]["$defs"]["Change"]),
+        (
+            "commit",
+            &schema["release-changes"]["$defs"]["ReleaseCommit"],
+        ),
+        (
+            "change-label",
+            &schema["change-checks"]["$defs"]["ChangeLabel"],
+        ),
+        ("cost", &schema["run-jobs"]["$defs"]["QueryCost"]),
+    ];
+    for (key, generated) in objects {
+        let (fields, null) = schema_fields(generated);
+        assert_eq!(names(key), fields, "docs/contract.md's {key} fields");
+        assert_eq!(
+            nullable(key),
+            null,
+            "docs/contract.md's nullable {key} fields"
+        );
+    }
+    let (checked, _) = schema_fields(&schema["change-checks"]["$defs"]["CheckedRun"]);
+    let mut run = names("run");
+    run.push("jobs".to_owned());
+    assert_eq!(
+        checked, run,
+        "a change-checks run is a run object plus its jobs"
+    );
+    assert_eq!(
+        block.as_object().expect("an object").len(),
+        objects.len() + 1,
+        "every list the block states is checked"
+    );
+}
+
+#[test]
+fn the_readme_spells_the_host_queries_as_the_amendment_does() {
+    // The README's tour of `onevcs host` restates the amendment's command lines, its
+    // token order and permissions, its replay seam and its exit statuses. The
+    // amendment's usage block is held to the parser by `documented_commands`; this
+    // holds the README's copy to the amendment. The README leaves out `[--json]`,
+    // which changes nothing, and wraps its prose, so both are compared folded.
+    let fold = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let readme = repo_file("README.md");
+    let lines = |usage: &str| -> Vec<String> {
+        usage
+            .lines()
+            .map(|line| fold(&line.replace(" [--json]", "")))
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
+    let usage_of = |doc: &str, whose: &str| -> String {
+        usage_in(doc)
+            .into_iter()
+            .find(|block| block.contains("onevcs host release-changes"))
+            .unwrap_or_else(|| panic!("{whose} spells the host queries' usage"))
+    };
+    assert_eq!(
+        lines(&usage_of(&readme, "the README")),
+        lines(&usage_of(&regions().0, "the amendment")),
+        "README.md and docs/contract.md spell the host queries differently"
+    );
+    let (readme, amendment) = (fold(&readme), fold(&regions().0));
+    for stated in [
+        "The token is `GITHUB_TOKEN`, else `GH_TOKEN`",
+        "`actions: read`, `contents: read`",
+        "`pull-requests: read`",
+        "`ONEVCS_GH`",
+        "gh api --include",
+    ] {
+        assert!(
+            readme.contains(stated) && amendment.contains(stated),
+            "README.md and docs/contract.md must both state {stated:?} about the host queries"
+        );
+    }
+    assert!(
+        amendment.contains("**Exit status.** `0` answered. `2` an invalid invocation")
+            && amendment.contains("`1` everything else, with stdout empty and one line on stderr naming the reason and the API path")
+            && readme.contains("Exit `0` is an answer, `2` an invalid invocation, and `1` anything else, with one line on stderr naming the reason and the API path"),
+        "README.md and docs/contract.md disagree about what the host queries exit with"
+    );
+}
+
+#[test]
+fn the_host_query_amendment_declares_the_operations_the_verbs_render() {
+    use onevcs::host_query::*;
+    let _: fn(&ReleaseChangesRequest) -> HostQueryResult<ReleaseChanges> = release_changes;
+    let _: fn(&ChangeChecksRequest) -> HostQueryResult<ChangeChecks> = change_checks;
+    let _: fn(&CommitRunsRequest) -> HostQueryResult<CommitRuns> = commit_runs;
+    let _: fn(&RunJobsRequest) -> HostQueryResult<RunJobs> = run_jobs;
+    let _: fn() -> serde_json::Value = host_schema;
+    let _: u32 = HOST_QUERY_SCHEMA_VERSION;
+    let declarations = amendment_declaring("pub fn release_changes(");
+    for declared in [
+        "pub const HOST_QUERY_SCHEMA_VERSION: u32 = 1;",
+        "pub fn release_changes(request: &ReleaseChangesRequest) -> HostQueryResult<ReleaseChanges>;",
+        "pub fn change_checks(request: &ChangeChecksRequest) -> HostQueryResult<ChangeChecks>;",
+        "pub fn commit_runs(request: &CommitRunsRequest) -> HostQueryResult<CommitRuns>;",
+        "pub fn run_jobs(request: &RunJobsRequest) -> HostQueryResult<RunJobs>;",
+        "pub fn host_schema() -> serde_json::Value;",
+        "pub type HostQueryResult<T> = std::result::Result<T, HostQueryError>;",
+    ] {
+        assert!(
+            declarations.contains(declared),
+            "the host-query amendment no longer declares: {declared}"
+        );
+    }
+    assert_eq!(HOST_QUERY_SCHEMA_VERSION, 1);
+    assert_eq!(host_schema()["schema_version"], 1);
 }
 
 #[test]

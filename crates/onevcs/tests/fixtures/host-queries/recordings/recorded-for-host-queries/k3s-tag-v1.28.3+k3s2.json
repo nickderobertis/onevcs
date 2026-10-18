@@ -1,0 +1,29 @@
+{
+ "body": {
+  "node_id": "MDM6UmVmMTM1NTE2MjcwOnJlZnMvdGFncy92MS4yOC4zK2szczI=",
+  "object": {
+   "sha": "bbafb86e91ae3682a1811119d136203957df9061",
+   "type": "commit",
+   "url": "https://api.github.com/repos/k3s-io/k3s/git/commits/bbafb86e91ae3682a1811119d136203957df9061"
+  },
+  "ref": "refs/tags/v1.28.3+k3s2",
+  "url": "https://api.github.com/repos/k3s-io/k3s/git/refs/tags/v1.28.3+k3s2"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:39:32 GMT",
+  "etag": "W/\"ef642507c79c6c890d0a6d98e647c6693a906c065eb91c7fb4dd743cb2375d4b\"",
+  "last-modified": "Sat, 17 Oct 2026 04:16:06 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4423",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "577"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/k3s-io/k3s/git/ref/tags/v1.28.3%2Bk3s2"
+ },
+ "status": 200
+}

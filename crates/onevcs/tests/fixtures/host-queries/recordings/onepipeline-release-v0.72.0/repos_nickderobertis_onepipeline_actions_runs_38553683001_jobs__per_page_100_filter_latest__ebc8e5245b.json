@@ -1,0 +1,155 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/nickderobertis/onepipeline/check-runs/115817452216",
+    "completed_at": "2026-10-14T12:27:57Z",
+    "conclusion": "success",
+    "created_at": "2026-10-14T11:01:42Z",
+    "head_branch": "release-plz-2026-10-14T11-01-36Z",
+    "head_sha": "4e3dee6c0842603388d96db3d4e8a6f64aac99d2",
+    "html_url": "https://github.com/nickderobertis/onepipeline/actions/runs/38553683001/job/115817452216",
+    "id": 115817452216,
+    "labels": [
+     "ubuntu-latest"
+    ],
+    "name": "release-sweep",
+    "node_id": "CR_kwDOTx8aUc8AAAAa90ISuA",
+    "run_attempt": 1,
+    "run_id": 38553683001,
+    "run_url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38553683001",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000231299,
+    "runner_name": "GitHub Actions 1000231299",
+    "started_at": "2026-10-14T11:01:44Z",
+    "status": "completed",
+    "steps": [
+     {
+      "completed_at": "2026-10-14T11:01:46Z",
+      "conclusion": "success",
+      "name": "Set up job",
+      "number": 1,
+      "started_at": "2026-10-14T11:01:44Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T11:01:47Z",
+      "conclusion": "success",
+      "name": "Run actions/checkout@v4",
+      "number": 2,
+      "started_at": "2026-10-14T11:01:46Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T11:02:06Z",
+      "conclusion": "success",
+      "name": "Run Swatinem/rust-cache@v2",
+      "number": 3,
+      "started_at": "2026-10-14T11:01:47Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T11:02:06Z",
+      "conclusion": "success",
+      "name": "Run actions/setup-node@v4",
+      "number": 4,
+      "started_at": "2026-10-14T11:02:06Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T11:02:07Z",
+      "conclusion": "success",
+      "name": "Run taiki-e/install-action@v2",
+      "number": 5,
+      "started_at": "2026-10-14T11:02:06Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T11:07:02Z",
+      "conclusion": "success",
+      "name": "Bootstrap",
+      "number": 6,
+      "started_at": "2026-10-14T11:02:07Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:26Z",
+      "conclusion": "success",
+      "name": "Quality gate (every project)",
+      "number": 7,
+      "started_at": "2026-10-14T11:07:02Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:26Z",
+      "conclusion": "skipped",
+      "name": "Does each failed test fail again on this build",
+      "number": 8,
+      "started_at": "2026-10-14T12:27:26Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:26Z",
+      "conclusion": "success",
+      "name": "Committed generated files are up to date",
+      "number": 9,
+      "started_at": "2026-10-14T12:27:26Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:26Z",
+      "conclusion": "success",
+      "name": "Post Run actions/setup-node@v4",
+      "number": 16,
+      "started_at": "2026-10-14T12:27:26Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:56Z",
+      "conclusion": "success",
+      "name": "Post Run Swatinem/rust-cache@v2",
+      "number": 17,
+      "started_at": "2026-10-14T12:27:26Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:56Z",
+      "conclusion": "success",
+      "name": "Post Run actions/checkout@v4",
+      "number": 18,
+      "started_at": "2026-10-14T12:27:56Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T12:27:56Z",
+      "conclusion": "success",
+      "name": "Complete job",
+      "number": 19,
+      "started_at": "2026-10-14T12:27:56Z",
+      "status": "completed"
+     }
+    ],
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/jobs/115817452216",
+    "workflow_name": "Release sweep"
+   }
+  ],
+  "total_count": 1
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:06:39 GMT",
+  "etag": "\"11d45d2a069be5da22d93f402a14811cc6b9182e4f981ad47b61f4c724a44953\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4625",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "375"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38553683001/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

@@ -53,6 +53,11 @@ impl Checkout {
             second: String::new(),
         };
         checkout.git(&["init", "-q", "-b", "main"]);
+        // llmlint walks the whole checkout, `.git/objects` included, and a newer git
+        // detaches its post-commit housekeeping, which can prune an object directory
+        // mid-walk: llmlint then fails with "walking … .git/objects/NN: No such file".
+        checkout.git(&["config", "maintenance.auto", "false"]);
+        checkout.git(&["config", "gc.auto", "0"]);
         checkout.first = checkout.commit("the checkout under test");
         checkout.append("scripts/setup-llmlint.sh", "# a change\n");
         checkout.second = checkout.commit("a first change");

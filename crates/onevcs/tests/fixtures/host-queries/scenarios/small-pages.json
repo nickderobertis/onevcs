@@ -1,0 +1,51 @@
+{
+  "about": "The listings v0.72.0's release and #914's checks read, recorded at a few entries a page so that every one of them is followed through its Link headers: the closed pull requests at five a page (v0.72.0's three are on pages 3 and 4) and the pull_request runs at #914's head at two a page.",
+  "serve": [
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_releases__per_page_100__311c1f946e.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_compare_v0_71_1_v0_72_0__per_page_100__1118b16acb.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-per-page-5-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/pulls?state=closed&sort=updated&direction=desc&per_page=100",
+      "why": "a first page that maps none of the range"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-per-page-5-page-2.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-per-page-5-page-3.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-per-page-5-page-4.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-914-head-runs-per-page-2-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/actions/runs?per_page=100&head_sha=62631f7c3936c095c6973f5108e9265360466e84&event=pull_request",
+      "why": "#914's runs spread over three linked pages"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-914-head-runs-per-page-2-page-2.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-914-head-runs-per-page-2-page-3.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_actions_runs_38534306223_jobs__per_page_100_filter_latest__8831b85b64.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_actions_runs_38534306114_jobs__per_page_100_filter_latest__913ac39f31.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_actions_runs_38534306078_jobs__per_page_100_filter_latest__573cda223f.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_actions_runs_38534306473_jobs__per_page_100_filter_latest__50200b03d8.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_actions_runs_38534306075_jobs__per_page_100_filter_latest__4208c7ea87.json"
+    }
+  ]
+}

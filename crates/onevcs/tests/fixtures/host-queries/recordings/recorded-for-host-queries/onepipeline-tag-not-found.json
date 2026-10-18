@@ -1,0 +1,22 @@
+{
+ "body": {
+  "documentation_url": "https://docs.github.com/rest/git/refs#get-a-reference",
+  "message": "Not Found",
+  "status": "404"
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 00:09:16 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4362",
+  "x-ratelimit-reset": "1792198343",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "638"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/ref/tags/v0.0.0-unreleased"
+ },
+ "status": 404
+}

@@ -1,0 +1,11 @@
+{
+  "about": "k3s's v1.28.3+k3s2, a lightweight tag whose name needs percent-encoding in a path, and GitHub's empty runs listing at its commit.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/k3s-tag-v1.28.3+k3s2.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/k3s-runs-at-bbafb86.json"
+    }
+  ]
+}

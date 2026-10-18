@@ -1,0 +1,16 @@
+{
+  "about": "The closed pull requests recorded at seventeen a page: its first page carries v0.72.0's three pull requests and ends on one updated two seconds after v0.71.1's commit, so only having mapped every commit stops the paging there.",
+  "serve": [
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_compare_v0_71_1_v0_72_0__per_page_100__1118b16acb.json"
+    },
+    {
+      "recording": "onepipeline-release-v0.72.0/repos_nickderobertis_onepipeline_releases__per_page_100__311c1f946e.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-per-page-17-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/pulls?state=closed&sort=updated&direction=desc&per_page=100",
+      "why": "a page that maps every commit and still ends after the previous tag's commit"
+    }
+  ]
+}

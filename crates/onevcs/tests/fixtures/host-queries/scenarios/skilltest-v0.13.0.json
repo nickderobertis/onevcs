@@ -1,0 +1,11 @@
+{
+  "about": "skilltest's v0.13.0 range, whose last commit release tooling pushed with no pull request.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/skilltest-compare-v0.12.2-v0.13.0.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/skilltest-pulls-closed-page-1.json"
+    }
+  ]
+}

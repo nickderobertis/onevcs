@@ -1,0 +1,81 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/ziglang/zig/check-runs/111257515417",
+    "completed_at": "2026-10-03T17:46:48Z",
+    "conclusion": "skipped",
+    "created_at": "2026-10-03T17:46:54Z",
+    "head_branch": "float-op-rl",
+    "head_sha": "02eb72c16b18ad8176a156cb7914af573cdac956",
+    "html_url": "https://github.com/ziglang/zig/actions/runs/37141763192/job/111257515417",
+    "id": 111257515417,
+    "labels": [
+     "self-hosted",
+     "Linux",
+     "riscv64"
+    ],
+    "name": "riscv64-linux-debug",
+    "node_id": "CR_kwDOAmaRMs8AAAAZ53b1mQ",
+    "run_attempt": 1,
+    "run_id": 37141763192,
+    "run_url": "https://api.github.com/repos/ziglang/zig/actions/runs/37141763192",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-10-03T17:46:54Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/ziglang/zig/actions/jobs/111257515417",
+    "workflow_name": "ci-pr-riscv64-linux"
+   },
+   {
+    "check_run_url": "https://api.github.com/repos/ziglang/zig/check-runs/111257519960",
+    "completed_at": "2026-10-03T17:46:48Z",
+    "conclusion": "skipped",
+    "created_at": "2026-10-03T17:46:55Z",
+    "head_branch": "float-op-rl",
+    "head_sha": "02eb72c16b18ad8176a156cb7914af573cdac956",
+    "html_url": "https://github.com/ziglang/zig/actions/runs/37141763192/job/111257519960",
+    "id": 111257519960,
+    "labels": [
+     "self-hosted",
+     "Linux",
+     "riscv64"
+    ],
+    "name": "riscv64-linux-release",
+    "node_id": "CR_kwDOAmaRMs8AAAAZ53cHWA",
+    "run_attempt": 1,
+    "run_id": 37141763192,
+    "run_url": "https://api.github.com/repos/ziglang/zig/actions/runs/37141763192",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-10-03T17:46:55Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/ziglang/zig/actions/jobs/111257519960",
+    "workflow_name": "ci-pr-riscv64-linux"
+   }
+  ],
+  "total_count": 2
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:45:09 GMT",
+  "etag": "W/\"9668e9037051cc8ee4757b3e7cde3c0482f49493d3cc00307ee9cec04453e209\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4366",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "634"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/ziglang/zig/actions/runs/37141763192/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

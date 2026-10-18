@@ -1,0 +1,43 @@
+{
+ "body": {
+  "message": "chore: Release package onepipeline version 0.72.0",
+  "node_id": "TA_kwDOTx8aUdoAKGU5NzcxMTljYWVmOTMyOGFiODJjODYwYTRjMDY5OTk0MzE5MmIwNGM",
+  "object": {
+   "sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+   "type": "commit",
+   "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/commits/d8d674f1f0b46fff580540ab70137ebc91e6b15b"
+  },
+  "sha": "e977119caef9328ab82c860a4c0699943192b04c",
+  "tag": "v0.72.0",
+  "tagger": {
+   "date": "2026-10-14T22:44:08Z",
+   "email": "whoopnip@gmail.com",
+   "name": "Nick DeRobertis"
+  },
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/tags/e977119caef9328ab82c860a4c0699943192b04c",
+  "verification": {
+   "payload": null,
+   "reason": "unsigned",
+   "signature": null,
+   "verified": false,
+   "verified_at": null
+  }
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:05:23 GMT",
+  "etag": "\"12c81200291c156ceefd781f2f4453a53135baef5a2a313797e2ca0d23b60753\"",
+  "last-modified": "Thu, 15 Oct 2026 22:18:45 GMT",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4733",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "267"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/git/tags/e977119caef9328ab82c860a4c0699943192b04c"
+ },
+ "status": 200
+}

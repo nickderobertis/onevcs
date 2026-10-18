@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use url::Url;
 
 use crate::boundary::{TermScope, Visibility};
+use crate::host_query::{CommitSha, PositiveId, RepositorySlug, Timestamp};
 use crate::releases::TargetName;
 use crate::rules::MergePolicy;
 use crate::sweep;
@@ -120,6 +121,119 @@ pub enum Command {
     /// Copy one directory of a private branch, as one new neutral commit, onto a local
     /// branch of a public repository. Nothing is pushed.
     Export(ExportArgs),
+    /// Ask GitHub, read-only, about a repository's releases, changes and workflow runs,
+    /// answering as versioned JSON. Nothing under the state root is read or written.
+    Host {
+        /// Which host question.
+        #[command(subcommand)]
+        command: HostCommand,
+    },
+}
+
+/// The `onevcs host` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum HostCommand {
+    /// The merged pull requests a release tag carries.
+    ReleaseChanges(HostReleaseChangesArgs),
+    /// A pull request's final checks: the latest `pull_request` run per workflow at its
+    /// head, with its latest attempt's jobs.
+    ChangeChecks(HostChangeChecksArgs),
+    /// The workflow runs GitHub recorded at a commit.
+    CommitRuns(HostCommitRunsArgs),
+    /// The jobs of a workflow run's latest attempt.
+    RunJobs(HostRunJobsArgs),
+    /// Print the versioned JSON schemas of the four answers.
+    Schema(HostSchemaArgs),
+}
+
+/// Arguments for `onevcs host release-changes`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostReleaseChangesArgs {
+    /// The repository, as OWNER/NAME.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub repo: RepositorySlug,
+    /// The release's tag.
+    // llmlint: ignore[invalid_states_unrepresentable] any tag GitHub holds is a valid
+    // operand: it is percent-encoded into the path, and one GitHub does not hold is the
+    // host's answer, exit 1 naming it, rather than a usage error.
+    #[arg(long, value_name = "TAG")]
+    pub tag: String,
+    /// The tag the release is measured from. Omitted, the first earlier published
+    /// release of the same `<prefix>MAJOR.MINOR.PATCH` form in the releases listing.
+    // llmlint: ignore[invalid_states_unrepresentable] the same operand as `tag`.
+    #[arg(long, value_name = "TAG")]
+    pub previous_tag: Option<String>,
+    /// Accepted for symmetry with other verbs; JSON is the only answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs host change-checks`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostChangeChecksArgs {
+    /// The repository, as OWNER/NAME.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub repo: RepositorySlug,
+    /// The pull request's number, which labels the answer and is not looked up.
+    #[arg(long, value_name = "NUMBER")]
+    pub change: PositiveId,
+    /// Its last head commit, 40 hexadecimal characters.
+    #[arg(long, value_name = "SHA")]
+    pub head: CommitSha,
+    /// When it merged, RFC 3339; runs created after it are left out.
+    #[arg(long, value_name = "TIMESTAMP")]
+    pub merged_at: Option<Timestamp>,
+    /// Accepted for symmetry with other verbs; JSON is the only answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs host commit-runs`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+#[command(group(clap::ArgGroup::new("at").required(true).args(["commit", "tag"])))]
+pub struct HostCommitRunsArgs {
+    /// The repository, as OWNER/NAME.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub repo: RepositorySlug,
+    /// The commit, 40 hexadecimal characters.
+    #[arg(long, value_name = "SHA")]
+    pub commit: Option<CommitSha>,
+    /// A tag naming the commit; an annotated tag is dereferenced.
+    // llmlint: ignore[invalid_states_unrepresentable] the same operand as
+    // `HostReleaseChangesArgs::tag`, for the same reason.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+    /// Keep only runs of this event — repeatable. Omitted, every event.
+    // llmlint: ignore[invalid_states_unrepresentable] an event is matched against what
+    // GitHub reports and never sent to it, and GitHub adds events, so no closed list here
+    // could be right for long.
+    #[arg(long, value_name = "EVENT")]
+    pub event: Vec<String>,
+    /// Accepted for symmetry with other verbs; JSON is the only answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs host run-jobs`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostRunJobsArgs {
+    /// The repository, as OWNER/NAME.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub repo: RepositorySlug,
+    /// The workflow run's id.
+    #[arg(long, value_name = "ID")]
+    pub run: PositiveId,
+    /// Accepted for symmetry with other verbs; JSON is the only answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs host schema`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostSchemaArgs {
+    /// Print the schemas as JSON, which is the only form they take.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Which private repositories a public boundary check derives its terms from.

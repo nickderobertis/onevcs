@@ -1,0 +1,16 @@
+{
+  "about": "onepipeline's v0.72.0...v0.73.0 recorded at one commit a page, so the comparison is read through its Link, with the closed pull requests that map both commits.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/onepipeline-compare-v0.72.0-v0.73.0-per-page-1-page-1.json",
+      "for": "repos/nickderobertis/onepipeline/compare/v0.72.0...v0.73.0?per_page=100",
+      "why": "a comparison spread over two linked pages"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-compare-v0.72.0-v0.73.0-per-page-1-page-2.json"
+    },
+    {
+      "recording": "recorded-for-host-queries/onepipeline-pulls-closed-page-1.json"
+    }
+  ]
+}

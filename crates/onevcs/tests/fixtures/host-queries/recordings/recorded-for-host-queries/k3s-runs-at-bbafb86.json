@@ -1,0 +1,22 @@
+{
+ "body": {
+  "total_count": 0,
+  "workflow_runs": []
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Sat, 17 Oct 2026 04:39:34 GMT",
+  "etag": "W/\"9f7a0abe34c09f0193c50dc37e26da03db28973b03a84cf977ab7c15ac8c8434\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4422",
+  "x-ratelimit-reset": "1792213124",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "578"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/k3s-io/k3s/actions/runs?per_page=100&head_sha=bbafb86e91ae3682a1811119d136203957df9061"
+ },
+ "status": 200
+}

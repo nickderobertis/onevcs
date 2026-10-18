@@ -100,8 +100,15 @@ impl Answer {
 /// check it just reported has not settled, and reading that as a failure would make
 /// every unsettled check unreadable.
 pub fn attempt(args: &[&str]) -> Result<Answer> {
+    attempt_with_env(args, &[])
+}
+
+/// [`attempt`], with `env` set on the `gh` process — how a host query hands `gh` the
+/// token its caller chose, rather than whatever `gh auth` would pick.
+pub fn attempt_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<Answer> {
     let output = Command::new(program())
         .args(args)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .map_err(error::at("run", &program()))?;

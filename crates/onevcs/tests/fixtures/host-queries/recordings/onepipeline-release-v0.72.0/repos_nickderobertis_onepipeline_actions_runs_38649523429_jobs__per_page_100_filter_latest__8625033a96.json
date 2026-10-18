@@ -1,0 +1,199 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/nickderobertis/onepipeline/check-runs/116144583411",
+    "completed_at": "2026-10-14T22:43:07Z",
+    "conclusion": "success",
+    "created_at": "2026-10-14T22:43:00Z",
+    "head_branch": "main",
+    "head_sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+    "html_url": "https://github.com/nickderobertis/onepipeline/actions/runs/38649523429/job/116144583411",
+    "id": 116144583411,
+    "labels": [
+     "ubuntu-latest"
+    ],
+    "name": "guard",
+    "node_id": "CR_kwDOTx8aUc8AAAAbCsGy8w",
+    "run_attempt": 1,
+    "run_id": 38649523429,
+    "run_url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38649523429",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000233069,
+    "runner_name": "GitHub Actions 1000233069",
+    "started_at": "2026-10-14T22:43:03Z",
+    "status": "completed",
+    "steps": [
+     {
+      "completed_at": "2026-10-14T22:43:04Z",
+      "conclusion": "success",
+      "name": "Set up job",
+      "number": 1,
+      "started_at": "2026-10-14T22:43:04Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:43:04Z",
+      "conclusion": "success",
+      "name": "Run if [ -n \"$TOKEN\" ]; then",
+      "number": 2,
+      "started_at": "2026-10-14T22:43:04Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:43:04Z",
+      "conclusion": "success",
+      "name": "Complete job",
+      "number": 3,
+      "started_at": "2026-10-14T22:43:04Z",
+      "status": "completed"
+     }
+    ],
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/jobs/116144583411",
+    "workflow_name": "Release-plz"
+   },
+   {
+    "check_run_url": "https://api.github.com/repos/nickderobertis/onepipeline/check-runs/116144623214",
+    "completed_at": "2026-10-14T22:44:14Z",
+    "conclusion": "success",
+    "created_at": "2026-10-14T22:43:07Z",
+    "head_branch": "main",
+    "head_sha": "d8d674f1f0b46fff580540ab70137ebc91e6b15b",
+    "html_url": "https://github.com/nickderobertis/onepipeline/actions/runs/38649523429/job/116144623214",
+    "id": 116144623214,
+    "labels": [
+     "ubuntu-latest"
+    ],
+    "name": "release-plz",
+    "node_id": "CR_kwDOTx8aUc8AAAAbCsJObg",
+    "run_attempt": 1,
+    "run_id": 38649523429,
+    "run_url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38649523429",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000233084,
+    "runner_name": "GitHub Actions 1000233084",
+    "started_at": "2026-10-14T22:43:34Z",
+    "status": "completed",
+    "steps": [
+     {
+      "completed_at": "2026-10-14T22:43:37Z",
+      "conclusion": "success",
+      "name": "Set up job",
+      "number": 1,
+      "started_at": "2026-10-14T22:43:35Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:43:43Z",
+      "conclusion": "success",
+      "name": "Run actions/checkout@v4",
+      "number": 2,
+      "started_at": "2026-10-14T22:43:37Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:05Z",
+      "conclusion": "success",
+      "name": "Run Swatinem/rust-cache@v2",
+      "number": 3,
+      "started_at": "2026-10-14T22:43:43Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:07Z",
+      "conclusion": "success",
+      "name": "Run taiki-e/install-action@v2",
+      "number": 4,
+      "started_at": "2026-10-14T22:44:05Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:07Z",
+      "conclusion": "success",
+      "name": "The toolchain honours release-plz.toml's semver_check",
+      "number": 5,
+      "started_at": "2026-10-14T22:44:07Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "success",
+      "name": "Tag and publish a merged version bump",
+      "number": 6,
+      "started_at": "2026-10-14T22:44:07Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "success",
+      "name": "Use the latest release tag as the version baseline",
+      "number": 7,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "skipped",
+      "name": "Open or update the release PR",
+      "number": 8,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "skipped",
+      "name": "Auto-merge the release PR when the gate is green",
+      "number": 9,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "success",
+      "name": "Post Run Swatinem/rust-cache@v2",
+      "number": 17,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "success",
+      "name": "Post Run actions/checkout@v4",
+      "number": 18,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T22:44:11Z",
+      "conclusion": "success",
+      "name": "Complete job",
+      "number": 19,
+      "started_at": "2026-10-14T22:44:11Z",
+      "status": "completed"
+     }
+    ],
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/jobs/116144623214",
+    "workflow_name": "Release-plz"
+   }
+  ],
+  "total_count": 2
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:05:28 GMT",
+  "etag": "\"a9b686bcdf5239bd4f2c5185d3010978c50dfc7ce5ad8195298068348bf0b607\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4722",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "278"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38649523429/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

@@ -1,0 +1,50 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/nickderobertis/onepipeline/check-runs/116086114665",
+    "completed_at": "2026-10-14T20:26:47Z",
+    "conclusion": "skipped",
+    "created_at": "2026-10-14T20:26:47Z",
+    "head_branch": "nick/847/op-readjust",
+    "head_sha": "c5574ad1e2747b59be7bdf843f86cd6e7a4e4b97",
+    "html_url": "https://github.com/nickderobertis/onepipeline/actions/runs/38632124755/job/116086114665",
+    "id": 116086114665,
+    "labels": [
+     "ubuntu-latest"
+    ],
+    "name": "release-sweep",
+    "node_id": "CR_kwDOTx8aUc8AAAAbB0WJaQ",
+    "run_attempt": 1,
+    "run_id": 38632124755,
+    "run_url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38632124755",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-10-14T20:26:47Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/jobs/116086114665",
+    "workflow_name": "Release sweep"
+   }
+  ],
+  "total_count": 1
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:06:36 GMT",
+  "etag": "\"df26684ba90bebbd9ca2f2a107d7984531c0559134788fadb7f4de07dafc6fbf\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4633",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "367"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38632124755/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

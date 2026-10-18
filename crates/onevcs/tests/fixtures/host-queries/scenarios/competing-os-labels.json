@@ -1,0 +1,8 @@
+{
+  "about": "A Karel-Survival run whose jobs asked for runs-on: [ubuntu-latest, windows-latest], a pair no runner carries, so both were cancelled a day later with no runner and labels naming two operating systems.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/karel-survival-run-37584281959-jobs.json"
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+ "body": {
+  "jobs": [
+   {
+    "check_run_url": "https://api.github.com/repos/nickderobertis/onepipeline/check-runs/115753351271",
+    "completed_at": "2026-10-14T08:19:47Z",
+    "conclusion": "success",
+    "created_at": "2026-10-14T08:19:33Z",
+    "head_branch": "nick/890/supervise-landings",
+    "head_sha": "62631f7c3936c095c6973f5108e9265360466e84",
+    "html_url": "https://github.com/nickderobertis/onepipeline/actions/runs/38534306075/job/115753351271",
+    "id": 115753351271,
+    "labels": [
+     "ubuntu-latest"
+    ],
+    "name": "suppressions",
+    "node_id": "CR_kwDOTx8aUc8AAAAa82_4Zw",
+    "run_attempt": 1,
+    "run_id": 38534306075,
+    "run_url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38534306075",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000231153,
+    "runner_name": "GitHub Actions 1000231153",
+    "started_at": "2026-10-14T08:19:35Z",
+    "status": "completed",
+    "steps": [
+     {
+      "completed_at": "2026-10-14T08:19:38Z",
+      "conclusion": "success",
+      "name": "Set up job",
+      "number": 1,
+      "started_at": "2026-10-14T08:19:36Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T08:19:42Z",
+      "conclusion": "success",
+      "name": "Run actions/checkout@v4",
+      "number": 2,
+      "started_at": "2026-10-14T08:19:38Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T08:19:45Z",
+      "conclusion": "success",
+      "name": "Run nickderobertis/notignored@v0",
+      "number": 3,
+      "started_at": "2026-10-14T08:19:42Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T08:19:45Z",
+      "conclusion": "success",
+      "name": "Post Run actions/checkout@v4",
+      "number": 6,
+      "started_at": "2026-10-14T08:19:45Z",
+      "status": "completed"
+     },
+     {
+      "completed_at": "2026-10-14T08:19:45Z",
+      "conclusion": "success",
+      "name": "Complete job",
+      "number": 7,
+      "started_at": "2026-10-14T08:19:45Z",
+      "status": "completed"
+     }
+    ],
+    "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/jobs/115753351271",
+    "workflow_name": "notignored"
+   }
+  ],
+  "total_count": 1
+ },
+ "headers": {
+  "content-type": "application/json; charset=utf-8",
+  "date": "Fri, 16 Oct 2026 00:06:22 GMT",
+  "etag": "\"d25c34bcb2cd407d9e879eca136dae3530834c8b92421213f3779a88d5c5c5c1\"",
+  "x-github-api-version-selected": "2022-11-28",
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "4654",
+  "x-ratelimit-reset": "1792111236",
+  "x-ratelimit-resource": "core",
+  "x-ratelimit-used": "346"
+ },
+ "request": {
+  "method": "GET",
+  "url": "https://api.github.com/repos/nickderobertis/onepipeline/actions/runs/38534306075/jobs?per_page=100&filter=latest"
+ },
+ "status": 200
+}

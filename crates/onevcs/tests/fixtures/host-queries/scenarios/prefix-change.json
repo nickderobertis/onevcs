@@ -1,0 +1,8 @@
+{
+  "about": "onejudge's releases, whose tags moved from v0.17.2 to onejudge-v0.18.0, so the first onejudge-v release has no earlier release of its form.",
+  "serve": [
+    {
+      "recording": "recorded-for-host-queries/onejudge-releases.json"
+    }
+  ]
+}
