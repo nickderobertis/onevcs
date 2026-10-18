@@ -415,7 +415,7 @@ fn reads_since(hosted: &Hosted, from: usize) -> Reads {
             .count(),
         probes: calls
             .iter()
-            .filter(|call| *call == "api repos/acme-corp/hosted")
+            .filter(|call| *call == "api repos/acme-corp/hosted --include")
             .count(),
     }
 }

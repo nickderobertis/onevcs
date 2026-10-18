@@ -8896,7 +8896,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub enum TermScope { Registry, Identities(Vec<String>) }",
         "pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }",
         "pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }",
-        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History }",
+        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility }",
         "pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }",
         "pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }",
         "pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }",
@@ -9030,6 +9030,15 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         .expect("serializes"),
         json!({"verdict": "unavailable", "reason": "declarations"})
     );
+    assert_eq!(
+        serde_json::to_value(BoundaryVerdict::Unavailable {
+            reason: Unavailability::HostVisibility
+        })
+        .expect("serializes"),
+        json!({"verdict": "unavailable", "reason": "host-visibility"})
+    );
+    assert_eq!(onevcs::boundary::BOUNDARY_SCHEMA_VERSION, 2);
+    assert!(declared.contains("pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;"));
     // The amendment's own input and verdict fixtures are ones this build reads.
     let fixture: BoundaryInput = serde_json::from_str(&amendment_block_declaring(
         "json",

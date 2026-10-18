@@ -356,22 +356,67 @@ case "$command" in
       repos/*/*)
         # A repository's own record, read for its visibility. A world that has said
         # nothing about one is a host this credential cannot read it from, which is a
-        # refusal; `refuse` says so explicitly.
+        # refusal; `refuse` says so explicitly, and `forbidden` is the same refusal as
+        # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `server-error` and
+        # `unreachable` are a host that did not answer at all. Asked `--include`, it
+        # prints the status line and headers ahead of the body, as `gh` does — on a
+        # refusal too.
         slug="${path#repos/}"
-        answer="$STATE/visibility/$slug"
-        if [ -f "$answer" ]; then
-          visibility="$(cat "$answer")"
-          if [ "$visibility" = "refuse" ]; then
-            printf 'gh: Not Found (HTTP 404)\n' >&2
+        include=false
+        for argument in "$@"; do
+          [ "$argument" = "--include" ] && include=true
+        done
+        # One response: status line, extra headers (one per line, may be empty), body,
+        # and what `gh` itself says on stderr when the status is not a success.
+        respond() {
+          if [ "$include" = true ]; then
+            printf 'HTTP/2.0 %s\nContent-Type: application/json; charset=utf-8\n' "$1"
+            [ -n "$2" ] && printf '%s\n' "$2"
+            printf '\n'
+          fi
+          printf '%s\n' "$3"
+          if [ -n "${4:-}" ]; then
+            printf 'gh: %s\n' "$4" >&2
             exit 1
           fi
-          private=false
-          [ "$visibility" = "public" ] || private=true
-          printf '{"full_name":"%s","private":%s,"visibility":"%s"}\n' "$slug" "$private" "$visibility"
           exit 0
-        fi
-        printf 'gh: Not Found (HTTP 404)\n' >&2
-        exit 1 ;;
+        }
+        quota='X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4999
+X-Ratelimit-Resource: core'
+        not_found() {
+          respond '404 Not Found' "$quota" '{"message":"Not Found","status":"404"}' 'Not Found (HTTP 404)'
+        }
+        answer="$STATE/visibility/$slug"
+        [ -f "$answer" ] || not_found
+        visibility="$(cat "$answer")"
+        case "$visibility" in
+          refuse) not_found ;;
+          forbidden)
+            respond '403 Forbidden' "$quota" \
+              '{"message":"Resource not accessible by personal access token","status":"403"}' \
+              'Resource not accessible by personal access token (HTTP 403)' ;;
+          rate-limited:*)
+            message='API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID 0000:0000.'
+            respond '403 Forbidden' "X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: ${visibility#rate-limited:}
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 5000" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          secondary-limited)
+            message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+            respond '403 Forbidden' "Retry-After: 60
+$quota" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          server-error)
+            # `gh` names the URL it asked when the host gave no message of its own.
+            respond '502 Bad Gateway' '' '' "HTTP 502: Bad Gateway (https://api.github.com/repos/$slug)" ;;
+          unreachable)
+            printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2
+            exit 1 ;;
+        esac
+        private=false
+        [ "$visibility" = "public" ] || private=true
+        respond '200 OK' "$quota" "{\"full_name\":\"$slug\",\"private\":$private,\"visibility\":\"$visibility\"}" ;;
     esac
     case "$path" in
       */actions/runs)

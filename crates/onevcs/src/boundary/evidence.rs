@@ -5,26 +5,32 @@
 //! turned down, exit 1 — and an unavailable check is [`Error::Invalid`], exit 2: both
 //! say *where* in the write the check stopped and nothing about what it found. What it
 //! found is written to a file under the state root that only this user can read, and
-//! the refusal names that file, which is on this host and nowhere else.
+//! the refusal names that file, which is on this host and nowhere else. A destination
+//! the host did not say is or is not public is the one unavailable check that says
+//! more: why the host did not answer, and when it says it will again, which names no
+//! repository and is what the operator waits on.
 
 use std::time::Instant;
 
 use super::diagnostics::{self, Phases};
 use super::screen::{self, Outgoing};
-use super::{scope, visibility, BoundaryVerdict, Evidence, Surface, TermScope};
+use super::visibility::{self, Screening};
+use super::{scope, BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
 use crate::error::{Error, Result};
+use crate::gh::Unanswered;
 use crate::host::Hosting;
 
 /// Refresh the destination's visibility and, unless it is verified not public, screen
 /// `outgoing` against every private repository its scope selects — the destination
-/// included, when it is in scope and not public.
+/// included, when it is in scope and not public. A destination the host did not answer
+/// for is held before anything is screened.
 pub fn guard_publication(
     hosting: &dyn Hosting,
     destination: &str,
     outgoing: &Outgoing<'_>,
     scope: &TermScope,
 ) -> Result<()> {
-    if !visibility::screens_writes(hosting, destination)? {
+    if !owed(visibility::screening(hosting, destination)?, destination)? {
         return Ok(());
     }
     let screened = screen::screen(outgoing, scope);
@@ -56,7 +62,7 @@ pub fn guard_fields(
     fields: &[(Surface, &str)],
     scope: &TermScope,
 ) -> Result<()> {
-    if !visibility::screens_writes(hosting, destination)? {
+    if !owed(visibility::screening(hosting, destination)?, destination)? {
         return Ok(());
     }
     screen_fields(fields, scope)
@@ -72,10 +78,39 @@ pub fn guard_fields_unless_recorded(
     fields: &[(Surface, &str)],
     scope: &TermScope,
 ) -> Result<()> {
-    if !visibility::screens_writes_unless_recorded(hosting, destination)? {
+    if !owed(
+        visibility::screening_unless_recorded(hosting, destination)?,
+        destination,
+    )? {
         return Ok(());
     }
     screen_fields(fields, scope)
+}
+
+/// Whether a write to `destination` is screened, or the unavailable check that holds it
+/// because the host did not answer whether it is public.
+fn owed(screening: Screening, destination: &str) -> Result<bool> {
+    match screening {
+        Screening::Screened => Ok(true),
+        Screening::Unscreened => Ok(false),
+        Screening::Unanswered(unanswered) => Err(unanswered_check(destination, unanswered)),
+    }
+}
+
+/// The unavailable check a destination the host did not answer for is: its reason says
+/// why, from what the host sent and nothing it was asked about, and its evidence keeps
+/// what `gh` wrote beside it.
+fn unanswered_check(destination: &str, unanswered: Unanswered) -> Error {
+    let reason = Unavailability::HostVisibility;
+    let said = format!("{}; retry once the host answers", unanswered.said);
+    let evidence = vec![Evidence::Unavailable {
+        reason,
+        identity: Some(destination.to_owned()),
+        detail: format!("{}; gh wrote: {}", unanswered.said, unanswered.detail),
+    }];
+    let verdict = BoundaryVerdict::Unavailable { reason };
+    let sentence = verdict.reason().unwrap_or_default();
+    held(verdict, format!("{sentence} — {said}"), &evidence)
 }
 
 /// Screen short fields against every private repository `scope` selects.
@@ -125,7 +160,13 @@ pub fn settle(verdict: BoundaryVerdict, evidence: Vec<Evidence>) -> Result<()> {
     let Some(reason) = verdict.reason() else {
         return Ok(());
     };
-    let kept = match keep(&evidence) {
+    Err(held(verdict, reason, &evidence))
+}
+
+/// The error a write that is not going ahead fails with: `reason`, then that nothing
+/// was written and where `evidence` was kept.
+fn held(verdict: BoundaryVerdict, reason: String, evidence: &[Evidence]) -> Error {
+    let kept = match keep(evidence) {
         Ok(path) => format!(
             "; what it found is recorded privately at {}, on this host only",
             path.display()
@@ -133,10 +174,10 @@ pub fn settle(verdict: BoundaryVerdict, evidence: Vec<Evidence>) -> Result<()> {
         Err(error) => format!("; what it found could not be recorded privately: {error}"),
     };
     let reason = format!("{reason}. Nothing was written to the remote{kept}");
-    Err(match verdict {
+    match verdict {
         BoundaryVerdict::Refuse { .. } => Error::GateFailed { reason },
         _ => Error::Invalid { reason },
-    })
+    }
 }
 
 /// Write `evidence` to a file only this user can read, under the state root.

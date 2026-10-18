@@ -416,7 +416,7 @@ fn a_preserving_push_reaches_no_change_request_and_runs_no_merge_path() {
     let asked: Vec<String> = world
         .host_calls()
         .into_iter()
-        .filter(|call| call != "api repos/acme-corp/hosted")
+        .filter(|call| call != "api repos/acme-corp/hosted --include")
         .collect();
     assert!(
         asked.is_empty(),

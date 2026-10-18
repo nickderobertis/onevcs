@@ -1541,12 +1541,20 @@ every time a pass met a session's leftover worker.
   (0700/0600). That includes what is printed *beside* a refusal: a publication's
   hand-back line drops the branch name when the failure is the boundary's
   (`evidence::is_boundary_reason`), because the name may be what was refused.
-- **Unknown is private, and a failed probe is unknown — but never an unchecked write.**
-  `visibility::refresh` records the host's answer, a rule's override, or — on any
-  failure — `unknown`; never the last answer. Every identity that is not public
-  contributes terms. A write skips the screen only where `visibility::screens_writes`
-  says its destination is *verified* not public; a hosted destination the host could not
-  answer for is screened.
+- **Unknown is private, and a refused probe is unknown — but never an unchecked write.**
+  `visibility::refresh` records the host's answer, a rule's override, or — on a refusal
+  (`404`, `401`, a `403` that is not a rate limit) — `unknown`; never the last answer.
+  Every identity that is not public contributes terms. A write skips the screen only
+  where `visibility::screening` says its destination is *verified* not public; a hosted
+  destination the host refused to say about is screened.
+- **A probe the host did not answer is neither an answer nor a refusal.** Rate limited,
+  `5xx`, or no HTTP response at all (`gh::Unanswered`, read off `gh api --include`'s
+  status and headers) records nothing — the last answer stands — and the write is held
+  as `Unavailability::HostVisibility`, exit 2, before a term is derived. Screening it
+  instead read every repository whose answer was lost as private, and refused public
+  work for carrying its own destination's name (onevcs#432). The reason is built from
+  the status and headers alone, because what `gh` writes can name the repository; that
+  goes to the evidence file.
 - **A removal is allowed against the resolved destination base and nothing else.** Not
   earlier base history, and not another parent of a merge: every parent diff is held to
   the whole policy.

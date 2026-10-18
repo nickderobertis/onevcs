@@ -1539,7 +1539,7 @@ fn a_reply_the_public_boundary_refuses_posts_nothing() {
 
 /// How many times the host was asked `slug`'s visibility.
 fn visibility_probes(world: &World, slug: &str) -> usize {
-    let probe = format!("api repos/{slug}");
+    let probe = format!("api repos/{slug} --include");
     world
         .host_calls()
         .iter()

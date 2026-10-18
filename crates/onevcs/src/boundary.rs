@@ -68,7 +68,7 @@ pub const PRIVATE_TERMS_VERSION: u32 = 1;
 
 /// The version of the JSON shapes `onevcs boundary inspect` and `onevcs boundary
 /// check` exchange, which [`boundary_schema`] carries.
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 1;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;
 
 /// Whether a repository is public.
 ///
@@ -282,6 +282,10 @@ pub enum Unavailability {
     Matcher,
     /// What is being published could not be read out of the repository.
     History,
+    /// The host did not answer whether the destination is public — it was rate
+    /// limited, failing, or out of reach — so nothing it last said was replaced and
+    /// the write waits for it to answer.
+    HostVisibility,
 }
 
 impl Unavailability {
@@ -296,6 +300,9 @@ impl Unavailability {
             }
             Unavailability::Matcher => "the terms could not be compiled",
             Unavailability::History => "what is being published could not be read",
+            Unavailability::HostVisibility => {
+                "the host did not answer whether the destination is public"
+            }
         }
     }
 }

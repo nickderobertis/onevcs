@@ -806,6 +806,223 @@ fn the_destinations_visibility_is_refreshed_at_the_write_and_a_rule_overrides_it
     host.published(&output, &before, "a rule's private over an unanswered host");
 }
 
+/// The evidence a held or refused write recorded privately, read off the path its
+/// stderr names.
+fn kept(stderr: &str) -> serde_json::Value {
+    let path = stderr
+        .split("recorded privately at ")
+        .nth(1)
+        .and_then(|rest| rest.split(", on this host only").next())
+        .unwrap_or_else(|| panic!("the reason names where the detail is: {stderr}"));
+    serde_json::from_str(&std::fs::read_to_string(path).expect("the evidence")).expect("JSON")
+}
+
+impl Boundary {
+    /// The destination's identity as the registry records it.
+    fn destination(&self) -> serde_json::Value {
+        self.registry()["identities"]["github.com/sample-owner/openwidget"].clone()
+    }
+
+    /// A session whose one commit names the destination itself — a public
+    /// repository's own name, which is no term while it is recorded public.
+    fn naming_the_destination(&self, branch: &str) -> String {
+        let (token, worktree) = self.session(branch);
+        write(
+            &worktree,
+            &format!("examples/{branch}.md"),
+            "how openwidget is used\n",
+        );
+        commit(&self.world, &worktree, "docs: add an openwidget example");
+        token
+    }
+
+    /// Assert `output` was held because the host did not say whether the destination
+    /// is public — exit 2, saying `said` and never the destination — with nothing
+    /// written, and answer the one piece of evidence it kept.
+    fn held(&self, output: &std::process::Output, said: &str, before: &str) -> serde_json::Value {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "the public boundary check is unavailable: the host did not answer whether the \
+                 destination is public — GitHub's REST API (GET /repos/{{owner}}/{{repo}}) \
+                 {said}; retry once the host answers. Nothing was written to the remote"
+            )),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("public output carries a term"), "{stderr}");
+        assert!(!stderr.contains("sample-owner/openwidget"), "{stderr}");
+        assert_neutral(&stderr);
+        assert_eq!(self.origin_refs(), before, "the origin moved");
+        let evidence = kept(&stderr);
+        let entries = evidence.as_array().expect("a list of evidence");
+        assert_eq!(entries.len(), 1, "{evidence}");
+        assert_eq!(entries[0]["kind"], "unavailable", "{evidence}");
+        assert_eq!(entries[0]["reason"], "host-visibility", "{evidence}");
+        assert_eq!(
+            entries[0]["identity"], "github.com/sample-owner/openwidget",
+            "{evidence}"
+        );
+        let detail = entries[0]["detail"].as_str().expect("a detail").to_owned();
+        assert!(detail.contains(said), "{detail}");
+        entries[0].clone()
+    }
+}
+
+/// What a host whose REST quota is spent says, as the reason renders it.
+const LIMITED: &str = "is refused for its rate limit: HTTP 403, limit 5000 (core), 0 remaining, \
+                       resets at 2026-10-18T01:06:06.000Z";
+
+#[test]
+fn a_rate_limited_visibility_probe_holds_the_publication_and_keeps_the_recorded_public() {
+    let host = Boundary::with_private(&[]);
+    let recorded = host.destination();
+    assert_eq!(recorded["visibility"], "public", "{recorded}");
+    assert_eq!(recorded["observation"], "host", "{recorded}");
+    assert!(recorded["observed_at"].is_string(), "{recorded}");
+
+    // The host's REST quota runs out with the reset it names. The publication is held
+    // as unavailable before a term is derived — so the destination is not read as
+    // private and its own name, which the work carries, is not refused as one — and
+    // the answer the host gave before the outage still stands.
+    let token = host.naming_the_destination("held-by-the-quota");
+    let before = host.origin_refs();
+    host.world
+        .host_visibility("sample-owner/openwidget", "rate-limited:1792285566");
+    let evidence = host.held(&host.publish(&token, &[]), LIMITED, &before);
+    assert!(
+        evidence["detail"]
+            .as_str()
+            .expect("a detail")
+            .contains("gh wrote: gh: API rate limit exceeded for user ID 1."),
+        "{evidence}"
+    );
+    assert_eq!(
+        host.destination(),
+        recorded,
+        "the failed lookup replaced the record"
+    );
+
+    // Asked again while the quota is still spent, it is held again rather than
+    // screened on what the first attempt left behind.
+    host.held(&host.publish(&token, &[]), LIMITED, &before);
+    assert_eq!(host.destination(), recorded);
+
+    // Once the host answers, the same publication is screened as it always was, and
+    // the destination's own name in it is no term.
+    host.world
+        .host_visibility("sample-owner/openwidget", "public");
+    host.published(
+        &host.publish(&token, &[]),
+        &before,
+        "the same publication once the host answers",
+    );
+    let answered = host.destination();
+    assert_eq!(answered["visibility"], "public", "{answered}");
+    assert_eq!(answered["observation"], "host", "{answered}");
+}
+
+#[test]
+fn every_way_a_host_does_not_answer_holds_the_publication_and_an_inspection_records_nothing() {
+    let host = Boundary::with_private(&[]);
+    for (answer, said, wrote) in [
+        (
+            "secondary-limited",
+            "is refused for a secondary rate limit: HTTP 403, limit 5000 (core), \
+             4999 remaining, retry after 60s",
+            "You have exceeded a secondary rate limit.",
+        ),
+        (
+            "server-error",
+            "failed on the host's side: HTTP 502",
+            // What `gh` said names the repository, so it is kept in the evidence
+            // alone and never reaches the reason.
+            "(https://api.github.com/repos/sample-owner/openwidget)",
+        ),
+        (
+            "unreachable",
+            "gave no HTTP response",
+            "error connecting to api.github.com",
+        ),
+    ] {
+        // What the host last answered, which each retry below stamps anew.
+        let recorded = host.destination();
+        assert_eq!(recorded["visibility"], "public", "{answer}: {recorded}");
+        let token = host.naming_the_destination(&format!("held-{answer}"));
+        let before = host.origin_refs();
+        host.world
+            .host_visibility("sample-owner/openwidget", answer);
+        let evidence = host.held(&host.publish(&token, &[]), said, &before);
+        assert!(
+            evidence["detail"]
+                .as_str()
+                .expect("a detail")
+                .contains(wrote),
+            "{answer}: {evidence}"
+        );
+        assert_eq!(host.destination(), recorded, "{answer}: the record moved");
+
+        // An inspection while the host does not answer has no answer to give, and
+        // records none over the one it holds.
+        let inspected = host.inspect("openwidget");
+        assert_eq!(inspected.code, 0, "{answer}: {}", inspected.stderr);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&inspected.stdout).expect("JSON")
+                ["visibility"],
+            "unknown",
+            "{answer}"
+        );
+        assert_eq!(
+            host.destination(),
+            recorded,
+            "{answer}: inspect moved the record"
+        );
+
+        host.world
+            .host_visibility("sample-owner/openwidget", "public");
+        host.published(
+            &host.publish(&token, &[]),
+            &before,
+            &format!("{answer}: once the host answers"),
+        );
+    }
+}
+
+#[test]
+fn a_plain_403_is_the_hosts_answer_so_the_destination_is_recorded_unknown_and_screened_private() {
+    let host = Boundary::with_private(&[]);
+    assert_eq!(host.destination()["visibility"], "public");
+
+    // A credential the host will not show the repository to has been answered, and
+    // what it says is that nothing here can confirm the destination is public: it is
+    // recorded unknown, which is private, so its own name is a term like any private
+    // repository's and the write naming it is refused.
+    let token = host.naming_the_destination("refused-by-the-credential");
+    let before = host.origin_refs();
+    host.world
+        .host_visibility("sample-owner/openwidget", "forbidden");
+    let output = host.publish(&token, &[]);
+    host.refused(&output, "a commit message", &before, "a plain 403");
+    let evidence = kept(&String::from_utf8_lossy(&output.stderr));
+    assert_eq!(evidence[0]["kind"], "term", "{evidence}");
+    assert_eq!(
+        evidence[0]["identity"], "github.com/sample-owner/openwidget",
+        "{evidence}"
+    );
+    let recorded = host.destination();
+    assert_eq!(recorded.get("visibility"), None, "{recorded}");
+    assert_eq!(recorded.get("observed_at"), None, "{recorded}");
+
+    // Its answering public again lets the same work through.
+    host.world
+        .host_visibility("sample-owner/openwidget", "public");
+    host.published(
+        &host.publish(&token, &[]),
+        &before,
+        "the same publication once the host says public",
+    );
+}
+
 #[test]
 fn what_a_refusal_found_is_kept_privately_and_the_timings_name_nothing() {
     let host = Boundary::with_private(&[]);
