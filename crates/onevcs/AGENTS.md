@@ -873,8 +873,12 @@ the *type* side of the status report's serialized contract (`status.rs`), and a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
 driven into writing one. Healing a torn record sits beside it on the same call, and
-`lifecycle.rs` also drives that through `session close`. The collector's is the one
-that looks like a journey and cannot be: what it holds is
+`lifecycle.rs` also drives that through `session close`. A stopped push's wait for its
+process group (`git.rs`'s `reaping`) is one more: macOS answers `EPERM` for a killed
+group whose members are not yet reaped, and Linux has no spelling of that answer, so
+the test answers for a real unreaped group as macOS does; the unreaped-member journey
+in `publication_watch.rs` drives the bound through a publication on either. The
+collector's is the one that looks like a journey and cannot be: what it holds is
 an *interleaving* — a reader taking a read that finds the pipe empty, and finding
 its command already collected when it next looks — and on an idle host that window
 is nanoseconds wide, so it is arranged rather than waited for.
