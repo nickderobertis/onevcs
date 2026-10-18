@@ -142,6 +142,19 @@ fn kinds(hosted: &Hosted) -> Vec<String> {
 
 /// The one boundary record `docs/contract.md` spells, as JSON.
 fn documented_boundary() -> Value {
+    documented("boundary record", |block| block.contains("\"base_commit\""))
+}
+
+/// The one `publication-resumed` payload `docs/contract.md` spells, as JSON.
+fn documented_resumption() -> Value {
+    documented("publication-resumed payload", |block| {
+        block.contains("\"head\"") && !block.contains("\"base_commit\"")
+    })
+}
+
+/// The one JSON block of the resumption amendment that `which` picks out — each names
+/// the change request as `change_url` — parsed.
+fn documented(what: &str, which: impl Fn(&str) -> bool) -> Value {
     let contract = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
     )
@@ -150,10 +163,10 @@ fn documented_boundary() -> Value {
         .split("```json\n")
         .skip(1)
         .filter_map(|rest| rest.split("\n```").next())
-        .filter(|block| block.contains("\"change_url\"") && block.contains("\"base_commit\""))
+        .filter(|block| block.contains("\"change_url\"") && which(block))
         .collect();
-    assert_eq!(blocks.len(), 1, "the contract spells one boundary record");
-    serde_json::from_str(blocks[0]).expect("the documented boundary is JSON")
+    assert_eq!(blocks.len(), 1, "the contract spells one {what}");
+    serde_json::from_str(blocks[0]).unwrap_or_else(|_| panic!("the documented {what} is JSON"))
 }
 
 /// Push something onto the base from outside every verb here, as somebody else's
@@ -345,6 +358,21 @@ fn a_resumed_landing_resolves_by_its_change_request_and_its_merge_commit() {
     let (resumed_at, opened_at) = (position("publication-resumed"), position("change-opened"));
     assert!(resumed_at < opened_at, "{events:?}");
     let (resumption, opened) = (&events[resumed_at], &events[opened_at]);
+    let keys = |value: &Value| {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(
+        keys(&resumption["payload"]),
+        keys(&documented_resumption()),
+        "the payload is the one the contract spells: {resumption}"
+    );
     assert_eq!(resumption["phase"], "review", "{resumption}");
     assert_eq!(resumption["payload"]["branch"], BRANCH, "{resumption}");
     assert_eq!(
