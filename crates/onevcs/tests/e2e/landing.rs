@@ -1655,12 +1655,15 @@ fn a_landing_read_off_the_bases_trailer_answers_in_part_for_a_name_that_kept_com
 /// handed to the real command line — holds change requests another host's session
 /// opened: #238 merged into the base as a real squash commit on the real origin, #239
 /// still open, #240 closed without merging, #241 merged into another branch, and #242
-/// reported merged at a commit the base does not carry. Nothing on this host opened any
-/// of them, published their branches, or recorded a stream about them.
+/// reported merged at a commit the base does not carry. #243 to #246 are answers no host
+/// should give and one might: about another change request, about another repository's,
+/// merged at something that is no commit, and merged from a head no branch could be
+/// named. Nothing on this host opened any of them, published their branches, or recorded
+/// a stream about them.
 struct ElsewhereOpened {
-    /// Held for the scene's lifetime: its root is the state root and the repositories
-    /// every command below reads.
-    _world: crate::world::World,
+    world: crate::world::World,
+    /// This host's own registered checkout of the repository.
+    checkout: std::path::PathBuf,
     host: onevcs_testing::MemoryHost,
     /// The squash commit #238 reached the base as.
     squash: String,
@@ -1710,11 +1713,14 @@ impl ElsewhereOpened {
         world.git(&elsewhere, &["push", "-q", "origin", "main"]);
         let squash = world.git(&elsewhere, &["rev-parse", "HEAD"]);
 
-        let change = |number: &str, head: &str, base: &str| ChangeRequest {
+        let answered = |number: &str, url: &str, head: &str, base: &str| ChangeRequest {
             id: ChangeId(number.to_owned()),
-            url: format!("{ELSEWHERE}/{number}").parse().expect("a URL"),
+            url: url.parse().expect("a URL"),
             head_sha: Sha(head.to_owned()),
             base: base.to_owned(),
+        };
+        let change = |number: &str, head: &str, base: &str| {
+            answered(number, &format!("{ELSEWHERE}/{number}"), head, base)
         };
         let id = |number: &str| ChangeId(number.to_owned());
         let host = onevcs_testing::MemoryHost::seeded(onevcs_testing::HostState {
@@ -1725,6 +1731,15 @@ impl ElsewhereOpened {
                 change("240", &closed, "main"),
                 change("241", &sideways, "release"),
                 change("242", &unbased, "main"),
+                answered("243", &format!("{ELSEWHERE}/999"), &landed, "main"),
+                answered(
+                    "244",
+                    "https://github.com/acme-corp/other/pull/244",
+                    &landed,
+                    "main",
+                ),
+                change("245", &landed, "main"),
+                change("246", &landed, "main"),
             ],
             heads: [
                 (id("238"), "feature/elsewhere".to_owned()),
@@ -1732,6 +1747,10 @@ impl ElsewhereOpened {
                 (id("240"), "feature/closed".to_owned()),
                 (id("241"), "feature/sideways".to_owned()),
                 (id("242"), "feature/unbased".to_owned()),
+                (id("243"), "feature/elsewhere".to_owned()),
+                (id("244"), "feature/elsewhere".to_owned()),
+                (id("245"), "feature/elsewhere".to_owned()),
+                (id("246"), "feature/../elsewhere".to_owned()),
             ]
             .into(),
             merges: [
@@ -1739,13 +1758,21 @@ impl ElsewhereOpened {
                 (id("241"), MergeOutcome::Merged(Sha(sideways.clone()))),
                 // A merge the host names at its head, which the base never received.
                 (id("242"), MergeOutcome::Merged(Sha(unbased.clone()))),
+                (id("243"), MergeOutcome::Merged(Sha(squash.clone()))),
+                (id("244"), MergeOutcome::Merged(Sha(squash.clone()))),
+                (
+                    id("245"),
+                    MergeOutcome::Merged(Sha("not-a-commit".to_owned())),
+                ),
+                (id("246"), MergeOutcome::Merged(Sha(squash.clone()))),
             ]
             .into(),
             closed: [id("240")].into(),
             ..onevcs_testing::HostState::default()
         });
         ElsewhereOpened {
-            _world: world,
+            checkout: world.path("hosted"),
+            world,
             host,
             squash,
         }
@@ -1890,5 +1917,153 @@ fn a_change_request_another_host_opened_and_never_landed_is_still_refused_naming
         stderr.contains("was opened through `onevcs` on this host")
             && stderr.contains("its host could not say where it stands"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn a_host_answer_about_something_else_is_neither_accepted_nor_recorded() {
+    let scene = ElsewhereOpened::new();
+    for (number, why) in [
+        // About another change request, and about another repository's of this number.
+        ("243", "its host answered nothing about it"),
+        ("244", "its host answered nothing about it"),
+        // Merged at something git could never be handed as a commit.
+        (
+            "245",
+            "its host reports it merged at not-a-commit, which main as",
+        ),
+    ] {
+        let url = format!("{ELSEWHERE}/{number}");
+        let (code, stdout, stderr) = scene.run(&["onevcs", "status", &url]);
+        assert_eq!(code, 2, "{url} is refused: {stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(
+            stderr.contains("was opened through `onevcs` on this host") && stderr.contains(why),
+            "{url} names what the host said: {stderr}"
+        );
+    }
+
+    // A merged head no branch could be named is a malformed answer, not an unknown
+    // reference: still refused, as the invalid input it is.
+    let url = format!("{ELSEWHERE}/246");
+    let (code, _, stderr) = scene.run(&["onevcs", "status", &url]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(
+        stderr.contains("onevcs: invalid input: ")
+            && stderr.contains("nothing here can name the work it carried"),
+        "{stderr}"
+    );
+
+    // None of them became a landing anybody here can act on.
+    let (code, _, _) = scene.run(&[
+        "onevcs",
+        "release",
+        "acknowledge",
+        &format!("{ELSEWHERE}/243"),
+        "--target",
+        "container",
+        "--version",
+        "0.25.0",
+    ]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_release_hold_on_a_change_request_another_host_landed_is_answered_on_its_first_read() {
+    let url = format!("{ELSEWHERE}/238");
+
+    // `release status` is the first thing asked: nothing here has read the change
+    // request before, and the hold resolves to its landing rather than refusing.
+    let scene = ElsewhereOpened::new();
+    let waiting = scene.json(&[
+        "onevcs",
+        "release",
+        "status",
+        &url,
+        "--target",
+        "container",
+        "--json",
+    ]);
+    assert_eq!(waiting["state"], "awaiting-human-step", "{waiting}");
+
+    // …and so does `release acknowledge`, in a scene of its own.
+    let scene = ElsewhereOpened::new();
+    let acknowledged = scene.json(&[
+        "onevcs",
+        "release",
+        "acknowledge",
+        &url,
+        "--target",
+        "container",
+        "--version",
+        "0.25.0",
+        "--json",
+    ]);
+    assert_eq!(
+        acknowledged["landing_commit"], scene.squash,
+        "{acknowledged}"
+    );
+}
+
+#[test]
+fn a_copy_here_of_the_same_name_that_never_landed_does_not_outweigh_the_host() {
+    let scene = ElsewhereOpened::new();
+    // This host holds a branch of the same name with work of its own the base never
+    // received, which on its own reads as not landed.
+    let world = &scene.world;
+    world.git(
+        &scene.checkout,
+        &["checkout", "-q", "-b", "feature/elsewhere"],
+    );
+    world.commit_file(
+        &scene.checkout,
+        "mine.txt",
+        "mine\n",
+        "feat: this host's own",
+    );
+    world.git(&scene.checkout, &["checkout", "-q", "main"]);
+    let mine = scene.json(&["onevcs", "status", "feature/elsewhere", "--json"]);
+    assert_eq!(mine["publication"]["landed"]["state"], "no", "{mine}");
+
+    // The question about the change request is answered by its host.
+    let report = scene.json(&["onevcs", "status", &format!("{ELSEWHERE}/238"), "--json"]);
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"],
+        scene.squash
+    );
+}
+
+#[test]
+fn an_attested_landing_this_host_cannot_record_is_answered_as_the_host_reports_it() {
+    let scene = ElsewhereOpened::new();
+    // A release-targets file nothing can read, so the landing's record — which
+    // captures the release baselines — cannot be written.
+    std::fs::write(
+        scene.world.home().join("releases.yml"),
+        "version: [unreadable\n",
+    )
+    .expect("a release-targets file");
+
+    let url = format!("{ELSEWHERE}/238");
+    let (code, stdout, stderr) = scene.run(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("a JSON report");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "change-request",
+        "what was not recorded is not claimed as a record: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"],
+        scene.squash
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["change_url"],
+        url.as_str()
+    );
+    assert!(
+        stderr.contains("could not record that landing"),
+        "the record that could not be written is said: {stderr}"
     );
 }

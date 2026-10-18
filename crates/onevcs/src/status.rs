@@ -4388,9 +4388,14 @@ fn attest(registry: &Registry, url: &str, hosting: &dyn Hosting) -> Result<(Work
         .standings
         .into_iter()
         .next()
+        // The host's answer is input: one about another repository's change request of
+        // the same number, or another change request of this one, is not about this one,
+        // and is neither accepted nor recorded under its name.
         .filter(|standing| {
-            crate::review::ChangeUrl::parse(standing.url.as_str())
-                .is_ok_and(|answered| answered.number == parsed.number)
+            crate::review::ChangeUrl::parse(standing.url.as_str()).is_ok_and(|answered| {
+                answered.number == parsed.number
+                    && answered.identity.eq_ignore_ascii_case(&parsed.identity)
+            })
         })
         .ok_or_else(|| refuse("its host answered nothing about it".to_owned()))?;
     let commit = match &standing.state {
@@ -4441,8 +4446,8 @@ fn attest(registry: &Registry, url: &str, hosting: &dyn Hosting) -> Result<(Work
              can name the work it carried"
         ),
     })?;
-    // Kept as the landing it is, so what answers is a record rather than the host's
-    // word repeated on every read — and so a later read by the merge commit finds it.
+    // Kept as the landing it is, the way a standings read keeps one, so what answers is
+    // a record of it rather than the host's word alone.
     let recorded = crate::standings::record_attested(
         registry,
         &resolution,
