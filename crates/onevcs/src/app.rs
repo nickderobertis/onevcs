@@ -124,7 +124,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Discover(args) => release_discover(args),
             ReleaseCommand::Latest(args) => release_latest(args),
             ReleaseCommand::Status(args) => release_status(args, providers),
-            ReleaseCommand::Acknowledge(args) => release_acknowledge(args),
+            ReleaseCommand::Acknowledge(args) => release_acknowledge(args, providers),
             ReleaseCommand::Declaration(args) => release_declaration(args),
         },
         Command::Pool { command } => match command {
@@ -2686,9 +2686,14 @@ fn release_status(args: &ReleaseStatusArgs, providers: &Providers<'_>) -> Result
 }
 
 /// Record that somebody performed a human-step release.
-fn release_acknowledge(args: &ReleaseAcknowledgeArgs) -> Result<u8> {
-    let recorded =
-        crate::acknowledge_release(&args.reference, &args.target, &args.version, args.supersede)?;
+fn release_acknowledge(args: &ReleaseAcknowledgeArgs, providers: &Providers<'_>) -> Result<u8> {
+    let recorded = crate::acknowledge_release_with(
+        providers,
+        &args.reference,
+        &args.target,
+        &args.version,
+        args.supersede,
+    )?;
     if args.json {
         return print_json(&recorded);
     }

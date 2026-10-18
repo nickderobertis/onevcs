@@ -867,6 +867,42 @@ impl Repository {
     }
 }
 
+/// Record a landing the host attests for a change request no stream here records, the
+/// way a standings read records a merge into the root: on the stream that opened it
+/// where one did, on its own stream otherwise, with the release baselines captured
+/// under the existing rules. Answers whether that landing is on the record afterwards —
+/// already, or by this call.
+///
+/// What `status`, `release status` and `release acknowledge` reach for a change request
+/// another host opened, once the host has said it merged into the root at `commit` and
+/// the root carries it. Best effort, as every record of something the host already did
+/// is: a landing that could not be written is said on stderr, and answered `false`.
+pub(crate) fn record_attested(
+    registry: &crate::registry::Registry,
+    resolution: &store::Resolution,
+    host: Box<dyn RemoteHost>,
+    standing: &ChangeStanding,
+    commit: &Sha,
+) -> bool {
+    if matches!(
+        status::landing_record(&resolution.key, &standing.head_branch),
+        Ok((Some(recorded), _)) if recorded == commit.0
+    ) {
+        return true;
+    }
+    let merged_at = match &standing.state {
+        ChangeState::Merged { merged_at, .. } => merged_at.as_deref(),
+        _ => None,
+    };
+    Repository {
+        host,
+        key: resolution.key.clone(),
+        publication: resolution.publication.clone(),
+        registry: registry.clone(),
+    }
+    .record_landing(standing, commit, merged_at)
+}
+
 /// The stream a change request records on when nothing else names it — the one
 /// `review.rs` records a URL-named read on.
 pub(crate) fn change_stream(change_url: &str) -> String {

@@ -645,7 +645,36 @@ pub fn acknowledge_release(
     version: &str,
     supersede: bool,
 ) -> Result<Acknowledgement> {
-    release::acknowledge(&store::load()?, reference, target, version, supersede)
+    release::acknowledge(
+        &store::load()?,
+        reference,
+        target,
+        version,
+        supersede,
+        Providers::real().hosting,
+    )
+}
+
+/// [`acknowledge_release`] against supplied implementations, which is what the command
+/// line runs — for the reason [`release_status_with`] exists: the signature above is the
+/// contract's and answers through the real host, and the one question an
+/// acknowledgement puts to a host is whether a change request nothing here records
+/// landed.
+pub(crate) fn acknowledge_release_with(
+    providers: &Providers<'_>,
+    reference: &str,
+    target: &TargetName,
+    version: &str,
+    supersede: bool,
+) -> Result<Acknowledgement> {
+    release::acknowledge(
+        &store::load()?,
+        reference,
+        target,
+        version,
+        supersede,
+        providers.hosting,
+    )
 }
 
 /// What one repository declares that it publishes.

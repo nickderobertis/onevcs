@@ -1650,3 +1650,227 @@ fn a_landing_read_off_the_bases_trailer_answers_in_part_for_a_name_that_kept_com
     assert_eq!(shown["landed"]["state"], "in-part");
     assert_eq!(shown["recover_command"][1], "publish-branch");
 }
+
+/// A repository registered on this host whose host — doubled by `onevcs-testing` and
+/// handed to the real command line — holds change requests another host's session
+/// opened: #238 merged into the base as a real squash commit on the real origin, #239
+/// still open, and #240 closed without merging. Nothing on this host opened any of them,
+/// published their branches, or recorded a stream about them.
+struct ElsewhereOpened {
+    /// Held for the scene's lifetime: its root is the state root and the repositories
+    /// every command below reads.
+    _world: crate::world::World,
+    host: onevcs_testing::MemoryHost,
+    /// The squash commit #238 reached the base as.
+    squash: String,
+}
+
+const ELSEWHERE: &str = "https://github.com/acme-corp/hosted/pull";
+
+impl ElsewhereOpened {
+    fn new() -> Self {
+        use onevcs::{ChangeId, ChangeRequest, MergeOutcome, Sha};
+
+        let world = crate::world::World::new();
+        crate::honesty::inhabit(&world);
+        let (origin, _) = crate::library::hosted(&world, REVIEWED);
+        std::fs::write(
+            world.home().join("releases.yml"),
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {origin: \
+             github.com/acme-corp/hosted}\n    adoption: published\n    targets:\n      - \
+             name: container\n        style: human-step\n        action: \"Push the image.\"\n",
+        )
+        .expect("a release-targets file");
+
+        // Another host's clone: the work is cut, pushed, and squash-merged on the base
+        // there, the way the host merges it — none of it through this host.
+        let elsewhere = world.clone_of(&origin, "elsewhere");
+        let cut = |branch: &str, file: &str| {
+            world.git(&elsewhere, &["checkout", "-q", "-b", branch, "origin/main"]);
+            world.commit_file(&elsewhere, file, "work\n", &format!("feat: {branch}"));
+            world.git(&elsewhere, &["push", "-q", "origin", branch]);
+            let head = world.git(&elsewhere, &["rev-parse", "HEAD"]);
+            world.git(&elsewhere, &["checkout", "-q", "main"]);
+            head
+        };
+        let landed = cut("feature/elsewhere", "elsewhere.txt");
+        let open = cut("feature/open", "open.txt");
+        let closed = cut("feature/closed", "closed.txt");
+        world.git(
+            &elsewhere,
+            &["merge", "-q", "--squash", "feature/elsewhere"],
+        );
+        world.git(
+            &elsewhere,
+            &["commit", "-q", "-m", "feat: work another host landed"],
+        );
+        world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+        let squash = world.git(&elsewhere, &["rev-parse", "HEAD"]);
+
+        let change = |number: &str, head: &str| ChangeRequest {
+            id: ChangeId(number.to_owned()),
+            url: format!("{ELSEWHERE}/{number}").parse().expect("a URL"),
+            head_sha: Sha(head.to_owned()),
+            base: "main".to_owned(),
+        };
+        let id = |number: &str| ChangeId(number.to_owned());
+        let host = onevcs_testing::MemoryHost::seeded(onevcs_testing::HostState {
+            authenticated_user: "someone-else".to_owned(),
+            changes: vec![
+                change("238", &landed),
+                change("239", &open),
+                change("240", &closed),
+            ],
+            heads: [
+                (id("238"), "feature/elsewhere".to_owned()),
+                (id("239"), "feature/open".to_owned()),
+                (id("240"), "feature/closed".to_owned()),
+            ]
+            .into(),
+            merges: [(id("238"), MergeOutcome::Merged(Sha(squash.clone())))].into(),
+            closed: [id("240")].into(),
+            ..onevcs_testing::HostState::default()
+        });
+        ElsewhereOpened {
+            _world: world,
+            host,
+            squash,
+        }
+    }
+
+    /// One command line through the real CLI, against the real repository side and
+    /// this host: its exit code, what it printed, and what it said on stderr.
+    fn run(&self, args: &[&str]) -> (u8, String, String) {
+        let providers = || onevcs::Providers {
+            vcs: &onevcs::Git,
+            hosting: &self.host,
+        };
+        let mut code = 0;
+        let mut stdout = String::new();
+        let stderr = crate::library::stderr_of(|| {
+            stdout = crate::library::stdout_of(|| {
+                code = crate::honesty::run(args, providers());
+            });
+        });
+        (code, stdout, stderr)
+    }
+
+    fn json(&self, args: &[&str]) -> Value {
+        let (code, stdout, stderr) = self.run(args);
+        assert_eq!(code, 0, "{args:?} answers: {stderr}");
+        serde_json::from_str(&stdout).expect("a JSON answer")
+    }
+}
+
+#[test]
+fn a_change_request_another_host_opened_and_landed_is_read_as_landed_through_its_host() {
+    let scene = ElsewhereOpened::new();
+    let url = format!("{ELSEWHERE}/238");
+
+    // `status` resolves it to its head branch in the registered repository, landed at
+    // the commit the host merged it as — which is the commit on the base.
+    let report = scene.json(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(report["ref"]["kind"], "change-url", "{report}");
+    assert_eq!(report["identity"]["key"], "github.com/acme-corp/hosted");
+    assert_eq!(report["branch"]["name"], "feature/elsewhere", "{report}");
+    assert_eq!(report["publication"]["state"], "landed", "{report}");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"], scene.squash,
+        "the landing is the host's merge commit: {report}"
+    );
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["tier"], "recorded-landing",
+        "and it is kept as the landing it is, so a record is what answers: {report}"
+    );
+    assert_eq!(report["publication"]["change_url"], url.as_str());
+
+    // `release status` resolves the work to that landing rather than refusing, and the
+    // wait is on the person the human-step target names.
+    let waiting = scene.json(&[
+        "onevcs",
+        "release",
+        "status",
+        &url,
+        "--target",
+        "container",
+        "--json",
+    ]);
+    assert_eq!(waiting["state"], "awaiting-human-step", "{waiting}");
+
+    // `release acknowledge` accepts it, against that same landing…
+    let acknowledged = scene.json(&[
+        "onevcs",
+        "release",
+        "acknowledge",
+        &url,
+        "--target",
+        "container",
+        "--version",
+        "0.25.0",
+        "--json",
+    ]);
+    assert_eq!(
+        acknowledged["landing_commit"], scene.squash,
+        "{acknowledged}"
+    );
+    assert_eq!(acknowledged["version"], "0.25.0");
+
+    // …and the hold it was waiting on is answered.
+    let released = scene.json(&[
+        "onevcs",
+        "release",
+        "status",
+        &url,
+        "--target",
+        "container",
+        "--json",
+    ]);
+    assert_eq!(released["state"], "released", "{released}");
+    assert_eq!(released["version"], "0.25.0");
+}
+
+#[test]
+fn a_change_request_another_host_opened_and_never_landed_is_still_refused_naming_why() {
+    let scene = ElsewhereOpened::new();
+    for (number, why) in [
+        ("239", "its host reports it open and unmerged"),
+        ("240", "its host reports it closed without merging"),
+    ] {
+        let url = format!("{ELSEWHERE}/{number}");
+        for args in [
+            vec!["onevcs", "status", &url],
+            vec!["onevcs", "release", "status", &url, "--target", "container"],
+            vec![
+                "onevcs",
+                "release",
+                "acknowledge",
+                &url,
+                "--target",
+                "container",
+                "--version",
+                "0.25.0",
+            ],
+        ] {
+            let (code, stdout, stderr) = scene.run(&args);
+            assert_eq!(code, 2, "{args:?} refuses: {stderr}");
+            assert!(stdout.is_empty(), "{args:?} answers nothing: {stdout}");
+            assert!(
+                stderr.contains("onevcs: invalid input: ")
+                    && stderr.contains("was opened through `onevcs` on this host")
+                    && stderr.contains(why),
+                "{args:?} names why the host's answer is no landing: {stderr}"
+            );
+        }
+    }
+
+    // A change request the host does not hold at all is refused as it always was, with
+    // what the host said beside it.
+    let (code, _, stderr) = scene.run(&["onevcs", "status", &format!("{ELSEWHERE}/4242")]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("was opened through `onevcs` on this host")
+            && stderr.contains("its host could not say where it stands"),
+        "{stderr}"
+    );
+}
