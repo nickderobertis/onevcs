@@ -1148,20 +1148,16 @@ impl World {
         let title = std::fs::read_to_string(self.path(format!("gh-state/pr-{number}.title")))
             .unwrap_or_default();
         match how {
-            PersonMerge::Squash => {
+            PersonMerge::Squash | PersonMerge::SquashSaying(_) => {
                 self.git(
                     &work,
                     &["merge", "-q", "--squash", &format!("origin/{branch}")],
                 );
-                self.git(
-                    &work,
-                    &[
-                        "commit",
-                        "-q",
-                        "-m",
-                        &format!("{} (#{number})", title.trim()),
-                    ],
-                );
+                let mut message = format!("{} (#{number})", title.trim());
+                if let PersonMerge::SquashSaying(body) = how {
+                    message = format!("{message}\n\n{body}");
+                }
+                self.git(&work, &["commit", "-q", "-m", &message]);
             }
             PersonMerge::MergeCommit => {
                 self.git(
@@ -1219,6 +1215,23 @@ impl World {
         }
         std::fs::remove_dir_all(&work).expect("the person's clone is disposable");
         commit
+    }
+
+    /// A person force-pushes change request `number`'s head branch back to `commit`, a
+    /// commit the origin already holds, and the host takes it as the change's head —
+    /// so a merge after it is a merge at an older head than anything here published.
+    pub fn person_force_pushes(&self, number: usize, commit: &str) {
+        let record = self.change_request(number);
+        let origin = std::fs::read_to_string(self.path("gh-state/origin")).expect("the origin");
+        self.git(
+            Path::new(origin.trim()),
+            &[
+                "update-ref",
+                &format!("refs/heads/{}", record["PR_HEAD"]),
+                commit,
+            ],
+        );
+        self.rewrite_change_request(number, &[("PR_HEAD_SHA", commit)]);
     }
 
     /// A person retargets change request `number` onto `base` on the host.
@@ -1304,6 +1317,9 @@ pub enum PersonMerge {
     /// One squash commit on the base, its subject the title and the change request's
     /// number, as GitHub writes one.
     Squash,
+    /// The same squash with a body beneath its subject, as GitHub writes the commit
+    /// messages of the change request's commits there.
+    SquashSaying(&'static str),
     /// A merge commit of the head into the base.
     MergeCommit,
 }

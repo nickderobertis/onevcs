@@ -6139,15 +6139,12 @@ fn a_change_request_merged_after_the_checks_bound_is_not_republished_by_the_next
     assert_eq!(nothing_to_ask.asks(), 0);
 }
 
-/// `onevcs status --json` about one branch, run against these implementations and
-/// read back as the object a consumer reads.
 /// The two issues, in two repositories, GitHub reports a change request closing.
 const CLOSED_ISSUES: [&str; 2] = ["acme-corp/hosted#12", "acme-corp/tracker#3"];
 
-/// A session on a change-request identity whose publication left its change request
-/// open on the substituted host, and which was then closed: what a person merges after
-/// the run that opened it stopped following it. `policy` decides how it was left open.
-fn closed_with_its_change_open(policy: &str, branch: &str) -> (World, Session) {
+/// A session on a change-request identity ruled `policy`, against the substituted host,
+/// holding one commit of work ready to publish.
+fn session_with_work_to_publish(policy: &str, branch: &str) -> (World, Session) {
     let world = World::new();
     inhabit(&world);
     let (origin, _identity) = hosted(&world, policy);
@@ -6186,7 +6183,7 @@ fn merges_recorded(token: &SessionToken, url: &str) -> (Vec<serde_json::Value>, 
 #[test]
 fn a_change_merged_after_its_session_closed_is_recorded_by_the_next_status_with_the_issues_it_closes(
 ) {
-    let (world, session) = closed_with_its_change_open(
+    let (world, session) = session_with_work_to_publish(
         "{publication: change-auto, approvals: required, drafts: {disabled: true}}",
         "feature/closes-late",
     );
@@ -6254,7 +6251,7 @@ fn a_change_merged_after_its_session_closed_is_recorded_by_the_next_status_with_
 #[test]
 fn a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_with_the_issues_it_closes(
 ) {
-    let (world, session) = closed_with_its_change_open(REVIEWED, "feature/closes-standing");
+    let (world, session) = session_with_work_to_publish(REVIEWED, "feature/closes-standing");
     world.host_visibility("acme-corp/hosted", "private");
     let _reviews = world.serve_reviews("acme-corp/hosted");
     let published = onevcs::publish(
@@ -6311,6 +6308,8 @@ fn a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_wi
     assert_eq!(completed, 0, "a standings read records no merge-completed");
 }
 
+/// `onevcs status --json` about one branch, run against these implementations and
+/// read back as the object a consumer reads.
 fn report(world: &World, branch: &str, hosting: &dyn Hosting) -> serde_json::Value {
     let printed = stdout_of(|| {
         assert_eq!(

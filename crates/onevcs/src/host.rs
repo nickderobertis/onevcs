@@ -1652,7 +1652,7 @@ impl GitHub {
             .collect::<Vec<_>>()
             .join(",");
         let base = ["pr", "view", &cr.id.0, "--repo", &self.repo, "--json"];
-        let (raw, heard) = gh::invoke_unless_refused(
+        let (raw, answered) = gh::invoke_unless_refused(
             &[&base[..], &[fields]].concat(),
             CLOSES_FIELD,
             &[&base[..], &[without.as_str()]].concat(),
@@ -1662,17 +1662,19 @@ impl GitHub {
             .get("state")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|state| state.eq_ignore_ascii_case("merged"));
-        if merged && heard {
-            crate::closing::heard(
-                cr.url.as_str(),
-                crate::closing::from_host(view.get(CLOSES_FIELD)),
-            );
-        } else if merged {
-            eprintln!(
-                "onevcs: warning: the host would not say which issues {} closes, so its landing \
-                 reports none",
-                cr.url
-            );
+        match answered {
+            gh::Answered::AsAsked if merged => {
+                crate::closing::hear(cr.url.as_str(), view.get(CLOSES_FIELD));
+            }
+            gh::Answered::WithoutTheField if merged => {
+                crate::closing::forget(cr.url.as_str());
+                eprintln!(
+                    "onevcs: warning: the host would not say which issues {} closes, so its \
+                     landing reports none",
+                    cr.url
+                );
+            }
+            _ => {}
         }
         Ok(view)
     }

@@ -4885,8 +4885,13 @@ are unchanged, and every emitter builds the field through one function.
   merge, the same read with `headRefOid` for a late one, and
   `closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } }`
   in each alias of the standings query. **Recording closures sends no request the merge
-  read did not already send.** A host implementation other than this crate's `GitHub`
-  reports none, so its landings carry `[]`.
+  read did not already send.** A `gh` that does not know the field, or a credential
+  GitHub will not show the closing issues to, refuses the whole read naming it; that read
+  alone is asked again without the field, because whether the change merged is the
+  answer. Such a landing — and one whose answer names a node no issue can be read out of,
+  which is refused whole rather than read in part — reports `[]` and says so on stderr,
+  so a `[]` there is not evidence that it closed nothing. A host implementation other
+  than this crate's `GitHub` reports none, so its landings carry `[]`.
 - **A landing found from the base's history alone** — `release status` reading the change
   request's number in the base with no read of that change request from the host in the
   same process: the issue-closing lines of the landing commit's own message, parsed as a

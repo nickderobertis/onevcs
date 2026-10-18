@@ -4085,21 +4085,20 @@ fn a_status_read_over_session_records_this_host_cannot_read_refuses_rather_than_
     }
 }
 
-#[test]
-fn a_credential_the_host_will_not_show_closed_issues_still_lands_and_reports_none() {
-    // GitHub refuses the whole read of a merge to a credential that may not see the
-    // issues it closes. The merge is what the read decides, so it is asked again
-    // without them: the change lands, its landing reports no closures, and says why.
+/// A `change-direct` publication of `acme-corp/<name>` the substituted host merges,
+/// after `host` has said what it holds about the change request's closures: answers
+/// the session's token and what the publication wrote on stderr.
+fn landed_directly(name: &str, host: impl FnOnce(&World)) -> (World, String, String) {
     let world = World::new();
-    let origin = world.bare_origin("refused");
-    let checkout = world.clone_of(&origin, "refused");
+    let origin = world.bare_origin(name);
+    let checkout = world.clone_of(&origin, name);
     world
         .onevcs()
         .args([
             "register",
             &checkout.to_string_lossy(),
             "--origin",
-            "https://github.com/acme-corp/refused.git",
+            &format!("https://github.com/acme-corp/{name}.git"),
         ])
         .assert()
         .success();
@@ -4110,31 +4109,68 @@ fn a_credential_the_host_will_not_show_closed_issues_still_lands_and_reports_non
     );
     world.install_fake_host(&origin);
     world.install_pre_push(&checkout, "exit 0");
-    world.host_closes(1, &["acme-corp/refused#12"]);
-    world.refuse_closing_references();
+    host(&world);
 
     let assert = world
         .onevcs()
-        .args(["session", "open", "refused", "--branch", "feature/refused"])
+        .args(["session", "open", name, "--branch", "feature/landed"])
         .assert()
         .success();
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
     world.commit_file(&worktree, "one.txt", "one\n", "feat: land it anyway");
 
-    world
+    let published = world
         .onevcs()
         .args(["publish", &token])
         .assert()
         .success()
-        .stdout(predicate::str::contains("merged at"))
-        .stderr(predicate::str::contains(
-            "the host would not say which issues \
-             https://github.com/acme-corp/refused/pull/1 closes, so its landing reports none",
-        ));
+        .stdout(predicate::str::contains("merged at"));
+    let stderr = String::from_utf8_lossy(&published.get_output().stderr).into_owned();
+    (world, token, stderr)
+}
+
+/// Both landing events of a watched merge report no closures.
+fn reports_no_closures(world: &World, token: &str) {
     for kind in ["change-merged", "merge-completed"] {
-        let events = world.events_of(&token, kind);
+        let events = world.events_of(token, kind);
         assert_eq!(events.len(), 1, "{events:#?}");
         assert_eq!(events[0]["payload"]["closes"], serde_json::json!([]));
     }
+}
+
+#[test]
+fn a_credential_the_host_will_not_show_closed_issues_still_lands_and_reports_none() {
+    // GitHub refuses the whole read of a merge to a credential that may not see the
+    // issues it closes. The merge is what the read decides, so it is asked again
+    // without them: the change lands, its landing reports no closures, and says why.
+    let (world, token, stderr) = landed_directly("refused", |world| {
+        world.host_closes(1, &["acme-corp/refused#12"]);
+        world.refuse_closing_references();
+    });
+    assert!(
+        stderr.contains(
+            "the host would not say which issues https://github.com/acme-corp/refused/pull/1 \
+             closes, so its landing reports none"
+        ),
+        "{stderr}"
+    );
+    reports_no_closures(&world, &token);
+}
+
+#[test]
+fn a_closures_answer_naming_an_issue_nothing_can_read_is_refused_whole_not_read_in_part() {
+    // One node of the host's answer names no repository or number. The rest is not the
+    // list of what the change closes, so none of it is reported as though it were.
+    let (world, token, stderr) = landed_directly("unreadable", |world| {
+        world.host_closes(1, &["acme-corp/unreadable#12", "?"]);
+    });
+    assert!(
+        stderr.contains(
+            "the host's answer about which issues \
+             https://github.com/acme-corp/unreadable/pull/1 closes could not be read"
+        ) && stderr.contains("names no repository and issue number"),
+        "{stderr}"
+    );
+    reports_no_closures(&world, &token);
 }

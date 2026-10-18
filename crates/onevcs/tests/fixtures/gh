@@ -790,13 +790,17 @@ json_recorded() {
 
 # The issues change request `$1` closes, as GitHub's `closingIssuesReferences` answers
 # them: one node per line of `closes-<n>`, each `owner/name#number`, in the order the
-# record lists them. A change request with no such record closes none.
+# record lists them, and a line `?` a node naming no repository or number — an answer
+# no issue can be read out of. A change request with no such record closes none.
 closing_references() {
   local record="$STATE/closes-$1" line owner name number separator=""
   printf '['
   if [ -f "$record" ]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
+      if [ "$line" = "?" ]; then
+        printf '%s{"id":"I_unreadable"}' "$separator"; separator=","; continue
+      fi
       owner="${line%%/*}"; name="${line#*/}"; name="${name%%#*}"; number="${line##*#}"
       printf '%s{"id":"I_%s_%s_%s","number":%s,"repository":{"id":"R_%s_%s","name":"%s","owner":{"id":"U_%s","login":"%s"}},"url":"https://github.com/%s/%s/issues/%s"}' \
         "$separator" "$owner" "$name" "$number" "$number" "$owner" "$name" "$name" "$owner" "$owner" "$owner" "$name" "$number"

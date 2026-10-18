@@ -983,9 +983,12 @@ fn closes_of(
     if landing.found == Found::OnTheHost {
         return Vec::new();
     }
-    let Ok(Some(message)) = git::commit_message(publication, landing.commit) else {
-        return Vec::new();
-    };
+    // The checkout was fast-forwarded onto the landing before this is asked, so it
+    // holds the commit; a message it cannot read carries no closing line.
+    let message = git::commit_message(publication, landing.commit)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     crate::closing::issues(
         &crate::closing::references([message.as_str()]),
         crate::gh::slug(identity).as_deref(),

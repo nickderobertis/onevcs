@@ -174,7 +174,7 @@ pub fn invoke_content(args: &[&str]) -> Result<String> {
 
 /// Run `asked`, and where `gh` turns it down naming `field`, run `without` instead —
 /// for a call that reads one field its caller can do without. Answers what was printed,
-/// and whether it was `asked` that printed it.
+/// and which of the two calls printed it.
 ///
 /// Two refusals name the field, and neither is the answer to the rest of the call: a
 /// `gh` that predates it rejects it while parsing its arguments, before asking GitHub
@@ -186,15 +186,24 @@ pub fn invoke_unless_refused(
     asked: &[&str],
     field: &str,
     without: &[&str],
-) -> Result<(String, bool)> {
+) -> Result<(String, Answered)> {
     let answer = attempt(asked)?;
     if answer.code == Some(0) {
-        return Ok((answer.stdout, true));
+        return Ok((answer.stdout, Answered::AsAsked));
     }
     if !answer.stderr.contains(field) {
         return Err(refused(asked, &answer));
     }
-    Ok((invoke(without)?, false))
+    Ok((invoke(without)?, Answered::WithoutTheField))
+}
+
+/// Which of its two calls [`invoke_unless_refused`] answered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answered {
+    /// The call as asked, the field included.
+    AsAsked,
+    /// The call without the field, which the first was refused over.
+    WithoutTheField,
 }
 
 /// Parse one `gh --json` response.

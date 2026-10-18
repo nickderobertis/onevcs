@@ -36,10 +36,10 @@ const KEYWORDS: [&str; 9] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Closing {
     /// The keyword, capitalised: `Closes`, `Fixed`.
-    pub(crate) keyword: String,
+    keyword: String,
     /// The issue, as `#N`, `owner/name#N`, or the URL of an issue on a host other
     /// than `github.com`.
-    pub(crate) reference: String,
+    reference: String,
 }
 
 impl Closing {
@@ -139,24 +139,33 @@ pub(crate) fn report(payload: &mut Map<String, Value>, issues: impl IntoIterator
 
 /// The issues GitHub says a change request closes, out of its `closingIssuesReferences`
 /// as `gh pr view --json` answers it (a list) or a GraphQL connection does
-/// (`{nodes: [...]}`). A node naming no repository and number is no issue.
-pub(crate) fn from_host(answered: Option<&Value>) -> Vec<Issue> {
+/// (`{nodes: [...]}`), or what about the answer is not that.
+///
+/// Refused whole rather than read in part: a list with an unreadable node in it is not
+/// the list of what the change closes, and a landing reporting the rest would present
+/// it as complete.
+fn from_host(answered: Option<&Value>) -> std::result::Result<Vec<Issue>, String> {
     let nodes = match answered {
-        Some(Value::Array(nodes)) => nodes.as_slice(),
+        Some(Value::Array(nodes)) => nodes,
         Some(connection) => connection
             .get("nodes")
             .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice),
-        None => &[],
+            .ok_or_else(|| format!("{connection} is neither a list nor a connection of nodes"))?,
+        None => return Err("the answer carries no closingIssuesReferences".to_owned()),
     };
     nodes
         .iter()
-        .filter_map(|node| {
-            Issue::new(
-                node.pointer("/repository/owner/login")?.as_str()?,
-                node.pointer("/repository/name")?.as_str()?,
-                node.get("number")?.as_u64()?,
-            )
+        .map(|node| {
+            let owner = node
+                .pointer("/repository/owner/login")
+                .and_then(Value::as_str);
+            let name = node.pointer("/repository/name").and_then(Value::as_str);
+            let number = node.get("number").and_then(Value::as_u64);
+            owner
+                .zip(name)
+                .zip(number)
+                .and_then(|((owner, name), number)| Issue::new(owner, name, number))
+                .ok_or_else(|| format!("{node} names no repository and issue number"))
         })
         .collect()
 }
@@ -166,22 +175,39 @@ pub(crate) fn from_host(answered: Option<&Value>) -> Vec<Issue> {
 /// reads its closures, so the record of the landing asks for nothing again.
 static HEARD: Mutex<BTreeMap<String, Vec<Issue>>> = Mutex::new(BTreeMap::new());
 
-/// Keep what the host said change request `url` closes, replacing anything older.
-pub(crate) fn heard(url: &str, issues: Vec<Issue>) {
-    HEARD
+fn heard_map<T>(act: impl FnOnce(&mut BTreeMap<String, Vec<Issue>>) -> T) -> T {
+    act(&mut HEARD
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(url.to_owned(), issues);
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
-/// What the host said change request `url` closes, where a read this process made of
-/// its merge said.
+/// Keep what the host answered change request `url` closes, replacing anything older —
+/// or, where the answer is not one, forget what was kept and say so: a landing then
+/// reports none, rather than a list the host did not give.
+pub(crate) fn hear(url: &str, answered: Option<&Value>) {
+    match from_host(answered) {
+        Ok(issues) => heard_map(|heard| heard.insert(url.to_owned(), issues)),
+        Err(problem) => {
+            eprintln!(
+                "onevcs: warning: the host's answer about which issues {url} closes could \
+                 not be read ({problem}), so its landing reports none"
+            );
+            forget(url);
+            None
+        }
+    };
+}
+
+/// Forget what the host said change request `url` closes, for a read that could not
+/// ask: an older answer is not this read's.
+pub(crate) fn forget(url: &str) {
+    heard_map(|heard| heard.remove(url));
+}
+
+/// What the host said change request `url` closes, where the last read this process
+/// made of its merge said.
 pub(crate) fn heard_of(url: &str) -> Option<Vec<Issue>> {
-    HEARD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(url)
-        .cloned()
+    heard_map(|heard| heard.get(url).cloned())
 }
 
 /// Every closing reference in one line.

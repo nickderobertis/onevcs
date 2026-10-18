@@ -499,7 +499,8 @@ fn operation_progress_three_branch_integration_matches_the_actual_cwd_identity()
 #[test]
 fn operation_progress_integration_reports_the_issues_each_squash_closes() {
     // The train's `merge-completed` names the GitHub issues the closing lines it carried
-    // into the squash close — a bare `#N` as one of this repository's own.
+    // into the squash close — a bare `#N` as one of this repository's own, and the same
+    // issue spelled twice, in two cases, once.
     let world = World::new();
     inhabit(&world);
     let (_origin, _) = hosted(&world, LOCAL);
@@ -513,7 +514,7 @@ fn operation_progress_integration_reports_the_issues_each_squash_closes() {
         "closing.txt",
         "closing\n",
         "feat: close two issues\n\nCloses #7\nFixes acme-corp/tracker#3\n\
-         Resolves https://git.example.com/acme-corp/hosted/issues/4",
+         Resolves https://git.example.com/acme-corp/hosted/issues/4\nFixes ACME-CORP/hosted#7",
     );
     world.git(&checkout, &["switch", "main"]);
     let operation = onevcs::OperationHandle::prepare(&onevcs::DirectOperation::Integrate {
@@ -537,7 +538,7 @@ fn operation_progress_integration_reports_the_issues_each_squash_closes() {
     assert!(
         message.contains(
             "Closes #7\nFixes acme-corp/tracker#3\n\
-             Resolves https://git.example.com/acme-corp/hosted/issues/4"
+             Resolves https://git.example.com/acme-corp/hosted/issues/4\nFixes ACME-CORP/hosted#7"
         ),
         "{message}"
     );

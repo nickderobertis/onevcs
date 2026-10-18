@@ -269,12 +269,12 @@ fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result
     let without = format!("query={}", asked.replace(CLOSES_FIELDS, ""));
     let asked = format!("query={asked}");
     let (owner, name) = (format!("owner={owner}"), format!("name={name}"));
-    let (raw, heard) = gh::invoke_unless_refused(
+    let (raw, answered) = gh::invoke_unless_refused(
         &["api", "graphql", "-f", &asked, "-f", &owner, "-f", &name],
         CLOSES_FIELD,
         &["api", "graphql", "-f", &without, "-f", &owner, "-f", &name],
     )?;
-    if !heard {
+    if answered == gh::Answered::WithoutTheField {
         eprintln!(
             "onevcs: warning: the host would not say which issues the change requests of \
              {repo} close, so a landing this read records reports none"
@@ -378,8 +378,9 @@ fn standing(
     // What a merge found here closes, for the record of its landing — where the query
     // read it, which a credential that may not see it was not asked.
     if matches!(state, ChangeState::Merged { .. }) {
-        if let Some(closes) = pull.get(CLOSES_FIELD) {
-            crate::closing::heard(url.as_str(), crate::closing::from_host(Some(closes)));
+        match pull.get(CLOSES_FIELD) {
+            Some(closes) => crate::closing::hear(url.as_str(), Some(closes)),
+            None => crate::closing::forget(url.as_str()),
         }
     }
     let head = Sha(head);

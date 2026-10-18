@@ -31,7 +31,7 @@
 use predicates::prelude::*;
 use serde_json::Value;
 
-use crate::host::{Hosted, DIRECT, REVIEWED};
+use crate::host::{Hosted, AUTOMATED_READY, DIRECT, REVIEWED};
 use crate::lifecycle::{local_direct, Fixture};
 use crate::world::{token_of, worktree_of};
 
@@ -2375,5 +2375,85 @@ fn a_landing_found_only_in_the_bases_history_reports_the_issues_its_commit_close
         merged[0]["payload"]["closes"],
         serde_json::json!(["acme-corp/hosted#5", "acme-corp/tracker#3"]),
         "{merged:#?}"
+    );
+}
+
+#[test]
+fn a_landing_found_in_history_reports_what_the_host_said_it_closes_where_the_read_asked() {
+    // `release status` asks the host about a change request a `checks-unsettled` close
+    // stopped watching. The host merged it — but at an older head than was published,
+    // so that merge is not this branch's landing and is not recorded; the base's history
+    // then finds it by its number. The host's answer about what it closes was read in
+    // that same process, so it is what the landing reports, over the commit's own text.
+    let hosted = Hosted::new(AUTOMATED_READY);
+    let world = &hosted.world;
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    world.install_pre_push(&hosted.checkout, "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/older-head",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let (token, worktree) = (token_of(&opened), worktree_of(&opened));
+    world.commit_file(&worktree, "first.txt", "first\n", "feat: the first half");
+    let older = world.git(&worktree, &["rev-parse", "HEAD"]);
+    world.commit_file(&worktree, "second.txt", "second\n", "feat: the second half");
+    world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("still unsettled"));
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    world.person_force_pushes(1, &older);
+    world.host_closes(1, &["acme-corp/hosted#12", "acme-corp/tracker#3"]);
+    world.person_merges(
+        1,
+        crate::world::PersonMerge::SquashSaying("Closes #5"),
+        "2026-10-11T09:30:00Z",
+        crate::world::HeadAfter::Kept,
+    );
+    world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+
+    let release = release_status(world, "feature/older-head");
+    assert_eq!(release["state"], "awaiting-human-step", "{release}");
+    let merged = world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(
+        merged[0]["payload"]["closes"],
+        serde_json::json!(["acme-corp/hosted#12", "acme-corp/tracker#3"]),
+        "the host's answer, not the commit's `Closes #5`: {merged:#?}"
     );
 }

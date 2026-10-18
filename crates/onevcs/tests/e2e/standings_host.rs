@@ -548,6 +548,11 @@ impl Model {
                     .unwrap_or_default()
                     .lines()
                     .filter_map(|line| {
+                        // `?` is a node naming no repository or number, as `fixtures/gh`
+                        // reads the same record.
+                        if line.trim() == "?" {
+                            return Some(json!({"id": "I_unreadable"}));
+                        }
                         let (repository, number) = line.trim().split_once('#')?;
                         let (owner, name) = repository.split_once('/')?;
                         Some(json!({
