@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0](https://github.com/nickderobertis/onevcs/compare/v0.54.1...v0.55.0) - 2026-10-18
+
+### Fixed
+
+- *(publish-branch)* resume an unchanged green change at its hosted checks after its base moves ([#470](https://github.com/nickderobertis/onevcs/pull/470))
+- *(pool)* [**breaking**] report admission from the slots session opening can use ([#466](https://github.com/nickderobertis/onevcs/pull/466))
+
 ## [0.54.1](https://github.com/nickderobertis/onevcs/compare/v0.54.0...v0.54.1) - 2026-10-18
 
 ### Fixed
