@@ -13,10 +13,11 @@
 //! verification ran" is measured by, and a publication workspace is a directory under
 //! `workspaces/publications/`, which is what "no workspace was allocated" is.
 //!
-//! The journeys about a base that moved under an unchanged head are in-process instead,
-//! on the host from `onevcs-testing`: whether the host requires an up-to-date branch is
-//! what decides them, and supplying a host with that set is something only a caller
-//! embedding the crate can do. The origin, the checkout and the hook are as real there.
+//! The journeys about a base that moved — under an unchanged head, or under a boundary
+//! some other input of which changed — are in-process instead, on the host from
+//! `onevcs-testing`: whether the host requires an up-to-date branch is what decides
+//! them, and supplying a host with that set is something only a caller embedding the
+//! crate can do. The origin, the checkout and the hook are as real there.
 
 // llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which change
 // requests exist, what their checks say, whether a merge is allowed — is the one boundary
@@ -875,6 +876,15 @@ fn base_moves(world: &World, file: &str) -> String {
     library::origin_tip(world, &origin, "main").expect("the base")
 }
 
+/// The `pre-push` verifications the branch's stream records as having run.
+fn pre_push_gate_runs(world: &World) -> usize {
+    world
+        .events_of(MOVED_STREAM, "gate-run")
+        .iter()
+        .filter(|event| event["payload"]["gate"] == "pre-push")
+        .count()
+}
+
 fn base_merge_decisions(world: &World) -> Vec<String> {
     world
         .events_of(MOVED_STREAM, "base-merge")
@@ -1271,4 +1281,263 @@ fn a_resume_over_a_moved_base_fetches_its_objects_and_moves_no_ref_in_the_checko
     );
     assert_eq!(pushes(&world), 1);
     assert_eq!(runs_of_the_hook(&world), 1);
+}
+
+/// How the host treats the base that moved under a boundary some other input of which
+/// no longer holds: whether the verification that runs again brings the base in.
+#[derive(Clone, Copy, Debug)]
+enum MovedBase {
+    /// It merges cleanly and the host requires no up-to-date branch: the head is
+    /// verified again as it stands, and the base is left to the host's merge.
+    LeftToTheHost,
+    /// The host requires an up-to-date branch: the base is brought in first.
+    RequiredUpToDate,
+    /// It conflicts with the head: bringing it in is attempted, and stops there.
+    Conflicting,
+}
+
+/// One input of a recorded boundary changed after it was recorded.
+struct Invalidation {
+    input: &'static str,
+    /// The words the publication names it by when it declines to resume.
+    because: &'static str,
+    /// Whether it moves the branch's head, so that what is verified again is a
+    /// different commit from the one the boundary recorded.
+    moves_the_head: bool,
+    invalidate: fn(&World, &MemoryHost),
+}
+
+const HEAD_CHANGED: Invalidation = Invalidation {
+    input: "the head",
+    because: "the branch has moved since it was verified",
+    moves_the_head: true,
+    invalidate: |world, _host| {
+        let checkout = world.path("hosted");
+        world.git(&checkout, &["checkout", "-q", MOVED]);
+        world.commit_file(&checkout, "two.txt", "two\n", "feat: a second thing");
+        world.git(&checkout, &["checkout", "-q", "main"]);
+    },
+};
+
+const GATE_CHANGED: Invalidation = Invalidation {
+    input: "the gate",
+    because: "what verified it",
+    moves_the_head: false,
+    invalidate: |world, _host| {
+        world.install_pre_push(
+            &world.path("hosted"),
+            &format!(
+                "# a changed gate\necho ran >> '{}'",
+                world.path("hook-runs").display()
+            ),
+        );
+    },
+};
+
+const RECORDED_VOCABULARY_CHANGED: Invalidation = Invalidation {
+    input: "the provenance vocabulary",
+    because: "what verified it",
+    moves_the_head: false,
+    invalidate: |world, _host| {
+        configure_rules(
+            world,
+            format!("version: 3\ntrailer_prefix: Qqq-\nrules: []\ndefault: {AUTOMATED}\n"),
+        );
+    },
+};
+
+const TARGET_CHANGED: Invalidation = Invalidation {
+    input: "the target base",
+    because: "is no longer open from",
+    moves_the_head: false,
+    invalidate: |world, host| {
+        let elsewhere = world.clone_of(&world.path("hosted.git"), "release-cutter");
+        world.git(&elsewhere, &["push", "-q", "origin", "main:release"]);
+        host.retarget_by_person(&ChangeId("1".to_owned()), "release")
+            .expect("the change request is retargeted");
+    },
+};
+
+/// A boundary that `invalidation` broke, over a base that moved and that the host
+/// treats as `moved` says: the boundary is not resumed, and the publication that runs
+/// instead brings the moved base in only where the host requires it or it conflicts.
+fn invalidated_over_a_moved_base(invalidation: Invalidation, moved: MovedBase) {
+    let Invalidation {
+        input,
+        because,
+        moves_the_head,
+        invalidate,
+    } = invalidation;
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    let file = match moved {
+        MovedBase::Conflicting => "one.txt",
+        MovedBase::LeftToTheHost | MovedBase::RequiredUpToDate => "other.txt",
+    };
+    let base = base_moves(&world, file);
+    let mut state = state;
+    // A change request the whole path opens in place of one retargeted away is as
+    // green as the one it replaces.
+    state
+        .checks
+        .insert(ChangeId("2".to_owned()), vec![host_check("success")]);
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: matches!(moved, MovedBase::RequiredUpToDate),
+        ..state
+    });
+    invalidate(&world, &host);
+    let first_publication = base_merge_decisions(&world).len();
+
+    let mut published = None;
+    let stderr = library::stderr_of(|| published = Some(publish_through(&host)));
+    let published = published.expect("the publication ran");
+    let case = format!("{input}, {moved:?}");
+    assert!(
+        stderr.contains("cannot be resumed") && stderr.contains(because),
+        "{case}: {stderr}"
+    );
+    assert!(
+        !stderr.contains("resuming the verified"),
+        "{case}: {stderr}"
+    );
+
+    // The first decision the publication made about the moved base; the workspace it
+    // builds afterwards finds the branch already carrying whatever was brought in.
+    let decision = base_merge_decisions(&world).get(first_publication).cloned();
+    let pushed = verified_tip(&world);
+    let carries_the_base = world
+        .git_raw(
+            &world.path("hosted"),
+            &["merge-base", "--is-ancestor", &base, &pushed],
+        )
+        .status
+        .success();
+    match moved {
+        MovedBase::LeftToTheHost | MovedBase::RequiredUpToDate => {
+            assert!(
+                matches!(published, Ok(PublishOutcome::Merged(_))),
+                "{case}: {published:?}\n{stderr}"
+            );
+            assert_eq!(
+                pushes(&world),
+                2,
+                "{case}: the stream records a second push"
+            );
+            assert_eq!(
+                runs_of_the_hook(&world),
+                2,
+                "{case}: verification ran again"
+            );
+        }
+        MovedBase::Conflicting => {
+            assert!(
+                matches!(published, Err(onevcs::Error::SyncConflict { .. })),
+                "{case}: {published:?}\n{stderr}"
+            );
+            assert_eq!(pushes(&world), 1, "{case}: nothing conflicted was pushed");
+            assert_eq!(pre_push_gate_runs(&world), 1, "{case}: nor verified");
+            assert_eq!(runs_of_the_hook(&world), 1, "{case}: nor verified");
+            assert_eq!(
+                pushed, verified,
+                "{case}: the origin keeps the verified head"
+            );
+        }
+    }
+    match moved {
+        MovedBase::LeftToTheHost => {
+            assert_eq!(decision.as_deref(), Some("skipped"), "{case}");
+            assert!(
+                !carries_the_base,
+                "{case}: the moved base was left to the host"
+            );
+            if moves_the_head {
+                assert_ne!(pushed, verified, "{case}: the changed head was pushed");
+                assert!(
+                    world
+                        .git_raw(
+                            &world.path("hosted"),
+                            &["merge-base", "--is-ancestor", &verified, &pushed],
+                        )
+                        .status
+                        .success(),
+                    "{case}: over the head that was verified"
+                );
+            } else {
+                assert_eq!(
+                    pushed, verified,
+                    "{case}: the origin keeps the verified head"
+                );
+            }
+        }
+        MovedBase::RequiredUpToDate => {
+            assert_eq!(decision.as_deref(), Some("merged"), "{case}");
+            assert!(carries_the_base, "{case}: the moved base was brought in");
+            assert_ne!(pushed, verified, "{case}: a new head was pushed");
+        }
+        MovedBase::Conflicting => {
+            assert_eq!(decision.as_deref(), Some("merged"), "{case}");
+        }
+    }
+}
+
+#[test]
+fn a_changed_head_over_a_moved_base_the_host_merges_is_verified_again_without_it() {
+    invalidated_over_a_moved_base(HEAD_CHANGED, MovedBase::LeftToTheHost);
+}
+
+#[test]
+fn a_changed_head_over_a_moved_base_the_host_requires_is_verified_again_with_it() {
+    invalidated_over_a_moved_base(HEAD_CHANGED, MovedBase::RequiredUpToDate);
+}
+
+#[test]
+fn a_changed_head_over_a_conflicting_moved_base_stops_at_bringing_it_in() {
+    invalidated_over_a_moved_base(HEAD_CHANGED, MovedBase::Conflicting);
+}
+
+#[test]
+fn a_changed_gate_over_a_moved_base_the_host_merges_is_verified_again_without_it() {
+    invalidated_over_a_moved_base(GATE_CHANGED, MovedBase::LeftToTheHost);
+}
+
+#[test]
+fn a_changed_gate_over_a_moved_base_the_host_requires_is_verified_again_with_it() {
+    invalidated_over_a_moved_base(GATE_CHANGED, MovedBase::RequiredUpToDate);
+}
+
+#[test]
+fn a_changed_gate_over_a_conflicting_moved_base_stops_at_bringing_it_in() {
+    invalidated_over_a_moved_base(GATE_CHANGED, MovedBase::Conflicting);
+}
+
+#[test]
+fn a_changed_recorded_vocabulary_over_a_moved_base_the_host_merges_is_verified_again_without_it() {
+    invalidated_over_a_moved_base(RECORDED_VOCABULARY_CHANGED, MovedBase::LeftToTheHost);
+}
+
+#[test]
+fn a_changed_recorded_vocabulary_over_a_moved_base_the_host_requires_is_verified_again_with_it() {
+    invalidated_over_a_moved_base(RECORDED_VOCABULARY_CHANGED, MovedBase::RequiredUpToDate);
+}
+
+#[test]
+fn a_changed_recorded_vocabulary_over_a_conflicting_moved_base_stops_at_bringing_it_in() {
+    invalidated_over_a_moved_base(RECORDED_VOCABULARY_CHANGED, MovedBase::Conflicting);
+}
+
+#[test]
+fn a_changed_target_over_a_moved_base_the_host_merges_is_verified_again_without_it() {
+    invalidated_over_a_moved_base(TARGET_CHANGED, MovedBase::LeftToTheHost);
+}
+
+#[test]
+fn a_changed_target_over_a_moved_base_the_host_requires_is_verified_again_with_it() {
+    invalidated_over_a_moved_base(TARGET_CHANGED, MovedBase::RequiredUpToDate);
+}
+
+#[test]
+fn a_changed_target_over_a_conflicting_moved_base_stops_at_bringing_it_in() {
+    invalidated_over_a_moved_base(TARGET_CHANGED, MovedBase::Conflicting);
 }
