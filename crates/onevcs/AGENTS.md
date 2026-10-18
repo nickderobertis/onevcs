@@ -623,16 +623,12 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
 
 ## Every landing says which GitHub issues it closes
 
-The amendment in `docs/contract.md` is the whole statement of `closes`. Two things about
-keeping it true are not in it.
-
-- **Reading closures may never cost a request.** Its proof is the call logs recorded on
-  the code before the field existed (`tests/fixtures/gh-call-baselines/`, held by
-  `tests/e2e/call_baseline.rs`). A journey failing against one has found a new request;
-  re-record a baseline only on behaviour that has not moved, never to absorb one.
-- **Nothing stands in for a host answer that did not come.** A read that was refused
-  the field, or whose answer was refused whole, is `closing::Heard::Unanswered`, and the
-  landing reports `[]` — not the commit's text, and not an earlier read's answer.
+The amendment in `docs/contract.md` is the whole statement of `closes`. What it does not
+say is how its one promise about cost is kept: reading closures may never add a request,
+and the proof is the call logs recorded on the code before the field existed
+(`tests/fixtures/gh-call-baselines/`, held by `tests/e2e/call_baseline.rs`). A journey
+failing against one has found a new request; re-record a baseline only on behaviour that
+has not moved, never to absorb one.
 
 ## The subject policy is the repository's, and this crate holds none
 
