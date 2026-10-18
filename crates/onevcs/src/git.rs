@@ -211,7 +211,8 @@ pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)])
 /// Run one git command as [`run_with_env`] does, stopping it — and every process it
 /// started — the first time `stop` says so.
 ///
-/// A command it stopped is answered as having [`Ended::Stopped`], and what it wrote
+/// A command it stopped is answered as having [`Ended::Stopped`] — or
+/// [`Ended::StoppedUnconfirmed`] where its tree could not be confirmed ended — and what it wrote
 /// is then only everything up to that moment.
 fn run_unless(
     args: &[&str],
@@ -275,7 +276,7 @@ fn run_unless(
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
-    if output.ended == Ended::Stopped {
+    if output.ended.was_stopped() {
         // What a stopped command wrote is a fragment, and no later read may be
         // answered from it.
         return Ok(output);
@@ -496,11 +497,22 @@ fn bounded(
         command.env(key, value);
     }
     detach_process_group(&mut command);
+    // Only a run its caller can stop is contained: that is the run whose descendants
+    // are owed an end it chose, rather than the one a fired bound gives them.
+    if stop.is_some() {
+        Tree::prepare(&mut command);
+    }
 
     let mut child = command.spawn().map_err(unspawnable)?;
-    // Only a run its caller can stop is adopted: that is the run whose descendants are
-    // owed an end it chose, rather than the one a fired bound gives them.
-    let tree = stop.map(|_| Tree::adopt(&child));
+    let tree = match stop {
+        Some(_) => Some(Tree::contain(&mut child).map_err(|why| {
+            error::invalid(format!(
+                "{label} could not be contained so that stopping it would end every process \
+                 it starts: {why}. It was ended before it ran"
+            ))
+        })?),
+        None => None,
+    };
 
     // Bytes are handed over as they are read, rather than only at EOF. The child's
     // exit is the lifetime signal; end of stream only lets a reader retire early —
@@ -516,12 +528,17 @@ fn bounded(
     let collected = match wait_for_exit(&mut child, started, bound, &endings, stop) {
         Waited::Exited(collected) => collected,
         Waited::Stopped => {
-            end_stopped(&mut child, tree.as_ref());
+            // `Stopped` is only reached where `stop` was given, and so a tree was held.
+            let ended = match tree.as_ref().map(|tree| end_stopped(&mut child, tree)) {
+                Some(Ok(())) => Ended::Stopped,
+                Some(Err(why)) => Ended::StoppedUnconfirmed(why),
+                None => Ended::StoppedUnconfirmed("no process tree was held".to_owned()),
+            };
             let out = out_reader.finish();
             let err = err_reader.finish();
             return Ok(Ran {
                 status: 128,
-                ended: Ended::Stopped,
+                ended,
                 stdout: out.bytes,
                 stderr: err.bytes,
                 read_failures: Vec::new(),
@@ -812,9 +829,17 @@ pub enum Ended {
     /// Its caller stopped it before it ended, and every process it started was ended
     /// and reaped with it.
     Stopped,
+    /// Its caller stopped it before it ended, and it was ended — but that every process
+    /// it started went with it could not be confirmed, for this reason.
+    StoppedUnconfirmed(String),
 }
 
 impl Ended {
+    /// Whether its caller stopped it, whatever became of what it started.
+    pub fn was_stopped(&self) -> bool {
+        matches!(self, Ended::Stopped | Ended::StoppedUnconfirmed(_))
+    }
+
     /// How one collected `ExitStatus` ended.
     ///
     /// Unix is the only platform that reports a terminating signal, and it reports
@@ -846,6 +871,11 @@ impl std::fmt::Display for Ended {
                 None => write!(f, "was terminated by signal {signal}"),
             },
             Ended::Stopped => write!(f, "was stopped by its caller"),
+            Ended::StoppedUnconfirmed(why) => write!(
+                f,
+                "was stopped by its caller, but processes it started may still be running: \
+                 {why}"
+            ),
         }
     }
 }
@@ -1307,55 +1337,76 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// End a command its caller stopped, and every process it started, collected.
 ///
-/// What a caller that stopped a command on purpose is owed: when this returns, no
-/// process the command started — a hook's own descendants included — is still
-/// running, and that is waited for rather than assumed. On Unix the tree is the
-/// command's own process group; on Windows it is the job [`Tree::adopt`] put it in.
-fn end_stopped(child: &mut Child, tree: Option<&Tree>) {
-    #[cfg(unix)]
-    {
-        let _ = tree;
-        terminate_group(child);
-    }
-    #[cfg(windows)]
-    if let Some(tree) = tree {
-        tree.terminate();
-    }
+/// What a caller that stopped a command on purpose is owed is either the fact that no
+/// process the command started — a hook's own descendants included — is still running,
+/// waited for rather than assumed, or the reason that could not be confirmed. The
+/// command itself is ended and collected either way. On Unix the tree is the command's
+/// own process group; on Windows it is the job [`Tree::contain`] launched it into.
+fn end_stopped(child: &mut Child, tree: &Tree) -> std::result::Result<(), String> {
+    let terminated = tree.terminate(child);
     let _ = child.kill();
     let _ = child.wait();
-    #[cfg(unix)]
-    await_group_empty(child.id());
-    #[cfg(windows)]
-    if let Some(tree) = tree {
-        tree.await_empty();
-    }
+    terminated.and_then(|()| tree.await_empty(child.id()))
 }
 
 /// The processes a stoppable command starts, as a handle that can end them all.
 ///
-/// On Unix that handle is the process group [`detach_process_group`] already gave the
-/// command, so there is nothing more to hold.
+/// On Unix that handle is the process group [`detach_process_group`] gave the command
+/// before it ran, so containment is already atomic and there is nothing more to hold.
 #[cfg(unix)]
 struct Tree;
 
 #[cfg(unix)]
 impl Tree {
-    fn adopt(_child: &Child) -> Self {
-        Tree
+    fn prepare(_command: &mut Command) {}
+
+    fn contain(_child: &mut Child) -> std::result::Result<Self, String> {
+        Ok(Tree)
+    }
+
+    fn terminate(&self, child: &Child) -> std::result::Result<(), String> {
+        terminate_group(child);
+        Ok(())
+    }
+
+    /// Wait until the process group `leader` led has no member left, for at most
+    /// [`REAP_BOUND`].
+    ///
+    /// A descendant reparented to init is reaped there, so a killed group empties on
+    /// its own. The group's id outlives its leader for as long as it has members, and
+    /// no new process is given an id a live group holds.
+    fn await_empty(&self, leader: u32) -> std::result::Result<(), String> {
+        let group = -(leader as libc::pid_t);
+        let deadline = Instant::now() + REAP_BOUND;
+        loop {
+            // SAFETY: signal 0 delivers nothing; it only asks whether the group, which
+            // was the stopped command's own, still has a member. `ESRCH` is the
+            // answer that it has none.
+            if unsafe { libc::kill(group, 0) } != 0 {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "process group {leader} still had a running member {}s after it was \
+                     killed",
+                    REAP_BOUND.as_secs()
+                ));
+            }
+            std::thread::sleep(EXIT_POLL);
+        }
     }
 }
 
 /// The processes a stoppable command starts, as a handle that can end them all.
 ///
-/// Windows has no process group to signal, so the command is put in a job object of
-/// its own the moment it is spawned, and every process it starts afterwards — git's
-/// hook, and that hook's descendants — is born into the same job. Terminating the job
-/// ends all of them. A command that could not be put in one (an older Windows that
-/// refuses a nested job) holds `None`, and is ended alone, as a fired bound ends it.
+/// Windows has no process group to signal, so the command is launched **suspended**,
+/// put in a job object of its own, and only then resumed — so it never executes an
+/// instruction outside the job, and every process it starts (git's hook, and that
+/// hook's descendants) is born inside it. Terminating the job ends all of them.
 ///
-/// The command runs for the instant between its spawn and its adoption; nothing git
-/// starts on a push is started before it has reached the remote, so a hook is never
-/// born outside the job.
+/// A command that cannot be contained is ended before it ever runs and refused, rather
+/// than run uncontained: a caller could then stop it only partly, and would be told it
+/// had stopped it whole.
 // llmlint: ignore-block[changed_behavior_has_e2e] Windows-only code no journey can
 // reach: the publication fixture `tests/e2e/world.rs` is Unix-only (POSIX-shell hooks
 // and `gh`), and the manager ruled for onevcs#358 that a Windows publication fixture is
@@ -1363,70 +1414,98 @@ impl Tree {
 // `publication_watch.rs` hold the same contract through the process group, and this
 // block is type-checked by clippy for `x86_64-pc-windows-msvc`.
 #[cfg(windows)]
-struct Tree(Option<windows_sys::Win32::Foundation::HANDLE>);
+struct Tree(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl Tree {
-    fn adopt(child: &Child) -> Self {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
-        // SAFETY: an anonymous job with default security, and the handle of a child
-        // this process spawned and still owns. A job that cannot be assigned is
-        // closed before it is dropped.
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return Tree(None);
-            }
-            if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
-                CloseHandle(job);
-                return Tree(None);
-            }
-            Tree(Some(job))
-        }
+    fn prepare(command: &mut Command) {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     }
 
-    fn terminate(&self) {
-        if let Some(job) = self.0 {
-            // SAFETY: a job handle this value owns and has not closed.
-            unsafe {
-                windows_sys::Win32::System::JobObjects::TerminateJobObject(job, 1);
-            }
+    /// Put the suspended `child` in a job of its own and resume it, or end it unrun.
+    fn contain(child: &mut Child) -> std::result::Result<Self, String> {
+        Self::adopt(child).inspect_err(|_| {
+            // Suspended, so it has run nothing and started nothing: ending it here is
+            // the whole of the cleanup.
+            let _ = child.kill();
+            let _ = child.wait();
+        })
+    }
+
+    fn adopt(child: &Child) -> std::result::Result<Self, String> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        // SAFETY: an anonymous job with default security.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(format!(
+                "creating a job object failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
+        // Owned from here, so every early return below closes it.
+        let tree = Tree(job);
+        // SAFETY: the job this value owns, and the handle of a child this process
+        // spawned and still owns.
+        if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
+            return Err(format!(
+                "assigning git to its job object failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        resume_only_thread(child.id())?;
+        Ok(tree)
+    }
+
+    fn terminate(&self, _child: &Child) -> std::result::Result<(), String> {
+        // SAFETY: a job handle this value owns and has not closed.
+        if unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) } == 0 {
+            return Err(format!(
+                "terminating its job object failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
     }
 
     /// Wait until the job has no live process left, for at most [`REAP_BOUND`].
-    fn await_empty(&self) {
+    fn await_empty(&self, _leader: u32) -> std::result::Result<(), String> {
         use windows_sys::Win32::System::JobObjects::{
             JobObjectBasicAccountingInformation, QueryInformationJobObject,
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         };
-        let Some(job) = self.0 else {
-            return;
-        };
         let deadline = Instant::now() + REAP_BOUND;
         loop {
+            // SAFETY: zeroed is a valid value of this plain-integer structure.
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
             // SAFETY: a job handle this value owns, and an out structure of exactly the
             // size the class asks for.
-            let active = unsafe {
-                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
-                let asked = QueryInformationJobObject(
-                    job,
+            let asked = unsafe {
+                QueryInformationJobObject(
+                    self.0,
                     JobObjectBasicAccountingInformation,
                     (&raw mut info).cast(),
                     std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
                     std::ptr::null_mut(),
-                );
-                // A job that will not answer is one nothing more can be learned from.
-                if asked == 0 {
-                    0
-                } else {
-                    info.ActiveProcesses
-                }
+                )
             };
-            if active == 0 || Instant::now() >= deadline {
-                return;
+            if asked == 0 {
+                return Err(format!(
+                    "asking its job object what is still running failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            if info.ActiveProcesses == 0 {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "{} process(es) of its job object were still running {}s after it was \
+                     terminated",
+                    info.ActiveProcesses,
+                    REAP_BOUND.as_secs()
+                ));
             }
             std::thread::sleep(EXIT_POLL);
         }
@@ -1436,44 +1515,96 @@ impl Tree {
 #[cfg(windows)]
 impl Drop for Tree {
     fn drop(&mut self) {
-        if let Some(job) = self.0 {
-            // SAFETY: the job handle this value owns, closed once.
-            unsafe {
-                windows_sys::Win32::Foundation::CloseHandle(job);
-            }
+        // SAFETY: the job handle this value owns, closed once.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
     }
 }
 
+/// Resume the one thread of a process created suspended.
+///
+/// The standard library hands back no thread handle, so the thread is found the way
+/// Windows documents for it: a snapshot of the system's threads, filtered by owner. A
+/// process created suspended has exactly one, and any other count is refused rather
+/// than guessed at.
+#[cfg(windows)]
+fn resume_only_thread(pid: u32) -> std::result::Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    let failed = |what: &str| format!("{what} failed: {}", std::io::Error::last_os_error());
+    // SAFETY: a snapshot of every thread on the system; the handle is closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(failed("snapshotting threads to resume git"));
+    }
+    let mut threads = Vec::new();
+    // SAFETY: zeroed is a valid value of this plain-integer structure, and `dwSize`
+    // is set to its size as the walk requires.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    // SAFETY: the live snapshot, and an entry sized for it.
+    let mut more = unsafe { Thread32First(snapshot, &raw mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            threads.push(entry.th32ThreadID);
+        }
+        // SAFETY: as above.
+        more = unsafe { Thread32Next(snapshot, &raw mut entry) } != 0;
+    }
+    // SAFETY: the snapshot handle opened above, closed once.
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    let [thread] = threads[..] else {
+        return Err(format!(
+            "git was created suspended with {} thread(s) rather than one, so which to resume \
+             is not known",
+            threads.len()
+        ));
+    };
+    // SAFETY: a thread id the snapshot named as the suspended child's own.
+    let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread) };
+    if handle.is_null() {
+        return Err(failed("opening git's thread to resume it"));
+    }
+    // SAFETY: the thread handle opened above, closed once after the resume.
+    let resumed = unsafe { ResumeThread(handle) };
+    let error = failed("resuming git");
+    // SAFETY: as above.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if resumed == u32::MAX {
+        return Err(error);
+    }
+    Ok(())
+}
+
 // llmlint: ignore-end[changed_behavior_has_e2e]
 
-/// Neither Unix nor Windows: no tree to hold, and a stopped command is ended alone.
+/// Neither Unix nor Windows: no tree to hold, so a stopped command is ended alone and
+/// that is said rather than claimed whole.
 #[cfg(not(any(unix, windows)))]
 struct Tree;
 
 #[cfg(not(any(unix, windows)))]
 impl Tree {
-    fn adopt(_child: &Child) -> Self {
-        Tree
-    }
-}
+    fn prepare(_command: &mut Command) {}
 
-/// Wait until the process group `leader` led has no member left, for at most
-/// [`REAP_BOUND`].
-///
-/// A descendant reparented to init is reaped there, so a killed group empties on its
-/// own; the wait is bounded because a process this host will not reap is not one this
-/// process can do anything more about. The group's id outlives its leader for as long
-/// as it has members, and no new process is given an id a live group holds.
-#[cfg(unix)]
-fn await_group_empty(leader: u32) {
-    let group = -(leader as libc::pid_t);
-    let deadline = Instant::now() + REAP_BOUND;
-    // SAFETY: signal 0 delivers nothing; it only asks whether the group, which was
-    // the stopped command's own, still has a member. `ESRCH` is the answer that it
-    // has none.
-    while unsafe { libc::kill(group, 0) } == 0 && Instant::now() < deadline {
-        std::thread::sleep(EXIT_POLL);
+    fn contain(_child: &mut Child) -> std::result::Result<Self, String> {
+        Ok(Tree)
+    }
+
+    fn terminate(&self, _child: &Child) -> std::result::Result<(), String> {
+        Err("this platform has no way to end the processes it started".to_owned())
+    }
+
+    fn await_empty(&self, _leader: u32) -> std::result::Result<(), String> {
+        Ok(())
     }
 }
 
@@ -3523,6 +3654,9 @@ pub enum Pushing {
     Stopped {
         /// Everything the push wrote before it was stopped.
         output: String,
+        /// That every process the push started was ended with it, or why that could
+        /// not be confirmed — in which case some may still be running.
+        teardown: std::result::Result<(), String>,
     },
 }
 
@@ -3553,12 +3687,14 @@ pub fn push_replacing(
         args.insert(1, lease);
     }
     let output = run_unless(&args, Some(cwd), env, Some(stop))?;
-    Ok(if output.ended == Ended::Stopped {
-        Pushing::Stopped {
-            output: output.combined(),
-        }
-    } else {
-        Pushing::Ran(read_push(&output))
+    let teardown = match &output.ended {
+        Ended::Stopped => Ok(()),
+        Ended::StoppedUnconfirmed(why) => Err(why.clone()),
+        _ => return Ok(Pushing::Ran(read_push(&output))),
+    };
+    Ok(Pushing::Stopped {
+        output: output.combined(),
+        teardown,
     })
 }
 

@@ -1069,6 +1069,55 @@ fn a_push_stopped_where_origin_cannot_then_say_whether_it_landed_is_reported_as_
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn a_stop_whose_hook_processes_cannot_be_confirmed_gone_says_so_rather_than_claiming_them() {
+    // This process becomes its descendants' subreaper and never reaps them, so once the
+    // push's group is killed its hook and the hook's child linger as zombies — still
+    // members of the group, which therefore never empties. The publication is still
+    // cancelled, and says it could not confirm the tree ended rather than claiming it.
+    // SAFETY: a flag on this test's own process, which nextest runs alone.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
+        0,
+        "this process becomes a subreaper"
+    );
+    let world = World::new();
+    let hook = HeldHook::in_world(&world);
+    let (origin, session) = publishing(
+        &world,
+        LOCAL_DIRECT,
+        "feature/unconfirmed-stop",
+        Some(&hook.body()),
+    );
+    let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
+
+    let published = cancel_in_push(&session, "the pre-push hook started", || {
+        hook.started.exists()
+    });
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a cancelled publication fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    assert!(
+        reason.contains("could not be confirmed") && reason.contains("may still be running"),
+        "the tree is not claimed stopped: {reason}"
+    );
+    assert!(
+        !reason.contains("every process the hook started were stopped"),
+        "{reason}"
+    );
+    assert_eq!(
+        origin_tip(&world, &origin, "main").as_deref(),
+        Some(base_before.as_str()),
+        "the base on origin did not move"
+    );
+    // Reap what this journey kept as zombies.
+    // SAFETY: a non-blocking wait on this process's own adopted children.
+    while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+    hook.release();
+}
+
+#[test]
 fn a_publication_cancelled_before_its_push_pushes_nothing() {
     // A caller that has already cancelled is answered before anything reaches the
     // remote: the work is committed in the session and nowhere else, which a

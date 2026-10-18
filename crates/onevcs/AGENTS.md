@@ -594,9 +594,12 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   true for it. The publishing push is the one git command it stops
   (`publish::publishing_push`, through `git::push_replacing`'s `stop`): its tree — git,
   the hook and the hook's descendants — is killed and reaped (`git::Tree`: the process
-  group on Unix, a job object on Windows), and origin is then asked whether the update
-  landed first, because a landing is reported, never claimed prevented. The journeys are
-  Unix-only like `world.rs`; the Windows teardown is compiled, not journey-verified.
+  group on Unix; on Windows a job object git is launched *suspended* into, so nothing it
+  starts is ever outside it, and a push that cannot be contained is refused unrun), and
+  origin is then asked whether the update landed first, because a landing is reported,
+  never claimed prevented. A tree whose end cannot be confirmed is `Ended::StoppedUnconfirmed`
+  and is said so, never reported as stopped whole. The journeys are Unix-only like
+  `world.rs`; the Windows teardown is compiled, not journey-verified.
 - **The armed merge's watch also ends on a conflict the host confirms.** It asks
   `mergeability` after `merged_at`, so a landed change is never reported as a conflict,
   and `Unknown` or a host without the method is "not yet". `unverified` passes

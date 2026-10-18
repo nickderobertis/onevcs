@@ -69,10 +69,12 @@ libz-sys = { workspace = true }
 dunce = { workspace = true }
 # `Win32_System_JobObjects` (and the `Win32_Security` its constructor names) is how a
 # stopped publishing push takes its hook's descendants down with it: Windows has no
-# process group to signal, and a job is the tree it offers instead.
+# process group to signal, and a job is the tree it offers instead. git is launched
+# suspended into it, and `Win32_System_Diagnostics_ToolHelp` finds the thread to resume.
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",

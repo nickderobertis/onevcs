@@ -2280,29 +2280,45 @@ fn publishing_push(
     environment: &[(String, String)],
 ) -> Result<git::Pushed> {
     let stop = || context.cancellation.is_cancelled();
-    let output = match git::push_replacing(cwd, refspec, "origin", replacing, environment, &stop)? {
-        git::Pushing::Ran(pushed) => return Ok(pushed),
-        git::Pushing::Stopped { output } => output,
-    };
+    let (output, teardown) =
+        match git::push_replacing(cwd, refspec, "origin", replacing, environment, &stop)? {
+            git::Pushing::Ran(pushed) => return Ok(pushed),
+            git::Pushing::Stopped { output, teardown } => (output, teardown),
+        };
     let branch = &context.branch;
+    // What was stopped is said as it was: the whole tree only where its end was
+    // confirmed, and otherwise that some of it may still be running, and why.
+    let stopped = match &teardown {
+        Ok(()) => {
+            "the push, its pre-push hook and every process the hook started were stopped".to_owned()
+        }
+        Err(why) => format!(
+            "the push was stopped, but that every process it and its pre-push hook started \
+             went with it could not be confirmed ({why}), so some may still be running"
+        ),
+    };
     // An origin that cannot be asked is the third answer below, never a refusal: the
     // push was stopped either way, and what is owed is whether it landed.
     let tip = git::remote_tip(cwd, "origin", remote_branch, environment)
         .unwrap_or(git::RemoteTip::Unknown);
     match (tip, pushing) {
         (git::RemoteTip::At(tip), Some(pushing)) if tip.as_str() == pushing => {
+            // The landing is the outcome; a tree that may outlive it is said beside it.
+            if teardown.is_err() {
+                eprintln!("onevcs: warning: {branch:?} reached origin, and then {stopped}");
+            }
             Ok(git::Pushed::Accepted { output })
         }
         (git::RemoteTip::At(_) | git::RemoteTip::Absent, Some(_)) => {
             Err(cancelled_while(&format!(
-                "the publishing push of {branch:?} ran; the push, its pre-push hook and every \
-             process the hook started were stopped before origin's {remote_branch:?} took it"
+                "the publishing push of {branch:?} ran; {stopped} before origin's \
+                 {remote_branch:?} took it"
             )))
         }
         _ => Err(cancelled_while(&format!(
-            "the publishing push of {branch:?} ran, and the push and its pre-push hook were \
-             stopped; whether origin's {remote_branch:?} took the update first could not be \
-             read, so read it on origin before publishing again"
+            "the publishing push of {branch:?} ran, and {stopped}; whether origin's \
+             {remote_branch:?} took the update first could not be read, so read it on origin \
+             before publishing again"
         ))),
     }
 }
