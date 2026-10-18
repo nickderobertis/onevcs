@@ -782,6 +782,17 @@ impl HeldHook {
     }
 }
 
+/// Publish `session` and cancel it once `reached`, for a journey whose push is held
+/// until the journey releases it.
+///
+/// The time the publication took is deliberately not asserted. Each of these journeys
+/// releases what holds the push only after the publication has answered, so an answer
+/// arriving at all is the proof that cancellation did not wait for the hook — and a
+/// clock bound would add a way to fail on a slow host without adding any proof.
+fn cancel_in_push(session: &Session, what: &str, reached: impl Fn() -> bool + Sync) -> Publication {
+    cancel_once(session, what, reached, || {}).0
+}
+
 /// Everything a publication its caller stopped during its push promises: the kind, the
 /// branch handed back, the session open, and no push or `pre-push` gate run recorded,
 /// since neither ruled on anything.
@@ -833,12 +844,9 @@ fn a_cancellation_during_a_local_publications_pre_push_hook_stops_the_push_and_r
     );
     let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
 
-    let (published, _) = cancel_once(
-        &session,
-        "the pre-push hook started",
-        || hook.started.exists(),
-        || {},
-    );
+    let published = cancel_in_push(&session, "the pre-push hook started", || {
+        hook.started.exists()
+    });
     assert!(
         !hook.released(),
         "the publication answered while its hook was still held"
@@ -911,12 +919,7 @@ fn a_cancellation_after_the_base_took_the_push_reports_the_landing() {
     let (received, release) = hold_after_receiving(&world, &origin);
     let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
 
-    let (published, _) = cancel_once(
-        &session,
-        "origin took the push",
-        || received.exists(),
-        || {},
-    );
+    let published = cancel_in_push(&session, "origin took the push", || received.exists());
     assert!(
         !release.exists(),
         "the publication answered while the push was still held"
@@ -950,12 +953,9 @@ fn a_cancellation_during_a_changes_pre_push_hook_stops_the_push_before_the_branc
     let (origin, session) = publishing(&world, AUTO, "feature/cancel-in-hook", Some(&hook.body()));
     world.host_checks(&[green()]);
 
-    let (published, _) = cancel_once(
-        &session,
-        "the pre-push hook started",
-        || hook.started.exists(),
-        || {},
-    );
+    let published = cancel_in_push(&session, "the pre-push hook started", || {
+        hook.started.exists()
+    });
     assert!(
         !hook.released(),
         "the publication answered while its hook was still held"
@@ -985,12 +985,7 @@ fn a_cancellation_after_a_changes_branch_reached_origin_reports_it_there_and_wat
     world.host_checks(&[green()]);
     let (received, release) = hold_after_receiving(&world, &origin);
 
-    let (published, _) = cancel_once(
-        &session,
-        "origin took the branch",
-        || received.exists(),
-        || {},
-    );
+    let published = cancel_in_push(&session, "origin took the branch", || received.exists());
     assert!(
         !release.exists(),
         "the publication answered while the push was still held"
@@ -1037,12 +1032,9 @@ fn a_push_stopped_where_origin_cannot_then_say_whether_it_landed_is_reported_as_
     let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/origin-gone", Some(&body));
     let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
 
-    let (published, _) = cancel_once(
-        &session,
-        "the pre-push hook started",
-        || hook.started.exists(),
-        || {},
-    );
+    let published = cancel_in_push(&session, "the pre-push hook started", || {
+        hook.started.exists()
+    });
     assert!(
         !hook.released(),
         "the publication answered while its hook was still held"

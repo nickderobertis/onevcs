@@ -513,7 +513,7 @@ fn bounded(
     let collected = match wait_for_exit(&mut child, started, bound, &endings, stop) {
         Waited::Exited(collected) => collected,
         Waited::Stopped => {
-            reap_group(&mut child);
+            end_stopped(&mut child);
             let out = out_reader.finish();
             let err = err_reader.finish();
             return Ok(Ran {
@@ -1302,49 +1302,42 @@ pub(crate) fn terminate_group(child: &Child) {
     }
 }
 
-/// End every process in a bounded command's own group, as [`terminate_group`] does,
-/// and wait until none of them is left.
+/// End a command its caller stopped: every process in its own group, as
+/// [`terminate_group`] does, and then the command itself, collected.
 ///
 /// What a caller that stopped a command on purpose is owed: when this returns, no
 /// process the command started — a hook's own descendants included — is still
-/// running. The wait is bounded, because a process this host will not reap is not
-/// one this process can do anything more about.
-#[cfg(unix)]
-fn reap_group(child: &mut Child) {
-    terminate_group(child);
-    let deadline = Instant::now() + REAP_BOUND;
-    let group = -(child.id() as libc::pid_t);
-    let mut collected = false;
-    loop {
-        // The child is a zombie until it is collected, and a zombie is still a member
-        // of its group, so it is collected first; a descendant reparented to init is
-        // reaped there, and the group then empties on its own.
-        collected = collected || matches!(child.try_wait(), Ok(Some(_)));
-        // SAFETY: signal 0 delivers nothing; it only asks whether the group, which is
-        // this child's own, still has a member. `ESRCH` is the answer that it has none.
-        let remains = unsafe { libc::kill(group, 0) } == 0;
-        if collected && !remains {
-            return;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(EXIT_POLL);
-    }
-    if !collected {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-}
-
-#[cfg(not(unix))]
-fn reap_group(child: &mut Child) {
+/// running, which on Unix is waited for rather than assumed. A platform with no group
+/// teardown ends the command alone, exactly as a fired bound does there.
+fn end_stopped(child: &mut Child) {
     terminate_group(child);
     let _ = child.kill();
     let _ = child.wait();
+    #[cfg(unix)]
+    await_group_empty(child.id());
 }
 
-/// The longest [`reap_group`] waits for a killed group to empty.
+/// Wait until the process group `leader` led has no member left, for at most
+/// [`REAP_BOUND`].
+///
+/// A descendant reparented to init is reaped there, so a killed group empties on its
+/// own; the wait is bounded because a process this host will not reap is not one this
+/// process can do anything more about. The group's id outlives its leader for as long
+/// as it has members, and no new process is given an id a live group holds.
+#[cfg(unix)]
+fn await_group_empty(leader: u32) {
+    let group = -(leader as libc::pid_t);
+    let deadline = Instant::now() + REAP_BOUND;
+    // SAFETY: signal 0 delivers nothing; it only asks whether the group, which was
+    // the stopped command's own, still has a member. `ESRCH` is the answer that it
+    // has none.
+    while unsafe { libc::kill(group, 0) } == 0 && Instant::now() < deadline {
+        std::thread::sleep(EXIT_POLL);
+    }
+}
+
+/// The longest [`await_group_empty`] waits for a killed group to empty.
+#[cfg(unix)]
 const REAP_BOUND: Duration = Duration::from_secs(5);
 
 #[cfg(not(unix))]
