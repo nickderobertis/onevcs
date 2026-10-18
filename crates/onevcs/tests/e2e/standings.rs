@@ -2573,3 +2573,50 @@ fn deferring_checks_under_a_policy_that_does_not_hold_the_change_for_review_push
     refused(&output, 2, "publishes change-auto here");
     assert_eq!(stack.origin_refs(), refs, "nothing pushed");
 }
+
+#[test]
+fn a_change_request_a_person_merged_that_nothing_here_opened_is_a_landing_through_the_real_host() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{origin: \
+             {IDENTITY}}}\n    adoption: published\n    targets:\n      - name: container\n        \
+             style: human-step\n        action: \"Push the image.\"\n"
+        ),
+    )
+    .expect("a release-targets file");
+    // The branch is pushed and then gone from here, and the change request is opened
+    // and merged on the host by a person: nothing of this host's opened or watched it.
+    stack.branch("feature/elsewhere", "main", "elsewhere.txt");
+    world.git(
+        &stack.checkout,
+        &["branch", "-q", "-D", "feature/elsewhere"],
+    );
+    let number = stack.open("feature/elsewhere", "main", false);
+    let landed = world.person_merges(number, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept);
+
+    // The library's own entry point, which answers through the real host implementation
+    // over the substituted `gh` — asked first, before anything here has read it.
+    crate::honesty::inhabit(world);
+    let container = onevcs::TargetName::try_from("container".to_owned()).expect("a target name");
+    let acknowledged = onevcs::acknowledge_release(&url(number), &container, "1.0.0", false)
+        .expect("a landing the host attests can be acknowledged");
+    assert_eq!(acknowledged.landing_commit, landed);
+
+    // …and the binary, through the same.
+    let report = succeeded(
+        &world
+            .onevcs()
+            .args(["status", &url(number), "--json"])
+            .output()
+            .expect("the binary runs"),
+    );
+    assert_eq!(report["branch"]["name"], "feature/elsewhere", "{report}");
+    assert_eq!(report["publication"]["landed"]["state"], "yes", "{report}");
+    assert_eq!(
+        report["publication"]["landed"]["evidence"]["commit"], landed,
+        "{report}"
+    );
+}

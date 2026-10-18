@@ -1799,6 +1799,21 @@ impl ElsewhereOpened {
         (code, stdout, stderr)
     }
 
+    /// One command line against another host factory than the scene's own.
+    fn run_against(&self, hosting: &dyn onevcs::Hosting, args: &[&str]) -> (u8, String) {
+        let mut code = 0;
+        let stderr = crate::library::stderr_of(|| {
+            code = crate::honesty::run(
+                args,
+                onevcs::Providers {
+                    vcs: &onevcs::Git,
+                    hosting,
+                },
+            );
+        });
+        (code, stderr)
+    }
+
     fn json(&self, args: &[&str]) -> Value {
         let (code, stdout, stderr) = self.run(args);
         assert_eq!(code, 0, "{args:?} answers: {stderr}");
@@ -2074,8 +2089,10 @@ fn an_attested_landing_this_host_cannot_record_is_answered_as_the_host_reports_i
 
 /// Every `change-merged` this host has recorded, across all of its streams.
 fn landings_recorded(world: &crate::world::World) -> usize {
-    std::fs::read_dir(world.home().join("streams"))
-        .expect("the streams directory")
+    let Ok(streams) = std::fs::read_dir(world.home().join("streams")) else {
+        return 0;
+    };
+    streams
         .map(|entry| std::fs::read_to_string(entry.expect("an entry").path()).expect("a stream"))
         .map(|stream| stream.matches("\"kind\":\"change-merged\"").count())
         .sum()
@@ -2153,4 +2170,108 @@ fn a_landing_found_here_answers_before_the_hosts_attestation() {
         then["publication"]["landed"]["evidence"]["commit"], scene.squash,
         "{then}"
     );
+}
+
+/// A host factory that answers the one way no well-behaved host does.
+enum Misbehaving<'h> {
+    /// No host can be had for the repository at all.
+    Unreachable,
+    /// The host is had, and answers a standings read with nothing.
+    Silent(&'h onevcs_testing::MemoryHost),
+}
+
+impl onevcs::Hosting for Misbehaving<'_> {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn onevcs::RemoteHost>> {
+        match self {
+            Misbehaving::Unreachable => Err(onevcs::Error::Invalid {
+                reason: format!("no host answers for {slug} from here"),
+            }),
+            Misbehaving::Silent(host) => Ok(Box::new(Silent(host.for_repo(slug)?))),
+        }
+    }
+}
+
+/// A host that delegates everything and reads every standing as nothing at all.
+struct Silent(Box<dyn onevcs::RemoteHost>);
+
+impl onevcs::RemoteHost for Silent {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        self.0.authenticated_user()
+    }
+    fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+        self.0.open_change(req)
+    }
+    fn find_changes(&self, head: &str, base: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+        self.0.find_changes(head, base)
+    }
+    fn change_checks(&self, cr: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+        self.0.change_checks(cr)
+    }
+    fn check_log(
+        &self,
+        cr: &onevcs::ChangeRequest,
+        check: &onevcs::Check,
+    ) -> onevcs::Result<onevcs::ArtifactId> {
+        self.0.check_log(cr, check)
+    }
+    fn merge(
+        &self,
+        cr: &onevcs::ChangeRequest,
+        policy: onevcs::MergePolicy,
+    ) -> onevcs::Result<onevcs::MergeOutcome> {
+        self.0.merge(cr, policy)
+    }
+    fn change_standings(
+        &self,
+        _root: &str,
+        _changes: &[onevcs::ChangeId],
+    ) -> onevcs::Result<onevcs::ChangeStandings> {
+        Ok(onevcs::ChangeStandings {
+            standings: Vec::new(),
+            cost: onevcs::ReadCost::default(),
+        })
+    }
+}
+
+#[test]
+fn a_host_that_cannot_be_had_or_says_nothing_settles_no_landing() {
+    let scene = ElsewhereOpened::new();
+    let url = format!("{ELSEWHERE}/238");
+    for (hosting, why) in [
+        (
+            Misbehaving::Unreachable,
+            "its host could not say where it stands: invalid input: no host answers",
+        ),
+        (
+            Misbehaving::Silent(&scene.host),
+            "its host answered nothing about it",
+        ),
+    ] {
+        let (code, stderr) = scene.run_against(&hosting, &["onevcs", "status", &url]);
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.contains("was opened through `onevcs` on this host") && stderr.contains(why),
+            "{stderr}"
+        );
+    }
+    assert_eq!(landings_recorded(&scene.world), 0);
+}
+
+#[test]
+fn a_merge_this_host_cannot_bring_its_base_up_to_is_no_landing_and_is_not_recorded() {
+    let scene = ElsewhereOpened::new();
+    // This host's checkout has not fetched since the host merged, and now cannot.
+    scene.world.git(
+        &scene.checkout,
+        &["remote", "set-url", "origin", "/nonexistent/origin.git"],
+    );
+    let url = format!("{ELSEWHERE}/238");
+    let (code, _, stderr) = scene.run(&["onevcs", "status", &url]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(
+        stderr.contains(&format!("its host reports it merged at {}", scene.squash))
+            && stderr.contains("does not carry, so it is no landing there"),
+        "{stderr}"
+    );
+    assert_eq!(landings_recorded(&scene.world), 0);
 }
