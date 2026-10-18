@@ -2285,7 +2285,10 @@ fn publishing_push(
         git::Pushing::Stopped { output } => output,
     };
     let branch = &context.branch;
-    let tip = git::remote_tip(cwd, "origin", remote_branch, environment)?;
+    // An origin that cannot be asked is the third answer below, never a refusal: the
+    // push was stopped either way, and what is owed is whether it landed.
+    let tip = git::remote_tip(cwd, "origin", remote_branch, environment)
+        .unwrap_or(git::RemoteTip::Unknown);
     match (tip, pushing) {
         (git::RemoteTip::At(tip), Some(pushing)) if tip.as_str() == pushing => {
             Ok(git::Pushed::Accepted { output })

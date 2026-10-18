@@ -731,8 +731,13 @@ impl HeldHook {
     }
 
     fn body(&self) -> String {
+        self.body_after("")
+    }
+
+    /// The hook, running `first` before it starts its child and blocks.
+    fn body_after(&self, first: &str) -> String {
         format!(
-            "( while [ ! -f '{release}' ]; do sleep 0.05; done ) &\n\
+            "{first}\n( while [ ! -f '{release}' ]; do sleep 0.05; done ) &\n\
              echo $! > '{child}'\n\
              echo $$ > '{hook}'\n\
              touch '{started}'\n\
@@ -873,14 +878,10 @@ fn a_cancellation_during_a_local_publications_pre_push_hook_stops_the_push_and_r
         .contains("one"));
 }
 
-#[test]
-fn a_cancellation_after_the_base_took_the_push_reports_the_landing() {
-    // The remote update can complete while the push is still running — here origin's
-    // own `post-receive` hook, which git runs after the ref has moved, holds it — and a
-    // cancellation then cannot prevent anything. It still stops the push, and the
-    // publication reports the landing it found on origin rather than a prevented one.
-    let world = World::new();
-    let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/landed-first", None);
+/// Hold every push `origin` takes in its own `post-receive` hook — which git runs once
+/// the ref has moved — until the journey writes the answered release file. Answers the
+/// file the hook writes once it holds a push, and the release.
+fn hold_after_receiving(world: &World, origin: &Path) -> (PathBuf, PathBuf) {
     let received = world.path("origin-received");
     let release = world.path("origin-release");
     let hook = origin.join("hooks/post-receive");
@@ -896,6 +897,18 @@ fn a_cancellation_after_the_base_took_the_push_reports_the_landing() {
     let mut permissions = std::fs::metadata(&hook).expect("the hook").permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
     std::fs::set_permissions(&hook, permissions).expect("the hook is executable");
+    (received, release)
+}
+
+#[test]
+fn a_cancellation_after_the_base_took_the_push_reports_the_landing() {
+    // The remote update can complete while the push is still running — here origin's
+    // own `post-receive` hook, which git runs after the ref has moved, holds it — and a
+    // cancellation then cannot prevent anything. It still stops the push, and the
+    // publication reports the landing it found on origin rather than a prevented one.
+    let world = World::new();
+    let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/landed-first", None);
+    let (received, release) = hold_after_receiving(&world, &origin);
     let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
 
     let (published, _) = cancel_once(
@@ -958,6 +971,103 @@ fn a_cancellation_during_a_changes_pre_push_hook_stops_the_push_before_the_branc
     assert!(
         !calls.iter().any(|call| call.starts_with("pr ")),
         "no change request was opened, read or watched: {calls:?}"
+    );
+    hook.release();
+}
+
+#[test]
+fn a_cancellation_after_a_changes_branch_reached_origin_reports_it_there_and_watches_nothing() {
+    // The change request's push, stopped after origin took the branch: nothing was
+    // prevented, so the publication says the branch is on origin — and, cancelled,
+    // opens and watches no change request.
+    let world = World::new();
+    let (origin, session) = publishing(&world, AUTO, "feature/branch-landed-first", None);
+    world.host_checks(&[green()]);
+    let (received, release) = hold_after_receiving(&world, &origin);
+
+    let (published, _) = cancel_once(
+        &session,
+        "origin took the branch",
+        || received.exists(),
+        || {},
+    );
+    assert!(
+        !release.exists(),
+        "the publication answered while the push was still held"
+    );
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a cancelled publication fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    let tip = world.git(&session.worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        origin_tip(&world, &origin, &session.branch).as_deref(),
+        Some(tip.as_str()),
+        "the branch is on origin at what was pushed"
+    );
+    assert!(
+        reason.contains(&format!("is on origin at {tip}")),
+        "the landing is reported, not a prevented push: {reason}"
+    );
+    let pushes = world.events_of(&session.token.0, "push");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["payload"]["accepted"], true, "{pushes:?}");
+    let calls = world.host_calls();
+    assert!(
+        !calls.iter().any(|call| call.starts_with("pr ")),
+        "no change request was opened, read or watched: {calls:?}"
+    );
+    std::fs::write(&release, "").expect("origin's hook is released");
+}
+
+#[test]
+fn a_push_stopped_where_origin_cannot_then_say_whether_it_landed_is_reported_as_unknown() {
+    // The hook takes origin away before it blocks, so once the push is stopped origin
+    // cannot be asked whether it took the update. The publication says exactly that,
+    // rather than claiming either answer.
+    let world = World::new();
+    let hook = HeldHook::in_world(&world);
+    let origin = world.path("hosted.git");
+    let away = world.path("hosted.git.away");
+    let body = hook.body_after(&format!(
+        "mv '{origin}' '{away}'",
+        origin = origin.display(),
+        away = away.display()
+    ));
+    let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/origin-gone", Some(&body));
+    let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
+
+    let (published, _) = cancel_once(
+        &session,
+        "the pre-push hook started",
+        || hook.started.exists(),
+        || {},
+    );
+    assert!(
+        !hook.released(),
+        "the publication answered while its hook was still held"
+    );
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        retained,
+        ..
+    } = &published.outcome
+    else {
+        panic!("a cancelled publication fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    assert!(reason.contains("could not be read"), "{reason}");
+    assert!(
+        matches!(retained, Some(Retention::HandedBack(_))),
+        "the branch is handed back like any failure's: {retained:?}"
+    );
+    hook.assert_reaped();
+    std::fs::rename(&away, &origin).expect("origin is put back");
+    assert_eq!(
+        origin_tip(&world, &origin, "main").as_deref(),
+        Some(base_before.as_str()),
+        "and the base on origin did not move"
     );
     hook.release();
 }

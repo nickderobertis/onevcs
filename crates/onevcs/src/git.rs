@@ -205,23 +205,22 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 /// `pre-push` hook: the gate a publishing push runs must judge the same base the
 /// worker's gate already cleared.
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
-    run_unless(args, cwd, env, None).map(|(output, _)| output)
+    run_unless(args, cwd, env, None)
 }
 
 /// Run one git command as [`run_with_env`] does, stopping it — and every process it
 /// started — the first time `stop` says so.
 ///
-/// The second half of the answer is whether it was stopped, because a command this
-/// stopped ended by a signal this process sent, and what it wrote is then only
-/// everything up to that signal.
+/// A command it stopped is answered as having [`Ended::Stopped`], and what it wrote
+/// is then only everything up to that moment.
 fn run_unless(
     args: &[&str],
     cwd: Option<&Path>,
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
-) -> Result<(Output, bool)> {
+) -> Result<Output> {
     if let Some(recalled) = reads::recall(args, cwd, env) {
-        return Ok((recalled, false));
+        return Ok(recalled);
     }
     // A read the admitted context lets this process answer from the objects
     // themselves costs no process and is never stored as a proof, since it is as
@@ -230,7 +229,7 @@ fn run_unless(
     // is remembered for the rest of this read.
     if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
         reads::remember(args, cwd, env, &output);
-        return Ok((output, false));
+        return Ok(output);
     }
     let reusable = crate::recovery_cache::query(args, cwd, env);
     if let Some(output) = reusable
@@ -238,7 +237,7 @@ fn run_unless(
         .and_then(crate::recovery_cache::Query::read)
     {
         reads::remember(args, cwd, env, &output);
-        return Ok((output, false));
+        return Ok(output);
     }
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
@@ -269,7 +268,6 @@ fn run_unless(
     );
     drop(shims);
     let ran = ran?;
-    let stopped = ran.stopped;
     let output = Output {
         status: ran.status,
         ended: ran.ended,
@@ -277,16 +275,16 @@ fn run_unless(
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
-    if stopped {
+    if output.ended == Ended::Stopped {
         // What a stopped command wrote is a fragment, and no later read may be
         // answered from it.
-        return Ok((output, true));
+        return Ok(output);
     }
     if let Some(reusable) = reusable {
         reusable.write(&output);
     }
     reads::remember(args, cwd, env, &output);
-    Ok((output, false))
+    Ok(output)
 }
 
 /// Run `read` with every repeated git read inside it answered once.
@@ -472,7 +470,7 @@ mod reads {
 /// `stop` is the caller's own reason to end the run early, asked as often as the
 /// bound is. The first time it says so the command's whole process group is ended
 /// and reaped exactly as a fired bound's is, and the run is answered as
-/// [`Ran::stopped`] with whatever it had written by then — an answer rather than a
+/// having [`Ended::Stopped`], with whatever it had written by then — an answer rather than a
 /// refusal, because the caller asked for it and may still need to read what the
 /// command did before it went.
 fn bounded(
@@ -515,19 +513,15 @@ fn bounded(
     let collected = match wait_for_exit(&mut child, started, bound, &endings, stop) {
         Waited::Exited(collected) => collected,
         Waited::Stopped => {
-            let status = reap_group(&mut child).or_else(|| {
-                let _ = child.kill();
-                child.wait().ok()
-            });
+            reap_group(&mut child);
             let out = out_reader.finish();
             let err = err_reader.finish();
             return Ok(Ran {
                 status: 128,
-                ended: status.as_ref().map_or(Ended::Code(128), Ended::of),
+                ended: Ended::Stopped,
                 stdout: out.bytes,
                 stderr: err.bytes,
                 read_failures: Vec::new(),
-                stopped: true,
             });
         }
         Waited::Elapsed => {
@@ -570,7 +564,6 @@ fn bounded(
                 failure.map(|failure| format!("{label}: reading its {stream} failed: {failure}"))
             })
             .collect(),
-        stopped: false,
     })
 }
 
@@ -795,8 +788,10 @@ impl<T: Read + std::os::windows::io::AsRawHandle> PipeRead for T {}
 /// `onevcs`'s own issue 161: a publishing push that ran for seventeen minutes and
 /// was reported as `rejected by the merge path: .`
 ///
-/// Reported rather than classified on: nothing here branches on which ending it
-/// was, and the one caller that reads it prints it for a person.
+/// Reported rather than classified on, with one exception: a run its caller
+/// [`Stopped`](Ended::Stopped) is told apart from one that ended on its own, because
+/// what it wrote is then a fragment and whether it did its work is a question for
+/// somewhere else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
     /// It exited of its own accord, with this code.
@@ -811,6 +806,9 @@ pub enum Ended {
         )
     )]
     Signal(i32),
+    /// Its caller stopped it before it ended, and every process it started was ended
+    /// and reaped with it.
+    Stopped,
 }
 
 impl Ended {
@@ -844,6 +842,7 @@ impl std::fmt::Display for Ended {
                 Some(name) => write!(f, "was terminated by signal {signal} ({name})"),
                 None => write!(f, "was terminated by signal {signal}"),
             },
+            Ended::Stopped => write!(f, "was stopped by its caller"),
         }
     }
 }
@@ -880,9 +879,6 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 /// writing prose for a person, and losing its refusal to one such byte would
 /// publish a change the repository turned down.
 struct Ran {
-    /// Whether the caller's own `stop` ended it, rather than it ending of its own
-    /// accord. Its output is then everything it wrote up to that moment and no more.
-    stopped: bool,
     status: i32,
     /// How the operating system says it ended: an exit code, or the signal that
     /// terminated it. A signalled command has no code at all, and `status` above
@@ -1313,35 +1309,39 @@ pub(crate) fn terminate_group(child: &Child) {
 /// process the command started — a hook's own descendants included — is still
 /// running. The wait is bounded, because a process this host will not reap is not
 /// one this process can do anything more about.
-///
-/// Answers how the child itself ended, where it was collected.
 #[cfg(unix)]
-fn reap_group(child: &mut Child) -> Option<ExitStatus> {
+fn reap_group(child: &mut Child) {
     terminate_group(child);
     let deadline = Instant::now() + REAP_BOUND;
     let group = -(child.id() as libc::pid_t);
-    let mut collected = None;
+    let mut collected = false;
     loop {
         // The child is a zombie until it is collected, and a zombie is still a member
         // of its group, so it is collected first; a descendant reparented to init is
         // reaped there, and the group then empties on its own.
-        if collected.is_none() {
-            collected = child.try_wait().ok().flatten();
-        }
+        collected = collected || matches!(child.try_wait(), Ok(Some(_)));
         // SAFETY: signal 0 delivers nothing; it only asks whether the group, which is
         // this child's own, still has a member. `ESRCH` is the answer that it has none.
         let remains = unsafe { libc::kill(group, 0) } == 0;
-        if (collected.is_some() && !remains) || Instant::now() >= deadline {
-            return collected;
+        if collected && !remains {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(EXIT_POLL);
+    }
+    if !collected {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
 #[cfg(not(unix))]
-fn reap_group(child: &mut Child) -> Option<ExitStatus> {
+fn reap_group(child: &mut Child) {
     terminate_group(child);
-    None
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// The longest [`reap_group`] waits for a killed group to empty.
@@ -3418,8 +3418,8 @@ pub fn push_replacing(
     if let Some(lease) = lease.as_deref() {
         args.insert(1, lease);
     }
-    let (output, stopped) = run_unless(&args, Some(cwd), env, Some(stop))?;
-    Ok(if stopped {
+    let output = run_unless(&args, Some(cwd), env, Some(stop))?;
+    Ok(if output.ended == Ended::Stopped {
         Pushing::Stopped {
             output: output.combined(),
         }
