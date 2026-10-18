@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.1](https://github.com/nickderobertis/onevcs/compare/v0.56.0...v0.56.1) - 2026-10-18
+
+### Fixed
+
+- *(publish)* stop a publishing push and its gate when its publication is cancelled ([#479](https://github.com/nickderobertis/onevcs/pull/479))
+- *(status)* resolve a merged change request another host opened through the repository's host ([#478](https://github.com/nickderobertis/onevcs/pull/478))
+
 ## [0.56.0](https://github.com/nickderobertis/onevcs/compare/v0.55.0...v0.56.0) - 2026-10-18
 
 ### Added
