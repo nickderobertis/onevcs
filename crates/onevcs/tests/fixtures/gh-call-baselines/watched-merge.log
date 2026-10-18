@@ -1,0 +1,13 @@
+api repos/acme-corp/direct --include 
+api user --jq .login 
+pr list --repo acme-corp/direct --head feature/direct --base main --state open --json number,url,state,headRefOid,isDraft,title,body 
+pr create --repo acme-corp/direct --head feature/direct --base main --title feat: land it directly --body  --draft 
+pr view 1 --repo acme-corp/direct --json headRefOid 
+pr view 1 --repo acme-corp/direct --json isDraft 
+api repos/acme-corp/direct/rules/branches/main 
+api repos/acme-corp/direct/branches/main/protection/required_status_checks 
+pr view 1 --repo acme-corp/direct --json headRefOid,statusCheckRollup 
+pr ready 1 --repo acme-corp/direct 
+pr merge 1 --repo acme-corp/direct --squash 
+pr view 1 --repo acme-corp/direct --json state,mergeCommit 
+pr view 1 --repo acme-corp/direct --json mergedAt 

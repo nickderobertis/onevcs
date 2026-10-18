@@ -788,6 +788,24 @@ json_recorded() {
   json_string "${text%$'\n'}"
 }
 
+# The issues change request `$1` closes, as GitHub's `closingIssuesReferences` answers
+# them: one node per line of `closes-<n>`, each `owner/name#number`, in the order the
+# record lists them. A change request with no such record closes none.
+closing_references() {
+  local record="$STATE/closes-$1" line owner name number separator=""
+  printf '['
+  if [ -f "$record" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      owner="${line%%/*}"; name="${line#*/}"; name="${name%%#*}"; number="${line##*#}"
+      printf '%s{"id":"I_%s_%s_%s","number":%s,"repository":{"id":"R_%s_%s","name":"%s","owner":{"id":"U_%s","login":"%s"}},"url":"https://github.com/%s/%s/issues/%s"}' \
+        "$separator" "$owner" "$name" "$number" "$number" "$owner" "$name" "$name" "$owner" "$owner" "$owner" "$name" "$number"
+      separator=","
+    done <"$record"
+  fi
+  printf ']'
+}
+
 # Perform the merge of one change request, with real git against the real bare
 # origin, and record it as merged.
 land_pr() {
@@ -1082,6 +1100,9 @@ case "$subcommand" in
     # The description, as `gh pr edit` last left it or `gh pr create` opened it.
     if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
     if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi
+    if wanted closingIssuesReferences; then
+      printf '%s"closingIssuesReferences":%s' "$separator" "$(closing_references "$number")"; separator=","
+    fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'
     ;;

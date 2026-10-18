@@ -297,6 +297,7 @@ impl Model {
             }
         }
         let reviews = query.contains("reviewThreads(first: 50)");
+        let closes = query.contains("closingIssuesReferences(");
         let cost = cost_of(query);
         self.charged = Some(cost);
         // A journey's own answer for the whole query — how an answer GitHub's schema
@@ -341,7 +342,7 @@ impl Model {
             }
         }
         for (at, number) in aliased_numbers(query).into_iter().enumerate() {
-            let Some(node) = self.standing(number, reviews) else {
+            let Some(node) = self.standing(number, reviews, closes) else {
                 return refused(&format!(
                     "GraphQL: Could not resolve to a PullRequest with the number of {number}. \
                      (repository.c{at})"
@@ -455,7 +456,7 @@ impl Model {
     }
 
     /// One change request as an alias of the standings query answers it.
-    fn standing(&self, number: u64, reviews: bool) -> Option<Value> {
+    fn standing(&self, number: u64, reviews: bool, closes: bool) -> Option<Value> {
         let record = self.record(number)?;
         let field = |key: &str| record.get(key).cloned().unwrap_or_default();
         let (base, head_branch, head) = (field("PR_BASE"), field("PR_HEAD"), field("PR_HEAD_SHA"));
@@ -523,6 +524,23 @@ impl Model {
             "baseRef": base_ref,
             "headRef": head_ref,
         });
+        // The issues it closes, where the query asks: `closes-<n>`, one `owner/name#number`
+        // a line, as `fixtures/gh` answers `gh pr view` from the same record.
+        if closes {
+            let nodes: Vec<Value> = std::fs::read_to_string(self.state.join(format!("closes-{number}")))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| {
+                    let (repository, number) = line.trim().split_once('#')?;
+                    let (owner, name) = repository.split_once('/')?;
+                    Some(json!({
+                        "number": number.parse::<u64>().ok()?,
+                        "repository": {"name": name, "owner": {"login": owner}},
+                    }))
+                })
+                .collect();
+            node["closingIssuesReferences"] = json!({"nodes": nodes});
+        }
         // A journey's own answer for this change request, in place of the derived
         // fields — which is how a malformed host answer is served.
         if let Ok(text) = std::fs::read_to_string(self.state.join(format!("pull-{number}.json"))) {
