@@ -1704,8 +1704,33 @@ fn resumable(
     let Some(branch) = branch else {
         return Ok(None);
     };
+    let Some(candidate) = resumable_record(&resolution.key, branch, base, execution)? else {
+        return Ok(None);
+    };
+    // The same question `adopt` asks a moment later, and it has the same answer: an
+    // exclusive holder — a reclamation probing this run root, or anything else that
+    // has taken it against the world — is what it answers `None` for. Shared holders
+    // are compatible with each other by design, because several commands legitimately
+    // work in one run root at once.
+    // llmlint: ignore-block[changed_behavior_has_e2e] the journey is
+    // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
+    // which holds the run root's lock itself, and says there why a lease no command
+    // outlives leaves nothing else to hold it with.
+    Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+}
+
+/// The one open session a pin would resume, judged from the records alone: what
+/// [`resumable`] asks before it takes the lease, and what `pool`'s capacity asks so
+/// the two cannot disagree about which pins resume.
+pub(crate) fn resumable_record(
+    identity: &str,
+    branch: &Ref,
+    base: &Ref,
+    execution: &Path,
+) -> Result<Option<Record>> {
     let mut held = all()?.into_iter().filter(|record| {
-        record.identity == resolution.key
+        record.identity == identity
             && record.branch == *branch
             && record.base == *base
             // Closing a session is the statement that it is finished: it hands the
@@ -1720,20 +1745,10 @@ fn resumable(
             && record.run_root.is_dir()
             && record.clone.is_dir()
     });
-    let (Some(candidate), None) = (held.next(), held.next()) else {
-        return Ok(None);
-    };
-    // The same question `adopt` asks a moment later, and it has the same answer: an
-    // exclusive holder — a reclamation probing this run root, or anything else that
-    // has taken it against the world — is what it answers `None` for. Shared holders
-    // are compatible with each other by design, because several commands legitimately
-    // work in one run root at once.
-    // llmlint: ignore-block[changed_behavior_has_e2e] the journey is
-    // `a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refusing`,
-    // which holds the run root's lock itself, and says there why a lease no command
-    // outlives leaves nothing else to hold it with.
-    Ok(lock::try_shared(&candidate.lease())?.map(|lease| (candidate, lease)))
-    // llmlint: ignore-end[changed_behavior_has_e2e]
+    Ok(match (held.next(), held.next()) {
+        (Some(candidate), None) => Some(candidate),
+        _ => None,
+    })
 }
 
 /// Take up a session that already exists, as the request that pinned its branch.

@@ -1923,6 +1923,181 @@ fn capacity_counts_only_the_slots_open_would_take_and_names_why_it_passes_over_t
     }
 }
 
+#[test]
+fn a_broken_slot_is_admitted_only_for_the_checkout_that_would_recreate_it() {
+    let fixture = pooled(&sized(2, "0"));
+    inhabit(&fixture.world);
+    let other = fixture.world.clone_of(&fixture.origin, "other");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &other.to_string_lossy()])
+        .assert()
+        .success();
+    // Slot 1: the other checkout's, and broken with its record still naming it.
+    let (theirs, theirs_tree, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 1);
+    // Slot 2: broken with nothing left to name a lender — neither a record nor a clone.
+    let (ours, ours_tree, placed) = open(&fixture, &[]);
+    assert_eq!(placed["slot"], 2);
+    close(&fixture, &theirs);
+    close(&fixture, &ours);
+    damage(theirs_tree.parent().expect("slot 1"), Damage::LoseClone);
+    let unbound = ours_tree.parent().expect("slot 2");
+    damage(unbound, Damage::GarbleRecord);
+    damage(unbound, Damage::LoseClone);
+
+    let capacity = capacity_from(None);
+    assert_eq!(capacity.idle, 0);
+    assert_eq!(
+        reasons(&capacity),
+        [(1, "other-lender".to_owned()), (2, "no-lender".to_owned())]
+    );
+    assert_eq!(
+        capacity.ineligible[0].reason,
+        onevcs::Ineligibility::OtherLender {
+            execution_checkout: PathBuf::from(
+                status(&fixture)["slots"][0]["execution_checkout"]
+                    .as_str()
+                    .expect("slot 1's lender")
+            ),
+        }
+    );
+    assert_eq!(
+        capacity.admits,
+        Bound::Bounded(1),
+        "the slot with no lender is anybody's to recreate; the other checkout's is not"
+    );
+    assert!(capacity.admitted);
+    let table = fixture
+        .world
+        .onevcs()
+        .args(["pool", "status", "project"])
+        .output()
+        .expect("the binary runs");
+    let table = String::from_utf8_lossy(&table.stdout);
+    assert!(
+        table.contains(
+            "not idle for this checkout: slot 2: broken with no lender, recreated by the open \
+             that takes it — its record at"
+        ),
+        "{table}"
+    );
+    // For the other checkout both are its to recreate.
+    let for_them = capacity_from(Some("other"));
+    assert_eq!(
+        reasons(&for_them),
+        [(1, "broken".to_owned()), (2, "no-lender".to_owned())]
+    );
+    assert_eq!(for_them.admits, Bound::Bounded(2));
+
+    // Admitted, so placed: on the slot with no lender, recreated for this checkout.
+    let (recreated, _, placed) = open(&fixture, &[]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 2, "created": true})
+    );
+    // Not admitted, so refused: the one slot left is the other checkout's.
+    let capacity = capacity_from(None);
+    assert_eq!(reasons(&capacity), [(1, "other-lender".to_owned())]);
+    assert!(!capacity.admitted, "{capacity:?}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .code(4);
+    // And the other checkout's request is admitted onto it, and placed there.
+    assert!(capacity_from(Some("other")).admitted);
+    let (rebuilt, _, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 1, "created": true})
+    );
+    close(&fixture, &recreated);
+    close(&fixture, &rebuilt);
+}
+
+/// What `workspace_capacity` answers for a session pinned to `branch`, against `base`
+/// where one is named.
+fn capacity_pinned(branch: &str, base: Option<&str>) -> onevcs::WorkspaceCapacity {
+    onevcs::workspace_capacity(&SessionRequest {
+        repo: "project".to_owned(),
+        branch: Some(branch.to_owned()),
+        branch_name: None,
+        branch_prefix: None,
+        base: base.map(str::to_owned),
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts: false,
+        caller_merges_base: false,
+    })
+    .expect("the capacity is answered")
+}
+
+#[test]
+fn a_pin_is_admitted_on_a_full_pool_only_where_open_would_resume_it() {
+    let fixture = pooled(&sized(1, "0"));
+    inhabit(&fixture.world);
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["branch", "-q", "sibling", "main"]);
+    world.git(&fixture.checkout, &["push", "-q", "origin", "sibling"]);
+    let (held, _, placed) = open(&fixture, &["--branch", "feature/held"]);
+    assert_eq!(placed["slot"], 1);
+
+    // Against the base it was cut on, the pin resumes: admitted, and the open hands
+    // back the same session.
+    assert!(capacity_pinned("feature/held", None).admitted);
+    assert!(capacity_pinned("feature/held", Some("main")).admitted);
+    let (resumed, _) = fixture.open(&["--branch", "feature/held"]);
+    assert_eq!(resumed, held);
+
+    // Against another base it would be a new session, and the full pool refuses it.
+    assert!(!capacity_pinned("feature/held", Some("sibling")).admitted);
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/held",
+            "--base",
+            "sibling",
+        ])
+        .assert()
+        .code(4);
+
+    // A root this checkout cannot name — no `origin/HEAD`, an origin that does not
+    // answer, and two branches it could be — is an open refused before it resumes.
+    let url = world.git(&fixture.checkout, &["remote", "get-url", "origin"]);
+    world.git(&fixture.checkout, &["remote", "set-head", "origin", "-d"]);
+    world.git(
+        &fixture.checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &world.path("gone").to_string_lossy(),
+        ],
+    );
+    assert!(!capacity_pinned("feature/held", None).admitted);
+    world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature/held"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot determine the default branch of remote \"origin\"",
+        ));
+    world.git(&fixture.checkout, &["remote", "set-url", "origin", &url]);
+    world.git(&fixture.checkout, &["remote", "set-head", "origin", "main"]);
+    assert!(capacity_pinned("feature/held", None).admitted);
+    close(&fixture, &held);
+}
+
 /// The worktree an open session was handed, off its record as `status` reports it.
 fn worktree_of_open(fixture: &Fixture, token: &str) -> PathBuf {
     let report = fixture

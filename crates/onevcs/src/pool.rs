@@ -1247,7 +1247,7 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
             ),
         },
     };
-    let admitted = resumes(asked, survey, request)
+    let admitted = resumes(asked, request)
         || (resolved.pool.value > 0 && (takeable_after > 0 || can_create > 0))
         || resolved.overflow.value.admits(overflow_in_use);
     WorkspaceCapacity {
@@ -1266,27 +1266,14 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
 }
 
 /// Whether `open` would resume an open session for the request's pinned branch rather
-/// than place one, asked the way `workspace::resumable` asks it: exactly one open
-/// session of the identity on that branch, cut against the same base from the same
-/// execution checkout, whose run root and clone are still there.
+/// than place one, asked through the record match `open`'s own resume asks.
 ///
-/// The base is the request's, or the root the open would resolve; one this host cannot
-/// name is an open that is refused rather than resumed.
-fn resumes(asked: &Asked, survey: &Survey, request: &SessionRequest) -> bool {
+/// The base is the request's, or the root the open resolves; one this host cannot
+/// name is an open that is refused before it could resume anything.
+fn resumes(asked: &Asked, request: &SessionRequest) -> bool {
     let Some(pinned) = request.branch.as_deref() else {
         return false;
     };
-    let on_branch = |record: &&Record| {
-        *record.branch == *pinned
-            && record.execution_checkout == asked.execution
-            && record.run_root.is_dir()
-            && record.clone.is_dir()
-    };
-    // Asked only where a session could be resumed at all, because resolving the root
-    // may read the checkout's remote.
-    if !survey.open.iter().any(|record| on_branch(&record)) {
-        return false;
-    }
     let base = match request.base.as_deref() {
         Some(base) => base.to_owned(),
         None => match git::default_branch(&asked.execution, "origin") {
@@ -1294,12 +1281,11 @@ fn resumes(asked: &Asked, survey: &Survey, request: &SessionRequest) -> bool {
             Err(_) => return false,
         },
     };
-    let mut held = survey
-        .open
-        .iter()
-        .filter(on_branch)
-        .filter(|record| *record.base == *base);
-    matches!((held.next(), held.next()), (Some(_), None))
+    let (Ok(pinned), Ok(base)) = (Ref::try_from(pinned.to_owned()), Ref::try_from(base)) else {
+        return false;
+    };
+    workspace::resumable_record(&asked.resolution.key, &pinned, &base, &asked.execution)
+        .is_ok_and(|record| record.is_some())
 }
 
 /// How many sessions the request's identity admits right now, and whether the request
