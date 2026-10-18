@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.52.1"
+version = "0.53.0"
 dependencies = [
  "aho-corasick",
  "assert_cmd",
@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs-testing"
-version = "0.19.5"
+version = "0.19.6"
 dependencies = [
  "clap",
  "onevcs",
