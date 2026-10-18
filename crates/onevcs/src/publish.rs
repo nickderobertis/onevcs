@@ -2462,16 +2462,22 @@ fn land_opened_change(
     pushed: &Sha,
 ) -> Result<PublishOutcome> {
     let lifecycle = !context.drafts.disabled;
-    stream.emit(
-        EventKind::ChangeOpened,
-        object(json!({
-            "url": change.url.to_string(),
-            "host": "github",
-            "id": change.id.0,
-            "base": change.base,
-            "author": author,
-        })),
-    );
+    let mut opened = object(json!({
+        "url": change.url.to_string(),
+        "host": "github",
+        "id": change.id.0,
+        "base": change.base,
+        "author": author,
+    }));
+    // A first publication's push has already named the branch and the head on this
+    // stream, which is what resolves the change request's URL and its landing back to
+    // the work. A resumed one pushes nothing, and its stream may hold nothing else, so
+    // it names them here, in the fields that push names them in.
+    if context.built == Built::Resumed {
+        opened.insert("branch".to_owned(), json!(context.branch));
+        opened.insert("head".to_owned(), json!(pushed.0));
+    }
+    stream.emit(EventKind::ChangeOpened, opened);
 
     if let Some(reason) = &context.draft {
         return hold_as_draft(context, host, change, reason, stream);

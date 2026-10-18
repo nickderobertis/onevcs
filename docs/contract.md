@@ -4580,7 +4580,8 @@ green. Publishing it again used to build a fresh workspace and repeat a verifica
 same tree had passed: on one repository, about 20 GB and a live lane run again for a push
 that moved nothing. So a publication records the boundary its verification passed at,
 and `onevcs publish-branch <branch> --repo <checkout>` — the library's
-`publish_branch` — resumes from it. No flag, output or event shape changes.
+`publish_branch` — resumes from it. No flag, output or event kind changes; the one event
+field it adds is the branch identity a resumed `change-opened` carries (below).
 
 **When it is written.** Once a publication's verification has passed — its publishing
 push, and the `pre-push` hook git ran there, accepted — and its change request is open,
@@ -4642,7 +4643,15 @@ publication does once it has pushed — waits for and judges the required checks
 draft where the policy lifts it, and enables or performs the merge the policy names
 (`change-auto`'s auto-merge among them). It ends in the outcomes and events a first
 publication would, without its `fetch` and `push`; a red required check still ends it as a
-red check does, and keeps the boundary for the next re-entry. A landing it reaches is
+red check does, and keeps the boundary for the next re-entry. A resumed publication
+records its branch identity before anything is recorded against it, because its stream
+may hold nothing a first publication's push would have written there (onevcs#318): the
+stream is labelled with the repository's `identity`, as every branch-keyed stream is, and
+its `change-opened` carries `branch` and `head` — the branch and the head its verification
+passed at, under the names a first publication's `push` gives them — beside the fields it
+always carries. So its change request's URL and its landing commit resolve to that branch's
+work in `status`, `release status` and `release acknowledge`, as a first publication's do.
+A first publication's `change-opened` is unchanged. A landing it reaches is
 recorded on the branch, by ref, in the checkout that keeps it. Stderr says which of the
 two it took, and why a boundary did not hold.
 
