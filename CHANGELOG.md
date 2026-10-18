@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0](https://github.com/nickderobertis/onevcs/compare/v0.52.1...v0.53.0) - 2026-10-18
+
+### Added
+
+- read-only host queries for release changes, checks, runs and jobs ([#450](https://github.com/nickderobertis/onevcs/pull/450))
+
+### Fixed
+
+- *(branch)* continue from the remote copy when the local copy adds only clean base merges ([#465](https://github.com/nickderobertis/onevcs/pull/465))
+
 ## [0.52.0](https://github.com/nickderobertis/onevcs/compare/v0.51.3...v0.52.0) - 2026-10-16
 
 ### Performance

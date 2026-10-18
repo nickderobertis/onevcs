@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.6](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.19.5...onevcs-testing-v0.19.6) - 2026-10-18
+
+### Fixed
+
+- *(progress)* relay a remote landing only once the host reports it ([#454](https://github.com/nickderobertis/onevcs/pull/454))
+
 ## [0.19.4](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.19.3...onevcs-testing-v0.19.4) - 2026-10-16
 
 ### Performance
