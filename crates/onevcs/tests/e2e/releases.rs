@@ -3444,3 +3444,4 @@ fn an_acknowledgement_never_takes_up_a_late_merge_it_would_be_recording() {
         .assert()
         .success();
 }
+// llmlint: ignore-end[e2e_not_mocked]
