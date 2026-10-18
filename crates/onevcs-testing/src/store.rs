@@ -125,6 +125,7 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
     /// at whichever call first read it.
     pub fn attach(path: impl Into<PathBuf>, fallback: &S) -> Result<Self> {
         let store = Self::at(path)?;
+        let _held = store.held()?;
         if store.path.exists() {
             store.snapshot()?;
             return Ok(store);
@@ -139,6 +140,7 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
     /// before anything has driven the provider must find the scenario it seeded.
     pub fn replace(path: impl Into<PathBuf>, state: &S) -> Result<Self> {
         let store = Self::at(path)?;
+        let _held = store.held()?;
         store.save(state)?;
         Ok(store)
     }
@@ -162,6 +164,35 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
     /// The document this state is kept in.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Hold this document's writers off until the guard is dropped.
+    ///
+    /// Two handles over one path are one state, and a write is a read, an action and
+    /// a save: without this, a provider polling from its own thread reads, a journey
+    /// re-seeds, and the provider's save puts back the document it read — the re-seed
+    /// is lost, and a check the journey settled is pending again for as long as the
+    /// watch is willing to wait. An advisory lock on a sibling file, because the
+    /// document itself is renamed over on every save and a lock on it would hold the
+    /// inode nobody reads any more. The file is left in place, since deleting it under
+    /// a waiter would let two writers each lock a different file; it is dot-prefixed
+    /// so a listing of the documents beside it does not count it as one.
+    fn held(&self) -> Result<std::fs::File> {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(self.path.file_name().unwrap_or_default());
+        name.push(".lock");
+        let lock = self.path.with_file_name(name);
+        let refused = |e: std::io::Error| Error::Invalid {
+            reason: format!("cannot lock {}: {e}", lock.display()),
+        };
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock)
+            .map_err(refused)?;
+        file.lock().map_err(refused)?;
+        Ok(file)
     }
 
     fn save(&self, state: &S) -> Result<()> {
@@ -201,6 +232,7 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
     where
         F: FnOnce(&mut S) -> Result<R>,
     {
+        let _held = self.held()?;
         let mut state = self.snapshot()?;
         let outcome = act(&mut state)?;
         self.save(&state)?;
