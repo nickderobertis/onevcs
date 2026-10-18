@@ -546,9 +546,22 @@ fn settle_after(
             std::thread::sleep(Duration::from_millis(10));
         }
         std::thread::sleep(held);
-        let mut state = FileHost::create(&path)
-            .and_then(|host| host.state())
-            .expect("the host is readable while its checks are pending");
+        let host =
+            FileHost::create(&path).expect("the host is readable while its checks are pending");
+        // Under the lock the host's own writers hold: the watch records every reading
+        // on the host's ledger, a read and a save, and a rename landing between the two
+        // is put back by that save — the checks stay pending until the watch gives up.
+        let mut name = std::ffi::OsString::from(".");
+        name.push(path.file_name().expect("the host document has a name"));
+        name.push(".lock");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_file_name(name))
+            .expect("the host's lock opens");
+        lock.lock().expect("the host's writers are held off");
+        let mut state = host.state().expect("the host's state reads under its lock");
         state.checks.insert(first(), then);
         let staged = path.with_extension("next");
         std::fs::write(
