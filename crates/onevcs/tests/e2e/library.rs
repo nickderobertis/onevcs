@@ -7379,3 +7379,350 @@ fn a_consumer_assembles_a_stack_base_over_the_testing_hosts_and_opens_nothing_on
         "{refused}"
     );
 }
+
+/// A host that answers exactly as the in-memory host behind it does, except that the
+/// first time this one invocation reads its change request's checks, it waits there
+/// until the journey lets it go.
+///
+/// Nothing is stood in for: every answer is the in-memory host's own. What is added is
+/// a place to hold one publication mid-flight, because "two publications of one branch
+/// are running at once" is a state no answer can make — and each invocation is handed
+/// its own, so the journey decides which of them finishes first.
+#[derive(Debug)]
+struct Parked<'a> {
+    behind: &'a MemoryHost,
+    gate: std::sync::Arc<Gate>,
+}
+
+/// The two halves of one parked read: that it has been reached, and that it may go.
+#[derive(Debug, Default)]
+struct Gate {
+    reached: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+}
+
+impl Gate {
+    /// Wait until `flag` is set, failing the journey rather than hanging it.
+    fn wait(flag: &std::sync::atomic::AtomicBool, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !flag.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never happened"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Wait until the publication behind this gate is parked at its checks, which is
+    /// after it took its lease.
+    fn reached(&self) {
+        Self::wait(&self.reached, "the publication reaching its checks");
+    }
+
+    /// Let the parked publication read its checks and go on.
+    fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Lets every gate it names go when it is dropped, so a journey that fails while a
+/// publication is parked ends rather than waiting out that publication's bound.
+struct Releasing<'a>(Vec<&'a Gate>);
+
+impl Drop for Releasing<'_> {
+    fn drop(&mut self) {
+        for gate in &self.0 {
+            gate.release();
+        }
+    }
+}
+
+impl<'a> Parked<'a> {
+    fn over(behind: &'a MemoryHost) -> Self {
+        Parked {
+            behind,
+            gate: std::sync::Arc::default(),
+        }
+    }
+}
+
+impl Hosting for Parked<'_> {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        Ok(Box::new(ParkedHost {
+            behind: self.behind.for_repo(slug)?,
+            gate: std::sync::Arc::clone(&self.gate),
+        }))
+    }
+}
+
+struct ParkedHost {
+    behind: Box<dyn RemoteHost>,
+    gate: std::sync::Arc<Gate>,
+}
+
+impl RemoteHost for ParkedHost {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        self.behind.authenticated_user()
+    }
+
+    fn open_change(&self, req: onevcs::ChangeSpec) -> onevcs::Result<ChangeRequest> {
+        self.behind.open_change(req)
+    }
+
+    fn find_changes(&self, head: &str, base: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+        self.behind.find_changes(head, base)
+    }
+
+    fn change_checks(&self, cr: &ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+        if !self
+            .gate
+            .reached
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            Gate::wait(&self.gate.released, "the journey releasing the publication");
+        }
+        self.behind.change_checks(cr)
+    }
+
+    fn check_log(&self, cr: &ChangeRequest, check: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+        self.behind.check_log(cr, check)
+    }
+
+    fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> onevcs::Result<MergeOutcome> {
+        self.behind.merge(cr, policy)
+    }
+
+    fn merged_at(&self, cr: &ChangeRequest) -> onevcs::Result<Option<onevcs::Sha>> {
+        self.behind.merged_at(cr)
+    }
+
+    fn merged_head(&self, cr: &ChangeRequest) -> onevcs::Result<Option<onevcs::MergedChange>> {
+        self.behind.merged_head(cr)
+    }
+
+    fn merge_time(&self, cr: &ChangeRequest) -> onevcs::Result<Option<String>> {
+        self.behind.merge_time(cr)
+    }
+
+    fn mergeability(&self, cr: &ChangeRequest) -> onevcs::Result<onevcs::Mergeability> {
+        self.behind.mergeability(cr)
+    }
+
+    fn ready_for_review(&self, cr: &ChangeRequest) -> onevcs::Result<()> {
+        self.behind.ready_for_review(cr)
+    }
+
+    fn is_draft(&self, cr: &ChangeRequest) -> onevcs::Result<bool> {
+        self.behind.is_draft(cr)
+    }
+
+    fn required_checks_on(&self, base: &str) -> onevcs::Result<onevcs::RequiredChecks> {
+        self.behind.required_checks_on(base)
+    }
+
+    fn requires_up_to_date(&self, base: &str) -> onevcs::Result<bool> {
+        self.behind.requires_up_to_date(base)
+    }
+
+    fn allows_auto_merge(&self) -> onevcs::Result<bool> {
+        self.behind.allows_auto_merge()
+    }
+
+    fn visibility(&self) -> onevcs::Result<onevcs::Visibility> {
+        self.behind.visibility()
+    }
+
+    fn head_activity(&self, cr: &ChangeRequest) -> onevcs::Result<onevcs::HeadActivity> {
+        self.behind.head_activity(cr)
+    }
+}
+
+const RESUMED: &str = "feature/resumed-twice";
+
+/// A finished branch of a hosted identity that was published once — verified by its
+/// hook, its change request opened — and stopped on a red required check, which is the
+/// state a resume re-enters. Hands back the host to resume it on, seeded with what the
+/// first publication left there.
+///
+/// `change-open`, because it asks for no merge and so takes no turn in the identity's
+/// merge queue: two resumes of it both reach their checks, rather than the second
+/// waiting its turn behind the first.
+fn verified_and_red(world: &World) -> MemoryHost {
+    let (_origin, _identity) = hosted(world, OPEN);
+    world.install_pre_push(&world.path("hosted"), "exit 0");
+    let session = worked(world, RESUMED);
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    let red = vec![Check {
+        name: "gate".to_owned(),
+        status: "completed".to_owned(),
+        conclusion: Some("failure".to_owned()),
+        required: true,
+        head: None,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    }];
+    let host = MemoryHost::seeded(HostState {
+        authenticated_user: "tester".to_owned(),
+        checks: [(ChangeId("1".to_owned()), red)].into_iter().collect(),
+        ..HostState::default()
+    });
+    stopped_on_its_red_check(publish_resumed(&host), "the first publication");
+    // The in-memory host never saw the push, so the change request's head is the one
+    // thing the journey says: the commit the publication pushed and verified.
+    let mut state = host.state();
+    state.changes[0].head_sha = onevcs::Sha(world.git(
+        &world.path("hosted"),
+        &["rev-parse", &format!("refs/heads/{RESUMED}")],
+    ));
+    MemoryHost::seeded(state)
+}
+
+/// Publish the branch by name, as `onevcs publish-branch` does, on `hosting`.
+fn publish_resumed(hosting: &dyn Hosting) -> onevcs::Result<PublishOutcome> {
+    onevcs::publish_branch(
+        &Providers { vcs: &Git, hosting },
+        &onevcs::BranchPublishRequest {
+            repo: std::path::PathBuf::from("hosted"),
+            branch: RESUMED.to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+            term_scope: Default::default(),
+        },
+    )
+}
+
+/// Hold a publication to having ended on its red required check, which keeps the
+/// boundary a later resume re-enters.
+fn stopped_on_its_red_check(ended: onevcs::Result<PublishOutcome>, which: &str) {
+    assert!(
+        matches!(ended, Err(onevcs::Error::ChecksFailed { .. })),
+        "{which} stops on its red check: {ended:?}"
+    );
+}
+
+/// What the inventory says holds the branch, where anything does.
+fn held(branch: &str) -> Option<onevcs::HeldBy> {
+    let rows = onevcs::recoverable(&Scope::All).expect("the inventory reads");
+    rows.iter()
+        .find(|row| row.branch.branch == branch)
+        .unwrap_or_else(|| panic!("no row for {branch}: {rows:#?}"))
+        .held_by
+        .clone()
+}
+
+/// Hold `branch` to being held by a running publication.
+fn held_by_a_publication(branch: &str, when: &str) {
+    let holder = held(branch).unwrap_or_else(|| panic!("{when}, the branch reads as unheld"));
+    assert_eq!(
+        holder.holding,
+        Holding::PublicationRunning,
+        "{when}: {holder:?}"
+    );
+    assert!(holder.token.is_none(), "{when}: {holder:?}");
+}
+
+#[test]
+fn two_overlapping_resumes_of_one_branch_each_hold_it_until_the_last_one_ends() {
+    let world = World::new();
+    inhabit(&world);
+    let host = verified_and_red(&world);
+    assert!(
+        held(RESUMED).is_none(),
+        "nothing holds it between publications"
+    );
+
+    let first = Parked::over(&host);
+    let second = Parked::over(&host);
+    std::thread::scope(|scope| {
+        let _released = Releasing(vec![&first.gate, &second.gate]);
+        // Two resumes of the one verified branch, from the one checkout that keeps it:
+        // both hold the same shared lease, and neither has finished.
+        let running_first = scope.spawn(|| publish_resumed(&first));
+        first.gate.reached();
+        let running_second = scope.spawn(|| publish_resumed(&second));
+        second.gate.reached();
+        held_by_a_publication(RESUMED, "while both resumes run");
+
+        // The first one ends — on its red check, as a resume does — and the second is
+        // still working on the branch, so the branch is still held, by it.
+        first.gate.release();
+        stopped_on_its_red_check(
+            running_first.join().expect("the first resume ends"),
+            "the first resume",
+        );
+        held_by_a_publication(
+            RESUMED,
+            "after the first resume ended and the second had not",
+        );
+
+        second.gate.release();
+        stopped_on_its_red_check(
+            running_second.join().expect("the second resume ends"),
+            "the second resume",
+        );
+    });
+    assert!(
+        held(RESUMED).is_none(),
+        "once the last resume has ended nothing holds the branch"
+    );
+}
+
+/// The records under the state root that say a publication of a branch is running.
+fn publication_records(world: &World) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(world.home().join("publishing"))
+        .expect("a publication recorded itself")
+        .flat_map(|branch| std::fs::read_dir(branch.expect("a branch's records").path()))
+        .flatten()
+        .map(|entry| entry.expect("a record").path())
+        .collect()
+}
+
+#[test]
+fn a_holder_record_an_earlier_build_named_by_its_lease_alone_still_holds_the_branch() {
+    let world = World::new();
+    inhabit(&world);
+    let host = verified_and_red(&world);
+
+    let running = Parked::over(&host);
+    std::thread::scope(|scope| {
+        let _released = Releasing(vec![&running.gate]);
+        let resume = scope.spawn(|| publish_resumed(&running));
+        running.gate.reached();
+
+        let records = publication_records(&world);
+        assert_eq!(records.len(), 1, "one holder, one record: {records:?}");
+        let name = records[0]
+            .file_name()
+            .expect("a record has a name")
+            .to_string_lossy()
+            .into_owned();
+        let parts: Vec<&str> = name.split('.').collect();
+        assert_eq!(
+            parts.len(),
+            3,
+            "named by the lease's digest and then this invocation's own name: {name}"
+        );
+
+        // llmlint: ignore-block[tests_mirror_real_usage] the premise is a record an
+        // earlier onevcs wrote — named by its lease's digest alone — for a publication
+        // still running on this host, and this build writes no such name. The running
+        // publication's own record is given that name, under the state root, which is
+        // exactly what that build would have left for this lease; the real inventory
+        // then meets it.
+        let earlier = records[0].with_file_name(format!("{}.json", parts[0]));
+        std::fs::rename(&records[0], &earlier).expect("name the record as a build before");
+        // llmlint: ignore-end[tests_mirror_real_usage]
+        held_by_a_publication(RESUMED, "with the holder recorded under the earlier name");
+
+        running.gate.release();
+        stopped_on_its_red_check(resume.join().expect("the resume ends"), "the resume");
+    });
+    // Its holder has ended, so the lease is free, and a record whose lease is free is
+    // one nobody is behind — whatever it is named.
+    assert!(held(RESUMED).is_none(), "nothing holds the branch now");
+}

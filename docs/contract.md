@@ -4611,6 +4611,17 @@ red check does, and keeps the boundary for the next re-entry. A landing it reach
 recorded on the branch, by ref, in the checkout that keeps it. Stderr says which of the
 two it took, and why a boundary did not hold.
 
+**Publication holder records are per invocation.** The publication lease is a shared lock,
+so it can have several holders at once — two resumes of one branch from one checkout hold
+the same one, because both name that checkout. Each holder therefore writes a record of its
+own under `$ONEVCS_HOME/publishing/<digest of identity and branch>/`, named
+`<lease digest>.<holder id>.json`, where the holder id is unique to the invocation, and
+removes only that record when it ends. The record document keeps every field it had. The
+inventory (`recoverable`'s `held_by`, and every reader of it) treats every record in that
+directory as a holder whose lease it asks, so a branch stays held while any holder is still
+running, and one named `<lease digest>.json` — what an earlier onevcs still running on the
+host writes — reads as a holder exactly as before.
+
 **Where it is stored, and how that coexists.** `$ONEVCS_HOME/verified/`, one JSON file per
 identity and branch, named by a digest of the two — beside the registry and the other host
 state, and outside `workspaces/`, so it outlives the publication workspace that verified
