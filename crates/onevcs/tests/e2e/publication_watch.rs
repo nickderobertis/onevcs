@@ -1118,6 +1118,81 @@ fn a_stop_whose_hook_processes_cannot_be_confirmed_gone_says_so_rather_than_clai
 }
 
 #[test]
+fn a_stop_whose_hook_group_keeps_an_unreaped_member_waits_out_the_bound_and_says_so() {
+    // A member of the push's group that is never reaped: this process starts it, moves
+    // it into the group once the hook is running (a parent may, within one session),
+    // and collects it only after the publication answers. The group's kill leaves it a
+    // zombie still in the group, so the group never empties. Linux says the group still
+    // has a member; macOS refuses to say, with `EPERM`, as it does for a killed hook's
+    // processes init has not reaped yet. Either way the wait asks again rather than
+    // taking the answer as final, and only at its bound reports that it could not
+    // confirm the tree ended.
+    let world = World::new();
+    let hook = HeldHook::in_world(&world);
+    let (_origin, session) = publishing(
+        &world,
+        LOCAL_DIRECT,
+        "feature/unreaped-member",
+        Some(&hook.body()),
+    );
+    let member: Mutex<Option<std::process::Child>> = Mutex::new(None);
+
+    let published = cancel_in_push(&session, "a member joined the hook's group", || {
+        if !hook.started.exists() {
+            return false;
+        }
+        let mut member = member.lock().expect("the member's lock");
+        if member.is_none() {
+            let hook_pid: libc::pid_t = std::fs::read_to_string(&hook.hook_pid)
+                .expect("the hook wrote its pid")
+                .trim()
+                .parse()
+                .expect("a pid");
+            // SAFETY: reads the group of the hook this journey's publication runs.
+            let group = unsafe { libc::getpgid(hook_pid) };
+            assert!(group > 0, "the hook's group reads");
+            let child = std::process::Command::new("sleep")
+                .arg("600")
+                .spawn()
+                .expect("sleep spawns");
+            // SAFETY: moves this process's own child into a group of the same session.
+            assert_eq!(
+                unsafe { libc::setpgid(child.id() as libc::pid_t, group) },
+                0,
+                "the member joins the hook's group: {}",
+                std::io::Error::last_os_error()
+            );
+            *member = Some(child);
+        }
+        true
+    });
+
+    let PublishOutcome::Failed { kind, reason, .. } = &published.outcome else {
+        panic!("a cancelled publication fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    assert!(
+        reason.contains("could not be confirmed") && reason.contains("may still be running"),
+        "the tree is not claimed stopped: {reason}"
+    );
+    let waited_out = if cfg!(target_os = "macos") {
+        "still refused 5s after it was killed: Operation not permitted"
+    } else {
+        "still had a running member 5s after it was killed"
+    };
+    assert!(
+        reason.contains(waited_out),
+        "the wait ran to its bound: {reason}"
+    );
+    let mut member = member
+        .into_inner()
+        .expect("the member's lock")
+        .expect("a member joined the hook's group");
+    member.wait().expect("the member is reaped");
+    hook.release();
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn a_landing_whose_stopped_push_left_processes_unconfirmed_is_kept_and_warned_about() {
     // Origin took the update and its `post-receive` hook holds the push; the push is
