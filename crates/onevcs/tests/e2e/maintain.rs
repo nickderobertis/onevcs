@@ -34,6 +34,7 @@ case "$1" in
   ok) exit 0 ;;
   fail) echo "boom" >&2; exit 3 ;;
   slow) sleep "$2"; exit 0 ;;
+  hold) while [ ! -e "$2" ]; do sleep 0.1; done; exit 0 ;;
   hang)
     sleep 300 </dev/null >/dev/null 2>&1 &
     echo "$!" > target/child.pid
@@ -746,8 +747,12 @@ fn a_running_maintenance_claims_one_slot_while_opens_go_elsewhere_and_a_second_m
 ) {
     // Two slots cut, a pool of three: the running maintenance claims slot 1, an open
     // takes slot 2 warm rather than waiting, the next cuts slot 3, and the next
-    // overflows.
-    let (fixture, _) = fixture_with(3, 2, &["slow", "3"], "30s");
+    // overflows. The command holds until the journey releases it, so the second run
+    // is answered while the first is still maintaining however slow the host is.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let release = scratch.path().join("release");
+    let held_until = release.display().to_string();
+    let (fixture, _) = fixture_with(3, 2, &["hold", &held_until], "30s");
     let slot_1 = slot_dir(&fixture, 1);
     let mut command = fixture.world.onevcs_std();
     command
@@ -757,6 +762,7 @@ fn a_running_maintenance_claims_one_slot_while_opens_go_elsewhere_and_a_second_m
     let running = command.spawn().expect("pool maintain starts");
     let pid = running.id();
     wait_until("the script to start in slot 1", || runs_in(&slot_1) == 1);
+    let started = Instant::now();
 
     let listed = status(&fixture);
     assert_eq!(
@@ -800,6 +806,8 @@ fn a_running_maintenance_claims_one_slot_while_opens_go_elsewhere_and_a_second_m
         )));
     assert_eq!(runs_in(&slot_1), 1, "the second run touched nothing");
 
+    let held = started.elapsed();
+    std::fs::write(&release, "").expect("release the held command");
     let finished = running.wait_with_output().expect("pool maintain finishes");
     assert_eq!(finished.status.code(), Some(0));
     let report: serde_json::Value =
@@ -815,8 +823,8 @@ fn a_running_maintenance_claims_one_slot_while_opens_go_elsewhere_and_a_second_m
         slots[0]["outcome"]["ran"]["duration_ms"]
             .as_u64()
             .expect("ms")
-            >= 3_000,
-        "the command ran its whole sleep: {report}"
+            >= u64::try_from(held.as_millis()).expect("ms"),
+        "the command ran until it was released: {report}"
     );
     // Slot 2 was taken while slot 1 was being maintained: read as it stands when its
     // turn comes, not as the survey found it. Slot 3 was cut after the survey, so the
