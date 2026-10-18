@@ -15,6 +15,12 @@
 //! its remote, the change request stays open, and the session publishes again onto the
 //! same branch.
 //!
+//! The publishing push is one of those phases (onevcs#358): its `pre-push` hook is a
+//! repository's whole gate. Those journeys prove promptness by the event rather than
+//! the clock — the hook blocks until the journey releases it, and the cancelled
+//! outcome arrives while it is still held — and that the hook's own child is reaped,
+//! the remote ref did not move, and a landing that completed first is reported.
+//!
 //! In-process for the reason `library.rs` is: a cancellation is something only a caller
 //! embedding the crate can hand over, and the binary deliberately has no flag for it.
 //! Everything else is the real `Git` and `GitHub` implementations against a real bare
@@ -50,6 +56,8 @@ const AUTO: &str = "{publication: change-auto, approvals: none}";
 /// so its watch is the ready change's.
 const DIRECT_READY: &str =
     "{publication: change-direct, approvals: none, drafts: {disabled: true}}";
+/// Squashes onto the base with a push of its own, which the `pre-push` hook verifies.
+const LOCAL_DIRECT: &str = "{publication: local-direct, approvals: none}";
 
 /// How long a cancelled publication may take to answer. "About a second", with room
 /// for the git a failed publication runs to hand its branch back.
@@ -701,46 +709,257 @@ fn a_cancellation_ends_the_wait_for_the_merge_queue_within_a_second() {
     continues(&world, &origin, &waiter, 2);
 }
 
-#[test]
-fn a_cancellation_during_the_pre_push_hook_lets_it_finish_and_ends_before_any_watch() {
-    // A push, and the hook it runs, are never interrupted: the hook signals that it has
-    // started, waits for the journey to cancel, and records that it ran to its end.
-    let world = World::new();
-    let started = world.path("hook-started");
-    let resume = world.path("hook-resume");
-    let finished = world.path("hook-finished");
-    let hook = format!(
-        "touch '{started}'\nwhile [ ! -f '{resume}' ]; do sleep 0.05; done\nsleep 0.3\ntouch '{finished}'\n",
-        started = started.display(),
-        resume = resume.display(),
-        finished = finished.display(),
-    );
-    let (origin, session) = publishing(&world, AUTO, "feature/cancel-in-hook", Some(&hook));
-    world.host_checks(&[green()]);
+/// A `pre-push` hook that starts a child of its own, says where both are, and then
+/// blocks until the journey releases it — which no journey here does before the
+/// publication has answered. The child waits on the same release, so a hook a later
+/// publication runs with the release in place leaves nothing behind.
+struct HeldHook {
+    started: PathBuf,
+    release: PathBuf,
+    hook_pid: PathBuf,
+    child_pid: PathBuf,
+}
 
-    let (published, took) = cancel_once(
+impl HeldHook {
+    fn in_world(world: &World) -> Self {
+        Self {
+            started: world.path("hook-started"),
+            release: world.path("hook-release"),
+            hook_pid: world.path("hook.pid"),
+            child_pid: world.path("hook-child.pid"),
+        }
+    }
+
+    fn body(&self) -> String {
+        format!(
+            "( while [ ! -f '{release}' ]; do sleep 0.05; done ) &\n\
+             echo $! > '{child}'\n\
+             echo $$ > '{hook}'\n\
+             touch '{started}'\n\
+             while [ ! -f '{release}' ]; do sleep 0.05; done\n",
+            release = self.release.display(),
+            child = self.child_pid.display(),
+            hook = self.hook_pid.display(),
+            started = self.started.display(),
+        )
+    }
+
+    fn released(&self) -> bool {
+        self.release.exists()
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.release, "").expect("the hook is released");
+    }
+
+    /// Whether the process whose id the hook wrote to `pid_file` is still running.
+    fn running(pid_file: &Path) -> bool {
+        let pid = std::fs::read_to_string(pid_file)
+            .unwrap_or_else(|e| panic!("{} was written: {e}", pid_file.display()));
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("kill runs")
+            .success()
+    }
+
+    /// Neither the hook nor the child it started is left running.
+    fn assert_reaped(&self) {
+        assert!(
+            !Self::running(&self.hook_pid),
+            "the pre-push hook was stopped"
+        );
+        assert!(
+            !Self::running(&self.child_pid),
+            "the process the pre-push hook started was reaped with it"
+        );
+    }
+}
+
+/// Everything a publication its caller stopped during its push promises: the kind, the
+/// branch handed back, the session open, and no push or `pre-push` gate run recorded,
+/// since neither ruled on anything.
+fn assert_stopped_in_its_push(world: &World, session: &Session, published: &Publication) {
+    let PublishOutcome::Failed {
+        kind,
+        reason,
+        retained,
+        armed: None,
+    } = &published.outcome
+    else {
+        panic!("a publication stopped in its push fails as cancelled: {published:?}");
+    };
+    assert_eq!(*kind, FailureKind::Cancelled, "{reason}");
+    assert!(reason.contains("stopped before origin"), "{reason}");
+    assert!(
+        matches!(retained, Some(Retention::HandedBack(_))),
+        "the branch is handed back like any failure's: {retained:?}"
+    );
+    let record = onevcs::session(&Providers::real(), &session.token).expect("the record reads");
+    assert_eq!(
+        record.lifecycle,
+        Lifecycle::Open,
+        "the session is left to publish again"
+    );
+    assert!(
+        world.events_of(&session.token.0, "push").is_empty(),
+        "a stopped push is no verdict, so none is recorded"
+    );
+    assert!(
+        world.events_of(&session.token.0, "gate-run").is_empty(),
+        "and no gate ran to its end"
+    );
+}
+
+#[test]
+fn a_cancellation_during_a_local_publications_pre_push_hook_stops_the_push_and_reaps_the_hook() {
+    // onevcs#358: a `local-direct` publication's push to its base runs the
+    // repository's whole gate in its `pre-push` hook. The hook here blocks until the
+    // journey releases it, which it does only after the publication has answered — so
+    // a cancelled outcome arriving at all is the proof that cancellation did not wait.
+    let world = World::new();
+    let hook = HeldHook::in_world(&world);
+    let (origin, session) = publishing(
+        &world,
+        LOCAL_DIRECT,
+        "feature/stop-local-push",
+        Some(&hook.body()),
+    );
+    let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
+
+    let (published, _) = cancel_once(
         &session,
         "the pre-push hook started",
-        || started.exists(),
-        || std::fs::write(&resume, "").expect("the hook is let go"),
+        || hook.started.exists(),
+        || {},
     );
-    assert!(finished.exists(), "the hook ran to completion");
-    // Measured from the cancellation, which the hook outlived by design: what is held
-    // to the second is the publication after the push returned.
-    assert!(took < PROMPT + Duration::from_millis(300), "{took:?}");
-    assert_cancelled_and_kept(&world, &origin, &session, &published, Duration::ZERO, None);
+    assert!(
+        !hook.released(),
+        "the publication answered while its hook was still held"
+    );
+    assert_stopped_in_its_push(&world, &session, &published);
+    hook.assert_reaped();
+    assert_eq!(
+        origin_tip(&world, &origin, "main").as_deref(),
+        Some(base_before.as_str()),
+        "the base on origin did not move"
+    );
+    let tip = world.git(&session.worktree, &["rev-parse", "HEAD"]);
+    assert!(
+        world
+            .git(&session.worktree, &["log", "--format=%s", "-1", &tip])
+            .contains("feat: the work on feature/stop-local-push"),
+        "the session still carries its work"
+    );
+
+    // The session publishes again, through a hook that now passes, and lands.
+    hook.release();
+    let again = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the session publishes again");
+    let PublishOutcome::Merged(landed) = &again.outcome else {
+        panic!("the continuation lands: {again:?}");
+    };
+    assert_eq!(
+        origin_tip(&world, &origin, "main").as_deref(),
+        Some(landed.0.as_str())
+    );
+    assert!(world
+        .git(&origin, &["show", "main:one.txt"])
+        .contains("one"));
+}
+
+#[test]
+fn a_cancellation_after_the_base_took_the_push_reports_the_landing() {
+    // The remote update can complete while the push is still running — here origin's
+    // own `post-receive` hook, which git runs after the ref has moved, holds it — and a
+    // cancellation then cannot prevent anything. It still stops the push, and the
+    // publication reports the landing it found on origin rather than a prevented one.
+    let world = World::new();
+    let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/landed-first", None);
+    let received = world.path("origin-received");
+    let release = world.path("origin-release");
+    let hook = origin.join("hooks/post-receive");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/usr/bin/env bash\ntouch '{received}'\nwhile [ ! -f '{release}' ]; do sleep 0.05; done\n",
+            received = received.display(),
+            release = release.display(),
+        ),
+    )
+    .expect("the post-receive hook is written");
+    let mut permissions = std::fs::metadata(&hook).expect("the hook").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&hook, permissions).expect("the hook is executable");
+    let base_before = origin_tip(&world, &origin, "main").expect("origin has its base");
+
+    let (published, _) = cancel_once(
+        &session,
+        "origin took the push",
+        || received.exists(),
+        || {},
+    );
+    assert!(
+        !release.exists(),
+        "the publication answered while the push was still held"
+    );
+    let PublishOutcome::Merged(landed) = &published.outcome else {
+        panic!("a landing the cancellation came too late for is reported: {published:?}");
+    };
+    let base_after = origin_tip(&world, &origin, "main").expect("origin has its base");
+    assert_ne!(base_after, base_before, "the base moved");
+    assert_eq!(
+        base_after, landed.0,
+        "to the landing the publication reports"
+    );
+    let pushes = world.events_of(&session.token.0, "push");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["payload"]["accepted"], true, "{pushes:?}");
+    assert_eq!(
+        world.events_of(&session.token.0, "merge-completed").len(),
+        1,
+        "the landing is recorded as one"
+    );
+    std::fs::write(&release, "").expect("origin's hook is released");
+}
+
+#[test]
+fn a_cancellation_during_a_changes_pre_push_hook_stops_the_push_before_the_branch_reaches_origin() {
+    // The same stop on a change request's push: the branch never reaches origin, so no
+    // change request is opened, read or watched.
+    let world = World::new();
+    let hook = HeldHook::in_world(&world);
+    let (origin, session) = publishing(&world, AUTO, "feature/cancel-in-hook", Some(&hook.body()));
+    world.host_checks(&[green()]);
+
+    let (published, _) = cancel_once(
+        &session,
+        "the pre-push hook started",
+        || hook.started.exists(),
+        || {},
+    );
+    assert!(
+        !hook.released(),
+        "the publication answered while its hook was still held"
+    );
+    assert_stopped_in_its_push(&world, &session, &published);
+    hook.assert_reaped();
+    assert_eq!(
+        origin_tip(&world, &origin, &session.branch),
+        None,
+        "the branch never reached origin"
+    );
     let calls = world.host_calls();
     assert!(
         !calls.iter().any(|call| call.starts_with("pr ")),
         "no change request was opened, read or watched: {calls:?}"
     );
-    assert!(
-        world.events_of(&session.token.0, "change-check").is_empty(),
-        "no watch began"
-    );
-    let pushes = world.events_of(&session.token.0, "push");
-    assert_eq!(pushes.len(), 1, "the push the hook ran under completed");
-    assert_eq!(pushes[0]["payload"]["accepted"], true, "{pushes:?}");
+    hook.release();
 }
 
 #[test]
