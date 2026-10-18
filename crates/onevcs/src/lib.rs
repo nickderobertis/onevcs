@@ -160,8 +160,8 @@ pub use ops::{
 };
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
-    IdentityOutcome, MaintainReport, MaintenanceOutcome, PoolStatus, PruneReport, SlotDisk,
-    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
+    IdentityOutcome, Ineligibility, IneligibleSlot, MaintainReport, MaintenanceOutcome, PoolStatus,
+    PruneReport, SlotDisk, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, WorkspaceCapacity,
 };
 pub use preserve::{Preservation, PreserveRequest, Preserved};
 pub use providers::Providers;

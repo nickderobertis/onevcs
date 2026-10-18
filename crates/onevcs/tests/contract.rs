@@ -42,14 +42,14 @@ use onevcs::{
     ArmedMerge, ArtifactId, ArtifactRef, Bound, ChangeChecks, ChangeDescription, ChangeId,
     ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description, Dimensions,
     DraftReason, Envelope, Error, EventFilter, EventKind, EventMatcher, FailureKind, Git, GitHub,
-    HeldBy, Holding, IdentityMaintenance, IdentityOutcome, Labels, Landed, LandingEvidence,
-    Lifecycle, LineChange, Liveness, MaintainReport, MaintenanceOutcome, MatchFields, MergeOutcome,
-    MergePolicy, NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf, PoolStatus, PreservedBranch,
-    ProtectionSource, Provenance, Providers, PruneReport, Publication, PublishOutcome,
-    PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope, Selection, Session,
-    SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken, Sha, Significance,
-    SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject, TermScope, Url,
-    Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
+    HeldBy, Holding, IdentityMaintenance, IdentityOutcome, Ineligibility, IneligibleSlot, Labels,
+    Landed, LandingEvidence, Lifecycle, LineChange, Liveness, MaintainReport, MaintenanceOutcome,
+    MatchFields, MergeOutcome, MergePolicy, NetNegative, OnOrigin, OpenConflict, Phase, PhaseOf,
+    PoolStatus, PreservedBranch, ProtectionSource, Provenance, Providers, PruneReport, Publication,
+    PublishOutcome, PublishRequest, Recoverable, RemoteHost, RequiredChecks, Retention, Scope,
+    Selection, Session, SessionChange, SessionHolder, SessionRecord, SessionRequest, SessionToken,
+    Sha, Significance, SlotMaintenance, SlotOutcome, SlotState, SlotStatus, Source, Span, Subject,
+    TermScope, Url, Vcs, WorkspaceCapacity, DIMENSIONS, RESERVED_LABELS, SOURCE_WORD,
 };
 use serde_json::{json, Value};
 
@@ -7490,6 +7490,7 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         overflow_in_use: 0,
         admits: Bound::Bounded(5),
         admitted: true,
+        ineligible: Vec::new(),
     };
     let status = PoolStatus {
         maintenance: onevcs::repository_config::MaintenanceSource::Undeclared {
@@ -7563,8 +7564,70 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         .expect("serializes"),
         json!({"state": "broken", "reason": "its clone is missing"})
     );
+    assert!(
+        json["capacity"].get("ineligible").is_none(),
+        "an empty `ineligible` is omitted, so a consumer that predates it reads the same object"
+    );
     let reread: PoolStatus = serde_json::from_value(json).expect("a status reads back");
     assert_eq!(reread, status);
+    // Each reason, spelled as the amendment spells it, and read back.
+    let listed = WorkspaceCapacity {
+        ineligible: vec![
+            IneligibleSlot {
+                number: 1,
+                reason: Ineligibility::OtherLender {
+                    execution_checkout: PathBuf::from("/abs"),
+                },
+            },
+            IneligibleSlot {
+                number: 2,
+                reason: Ineligibility::HeldByProcess { pids: vec![7] },
+            },
+            IneligibleSlot {
+                number: 3,
+                reason: Ineligibility::Broken {
+                    detail: "its clone is missing".to_owned(),
+                },
+            },
+            IneligibleSlot {
+                number: 4,
+                reason: Ineligibility::NoLender {
+                    detail: "its record is malformed".to_owned(),
+                },
+            },
+        ],
+        ..capacity.clone()
+    };
+    let spelled = serde_json::to_value(&listed).expect("a capacity serializes");
+    for (index, reason) in [
+        "{\"kind\": \"other-lender\", \"execution_checkout\": \"/abs\"}",
+        "{\"kind\": \"held-by-process\", \"pids\": [N]}",
+        "{\"kind\": \"broken\", \"detail\": \"…\"}",
+        "{\"kind\": \"no-lender\", \"detail\": \"…\"}",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            regions().0.contains(&format!("`{reason}`")),
+            "the amendment spells the reason {reason}"
+        );
+        let kind = spelled["ineligible"][index]["reason"]["kind"]
+            .as_str()
+            .expect("a reason is tagged `kind`");
+        assert!(
+            reason.contains(&format!("\"{kind}\"")),
+            "{kind} is spelled {reason}"
+        );
+    }
+    assert_eq!(
+        spelled["ineligible"][1],
+        json!({"number": 2, "reason": {"kind": "held-by-process", "pids": [7]}})
+    );
+    assert_eq!(
+        serde_json::from_value::<WorkspaceCapacity>(spelled).expect("reads back"),
+        listed
+    );
     assert_eq!(
         serde_json::to_value(&report).expect("a report serializes"),
         json!({"removed": [2], "kept": [[1, "session s-1 is working in it"]]})
@@ -7634,7 +7697,11 @@ fn the_amendment_declares_the_pool_surface_it_added() {
         "pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u32,",
         "pub idle: u32, pub in_use: u32, pub maintaining: u32, pub overflow: Bound,",
         "pub overflow_in_use: u32, pub admits: Bound,",
-        "pub admitted: bool }",
+        "pub admitted: bool,",
+        "pub ineligible: Vec<IneligibleSlot> }",
+        "pub struct IneligibleSlot { pub number: u32, pub reason: Ineligibility }",
+        "pub enum Ineligibility { OtherLender { execution_checkout: PathBuf },",
+        "HeldByProcess { pids: Vec<u32> }, Broken { detail: String }, NoLender { detail: String } }",
         "pub fn pool_status(repo: &str) -> Result<PoolStatus>;",
         "pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus>, pub maintenance: MaintenanceSource }",
         "pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,",

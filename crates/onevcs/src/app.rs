@@ -516,6 +516,31 @@ fn pool_status(args: &PoolStatusArgs) -> Result<u8> {
         capacity.overflow, capacity.overflow_in_use
     );
     println!("admits: {}", capacity.admits);
+    for ineligible in &capacity.ineligible {
+        let why = match &ineligible.reason {
+            crate::Ineligibility::OtherLender { execution_checkout } => format!(
+                "bound to another execution checkout, {}",
+                execution_checkout.display()
+            ),
+            crate::Ineligibility::HeldByProcess { pids } => format!(
+                "held by a live process ({})",
+                pids.iter()
+                    .map(|pid| format!("pid {pid}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            crate::Ineligibility::Broken { detail } => {
+                format!("broken, recreated by the open that takes it — {detail}")
+            }
+            crate::Ineligibility::NoLender { detail } => {
+                format!("broken with no lender, recreated by the open that takes it — {detail}")
+            }
+        };
+        println!(
+            "not idle for this checkout: slot {}: {why}",
+            ineligible.number
+        );
+    }
     for slot in &status.slots {
         let state = match &slot.state {
             crate::SlotState::Idle => "idle".to_owned(),

@@ -205,13 +205,53 @@ pub struct SlotStatus {
     pub last_outcome: Option<MaintenanceOutcome>,
 }
 
-/// How many sessions one identity can admit right now, and whether one request would
-/// be placed.
+/// Why one slot nobody is in is not counted as idle for a request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Ineligibility {
+    /// It is bound to another execution checkout, and a request lending from this one
+    /// never takes it.
+    OtherLender {
+        /// The checkout it is bound to.
+        execution_checkout: PathBuf,
+    },
+    /// Its last session closed without returning it and live processes are still
+    /// working inside it, so an open passes it over.
+    HeldByProcess {
+        /// Those processes.
+        pids: Vec<u32>,
+    },
+    /// It is broken, and bound to this request's checkout: the session that takes it
+    /// recreates it in place, so `admits` and `admitted` still count it.
+    Broken {
+        /// What is wrong with it.
+        detail: String,
+    },
+    /// It is broken and neither its record nor its clone names a lender: any request
+    /// takes it and recreates it in place, so `admits` and `admitted` still count it.
+    NoLender {
+        /// What is wrong with it.
+        detail: String,
+    },
+}
+
+/// One slot a capacity does not count as idle for its request, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IneligibleSlot {
+    /// The slot's number.
+    pub number: u32,
+    /// Why it is not counted.
+    pub reason: Ineligibility,
+}
+
+/// How many sessions one identity can admit right now for one request, and whether
+/// that request would be placed.
 ///
-/// Advisory: it reads the same records `open` reads and applies the request's overrides
-/// over the same layering, and `open` is what decides. `admitted` is true for a request
-/// whose pinned branch an open session already holds, because that open resumes in
-/// place and places nothing.
+/// Advisory: it reads the same records `open` reads, applies the request's overrides
+/// over the same layering, and judges each slot by the same lender and occupancy test
+/// a placement takes it on — and `open` is what decides. `admitted` is true for a
+/// request whose pinned branch an open session already holds, because that open
+/// resumes in place and places nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCapacity {
     /// The identity key.
@@ -220,9 +260,9 @@ pub struct WorkspaceCapacity {
     pub pool: u32,
     /// How many slots exist, whatever their state.
     pub slots: u32,
-    /// How many of them are idle. A broken slot is neither this nor in use — `slots`
-    /// exceeds the three counts by the broken ones — and a session still takes it,
-    /// recreating it in place, which `admits` and `admitted` count.
+    /// How many of them are idle *for this request*: bound to its execution checkout,
+    /// and with nothing still working inside them. `slots` is exactly this, `in_use`,
+    /// `maintaining` and the length of `ineligible`.
     pub idle: u32,
     /// How many an open session names.
     pub in_use: u32,
@@ -237,6 +277,10 @@ pub struct WorkspaceCapacity {
     pub admits: Bound,
     /// Whether *this* request would be placed now.
     pub admitted: bool,
+    /// Every slot nobody is in that `idle` does not count, by number, each with why.
+    /// Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ineligible: Vec<IneligibleSlot>,
 }
 
 /// What `pool status` reports: the capacity, and every slot.
@@ -788,10 +832,7 @@ fn take_idle(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         let Some(held) = lock::try_exclusive(&workspace::occupancy_identity(&slot.dir))? else {
             continue;
         };
-        // A slot whose last session closed without returning it — a publication closes
-        // the record, and `session close` returns the tree afterwards — may still have
-        // that session's worker inside; the same census the close refuses on skips it.
-        if !returned(&slot.worktree()) && !processes::holding(&slot.dir).is_empty() {
+        if !occupants(slot).is_empty() {
             continue;
         }
         return Ok(Some(Taken {
@@ -820,14 +861,9 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         }
         let clone = slot.clone_dir();
         let worktree = slot.worktree();
-        // The lender the slot is bound to: its record's, or — where the record could
-        // not be read — the checkout its clone borrows objects from. A slot bound to
-        // another lender is not this request's to rebuild any more than to take.
-        let lender = slot
-            .lender()
-            .map(Path::to_path_buf)
-            .or_else(|| lender_of(&clone));
-        if lender.is_some_and(|lender| lender != ask.execution) {
+        // A slot bound to another lender is not this request's to rebuild any more
+        // than to take.
+        if bound_lender(slot).is_some_and(|lender| lender != ask.execution) {
             continue;
         }
         let Some(held) = lock::try_exclusive(&workspace::occupancy_identity(&slot.dir))? else {
@@ -861,6 +897,70 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         }));
     }
     Ok(None)
+}
+
+/// The processes still working inside an idle slot an open would otherwise take.
+///
+/// A slot whose last session closed without returning it — a publication closes the
+/// record, and `session close` returns the tree afterwards — may still have that
+/// session's worker inside; the same census the close refuses on is what an open
+/// passes it over for. A returned slot is not asked: nothing of a session is left in
+/// it to be working on.
+fn occupants(slot: &Surveyed) -> Vec<u32> {
+    match returned(&slot.worktree()) {
+        true => Vec::new(),
+        false => processes::holding(&slot.dir)
+            .iter()
+            .map(|holder| holder.pid().number())
+            .collect(),
+    }
+}
+
+/// The lender a slot is bound to: its record's, or — where the record could not be
+/// read — the checkout its clone borrows objects from.
+fn bound_lender(slot: &Surveyed) -> Option<PathBuf> {
+    slot.lender()
+        .map(Path::to_path_buf)
+        .or_else(|| lender_of(&slot.clone_dir()))
+}
+
+/// How one slot nobody is in stands for a request lending from `execution`, judged
+/// exactly as [`take_idle`] and [`recreate_broken`] judge it.
+enum Fit {
+    /// An idle slot of this lender with nothing inside it: taken warm.
+    Idle,
+    /// A broken slot this request would recreate in place as it takes it.
+    Recreated(Ineligibility),
+    /// A slot this request never takes.
+    Refused(Ineligibility),
+}
+
+/// The fit of one slot for a request, or `None` for one a session or a maintenance run
+/// holds, which no request takes and the capacity counts on its own.
+fn fit(slot: &Surveyed, execution: &Path) -> Option<Fit> {
+    match &slot.state {
+        SlotState::InUse { .. } | SlotState::Maintaining { .. } => None,
+        SlotState::Idle => Some(match slot.lender() {
+            Some(lender) if lender != execution => Fit::Refused(Ineligibility::OtherLender {
+                execution_checkout: lender.to_path_buf(),
+            }),
+            _ => match occupants(slot) {
+                pids if pids.is_empty() => Fit::Idle,
+                pids => Fit::Refused(Ineligibility::HeldByProcess { pids }),
+            },
+        }),
+        SlotState::Broken { reason } => Some(match bound_lender(slot) {
+            Some(lender) if lender != execution => Fit::Refused(Ineligibility::OtherLender {
+                execution_checkout: lender,
+            }),
+            Some(_) => Fit::Recreated(Ineligibility::Broken {
+                detail: reason.clone(),
+            }),
+            None => Fit::Recreated(Ineligibility::NoLender {
+                detail: reason.clone(),
+            }),
+        }),
+    }
 }
 
 /// The checkout a slot's clone borrows its objects from, read off the clone itself
@@ -1089,23 +1189,52 @@ fn asked(request: &SessionRequest) -> Result<Asked> {
     })
 }
 
-/// The capacity one request meets, read the way `open` reads it.
+/// The capacity one request meets, read the way `open` reads it: every slot judged by
+/// the [`fit`] a placement takes it on, so a slot this answer counts is one the open
+/// would be placed on and a slot it would pass over is named with why.
 fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> WorkspaceCapacity {
     let resolved = &asked.resolved;
     let slots = u32::try_from(survey.slots.len()).unwrap_or(u32::MAX);
-    let idle = survey.count(|state| *state == SlotState::Idle);
-    let takeable =
-        survey.count(|state| matches!(state, SlotState::Idle | SlotState::Broken { .. }));
     let in_use = survey.count(|state| matches!(state, SlotState::InUse { .. }));
     let maintaining = survey.count(|state| matches!(state, SlotState::Maintaining { .. }));
     let overflow_in_use = u32::try_from(survey.overflow().len()).unwrap_or(u32::MAX);
     // What the next open finds after the shed it performs first: exactly the slots
     // the shed would remove are gone — never one it keeps for what it retains — and
     // the rest stay.
-    let shed = u32::try_from(sheddable(survey, resolved.file_pool, &asked.execution).len())
-        .unwrap_or(u32::MAX);
-    let takeable_after = takeable.saturating_sub(shed);
-    let slots_after = slots.saturating_sub(shed);
+    let shed: Vec<u32> = sheddable(survey, resolved.file_pool, &asked.execution)
+        .iter()
+        .map(|slot| slot.number)
+        .collect();
+    let mut idle: u32 = 0;
+    let mut takeable_after: u32 = 0;
+    let mut ineligible = Vec::new();
+    for slot in &survey.slots {
+        let taken = match fit(slot, &asked.execution) {
+            None => continue,
+            Some(Fit::Idle) => {
+                idle += 1;
+                true
+            }
+            Some(Fit::Recreated(reason)) => {
+                ineligible.push(IneligibleSlot {
+                    number: slot.number,
+                    reason,
+                });
+                true
+            }
+            Some(Fit::Refused(reason)) => {
+                ineligible.push(IneligibleSlot {
+                    number: slot.number,
+                    reason,
+                });
+                false
+            }
+        };
+        if taken && !shed.contains(&slot.number) {
+            takeable_after += 1;
+        }
+    }
+    let slots_after = slots.saturating_sub(u32::try_from(shed.len()).unwrap_or(u32::MAX));
     let can_create = resolved.pool.value.saturating_sub(slots_after);
     let admits = match resolved.pool.value {
         0 => resolved.overflow.value.headroom(overflow_in_use),
@@ -1118,19 +1247,8 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
             ),
         },
     };
-    let resumes = request.branch.as_ref().is_some_and(|pinned| {
-        survey.open.iter().any(|record| {
-            *record.branch == **pinned
-                && record.execution_checkout == asked.execution
-                && record.run_root.is_dir()
-                && record.clone.is_dir()
-        })
-    });
-    let mine = survey.slots.iter().any(|slot| {
-        slot.takeable() && slot.lender().is_none_or(|lender| lender == asked.execution)
-    });
-    let admitted = resumes
-        || (resolved.pool.value > 0 && (mine || can_create > 0))
+    let admitted = resumes(asked, survey, request)
+        || (resolved.pool.value > 0 && (takeable_after > 0 || can_create > 0))
         || resolved.overflow.value.admits(overflow_in_use);
     WorkspaceCapacity {
         identity: asked.resolution.key.clone(),
@@ -1143,7 +1261,45 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
         overflow_in_use,
         admits,
         admitted,
+        ineligible,
     }
+}
+
+/// Whether `open` would resume an open session for the request's pinned branch rather
+/// than place one, asked the way `workspace::resumable` asks it: exactly one open
+/// session of the identity on that branch, cut against the same base from the same
+/// execution checkout, whose run root and clone are still there.
+///
+/// The base is the request's, or the root the open would resolve; one this host cannot
+/// name is an open that is refused rather than resumed.
+fn resumes(asked: &Asked, survey: &Survey, request: &SessionRequest) -> bool {
+    let Some(pinned) = request.branch.as_deref() else {
+        return false;
+    };
+    let on_branch = |record: &&Record| {
+        *record.branch == *pinned
+            && record.execution_checkout == asked.execution
+            && record.run_root.is_dir()
+            && record.clone.is_dir()
+    };
+    // Asked only where a session could be resumed at all, because resolving the root
+    // may read the checkout's remote.
+    if !survey.open.iter().any(|record| on_branch(&record)) {
+        return false;
+    }
+    let base = match request.base.as_deref() {
+        Some(base) => base.to_owned(),
+        None => match git::default_branch(&asked.execution, "origin") {
+            Ok(base) => base,
+            Err(_) => return false,
+        },
+    };
+    let mut held = survey
+        .open
+        .iter()
+        .filter(on_branch)
+        .filter(|record| *record.base == *base);
+    matches!((held.next(), held.next()), (Some(_), None))
 }
 
 /// How many sessions the request's identity admits right now, and whether the request
