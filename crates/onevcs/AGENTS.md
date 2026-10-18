@@ -421,8 +421,9 @@ hooks come from, belongs there in the same change, or a re-entry resumes a tree 
 verified under it. And **the resumed path is `land_opened_change`, the tail a first
 publication runs**, so its outcomes and events cannot drift; a resumed landing is
 recorded by ref (`publish::Built::Resumed`), because its repository is the operator's own
-checkout. Its stream may be fresh, so its `change-opened` names `branch` and `head` itself:
-without them nothing resolves its URL or landing commit to work (onevcs#318). `tests/e2e/resumption.rs` holds each component to forcing the whole path — except a
+checkout. Its stream may be fresh, so it emits `publication-resumed` (`branch`, `head`,
+`base`, `change_url`) before `change-opened`, whose payload stays a first publication's:
+without it nothing resolves its URL or landing commit to work (onevcs#318). `tests/e2e/resumption.rs` holds each component to forcing the whole path — except a
 moved base, which `base_merge::decide` judges over the verified head, so an unchanged
 head the host would merge as it stands is resumed rather than re-pushed (onevcs#371).
 

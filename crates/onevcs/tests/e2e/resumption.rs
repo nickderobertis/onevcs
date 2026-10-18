@@ -331,19 +331,47 @@ fn a_resumed_landing_resolves_by_its_change_request_and_its_merge_commit() {
     );
     assert_eq!(hook_runs(&hosted), 1, "no local verification ran again");
 
-    // The fresh stream names the work before it names the change request: the branch
-    // and the head verification passed at, in the fields a first publication's push
-    // names them in, under the identity the stream is labelled with.
+    // The fresh stream names the work before it names the change request: a
+    // `publication-resumed` carrying the branch, the head verification passed at, the
+    // base and the change request, under the identity the stream is labelled with —
+    // and the `change-opened` after it is the one a first publication writes.
     let events = hosted.world.events(STREAM);
-    let opened = events
-        .iter()
-        .find(|event| event["kind"] == "change-opened")
-        .expect("the resumed publication recorded its change request");
-    assert_eq!(opened["payload"]["branch"], BRANCH, "{opened}");
-    assert_eq!(opened["payload"]["head"], verified.as_str(), "{opened}");
+    let position = |kind: &str| {
+        events
+            .iter()
+            .position(|event| event["kind"] == kind)
+            .unwrap_or_else(|| panic!("the resumed publication recorded {kind}: {events:?}"))
+    };
+    let (resumed_at, opened_at) = (position("publication-resumed"), position("change-opened"));
+    assert!(resumed_at < opened_at, "{events:?}");
+    let (resumption, opened) = (&events[resumed_at], &events[opened_at]);
+    assert_eq!(resumption["phase"], "review", "{resumption}");
+    assert_eq!(resumption["payload"]["branch"], BRANCH, "{resumption}");
+    assert_eq!(
+        resumption["payload"]["head"],
+        verified.as_str(),
+        "{resumption}"
+    );
+    assert_eq!(resumption["payload"]["base"], "main", "{resumption}");
+    assert_eq!(
+        resumption["payload"]["change_url"], opened["payload"]["url"],
+        "{resumption}"
+    );
     assert!(
-        opened["labels"]["identity"].as_str().is_some(),
-        "the stream names its repository: {opened}"
+        resumption["labels"]["identity"].as_str().is_some()
+            && resumption["labels"]["identity"] == opened["labels"]["identity"],
+        "the stream names its repository: {resumption}"
+    );
+    let mut fields: Vec<&String> = opened["payload"]
+        .as_object()
+        .expect("a payload")
+        .keys()
+        .collect();
+    fields.sort();
+    assert_eq!(
+        fields,
+        ["author", "base", "host", "id", "url"],
+        "change-opened is unchanged: {opened}"
     );
     let url = opened["payload"]["url"]
         .as_str()
@@ -1094,6 +1122,19 @@ fn an_unchanged_green_change_whose_base_moved_is_resumed_where_the_host_merges_i
         base_merge_decisions(&world).last().map(String::as_str),
         Some("skipped"),
         "the resume records the moved base left to the host"
+    );
+    // A moved base is still a resumption, recorded before the change request it names.
+    let recorded: Vec<Value> = world.events(MOVED_STREAM);
+    let resumed_at = recorded
+        .iter()
+        .rposition(|event| event["kind"] == "publication-resumed")
+        .expect("the resume records its resumption");
+    assert_eq!(recorded[resumed_at]["payload"]["head"], verified.as_str());
+    assert!(
+        recorded[resumed_at..]
+            .iter()
+            .any(|event| event["kind"] == "change-opened"),
+        "{recorded:?}"
     );
 
     let after = host.state();

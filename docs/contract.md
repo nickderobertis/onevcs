@@ -1220,7 +1220,7 @@ review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
              review-reply-posted change-standings-read change-retargeted
-             change-reopened merge-armed
+             change-reopened merge-armed publication-resumed
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -4580,8 +4580,8 @@ green. Publishing it again used to build a fresh workspace and repeat a verifica
 same tree had passed: on one repository, about 20 GB and a live lane run again for a push
 that moved nothing. So a publication records the boundary its verification passed at,
 and `onevcs publish-branch <branch> --repo <checkout>` — the library's
-`publish_branch` — resumes from it. No flag, output or event kind changes; the one event
-field it adds is the branch identity a resumed `change-opened` carries (below).
+`publish_branch` — resumes from it. No flag or output changes; the one event kind it adds
+is `publication-resumed` (below).
 
 **When it is written.** Once a publication's verification has passed — its publishing
 push, and the `pre-push` hook git ran there, accepted — and its change request is open,
@@ -4645,15 +4645,26 @@ draft where the policy lifts it, and enables or performs the merge the policy na
 publication would, without its `fetch` and `push`; a red required check still ends it as a
 red check does, and keeps the boundary for the next re-entry. A resumed publication
 records its branch identity before anything is recorded against it, because its stream
-may hold nothing a first publication's push would have written there (onevcs#318): the
-stream is labelled with the repository's `identity`, as every branch-keyed stream is, and
-its `change-opened` carries `branch` and `head` — the branch and the head its verification
-passed at, under the names a first publication's `push` gives them — beside the fields it
-always carries. So its change request's URL and its landing commit resolve to that branch's
-work in `status`, `release status` and `release acknowledge`, as a first publication's do.
-A first publication's `change-opened` is unchanged. A landing it reaches is
+may hold nothing a first publication's push would have written there (onevcs#318). It
+emits `publication-resumed` before its `change-opened`, on every resumed path — whether
+or not its base moved — with the payload
+
+```json
+{"branch": "feature/x", "head": "<the verified head>", "base": "main", "change_url": "https://github.com/acme/repo/pull/1"}
+```
+
+in the `review` phase, at `progress` significance, on the branch-keyed stream the
+resuming `publish-branch` writes (`publish-branch-feature-x` for `feature/x`, labelled with the repository's
+`identity` as every branch-keyed stream is). It appears on no other stream: a first
+publication's `push` already names its branch and head, and it emits none. `status`,
+`release status` and `release acknowledge` read its `branch` as they read a push's, so a
+resumed change request's URL and its landing commit resolve to that branch's work when the
+stream holds no push, as a first publication's do. `change-opened`'s payload is the one a
+first publication writes, and a first publication's stream is unchanged. A first publication's `change-opened` is unchanged. A landing it reaches is
 recorded on the branch, by ref, in the checkout that keeps it. Stderr says which of the
 two it took, and why a boundary did not hold.
+
+Event kinds added: `publication-resumed`.
 
 **Publication holder records are per invocation.** The publication lease is a shared lock,
 so it can have several holders at once — two resumes of one branch from one checkout hold
@@ -5983,7 +5994,7 @@ The producer classification table is exhaustive over current kinds:
 | base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
 | release-probed | progress | blocker for not-answered; released and no-release remain progress |
 | branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
-| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
+| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, publication-resumed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
 
 Required check significance uses the watch's existing cached declaration, falling
 back to the host's per-check marking only when that declaration is unavailable.

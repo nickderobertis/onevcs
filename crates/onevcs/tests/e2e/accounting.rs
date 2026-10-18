@@ -330,8 +330,8 @@ fn an_ambiguous_reference_is_refused_by_naming_the_candidates() {
         .stderr(predicate::str::contains("is a name git would not accept"));
 
     // …and one that records the change request and names no branch at all — what a
-    // resumed `publish-branch` wrote before it recorded its branch, and what a stream
-    // already on a host still holds — is refused as the gap it is, rather than
+    // resumed `publish-branch` wrote before it recorded `publication-resumed`, and what a
+    // stream already on a host still holds — is refused as the gap it is, rather than
     // answered about work nobody identified. A resumed publication now names its work
     // (`resumption::a_resumed_landing_resolves_by_its_change_request_and_its_merge_commit`).
     std::fs::write(

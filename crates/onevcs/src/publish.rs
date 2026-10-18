@@ -2397,6 +2397,19 @@ fn resume_within(
     // a body — is new, and the commits are screened once more for the same reason.
     let compared = format!("origin/{}", context.target.base());
     hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+    // A first publication's push names the branch and the head on its stream, and that
+    // is what resolves its change request's URL and its landing back to the work. A
+    // resumed one pushes nothing and its stream may hold nothing else, so it names
+    // them here, before anything is recorded against its change request.
+    stream.emit(
+        EventKind::PublicationResumed,
+        object(json!({
+            "branch": context.branch,
+            "head": pushed.0,
+            "base": context.target.base(),
+            "change_url": change.url.to_string(),
+        })),
+    );
     (|| -> Result<PublishOutcome> {
         let slug = change_host(&context.resolution.key)?;
         let host = context.hosting.for_repo(&slug)?;
@@ -2462,22 +2475,16 @@ fn land_opened_change(
     pushed: &Sha,
 ) -> Result<PublishOutcome> {
     let lifecycle = !context.drafts.disabled;
-    let mut opened = object(json!({
-        "url": change.url.to_string(),
-        "host": "github",
-        "id": change.id.0,
-        "base": change.base,
-        "author": author,
-    }));
-    // A first publication's push has already named the branch and the head on this
-    // stream, which is what resolves the change request's URL and its landing back to
-    // the work. A resumed one pushes nothing, and its stream may hold nothing else, so
-    // it names them here, in the fields that push names them in.
-    if context.built == Built::Resumed {
-        opened.insert("branch".to_owned(), json!(context.branch));
-        opened.insert("head".to_owned(), json!(pushed.0));
-    }
-    stream.emit(EventKind::ChangeOpened, opened);
+    stream.emit(
+        EventKind::ChangeOpened,
+        object(json!({
+            "url": change.url.to_string(),
+            "host": "github",
+            "id": change.id.0,
+            "base": change.base,
+            "author": author,
+        })),
+    );
 
     if let Some(reason) = &context.draft {
         return hold_as_draft(context, host, change, reason, stream);

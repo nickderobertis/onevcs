@@ -215,6 +215,15 @@ pub enum EventKind {
     /// host's own merge armed on its change request, so it lands once the checks pass;
     /// carries the change request's URL and the head commit armed.
     MergeArmed,
+    /// A `publish-branch` found its change request open at the boundary its
+    /// verification passed and resumed it at its hosted checks, pushing nothing;
+    /// carries the `branch`, the verified `head`, the `base` and the `change_url`.
+    ///
+    /// Emitted before that publication's [`ChangeOpened`](EventKind::ChangeOpened),
+    /// whether or not its base moved. A first publication's `push` is what names its
+    /// branch and head on a stream, and a resumed one has none, so this is what
+    /// resolves its change request's URL and its landing commit back to the work.
+    PublicationResumed,
 }
 
 /// How much attention an event asks of its consumer, stamped by its producer.
@@ -280,6 +289,7 @@ impl EventKind {
             EventKind::ChangeReopened => "change-reopened",
             EventKind::BaseMerge => "base-merge",
             EventKind::MergeArmed => "merge-armed",
+            EventKind::PublicationResumed => "publication-resumed",
         }
     }
 
@@ -367,6 +377,9 @@ impl PhaseOf for Phase {
             // The host's merge of the change request, armed to happen once its checks
             // pass: the change being ruled on, as `change-merged` is.
             | EventKind::MergeArmed
+            // Taking an open change request up again at its hosted checks: the change
+            // being ruled on, at the point its first publication's watch would start.
+            | EventKind::PublicationResumed
             // Reading what reviewers said and answering it is the change being ruled on.
             | EventKind::ReviewCommentsRead
             | EventKind::ReviewReplyPosted
