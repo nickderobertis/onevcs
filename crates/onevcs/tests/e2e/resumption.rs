@@ -768,7 +768,12 @@ const MOVED_STREAM: &str = "publish-branch-feature-base-moved";
 /// runs at the push. Only the host is supplied, because only a caller embedding the
 /// crate can set a host's merge policy per journey.
 fn verified_and_red_on_a_supplied_host(world: &World) -> HostState {
-    let (_origin, _identity) = library::hosted(world, AUTOMATED);
+    verified_and_red_on_a_supplied_host_under(world, AUTOMATED)
+}
+
+/// The same under the rules `rules` names.
+fn verified_and_red_on_a_supplied_host_under(world: &World, rules: &str) -> HostState {
+    let (_origin, _identity) = library::hosted(world, rules);
     let counter = world.path("hook-runs");
     world.install_pre_push(
         &world.path("hosted"),
@@ -847,6 +852,14 @@ fn runs_of_the_hook(world: &World) -> usize {
 /// The publishing pushes the branch's stream records — one per verification git ran.
 fn pushes(world: &World) -> usize {
     world.events_of(MOVED_STREAM, "push").len()
+}
+
+/// The checkout's own branches and remote-tracking refs.
+fn checkout_refs(world: &World) -> String {
+    world.git(
+        &world.path("hosted"),
+        &["for-each-ref", "refs/heads", "refs/remotes"],
+    )
 }
 
 fn workspaces(world: &World) -> usize {
@@ -1071,4 +1084,194 @@ fn a_head_changed_since_its_boundary_is_verified_again_whatever_the_host_allows(
     );
     assert_eq!(pushes(&world), 2);
     assert_eq!(runs_of_the_hook(&world), 2, "verification ran again");
+}
+
+/// Publish through `host`, and hold it to having verified again: a second push, a
+/// second run of the hook, and the reason the boundary did not hold on stderr.
+fn verified_again_through(world: &World, host: &MemoryHost, because: &str) {
+    let mut published = None;
+    let stderr = library::stderr_of(|| published = Some(publish_through(host)));
+    let published = published.expect("the publication ran");
+    assert!(
+        matches!(published, Ok(PublishOutcome::Merged(_))),
+        "{published:?}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot be resumed") && stderr.contains(because),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(pushes(world), 2, "the stream records the second push");
+    assert_eq!(runs_of_the_hook(world), 2, "verification ran again");
+}
+
+#[test]
+fn a_moved_base_under_base_merge_always_is_integrated_whatever_the_host_allows() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host_under(
+        &world,
+        "{publication: change-auto, approvals: none, base_merge: always}",
+    );
+    base_moves(&world, "other.txt");
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+    verified_again_through(&world, &host, "base_merge is always");
+}
+
+#[test]
+fn a_base_that_moved_onto_a_commit_the_head_already_carries_is_resumed() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    // Somebody fast-forwards the base onto the verified head itself.
+    let elsewhere = world.clone_of(&world.path("hosted.git"), "elsewhere");
+    world.git(
+        &elsewhere,
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("{verified}:refs/heads/main"),
+        ],
+    );
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: true,
+        ..state
+    });
+
+    let mut resumed = None;
+    let stderr = library::stderr_of(|| resumed = Some(publish_through(&host)));
+    let resumed = resumed.expect("the publication ran");
+    assert!(
+        matches!(resumed, Ok(PublishOutcome::Merged(_))),
+        "{resumed:?}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("resuming the verified") && stderr.contains("already carries"),
+        "even a host requiring an up-to-date branch has nothing to bring in: {stderr}"
+    );
+    assert_eq!(verified_tip(&world), verified, "no new head was pushed");
+    assert_eq!(pushes(&world), 1);
+    assert_eq!(runs_of_the_hook(&world), 1, "no local verification ran");
+}
+
+#[test]
+fn a_moved_base_whose_objects_cannot_be_fetched_takes_the_whole_path() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let moved = base_moves(&world, "other.txt");
+    // The origin serves every request but the one fetching the moved base by its id —
+    // an `upload-pack` that refuses when the `git` that started it names that commit.
+    let refusing = world.path("refusing-upload-pack");
+    std::fs::write(
+        &refusing,
+        format!(
+            "#!/bin/sh\n\
+             pid=$PPID\n\
+             for _ in 1 2 3; do\n\
+             \x20 if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '{moved}'; then\n\
+             \x20   echo 'refusing to serve {moved}' >&2; exit 1\n\
+             \x20 fi\n\
+             \x20 pid=$(awk '{{print $4}}' /proc/$pid/stat)\n\
+             done\n\
+             exec git-upload-pack \"$@\"\n"
+        ),
+    )
+    .expect("the refusing upload-pack");
+    std::fs::set_permissions(
+        &refusing,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("an executable upload-pack");
+    world.git(
+        &world.path("hosted"),
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &refusing.to_string_lossy(),
+        ],
+    );
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+    verified_again_through(
+        &world,
+        &host,
+        "whether the host would merge the change as it stands could not be read",
+    );
+}
+
+#[test]
+fn a_moved_base_whose_host_policy_cannot_be_read_is_integrated_and_verified_again() {
+    let hosted = verified_and_red();
+    // The rulesets answer and classic branch protection refuses the credential, so
+    // whether the host requires an up-to-date branch is not known.
+    hosted.world.answer_malformed("classic-protection-refused");
+    land_on_base(&hosted);
+    hosted.world.host_notices_the_push_after(0);
+    hosted.world.host_checks(&[required("success")]);
+    let assert = publish(&hosted)
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("cannot be resumed")
+            && stderr.contains("whether the host requires an up-to-date branch could not be read"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(hook_runs(&hosted), 2, "verification ran again");
+    assert_eq!(publications(&hosted), 2, "a workspace was built");
+}
+
+#[test]
+fn a_resume_over_a_moved_base_fetches_its_objects_and_moves_no_ref_in_the_checkout() {
+    let world = World::new();
+    inhabit(&world);
+    let mut state = verified_and_red_on_a_supplied_host(&world);
+    // Still red, so the resume ends at its checks and nothing lands: whatever the
+    // checkout holds afterwards is what the resume itself left there.
+    state
+        .checks
+        .insert(ChangeId("1".to_owned()), vec![host_check("failure")]);
+    let refs_before = checkout_refs(&world);
+    let moved = base_moves(&world, "other.txt");
+    let checkout = world.path("hosted");
+    let has_moved = || {
+        world
+            .git_raw(
+                &checkout,
+                &["cat-file", "-e", &format!("{moved}^{{commit}}")],
+            )
+            .status
+            .success()
+    };
+    assert!(!has_moved(), "the checkout has not seen the moved base");
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+
+    let mut resumed = None;
+    let stderr = library::stderr_of(|| resumed = Some(publish_through(&host)));
+    let resumed = resumed.expect("the publication ran");
+    assert!(
+        matches!(resumed, Err(onevcs::Error::ChecksFailed { .. })),
+        "{resumed:?}\n{stderr}"
+    );
+    assert!(stderr.contains("resuming the verified"), "{stderr}");
+    assert!(has_moved(), "the moved base's objects were fetched");
+    assert_eq!(
+        checkout_refs(&world),
+        refs_before,
+        "no branch or remote-tracking ref in the checkout moved"
+    );
+    assert_eq!(pushes(&world), 1);
+    assert_eq!(runs_of_the_hook(&world), 1);
 }
