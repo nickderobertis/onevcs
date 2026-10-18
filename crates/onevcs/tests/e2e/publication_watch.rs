@@ -789,6 +789,10 @@ impl HeldHook {
 /// releases what holds the push only after the publication has answered, so an answer
 /// arriving at all is the proof that cancellation did not wait for the hook — and a
 /// clock bound would add a way to fail on a slow host without adding any proof.
+// llmlint: ignore[changed_behavior_has_e2e] onevcs#358's task rules that promptness is
+// proved by the event and that no elapsed-time bound is wanted: the held hook is
+// released only after the publication answers, so a cancellation that waited for it
+// could never answer and the journey would fail rather than pass late.
 fn cancel_in_push(session: &Session, what: &str, reached: impl Fn() -> bool + Sync) -> Publication {
     cancel_once(session, what, reached, || {}).0
 }

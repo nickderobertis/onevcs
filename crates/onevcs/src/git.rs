@@ -1356,6 +1356,12 @@ impl Tree {
 /// The command runs for the instant between its spawn and its adoption; nothing git
 /// starts on a push is started before it has reached the remote, so a hook is never
 /// born outside the job.
+// llmlint: ignore-block[changed_behavior_has_e2e] Windows-only code no journey can
+// reach: the publication fixture `tests/e2e/world.rs` is Unix-only (POSIX-shell hooks
+// and `gh`), and the manager ruled for onevcs#358 that a Windows publication fixture is
+// follow-up work outside it, drafted as such. The Unix journeys in
+// `publication_watch.rs` hold the same contract through the process group, and this
+// block is type-checked by clippy for `x86_64-pc-windows-msvc`.
 #[cfg(windows)]
 struct Tree(Option<windows_sys::Win32::Foundation::HANDLE>);
 
@@ -1438,6 +1444,8 @@ impl Drop for Tree {
         }
     }
 }
+
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// Neither Unix nor Windows: no tree to hold, and a stopped command is ended alone.
 #[cfg(not(any(unix, windows)))]
