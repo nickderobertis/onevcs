@@ -397,6 +397,19 @@ guess that a rewrite supersedes what it rewrote. The workflow that reaches this 
 replay from where `sync_change_base` sends an operator — is recorded as a journey rather
 than described here.
 
+**…except a copy that adds only clean merges of base commits** (onevcs#438). A
+continuation merges a moved base at open, and when it stops there while the work goes on
+in another copy, the copy it leaves holds nothing that copy and the base lack.
+`branch::only_clean_base_merges` is the one test — asked by `locate` and by `opened_at`
+against origin's copy, so the two cannot disagree — and it verifies every such commit's
+parents *and* its tree against `merge-tree`'s clean merge, because a merge carrying a
+resolution is work. Two things are easy to undo: the passed-over tip is written to
+`refs/onevcs/passed-over/<branch>/<commit>` in the publication checkout *before* it is
+passed over, or a reclaimed run clone takes it; and `locate` judges each passed-over copy
+in its own checkout borrowing the chosen copy's objects, with that checkout's own view of
+the base beside the publication checkout's — two run clones never see each other's
+commits, and a clone can have merged a base commit the publication checkout never fetched.
+
 **A verified change request is resumed, not verified again** (`verified.rs`). Once a
 publication's push is accepted and its change request is open, `publish::record_boundary` writes the boundary under
 `$ONEVCS_HOME/verified/`, and `publish-branch` asks `publish_branch::resumable` before
