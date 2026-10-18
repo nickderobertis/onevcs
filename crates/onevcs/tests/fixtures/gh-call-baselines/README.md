@@ -12,6 +12,7 @@ set in a GraphQL query) as the same invocation.
 | `watched-merge.log` | `edges::a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it` |
 | `late-merge-status.log` | `library::a_change_merged_after_its_session_closed_is_recorded_by_the_next_status_with_the_issues_it_closes` |
 | `late-merge-standings.log` | `library::a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_with_the_issues_it_closes` |
+| `history-landing-release-status.log` | `landing::a_landing_found_only_in_the_bases_history_reports_the_issues_its_commit_closes` — held **exactly** (`assert_calls_unchanged`): that path must ask the host what it asked before, no less |
 
 They were made by running those journeys on `90e1833`'s `src/` with a one-off copy of the
 world's `gh-state/gh-calls.log` at the point each journey now checks it; that copy is not
