@@ -4040,25 +4040,17 @@ impl Resolved {
 /// commit it merged as, which that base carries.
 struct Attested {
     url: Url,
-    commit: ObjectId,
-    /// Whether the landing is on this host's record now, which is what it is evidence
-    /// as: a recorded landing where it is, and the change request the host reports
-    /// merged where it could not be written.
-    recorded: bool,
+    /// What it is evidence as: a recorded landing where this host has it on the record
+    /// now, and the change request the host reports merged where that could not be
+    /// written.
+    evidence: landed::LandingEvidence,
 }
 
 impl Attested {
     /// The answer it gives where no copy or record here decided a landing.
     fn landed(&self) -> Landed {
-        let commit = crate::host::Sha(self.commit.as_str().to_owned());
         Landed::Yes {
-            evidence: match self.recorded {
-                true => landed::LandingEvidence::RecordedLanding { commit },
-                false => landed::LandingEvidence::ChangeRequest {
-                    commit,
-                    change_url: self.url.clone(),
-                },
-            },
+            evidence: self.evidence.clone(),
         }
     }
 
@@ -4448,13 +4440,16 @@ fn attest(registry: &Registry, url: &str, hosting: &dyn Hosting) -> Result<(Work
     })?;
     // Kept as the landing it is, the way a standings read keeps one, so what answers is
     // a record of it rather than the host's word alone.
-    let recorded = crate::standings::record_attested(
-        registry,
-        &resolution,
-        host,
-        &standing,
-        &crate::host::Sha(commit.as_str().to_owned()),
-    );
+    let commit = crate::host::Sha(commit.as_str().to_owned());
+    let recorded =
+        crate::standings::record_attested(registry, &resolution, host, &standing, &commit);
+    let evidence = match recorded {
+        true => landed::LandingEvidence::RecordedLanding { commit },
+        false => landed::LandingEvidence::ChangeRequest {
+            commit,
+            change_url: standing.url.clone(),
+        },
+    };
     Ok((
         Work {
             identity: resolution.key,
@@ -4462,8 +4457,7 @@ fn attest(registry: &Registry, url: &str, hosting: &dyn Hosting) -> Result<(Work
         },
         Attested {
             url: standing.url,
-            commit,
-            recorded,
+            evidence,
         },
     ))
 }
