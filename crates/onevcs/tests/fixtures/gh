@@ -360,7 +360,8 @@ case "$command" in
         # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `too-many-requests`,
         # `rate-limit-message` (a 403 that says so and sends no quota),
         # `rate-limit-garbled` (one whose quota headers are not numbers), `quota-spent`
-        # and `retry-after` (a 403 saying nothing but that header), `server-error`
+        # and `retry-after` (a 403 saying nothing but that header), `quota-odd` (a
+        # spent quota whose resource and reset are not ones to print), `server-error`
         # and `unreachable` are a host that did not answer at all. Asked `--include`, it
         # prints the status line and headers ahead of the body, as `gh` does — on a
         # refusal too.
@@ -418,6 +419,11 @@ $quota" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
 X-Ratelimit-Remaining: 0
 X-Ratelimit-Reset: 1792285566
 X-Ratelimit-Resource: core' '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
+          quota-odd)
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: 99999999999999999
+X-Ratelimit-Resource: Core Quota' '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
           retry-after)
             respond '403 Forbidden' "Retry-After: 120
 $quota" '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;

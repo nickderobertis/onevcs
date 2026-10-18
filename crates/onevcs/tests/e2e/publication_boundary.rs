@@ -939,6 +939,12 @@ fn every_way_a_host_does_not_answer_holds_the_publication_and_an_inspection_reco
              resets at 2026-10-18T01:06:06.000Z",
             "Forbidden (HTTP 403)",
         ),
+        // A resource that is not one word and a reset past any calendar are left out.
+        (
+            "quota-odd",
+            "is refused for its rate limit: HTTP 403, limit 5000, 0 remaining",
+            "Forbidden (HTTP 403)",
+        ),
         (
             "retry-after",
             "is refused for its rate limit: HTTP 403, limit 5000 (core), 4999 remaining, \

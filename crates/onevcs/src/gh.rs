@@ -338,11 +338,7 @@ impl Unanswered {
                 if let Some(remaining) = remaining {
                     said.push_str(&format!(", {remaining} remaining"));
                 }
-                if let Some(reset) = response
-                    .count("x-ratelimit-reset")
-                    .and_then(|epoch| i64::try_from(epoch).ok())
-                    .and_then(|epoch| time::OffsetDateTime::from_unix_timestamp(epoch).ok())
-                {
+                if let Some(reset) = response.moment("x-ratelimit-reset") {
                     said.push_str(&format!(", resets at {}", crate::ids::stamp(reset)));
                 }
                 if let Some(retry) = retry {
@@ -416,6 +412,13 @@ impl Response {
     /// nothing where it is absent or not one.
     fn count(&self, name: &str) -> Option<u64> {
         self.header(name)?.parse().ok()
+    }
+
+    /// Header `name` as a moment, sent as seconds since the Unix epoch, or nothing
+    /// where it is absent or no moment this build can name.
+    fn moment(&self, name: &str) -> Option<time::OffsetDateTime> {
+        let epoch: i64 = self.header(name)?.parse().ok()?;
+        time::OffsetDateTime::from_unix_timestamp(epoch).ok()
     }
 
     /// Header `name` as one short word of lower-case letters, digits and `_` — the
