@@ -4183,10 +4183,11 @@ fn a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none() {
             "{how}: {stderr}"
         );
         let (asked, without) = merge_reads(&world);
-        assert!(asked >= 1, "{how}: the merge read asked for the closures");
+        // One merge read found the merge, and its refusal cost exactly one request more.
         assert_eq!(
-            without, asked,
-            "{how}: each refused read is asked again once"
+            (asked, without),
+            (1, 1),
+            "{how}: the refused read is asked again once, and nothing else is added"
         );
     }
 }

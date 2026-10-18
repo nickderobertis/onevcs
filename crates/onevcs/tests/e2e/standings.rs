@@ -497,9 +497,25 @@ fn a_standing_read_by_a_credential_that_may_not_see_closed_issues_records_the_la
     world.refuse_closing_references("permission");
     let landed = world.person_merges(1, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept);
 
+    let before = world.host_calls().len();
     let output = stack.standings_output("main", &[url(1)], &[]);
     let read = succeeded(&output);
     assert_eq!(standing(&read, 1)["state"]["landing"], true, "{read}");
+    // The refused query, and the same query without the closures: one request added.
+    let queries: Vec<String> = world.host_calls()[before..]
+        .iter()
+        .filter(|call| call.starts_with("api graphql"))
+        .cloned()
+        .collect();
+    assert_eq!(queries.len(), 2, "{queries:#?}");
+    assert!(
+        queries[0].contains("closingIssuesReferences("),
+        "{queries:#?}"
+    );
+    assert!(
+        !queries[1].contains("closingIssuesReferences("),
+        "{queries:#?}"
+    );
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(
             "the host would not say which issues the change requests of acme-corp/stacked \

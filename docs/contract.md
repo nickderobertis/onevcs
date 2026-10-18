@@ -4890,7 +4890,8 @@ are unchanged, and every emitter builds the field through one function.
   alone is asked again without the field, because whether the change merged is the
   answer. Such a landing — and one whose answer names a node no issue can be read out of,
   which is refused whole rather than read in part — reports `[]` and says so on stderr,
-  so a `[]` there is not evidence that it closed nothing. A host implementation other
+  so a `[]` there is not evidence that it closed nothing. The one added request is sent
+  only on such a refusal *(the manager's ruling on this amendment)*. A host implementation other
   than this crate's `GitHub` reports none, so its landings carry `[]`.
 - **A landing found from the base's history alone** — `release status` reading the change
   request's number in the base with no read of that change request from the host in the
