@@ -4030,9 +4030,12 @@ passed over is the checkout's and the copy continued is origin's: the session's 
 written at origin's commit, and the base is then merged into it as for any continuation.
 
 **The passed-over tip is kept.** Before a copy is passed over its commit is written, with
-its objects, to `refs/onevcs/passed-over/<branch>/<commit>` in the identity's publication
-checkout — the one repository of an identity nothing reclaims — and the copy itself is left
-where it was, never moved or deleted. A copy that cannot be kept is not passed over: the
+its objects, to `refs/onevcs/passed-over/<branch>/<commit>` in the publication checkout the
+call resolved the identity through — the checkout `--repo` names, for a verb that takes
+one, and a repository nothing reclaims, unlike a run clone — and the copy itself is left
+where it was, never moved or deleted. Copies are compared in search order (the publication
+checkout, the other registered checkouts, then the run clones), and each is kept as it is
+reached. A copy that cannot be kept is not passed over: the
 call is refused naming the fetch that keeps it. The call says on stderr, in one line per
 copy, which copy it passed over, at which commit, and the ref that keeps it.
 

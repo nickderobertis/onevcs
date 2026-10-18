@@ -2565,20 +2565,8 @@ fn a_clean_base_merge_copy_origin_already_has_still_refuses_the_landing() {
     assert!(kept_tips(&fixture).is_empty(), "nothing is passed over");
 }
 
-#[test]
-fn a_clean_base_merge_in_a_checkout_with_a_store_of_its_own_is_judged_by_its_own_base() {
-    // A second registered checkout, cloned on its own, so it borrows nothing from the
-    // publication checkout: the work there is a commit it cannot see, and the base it
-    // merged is one the publication checkout has never fetched.
-    let fixture = Fixture::local(&local_direct());
-    let branch = "feature/merged-in-another-store";
-    let worker = fixture.world.clone_of(&fixture.origin, "worker");
-    fixture
-        .world
-        .onevcs()
-        .args(["register", &worker.to_string_lossy()])
-        .assert()
-        .success();
+/// The branch begun in the publication checkout, with one commit every copy will share.
+fn begun(fixture: &Fixture, branch: &str) {
     fixture
         .world
         .git(&fixture.checkout, &["checkout", "-q", "-b", branch, "main"]);
@@ -2588,6 +2576,22 @@ fn a_clean_base_merge_in_a_checkout_with_a_store_of_its_own_is_judged_by_its_own
         "work\n",
         "feat: the work begins",
     );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+}
+
+/// A second registered checkout, cloned on its own so it borrows nothing from the
+/// publication checkout, holding the branch as the publication checkout has it now.
+/// Fetched between checkouts rather than through the origin, which never sees it.
+fn taken_into_a_store_of_its_own(fixture: &Fixture, branch: &str, name: &str) -> PathBuf {
+    let worker = fixture.world.clone_of(&fixture.origin, name);
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
     fixture.world.git(
         &worker,
         &[
@@ -2597,60 +2601,307 @@ fn a_clean_base_merge_in_a_checkout_with_a_store_of_its_own_is_judged_by_its_own
             &format!("+refs/heads/{branch}:refs/heads/{branch}"),
         ],
     );
-    fixture.world.commit_file(
+    worker
+}
+
+/// The publication checkout goes on with the work — `also` committed after it, for a
+/// journey whose verb asks something of the branch's last commit — and answers its tip.
+fn went_on(fixture: &Fixture, branch: &str, also: &[&str]) -> String {
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["checkout", "-q", branch]);
+    world.commit_file(
         &fixture.checkout,
         "more-work.txt",
         "more work\n",
         "feat: the work the publication checkout went on with",
     );
-    fixture
-        .world
-        .git(&fixture.checkout, &["checkout", "-q", "main"]);
-    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
-    fixture
-        .world
-        .commit_file(&elsewhere, "base.txt", "base\n", "feat: the base moves");
-    fixture
-        .world
-        .git(&elsewhere, &["push", "-q", "origin", "main"]);
-    fixture.world.git(&worker, &["fetch", "-q", "origin"]);
-    fixture.world.git(&worker, &["checkout", "-q", branch]);
-    fixture
-        .world
-        .git(&worker, &["merge", "-q", "--no-edit", "origin/main"]);
-    fixture.world.git(&worker, &["checkout", "-q", "main"]);
-    let work = tip_of(&fixture, &fixture.checkout, branch);
-    let merged = tip_of(&fixture, &worker, branch);
+    if !also.is_empty() {
+        let mut commit = vec!["commit", "-q", "--allow-empty"];
+        for paragraph in also {
+            commit.extend(["-m", paragraph]);
+        }
+        world.git(&fixture.checkout, &commit);
+    }
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    tip_of(fixture, &fixture.checkout, branch)
+}
+
+/// The base moves on origin by `file`, and `worker` — which has fetched it and the
+/// publication checkout has not — merges it cleanly into its copy. Answers that copy's
+/// tip, after asserting the premise: neither store can see the other's commit.
+fn took_the_base(fixture: &Fixture, worker: &Path, branch: &str, file: &str, work: &str) -> String {
+    let world = &fixture.world;
+    let elsewhere = world.clone_of(&fixture.origin, &format!("moves-{file}"));
+    world.commit_file(&elsewhere, file, "base\n", "feat: the base moves");
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world.git(worker, &["fetch", "-q", "origin"]);
+    world.git(worker, &["checkout", "-q", branch]);
+    world.git(worker, &["merge", "-q", "--no-edit", "origin/main"]);
+    world.git(worker, &["checkout", "-q", "main"]);
+    let merged = tip_of(fixture, worker, branch);
     let absent = |checkout: &Path, sha: &str| {
-        fixture
-            .world
+        world
             .git_raw(checkout, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
             .status
             .code()
             != Some(0)
     };
     assert!(
-        absent(&worker, &work) && absent(&fixture.checkout, &merged),
+        absent(worker, work) && absent(&fixture.checkout, &merged),
         "the premise: neither checkout can see the other's commit"
     );
+    merged
+}
 
-    let assert = publish_branch(&fixture, branch).assert().success();
-    let said = stderr_of(&assert);
-    let kept = format!("refs/onevcs/passed-over/{branch}/{merged}");
+/// The publication checkout carrying the work, and one registered checkout of its own
+/// whose copy only took the base. Answers that checkout, the work's tip and its copy's.
+fn work_here_while_a_store_of_its_own_took_the_base(
+    fixture: &Fixture,
+    branch: &str,
+    also: &[&str],
+) -> (PathBuf, String, String) {
+    begun(fixture, branch);
+    let worker = taken_into_a_store_of_its_own(fixture, branch, "worker");
+    let work = went_on(fixture, branch, also);
+    let merged = took_the_base(fixture, &worker, branch, "base.txt", &work);
+    (worker, work, merged)
+}
+
+/// What every verb that locates a branch says and keeps for a copy it passed over.
+fn passed_over_and_kept(fixture: &Fixture, said: &str, worker: &Path, branch: &str, tip: &str) {
+    passed_over_and_kept_in(fixture, &fixture.checkout, said, worker, branch, tip);
+}
+
+/// The same, for a verb whose publication checkout is the one its `--repo` names.
+fn passed_over_and_kept_in(
+    fixture: &Fixture,
+    publication: &Path,
+    said: &str,
+    worker: &Path,
+    branch: &str,
+    tip: &str,
+) {
+    let kept = format!("refs/onevcs/passed-over/{branch}/{tip}");
     assert!(
-        said.contains(&format!("{} at {merged}", worker.display()))
+        said.contains(&format!("{} at {tip}", worker.display()))
+            && said.contains("passed over rather than refused")
             && said.contains(&format!("kept at {kept}")),
-        "{said}"
+        "the copy passed over is named, with where its tip is kept:\n{said}"
     );
     assert_eq!(
-        fixture.world.git(&fixture.checkout, &["rev-parse", &kept]),
-        merged,
+        fixture.world.git(publication, &["rev-parse", &kept]),
+        tip,
         "the other store's tip is fetched into the publication checkout and kept"
     );
+}
+
+#[test]
+fn a_clean_base_merge_in_a_checkout_with_a_store_of_its_own_is_judged_by_its_own_base() {
+    // The work is a commit the other checkout cannot see, and the base it merged is one
+    // the publication checkout has never fetched.
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/merged-in-another-store";
+    let (worker, _work, merged) =
+        work_here_while_a_store_of_its_own_took_the_base(&fixture, branch, &[]);
+
+    let assert = publish_branch(&fixture, branch).assert().success();
+    passed_over_and_kept(&fixture, &stderr_of(&assert), &worker, branch, &merged);
     let landed = fixture
         .world
         .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
     assert!(landed.contains("more-work.txt"), "{landed}");
+}
+
+#[test]
+fn a_session_continuing_a_branch_passes_over_a_local_copy_that_only_took_the_base() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/continued-past-a-merge";
+    let (worker, work, merged) =
+        work_here_while_a_store_of_its_own_took_the_base(&fixture, branch, &[]);
+
+    let mut command = fixture.world.onevcs();
+    command.args(["session", "open", "project", "--branch", branch]);
+    let assert = command.assert().success();
+    let tree = worktree_of(&assert.get_output().stdout);
+    passed_over_and_kept(&fixture, &stderr_of(&assert), &worker, branch, &merged);
+    let reaches = |commit: &str| {
+        fixture
+            .world
+            .git_raw(&tree, &["merge-base", "--is-ancestor", commit, "HEAD"])
+            .status
+            .success()
+    };
+    assert!(reaches(&work), "the session opens on the work");
+    assert!(!reaches(&merged), "and not on the copy passed over");
+}
+
+#[test]
+fn an_import_searching_for_its_source_passes_over_a_copy_that_only_took_the_base() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/imported-past-a-merge";
+    let (worker, work, merged) =
+        work_here_while_a_store_of_its_own_took_the_base(&fixture, branch, &[]);
+    let destination = fixture.world.clone_of(&fixture.origin, "destination");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &destination.to_string_lossy()])
+        .assert()
+        .success();
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args(["import", branch, "--repo", &destination.to_string_lossy()])
+        .assert()
+        .success();
+    // An import resolves the identity through the checkout it imports into, so that
+    // is the publication checkout the passed-over tip is kept in.
+    passed_over_and_kept_in(
+        &fixture,
+        &destination,
+        &stderr_of(&assert),
+        &worker,
+        branch,
+        &merged,
+    );
+    assert_eq!(
+        tip_of(&fixture, &destination, branch),
+        work,
+        "what is imported is the copy carrying the work"
+    );
+}
+
+#[test]
+fn a_preservation_passes_over_a_copy_that_only_took_the_base() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/preserved-past-a-merge";
+    let (worker, work, merged) =
+        work_here_while_a_store_of_its_own_took_the_base(&fixture, branch, &[]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "preserve",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+            "--term-scope-empty",
+        ])
+        .assert()
+        .success();
+    passed_over_and_kept(&fixture, &stderr_of(&assert), &worker, branch, &merged);
+    assert_eq!(
+        fixture.world.git(
+            &fixture.origin,
+            &["rev-parse", &format!("refs/heads/{branch}")]
+        ),
+        work,
+        "what reaches the origin is the copy carrying the work"
+    );
+}
+
+#[test]
+fn a_recovery_passes_over_a_copy_that_only_took_the_base() {
+    let fixture = Fixture::local(&local_direct());
+    fixture.verified_by("exit 0");
+    let branch = "feature/recovered-past-a-merge";
+    let marker = format!("chore: preserve work on {branch} (incomplete step)");
+    let status = documented_trailer("Status", &documented_default_prefix());
+    let (worker, _work, merged) =
+        work_here_while_a_store_of_its_own_took_the_base(&fixture, branch, &[&marker, &status]);
+
+    let assert = fixture
+        .world
+        .onevcs()
+        .args([
+            "recover",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    passed_over_and_kept(&fixture, &stderr_of(&assert), &worker, branch, &merged);
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(landed.contains("more-work.txt"), "{landed}");
+}
+
+/// The publication checkout carrying the work, and two registered checkouts of their own
+/// whose copies each took a different base. Answers both checkouts and their tips.
+fn work_here_while_two_stores_took_the_base(
+    fixture: &Fixture,
+    branch: &str,
+) -> [(PathBuf, String); 2] {
+    begun(fixture, branch);
+    let first = taken_into_a_store_of_its_own(fixture, branch, "worker");
+    // Named so the registry, which is the search order, lists this one second.
+    let second = taken_into_a_store_of_its_own(fixture, branch, "worker-later");
+    let work = went_on(fixture, branch, &[]);
+    let first_tip = took_the_base(fixture, &first, branch, "base.txt", &work);
+    let second_tip = took_the_base(fixture, &second, branch, "later.txt", &work);
+    [(first, first_tip), (second, second_tip)]
+}
+
+#[test]
+fn every_copy_that_only_took_the_base_is_passed_over_and_kept_on_its_own() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/two-copies-took-the-base";
+    let copies = work_here_while_two_stores_took_the_base(&fixture, branch);
+
+    let assert = publish_branch(&fixture, branch).assert().success();
+    let said = stderr_of(&assert);
+    for (worker, tip) in &copies {
+        passed_over_and_kept(&fixture, &said, worker, branch, tip);
+    }
+    assert_eq!(
+        said.matches("passed over rather than refused").count(),
+        2,
+        "one line per copy passed over:\n{said}"
+    );
+}
+
+#[test]
+fn a_later_copy_that_cannot_be_kept_refuses_the_landing_after_the_first_is_kept() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/two-copies-one-unkept";
+    let [(_first, first), (second, unkept)] =
+        work_here_while_two_stores_took_the_base(&fixture, branch);
+    // A ref beneath the one the second copy would be kept under: git cannot write a ref
+    // where another's directory is, so that keep alone fails.
+    let main = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "update-ref",
+            &format!("refs/onevcs/passed-over/{branch}/{unkept}/in-the-way"),
+            &main,
+        ],
+    );
+
+    publish_branch(&fixture, branch)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "the copy of branch {branch:?} in {} at {unkept} would be passed over, and could \
+             not be kept",
+            second.display()
+        )));
+    assert_eq!(fixture.origin_log().len(), 3, "nothing may have landed");
+    assert_eq!(
+        fixture.world.git(
+            &fixture.checkout,
+            &[
+                "rev-parse",
+                &format!("refs/onevcs/passed-over/{branch}/{first}")
+            ]
+        ),
+        first,
+        "the copy kept before the refusal stays kept"
+    );
 }
 
 #[test]
