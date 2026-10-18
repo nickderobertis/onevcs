@@ -4591,16 +4591,30 @@ and writes none.
 - `change` and `change_url` — the change request: the host's identifier and its URL.
 
 **When it is invalidated.** When the change request lands, closes or is retargeted, and
-when any component differs: the branch's tip in the checkout it is found in, the base's
-tip on the origin, the inputs as they would be handed over now, or the change request's
-head on the host. Any component the verb cannot read back counts as different, and so
-does a record that is missing, unreadable, or not of this shape. A boundary that does not
+when any component differs: the branch's tip in the checkout it is found in, the inputs
+as they would be handed over now, or the change request's head on the host. Any component
+the verb cannot read back counts as different, and so does a record that is missing,
+unreadable, or not of this shape.
+
+**A base that moved is the host's to judge** (onevcs#371). When the base's tip on the
+origin differs from `base_commit` while every other component holds, the boundary still
+holds exactly where the host will merge the verified head as it stands, decided by the
+rule a publication's sync applies to a moved base (`base_merge`, above): the identity's
+`base_merge` is not `always`, the moved base merges into the head without a conflict, and
+the host requires no up-to-date branch. The publication then resumes at the hosted checks
+— it keeps the head and its checks, pushes nothing, and verifies nothing locally — and
+records that decision as its `base-merge` event (`skipped`). Where the host requires an
+up-to-date branch, where its answer cannot be read, where the head conflicts with the
+moved base, or under `base_merge: always`, the boundary is invalidated: the base is
+integrated, a new head is pushed, and it is verified again. A base the origin no longer
+has, or whose tip cannot be read, invalidates it too. A boundary that does not
 hold is removed and the publication takes the complete path, exactly as a first
 publication would — which writes a new boundary once it has verified again. A change
 request that lands removes its boundary.
 
 **Resuming.** A boundary that holds is taken up where it stands. The publication opens no
-workspace, fetches nothing, and runs no local gate: it holds the branch's publication
+workspace, fetches nothing but a moved base's objects (into the checkout's object store,
+moving no ref), and runs no local gate: it holds the branch's publication
 lease (naming the checkout the branch was found in), reads the open change request's
 hosted checks, and then applies the identity's resolved policy and draft rules as a first
 publication does once it has pushed — waits for and judges the required checks, lifts the

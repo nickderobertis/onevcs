@@ -12,25 +12,34 @@
 //! documents in full. The hook counts its own runs, which is what "no local
 //! verification ran" is measured by, and a publication workspace is a directory under
 //! `workspaces/publications/`, which is what "no workspace was allocated" is.
+//!
+//! The journeys about a base that moved under an unchanged head are in-process instead,
+//! on the host from `onevcs-testing`: whether the host requires an up-to-date branch is
+//! what decides them, and supplying a host with that set is something only a caller
+//! embedding the crate can do. The origin, the checkout and the hook are as real there.
 
 // llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — which change
 // requests exist, what their checks say, whether a merge is allowed — is the one boundary
 // an offline, credential-free gate cannot drive. `world.rs` installs a program that answers
-// it as `gh` and substitutes nothing else: the origin is a real bare repository, the
-// checkouts real clones, every publication a real `git push` through a real `pre-push`
-// hook, and when that program merges a change it does so with real git against the same
-// bare origin.
+// it as `gh` and substitutes nothing else, and the moved-base journeys take the host from
+// `onevcs-testing` in its place: the origin is a real bare repository, the checkouts real
+// clones, every publication a real `git push` through a real `pre-push` hook, and when the
+// `gh` program merges a change it does so with real git against the same bare origin.
 
 use std::path::PathBuf;
 
+use onevcs::{ChangeId, Git, MergeOutcome, Providers, PublishOutcome};
+use onevcs_testing::{HostState, MemoryHost};
 use predicates::prelude::*;
 use serde_json::Value;
 
+use crate::honesty::inhabit;
 use crate::host::{Hosted, AUTOMATED, DIRECT, OPEN, REVIEWED};
+use crate::library;
 use crate::publish_branch::finished_hosted_branch;
 use crate::registry::configure_rules;
 use crate::support::{documented_default_prefix, documented_trailer};
-use crate::world::Check;
+use crate::world::{Check, World};
 
 const BRANCH: &str = "feature/resumed";
 const STREAM: &str = "publish-branch-feature-resumed";
@@ -348,7 +357,12 @@ fn a_tip_base_or_verification_input_that_moved_takes_the_whole_path() {
                 .commit_file(checkout, "two.txt", "two\n", "feat: add a second thing");
             hosted.world.git(checkout, &["checkout", "-q", "main"]);
         }),
-        ("the base", land_on_base),
+        // A moved base is the host's to judge, so this one is a host that requires an
+        // up-to-date branch: the base has to be brought in.
+        ("the base", |hosted| {
+            hosted.world.host_requires_up_to_date("rulesets");
+            land_on_base(hosted);
+        }),
         ("the hook", |hosted| counting_hook(hosted, "a changed gate")),
     ];
     for (moved, change) in moves {
@@ -485,6 +499,9 @@ fn a_base_that_moved_while_it_was_verified_is_recorded_as_verified_and_not_resum
         "the record names the base the gate verified against, not where it moved"
     );
 
+    // A host that requires an up-to-date branch, so the base that moved has to be
+    // brought in rather than left to the host's merge.
+    hosted.world.host_requires_up_to_date("rulesets");
     hosted.world.host_notices_the_push_after(0);
     hosted.world.host_checks(&[required("success")]);
     let assert = publish(&hosted)
@@ -735,4 +752,323 @@ fn a_change_the_whole_path_adopted_records_its_new_boundary_and_is_resumed_from_
         ));
     assert_eq!(hook_runs(&hosted), 2, "no local verification ran again");
     assert_eq!(publications(&hosted), 2, "no workspace was allocated");
+}
+
+/// The branch the journeys over a supplied host publish, and the stream it records on.
+const MOVED: &str = "feature/base-moved";
+const MOVED_STREAM: &str = "publish-branch-feature-base-moved";
+
+/// A `change-auto` identity's finished branch, published once through the host from
+/// `onevcs-testing` — verified by its counting hook, its change request opened — and
+/// stopped on a red required check. Hands back the host to re-enter it on, seeded with
+/// what the first publication left there, its check turned green and the change
+/// request's head at the commit that was pushed, which is what the host would hold.
+///
+/// The repository side is real: a bare origin, the registered checkout, the hook git
+/// runs at the push. Only the host is supplied, because only a caller embedding the
+/// crate can set a host's merge policy per journey.
+fn verified_and_red_on_a_supplied_host(world: &World) -> HostState {
+    let (_origin, _identity) = library::hosted(world, AUTOMATED);
+    let counter = world.path("hook-runs");
+    world.install_pre_push(
+        &world.path("hosted"),
+        &format!("echo ran >> '{}'", counter.display()),
+    );
+    let session = library::worked(world, MOVED);
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    let host = MemoryHost::seeded(HostState {
+        authenticated_user: "tester".to_owned(),
+        checks: [(ChangeId("1".to_owned()), vec![host_check("failure")])]
+            .into_iter()
+            .collect(),
+        ..HostState::default()
+    });
+    let first = publish_through(&host);
+    assert!(
+        matches!(first, Err(onevcs::Error::ChecksFailed { .. })),
+        "the first publication stops on its red check: {first:?}"
+    );
+    assert_eq!(
+        runs_of_the_hook(world),
+        1,
+        "the first publication ran the hook"
+    );
+    assert_eq!(pushes(world), 1, "and pushed once");
+
+    let mut state = host.state();
+    state.changes[0].head_sha = onevcs::Sha(verified_tip(world));
+    state
+        .checks
+        .insert(ChangeId("1".to_owned()), vec![host_check("success")]);
+    state
+}
+
+fn host_check(conclusion: &str) -> onevcs::Check {
+    onevcs::Check {
+        name: "gate".to_owned(),
+        status: "completed".to_owned(),
+        conclusion: Some(conclusion.to_owned()),
+        required: true,
+        head: None,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    }
+}
+
+/// `onevcs publish-branch` of the branch, through the library, on `hosting`.
+fn publish_through(hosting: &dyn onevcs::Hosting) -> onevcs::Result<PublishOutcome> {
+    onevcs::publish_branch(
+        &Providers { vcs: &Git, hosting },
+        &onevcs::BranchPublishRequest {
+            repo: PathBuf::from("hosted"),
+            branch: MOVED.to_owned(),
+            title: None,
+            body: None,
+            policy: None,
+            term_scope: Default::default(),
+        },
+    )
+}
+
+/// The commit the first publication pushed and verified: the branch's tip on origin.
+fn verified_tip(world: &World) -> String {
+    library::origin_tip(world, &world.path("hosted.git"), MOVED).expect("the branch is on origin")
+}
+
+fn runs_of_the_hook(world: &World) -> usize {
+    std::fs::read_to_string(world.path("hook-runs"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// The publishing pushes the branch's stream records — one per verification git ran.
+fn pushes(world: &World) -> usize {
+    world.events_of(MOVED_STREAM, "push").len()
+}
+
+fn workspaces(world: &World) -> usize {
+    std::fs::read_dir(world.home().join("workspaces/publications"))
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+/// Land somebody else's commit on the base, writing `file`.
+fn base_moves(world: &World, file: &str) -> String {
+    let origin = world.path("hosted.git");
+    let elsewhere = world.clone_of(&origin, "elsewhere");
+    world.commit_file(&elsewhere, file, "other\n", "feat: somebody else's change");
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    library::origin_tip(world, &origin, "main").expect("the base")
+}
+
+/// The `base-merge` decisions the branch's stream records.
+fn base_merge_decisions(world: &World) -> Vec<String> {
+    world
+        .events_of(MOVED_STREAM, "base-merge")
+        .iter()
+        .map(|event| {
+            event["payload"]["decision"]
+                .as_str()
+                .expect("a decision")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn an_unchanged_green_change_whose_base_moved_is_resumed_where_the_host_merges_it_as_it_stands() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    let workspaces_before = workspaces(&world);
+    base_moves(&world, "other.txt");
+    // The host requires no up-to-date branch, and the moved base merges cleanly.
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+
+    let mut resumed = None;
+    let stderr = library::stderr_of(|| resumed = Some(publish_through(&host)));
+    let resumed = resumed.expect("the publication ran");
+    assert!(
+        matches!(resumed, Ok(PublishOutcome::Merged(_))),
+        "{resumed:?}\n{stderr}"
+    );
+    assert!(stderr.contains("resuming the verified"), "{stderr}");
+    assert!(stderr.contains("has moved"), "{stderr}");
+    assert!(!stderr.contains("cannot be resumed"), "{stderr}");
+
+    assert_eq!(
+        verified_tip(&world),
+        verified,
+        "no new head was pushed: the origin holds the verified head"
+    );
+    assert_eq!(pushes(&world), 1, "the stream records no second push");
+    assert_eq!(runs_of_the_hook(&world), 1, "no local verification ran");
+    assert_eq!(
+        workspaces(&world),
+        workspaces_before,
+        "no publication workspace or clone was cut"
+    );
+    assert_eq!(
+        base_merge_decisions(&world).last().map(String::as_str),
+        Some("skipped"),
+        "the resume records the moved base left to the host"
+    );
+
+    let after = host.state();
+    assert!(
+        after
+            .ledger
+            .iter()
+            .any(|call| call.method == "requires_up_to_date"),
+        "the host's merge policy was asked: {:?}",
+        after.ledger
+    );
+    assert_eq!(
+        after.changes[0].head_sha.0, verified,
+        "the change request lands at the head that was verified"
+    );
+    assert!(
+        matches!(
+            after.merges.get(&ChangeId("1".to_owned())),
+            Some(MergeOutcome::Merged(_))
+        ),
+        "{:?}",
+        after.merges
+    );
+}
+
+#[test]
+fn a_moved_base_the_host_requires_brought_in_is_integrated_and_verified_again() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    let workspaces_before = workspaces(&world);
+    let base = base_moves(&world, "other.txt");
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: true,
+        ..state
+    });
+
+    let mut published = None;
+    let stderr = library::stderr_of(|| published = Some(publish_through(&host)));
+    let published = published.expect("the publication ran");
+    assert!(
+        matches!(published, Ok(PublishOutcome::Merged(_))),
+        "{published:?}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot be resumed")
+            && stderr.contains("requires a branch to be up to date"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+
+    let pushed = verified_tip(&world);
+    assert_ne!(pushed, verified, "a new head was pushed");
+    assert_eq!(
+        world
+            .git_raw(
+                &world.path("hosted"),
+                &["merge-base", "--is-ancestor", &base, &pushed]
+            )
+            .status
+            .code(),
+        Some(0),
+        "the new head carries the moved base"
+    );
+    assert_eq!(pushes(&world), 2, "the stream records the second push");
+    assert_eq!(runs_of_the_hook(&world), 2, "verification ran again");
+    assert_eq!(
+        workspaces(&world),
+        workspaces_before + 1,
+        "the whole path cut a workspace"
+    );
+}
+
+#[test]
+fn a_moved_base_that_conflicts_with_the_head_takes_the_whole_path() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    let workspaces_before = workspaces(&world);
+    // The branch wrote `one.txt`; the base now writes it differently.
+    base_moves(&world, "one.txt");
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+
+    let mut published = None;
+    let stderr = library::stderr_of(|| published = Some(publish_through(&host)));
+    let published = published.expect("the publication ran");
+    assert!(
+        matches!(published, Err(onevcs::Error::SyncConflict { .. })),
+        "the whole path merges the base and meets its conflict: {published:?}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot be resumed") && stderr.contains("conflicts with the branch"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(
+        workspaces(&world),
+        workspaces_before + 1,
+        "the whole path cut a workspace"
+    );
+    assert_eq!(
+        base_merge_decisions(&world).last().map(String::as_str),
+        Some("merged"),
+        "the whole path decided to merge the base"
+    );
+    assert_eq!(
+        verified_tip(&world),
+        verified,
+        "nothing conflicted was pushed"
+    );
+    assert_eq!(pushes(&world), 1);
+}
+
+#[test]
+fn a_head_changed_since_its_boundary_is_verified_again_whatever_the_host_allows() {
+    let world = World::new();
+    inhabit(&world);
+    let state = verified_and_red_on_a_supplied_host(&world);
+    let verified = verified_tip(&world);
+    base_moves(&world, "other.txt");
+    let checkout = world.path("hosted");
+    world.git(&checkout, &["checkout", "-q", MOVED]);
+    world.commit_file(&checkout, "two.txt", "two\n", "feat: a second thing");
+    world.git(&checkout, &["checkout", "-q", "main"]);
+    let host = MemoryHost::seeded(HostState {
+        up_to_date_required: false,
+        ..state
+    });
+
+    let mut published = None;
+    let stderr = library::stderr_of(|| published = Some(publish_through(&host)));
+    let published = published.expect("the publication ran");
+    assert!(
+        matches!(published, Ok(PublishOutcome::Merged(_))),
+        "{published:?}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cannot be resumed — the branch has moved"),
+        "{stderr}"
+    );
+    assert_ne!(
+        verified_tip(&world),
+        verified,
+        "the changed head was pushed"
+    );
+    assert_eq!(pushes(&world), 2);
+    assert_eq!(runs_of_the_hook(&world), 2, "verification ran again");
 }
