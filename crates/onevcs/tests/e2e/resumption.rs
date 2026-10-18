@@ -1173,7 +1173,8 @@ fn a_moved_base_whose_objects_cannot_be_fetched_takes_the_whole_path() {
     let state = verified_and_red_on_a_supplied_host(&world);
     let moved = base_moves(&world, "other.txt");
     // The origin serves every request but the one fetching the moved base by its id —
-    // an `upload-pack` that refuses when the `git` that started it names that commit.
+    // an `upload-pack` that refuses when the `git` that started it names that commit,
+    // read through `ps` rather than `/proc` so the journey holds on macOS too.
     let refusing = world.path("refusing-upload-pack");
     std::fs::write(
         &refusing,
@@ -1181,10 +1182,10 @@ fn a_moved_base_whose_objects_cannot_be_fetched_takes_the_whole_path() {
             "#!/bin/sh\n\
              pid=$PPID\n\
              for _ in 1 2 3; do\n\
-             \x20 if tr '\\0' ' ' < /proc/$pid/cmdline | grep -q '{moved}'; then\n\
+             \x20 if ps -ww -o args= -p \"$pid\" | grep -q '{moved}'; then\n\
              \x20   echo 'refusing to serve {moved}' >&2; exit 1\n\
              \x20 fi\n\
-             \x20 pid=$(awk '{{print $4}}' /proc/$pid/stat)\n\
+             \x20 pid=$(ps -o ppid= -p \"$pid\" | tr -d ' ')\n\
              done\n\
              exec git-upload-pack \"$@\"\n"
         ),
