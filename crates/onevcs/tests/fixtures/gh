@@ -359,7 +359,8 @@ case "$command" in
         # refusal; `refuse` says so explicitly, and `forbidden` is the same refusal as
         # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `too-many-requests`,
         # `rate-limit-message` (a 403 that says so and sends no quota),
-        # `rate-limit-garbled` (one whose quota headers are not numbers), `server-error`
+        # `rate-limit-garbled` (one whose quota headers are not numbers), `quota-spent`
+        # and `retry-after` (a 403 saying nothing but that header), `server-error`
         # and `unreachable` are a host that did not answer at all. Asked `--include`, it
         # prints the status line and headers ahead of the body, as `gh` does — on a
         # refusal too.
@@ -412,6 +413,14 @@ $quota" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
           too-many-requests)
             respond '429 Too Many Requests' 'Retry-After: 30' \
               '{"message":"Too Many Requests","status":"429"}' 'Too Many Requests (HTTP 429)' ;;
+          quota-spent)
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 15000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: 1792285566
+X-Ratelimit-Resource: core' '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
+          retry-after)
+            respond '403 Forbidden' "Retry-After: 120
+$quota" '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
           rate-limit-message)
             message='API rate limit exceeded for installation ID 2.'
             respond '403 Forbidden' '' "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;

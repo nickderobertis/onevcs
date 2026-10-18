@@ -932,6 +932,19 @@ fn every_way_a_host_does_not_answer_holds_the_publication_and_an_inspection_reco
              4999 remaining, retry after 60s",
             "You have exceeded a secondary rate limit.",
         ),
+        // A 403 is a rate limit on either header alone, saying nothing else.
+        (
+            "quota-spent",
+            "is refused for its rate limit: HTTP 403, limit 15000 (core), 0 remaining, \
+             resets at 2026-10-18T01:06:06.000Z",
+            "Forbidden (HTTP 403)",
+        ),
+        (
+            "retry-after",
+            "is refused for its rate limit: HTTP 403, limit 5000 (core), 4999 remaining, \
+             retry after 120s",
+            "Forbidden (HTTP 403)",
+        ),
         (
             "too-many-requests",
             "is refused for its rate limit: HTTP 429, retry after 30s",
