@@ -4223,11 +4223,21 @@ fn a_merge_read_refused_for_another_reason_or_refused_again_without_the_field_is
 #[test]
 fn a_closures_answer_nothing_can_be_read_out_of_is_refused_whole_not_read_in_part() {
     // The host answered, but not with a list of issues: a node naming no repository or
-    // number, no field at all, or a field that is not a list. None of it is reported as
-    // what the change closes, and each says what was wrong.
+    // number, or one naming an issue or owner GitHub never has — beside a readable one —
+    // no field at all, or a field that is not a list. None of it is reported as what the
+    // change closes, the readable node included, and each says what was wrong.
     for (record, says) in [
         (
             &["acme-corp/unreadable#12", "?"][..],
+            "names no repository and issue number",
+        ),
+        // A node GitHub never answers: issue 0, and an owner no GitHub account can have.
+        (
+            &["acme-corp/unreadable#12", "acme-corp/unreadable#0"][..],
+            "names no repository and issue number",
+        ),
+        (
+            &["acme-corp/unreadable#12", "not_an_owner/unreadable#3"][..],
             "names no repository and issue number",
         ),
         (
