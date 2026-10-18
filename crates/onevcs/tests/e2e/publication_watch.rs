@@ -1119,10 +1119,12 @@ fn a_stop_whose_hook_processes_cannot_be_confirmed_gone_says_so_rather_than_clai
 
 #[test]
 fn a_stop_whose_hook_group_keeps_an_unreaped_member_waits_out_the_bound_and_says_so() {
-    // A member of the push's group that is never reaped: this process starts it, moves
-    // it into the group once the hook is running (a parent may, within one session),
-    // and collects it only after the publication answers. The group's kill leaves it a
-    // zombie still in the group, so the group never empties. Linux says the group still
+    use std::os::unix::process::CommandExt;
+
+    // A member of the push's group that is never reaped: this process starts it in the
+    // group once the hook is running (a group of the same session, which a process may
+    // join), and collects it only after the publication answers. The group's kill
+    // leaves it a zombie still in the group, so the group never empties. Linux says the group still
     // has a member; macOS refuses to say, with `EPERM`, as it does for a killed hook's
     // processes init has not reaped yet. Either way the wait asks again rather than
     // taking the answer as final, and only at its bound reports that it could not
@@ -1150,18 +1152,22 @@ fn a_stop_whose_hook_group_keeps_an_unreaped_member_waits_out_the_bound_and_says
                 .expect("a pid");
             // SAFETY: reads the group of the hook this journey's publication runs.
             let group = unsafe { libc::getpgid(hook_pid) };
-            assert!(group > 0, "the hook's group reads");
-            let child = std::process::Command::new("sleep")
-                .arg("600")
-                .spawn()
-                .expect("sleep spawns");
-            // SAFETY: moves this process's own child into a group of the same session.
-            assert_eq!(
-                unsafe { libc::setpgid(child.id() as libc::pid_t, group) },
-                0,
-                "the member joins the hook's group: {}",
-                std::io::Error::last_os_error()
-            );
+            // Joined before it executes anything: a parent may move its child into a
+            // group of the same session only until the child has called `exec`.
+            let joined = if group > 0 {
+                std::process::Command::new("sleep")
+                    .arg("600")
+                    .process_group(group)
+                    .spawn()
+            } else {
+                Err(std::io::Error::last_os_error())
+            };
+            let child = joined.unwrap_or_else(|refused| {
+                // Released first, so a failure here fails the journey rather than
+                // leaving the publication held on the hook for ever.
+                hook.release();
+                panic!("the member joins the hook's group: {refused}")
+            });
             *member = Some(child);
         }
         true
