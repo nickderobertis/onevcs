@@ -23,7 +23,7 @@ if GITHUB_EVENT_NAME=release GITHUB_REF_NAME=invalid python3 scripts/release-arc
   echo 'release journey: invalid release tag was admitted; ACTION: repair tag validation before publishing' >&2
   exit 1
 fi
-rg -q 'is not a version tag' "$scratch/tag-error.log" || {
+grep -qF 'is not a version tag' "$scratch/tag-error.log" || {
   cat "$scratch/tag-error.log" >&2
   echo 'ACTION: fix the unexpected archive failure and rerun this journey' >&2
   exit 1
@@ -50,7 +50,7 @@ if python3 scripts/release-payload-check.py "$target" "$bin" "$out" "$version" >
 fi
 cp "$scratch/original.whl" "$wheel"
 # Require the intended boundary failure rather than accepting an unrelated error.
-rg -q 'wheel binary differs' "$scratch/failure.log" || { cat "$scratch/failure.log" >&2; echo 'ACTION: fix the unexpected validation failure and rerun this journey' >&2; exit 1; }
+grep -qF 'wheel binary differs' "$scratch/failure.log" || { cat "$scratch/failure.log" >&2; echo 'ACTION: fix the unexpected validation failure and rerun this journey' >&2; exit 1; }
 python3 scripts/release-payload-check.py "$target" "$bin" "$out" "$version"
 bash scripts/release-local-install.sh "$target"
 echo "release packaging: $target built, shared payloads verified, corruption rejected, local installs ran"
