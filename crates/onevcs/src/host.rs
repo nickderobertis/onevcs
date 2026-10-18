@@ -2240,8 +2240,21 @@ impl RemoteHost for GitHub {
     /// repository's visibility in. `visibility` is `public`, `private` or `internal`,
     /// and an internal repository is private to everybody outside its organisation;
     /// an answer carrying neither field is refused rather than read as either.
+    ///
+    /// Asked with `--include`, so a request the host did not answer — rate limited,
+    /// failing, or never reached — is told from one it refused, and is
+    /// `gh::Unanswered` carrying the limit and reset the response's headers name.
     fn visibility(&self) -> Result<Visibility> {
-        let answer = gh::json(&gh::invoke(&["api", &format!("repos/{}", self.repo)])?)?;
+        let path = format!("repos/{}", self.repo);
+        let answer = gh::attempt(&["api", &path, "--include"])?;
+        if answer.code != Some(0) {
+            let api = "GitHub's REST API (GET /repos/{owner}/{repo})";
+            return Err(match gh::Unanswered::read(api, &answer) {
+                Some(unanswered) => unanswered.into_error(),
+                None => invalid(format!("gh api {path} failed: {}", answer.detail())),
+            });
+        }
+        let answer = gh::json(&gh::Response::read(&answer.stdout).body)?;
         match answer.get("visibility").and_then(serde_json::Value::as_str) {
             Some("public") => return Ok(Visibility::Public),
             Some("private" | "internal") => return Ok(Visibility::Private),

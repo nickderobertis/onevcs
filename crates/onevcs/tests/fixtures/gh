@@ -333,6 +333,12 @@ case "$command" in
     # is left with. `checks-refused` is the credential that may not read those
     # either, and it declines here the way the API declines.
     if [ "$malformed" = "checks-refused" ]; then
+      # Asked `--include`, `gh` prints the refusal's status line and body too.
+      for argument in "$@"; do
+        if [ "$argument" = "--include" ]; then
+          printf 'HTTP/2.0 403 Forbidden\n\n{"message":"Resource not accessible by personal access token","status":"403"}\n'
+        fi
+      done
       printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
       exit 1
     fi
@@ -356,22 +362,97 @@ case "$command" in
       repos/*/*)
         # A repository's own record, read for its visibility. A world that has said
         # nothing about one is a host this credential cannot read it from, which is a
-        # refusal; `refuse` says so explicitly.
+        # refusal; `refuse` says so explicitly, and `forbidden` is the same refusal as
+        # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `too-many-requests`,
+        # `rate-limit-message` (a 403 that says so and sends no quota),
+        # `rate-limit-garbled` (one whose quota headers are not numbers), `quota-spent`
+        # and `retry-after` (a 403 saying nothing but that header), `quota-odd` (a
+        # spent quota whose resource and reset are not ones to print), `server-error`
+        # and `unreachable` are a host that did not answer at all. Asked `--include`, it
+        # prints the status line and headers ahead of the body, as `gh` does — on a
+        # refusal too.
         slug="${path#repos/}"
-        answer="$STATE/visibility/$slug"
-        if [ -f "$answer" ]; then
-          visibility="$(cat "$answer")"
-          if [ "$visibility" = "refuse" ]; then
-            printf 'gh: Not Found (HTTP 404)\n' >&2
+        include=false
+        for argument in "$@"; do
+          [ "$argument" = "--include" ] && include=true
+        done
+        # One response: status line, extra headers (one per line, may be empty), body,
+        # and what `gh` itself says on stderr when the status is not a success.
+        respond() {
+          if [ "$include" = true ]; then
+            printf 'HTTP/2.0 %s\nContent-Type: application/json; charset=utf-8\n' "$1"
+            [ -n "$2" ] && printf '%s\n' "$2"
+            printf '\n'
+          fi
+          printf '%s\n' "$3"
+          if [ -n "${4:-}" ]; then
+            printf 'gh: %s\n' "$4" >&2
             exit 1
           fi
-          private=false
-          [ "$visibility" = "public" ] || private=true
-          printf '{"full_name":"%s","private":%s,"visibility":"%s"}\n' "$slug" "$private" "$visibility"
           exit 0
-        fi
-        printf 'gh: Not Found (HTTP 404)\n' >&2
-        exit 1 ;;
+        }
+        quota='X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4999
+X-Ratelimit-Resource: core'
+        not_found() {
+          respond '404 Not Found' "$quota" '{"message":"Not Found","status":"404"}' 'Not Found (HTTP 404)'
+        }
+        answer="$STATE/visibility/$slug"
+        [ -f "$answer" ] || not_found
+        visibility="$(cat "$answer")"
+        case "$visibility" in
+          refuse) not_found ;;
+          forbidden)
+            respond '403 Forbidden' "$quota" \
+              '{"message":"Resource not accessible by personal access token","status":"403"}' \
+              'Resource not accessible by personal access token (HTTP 403)' ;;
+          rate-limited:*)
+            message='API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID 0000:0000.'
+            respond '403 Forbidden' "X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: ${visibility#rate-limited:}
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 5000" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          secondary-limited)
+            message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+            respond '403 Forbidden' "Retry-After: 60
+$quota" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          too-many-requests)
+            respond '429 Too Many Requests' 'Retry-After: 30' \
+              '{"message":"Too Many Requests","status":"429"}' 'Too Many Requests (HTTP 429)' ;;
+          quota-spent)
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 15000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: 1792285566
+X-Ratelimit-Resource: core' '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
+          quota-odd)
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Reset: 99999999999999999
+X-Ratelimit-Resource: Core Quota' '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
+          retry-after)
+            respond '403 Forbidden' "Retry-After: 120
+$quota" '{"message":"Forbidden","status":"403"}' 'Forbidden (HTTP 403)' ;;
+          rate-limit-message)
+            message='API rate limit exceeded for installation ID 2.'
+            respond '403 Forbidden' '' "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          rate-limit-garbled)
+            message='API rate limit exceeded for user ID 1.'
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 5000 per hour
+X-Ratelimit-Remaining: none
+X-Ratelimit-Reset: soon
+X-Ratelimit-Resource: Core Quota
+Retry-After: Wed, 21 Oct 2026 07:28:00 GMT' "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          server-error)
+            # `gh` names the URL it asked when the host gave no message of its own.
+            respond '502 Bad Gateway' '' '' "HTTP 502: Bad Gateway (https://api.github.com/repos/$slug)" ;;
+          unreachable)
+            printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2
+            exit 1 ;;
+        esac
+        private=false
+        [ "$visibility" = "public" ] || private=true
+        respond '200 OK' "$quota" "{\"full_name\":\"$slug\",\"private\":$private,\"visibility\":\"$visibility\"}" ;;
     esac
     case "$path" in
       */actions/runs)

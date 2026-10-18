@@ -5627,7 +5627,7 @@ fn preserving_a_branch_answers_what_it_did_and_the_enumeration_beside_it_names_i
     let asked: Vec<String> = world
         .host_calls()
         .into_iter()
-        .filter(|call| call != "api repos/acme-corp/hosted")
+        .filter(|call| call != "api repos/acme-corp/hosted --include")
         .collect();
     assert!(
         asked.is_empty(),

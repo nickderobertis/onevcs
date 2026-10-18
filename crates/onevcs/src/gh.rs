@@ -245,3 +245,197 @@ pub fn slug(identity: &str) -> Option<String> {
     }
     Some(format!("{owner}/{name}"))
 }
+
+/// How the reason an [`Unanswered`] request is refused with begins.
+const UNANSWERED: &str = "the host did not answer: ";
+
+/// A request the host did not answer — rate limited, failing on its own side, or never
+/// reached — as opposed to one it answered with a refusal such as `404`.
+///
+/// The difference is what a caller may conclude. A refusal is the host's answer about
+/// this credential; a request it did not answer says nothing about the repository, and
+/// is retried rather than read as anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unanswered {
+    /// What did not answer and why, with the limit and its reset where the host sent
+    /// them, built from the response's status and headers alone — so it names no
+    /// repository and may be printed.
+    pub said: String,
+    /// What `gh` wrote, which may name the repository it asked about.
+    pub detail: String,
+}
+
+// llmlint: ignore-block[invalid_states_unrepresentable] the classification crosses the
+// `RemoteHost::visibility -> Result<Visibility>` seam, whose signature and whose `Error`
+// variants docs/contract.md fixes, so a typed carrier would be a public item the contract
+// does not name. The one reader is `boundary::visibility`, which asks only of a
+// `visibility()` error, and the parse is strict; a reason that merely began with this
+// sentence would hold the write as unavailable, which is the direction that never lets a
+// write through unchecked.
+impl Unanswered {
+    /// The error a [`RemoteHost`](crate::host::RemoteHost) method answers with, which
+    /// [`Unanswered::of`] reads back.
+    pub fn into_error(self) -> Error {
+        Error::Invalid {
+            reason: format!(
+                "{UNANSWERED}{}\n{}",
+                self.said.replace('\n', " "),
+                self.detail
+            ),
+        }
+    }
+
+    /// The request `error` reports the host did not answer, when it is one: an
+    /// [`Error::Invalid`] spelled exactly as [`Unanswered::into_error`] spells one.
+    pub fn of(error: &Error) -> Option<Unanswered> {
+        let Error::Invalid { reason } = error else {
+            return None;
+        };
+        let (said, detail) = reason.strip_prefix(UNANSWERED)?.split_once('\n')?;
+        if said.is_empty() {
+            return None;
+        }
+        Some(Unanswered {
+            said: said.to_owned(),
+            detail: detail.to_owned(),
+        })
+    }
+
+    /// Whether the `gh api --include` call that wrote `answer` is one the host did
+    /// not answer, and how to say so: `api` names the endpoint without the repository.
+    ///
+    /// Rate limited is any `429`, and a `403` the host marks as one — no requests
+    /// remaining, a `Retry-After`, or its message saying so; failing is any `5xx`;
+    /// never reached is a call `gh` printed no status line for. Every other status is
+    /// an answer.
+    pub fn read(api: &str, answer: &Answer) -> Option<Unanswered> {
+        if answer.code == Some(0) {
+            return None;
+        }
+        let response = Response::read(&answer.stdout);
+        let detail = answer.detail();
+        let said = match response.status {
+            None => format!("{api} gave no HTTP response"),
+            Some(status) if status >= 500 => {
+                format!("{api} failed on the host's side: HTTP {status}")
+            }
+            Some(status @ (403 | 429)) => {
+                let message = format!("{detail} {}", response.body).to_lowercase();
+                let remaining = response.count("x-ratelimit-remaining");
+                let retry = response.count("retry-after");
+                if status == 403
+                    && remaining != Some(0)
+                    && retry.is_none()
+                    && !message.contains("rate limit")
+                {
+                    return None;
+                }
+                let which = if message.contains("secondary rate limit") {
+                    "a secondary rate limit"
+                } else {
+                    "its rate limit"
+                };
+                let mut said = format!("{api} is refused for {which}: HTTP {status}");
+                if let Some(limit) = response.count("x-ratelimit-limit") {
+                    said.push_str(&format!(", limit {limit}"));
+                    if let Some(resource) = response.word("x-ratelimit-resource") {
+                        said.push_str(&format!(" ({resource})"));
+                    }
+                }
+                if let Some(remaining) = remaining {
+                    said.push_str(&format!(", {remaining} remaining"));
+                }
+                if let Some(reset) = response.moment("x-ratelimit-reset") {
+                    said.push_str(&format!(", resets at {}", crate::ids::stamp(reset)));
+                }
+                if let Some(retry) = retry {
+                    said.push_str(&format!(", retry after {retry}s"));
+                }
+                said
+            }
+            Some(_) => return None,
+        };
+        Some(Unanswered { said, detail })
+    }
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// What one `gh api --include` wrote to standard output: the response's status line
+/// and headers, then its body.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Response {
+    /// The status, where a status line came first.
+    pub status: Option<u16>,
+    /// Every header, as sent.
+    headers: Vec<(String, String)>,
+    /// The body: everything after the headers, or the whole output with no status line.
+    pub body: String,
+}
+
+impl Response {
+    /// Read `stdout`, which carries no status line or headers where `gh` sent no
+    /// request — and is then all body.
+    pub fn read(stdout: &str) -> Response {
+        let Some(rest) = stdout.strip_prefix("HTTP/") else {
+            return Response {
+                body: stdout.to_owned(),
+                ..Response::default()
+            };
+        };
+        let mut lines = rest.split_inclusive('\n');
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok());
+        let mut headers = Vec::new();
+        let mut consumed = 0;
+        for line in lines.by_ref() {
+            consumed += line.len();
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                headers.push((name.trim().to_owned(), value.trim().to_owned()));
+            }
+        }
+        let start = rest.find('\n').map_or(rest.len(), |end| end + 1) + consumed;
+        Response {
+            status,
+            headers,
+            body: rest.get(start..).unwrap_or_default().to_owned(),
+        }
+    }
+
+    /// The value of header `name`, compared without case.
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Header `name` as a count — a limit, a remainder, seconds, or an epoch — or
+    /// nothing where it is absent or not one.
+    fn count(&self, name: &str) -> Option<u64> {
+        self.header(name)?.parse().ok()
+    }
+
+    /// Header `name` as a moment, sent as seconds since the Unix epoch, or nothing
+    /// where it is absent or no moment this build can name.
+    fn moment(&self, name: &str) -> Option<time::OffsetDateTime> {
+        let epoch: i64 = self.header(name)?.parse().ok()?;
+        time::OffsetDateTime::from_unix_timestamp(epoch).ok()
+    }
+
+    /// Header `name` as one short word of lower-case letters, digits and `_` — the
+    /// shape GitHub names a rate limit's resource in — or nothing where it is not one.
+    fn word(&self, name: &str) -> Option<&str> {
+        self.header(name).filter(|value| {
+            (1..=40).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+    }
+}

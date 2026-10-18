@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "inspect": {
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -267,6 +267,11 @@
               "description": "What is being published could not be read out of the repository.",
               "type": "string",
               "const": "history"
+            },
+            {
+              "description": "The host did not answer whether the destination is public — it was rate\nlimited, failing, or out of reach — so nothing it last said was replaced and\nthe write waits for it to answer.",
+              "type": "string",
+              "const": "host-visibility"
             }
           ]
         }

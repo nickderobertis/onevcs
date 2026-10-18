@@ -4985,14 +4985,22 @@ host is not asked and the identity records `observation: override`. Otherwise Gi
 asked (`gh api repos/{owner}/{name}`: `public`, and `private` or `internal` as private)
 when a checkout is registered, by `onevcs boundary inspect`, and **at every write that
 could reach a public destination**; its answer is recorded as `observation: host`, and a
-probe that fails is recorded as `unknown` — never as the last answer — so a failure is
-private wherever terms are derived. A local-only identity is never probed. **A write is
-let through unchecked only where its destination is verified not public**: a rule
-declaring it private, a host answering private, or a local-only identity no rule calls
-public. A hosted destination whose visibility the host could not answer for is screened
-as a public one would be, so an unverified destination never receives an unchecked
-write. That screen derives terms exactly as `boundary check` does over the write's
-scope: the destination itself, where the scope selects it and it is not public,
+probe the host refuses (a `404`, a `401`, a `403` that is not a rate limit) is recorded
+as `unknown` — never as the last answer — so a refusal is private wherever terms are
+derived. A probe the host **did not answer** — a rate limit (a `403` with no
+requests remaining, a `Retry-After`, or a message saying so; any `429`), a `5xx`, or no
+HTTP response at all — says nothing about the repository: it records nothing, so a
+visibility recorded before it stands, and the write that asked is held as an
+unavailable check with the reason `host-visibility` before any term is derived. Its
+reason names the API that did not answer and why, with the limit and reset the
+response's headers supplied as numbers, and never the repository; it is retried by publishing again
+once the host answers, and needs no flag or declaration. A local-only identity is never
+probed. **A write is let through unchecked only where its destination is verified not
+public**: a rule declaring it private, a host answering private, or a local-only
+identity no rule calls public. A hosted destination whose visibility the host refused to
+say is screened as a public one would be, so an unverified destination never receives an
+unchecked write. That screen derives terms exactly as `boundary check` does over the
+write's scope: the destination itself, where the scope selects it and it is not public,
 contributes its terms like any other private repository.
 
 ```yaml
@@ -5115,7 +5123,12 @@ this check can see.
 check** is `Error::Invalid` (exit 2); neither adds a failure kind. Both say only *where*
 the check stopped — `public output carries a term of a private repository in <surface>`,
 or `the public boundary check is unavailable: <reason>` — and never the term, the
-identity or the path. What the check found is written, as JSON, to a file under
+identity or the path. For `host-visibility` the reason goes on to say what did not
+answer and why — `the host did not answer whether the destination is public — GitHub's
+REST API (GET /repos/{owner}/{repo}) is refused for its rate limit: HTTP 403, limit 5000
+(core), 0 remaining, resets at <RFC3339>; retry once the host answers` — and its
+`Evidence::Unavailable` carries the destination as `identity` and, as `detail`, that same
+account with the limit and reset followed by what `gh` wrote. What the check found is written, as JSON, to a file under
 `$ONEVCS_HOME/boundary/evidence/` in a mode-0700 directory with mode 0600, which the
 refusal names; that is the caller-owned private sink on the command line, and the library
 hands the same detail to `check_public_output_with_evidence`'s caller.
@@ -5164,8 +5177,9 @@ refreshed, recorded, and nothing else: no term, no echo of the identity, no prov
 from `--destination`, and must agree where both are given), prints its verdict, says the
 neutral reason on stderr, and exits 0 to pass, 1 to refuse and 2 when unavailable.
 **`boundary schema --json`** prints the versioned JSON schemas of both, generated from the
-Rust definitions, with `schema_version` 1; `tests/golden/boundary-schema-v1.json` is the
-checked-in copy.
+Rust definitions, with `schema_version` 2; `tests/golden/boundary-schema-v2.json` is the
+checked-in copy. Version 2 adds the `host-visibility` reason to the unavailable verdict's
+`Unavailability`, and nothing else; a reader pinned to version 1 must re-pin to read it.
 
 ```
 onevcs boundary inspect --input - [--json]
@@ -5205,7 +5219,7 @@ pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: 
 pub enum TermScope { Registry, Identities(Vec<String>) }    // Default: Registry; wire: absent | [identity]
 pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }
 pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }
-pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History }
+pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility }   // serde: kebab-case
 pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }   // tag: verdict
 pub enum Evidence { Term { surface: Surface, at: String, rule: TermRule, identity: String }, Unavailable { reason: Unavailability, identity: Option<String>, detail: String } }
 pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }
@@ -5221,7 +5235,7 @@ pub struct InspectRequest { pub repository: String }
 pub struct InspectAnswer { pub visibility: Visibility }
 pub const PRIVATE_TERMS_FILE: &str = "private-terms.toml";
 pub const PRIVATE_TERMS_VERSION: u32 = 1;
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 1;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;
 pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;
 pub fn boundary_schema() -> serde_json::Value;
 pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;
