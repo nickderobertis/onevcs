@@ -2000,7 +2000,19 @@ fn continuation(
 /// carrying the other is a divergence, and taking either would open a session that
 /// silently drops the commits of the one it passed over, which is the thing this
 /// whole path exists to stop.
-fn opened_at(clone: &Path, branch: &Ref, continued: &Continued) -> Result<Carried> {
+///
+/// Except where the checkout's copy holds nothing beyond origin's but clean merges of
+/// base commits ([`crate::branch::only_clean_base_merges`]): that is a continuation
+/// that merged the base and stopped while the work went on, and the base it merged is
+/// merged into origin's copy anyway. The session opens at origin's copy, and the
+/// checkout's tip is kept in the publication checkout first and left where it was.
+fn opened_at(
+    clone: &Path,
+    branch: &Ref,
+    base: &Ref,
+    publication: &Path,
+    continued: &Continued,
+) -> Result<Carried> {
     match continued {
         Continued::Held(only) | Continued::Pushed(only) => {
             only.bring_into(clone, branch)?;
@@ -2014,6 +2026,29 @@ fn opened_at(clone: &Path, branch: &Ref, continued: &Continued) -> Result<Carrie
             }
             if git::is_ancestor(clone, &held.tip, &pushed.tip)? {
                 return Ok(pushed.clone());
+            }
+            let integrated = integrated_base(clone, base);
+            if let Some(checkout) = &held.checkout {
+                if crate::branch::only_clean_base_merges(
+                    clone,
+                    &held.tip,
+                    &pushed.tip,
+                    &[&integrated],
+                )? {
+                    let kept =
+                        crate::branch::keep_passed_over(publication, checkout, branch, &held.tip)?;
+                    eprintln!(
+                        "onevcs: the copy of branch {branch:?} in {at} at {here} holds nothing \
+                         beyond origin's at {there} but clean merges of base commits, so the \
+                         session opens at origin's copy; the passed-over tip is kept at {kept} \
+                         in {publication}",
+                        at = held.at(),
+                        here = held.tip,
+                        there = pushed.tip,
+                        publication = publication.display(),
+                    );
+                    return Ok(pushed.clone());
+                }
             }
             Err(diverged(branch, held, pushed))
         }
@@ -2156,7 +2191,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         });
     };
 
-    let opened = opened_at(clone, branch, continued)?;
+    let opened = opened_at(clone, branch, base, publication, continued)?;
     git::update_ref(clone, &format!("refs/heads/{branch}"), &opened.tip)?;
     git::delete_ref(clone, CONTINUED_REF);
     git::detach_head(clone)?;

@@ -4000,6 +4000,45 @@ session on a slot. A registered checkout is the operator's own and is never touc
 continued branch, so every session it opens opens clean and its `session-opened` never
 carries the key. A consumer proving the conflicted open drives the real `onevcs`.
 
+### Copies of a continued branch that differ only by clean base merges are not a divergence
+
+A branch name held in more than one place is several copies of the branch, and they are
+compared rather than ordered: a continuation (`session open` naming a branch something
+already carries) and every verb that lands or reads a branch by name (`publish-branch`,
+`recover`, `import` without `--from`, `preserve`) take the copy that carries every other,
+comparing the copies in this identity's checkouts and run clones, and a continuation then
+compares that copy with origin's. Where no copy carries the rest the branch has
+**diverged**, and the call is refused with exit `2`, naming every copy and its commit and
+changing nothing.
+
+**One shape is not a divergence.** A copy whose only commits beyond another copy — once the
+base's own commits are set aside — are clean merges of base commits is passed over for that
+copy. That is what a continuation leaves behind when it merges a moved base and stops while
+the work goes on somewhere else, and the base it merged is merged into the copy that is
+continued anyway. Every such commit is verified, and the copy is recognised only where all
+of them pass:
+
+- it is a merge of exactly two parents, one a commit the base reaches (by this host's
+  freshest view of the base, or by the passed-over copy's own checkout's), the other the
+  chosen copy's history or another such merge;
+- its tree is exactly the tree merging those two parents cleanly writes.
+
+A copy holding any other commit — independent work — or a merge whose tree differs from
+the clean merge (a resolution or an edit folded into it) still diverges and is refused as
+before. A copy origin already carries is never passed over. For a continuation the copy
+passed over is the checkout's and the copy continued is origin's: the session's branch is
+written at origin's commit, and the base is then merged into it as for any continuation.
+
+**The passed-over tip is kept.** Before a copy is passed over its commit is written, with
+its objects, to `refs/onevcs/passed-over/<branch>/<commit>` in the publication checkout the
+call resolved the identity through — the checkout `--repo` names, for a verb that takes
+one, and a repository nothing reclaims, unlike a run clone — and the copy itself is left
+where it was, never moved or deleted. Copies are compared in search order (the publication
+checkout, the other registered checkouts, then the run clones), and each is kept as it is
+reached. A copy that cannot be kept is not passed over: the
+call is refused naming the fetch that keeps it. The call says on stderr, in one line per
+copy, which copy it passed over, at which commit, and the ref that keeps it.
+
 ### A moved base is merged only where it is needed, and a check wait that elapses leaves the merge armed
 
 **Recorded as the manager's ruling for plan node `onevcs-base-merge-and-wait`** (the

@@ -2727,6 +2727,80 @@ pub(crate) fn already_integrates<'a>(
     }
 }
 
+/// The tree merging `second` into `first` cleanly writes, or `None` where the two
+/// conflict.
+///
+/// Read-only, as [`already_integrates`] is and for its reason: `merge-tree
+/// --write-tree` writes the merge it computes into the object store, so that store is
+/// a scratch one and the repository's own objects — and whatever it borrows — are read
+/// through the alternates.
+// llmlint: ignore[invalid_states_unrepresentable] what comes back is git's own printed
+// tree id, spelled as every other object id this module reads; see `merge_base`.
+pub(crate) fn clean_merge_tree<'a>(
+    cwd: impl Into<Asked<'a>>,
+    first: &str,
+    second: &str,
+) -> Result<Option<String>> {
+    let cwd = cwd.into();
+    let scratch = tempfile::tempdir().map_err(|failure| Error::Invalid {
+        reason: format!("could not create a scratch object store to merge in: {failure}"),
+    })?;
+    let mut env = vec![(
+        "GIT_OBJECT_DIRECTORY".to_owned(),
+        scratch.path().to_string_lossy().into_owned(),
+    )];
+    env.extend(cwd.reading_also(&[objects_dir(cwd.path())?]));
+    let merged = run_with_env(
+        &["merge-tree", "--write-tree", "--no-messages", first, second],
+        Some(cwd.path()),
+        &env,
+    )?;
+    match merged.status {
+        0 => Ok(merged.stdout.lines().next().map(str::to_owned)),
+        // A conflict is an answer — there is no clean merge — not a failed invocation.
+        1 => Ok(None),
+        _ => Err(Error::Invalid {
+            reason: format!(
+                "git merge-tree --write-tree {first} {second} failed: {}",
+                merged.diagnostic()
+            ),
+        }),
+    }
+}
+
+/// The tree one commit records.
+// llmlint: ignore[invalid_states_unrepresentable] git's own printed tree id; see
+// `merge_base`.
+pub(crate) fn tree_of<'a>(cwd: impl Into<Asked<'a>>, commit: &str) -> Result<String> {
+    Ok(checked_in(
+        cwd.into(),
+        &["rev-parse", "--verify", &format!("{commit}^{{tree}}")],
+    )?
+    .trimmed())
+}
+
+/// Every commit `tip` reaches that none of `not` does, each with its parents, as
+/// git lists them.
+// llmlint: ignore[invalid_states_unrepresentable] git's own printed commit ids; see
+// `merge_base`.
+pub(crate) fn commits_with_parents<'a>(
+    cwd: impl Into<Asked<'a>>,
+    tip: &str,
+    not: &[&str],
+) -> Result<Vec<(String, Vec<String>)>> {
+    let mut args = vec!["rev-list", "--parents", tip, "--not"];
+    args.extend_from_slice(not);
+    args.push("--");
+    Ok(checked_in(cwd.into(), &args)?
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            let mut ids = line.split_whitespace().map(str::to_owned);
+            ids.next().map(|commit| (commit, ids.collect()))
+        })
+        .collect())
+}
+
 /// What one attempt to bring a ref into a branch did.
 ///
 /// Named rather than a `bool`, because "it conflicted" is a domain answer every

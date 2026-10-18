@@ -740,7 +740,8 @@ pub(crate) fn refuse_unfinished_merges(
 /// work rather than the name.
 ///
 /// Searches [`crate::workspace::checkouts_of`] and answers with the copy carrying every
-/// other, refusing where none does. Which copies are compared, and why it is a
+/// other — or every other but copies holding only clean base merges beyond it, which are
+/// kept and passed over ([`only_clean_base_merges`]) — refusing where none does. Which copies are compared, and why it is a
 /// comparison rather than a tier order, is this crate's `AGENTS.md`.
 ///
 /// `next` is the clause the divergence refusal ends in — what to do with the branch once
@@ -801,6 +802,38 @@ pub(crate) fn locate(
         announce(branch, copy, &held);
         return Ok(copy.checkout.clone());
     }
+    // No copy carries the rest outright. One still may but for copies that hold nothing
+    // beyond it except clean merges of base commits — what a continuation that merged
+    // the base and then stopped leaves behind, while the work went on in another copy.
+    // Those are passed over, never deleted, and kept by commit in the publication
+    // checkout first, so passing one over is never the thing that lost it.
+    for copy in &held {
+        let Some(spent) = carries_the_rest_but_base_merges(
+            copy,
+            &held,
+            &resolution.publication,
+            branch,
+            base,
+            current.as_ref(),
+        )?
+        else {
+            continue;
+        };
+        for other in spent {
+            let kept =
+                keep_passed_over(&resolution.publication, &other.checkout, branch, &other.tip)?;
+            eprintln!(
+                "onevcs: the copy of branch {branch:?} in {other} holds nothing beyond the copy \
+                 in {chosen} but clean merges of base commits, so it is passed over rather than \
+                 refused; its tip is kept at {kept} in {publication}",
+                other = other.describe(),
+                chosen = copy.describe(),
+                publication = resolution.publication.display(),
+            );
+        }
+        announce(branch, copy, &held);
+        return Ok(copy.checkout.clone());
+    }
     // The fetch the refusal prints has to be between copies at *different* commits:
     // copies at one commit are one copy for this purpose, and fetching between them
     // moves nothing. Such a pair exists wherever this is reached — copies all at one
@@ -844,6 +877,167 @@ fn carries_the_rest(copy: &Held, held: &[Held]) -> Result<bool> {
     }
     Ok(true)
 }
+
+/// The copies `copy` does not carry, where each of them holds nothing beyond it but
+/// clean merges of base commits; `None` where any other copy holds more than that.
+///
+/// A copy the host already has is never one of them: origin's copy is the one a
+/// publication pushes onto, and a copy that does not carry it is not the work whatever
+/// the other holds. Each passed-over copy is judged in its own checkout, reading the
+/// chosen copy's objects through the alternates — two run clones borrow from the
+/// publication checkout and never from each other, so neither alone sees both commits.
+fn carries_the_rest_but_base_merges<'h>(
+    copy: &Held,
+    held: &'h [Held],
+    publication: &Path,
+    branch: &str,
+    base: &str,
+    current: Option<&crate::host::Sha>,
+) -> Result<Option<Vec<&'h Held>>> {
+    let hosted = git::tip(publication, &format!("refs/remotes/origin/{branch}"));
+    let lent = git::objects_dir(&copy.checkout)?;
+    let mut spent = Vec::new();
+    for other in held {
+        if git::known_to_reach(&copy.checkout, &other.tip, &copy.tip)? {
+            continue;
+        }
+        if let Some(hosted) = &hosted {
+            if git::known_to_reach(publication, &other.tip, hosted)? {
+                return Ok(None);
+            }
+        }
+        // The base as the freshest view this host keeps of it, and as the passed-over
+        // copy's own checkout has it: a clone that fetched after the publication
+        // checkout last did merged a base commit only it has seen.
+        let asked = git::Asked::borrowing(&other.checkout, Some(&lent));
+        let compared = crate::vcs::judged_against(asked, base, current);
+        let own = crate::vcs::base_ref(&other.checkout, base);
+        if !only_clean_base_merges(asked, &other.tip, &copy.tip, &[&compared, &own])? {
+            return Ok(None);
+        }
+        spent.push(other);
+    }
+    Ok(Some(spent))
+}
+
+/// Whether everything `extra` holds beyond `onto` and the base is clean merges of base
+/// commits — which is what makes a copy at `extra` safe to pass over for one at `onto`.
+///
+/// `bases` are the views of the base to read it by, any of which a base commit may be
+/// reached from. Each such commit must be a merge of exactly two parents, one of them a
+/// base commit and the other `onto`'s history or another such merge, and must record
+/// exactly the tree merging those two parents cleanly writes. A commit of any other
+/// shape is independent work, and a merge whose tree differs from the clean merge
+/// carries a resolution or an edit of its own: either keeps the copy a divergence. A
+/// copy holding nothing beyond the two at all is no merge of anything, and is not one
+/// either.
+pub(crate) fn only_clean_base_merges<'a>(
+    asked: impl Into<git::Asked<'a>>,
+    extra: &str,
+    onto: &str,
+    bases: &[&str],
+) -> Result<bool> {
+    let asked = asked.into();
+    for revision in [extra, onto] {
+        if !git::has_commit(asked, &crate::host::Sha(revision.to_owned())) {
+            return Ok(false);
+        }
+    }
+    let mut not = vec![onto];
+    not.extend_from_slice(bases);
+    let commits = git::commits_with_parents(asked, extra, &not)?;
+    if commits.is_empty() {
+        return Ok(false);
+    }
+    let local: std::collections::BTreeSet<&str> =
+        commits.iter().map(|(commit, _)| commit.as_str()).collect();
+    let in_base = |merged: &str| -> Result<bool> {
+        for base in bases {
+            if git::is_ancestor(asked, merged, base)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let merges_base = |merged: &str, side: &str| -> Result<bool> {
+        Ok(in_base(merged)? && (local.contains(side) || git::is_ancestor(asked, side, onto)?))
+    };
+    for (commit, parents) in &commits {
+        let [first, second] = parents.as_slice() else {
+            return Ok(false);
+        };
+        if !(merges_base(second, first)? || merges_base(first, second)?) {
+            return Ok(false);
+        }
+        if git::clean_merge_tree(asked, first, second)? != Some(git::tree_of(asked, commit)?) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The ref a passed-over copy's tip is kept under, in the publication checkout.
+///
+/// Named by the branch and the commit both, so a second copy passed over later is kept
+/// beside the first rather than over it.
+pub(crate) fn passed_over_ref(branch: &str, tip: &str) -> String {
+    format!("refs/onevcs/passed-over/{branch}/{tip}")
+}
+
+/// Keep a passed-over copy's tip in the publication checkout, and answer the ref it is
+/// kept under.
+///
+/// The publication checkout because it is the one repository of an identity nothing
+/// reclaims: the checkout the copy is in may be a run clone, and a run clone goes.
+/// Fetched through a scratch ref and only then named by the commit, so a copy that
+/// moved after it was read never leaves the ref naming a commit it does not hold.
+pub(crate) fn keep_passed_over(
+    publication: &Path,
+    from: &Path,
+    branch: &str,
+    tip: &str,
+) -> Result<String> {
+    let kept = passed_over_ref(branch, tip);
+    if git::tip(publication, &kept).as_deref() == Some(tip) {
+        return Ok(kept);
+    }
+    // llmlint: ignore[changed_behavior_has_e2e] uncovered: the copy's branch moving
+    // after `locate` read its tip and before this fetch starts. Nothing git runs between
+    // the two invokes a hook, so no journey can move the branch inside that window. Both
+    // of its outcomes go through the write below — a tip the moved branch still reaches
+    // is named, one it does not is refused — and that refusal is what
+    // `a_copy_that_cannot_be_kept_is_not_passed_over` drives.
+    if from != publication {
+        git::fetch_into_ref(
+            publication,
+            &from.to_string_lossy(),
+            branch,
+            PASSED_OVER_SCRATCH,
+        )?;
+        git::delete_ref(publication, PASSED_OVER_SCRATCH);
+    }
+    git::update_ref(publication, &kept, tip).map_err(|_| Error::Invalid {
+        reason: format!(
+            "the copy of branch {branch:?} in {from} at {tip} would be passed over, and could \
+             not be kept at {kept} in {publication} first, so it is not passed over. Keep it \
+             by hand with `{fetch}`, then try again",
+            from = from.display(),
+            publication = publication.display(),
+            fetch = guidance::command([
+                "git",
+                "-C",
+                &publication.to_string_lossy(),
+                "fetch",
+                &from.to_string_lossy(),
+                &format!("+refs/heads/{branch}:{kept}"),
+            ]),
+        ),
+    })?;
+    Ok(kept)
+}
+
+/// The scratch ref a passed-over copy is fetched into before it is named by its commit.
+const PASSED_OVER_SCRATCH: &str = "refs/onevcs/passing-over";
 
 /// Say which copy of a branch is being published, and which were passed over.
 ///
