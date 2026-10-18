@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.1](https://github.com/nickderobertis/onevcs/compare/v0.54.0...v0.54.1) - 2026-10-18
+
+### Fixed
+
+- *(publish-branch)* keep one holder record per publication so a live holder stays visible ([#467](https://github.com/nickderobertis/onevcs/pull/467))
+
 ## [0.54.0](https://github.com/nickderobertis/onevcs/compare/v0.53.0...v0.54.0) - 2026-10-18
 
 ### Fixed
