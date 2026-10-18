@@ -1380,10 +1380,18 @@ impl Tree {
         let deadline = Instant::now() + REAP_BOUND;
         loop {
             // SAFETY: signal 0 delivers nothing; it only asks whether the group, which
-            // was the stopped command's own, still has a member. `ESRCH` is the
-            // answer that it has none.
+            // was the stopped command's own, still has a member. `ESRCH` is the one
+            // answer that it has none: any other refusal (`EPERM` is a member this
+            // process may not signal) leaves a member that may be running.
             if unsafe { libc::kill(group, 0) } != 0 {
-                return Ok(());
+                let refused = std::io::Error::last_os_error();
+                if refused.raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "asking whether process group {leader} still had a member was refused: \
+                     {refused}"
+                ));
             }
             if Instant::now() >= deadline {
                 return Err(format!(

@@ -1118,6 +1118,48 @@ fn a_stop_whose_hook_processes_cannot_be_confirmed_gone_says_so_rather_than_clai
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn a_landing_whose_stopped_push_left_processes_unconfirmed_is_kept_and_warned_about() {
+    // Origin took the update and its `post-receive` hook holds the push; the push is
+    // then stopped while this process, a subreaper that never reaps, keeps the killed
+    // receiving processes as zombies. The landing is still reported — it happened —
+    // and the publication warns that what the push started may still be running.
+    // SAFETY: a flag on this test's own process, which nextest runs alone.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
+        0,
+        "this process becomes a subreaper"
+    );
+    let world = World::new();
+    let (origin, session) = publishing(&world, LOCAL_DIRECT, "feature/landed-unconfirmed", None);
+    let (received, release) = hold_after_receiving(&world, &origin);
+
+    let mut published = None;
+    let warned = crate::library::stderr_of(|| {
+        published = Some(cancel_in_push(&session, "origin took the push", || {
+            received.exists()
+        }));
+    });
+    let published = published.expect("the publication answered");
+    let PublishOutcome::Merged(landed) = &published.outcome else {
+        panic!("a landing the cancellation came too late for is reported: {published:?}");
+    };
+    assert_eq!(
+        origin_tip(&world, &origin, "main").as_deref(),
+        Some(landed.0.as_str()),
+        "the base moved to the landing the publication reports"
+    );
+    assert!(
+        warned.contains("reached origin") && warned.contains("may still be running"),
+        "the unconfirmed teardown is said beside the landing: {warned}"
+    );
+    // Reap what this journey kept as zombies.
+    // SAFETY: a non-blocking wait on this process's own adopted children.
+    while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+    std::fs::write(&release, "").expect("origin's hook is released");
+}
+
+#[test]
 fn a_publication_cancelled_before_its_push_pushes_nothing() {
     // A caller that has already cancelled is answered before anything reaches the
     // remote: the work is committed in the session and nowhere else, which a
