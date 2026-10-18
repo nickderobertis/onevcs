@@ -366,6 +366,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::ChangeReopened,
         EventKind::BaseMerge,
         EventKind::MergeArmed,
+        EventKind::PublicationResumed,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -405,7 +406,8 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::ChangeReopened
             | EventKind::BaseMerge
             | EventKind::BaseArrived
-            | EventKind::MergeArmed => {}
+            | EventKind::MergeArmed
+            | EventKind::PublicationResumed => {}
         }
     }
     kinds

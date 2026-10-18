@@ -2397,6 +2397,19 @@ fn resume_within(
     // a body — is new, and the commits are screened once more for the same reason.
     let compared = format!("origin/{}", context.target.base());
     hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+    // A first publication's push names the branch and the head on its stream, and that
+    // is what resolves its change request's URL and its landing back to the work. A
+    // resumed one pushes nothing and its stream may hold nothing else, so it names
+    // them here, before anything is recorded against its change request.
+    stream.emit(
+        EventKind::PublicationResumed,
+        object(json!({
+            "branch": context.branch,
+            "head": pushed.0,
+            "base": context.target.base(),
+            "change_url": change.url.to_string(),
+        })),
+    );
     (|| -> Result<PublishOutcome> {
         let slug = change_host(&context.resolution.key)?;
         let host = context.hosting.for_repo(&slug)?;

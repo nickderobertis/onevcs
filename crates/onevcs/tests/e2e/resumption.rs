@@ -142,6 +142,19 @@ fn kinds(hosted: &Hosted) -> Vec<String> {
 
 /// The one boundary record `docs/contract.md` spells, as JSON.
 fn documented_boundary() -> Value {
+    documented("boundary record", |block| block.contains("\"base_commit\""))
+}
+
+/// The one `publication-resumed` payload `docs/contract.md` spells, as JSON.
+fn documented_resumption() -> Value {
+    documented("publication-resumed payload", |block| {
+        block.contains("\"head\"") && !block.contains("\"base_commit\"")
+    })
+}
+
+/// The one JSON block of the resumption amendment that `which` picks out — each names
+/// the change request as `change_url` — parsed.
+fn documented(what: &str, which: impl Fn(&str) -> bool) -> Value {
     let contract = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
     )
@@ -150,10 +163,10 @@ fn documented_boundary() -> Value {
         .split("```json\n")
         .skip(1)
         .filter_map(|rest| rest.split("\n```").next())
-        .filter(|block| block.contains("\"change_url\"") && block.contains("\"base_commit\""))
+        .filter(|block| block.contains("\"change_url\"") && which(block))
         .collect();
-    assert_eq!(blocks.len(), 1, "the contract spells one boundary record");
-    serde_json::from_str(blocks[0]).expect("the documented boundary is JSON")
+    assert_eq!(blocks.len(), 1, "the contract spells one {what}");
+    serde_json::from_str(blocks[0]).unwrap_or_else(|_| panic!("the documented {what} is JSON"))
 }
 
 /// Push something onto the base from outside every verb here, as somebody else's
@@ -273,6 +286,204 @@ fn a_verified_change_whose_red_check_turns_green_is_resumed_and_merged() {
         boundaries(&hosted).is_empty(),
         "a landed change keeps no boundary"
     );
+}
+
+/// The release targets the resumed landing below is asked about: one human step, so
+/// `release status` and `release acknowledge` answer from the landing alone.
+const RELEASES: &str = "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {host: \
+                        github.com, owner: acme-corp, name: hosted}\n    adoption: published\n    \
+                        default_target: image\n    targets:\n      - {name: image, style: \
+                        human-step, action: push the image}\n";
+
+#[test]
+fn a_resumed_landing_resolves_by_its_change_request_and_its_merge_commit() {
+    // The incident's shape: a session's publication verified the branch and stopped on
+    // a red check, so its own stream is the session's, and the `publish-branch` that
+    // resumes it writes its change request and its landing into a stream of its own
+    // that nothing before it wrote to.
+    let hosted = Hosted::new(AUTOMATED);
+    std::fs::write(hosted.world.home().join("releases.yml"), RELEASES)
+        .expect("a release-targets file");
+    counting_hook(&hosted, "the first gate");
+    hosted.world.host_checks(&[required("failure")]);
+    let token = hosted.change(BRANCH, "feat: add the resumed thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("required check failed"));
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(
+        !hosted
+            .world
+            .home()
+            .join("streams")
+            .join(format!("{STREAM}.ndjson"))
+            .exists(),
+        "nothing has written the branch's own stream yet"
+    );
+    let verified = hosted
+        .branch_on_origin(BRANCH)
+        .expect("the verified head is on origin");
+
+    hosted.world.host_checks(&[required("success")]);
+    let resumed = publish(&hosted)
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert!(
+        String::from_utf8_lossy(&resumed.get_output().stderr)
+            .contains("resuming the verified publication"),
+        "the publication was resumed rather than verified again"
+    );
+    assert_eq!(hook_runs(&hosted), 1, "no local verification ran again");
+
+    // The fresh stream names the work before it names the change request: a
+    // `publication-resumed` carrying the branch, the head verification passed at, the
+    // base and the change request, under the identity the stream is labelled with —
+    // and the `change-opened` after it is the one a first publication writes.
+    let events = hosted.world.events(STREAM);
+    let position = |kind: &str| {
+        events
+            .iter()
+            .position(|event| event["kind"] == kind)
+            .unwrap_or_else(|| panic!("the resumed publication recorded {kind}: {events:?}"))
+    };
+    let (resumed_at, opened_at) = (position("publication-resumed"), position("change-opened"));
+    assert!(resumed_at < opened_at, "{events:?}");
+    let (resumption, opened) = (&events[resumed_at], &events[opened_at]);
+    let keys = |value: &Value| {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(
+        keys(&resumption["payload"]),
+        keys(&documented_resumption()),
+        "the payload is the one the contract spells: {resumption}"
+    );
+    assert_eq!(resumption["phase"], "review", "{resumption}");
+    assert_eq!(resumption["payload"]["branch"], BRANCH, "{resumption}");
+    assert_eq!(
+        resumption["payload"]["head"],
+        verified.as_str(),
+        "{resumption}"
+    );
+    assert_eq!(resumption["payload"]["base"], "main", "{resumption}");
+    assert_eq!(
+        resumption["payload"]["change_url"], opened["payload"]["url"],
+        "{resumption}"
+    );
+    assert!(
+        resumption["labels"]["identity"].as_str().is_some()
+            && resumption["labels"]["identity"] == opened["labels"]["identity"],
+        "the stream names its repository: {resumption}"
+    );
+    let mut fields: Vec<&String> = opened["payload"]
+        .as_object()
+        .expect("a payload")
+        .keys()
+        .collect();
+    fields.sort();
+    assert_eq!(
+        fields,
+        ["author", "base", "host", "id", "url"],
+        "change-opened is unchanged: {opened}"
+    );
+    let url = opened["payload"]["url"]
+        .as_str()
+        .expect("a change request URL")
+        .to_owned();
+    assert!(
+        events
+            .iter()
+            .all(|event| event["kind"] != "push" && event["kind"] != "fetch"),
+        "nothing was fetched or pushed: {events:?}"
+    );
+    let merged = hosted.world.git(&hosted.origin, &["rev-parse", "main"]);
+    let merged = merged.trim();
+
+    // Every spelling a consumer settles a landing with reaches the branch's work.
+    for reference in [url.as_str(), merged] {
+        let report = hosted
+            .world
+            .onevcs()
+            .args(["status", reference, "--json"])
+            .assert()
+            .success();
+        let report: Value =
+            serde_json::from_slice(&report.get_output().stdout).expect("a status report");
+        assert_eq!(report["branch"]["name"], BRANCH, "{reference}: {report}");
+        assert_eq!(
+            report["identity"]["key"], opened["labels"]["identity"],
+            "{reference}: {report}"
+        );
+        assert_eq!(
+            report["publication"]["landed"]["state"], "yes",
+            "{reference}: {report}"
+        );
+
+        let release = hosted
+            .world
+            .onevcs()
+            .args(["release", "status", reference, "--json"])
+            .assert()
+            .success();
+        let release: Value =
+            serde_json::from_slice(&release.get_output().stdout).expect("a release answer");
+        assert_eq!(release["target"], "image", "{reference}: {release}");
+    }
+    // A person records the release against the change request, and the merge commit
+    // then reads as released by it: both name the same landing.
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "release",
+            "acknowledge",
+            &url,
+            "--target",
+            "image",
+            "--version",
+            "1.2.3",
+        ])
+        .assert()
+        .success();
+    hosted
+        .world
+        .onevcs()
+        .args([
+            "release",
+            "acknowledge",
+            merged,
+            "--target",
+            "image",
+            "--version",
+            "1.2.3",
+        ])
+        .assert()
+        .success();
+    let released = hosted
+        .world
+        .onevcs()
+        .args(["release", "status", merged, "--json"])
+        .assert()
+        .success();
+    let released: Value =
+        serde_json::from_slice(&released.get_output().stdout).expect("a release answer");
+    assert_eq!(released["state"], "released", "{released}");
+    assert_eq!(released["version"], "1.2.3", "{released}");
 }
 
 #[test]
@@ -939,6 +1150,19 @@ fn an_unchanged_green_change_whose_base_moved_is_resumed_where_the_host_merges_i
         base_merge_decisions(&world).last().map(String::as_str),
         Some("skipped"),
         "the resume records the moved base left to the host"
+    );
+    // A moved base is still a resumption, recorded before the change request it names.
+    let recorded: Vec<Value> = world.events(MOVED_STREAM);
+    let resumed_at = recorded
+        .iter()
+        .rposition(|event| event["kind"] == "publication-resumed")
+        .expect("the resume records its resumption");
+    assert_eq!(recorded[resumed_at]["payload"]["head"], verified.as_str());
+    assert!(
+        recorded[resumed_at..]
+            .iter()
+            .any(|event| event["kind"] == "change-opened"),
+        "{recorded:?}"
     );
 
     let after = host.state();
