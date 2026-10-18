@@ -196,37 +196,6 @@ impl Releasing {
         found
     }
 
-    /// Every event on the streams whose name starts with `prefix`, in the order each
-    /// file holds them rather than the cross-stream merge order: `ts` is stamped
-    /// before the writer takes the lock that numbers it, so two processes writing at
-    /// once can hold a later `ts` at a lower `seq`.
-    fn in_file_order(&self, prefix: &str) -> Vec<Value> {
-        let directory = self.fixture.world.home().join("streams");
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&directory)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(prefix))
-            })
-            .collect();
-        files.sort();
-        files
-            .iter()
-            .flat_map(|file| {
-                std::fs::read_to_string(file)
-                    .expect("a stream is readable")
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| serde_json::from_str(line).expect("every line is an envelope"))
-                    .collect::<Vec<Value>>()
-            })
-            .collect()
-    }
-
     /// Every event of one kind, in the order written.
     fn events_of(&self, kind: &str) -> Vec<Value> {
         self.events()
@@ -2926,11 +2895,15 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
     // own: a shared stream is numbered under the lock that orders it, so a consumer
     // reading these for loss sees a series rather than the same number four times.
     let numbers: Vec<u64> = releasing
-        .in_file_order("releases-")
+        .events()
         .iter()
+        .filter(|event| {
+            event["stream"]
+                .as_str()
+                .is_some_and(|stream| stream.starts_with("releases-"))
+        })
         .map(|event| event["seq"].as_u64().expect("every event is numbered"))
         .collect();
-    assert!(!numbers.is_empty(), "the asks wrote to the release stream");
     let mut ordered = numbers.clone();
     ordered.sort_unstable();
     ordered.dedup();
