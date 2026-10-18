@@ -2243,7 +2243,7 @@ impl RemoteHost for GitHub {
     ///
     /// Asked with `--include`, so a request the host did not answer — rate limited,
     /// failing, or never reached — is told from one it refused, and is
-    /// [`gh::Unanswered`] carrying the limit and reset the response's headers name.
+    /// `gh::Unanswered` carrying the limit and reset the response's headers name.
     fn visibility(&self) -> Result<Visibility> {
         let path = format!("repos/{}", self.repo);
         let answer = gh::attempt(&["api", &path, "--include"])?;
