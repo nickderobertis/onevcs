@@ -69,7 +69,7 @@ pub fn refresh_named(hosting: &dyn Hosting, repo: &str) -> Result<Visibility> {
 /// is.
 pub fn refresh(hosting: &dyn Hosting, key: &str) -> Result<Visibility> {
     Ok(match refreshed(hosting, key)? {
-        Refreshed::Answered(visibility) | Refreshed::Unasked(visibility) => visibility,
+        Refreshed::Answered(visibility) | Refreshed::Unconfirmed(visibility) => visibility,
         Refreshed::Unanswered(_) => Visibility::Unknown,
     })
 }
@@ -105,12 +105,12 @@ pub fn screening(hosting: &dyn Hosting, key: &str) -> Result<Screening> {
         Refreshed::Answered(visibility) if visibility.effective() != Visibility::Public => {
             Screening::Unscreened
         }
-        Refreshed::Unasked(visibility)
+        Refreshed::Unconfirmed(visibility)
             if visibility.effective() != Visibility::Public && !hosted =>
         {
             Screening::Unscreened
         }
-        Refreshed::Answered(_) | Refreshed::Unasked(_) => Screening::Screened,
+        Refreshed::Answered(_) | Refreshed::Unconfirmed(_) => Screening::Screened,
     })
 }
 
@@ -168,9 +168,9 @@ fn screens_writes_as_recorded(key: &str) -> Result<Option<bool>> {
 enum Refreshed {
     /// A rule or the host answered it.
     Answered(Visibility),
-    /// Nothing could answer it — no host to ask, a host this build cannot ask, or one
+    /// Nothing confirmed it — no host to ask, a host this build cannot ask, or one
     /// that refused to say — and this is what is recorded.
-    Unasked(Visibility),
+    Unconfirmed(Visibility),
     /// The host did not answer, and what was recorded is left as it was.
     Unanswered(Unanswered),
 }
@@ -192,7 +192,7 @@ fn refreshed(hosting: &dyn Hosting, key: &str) -> Result<Refreshed> {
             .get(key)
             .map(|identity| identity.visibility)
             .unwrap_or_default();
-        return Ok(Refreshed::Unasked(recorded));
+        return Ok(Refreshed::Unconfirmed(recorded));
     };
     let answered = hosting.for_repo(&slug).and_then(|host| host.visibility());
     if let Some(unanswered) = answered.as_ref().err().and_then(Unanswered::of) {
@@ -210,7 +210,7 @@ fn refreshed(hosting: &dyn Hosting, key: &str) -> Result<Refreshed> {
             if !unchanged {
                 record(key, Visibility::Unknown, Observation::Unknown)?;
             }
-            Ok(Refreshed::Unasked(Visibility::Unknown))
+            Ok(Refreshed::Unconfirmed(Visibility::Unknown))
         }
     }
 }

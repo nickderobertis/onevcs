@@ -357,8 +357,10 @@ case "$command" in
         # A repository's own record, read for its visibility. A world that has said
         # nothing about one is a host this credential cannot read it from, which is a
         # refusal; `refuse` says so explicitly, and `forbidden` is the same refusal as
-        # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `server-error` and
-        # `unreachable` are a host that did not answer at all. Asked `--include`, it
+        # a 403. `rate-limited:<reset epoch>`, `secondary-limited`, `too-many-requests`,
+        # `rate-limit-message` (a 403 that says so and sends no quota),
+        # `rate-limit-garbled` (one whose quota headers are not numbers), `server-error`
+        # and `unreachable` are a host that did not answer at all. Asked `--include`, it
         # prints the status line and headers ahead of the body, as `gh` does — on a
         # refusal too.
         slug="${path#repos/}"
@@ -407,6 +409,19 @@ X-Ratelimit-Used: 5000" "{\"message\":\"$message\",\"status\":\"403\"}" "$messag
             message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
             respond '403 Forbidden' "Retry-After: 60
 $quota" "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          too-many-requests)
+            respond '429 Too Many Requests' 'Retry-After: 30' \
+              '{"message":"Too Many Requests","status":"429"}' 'Too Many Requests (HTTP 429)' ;;
+          rate-limit-message)
+            message='API rate limit exceeded for installation ID 2.'
+            respond '403 Forbidden' '' "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
+          rate-limit-garbled)
+            message='API rate limit exceeded for user ID 1.'
+            respond '403 Forbidden' 'X-Ratelimit-Limit: 5000 per hour
+X-Ratelimit-Remaining: none
+X-Ratelimit-Reset: soon
+X-Ratelimit-Resource: Core Quota
+Retry-After: Wed, 21 Oct 2026 07:28:00 GMT' "{\"message\":\"$message\",\"status\":\"403\"}" "$message (HTTP 403)" ;;
           server-error)
             # `gh` names the URL it asked when the host gave no message of its own.
             respond '502 Bad Gateway' '' '' "HTTP 502: Bad Gateway (https://api.github.com/repos/$slug)" ;;

@@ -4948,13 +4948,13 @@ when a checkout is registered, by `onevcs boundary inspect`, and **at every writ
 could reach a public destination**; its answer is recorded as `observation: host`, and a
 probe the host refuses (a `404`, a `401`, a `403` that is not a rate limit) is recorded
 as `unknown` — never as the last answer — so a refusal is private wherever terms are
-derived. A probe the host **did not answer** — a rate limit (a `403` or `429` with no
-requests remaining, a `Retry-After`, or a message saying so), a `5xx`, or no HTTP
-response at all — says nothing about the repository: it records nothing, so a
+derived. A probe the host **did not answer** — a rate limit (a `403` with no
+requests remaining, a `Retry-After`, or a message saying so; any `429`), a `5xx`, or no
+HTTP response at all — says nothing about the repository: it records nothing, so a
 visibility recorded before it stands, and the write that asked is held as an
 unavailable check with the reason `host-visibility` before any term is derived. Its
 reason names the API that did not answer and why, with the limit and reset the
-response's headers supplied, and never the repository; it is retried by publishing again
+response's headers supplied as numbers, and never the repository; it is retried by publishing again
 once the host answers, and needs no flag or declaration. A local-only identity is never
 probed. **A write is let through unchecked only where its destination is verified not
 public**: a rule declaring it private, a host answering private, or a local-only

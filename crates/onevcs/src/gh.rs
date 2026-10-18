@@ -258,22 +258,36 @@ pub struct Unanswered {
     pub detail: String,
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] the classification crosses the
+// `RemoteHost::visibility -> Result<Visibility>` seam, whose signature and whose `Error`
+// variants docs/contract.md fixes, so a typed carrier would be a public item the contract
+// does not name. The one reader is `boundary::visibility`, which asks only of a
+// `visibility()` error, and the parse is strict; a reason that merely began with this
+// sentence would hold the write as unavailable, which is the direction that never lets a
+// write through unchecked.
 impl Unanswered {
     /// The error a [`RemoteHost`](crate::host::RemoteHost) method answers with, which
     /// [`Unanswered::of`] reads back.
     pub fn into_error(self) -> Error {
         Error::Invalid {
-            reason: format!("{UNANSWERED}{}\n{}", self.said, self.detail),
+            reason: format!(
+                "{UNANSWERED}{}\n{}",
+                self.said.replace('\n', " "),
+                self.detail
+            ),
         }
     }
 
-    /// The request `error` reports the host did not answer, when it is one.
+    /// The request `error` reports the host did not answer, when it is one: an
+    /// [`Error::Invalid`] spelled exactly as [`Unanswered::into_error`] spells one.
     pub fn of(error: &Error) -> Option<Unanswered> {
         let Error::Invalid { reason } = error else {
             return None;
         };
-        let rest = reason.strip_prefix(UNANSWERED)?;
-        let (said, detail) = rest.split_once('\n').unwrap_or((rest, ""));
+        let (said, detail) = reason.strip_prefix(UNANSWERED)?.split_once('\n')?;
+        if said.is_empty() {
+            return None;
+        }
         Some(Unanswered {
             said: said.to_owned(),
             detail: detail.to_owned(),
@@ -283,25 +297,30 @@ impl Unanswered {
     /// Whether the `gh api --include` call that wrote `answer` is one the host did
     /// not answer, and how to say so: `api` names the endpoint without the repository.
     ///
-    /// Rate limited is a `403` or `429` the host marks as one — no requests remaining,
-    /// a `Retry-After`, or its message saying so; failing is any `5xx`; never reached
-    /// is a call that carried no HTTP status at all. Every other status is an answer.
+    /// Rate limited is any `429`, and a `403` the host marks as one — no requests
+    /// remaining, a `Retry-After`, or its message saying so; failing is any `5xx`;
+    /// never reached is a call `gh` printed no status line for. Every other status is
+    /// an answer.
     pub fn read(api: &str, answer: &Answer) -> Option<Unanswered> {
         if answer.code == Some(0) {
             return None;
         }
         let response = Response::read(&answer.stdout);
         let detail = answer.detail();
-        let said = match response.status.or_else(|| status_in(&answer.stderr)) {
+        let said = match response.status {
             None => format!("{api} gave no HTTP response"),
             Some(status) if status >= 500 => {
                 format!("{api} failed on the host's side: HTTP {status}")
             }
             Some(status @ (403 | 429)) => {
                 let message = format!("{detail} {}", response.body).to_lowercase();
-                let remaining = response.header("x-ratelimit-remaining");
-                let retry = response.header("retry-after");
-                if remaining != Some("0") && retry.is_none() && !message.contains("rate limit") {
+                let remaining = response.count("x-ratelimit-remaining");
+                let retry = response.count("retry-after");
+                if status == 403
+                    && remaining != Some(0)
+                    && retry.is_none()
+                    && !message.contains("rate limit")
+                {
                     return None;
                 }
                 let which = if message.contains("secondary rate limit") {
@@ -310,9 +329,9 @@ impl Unanswered {
                     "its rate limit"
                 };
                 let mut said = format!("{api} is refused for {which}: HTTP {status}");
-                if let Some(limit) = response.header("x-ratelimit-limit") {
+                if let Some(limit) = response.count("x-ratelimit-limit") {
                     said.push_str(&format!(", limit {limit}"));
-                    if let Some(resource) = response.header("x-ratelimit-resource") {
+                    if let Some(resource) = response.word("x-ratelimit-resource") {
                         said.push_str(&format!(" ({resource})"));
                     }
                 }
@@ -320,8 +339,8 @@ impl Unanswered {
                     said.push_str(&format!(", {remaining} remaining"));
                 }
                 if let Some(reset) = response
-                    .header("x-ratelimit-reset")
-                    .and_then(|epoch| epoch.parse::<i64>().ok())
+                    .count("x-ratelimit-reset")
+                    .and_then(|epoch| i64::try_from(epoch).ok())
                     .and_then(|epoch| time::OffsetDateTime::from_unix_timestamp(epoch).ok())
                 {
                     said.push_str(&format!(", resets at {}", crate::ids::stamp(reset)));
@@ -385,17 +404,27 @@ impl Response {
     }
 
     /// The value of header `name`, compared without case.
-    pub fn header(&self, name: &str) -> Option<&str> {
+    fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .find(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
     }
-}
 
-/// The status `gh` names at the end of its own refusal — `… (HTTP 404)` — where it
-/// printed no status line.
-fn status_in(stderr: &str) -> Option<u16> {
-    let (_, after) = stderr.rsplit_once("(HTTP ")?;
-    after.split(')').next()?.parse().ok()
+    /// Header `name` as a count — a limit, a remainder, seconds, or an epoch — or
+    /// nothing where it is absent or not one.
+    fn count(&self, name: &str) -> Option<u64> {
+        self.header(name)?.parse().ok()
+    }
+
+    /// Header `name` as one short word of lower-case letters, digits and `_` — the
+    /// shape GitHub names a rate limit's resource in — or nothing where it is not one.
+    fn word(&self, name: &str) -> Option<&str> {
+        self.header(name).filter(|value| {
+            (1..=40).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+    }
 }

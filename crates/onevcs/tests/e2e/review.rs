@@ -1693,6 +1693,44 @@ fn a_reply_to_a_repository_recorded_private_is_let_through_and_one_the_host_woul
         "an unanswered visibility is asked again at each reply"
     );
     assert_eq!(posts(&host.world), 0);
+
+    // A host that does not answer at all — its quota spent — holds the reply as
+    // unavailable rather than screening it, and posts nothing; once it answers, the
+    // reply it held is screened and posted.
+    host.world
+        .host_visibility("sample-owner/vaguewidget", "rate-limited:1792285566");
+    let held = reply(
+        &host.world,
+        change,
+        &asked,
+        "k-3",
+        &["--body", "Fixed, thanks."],
+    );
+    let stderr = String::from_utf8_lossy(&held.stderr);
+    assert_eq!(held.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(
+            "the public boundary check is unavailable: the host did not answer whether the \
+             destination is public — GitHub's REST API (GET /repos/{owner}/{repo}) is refused \
+             for its rate limit: HTTP 403, limit 5000 (core), 0 remaining, resets at \
+             2026-10-18T01:06:06.000Z; retry once the host answers"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("vaguewidget"), "{stderr}");
+    assert_neutral(&stderr);
+    assert_eq!(posts(&host.world), 0);
+    host.world
+        .host_visibility("sample-owner/vaguewidget", "public");
+    let posted = replied(&reply(
+        &host.world,
+        change,
+        &asked,
+        "k-3",
+        &["--body", "Fixed, thanks.", "--json"],
+    ));
+    assert_eq!(posted["existing"], false);
+    assert_eq!(posts(&host.world), 1);
 }
 
 #[test]

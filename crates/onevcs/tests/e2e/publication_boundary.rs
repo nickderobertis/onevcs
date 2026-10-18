@@ -933,6 +933,23 @@ fn every_way_a_host_does_not_answer_holds_the_publication_and_an_inspection_reco
             "You have exceeded a secondary rate limit.",
         ),
         (
+            "too-many-requests",
+            "is refused for its rate limit: HTTP 429, retry after 30s",
+            "Too Many Requests (HTTP 429)",
+        ),
+        (
+            "rate-limit-message",
+            "is refused for its rate limit: HTTP 403",
+            "API rate limit exceeded for installation ID 2.",
+        ),
+        (
+            // Quota headers that are not numbers are left out of the reason rather
+            // than printed as the host sent them: the account ends at the status.
+            "rate-limit-garbled",
+            "is refused for its rate limit: HTTP 403",
+            "API rate limit exceeded for user ID 1.",
+        ),
+        (
             "server-error",
             "failed on the host's side: HTTP 502",
             // What `gh` said names the repository, so it is kept in the evidence
@@ -986,6 +1003,66 @@ fn every_way_a_host_does_not_answer_holds_the_publication_and_an_inspection_reco
             &format!("{answer}: once the host answers"),
         );
     }
+}
+
+#[test]
+fn a_description_whose_destination_the_host_does_not_answer_for_is_held_and_written_once_it_does() {
+    let host = Boundary::new("{publication: change-open, approvals: required}");
+    host.private("hiddenco/quietharbor", &[]);
+    let token = host.naming_the_destination("described-while-limited");
+    let before = host.origin_refs();
+    host.published(
+        &host.publish(&token, &["--draft"]),
+        &before,
+        "a neutral draft",
+    );
+    let recorded = host.destination();
+    let body = host.world.change_request_body(1);
+
+    // The drafter's final words name the destination, which is public: with the quota
+    // spent they are held, unwritten, rather than refused as a private term.
+    host.world
+        .host_visibility("sample-owner/openwidget", "rate-limited:1792285566");
+    let before = host.origin_refs();
+    let describe = |host: &Boundary| {
+        host.run(
+            &[
+                "change",
+                "describe",
+                &token,
+                "--body",
+                "Explains how openwidget is used.",
+            ],
+            None,
+        )
+    };
+    host.held(&describe(&host), LIMITED, &before);
+    assert_eq!(
+        host.world.change_request_body(1),
+        body,
+        "the host was written"
+    );
+    assert_eq!(
+        host.destination(),
+        recorded,
+        "the failed lookup replaced the record"
+    );
+
+    // Once the host answers, the same description is screened and written.
+    host.world
+        .host_visibility("sample-owner/openwidget", "public");
+    let output = describe(&host);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        host.world
+            .change_request_body(1)
+            .contains("Explains how openwidget is used."),
+        "the description was not written"
+    );
 }
 
 #[test]
