@@ -6308,6 +6308,122 @@ fn a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_wi
     assert_eq!(completed, 0, "a standings read records no merge-completed");
 }
 
+/// A change request a `checks-unsettled` close stopped watching, which a person then
+/// merged at an older head than was published — so no read records that merge as the
+/// branch's landing, and `release status` finds it in the base's history instead.
+///
+/// Two reads in this one process: a `status` that asks the host about the merge while the
+/// host says the change closes `acme-corp/hosted#12` and records nothing, then — once
+/// `between` has changed what the host says — a `release status` that asks again and
+/// records the landing. Answers that landing's `change-merged` payload.
+fn read_twice_at_an_older_head(between: impl FnOnce(&World)) -> serde_json::Value {
+    let hosted = crate::host::Hosted::new(crate::host::AUTOMATED_READY);
+    let world = &hosted.world;
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    world.install_pre_push(&hosted.checkout, "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/read-twice",
+        ])
+        .output()
+        .expect("the binary runs");
+    let token = crate::world::token_of(&opened.stdout);
+    let worktree = crate::world::worktree_of(&opened.stdout);
+    world.commit_file(&worktree, "first.txt", "first\n", "feat: the first half");
+    let older = world.git(&worktree, &["rev-parse", "HEAD"]);
+    world.commit_file(&worktree, "second.txt", "second\n", "feat: the second half");
+    let published = world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(published.status.code(), Some(1), "{published:?}");
+    let closed = world
+        .onevcs()
+        .args(["session", "close", &token])
+        .output()
+        .expect("the binary runs");
+    assert!(closed.status.success(), "{closed:?}");
+    world.person_force_pushes(1, &older);
+    world.host_closes(1, &["acme-corp/hosted#12"]);
+    world.person_merges(
+        1,
+        crate::world::PersonMerge::SquashSaying("Closes #5"),
+        "2026-10-11T09:30:00Z",
+        crate::world::HeadAfter::Kept,
+    );
+    let synced = world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .output()
+        .expect("the binary runs");
+    assert!(synced.status.success(), "{synced:?}");
+
+    inhabit(world);
+    let read = |args: &[&str]| {
+        stdout_of(|| assert_eq!(run(args, Providers::real()), 0, "{args:?}"));
+    };
+    read(&["onevcs", "status", "feature/read-twice", "--json"]);
+    assert!(
+        world.events_of(&token, "change-merged").is_empty(),
+        "the first read records no landing"
+    );
+    between(world);
+    read(&[
+        "onevcs",
+        "release",
+        "status",
+        "feature/read-twice",
+        "--json",
+    ]);
+    let merged = world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    merged[0]["payload"].clone()
+}
+
+#[test]
+fn a_later_read_of_a_merges_closures_replaces_what_an_earlier_read_in_the_process_heard() {
+    let merged = read_twice_at_an_older_head(|world| {
+        world.host_closes(1, &["acme-corp/tracker#3"]);
+    });
+    assert_eq!(
+        merged["closes"],
+        serde_json::json!(["acme-corp/tracker#3"]),
+        "the latest answer, not the first read's: {merged}"
+    );
+}
+
+#[test]
+fn a_later_read_refused_the_closures_leaves_none_of_what_an_earlier_read_heard() {
+    let merged = read_twice_at_an_older_head(|world| {
+        world.refuse_closing_references("permission");
+    });
+    assert_eq!(
+        merged["closes"],
+        serde_json::json!([]),
+        "neither the first read's answer nor the commit's text stands in: {merged}"
+    );
+}
+
 /// `onevcs status --json` about one branch, run against these implementations and
 /// read back as the object a consumer reads.
 fn report(world: &World, branch: &str, hosting: &dyn Hosting) -> serde_json::Value {
