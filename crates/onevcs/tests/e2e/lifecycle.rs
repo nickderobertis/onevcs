@@ -4414,6 +4414,55 @@ fn a_continued_branch_whose_local_copy_resolved_a_conflicting_base_merge_is_stil
 }
 
 #[test]
+fn a_continued_branch_whose_passed_over_copy_cannot_be_kept_does_not_open() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/took-the-base-unkept";
+    a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/main"],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let local = world.git(
+        &fixture.checkout,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    );
+    // A ref standing exactly where the kept refs' directory would go: git cannot write
+    // a ref beneath another, so the keep fails as any refused ref write would.
+    world.git(
+        &fixture.checkout,
+        &[
+            "update-ref",
+            &format!("refs/onevcs/passed-over/{branch}"),
+            &local,
+        ],
+    );
+
+    world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", branch])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("could not be kept"))
+        .stderr(predicate::str::contains("so it is not passed over"))
+        .stderr(predicate::str::contains(format!(
+            "+refs/heads/{branch}:refs/onevcs/passed-over/{branch}/{local}"
+        )));
+    let held = world
+        .onevcs()
+        .args(["session", "holders", "project", "--json"])
+        .output()
+        .expect("the session listing runs");
+    assert!(held.status.success(), "{held:?}");
+    assert!(
+        !String::from_utf8_lossy(&held.stdout).contains(branch),
+        "no session opened over the branch: {}",
+        String::from_utf8_lossy(&held.stdout)
+    );
+}
+
+#[test]
 fn a_continued_branch_whose_local_copy_also_holds_its_own_commit_is_still_refused() {
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
