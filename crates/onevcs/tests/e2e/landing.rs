@@ -2378,13 +2378,12 @@ fn a_landing_found_only_in_the_bases_history_reports_the_issues_its_commit_close
     );
 }
 
-#[test]
-fn a_landing_found_in_history_reports_what_the_host_said_it_closes_where_the_read_asked() {
-    // `release status` asks the host about a change request a `checks-unsettled` close
-    // stopped watching. The host merged it — but at an older head than was published,
-    // so that merge is not this branch's landing and is not recorded; the base's history
-    // then finds it by its number. The host's answer about what it closes was read in
-    // that same process, so it is what the landing reports, over the commit's own text.
+/// `release status` over a change request a `checks-unsettled` close stopped watching,
+/// which the host then merged at an older head than was published — so that merge is
+/// not this branch's landing and is not recorded, and the base's history finds it by
+/// its number instead. `host` says what the host holds about its closures before the
+/// read; answers the `change-merged` the read recorded.
+fn merged_at_an_older_head(host: impl FnOnce(&crate::world::World)) -> Value {
     let hosted = Hosted::new(AUTOMATED_READY);
     let world = &hosted.world;
     std::fs::write(
@@ -2433,7 +2432,7 @@ fn a_landing_found_in_history_reports_what_the_host_said_it_closes_where_the_rea
         .success();
 
     world.person_force_pushes(1, &older);
-    world.host_closes(1, &["acme-corp/hosted#12", "acme-corp/tracker#3"]);
+    host(world);
     world.person_merges(
         1,
         crate::world::PersonMerge::SquashSaying("Closes #5"),
@@ -2451,9 +2450,30 @@ fn a_landing_found_in_history_reports_what_the_host_said_it_closes_where_the_rea
     assert_eq!(release["state"], "awaiting-human-step", "{release}");
     let merged = world.events_of(&token, "change-merged");
     assert_eq!(merged.len(), 1, "{merged:#?}");
+    merged[0]["payload"].clone()
+}
+
+#[test]
+fn a_landing_found_in_history_reports_what_the_host_said_it_closes_where_the_read_asked() {
+    // The host's answer about what it closes was read in that same process, so it is
+    // what the landing reports — over the commit's own `Closes #5`.
+    let merged = merged_at_an_older_head(|world| {
+        world.host_closes(1, &["acme-corp/hosted#12", "acme-corp/tracker#3"]);
+    });
     assert_eq!(
-        merged[0]["payload"]["closes"],
+        merged["closes"],
         serde_json::json!(["acme-corp/hosted#12", "acme-corp/tracker#3"]),
-        "the host's answer, not the commit's `Closes #5`: {merged:#?}"
+        "{merged}"
     );
+}
+
+#[test]
+fn a_landing_found_in_history_after_the_host_would_not_say_reports_none_rather_than_its_text() {
+    // The read asked the host and was refused the closures: nothing stands in for the
+    // host's answer, the commit's own text included.
+    let merged = merged_at_an_older_head(|world| {
+        world.host_closes(1, &["acme-corp/hosted#12"]);
+        world.refuse_closing_references("permission");
+    });
+    assert_eq!(merged["closes"], serde_json::json!([]), "{merged}");
 }

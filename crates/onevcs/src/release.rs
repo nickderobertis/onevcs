@@ -968,9 +968,9 @@ pub(crate) enum Found {
 }
 
 /// The GitHub issues a landing found after the fact closes: what a host read this
-/// process made of `change` said, and otherwise — for a landing only the base's history
-/// holds — the closing lines of the landing commit's own message, read as a
-/// `local-direct` squash's are. None where neither says.
+/// process made of `change` heard — none, where the host gave no readable answer — and,
+/// for a landing only the base's history holds and no read asked about, the closing
+/// lines of the landing commit's own message, read as a `local-direct` squash's are.
 fn closes_of(
     publication: &Path,
     identity: &str,
@@ -978,7 +978,7 @@ fn closes_of(
     landing: &Landing<'_>,
 ) -> Vec<crate::closing::Issue> {
     if let Some(heard) = crate::closing::heard_of(change.as_str()) {
-        return heard;
+        return heard.issues();
     }
     if landing.found == Found::OnTheHost {
         return Vec::new();

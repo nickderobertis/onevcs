@@ -2687,7 +2687,9 @@ fn land_opened_change(
         // when somebody happened to ask, and never a time read from anywhere else.
         let landed_at = merge_time(host, change);
         // What the host said it closes, in the read that found it merged.
-        let closes = crate::closing::heard_of(change.url.as_str()).unwrap_or_default();
+        let closes = crate::closing::heard_of(change.url.as_str())
+            .map(crate::closing::Heard::issues)
+            .unwrap_or_default();
         let mut merged = object(json!({"url": change.url.to_string(), "sha": sha.0}));
         gate_run::landed(&mut merged, landed_at, &sha.0);
         crate::closing::report(&mut merged, closes.clone());

@@ -380,7 +380,7 @@ fn standing(
     if matches!(state, ChangeState::Merged { .. }) {
         match pull.get(CLOSES_FIELD) {
             Some(closes) => crate::closing::hear(url.as_str(), Some(closes)),
-            None => crate::closing::forget(url.as_str()),
+            None => crate::closing::unanswered(url.as_str()),
         }
     }
     let head = Sha(head);

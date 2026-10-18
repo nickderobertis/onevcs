@@ -1068,11 +1068,29 @@ case "$subcommand" in
         fi
         ;;
     esac
-    # A credential the host will not show the issues a change request closes: GitHub
-    # refuses the whole call naming that field, however much else it could read.
-    if wanted closingIssuesReferences && [ -f "$STATE/refuse-closing-references" ]; then
-      printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.closingIssuesReferences)\n' >&2
-      exit 1
+    # A read of the issues a change request closes that is refused, as
+    # `refuse-closing-references` says: `permission` (or nothing) — GitHub refuses a
+    # credential that may not see them the whole call, naming the field; `unknown-field`
+    # — a `gh` that predates the field rejects it while parsing its arguments;
+    # `unrelated` — the call fails for a reason naming nothing of the field; and
+    # `fallback-too` — refused naming the field, and the same read without it fails too.
+    if [ -f "$STATE/refuse-closing-references" ]; then
+      refusal="$(cat "$STATE/refuse-closing-references")"
+      if wanted closingIssuesReferences; then
+        case "$refusal" in
+          unknown-field)
+            printf 'Unknown JSON field: "closingIssuesReferences"\nAvailable fields:\n  state\n  mergeCommit\n' >&2 ;;
+          unrelated)
+            printf 'GraphQL: Something went wrong while executing your query.\n' >&2 ;;
+          *)
+            printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.closingIssuesReferences)\n' >&2 ;;
+        esac
+        exit 1
+      fi
+      if [ "$refusal" = "fallback-too" ] && wanted mergeCommit; then
+        printf 'GraphQL: Something went wrong while executing your query.\n' >&2
+        exit 1
+      fi
     fi
     separator=""
     printf '{'
@@ -1110,8 +1128,15 @@ case "$subcommand" in
     # The description, as `gh pr edit` last left it or `gh pr create` opened it.
     if wanted title; then printf '%s"title":%s' "$separator" "$(json_recorded "$STATE/pr-$number.title")"; separator=","; fi
     if wanted body && [ "$malformed" != "no-description" ]; then printf '%s"body":%s' "$separator" "$(json_recorded "$STATE/pr-$number.body")"; separator=","; fi
+    # The record's first line may instead say how the answer is malformed: `!missing`
+    # leaves the field out though it was asked for, and `!not-a-list` answers it as a
+    # string.
     if wanted closingIssuesReferences; then
-      printf '%s"closingIssuesReferences":%s' "$separator" "$(closing_references "$number")"; separator=","
+      case "$(head -n 1 "$STATE/closes-$number" 2>/dev/null || true)" in
+        '!missing') ;;
+        '!not-a-list') printf '%s"closingIssuesReferences":"soon"' "$separator"; separator="," ;;
+        *) printf '%s"closingIssuesReferences":%s' "$separator" "$(closing_references "$number")"; separator="," ;;
+      esac
     fi
     if wanted statusCheckRollup; then printf '%s"statusCheckRollup":%s' "$separator" "$(rollup)"; fi
     printf '}\n'

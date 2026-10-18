@@ -170,44 +170,67 @@ fn from_host(answered: Option<&Value>) -> std::result::Result<Vec<Issue>, String
         .collect()
 }
 
-/// What GitHub said each merged change request closes, by its URL, as the read that
-/// found the merge answered it — the request that records a merge is the one that
-/// reads its closures, so the record of the landing asks for nothing again.
-static HEARD: Mutex<BTreeMap<String, Vec<Issue>>> = Mutex::new(BTreeMap::new());
+/// What a read of a merged change request heard about the issues it closes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Heard {
+    /// The host's answer: these, and no others.
+    Issues(Vec<Issue>),
+    /// The host was asked and gave no answer this crate could read — refused the field,
+    /// or answered it in a shape no issue can be read out of. The landing reports none,
+    /// and nothing else stands in for the host's answer.
+    Unanswered,
+}
 
-fn heard_map<T>(act: impl FnOnce(&mut BTreeMap<String, Vec<Issue>>) -> T) -> T {
-    act(&mut HEARD
+impl Heard {
+    /// The issues a landing reports for what was heard: none where nothing was.
+    pub(crate) fn issues(self) -> Vec<Issue> {
+        match self {
+            Heard::Issues(issues) => issues,
+            Heard::Unanswered => Vec::new(),
+        }
+    }
+}
+
+/// What the last read of each merged change request heard about what it closes, by its
+/// URL — the request that records a merge is the one that reads its closures, so the
+/// record of the landing asks for nothing again.
+static HEARD: Mutex<BTreeMap<String, Heard>> = Mutex::new(BTreeMap::new());
+
+fn record(url: &str, heard: Heard) {
+    HEARD
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(url.to_owned(), heard);
 }
 
 /// Keep what the host answered change request `url` closes, replacing anything older —
-/// or, where the answer is not one, forget what was kept and say so: a landing then
-/// reports none, rather than a list the host did not give.
+/// or, where the answer is not one, keep that it was not and say so.
 pub(crate) fn hear(url: &str, answered: Option<&Value>) {
     match from_host(answered) {
-        Ok(issues) => heard_map(|heard| heard.insert(url.to_owned(), issues)),
+        Ok(issues) => record(url, Heard::Issues(issues)),
         Err(problem) => {
             eprintln!(
                 "onevcs: warning: the host's answer about which issues {url} closes could \
                  not be read ({problem}), so its landing reports none"
             );
-            forget(url);
-            None
+            record(url, Heard::Unanswered);
         }
-    };
+    }
 }
 
-/// Forget what the host said change request `url` closes, for a read that could not
-/// ask: an older answer is not this read's.
-pub(crate) fn forget(url: &str) {
-    heard_map(|heard| heard.remove(url));
+/// Keep that a read of change request `url` was answered without what it closes.
+pub(crate) fn unanswered(url: &str) {
+    record(url, Heard::Unanswered);
 }
 
-/// What the host said change request `url` closes, where the last read this process
-/// made of its merge said.
-pub(crate) fn heard_of(url: &str) -> Option<Vec<Issue>> {
-    heard_map(|heard| heard.get(url).cloned())
+/// What the last read this process made of change request `url`'s merge heard about
+/// what it closes, where one did.
+pub(crate) fn heard_of(url: &str) -> Option<Heard> {
+    HEARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(url)
+        .cloned()
 }
 
 /// Every closing reference in one line.

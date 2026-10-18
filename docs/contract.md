@@ -4897,7 +4897,8 @@ are unchanged, and every emitter builds the field through one function.
   same process: the issue-closing lines of the landing commit's own message, parsed as a
   `local-direct` squash's are, with a bare `#N` resolved against the identity's own
   repository. Where the same process did read the change request from the host, that read's
-  `closingIssuesReferences` is what is reported. **A `[]` on such an event is not evidence
+  `closingIssuesReferences` is what is reported — `[]` where that read could not hear
+  them, with nothing else standing in for the host's answer. **A `[]` on such an event is not evidence
   that the landing closed nothing**: GitHub can close an issue from a change request's
   description, which its merge commit need not carry *(the manager's ruling on this
   amendment)*.

@@ -494,7 +494,7 @@ fn a_standing_read_by_a_credential_that_may_not_see_closed_issues_records_the_la
         String::from_utf8_lossy(&held.stderr)
     );
     world.host_closes(1, &["acme-corp/stacked#12"]);
-    world.refuse_closing_references();
+    world.refuse_closing_references("permission");
     let landed = world.person_merges(1, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept);
 
     let output = stack.standings_output("main", &[url(1)], &[]);

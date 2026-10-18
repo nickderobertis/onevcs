@@ -603,13 +603,15 @@ impl World {
         .expect("the issues a change request closes");
     }
 
-    /// Make the substituted host refuse, naming the field, every read that asks which
-    /// issues a change request closes — as GitHub refuses a credential that may not see
-    /// them the whole call — while answering the same read without it.
-    pub fn refuse_closing_references(&self) {
+    /// Make the substituted host refuse every read that asks which issues a change
+    /// request closes, `how` the substituted `gh` spells it: `permission` (GitHub
+    /// refusing a credential the whole call, naming the field), `unknown-field` (a `gh`
+    /// predating the field), `unrelated` (a failure naming nothing of the field), or
+    /// `fallback-too` (refused naming the field, and the read without it failing too).
+    pub fn refuse_closing_references(&self, how: &str) {
         std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
-        std::fs::write(self.path("gh-state/refuse-closing-references"), "")
-            .expect("a credential refused the closing issues");
+        std::fs::write(self.path("gh-state/refuse-closing-references"), how)
+            .expect("a refused read of the closing issues");
     }
 
     /// What the substituted host's **classic** branch protection requires on the

@@ -1667,7 +1667,7 @@ impl GitHub {
                 crate::closing::hear(cr.url.as_str(), view.get(CLOSES_FIELD));
             }
             gh::Answered::WithoutTheField if merged => {
-                crate::closing::forget(cr.url.as_str());
+                crate::closing::unanswered(cr.url.as_str());
                 eprintln!(
                     "onevcs: warning: the host would not say which issues {} closes, so its \
                      landing reports none",
