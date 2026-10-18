@@ -133,7 +133,7 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
     let mut cost = ReadCost::default();
     let mut required = Required::default();
     for (index, batch) in numbers.chunks(STANDINGS_BATCH).enumerate() {
-        let (data, points) = ask(repo, batch, false, index == 0)?;
+        let (data, points, answered) = ask(repo, batch, false, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
         if index == 0 {
             required.declared(&data)?;
@@ -144,6 +144,7 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
                 root,
                 *number,
                 &mut required,
+                answered,
             )?);
         }
     }
@@ -170,14 +171,14 @@ pub(crate) fn read_with_reviews(
         .zip(changes.chunks(REVIEW_BATCH))
         .enumerate()
     {
-        let (data, points) = ask(repo, batch, true, index == 0)?;
+        let (data, points, answered) = ask(repo, batch, true, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
         if index == 0 {
             required.declared(&data)?;
         }
         for (at, (number, (change, since))) in batch.iter().zip(targets).enumerate() {
             let pull = pull_of(&data, at, *number, repo)?;
-            standings.push(standing(pull, root, *number, &mut required)?);
+            standings.push(standing(pull, root, *number, &mut required, answered)?);
             let about = format!("pull request {number} of {repo}");
             let read = match review_github::first_page(pull)? {
                 Some(pages) => review_github::answer(&pages, since.as_ref(), &about)?,
@@ -256,8 +257,14 @@ pub(crate) fn reopen(repo: &str, change: &ChangeId) -> Result<ReadCost> {
     })
 }
 
-/// One query of one batch, answered: its `data`, and what GitHub charged for it.
-fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result<(Value, u32)> {
+/// One query of one batch, answered: its `data`, what GitHub charged for it, and whether
+/// it was the query as asked or the one without the closures selection.
+fn ask(
+    repo: &str,
+    numbers: &[u64],
+    reviews: bool,
+    declarations: bool,
+) -> Result<(Value, u32, gh::Answered)> {
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| invalid(format!("{repo:?} does not name one repository")))?;
@@ -292,7 +299,7 @@ fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result
         .ok_or_else(|| {
             invalid("GitHub answered the standings read without what it charged for it")
         })?;
-    Ok((data, u32::try_from(cost).unwrap_or(u32::MAX)))
+    Ok((data, u32::try_from(cost).unwrap_or(u32::MAX), answered))
 }
 
 /// The alias for the `at`th change request of a batch, refused where GitHub holds none.
@@ -308,6 +315,7 @@ fn standing(
     root: &str,
     number: u64,
     required: &mut Required,
+    answered: gh::Answered,
 ) -> Result<ChangeStanding> {
     let text = |name: &str| -> Result<String> {
         pull.get(name)
@@ -376,11 +384,11 @@ fn standing(
         )),
     };
     // What a merge found here closes, for the record of its landing — where the query
-    // read it, which a credential that may not see it was not asked.
+    // asked, which for a credential that may not see it, it did not.
     if matches!(state, ChangeState::Merged { .. }) {
-        match pull.get(CLOSES_FIELD) {
-            Some(closes) => crate::closing::hear(url.as_str(), Some(closes)),
-            None => crate::closing::unanswered(url.as_str()),
+        match answered {
+            gh::Answered::AsAsked => crate::closing::hear(url.as_str(), pull.get(CLOSES_FIELD)),
+            gh::Answered::WithoutTheField => crate::closing::unanswered(url.as_str()),
         }
     }
     let head = Sha(head);

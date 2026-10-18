@@ -23,6 +23,7 @@
 //! [`heard`] and the record of the landing asks for ([`heard_of`]).
 
 use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroU64;
 use std::sync::Mutex;
 
 use serde_json::{Map, Value};
@@ -74,12 +75,15 @@ impl Closing {
 pub(crate) struct Issue {
     owner: String,
     name: String,
-    number: u64,
+    /// GitHub numbers issues from 1.
+    number: NonZeroU64,
 }
 
 impl Issue {
-    /// An issue, where `owner` and `name` can be a GitHub repository's.
+    /// An issue, where `owner` and `name` can be a GitHub repository's and `number` an
+    /// issue's.
     fn new(owner: &str, name: &str, number: u64) -> Option<Self> {
+        let number = NonZeroU64::new(number)?;
         (is_owner(owner) && is_name(name)).then(|| Issue {
             owner: owner.to_owned(),
             name: name.to_owned(),

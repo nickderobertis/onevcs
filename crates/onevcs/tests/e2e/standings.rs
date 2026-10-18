@@ -514,6 +514,49 @@ fn a_standing_read_by_a_credential_that_may_not_see_closed_issues_records_the_la
     assert_eq!(merged[0]["payload"]["closes"], json!([]), "{merged:#?}");
 }
 
+#[test]
+fn a_standing_whose_closures_answer_nothing_can_be_read_out_of_records_the_landing_with_none() {
+    // The query asked for the issues the change request closes and the host answered
+    // the field with nothing a list of issues can be read out of. The standing is still
+    // the answer; the landing reports no closures, and the read says why.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let (token, worktree) = stack.session("feature/unreadable");
+    world.commit_file(
+        &worktree,
+        "unreadable.txt",
+        "unreadable\n",
+        "feat: an unreadable answer",
+    );
+    let held = world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        held.status.success(),
+        "{}",
+        String::from_utf8_lossy(&held.stderr)
+    );
+    world.host_pull_answer(1, &json!({"closingIssuesReferences": null}));
+    world.person_merges(1, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept);
+
+    let output = stack.standings_output("main", &[url(1)], &[]);
+    let read = succeeded(&output);
+    assert_eq!(standing(&read, 1)["state"]["landing"], true, "{read}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "the host's answer about which issues {} closes could not be read",
+            url(1)
+        )),
+        "{stderr}"
+    );
+    let merged = world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(merged[0]["payload"]["closes"], json!([]), "{merged:#?}");
+}
+
 /// One verdict's change request: its branch, what its head's rollup says, and the base.
 struct Rollup {
     branch: &'static str,

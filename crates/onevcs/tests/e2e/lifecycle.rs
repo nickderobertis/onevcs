@@ -2086,14 +2086,15 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
 fn a_bare_reference_on_a_repository_github_does_not_host_is_carried_and_not_reported() {
     // `#7` names an issue of whatever host the repository is on, and this one is on
     // none GitHub's: the squash still carries the line, and the landing names no GitHub
-    // issue for it — while one naming a GitHub repository outright is still reported.
+    // issue for it — while one naming a GitHub repository outright is still reported,
+    // and one naming issue 0, which GitHub never numbers, is carried and not reported.
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/bare"]);
     fixture.world.commit_file(
         &worktree,
         "one.txt",
         "one\n",
-        "feat: add the thing\n\nCloses #7\nFixes owner/name#3",
+        "feat: add the thing\n\nCloses #7\nFixes owner/name#3\nResolves owner/name#0",
     );
     fixture
         .world
@@ -2107,7 +2108,7 @@ fn a_bare_reference_on_a_repository_github_does_not_host_is_carried_and_not_repo
         .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
     let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
     assert_eq!(
-        paragraphs[1], "Closes #7\nFixes owner/name#3",
+        paragraphs[1], "Closes #7\nFixes owner/name#3\nResolves owner/name#0",
         "{published}"
     );
     let completed = fixture.world.events_of(&token, "merge-completed");
