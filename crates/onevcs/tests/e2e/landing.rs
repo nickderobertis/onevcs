@@ -1682,9 +1682,13 @@ impl ElsewhereOpened {
             world.home().join("releases.yml"),
             "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {origin: \
              github.com/acme-corp/hosted}\n    adoption: published\n    targets:\n      - \
-             name: container\n        style: human-step\n        action: \"Push the image.\"\n",
+             name: container\n        style: human-step\n        action: \"Push the image.\"\n      \
+             - name: crate\n        style: automated\n        probe:\n          shell: 'cat \
+             \"$HOME/answers/crate\"'\n          timeout_seconds: 20\n",
         )
         .expect("a release-targets file");
+        std::fs::create_dir_all(world.path("answers")).expect("an answers directory");
+        std::fs::write(world.path("answers/crate"), "0.24.0\n").expect("what is out now");
 
         // Another host's clone: the work is cut, pushed, and squash-merged on the base
         // there, the way the host merges it — none of it through this host.
@@ -2065,5 +2069,88 @@ fn an_attested_landing_this_host_cannot_record_is_answered_as_the_host_reports_i
     assert!(
         stderr.contains("could not record that landing"),
         "the record that could not be written is said: {stderr}"
+    );
+}
+
+/// Every `change-merged` this host has recorded, across all of its streams.
+fn landings_recorded(world: &crate::world::World) -> usize {
+    std::fs::read_dir(world.home().join("streams"))
+        .expect("the streams directory")
+        .map(|entry| std::fs::read_to_string(entry.expect("an entry").path()).expect("a stream"))
+        .map(|stream| stream.matches("\"kind\":\"change-merged\"").count())
+        .sum()
+}
+
+#[test]
+fn an_attested_landing_is_recorded_once_with_the_baseline_out_when_it_was_first_read() {
+    let scene = ElsewhereOpened::new();
+    let url = format!("{ELSEWHERE}/238");
+
+    // The first read records the landing, probing the automated target for what was out
+    // then; a release made afterwards, and a second read, leave both as they were.
+    let first = scene.json(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(
+        first["publication"]["landed"]["evidence"]["tier"],
+        "recorded-landing"
+    );
+    assert_eq!(landings_recorded(&scene.world), 1);
+    let not_yet = scene.json(&[
+        "onevcs", "release", "status", &url, "--target", "crate", "--json",
+    ]);
+    assert_eq!(not_yet["state"], "not-released", "{not_yet}");
+
+    std::fs::write(scene.world.path("answers/crate"), "0.25.0\n").expect("a release");
+    let again = scene.json(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(
+        again["publication"]["landed"],
+        first["publication"]["landed"]
+    );
+    assert_eq!(
+        landings_recorded(&scene.world),
+        1,
+        "a landing already on the record is not written again"
+    );
+
+    // The release after the landing is the one that carries it.
+    let released = scene.json(&[
+        "onevcs", "release", "status", &url, "--target", "crate", "--json",
+    ]);
+    assert_eq!(released["state"], "released", "{released}");
+    assert_eq!(released["version"], "0.25.0");
+}
+
+#[test]
+fn a_landing_found_here_answers_before_the_hosts_attestation() {
+    let scene = ElsewhereOpened::new();
+    let url = format!("{ELSEWHERE}/238");
+    // This host holds the change request's branch, and has gone on committing to it
+    // since it merged.
+    let world = &scene.world;
+    world.git(&scene.checkout, &["fetch", "-q", "origin"]);
+    world.git(
+        &scene.checkout,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "feature/elsewhere",
+            "origin/feature/elsewhere",
+        ],
+    );
+    world.commit_file(&scene.checkout, "more.txt", "more\n", "feat: and then more");
+    world.git(&scene.checkout, &["checkout", "-q", "main"]);
+
+    // The first read finds no landing here, so the host's answers.
+    let first = scene.json(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(first["publication"]["landed"]["state"], "yes", "{first}");
+
+    // Once it is recorded, the copy here reads it — and says what the host's word alone
+    // could not: the commit above the landing has not landed.
+    let then = scene.json(&["onevcs", "status", &url, "--json"]);
+    assert_eq!(then["publication"]["landed"]["state"], "in-part", "{then}");
+    assert_eq!(then["publication"]["landed"]["unlanded"], 1, "{then}");
+    assert_eq!(
+        then["publication"]["landed"]["evidence"]["commit"], scene.squash,
+        "{then}"
     );
 }
