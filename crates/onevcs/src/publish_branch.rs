@@ -108,8 +108,8 @@ struct Resumed {
 ///
 /// Anything else is `None`, and the whole path runs as a first publication would:
 /// no boundary recorded, one that cannot be read, a tip or verification input that
-/// differs, a base that moved where the host needs it brought in, and a change request that closed, landed, was retargeted, or moved its
-/// head — and so is every read this cannot finish, because a component the verb cannot
+/// differs, a base that moved where the host needs it brought in, and a change request
+/// that closed, landed, was retargeted, or moved its head — and so is every read this cannot finish, because a component the verb cannot
 /// read back counts as different. Every refusal the whole path makes is left to it, so
 /// asking here first moves no refusal: a question this cannot answer is answered there.
 /// A boundary that does not hold is forgotten, and the whole path records a new one once
