@@ -1426,6 +1426,11 @@ fn invalidated_over_a_moved_base(invalidation: Invalidation, moved: MovedBase) {
                 "{case}: the stream records a second push"
             );
             assert_eq!(
+                pre_push_gate_runs(&world),
+                2,
+                "{case}: and a second verification"
+            );
+            assert_eq!(
                 runs_of_the_hook(&world),
                 2,
                 "{case}: verification ran again"
