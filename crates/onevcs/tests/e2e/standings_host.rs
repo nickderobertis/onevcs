@@ -283,10 +283,26 @@ impl Model {
     /// One aliased standings query — with each change request's review connections,
     /// where the query asks for them.
     pub(super) fn standings(&mut self, call: &Call, query: &str) -> (String, String, i32) {
+        const CLOSES: &str =
+            "closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } }";
+        // A credential the host will not show the issues a change request closes: GitHub
+        // refuses the whole query naming that field, and answers one that leaves it out.
+        let refuses_closes = self.flag("refuse-closing-references");
+        if refuses_closes && query.contains(CLOSES) {
+            return refused(
+                "GraphQL: Resource not accessible by personal access token \
+                 (repository.c0.closingIssuesReferences)",
+            );
+        }
         for wanted in [
             "rateLimit { cost }",
             "isDraft body baseRefName headRefName headRefOid mergedAt mergeCommit { oid }",
             "baseRef { name }",
+            if refuses_closes {
+                "baseRef { name }"
+            } else {
+                CLOSES
+            },
             "statusCheckRollup { contexts(first: 100)",
             "isRequired(pullRequestNumber: ",
         ] {
@@ -527,18 +543,19 @@ impl Model {
         // The issues it closes, where the query asks: `closes-<n>`, one `owner/name#number`
         // a line, as `fixtures/gh` answers `gh pr view` from the same record.
         if closes {
-            let nodes: Vec<Value> = std::fs::read_to_string(self.state.join(format!("closes-{number}")))
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| {
-                    let (repository, number) = line.trim().split_once('#')?;
-                    let (owner, name) = repository.split_once('/')?;
-                    Some(json!({
-                        "number": number.parse::<u64>().ok()?,
-                        "repository": {"name": name, "owner": {"login": owner}},
-                    }))
-                })
-                .collect();
+            let nodes: Vec<Value> =
+                std::fs::read_to_string(self.state.join(format!("closes-{number}")))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| {
+                        let (repository, number) = line.trim().split_once('#')?;
+                        let (owner, name) = repository.split_once('/')?;
+                        Some(json!({
+                            "number": number.parse::<u64>().ok()?,
+                            "repository": {"name": name, "owner": {"login": owner}},
+                        }))
+                    })
+                    .collect();
             node["closingIssuesReferences"] = json!({"nodes": nodes});
         }
         // A journey's own answer for this change request, in place of the derived

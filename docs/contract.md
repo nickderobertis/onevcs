@@ -4843,6 +4843,86 @@ build never recorded.
 Event kinds added: `gate-run`.
 
 
+### Every landing reports the GitHub issues it closes
+
+A consumer relaying landing events — the engine, which moves each closed issue's card to
+`Done` — has to know which issues a landing closed, and this crate already knows at the
+moment it records the landing: it composed the squash, or it read the merge from the host.
+So the landing events say so, and a consumer never reads the host again to find out. This
+crate knows nothing about boards or plan stores; the field is the whole interface.
+
+**One field, `closes`, on the events that record a landing:**
+
+- `merge-completed` — a `local-direct` publication's squash, the `merge-completed` that
+  follows a watched `change-merged`, and the `integrate` train's.
+- `change-merged` — a merge a publication's watch saw, a merge a later read reconciles
+  (`status`, `release status` or `publish` meeting a change request a `checks-unsettled`
+  close stopped watching), a merge the standings read finds, and a landing `release status`
+  finds from the base's history alone.
+
+`closes` is a JSON array of strings, each `owner/name#N` — the repository's owner and name
+as GitHub spells them, and the issue's number — distinct ignoring case, in the order each
+first appears, and `[]` when the landing closes none. Every one of those events this
+release emits carries it. **A reader of an event an older release wrote, which has no
+`closes`, reads it as `[]`.** Every other field of those payloads, every event kind, the
+envelope (still `v: 1`), `PublishOutcome`, `Publication` and every other public Rust type
+are unchanged, and every emitter builds the field through one function.
+
+**Where each landing's set comes from:**
+
+- **A `local-direct` squash**: the issue-closing references the squash message already
+  carries forward (`Closes #7`, `fixes: owner/other#3`, `Resolves <issue URL>`), each
+  resolved — `owner/name#N` as written; a `github.com` issue URL as `owner/name#N`; a bare
+  `#N` against the identity's own GitHub repository. A reference that names no GitHub
+  issue — an issue URL on another host, or a bare `#N` on an identity with no GitHub
+  repository — is left out of `closes` and is still carried in the squash message.
+- **The `integrate` train**: it carries its candidates' closing lines into each squash
+  commit it lands exactly as a `local-direct` publication does, and reports them the same
+  way, so what it reports is what its commit carries.
+- **A change request**: GitHub's own `closingIssuesReferences` of that change request —
+  each node's repository owner, name and number — read in the request that already records
+  its merge: `gh pr view --json state,mergeCommit,closingIssuesReferences` for a watched
+  merge, the same read with `headRefOid` for a late one, and
+  `closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } }`
+  in each alias of the standings query. **Recording closures sends no request the merge
+  read did not already send.** A host implementation other than this crate's `GitHub`
+  reports none, so its landings carry `[]`.
+- **A landing found from the base's history alone** — `release status` reading the change
+  request's number in the base with no read of that change request from the host in the
+  same process: the issue-closing lines of the landing commit's own message, parsed as a
+  `local-direct` squash's are, with a bare `#N` resolved against the identity's own
+  repository. Where the same process did read the change request from the host, that read's
+  `closingIssuesReferences` is what is reported. **A `[]` on such an event is not evidence
+  that the landing closed nothing**: GitHub can close an issue from a change request's
+  description, which its merge commit need not carry *(the manager's ruling on this
+  amendment)*.
+
+**Readable after the fact.** Every `change-merged` a late-merge reconcile or the standings
+read records is appended to the stream of the session that opened the change request
+whenever one exists, so a consumer re-reading that session's persisted stream
+(`EventStream::open`) after the session closed finds the landing with its `closes`.
+
+A `local-direct` publication of `github.com/owner/name` whose commits carry `Closes #7`,
+`fixes: owner/other#3`, `Resolves https://github.com/owner/name/issues/9`, a second
+`Fixes #7`, and `Closes https://git.example.com/owner/name/issues/4` records:
+
+```json
+{"kind": "merge-completed",
+ "payload": {"identity": "/srv/repos/name/.git",
+             "sha": "1c5a0b1e8e3f3c2d6b9a4f0e7d8c9b0a1f2e3d4c",
+             "base": "main",
+             "landed_at": "2026-10-18T12:00:00.000Z",
+             "landing": "1c5a0b1e8e3f3c2d6b9a4f0e7d8c9b0a1f2e3d4c",
+             "closes": ["owner/name#7", "owner/other#3", "owner/name#9"]}}
+```
+
+— and its squash still carries each distinct closing line between the subject and the
+trailers: `Closes #7`, `Fixes owner/other#3`, `Resolves owner/name#9` and
+`Closes https://git.example.com/owner/name/issues/4`.
+
+Event kinds added: none.
+
+
 ### A stack base merges several unlanded parents onto a root, and is pushed with no change request
 
 **Recorded as the plan's agreement** (plan `authoring:pr-feedback-rework`, node

@@ -1064,6 +1064,12 @@ case "$subcommand" in
         fi
         ;;
     esac
+    # A credential the host will not show the issues a change request closes: GitHub
+    # refuses the whole call naming that field, however much else it could read.
+    if wanted closingIssuesReferences && [ -f "$STATE/refuse-closing-references" ]; then
+      printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.closingIssuesReferences)\n' >&2
+      exit 1
+    fi
     separator=""
     printf '{'
     if wanted number; then printf '%s"number":%s' "$separator" "$PR_NUMBER"; separator=","; fi

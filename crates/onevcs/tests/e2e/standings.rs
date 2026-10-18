@@ -468,6 +468,52 @@ fn a_landing_of_a_branch_a_publication_here_opened_is_recorded_on_that_publicati
     assert_eq!(world.events_of(&token, "change-merged").len(), 1);
 }
 
+#[test]
+fn a_standing_read_by_a_credential_that_may_not_see_closed_issues_records_the_landing_with_none() {
+    // GitHub refuses the whole query to a credential that may not see the issues a change
+    // request closes. The standings are what the read is for, so it is asked again
+    // without that selection: the landing is recorded, reporting no closures, and the
+    // read says why.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let (token, worktree) = stack.session("feature/refused");
+    world.commit_file(
+        &worktree,
+        "refused.txt",
+        "refused\n",
+        "feat: a refused change",
+    );
+    let held = world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .output()
+        .expect("the binary runs");
+    assert!(
+        held.status.success(),
+        "{}",
+        String::from_utf8_lossy(&held.stderr)
+    );
+    world.host_closes(1, &["acme-corp/stacked#12"]);
+    world.refuse_closing_references();
+    let landed = world.person_merges(1, PersonMerge::Squash, MERGED_AT, HeadAfter::Kept);
+
+    let output = stack.standings_output("main", &[url(1)], &[]);
+    let read = succeeded(&output);
+    assert_eq!(standing(&read, 1)["state"]["landing"], true, "{read}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "the host would not say which issues the change requests of acme-corp/stacked \
+             close, so a landing this read records reports none"
+        ),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let merged = world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(merged[0]["payload"]["sha"], landed);
+    assert_eq!(merged[0]["payload"]["closes"], json!([]), "{merged:#?}");
+}
+
 /// One verdict's change request: its branch, what its head's rollup says, and the base.
 struct Rollup {
     branch: &'static str,

@@ -14,8 +14,18 @@
 //! or an issue URL. Each is written back as one line, `<Keyword> <reference>`, so a
 //! sentence that happened to close an issue survives as the reference and not as the
 //! sentence.
+//!
+//! The same references are what a landing *reports* closing: every landing event carries
+//! `closes`, the GitHub issues it closes as `owner/name#N`, and [`report`] is the one
+//! place that field is written. A squash this crate composes reports the references it
+//! carried, resolved to issues ([`Closing::issue`]); a merge GitHub performed reports what
+//! GitHub said that change request closes, which the read that found the merge
+//! [`heard`] and the record of the landing asks for ([`heard_of`]).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Mutex;
+
+use serde_json::{Map, Value};
 
 /// Every keyword GitHub reads as closing an issue, lowercased.
 const KEYWORDS: [&str; 9] = [
@@ -24,31 +34,154 @@ const KEYWORDS: [&str; 9] = [
 
 /// One closing reference, as it is written back.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Closing {
+pub(crate) struct Closing {
     /// The keyword, capitalised: `Closes`, `Fixed`.
-    keyword: String,
+    pub(crate) keyword: String,
     /// The issue, as `#N`, `owner/name#N`, or the URL of an issue on a host other
     /// than `github.com`.
-    reference: String,
+    pub(crate) reference: String,
 }
 
-/// The distinct closing lines `messages` carry, in the order they first appear.
+impl Closing {
+    /// The line a squash carries it forward as: `<Keyword> <reference>`.
+    pub(crate) fn line(&self) -> String {
+        format!("{} {}", self.keyword, self.reference)
+    }
+
+    /// The GitHub issue it closes, with a bare `#N` taken to be an issue of `own` —
+    /// the `owner/name` of the repository the commit lands in. `None` for an issue on
+    /// another host, and for a bare `#N` where the repository is not a GitHub one: the
+    /// line still closes whatever its host reads it as, and is still carried, but it
+    /// names no GitHub issue this crate can report.
+    pub(crate) fn issue(&self, own: Option<&str>) -> Option<Issue> {
+        // A URL is kept as written only where it names an issue on another host:
+        // a github.com one was read as `owner/name#N`.
+        if self.reference.contains("://") {
+            return None;
+        }
+        let (repository, number) = match self.reference.strip_prefix('#') {
+            Some(number) => (own?, number),
+            None => self.reference.split_once('#')?,
+        };
+        let (owner, name) = repository.split_once('/')?;
+        Issue::new(owner, name, number.parse().ok()?)
+    }
+}
+
+/// One GitHub issue a landing closes, spelled `owner/name#N` as GitHub spells the
+/// repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Issue {
+    owner: String,
+    name: String,
+    number: u64,
+}
+
+impl Issue {
+    /// An issue, where `owner` and `name` can be a GitHub repository's.
+    fn new(owner: &str, name: &str, number: u64) -> Option<Self> {
+        (is_owner(owner) && is_name(name)).then(|| Issue {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+            number,
+        })
+    }
+}
+
+impl std::fmt::Display for Issue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}#{}", self.owner, self.name, self.number)
+    }
+}
+
+/// The distinct closing references `messages` carry, in the order they first appear.
 ///
 /// Two lines closing the same issue are one: which keyword closed it does not change
 /// what the host does, and a squash naming an issue twice reads as two deliveries.
-pub(crate) fn lines<'a>(messages: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+pub(crate) fn references<'a>(messages: impl IntoIterator<Item = &'a str>) -> Vec<Closing> {
     let mut seen = HashSet::new();
     let mut answer = Vec::new();
     for message in messages {
         for line in message.lines() {
             for closing in in_line(line) {
                 if seen.insert(closing.reference.to_lowercase()) {
-                    answer.push(format!("{} {}", closing.keyword, closing.reference));
+                    answer.push(closing);
                 }
             }
         }
     }
     answer
+}
+
+/// The GitHub issues `closings` close, a bare `#N` taken as an issue of `own`.
+pub(crate) fn issues(closings: &[Closing], own: Option<&str>) -> Vec<Issue> {
+    closings
+        .iter()
+        .filter_map(|closing| closing.issue(own))
+        .collect()
+}
+
+/// Write `closes` onto a landing event's payload: `issues` as `owner/name#N`, each
+/// once ignoring case, in the order each first appears, and `[]` for none.
+///
+/// The one place the field is spelled, so every landing a consumer relays says it
+/// the same way — the shape `docs/contract.md`'s amendment fixes.
+pub(crate) fn report(payload: &mut Map<String, Value>, issues: impl IntoIterator<Item = Issue>) {
+    let mut seen = HashSet::new();
+    let closes: Vec<Value> = issues
+        .into_iter()
+        .map(|issue| issue.to_string())
+        .filter(|spelled| seen.insert(spelled.to_lowercase()))
+        .map(Value::String)
+        .collect();
+    payload.insert("closes".to_owned(), Value::Array(closes));
+}
+
+/// The issues GitHub says a change request closes, out of its `closingIssuesReferences`
+/// as `gh pr view --json` answers it (a list) or a GraphQL connection does
+/// (`{nodes: [...]}`). A node naming no repository and number is no issue.
+pub(crate) fn from_host(answered: Option<&Value>) -> Vec<Issue> {
+    let nodes = match answered {
+        Some(Value::Array(nodes)) => nodes.as_slice(),
+        Some(connection) => connection
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice),
+        None => &[],
+    };
+    nodes
+        .iter()
+        .filter_map(|node| {
+            Issue::new(
+                node.pointer("/repository/owner/login")?.as_str()?,
+                node.pointer("/repository/name")?.as_str()?,
+                node.get("number")?.as_u64()?,
+            )
+        })
+        .collect()
+}
+
+/// What GitHub said each merged change request closes, by its URL, as the read that
+/// found the merge answered it — the request that records a merge is the one that
+/// reads its closures, so the record of the landing asks for nothing again.
+static HEARD: Mutex<BTreeMap<String, Vec<Issue>>> = Mutex::new(BTreeMap::new());
+
+/// Keep what the host said change request `url` closes, replacing anything older.
+pub(crate) fn heard(url: &str, issues: Vec<Issue>) {
+    HEARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(url.to_owned(), issues);
+}
+
+/// What the host said change request `url` closes, where a read this process made of
+/// its merge said.
+pub(crate) fn heard_of(url: &str) -> Option<Vec<Issue>> {
+    HEARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(url)
+        .cloned()
 }
 
 /// Every closing reference in one line.
@@ -169,7 +302,12 @@ fn capitalised(word: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::lines;
+    fn lines<'a>(messages: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        super::references(messages)
+            .iter()
+            .map(super::Closing::line)
+            .collect()
+    }
 
     #[test]
     fn every_form_github_reads_is_collected_once_in_order() {

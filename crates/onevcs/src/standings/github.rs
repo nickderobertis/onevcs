@@ -46,9 +46,19 @@ mod pattern;
 
 use pattern::Pattern;
 
-/// What every alias reads of its change request, and whether its base still exists.
+/// What every alias reads of its change request, and whether its base still exists —
+/// and the issues it closes ([`CLOSES_FIELDS`]), which a merge found here reports.
 pub(crate) const PULL_FIELDS: &str = "url number state isDraft body baseRefName headRefName \
-headRefOid mergedAt mergeCommit { oid } baseRef { name }";
+headRefOid mergedAt mergeCommit { oid } baseRef { name } closingIssuesReferences(first: 100) { \
+nodes { number repository { name owner { login } } } }";
+
+/// The selection [`PULL_FIELDS`] reads the issues a change request closes with: what a
+/// credential that may not see them is asked again without, as `ask` says.
+const CLOSES_FIELDS: &str =
+    " closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } }";
+
+/// The field GitHub answers those issues in.
+const CLOSES_FIELD: &str = "closingIssuesReferences";
 
 /// What the host declares a merge into any of its branches requires, read once per call
 /// at the repository: its rulesets with the refs each applies to, and its classic
@@ -251,16 +261,26 @@ fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| invalid(format!("{repo:?} does not name one repository")))?;
-    let page = gh::json(&gh::invoke(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!("query={}", query(numbers, reviews, declarations)),
-        "-f",
-        &format!("owner={owner}"),
-        "-f",
-        &format!("name={name}"),
-    ])?)?;
+    // The issues each change request closes are what one field of the query reads, and
+    // GitHub refuses the whole query to a credential that may not see them — so such a
+    // credential is asked again without that selection, rather than losing the standing
+    // over a field the standing does not need ([`gh::invoke_unless_refused`]).
+    let asked = query(numbers, reviews, declarations);
+    let without = format!("query={}", asked.replace(CLOSES_FIELDS, ""));
+    let asked = format!("query={asked}");
+    let (owner, name) = (format!("owner={owner}"), format!("name={name}"));
+    let (raw, heard) = gh::invoke_unless_refused(
+        &["api", "graphql", "-f", &asked, "-f", &owner, "-f", &name],
+        CLOSES_FIELD,
+        &["api", "graphql", "-f", &without, "-f", &owner, "-f", &name],
+    )?;
+    if !heard {
+        eprintln!(
+            "onevcs: warning: the host would not say which issues the change requests of \
+             {repo} close, so a landing this read records reports none"
+        );
+    }
+    let page = gh::json(&raw)?;
     let data = page.get("data").cloned().ok_or_else(|| {
         invalid(format!(
             "GitHub answered the standings read with no data: {page}"
@@ -355,6 +375,13 @@ fn standing(
             "{base:?} is gone from the origin, so what a merge into it requires cannot be read"
         )),
     };
+    // What a merge found here closes, for the record of its landing — where the query
+    // read it, which a credential that may not see it was not asked.
+    if matches!(state, ChangeState::Merged { .. }) {
+        if let Some(closes) = pull.get(CLOSES_FIELD) {
+            crate::closing::heard(url.as_str(), crate::closing::from_host(Some(closes)));
+        }
+    }
     let head = Sha(head);
     let checks = rollup(pull, number, &head)?;
     Ok(ChangeStanding {

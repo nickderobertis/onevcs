@@ -932,6 +932,8 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
     world.commit_file(&worktree, "one.txt", "one\n", "feat: land it directly");
+    // GitHub links two issues, in two repositories, to the change request it opens.
+    world.host_closes(1, &["acme-corp/direct#12", "acme-corp/tracker#3"]);
 
     world
         .onevcs()
@@ -943,7 +945,21 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
         world.git(&origin, &["log", "-1", "--format=%s", "main"]),
         "feat: land it directly (#1)"
     );
-    assert!(!world.events_of(&token, "change-merged").is_empty());
+    // Both landing events the watched merge records say which issues it closed, read
+    // from the host in the request that found the merge — and that request is the only
+    // one: the journey asks the host nothing it did not ask before closures were read.
+    crate::call_baseline::assert_no_call_beyond(&world, "watched-merge");
+    let merged = world.events_of(&token, "change-merged");
+    let completed = world.events_of(&token, "merge-completed");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    for event in merged.iter().chain(&completed) {
+        assert_eq!(
+            event["payload"]["closes"],
+            serde_json::json!(["acme-corp/direct#12", "acme-corp/tracker#3"]),
+            "{event}"
+        );
+    }
 }
 
 #[test]
@@ -4066,5 +4082,59 @@ fn a_status_read_over_session_records_this_host_cannot_read_refuses_rather_than_
             .args(["status", spelling, "--json"])
             .assert()
             .success();
+    }
+}
+
+#[test]
+fn a_credential_the_host_will_not_show_closed_issues_still_lands_and_reports_none() {
+    // GitHub refuses the whole read of a merge to a credential that may not see the
+    // issues it closes. The merge is what the read decides, so it is asked again
+    // without them: the change lands, its landing reports no closures, and says why.
+    let world = World::new();
+    let origin = world.bare_origin("refused");
+    let checkout = world.clone_of(&origin, "refused");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/refused.git",
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-direct, approvals: none}\n",
+    );
+    world.install_fake_host(&origin);
+    world.install_pre_push(&checkout, "exit 0");
+    world.host_closes(1, &["acme-corp/refused#12"]);
+    world.refuse_closing_references();
+
+    let assert = world
+        .onevcs()
+        .args(["session", "open", "refused", "--branch", "feature/refused"])
+        .assert()
+        .success();
+    let token = token_of(&assert.get_output().stdout);
+    let worktree = worktree_of(&assert.get_output().stdout);
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: land it anyway");
+
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"))
+        .stderr(predicate::str::contains(
+            "the host would not say which issues \
+             https://github.com/acme-corp/refused/pull/1 closes, so its landing reports none",
+        ));
+    for kind in ["change-merged", "merge-completed"] {
+        let events = world.events_of(&token, kind);
+        assert_eq!(events.len(), 1, "{events:#?}");
+        assert_eq!(events[0]["payload"]["closes"], serde_json::json!([]));
     }
 }

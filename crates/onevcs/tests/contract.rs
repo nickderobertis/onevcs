@@ -708,6 +708,59 @@ fn the_phase_the_amendment_adds_is_the_approved_envelope_and_one_more_key() {
     assert_eq!(Phase::of(EventKind::ChangeOpened), Some(Phase::Review));
 }
 
+/// The landing the closures amendment spells, as `{kind, payload}`.
+fn documented_closing_landing() -> Value {
+    serde_json::from_str(&amendment_block_declaring("json", "\"closes\": ["))
+        .expect("the closures amendment's landing is JSON")
+}
+
+#[test]
+fn the_closures_amendment_spells_one_field_on_the_landing_events_this_build_names() {
+    // What a consumer relaying landings builds against: one field, on the two kinds that
+    // record a landing, each issue `owner/name#N` once. The e2e journey holds the payload
+    // the binary writes to this same block.
+    let landing = documented_closing_landing();
+    let kind: EventKind = serde_json::from_value(landing["kind"].clone())
+        .expect("the documented landing is of a kind this build names");
+    assert_eq!(kind, EventKind::MergeCompleted);
+    let closes = landing["payload"]["closes"]
+        .as_array()
+        .expect("`closes` is an array");
+    assert!(!closes.is_empty(), "the example closes something");
+    let mut seen = BTreeSet::new();
+    for issue in closes {
+        let spelled = issue.as_str().expect("each issue is a string");
+        let (repository, number) = spelled.split_once('#').expect("owner/name#N");
+        let (owner, name) = repository.split_once('/').expect("owner/name#N");
+        assert!(
+            !owner.is_empty() && !name.is_empty() && number.parse::<u64>().is_ok(),
+            "{spelled} is owner/name#N"
+        );
+        assert!(
+            seen.insert(spelled.to_lowercase()),
+            "{spelled} appears once, ignoring case"
+        );
+    }
+
+    let (amendments, _) = regions();
+    let section = amendments
+        .split("\n### ")
+        .find(|section| section.starts_with("Every landing reports the GitHub issues it closes"))
+        .expect("the closures amendment");
+    for named in [
+        "`merge-completed`",
+        "`change-merged`",
+        "`[]`",
+        "`closingIssuesReferences`",
+    ] {
+        assert!(section.contains(named), "the amendment names {named}");
+    }
+    assert!(
+        section.contains("Event kinds added: none."),
+        "the amendment adds no event kind"
+    );
+}
+
 #[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
     let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();

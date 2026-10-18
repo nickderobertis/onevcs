@@ -587,6 +587,31 @@ impl World {
         std::fs::write(self.path("gh-state/merge-clock"), at).expect("a merge clock");
     }
 
+    /// The issues change request `number` closes, as the substituted host's
+    /// `closingIssuesReferences` answers them — each `owner/name#number`, in this order.
+    /// Unset, it closes none. Written before or after the change request is opened, as
+    /// GitHub links an issue from a body or by hand at either moment.
+    pub fn host_closes(&self, number: usize, issues: &[&str]) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path(format!("gh-state/closes-{number}")),
+            issues
+                .iter()
+                .map(|issue| format!("{issue}\n"))
+                .collect::<String>(),
+        )
+        .expect("the issues a change request closes");
+    }
+
+    /// Make the substituted host refuse, naming the field, every read that asks which
+    /// issues a change request closes — as GitHub refuses a credential that may not see
+    /// them the whole call — while answering the same read without it.
+    pub fn refuse_closing_references(&self) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/refuse-closing-references"), "")
+            .expect("a credential refused the closing issues");
+    }
+
     /// What the substituted host's **classic** branch protection requires on the
     /// base, which is the second of the two ways GitHub protects a branch and the one
     /// a credential may be refused. Unset, the branch has no classic protection —

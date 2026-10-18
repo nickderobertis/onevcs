@@ -2320,3 +2320,60 @@ fn a_url_no_registered_github_repository_answers_for_is_refused_without_asking_a
     );
     assert_eq!(landings_recorded(&scene.world), 0);
 }
+
+#[test]
+fn a_landing_found_only_in_the_bases_history_reports_the_issues_its_commit_closes() {
+    // A change request this host opened and nothing here watched land: the host squash
+    // merges it under a message carrying two closing lines, and `release status` finds
+    // the landing by the number in that message alone — asking the host nothing about
+    // the change request, so the commit's own lines are what say which issues closed.
+    let hosted = Hosted::new(REVIEWED);
+    std::fs::write(
+        hosted.world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    let token = hosted.change("feature/closed-in-history", "feat: close two issues");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    landed_on_the_host_saying(
+        &hosted,
+        "feature/closed-in-history",
+        "feat: close two issues (#1)\n\nCloses #5\nFixes acme-corp/tracker#3",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .assert()
+        .success();
+
+    let release = release_status(&hosted.world, "feature/closed-in-history");
+    assert_eq!(release["state"], "awaiting-human-step", "{release}");
+    // The landing commit was read out of git, and the host was asked exactly what it
+    // was asked before closures were reported.
+    crate::call_baseline::assert_calls_unchanged(&hosted.world, "history-landing-release-status");
+    let merged = hosted.world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(
+        merged[0]["payload"]["closes"],
+        serde_json::json!(["acme-corp/hosted#5", "acme-corp/tracker#3"]),
+        "{merged:#?}"
+    );
+}

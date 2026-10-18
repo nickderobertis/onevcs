@@ -172,6 +172,31 @@ pub fn invoke_content(args: &[&str]) -> Result<String> {
     invoke(args)
 }
 
+/// Run `asked`, and where `gh` turns it down naming `field`, run `without` instead —
+/// for a call that reads one field its caller can do without. Answers what was printed,
+/// and whether it was `asked` that printed it.
+///
+/// Two refusals name the field, and neither is the answer to the rest of the call: a
+/// `gh` that predates it rejects it while parsing its arguments, before asking GitHub
+/// anything, and GitHub refuses a credential the field is not visible to by failing the
+/// *whole* call. So a read whose other fields decide something — whether a change
+/// merged — is not lost to the one it could do without. Every other refusal is
+/// `asked`'s, unchanged.
+pub fn invoke_unless_refused(
+    asked: &[&str],
+    field: &str,
+    without: &[&str],
+) -> Result<(String, bool)> {
+    let answer = attempt(asked)?;
+    if answer.code == Some(0) {
+        return Ok((answer.stdout, true));
+    }
+    if !answer.stderr.contains(field) {
+        return Err(refused(asked, &answer));
+    }
+    Ok((invoke(without)?, false))
+}
+
 /// Parse one `gh --json` response.
 pub fn json(raw: &str) -> Result<Value> {
     serde_json::from_str(raw.trim()).map_err(|e| {

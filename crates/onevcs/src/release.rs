@@ -635,6 +635,7 @@ pub fn status(
                     commit: &commit,
                     head: None,
                     at: None,
+                    found: Found::InHistory,
                 },
                 change_url,
                 &mut stream,
@@ -953,6 +954,42 @@ pub(crate) struct Landing<'a> {
     /// what lets a later reader take the record in place of asking again.
     pub(crate) head: Option<&'a str>,
     pub(crate) at: Option<crate::gate_run::Moment>,
+    /// Where it was found, which decides where the issues it closes are read from.
+    pub(crate) found: Found,
+}
+
+/// Where a landing found after its publication ended was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// The host reported the merge, in a read that also says what it closes.
+    OnTheHost,
+    /// The base's history holds it, and the host was not asked about it.
+    InHistory,
+}
+
+/// The GitHub issues a landing found after the fact closes: what a host read this
+/// process made of `change` said, and otherwise — for a landing only the base's history
+/// holds — the closing lines of the landing commit's own message, read as a
+/// `local-direct` squash's are. None where neither says.
+fn closes_of(
+    publication: &Path,
+    identity: &str,
+    change: &Url,
+    landing: &Landing<'_>,
+) -> Vec<crate::closing::Issue> {
+    if let Some(heard) = crate::closing::heard_of(change.as_str()) {
+        return heard;
+    }
+    if landing.found == Found::OnTheHost {
+        return Vec::new();
+    }
+    let Ok(Some(message)) = git::commit_message(publication, landing.commit) else {
+        return Vec::new();
+    };
+    crate::closing::issues(
+        &crate::closing::references([message.as_str()]),
+        crate::gh::slug(identity).as_deref(),
+    )
 }
 
 /// Give a landing this host learned of after the fact what the publication that
@@ -996,6 +1033,7 @@ pub(crate) fn reconcile_landing(
         commit,
         head,
         at: landed_at,
+        found: _,
     } = landing;
     let identity = &located.releases.identity;
     let warn = |what: &str, failure: &dyn std::fmt::Display| {
@@ -1033,6 +1071,10 @@ pub(crate) fn reconcile_landing(
         merged.insert("head".to_owned(), json!(head));
     }
     crate::gate_run::landed(&mut merged, landed_at, commit);
+    crate::closing::report(
+        &mut merged,
+        closes_of(&publication, identity, change, &landing),
+    );
     let opened = match recording {
         // Labelled with the identity even on a stream that already says whose it is,
         // because a branch-keyed verb's stream is one per branch *name*: a record on it

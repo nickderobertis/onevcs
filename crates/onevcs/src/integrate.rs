@@ -529,8 +529,24 @@ fn one(train: &Train, branch: &str, stream: &mut Stream) -> Result<BranchOutcome
                 }
             };
         let attested = provenance::attestation_trailers(&worktree, base, "HEAD", trailers)?;
-        let message = publish::compose_message(&subject, &attested);
-        let landed = squash_publish(root, base, branch, &message, workspace, stream)?;
+        // The issue-closing lines the candidate's commits carried go into its squash,
+        // as a `local-direct` publication carries them, and are what it reports closing.
+        let commits = git::log_messages(&worktree, base, "HEAD")?;
+        let closing =
+            crate::closing::references(commits.iter().map(|commit| commit.message.as_str()));
+        let message = publish::compose_squash(&subject, &closing, &attested);
+        let closes = crate::closing::issues(&closing, crate::gh::slug(&resolution.key).as_deref());
+        let landed = squash_publish(
+            root,
+            base,
+            branch,
+            &Squash {
+                message: &message,
+                closes,
+            },
+            workspace,
+            stream,
+        )?;
         Ok(BranchOutcome {
             branch: Ref::from_git(branch),
             status: if landed {
@@ -553,12 +569,19 @@ fn skipped(branch: &str, reason: &str) -> BranchOutcome {
     }
 }
 
+/// One candidate's squash: the message it lands under, and the GitHub issues the
+/// closing lines in that message name.
+struct Squash<'a> {
+    message: &'a str,
+    closes: Vec<crate::closing::Issue>,
+}
+
 /// Land one candidate as a single commit the base checkout fast-forwards onto.
 fn squash_publish(
     root: &Path,
     base: &str,
     branch: &str,
-    message: &str,
+    squash: &Squash<'_>,
     workspace: &Path,
     stream: &mut Stream,
 ) -> Result<bool> {
@@ -567,15 +590,14 @@ fn squash_publish(
     let scratch = parent.join("worktree");
     git::worktree_add_detached(root, &scratch, base)?;
     let landed = (|| -> Result<bool> {
-        let Some(sha) = git::merge_squash(&scratch, branch, message)? else {
+        let Some(sha) = git::merge_squash(&scratch, branch, squash.message)? else {
             return Ok(false);
         };
         git::merge_ff_only(root, &sha)?;
         if stream.in_operation() {
-            stream.emit(
-                EventKind::MergeCompleted,
-                object(json!({"branch": branch, "base": base, "sha": sha})),
-            );
+            let mut completed = object(json!({"branch": branch, "base": base, "sha": sha}));
+            crate::closing::report(&mut completed, squash.closes.clone());
+            stream.emit(EventKind::MergeCompleted, completed);
         }
         Ok(true)
     })();
