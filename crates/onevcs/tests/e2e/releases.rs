@@ -3352,6 +3352,11 @@ fn a_retired_landings_url_names_its_own_repository_where_two_identities_retired_
     assert_eq!(answered["state"], "not-released", "{answered}");
 }
 
+// llmlint: ignore-block[e2e_not_mocked] the remote host's own decisioning — when a
+// held change merges — is the one boundary an offline gate cannot drive, and this
+// suite's substituted `gh` answers it, as it does for the journey above this one. The
+// binary, its registry, its event streams and the real bare origin are all real; what
+// is asserted is that no host question this journey could script was asked.
 #[test]
 fn an_acknowledgement_never_takes_up_a_late_merge_it_would_be_recording() {
     // A change request this host opened and stopped watching while its check ran: the
