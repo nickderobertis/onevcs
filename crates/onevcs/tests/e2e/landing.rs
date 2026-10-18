@@ -2275,3 +2275,48 @@ fn a_merge_this_host_cannot_bring_its_base_up_to_is_no_landing_and_is_not_record
     );
     assert_eq!(landings_recorded(&scene.world), 0);
 }
+
+#[test]
+fn a_url_no_registered_github_repository_answers_for_is_refused_without_asking_a_host() {
+    let scene = ElsewhereOpened::new();
+    // A repository registered on a host this build has no implementation for.
+    let lab = scene.world.bare_origin("lab");
+    let checkout = scene.world.clone_of(&lab, "lab");
+    let (code, _, stderr) = scene.run(&[
+        "onevcs",
+        "register",
+        &checkout.to_string_lossy(),
+        "--origin",
+        "https://gitlab.com/acme-corp/lab.git",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+
+    for (url, why) in [
+        // Not a change request's address at all.
+        ("https://github.com/acme-corp/hosted/issues/238", None),
+        // A change request of a repository nobody registered here.
+        ("https://github.com/someone/else/pull/238", None),
+        // One of a registered repository no host here answers for.
+        (
+            "https://gitlab.com/acme-corp/lab/pull/5",
+            Some("is not a github.com repository, so no host this build asks answers for it"),
+        ),
+    ] {
+        let (code, stdout, stderr) = scene.run(&["onevcs", "status", url]);
+        assert_eq!(code, 2, "{url}: {stderr}");
+        assert!(stdout.is_empty());
+        assert!(
+            stderr.contains("onevcs: invalid input: ")
+                && stderr.contains("was opened through `onevcs` on this host"),
+            "{url} is refused as it always was: {stderr}"
+        );
+        if let Some(why) = why {
+            assert!(stderr.contains(why), "{url} says why: {stderr}");
+        }
+    }
+    assert!(
+        scene.host.ledger().expect("the host's calls").is_empty(),
+        "no host was asked about any of them"
+    );
+    assert_eq!(landings_recorded(&scene.world), 0);
+}
