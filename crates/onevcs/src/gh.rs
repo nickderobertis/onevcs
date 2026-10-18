@@ -355,6 +355,7 @@ impl Unanswered {
         Some(Unanswered { said, detail })
     }
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// What one `gh api --include` wrote to standard output: the response's status line
 /// and headers, then its body.
