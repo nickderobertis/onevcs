@@ -4216,6 +4216,203 @@ fn a_continued_branch_whose_local_copy_only_merged_the_base_opens_at_origins_cop
     );
 }
 
+/// Move origin's base by one commit from a clone of its own, and fetch it into the
+/// checkout, so the checkout can merge it.
+fn move_the_base(fixture: &Fixture, clone: &str, file: &str, contents: &str) {
+    let world = &fixture.world;
+    let elsewhere = world.clone_of(&fixture.origin, clone);
+    world.commit_file(&elsewhere, file, contents, "feat: the base moves again");
+    world.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
+}
+
+/// Open a session continuing `branch` and answer its worktree and what it said.
+fn continued(fixture: &Fixture, branch: &str) -> (PathBuf, String) {
+    let mut command = fixture.world.onevcs();
+    command.args(["session", "open", "project", "--branch", branch]);
+    let assert = command.assert().success();
+    (
+        worktree_of(&assert.get_output().stdout),
+        String::from_utf8_lossy(&assert.get_output().stderr).into_owned(),
+    )
+}
+
+/// The refusal a continuation over a copy that is not only clean base merges meets, and
+/// the proof it kept nothing on the way.
+fn refused_as_diverged(fixture: &Fixture, branch: &str) {
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", branch])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("neither copy carries the other"));
+    assert!(
+        fixture
+            .world
+            .git(
+                &fixture.checkout,
+                &["for-each-ref", "refs/onevcs/passed-over/"]
+            )
+            .is_empty(),
+        "a refused continuation passes nothing over"
+    );
+}
+
+#[test]
+fn a_continued_branch_whose_local_copy_merged_the_base_twice_opens_at_origins_copy() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/took-the-base-twice";
+    let remote =
+        a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/main"],
+    );
+    // A second clean merge on top of the first: the first merge is the second's other
+    // parent, which is how a chain of them is recognised rather than only one.
+    move_the_base(&fixture, "elsewhere-again", "later.txt", "later\n");
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/main"],
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let local = world.git(
+        &fixture.checkout,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    );
+
+    let (tree, said) = continued(&fixture, branch);
+    assert!(reaches(&fixture, &tree, &remote, "HEAD"), "{said}");
+    assert!(!reaches(&fixture, &tree, &local, "HEAD"), "{said}");
+    assert!(
+        tree.join("later.txt").is_file(),
+        "the newest base is merged at the open"
+    );
+    assert_eq!(
+        world.git(
+            &fixture.checkout,
+            &[
+                "rev-parse",
+                &format!("refs/onevcs/passed-over/{branch}/{local}")
+            ]
+        ),
+        local,
+        "{said}"
+    );
+}
+
+#[test]
+fn a_continued_branch_whose_local_copy_merged_itself_into_the_base_opens_at_origins_copy() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/merged-from-the-base-side";
+    let remote =
+        a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    // The same merge made from the base's side, so the base commit is the first parent
+    // and the branch the second: the parents are recognised in either order.
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "--detach", "origin/main"],
+    );
+    world.git(&fixture.checkout, &["merge", "-q", "--no-edit", branch]);
+    world.git(&fixture.checkout, &["branch", "-f", branch, "HEAD"]);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let local = world.git(
+        &fixture.checkout,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    );
+
+    let (tree, said) = continued(&fixture, branch);
+    assert!(reaches(&fixture, &tree, &remote, "HEAD"), "{said}");
+    assert!(!reaches(&fixture, &tree, &local, "HEAD"), "{said}");
+    assert!(
+        said.contains(&format!("kept at refs/onevcs/passed-over/{branch}/{local}")),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_continued_branch_whose_local_copy_holds_an_octopus_of_base_commits_is_still_refused() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/took-the-base-three-ways";
+    a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    // The tree of the clean merge, recorded over three parents rather than two: the
+    // content is right and the shape is not one any merge of the base writes.
+    world.git(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/main"],
+    );
+    let tree = world.git(&fixture.checkout, &["rev-parse", "HEAD^{tree}"]);
+    let octopus = world.git(
+        &fixture.checkout,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD^1",
+            "-p",
+            "origin/main",
+            "-p",
+            "origin/main~1",
+            "-m",
+            "Merge the base three ways",
+        ],
+    );
+    world.git(&fixture.checkout, &["reset", "-q", "--hard", &octopus]);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    refused_as_diverged(&fixture, branch);
+}
+
+#[test]
+fn a_continued_branch_whose_local_copy_merged_a_branch_that_is_not_the_base_is_still_refused() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/took-a-side-branch";
+    a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    // A clean merge — of a branch nobody published into the base, whose commit is work.
+    world.git(&fixture.checkout, &["checkout", "-q", "-b", "side", "main"]);
+    world.commit_file(
+        &fixture.checkout,
+        "side.txt",
+        "side\n",
+        "feat: a side branch",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", branch]);
+    world.git(&fixture.checkout, &["merge", "-q", "--no-edit", "side"]);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    refused_as_diverged(&fixture, branch);
+}
+
+#[test]
+fn a_continued_branch_whose_local_copy_resolved_a_conflicting_base_merge_is_still_refused() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/resolved-the-base";
+    a_branch_whose_work_went_on_elsewhere_while_this_copy_took_the_base(&fixture, branch);
+    // The base adds the file the branch added, so merging it conflicts, and the copy
+    // here records a resolution — a choice somebody made, which is work.
+    move_the_base(&fixture, "elsewhere-again", "work.txt", "the base's own\n");
+    let conflicted = world.git_raw(
+        &fixture.checkout,
+        &["merge", "-q", "--no-edit", "origin/main"],
+    );
+    assert!(
+        !conflicted.status.success(),
+        "the premise: the merge conflicts"
+    );
+    std::fs::write(fixture.checkout.join("work.txt"), "both, resolved\n").expect("a resolution");
+    world.git(&fixture.checkout, &["add", "-A"]);
+    world.git(&fixture.checkout, &["commit", "-q", "--no-edit"]);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+
+    refused_as_diverged(&fixture, branch);
+}
+
 #[test]
 fn a_continued_branch_whose_local_copy_also_holds_its_own_commit_is_still_refused() {
     let fixture = Fixture::local(&local_direct());

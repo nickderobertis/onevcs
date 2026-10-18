@@ -2531,6 +2531,206 @@ fn a_run_clones_copy_holding_only_a_clean_base_merge_is_kept_in_the_publication_
     assert!(landed.contains("more-work.txt"), "{landed}");
 }
 
+/// Every ref the publication checkout keeps a passed-over tip under, and the commit each
+/// names.
+fn kept_tips(fixture: &Fixture) -> String {
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/onevcs/passed-over/",
+        ],
+    )
+}
+
+#[test]
+fn a_clean_base_merge_copy_origin_already_has_still_refuses_the_landing() {
+    // Origin's copy is what a landing pushes onto, so a copy that does not carry it is
+    // not the work whatever the other copy holds beyond it.
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/merged-and-pushed";
+    work_in_the_session_while_the_checkout_took_the_base(&fixture, branch, |fixture| {
+        merged_cleanly(fixture);
+        fixture.world.git(
+            &fixture.checkout,
+            &["push", "-q", "--no-verify", "origin", branch],
+        );
+    });
+
+    publish_branch(&fixture, branch)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no copy of it carries the rest"));
+    assert!(kept_tips(&fixture).is_empty(), "nothing is passed over");
+}
+
+#[test]
+fn a_clean_base_merge_in_a_checkout_with_a_store_of_its_own_is_judged_by_its_own_base() {
+    // A second registered checkout, cloned on its own, so it borrows nothing from the
+    // publication checkout: the work there is a commit it cannot see, and the base it
+    // merged is one the publication checkout has never fetched.
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/merged-in-another-store";
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &worker.to_string_lossy()])
+        .assert()
+        .success();
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "-b", branch, "main"]);
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "work.txt",
+        "work\n",
+        "feat: the work begins",
+    );
+    fixture.world.git(
+        &worker,
+        &[
+            "fetch",
+            "-q",
+            &fixture.checkout.to_string_lossy(),
+            &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+    );
+    fixture.world.commit_file(
+        &fixture.checkout,
+        "more-work.txt",
+        "more work\n",
+        "feat: the work the publication checkout went on with",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture
+        .world
+        .commit_file(&elsewhere, "base.txt", "base\n", "feat: the base moves");
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    fixture.world.git(&worker, &["fetch", "-q", "origin"]);
+    fixture.world.git(&worker, &["checkout", "-q", branch]);
+    fixture
+        .world
+        .git(&worker, &["merge", "-q", "--no-edit", "origin/main"]);
+    fixture.world.git(&worker, &["checkout", "-q", "main"]);
+    let work = tip_of(&fixture, &fixture.checkout, branch);
+    let merged = tip_of(&fixture, &worker, branch);
+    let absent = |checkout: &Path, sha: &str| {
+        fixture
+            .world
+            .git_raw(checkout, &["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .status
+            .code()
+            != Some(0)
+    };
+    assert!(
+        absent(&worker, &work) && absent(&fixture.checkout, &merged),
+        "the premise: neither checkout can see the other's commit"
+    );
+
+    let assert = publish_branch(&fixture, branch).assert().success();
+    let said = stderr_of(&assert);
+    let kept = format!("refs/onevcs/passed-over/{branch}/{merged}");
+    assert!(
+        said.contains(&format!("{} at {merged}", worker.display()))
+            && said.contains(&format!("kept at {kept}")),
+        "{said}"
+    );
+    assert_eq!(
+        fixture.world.git(&fixture.checkout, &["rev-parse", &kept]),
+        merged,
+        "the other store's tip is fetched into the publication checkout and kept"
+    );
+    let landed = fixture
+        .world
+        .git(&fixture.origin, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(landed.contains("more-work.txt"), "{landed}");
+}
+
+#[test]
+fn a_tip_passed_over_again_is_kept_once_and_a_later_one_is_kept_beside_it() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/passed-over-twice";
+    let (_clone, _work, first) =
+        work_in_the_session_while_the_checkout_took_the_base(&fixture, branch, merged_cleanly);
+    // Refused at the gate twice, so the same tip is passed over by two landings.
+    fixture.verified_by("exit 1");
+    for _ in 0..2 {
+        publish_branch(&fixture, branch).assert().code(1);
+    }
+    let once = format!("refs/onevcs/passed-over/{branch}/{first} {first}");
+    assert_eq!(
+        kept_tips(&fixture),
+        once,
+        "one ref for one tip, however often"
+    );
+
+    // The checkout takes the base again, so the copy passed over next is a later tip.
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere-again");
+    fixture.world.commit_file(
+        &elsewhere,
+        "later.txt",
+        "later\n",
+        "feat: the base moves again",
+    );
+    fixture
+        .world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", branch]);
+    merged_cleanly(&fixture);
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let second = tip_of(&fixture, &fixture.checkout, branch);
+    a_merge_path_that_accepts(&fixture);
+    publish_branch(&fixture, branch).assert().success();
+
+    let kept = kept_tips(&fixture);
+    assert!(
+        kept.contains(&once) && kept.contains(&format!("{branch}/{second} {second}")),
+        "the earlier tip is still kept beside the later one: {kept}"
+    );
+}
+
+#[test]
+fn a_copy_that_cannot_be_kept_is_not_passed_over() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/cannot-be-kept";
+    work_in_the_session_while_the_checkout_took_the_base(&fixture, branch, merged_cleanly);
+    // A ref standing exactly where the kept refs' directory would go: git cannot write
+    // a ref beneath another, so the keep fails as any refused ref write would.
+    let main = fixture.world.git(&fixture.checkout, &["rev-parse", "main"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "update-ref",
+            &format!("refs/onevcs/passed-over/{branch}"),
+            &main,
+        ],
+    );
+
+    publish_branch(&fixture, branch)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("could not be kept"))
+        .stderr(predicate::str::contains("so it is not passed over"))
+        .stderr(predicate::str::contains(format!(
+            "+refs/heads/{branch}:refs/onevcs/passed-over/{branch}/"
+        )));
+    assert_eq!(fixture.origin_log().len(), 2, "nothing may have landed");
+}
+
 #[test]
 fn a_copy_holding_its_own_commit_beyond_a_clean_base_merge_still_refuses_the_landing() {
     let fixture = Fixture::local(&local_direct());

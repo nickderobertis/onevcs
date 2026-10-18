@@ -1001,6 +1001,12 @@ pub(crate) fn keep_passed_over(
     if git::tip(publication, &kept).as_deref() == Some(tip) {
         return Ok(kept);
     }
+    // llmlint: ignore[changed_behavior_has_e2e] uncovered: the copy's branch moving
+    // after `locate` read its tip and before this fetch starts. Nothing git runs between
+    // the two invokes a hook, so no journey can move the branch inside that window. Both
+    // of its outcomes go through the write below — a tip the moved branch still reaches
+    // is named, one it does not is refused — and that refusal is what
+    // `a_copy_that_cannot_be_kept_is_not_passed_over` drives.
     if from != publication {
         git::fetch_into_ref(
             publication,
