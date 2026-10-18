@@ -985,8 +985,8 @@ fn closes_of(
     }
     // The checkout was fast-forwarded onto the landing before this is asked, so it
     // holds the commit; a message it cannot read carries no closing line.
-    // llmlint: ignore[changed_behavior_has_e2e] the fallback is unreachable from any
-    // journey: this line runs only for a landing the landing tiers found in the base's
+    // llmlint: ignore-block[changed_behavior_has_e2e] the default is unreachable from any
+    // journey: this runs only for a landing the landing tiers found in the base's
     // history, and only once the fast-forward bringing that base into `publication`
     // succeeded, so the commit is one git just read there; only git failing mid-call
     // on it reaches the default.
@@ -994,6 +994,7 @@ fn closes_of(
         .ok()
         .flatten()
         .unwrap_or_default();
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     crate::closing::issues(
         &crate::closing::references([message.as_str()]),
         crate::gh::slug(identity).as_deref(),

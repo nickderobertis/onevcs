@@ -623,25 +623,16 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
 
 ## Every landing says which GitHub issues it closes
 
-`closes` on `merge-completed` and `change-merged` is an amendment in `docs/contract.md`,
-and the engine moves board cards on it. `closing::report` is the one place it is written.
-Four things are easy to undo.
+The amendment in `docs/contract.md` is the whole statement of `closes`. Two things about
+keeping it true are not in it.
 
-- **A squash reports what it carries.** `local-direct` and the train resolve the closing
-  references `closing::references` collected for the message (`Closing::issue`, a bare
-  `#N` against `gh::slug` of the identity); an issue on another host stays in the message
-  and out of `closes`.
-- **A host merge reports what the merge read heard, and costs no request.**
-  `closingIssuesReferences` rides in `MERGE_FIELDS`, `MERGED_HEAD_FIELDS` and
-  `PULL_FIELDS`; the read keeps what it heard in `closing::HEARD` by change URL, and the
-  emitter asks `closing::heard_of`. `Heard::Unanswered` — a refused field
-  (`gh::invoke_unless_refused` asks once more without it, never on another refusal) or an
-  answer refused whole — reports `[]`, and nothing stands in for it.
-- **A landing only history found reads its commit's own closing lines**, unless a read in
-  this process already heard the change request (`release::closes_of`).
-- **The no-new-request proof is call logs recorded on the code before the change**
-  (`tests/fixtures/gh-call-baselines/`, held by `tests/e2e/call_baseline.rs`). Re-record
-  one only on behaviour that has not moved; its README says how.
+- **Reading closures may never cost a request.** Its proof is the call logs recorded on
+  the code before the field existed (`tests/fixtures/gh-call-baselines/`, held by
+  `tests/e2e/call_baseline.rs`). A journey failing against one has found a new request;
+  re-record a baseline only on behaviour that has not moved, never to absorb one.
+- **Nothing stands in for a host answer that did not come.** A read that was refused
+  the field, or whose answer was refused whole, is `closing::Heard::Unanswered`, and the
+  landing reports `[]` — not the commit's text, and not an earlier read's answer.
 
 ## The subject policy is the repository's, and this crate holds none
 
