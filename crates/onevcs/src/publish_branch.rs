@@ -92,6 +92,9 @@ struct Resumed {
     source: PathBuf,
     boundary: Boundary,
     change: ChangeRequest,
+    /// What was decided about a base that moved since the boundary was recorded — left
+    /// out, for the host to bring in when it merges — or nothing where it did not move.
+    base_merge: Option<crate::base_merge::Decision>,
     /// The hold this publication has on its branch, for as long as it runs — the same
     /// lease a publication that built a workspace holds, naming the checkout it works
     /// in instead.
@@ -99,12 +102,14 @@ struct Resumed {
 }
 
 /// The verified publication of `branch` to resume, where every component of the
-/// boundary it recorded still reads back the same.
+/// boundary it recorded still reads back the same — except a base that moved under an
+/// unchanged head, which holds where the host would merge that head as it stands: it
+/// merges cleanly and the host requires no up-to-date branch.
 ///
 /// Anything else is `None`, and the whole path runs as a first publication would:
-/// no boundary recorded, one that cannot be read, a tip, base, or verification input
-/// that differs, and a change request that closed, landed, was retargeted, or moved its
-/// head — and so is every read this cannot finish, because a component the verb cannot
+/// no boundary recorded, one that cannot be read, a tip or verification input that
+/// differs, a base that moved where the host needs it brought in, and a change request
+/// that closed, landed, was retargeted, or moved its head — and so is every read this cannot finish, because a component the verb cannot
 /// read back counts as different. Every refusal the whole path makes is left to it, so
 /// asking here first moves no refusal: a question this cannot answer is answered there.
 /// A boundary that does not hold is forgotten, and the whole path records a new one once
@@ -174,8 +179,9 @@ fn resumable(
             "the branch has moved since it was verified",
         ));
     }
-    match git::remote_tip(&source, "origin", &boundary.base, &[]) {
-        Ok(git::RemoteTip::At(at)) if at.as_str() == boundary.base_commit.0 => {}
+    let moved = match git::remote_tip(&source, "origin", &boundary.base, &[]) {
+        Ok(git::RemoteTip::At(at)) if at.as_str() == boundary.base_commit.0 => None,
+        Ok(git::RemoteTip::At(at)) => Some(at),
         _ => {
             return Ok(stale(
                 &resolution.key,
@@ -186,7 +192,7 @@ fn resumable(
                 ),
             ))
         }
-    }
+    };
     let inputs = git::carried_hooks(&source)
         .and_then(|hooks| verified::inputs(hooks.as_deref(), &boundary.base, &trailers));
     if inputs.ok().as_deref() != Some(boundary.inputs.as_str()) {
@@ -223,6 +229,43 @@ fn resumable(
             ),
         ));
     };
+    // A base that moved under an unchanged head is the host's to judge: its merge
+    // policy is what decides whether the head lands as it stands, so it is asked the
+    // question a publication's sync asks, over the same commits.
+    let base_merge = match moved {
+        None => None,
+        Some(moved) => match left_to_the_host(
+            &source,
+            &resolution.key,
+            &boundary,
+            &moved,
+            resolved.base_merge.value,
+            hosting,
+        ) {
+            Ok(decision) if !decision.merges() => Some(decision),
+            Ok(decision) => {
+                return Ok(stale(
+                    &resolution.key,
+                    branch,
+                    &format!(
+                        "its base {:?} has moved since it was verified, and {}",
+                        boundary.base, decision.because
+                    ),
+                ))
+            }
+            Err(unread) => {
+                return Ok(stale(
+                    &resolution.key,
+                    branch,
+                    &format!(
+                        "its base {:?} has moved since it was verified, and whether the host \
+                         would merge the change as it stands could not be read: {unread}",
+                        boundary.base
+                    ),
+                ))
+            }
+        },
+    };
     Ok(Some(Resumed {
         resolution,
         resolved,
@@ -231,8 +274,42 @@ fn resumable(
         source,
         boundary,
         change,
+        base_merge,
         _publication: publication,
     }))
+}
+
+/// Whether the verified head lands on its moved base as it stands, decided by
+/// [`crate::base_merge::decide`] — the one rule every sync of a moved base asks — over
+/// the verified tip and the base's tip on the origin.
+///
+/// The base's objects are fetched into the checkout's store and no ref is moved: the
+/// operator's checkout keeps every ref it had, and nothing is built.
+fn left_to_the_host(
+    source: &Path,
+    identity: &str,
+    boundary: &Boundary,
+    moved: &git::ObjectId,
+    setting: crate::rules::BaseMerge,
+    hosting: &dyn Hosting,
+) -> Result<crate::base_merge::Decision> {
+    if !git::fetch_commit(source, "origin", moved.as_str())? {
+        return Err(Error::Invalid {
+            reason: format!("{} could not be fetched from the origin", moved.as_str()),
+        });
+    }
+    crate::base_merge::decide(
+        setting,
+        &crate::base_merge::Merging {
+            repo: source,
+            integrated: moved.as_str(),
+            base: &boundary.base,
+            branch: &boundary.tip.0,
+            identity,
+            hosting,
+            brought_in: crate::base_merge::BaseBroughtIn::Here,
+        },
+    )
 }
 
 /// Forget a boundary that no longer holds, say why, and take the whole path.
@@ -256,13 +333,23 @@ impl Resumed {
         hosting: &dyn Hosting,
         stream: &mut Stream,
     ) -> Result<PublishOutcome> {
+        let base = match &self.base_merge {
+            None => String::new(),
+            Some(decision) => format!(
+                " — its base {:?} has moved, and {}",
+                self.boundary.base, decision.because
+            ),
+        };
         eprintln!(
             "onevcs: resuming the verified publication of {branch:?} at {tip}: {url} is open \
-             and nothing it was verified with has changed, so it is taken up at its checks",
+             and nothing it was verified with has changed{base}, so it is taken up at its checks",
             branch = self.boundary.branch,
             tip = self.boundary.tip.0,
             url = self.boundary.change_url,
         );
+        if let Some(decision) = &self.base_merge {
+            crate::base_merge::record(stream, &self.boundary.branch, &self.boundary.base, decision);
+        }
         let context = publish::Context {
             resolution: self.resolution.clone(),
             policy: self.resolved.policy.clone(),
