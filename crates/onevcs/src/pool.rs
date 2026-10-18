@@ -1266,7 +1266,9 @@ fn capacity_of(asked: &Asked, survey: &Survey, request: &SessionRequest) -> Work
 }
 
 /// Whether `open` would resume an open session for the request's pinned branch rather
-/// than place one, asked through the record match `open`'s own resume asks.
+/// than place one, asked through `open`'s own resume: the one matching record, and its
+/// shared lease takeable — a session somebody holds exclusively is not resumed, so it
+/// is not admitted either. The take is dropped as soon as it is answered.
 ///
 /// The base is the request's, or the root the open resolves; one this host cannot
 /// name is an open that is refused before it could resume anything.
@@ -1284,8 +1286,8 @@ fn resumes(asked: &Asked, request: &SessionRequest) -> bool {
     let (Ok(pinned), Ok(base)) = (Ref::try_from(pinned.to_owned()), Ref::try_from(base)) else {
         return false;
     };
-    workspace::resumable_record(&asked.resolution.key, &pinned, &base, &asked.execution)
-        .is_ok_and(|record| record.is_some())
+    workspace::resumable(&asked.resolution, Some(&pinned), &base, &asked.execution)
+        .is_ok_and(|held| held.is_some())
 }
 
 /// How many sessions the request's identity admits right now, and whether the request

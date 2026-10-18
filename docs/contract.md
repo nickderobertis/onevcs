@@ -2188,7 +2188,7 @@ records `open` reads, applies the request's overrides over the same layering, an
 answers `admitted: true` for a request whose pinned `branch` an open session of the
 identity already holds (that open resumes in place and places nothing — exactly one
 open session on that branch, from the request's execution checkout, against the base
-the open resolves). Every other count is **the request's**, judged slot by slot with
+the open resolves, whose run root nothing holds exclusively). Every other count is **the request's**, judged slot by slot with
 the test placement takes a slot on: `idle` counts only the idle slots bound to the
 request's execution checkout that no live process is still working inside, and every
 other slot nobody is in is listed in `ineligible` with its `reason`, tagged `kind`:

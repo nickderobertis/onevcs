@@ -1695,7 +1695,7 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
 /// adoption has taken its own: a shared lease is compatible with the one [`adopt`]
 /// takes, so holding it costs nothing and closes the window in which the run root
 /// could be reclaimed between being asked about and being taken up.
-fn resumable(
+pub(crate) fn resumable(
     resolution: &Resolution,
     branch: Option<&Ref>,
     base: &Ref,
@@ -1721,9 +1721,8 @@ fn resumable(
 }
 
 /// The one open session a pin would resume, judged from the records alone: what
-/// [`resumable`] asks before it takes the lease, and what `pool`'s capacity asks so
-/// the two cannot disagree about which pins resume.
-pub(crate) fn resumable_record(
+/// [`resumable`] asks before it takes the lease.
+fn resumable_record(
     identity: &str,
     branch: &Ref,
     base: &Ref,

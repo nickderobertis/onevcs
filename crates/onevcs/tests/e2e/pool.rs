@@ -2168,6 +2168,49 @@ fn a_pin_is_admitted_on_a_full_pool_only_where_open_would_resume_it() {
 }
 
 #[test]
+fn a_pin_whose_session_is_occupied_is_admitted_only_once_its_lease_is_free() {
+    let fixture = pooled(&sized(1, "0"));
+    inhabit(&fixture.world);
+    // Placement's own lock exists from this first open, so the pinned open's one new
+    // lock is its slot's occupancy lease.
+    let (aside, _, placed) = open(&fixture, &["--pool", "0", "--overflow", "unlimited"]);
+    assert_eq!(placed["kind"], "run-root");
+    close(&fixture, &aside);
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock no
+    // command holds across time — each takes it, works, and releases it before the
+    // process that opened the session exits — so the one way a journey can make a pin
+    // decline to resume its session is to hold that lease while the real CLI meets
+    // it, exactly as `lifecycle.rs`'s occupied-pin journey does.
+    let before = fixture.world.locks();
+    let (held, _, placed) = open(&fixture, &["--branch", "feature/held"]);
+    assert_eq!(placed["slot"], 1);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening onto a new slot takes exactly one new lock, not {opened:?}");
+    };
+    let occupant = World::occupy(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // While somebody holds the session's lease the open cannot resume it, and the one
+    // slot is in use with no overflow: not admitted, and refused.
+    let capacity = capacity_pinned("feature/held", None);
+    assert!(!capacity.admitted, "{capacity:?}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature/held"])
+        .assert()
+        .code(4);
+
+    // Released, the pin resumes: admitted, and the open hands back the same session.
+    drop(occupant);
+    assert!(capacity_pinned("feature/held", None).admitted);
+    let (resumed, _) = fixture.open(&["--branch", "feature/held"]);
+    assert_eq!(resumed, held);
+    close(&fixture, &held);
+}
+
+#[test]
 fn a_pin_two_open_sessions_hold_is_not_admitted_on_a_full_pool() {
     let fixture = pooled(&sized(2, "1"));
     inhabit(&fixture.world);
