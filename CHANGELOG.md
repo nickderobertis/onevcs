@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0](https://github.com/nickderobertis/onevcs/compare/v0.53.0...v0.54.0) - 2026-10-18
+
+### Fixed
+
+- *(boundary)* [**breaking**] answer an unanswered visibility lookup as an unavailable check, not a disclosure ([#464](https://github.com/nickderobertis/onevcs/pull/464))
+
 ## [0.53.0](https://github.com/nickderobertis/onevcs/compare/v0.52.1...v0.53.0) - 2026-10-18
 
 ### Added
