@@ -4511,10 +4511,10 @@ outcome: PublishOutcome::Failed { kind: FailureKind::Cancelled, reason, retained
 and `reason` says what it was waiting on. **Nothing is undone**: the branch stays on its
 remote, a change request is neither closed nor deleted (a merge already armed stays armed),
 the merge queue ticket is taken back, and the session record stays open — so a later
-publication of the session continues the same branch and adopts the same change request. **A
-git command already running is never interrupted**, the publishing push and its `pre-push`
-hook included: it runs to completion, and the cancellation is observed once it returns —
-after the push, before any change request is opened or watched.
+publication of the session continues the same branch and adopts the same change request.
+Publication cancellation interrupts a pending publishing push and reaps its hook descendants.
+Preserved branch/session evidence remains available; completed remote updates are reported as
+completed, never undone.
 
 `Cancelled` serializes as `cancelled`, and `FailureKind::of(&Error::Cancelled { .. })` is
 `Cancelled`. Its exit code is **75** (`EX_TEMPFAIL`: nothing failed, and the same publication

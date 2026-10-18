@@ -4780,7 +4780,8 @@ fn the_cancellation_amendment_declares_its_surface_and_the_conflict_it_ends_a_wa
     for stated in [
         "ends the publication as the\nexisting `PublishOutcome::Failed { kind: FailureKind::SyncConflict, reason, retained }`",
         "GitHub's `UNKNOWN` — is **never** read as a conflict",
-        "**A\ngit command already running is never interrupted**, the publishing push and its `pre-push`\nhook included",
+        "Publication cancellation interrupts a pending publishing push and reaps its hook descendants.",
+        "completed remote updates are reported as\ncompleted, never undone",
         "`Cancelled` serializes as `cancelled`",
     ] {
         assert!(

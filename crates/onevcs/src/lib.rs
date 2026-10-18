@@ -252,17 +252,18 @@ pub fn publish(
 /// What a caller that may have to abandon a publication — a manager cancelling or
 /// retrying the work it belongs to — runs instead of [`publish`], which is this with a
 /// cancellation nobody can trigger. Every phase that waits asks it at least once a
-/// second, whatever `ONEVCS_CHECKS_POLL_SECONDS` says: the watch of the host's checks,
-/// a draft's settle and the one after an early lift, the watch of a merge the host was
-/// armed to perform, and the wait for the identity's merge queue. A cancelled
+/// second, whatever `ONEVCS_CHECKS_POLL_SECONDS` says: the publishing push and the
+/// `pre-push` hook it runs, the watch of the host's checks, a draft's settle and the
+/// one after an early lift, the watch of a merge the host was armed to perform, and the
+/// wait for the identity's merge queue. A cancelled
 /// publication answers `Ok` with [`PublishOutcome::Failed`] of kind
 /// [`FailureKind::Cancelled`].
 ///
 /// **Nothing is undone.** The branch stays on its remote, a change request is neither
 /// closed nor deleted, and the session is left open, so a later publication of it
-/// continues the same branch. A git command already running — the publishing push and
-/// its `pre-push` hook included — is never interrupted: it runs to completion, and the
-/// cancellation is observed once it returns.
+/// continues the same branch. Publication cancellation interrupts a pending publishing
+/// push and reaps its hook descendants; a remote update that completed before the push
+/// was stopped is reported as completed, never undone.
 pub fn publish_with_cancellation(
     providers: &Providers<'_>,
     token: &SessionToken,

@@ -534,10 +534,11 @@ pub enum FailureKind {
     /// [`PushedUnverified`](FailureKind::PushedUnverified) is one: a router branches
     /// on the kind, and this is a refusal no change to the work can clear.
     HostPrerequisite,
-    /// The caller cancelled the publication while it waited — on the host's checks,
-    /// on a merge the host was armed to perform, or on the identity's merge queue —
-    /// through [`publish_with_cancellation`](crate::publish_with_cancellation). The
-    /// reason names what it was waiting on.
+    /// The caller cancelled the publication while it waited — on its publishing push
+    /// and the `pre-push` hook it runs, on the host's checks, on a merge the host was
+    /// armed to perform, or on the identity's merge queue — through
+    /// [`publish_with_cancellation`](crate::publish_with_cancellation). The reason
+    /// names what it was waiting on.
     ///
     /// Nothing is undone: the branch stays on its remote, any change request stays
     /// open, and the session is left so that publishing it again continues the same
@@ -621,8 +622,10 @@ pub enum Retention {
 /// merge the host was armed to perform, and the wait for the identity's merge queue.
 /// A cancelled publication ends as [`FailureKind::Cancelled`] and undoes nothing.
 ///
-/// A git command already running — the publishing push and its `pre-push` hook
-/// included — is never interrupted: the answer is asked again once it returns.
+/// The publishing push is asked too, for as long as it runs: publication cancellation
+/// interrupts a pending publishing push and reaps its hook descendants. Preserved
+/// branch and session evidence remains available; a remote update that completed
+/// before the push was stopped is reported as completed, never undone.
 pub trait PublicationCancellation {
     /// Whether the publication should stop at the next point it is asked.
     fn is_cancelled(&self) -> bool;
@@ -1770,10 +1773,13 @@ fn publish_locally(
             };
             let hooked = gate_run::runs_pre_push(&scratch);
             let started = Moment::now();
-            let pushed = git::push(
+            let pushed = publishing_push(
+                context,
                 &scratch,
                 &format!("HEAD:refs/heads/{}", context.target.base()),
-                "origin",
+                &context.target.base().to_string(),
+                Some(&sha),
+                None,
                 environment,
             )?;
             let ended = Moment::now();
@@ -2118,10 +2124,12 @@ fn publish_as_change(
     }
     let hooked = gate_run::runs_pre_push(&context.worktree);
     let started = Moment::now();
-    let pushed = git::push_replacing(
+    let pushed = publishing_push(
+        context,
         &context.worktree,
         &context.branch,
-        "origin",
+        &context.branch,
+        git::tip(&context.worktree, &format!("refs/heads/{}", context.branch)).as_deref(),
         replacing,
         environment,
     )?;
@@ -2194,8 +2202,9 @@ fn publish_as_change(
     // tree that was pushed rather than asked of the remote, because asking the remote
     // is one more read that can fail for the very reason being reported.
     let pushed_at = git::tip(&context.worktree, &context.branch);
-    // The push — and the `pre-push` hook it ran — is never interrupted, so a caller
-    // that cancelled while it ran is answered here, once it has returned and before
+    // A push the caller's cancellation stopped before the branch reached origin ended
+    // the publication above. One that reached it — whether it returned on its own or
+    // was stopped after the update landed — is answered here, saying so, before
     // anything on the host is opened or watched.
     if context.cancellation.is_cancelled() {
         return Err(cancelled_while(&format!(
@@ -2248,6 +2257,70 @@ fn land_deferred(context: &Context<'_>, stream: &mut Stream, adopt: &Url) -> Pub
     );
     crate::standings::record_head(adopt, &context.branch);
     PublishOutcome::ChangeReviewDraftUnchecked(adopt.clone())
+}
+
+/// Run a publishing push the caller's cancellation can stop, and answer what it came to.
+///
+/// The cancellation is asked for as long as the push runs, its `pre-push` hook — the
+/// repository's whole gate — included, and the first time it says so the push, the
+/// hook and every process the hook started are stopped and reaped. Whether that came
+/// in time is then asked of origin rather than assumed: where `remote_branch` is at
+/// `pushing`, the update landed before the push was stopped, and the landing is kept
+/// and reported as the accepted push it was — never claimed prevented, and never
+/// undone. Anywhere else nothing reached it, and the publication ends as
+/// [`FailureKind::Cancelled`] with the branch and the session left as every
+/// cancellation leaves them. An origin that cannot say is reported as exactly that.
+fn publishing_push(
+    context: &Context<'_>,
+    cwd: &Path,
+    refspec: &str,
+    remote_branch: &str,
+    pushing: Option<&str>,
+    replacing: Option<&str>,
+    environment: &[(String, String)],
+) -> Result<git::Pushed> {
+    let stop = || context.cancellation.is_cancelled();
+    let (output, teardown) =
+        match git::push_replacing(cwd, refspec, "origin", replacing, environment, &stop)? {
+            git::Pushing::Ran(pushed) => return Ok(pushed),
+            git::Pushing::Stopped { output, teardown } => (output, teardown),
+        };
+    let branch = &context.branch;
+    // What was stopped is said as it was: the whole tree only where its end was
+    // confirmed, and otherwise that some of it may still be running, and why.
+    let stopped = match &teardown {
+        Ok(()) => {
+            "the push, its pre-push hook and every process the hook started were stopped".to_owned()
+        }
+        Err(why) => format!(
+            "the push was stopped, but that every process it and its pre-push hook started \
+             went with it could not be confirmed ({why}), so some may still be running"
+        ),
+    };
+    // An origin that cannot be asked is the third answer below, never a refusal: the
+    // push was stopped either way, and what is owed is whether it landed.
+    let tip = git::remote_tip(cwd, "origin", remote_branch, environment)
+        .unwrap_or(git::RemoteTip::Unknown);
+    match (tip, pushing) {
+        (git::RemoteTip::At(tip), Some(pushing)) if tip.as_str() == pushing => {
+            // The landing is the outcome; a tree that may outlive it is said beside it.
+            if teardown.is_err() {
+                eprintln!("onevcs: warning: {branch:?} reached origin, and then {stopped}");
+            }
+            Ok(git::Pushed::Accepted { output })
+        }
+        (git::RemoteTip::At(_) | git::RemoteTip::Absent, Some(_)) => {
+            Err(cancelled_while(&format!(
+                "the publishing push of {branch:?} ran; {stopped} before origin's \
+                 {remote_branch:?} took it"
+            )))
+        }
+        _ => Err(cancelled_while(&format!(
+            "the publishing push of {branch:?} ran, and {stopped}; whether origin's \
+             {remote_branch:?} took the update first could not be read, so read it on origin \
+             before publishing again"
+        ))),
+    }
 }
 
 /// Refuse an identity that has no host at all, before anything is pushed.
