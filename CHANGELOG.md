@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0](https://github.com/nickderobertis/onevcs/compare/v0.55.0...v0.56.0) - 2026-10-18
+
+### Added
+
+- *(publish-branch)* [**breaking**] record a resumed publication's branch and head in its own event ([#474](https://github.com/nickderobertis/onevcs/pull/474))
+
 ## [0.55.0](https://github.com/nickderobertis/onevcs/compare/v0.54.1...v0.55.0) - 2026-10-18
 
 ### Fixed
