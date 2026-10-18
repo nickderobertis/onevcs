@@ -19,6 +19,14 @@
 //!   that lock from the branch alone and says where the work is being made. Written
 //!   only once the lock is held and removed before it is released, so a record whose
 //!   lock is free is one a dead publisher left, never one a live one is about to.
+//!
+//! The lock is shared, so one identity can have several holders at once — a resumed
+//! publication takes the lease of the checkout it found the branch in, and two
+//! resumes of one branch from one checkout take the same one. The record is
+//! therefore each holder's own: its name is the lease's digest followed by a
+//! component unique to the invocation that wrote it, and a holder removes that one
+//! file and nobody else's. A reader treats every record there as a holder, including
+//! one named by the lease digest alone, which is what a build before this wrote.
 
 use std::path::{Path, PathBuf};
 
@@ -110,9 +118,12 @@ impl Lease {
         let run_root = std::path::absolute(run_root)
             .map_err(error::at("resolve the publication run root", run_root))?;
         let lease = lease_of(&run_root);
-        // The run root is this run's own — its name carries `ids::unique()` — so
-        // nothing else can be holding this identity, and a lease that will not come is
-        // a state root something other than onevcs is writing in.
+        // A first publication's run root is this run's own — its name carries
+        // `ids::unique()` — but a resumed one holds the lease of the checkout it found
+        // the branch in, which two resumes of one branch from one checkout share. The
+        // lock is shared, so both hold it, and what keeps them apart is the record
+        // below, named per invocation rather than per lease. A lease that will not come
+        // is one held exclusively, which no publication does.
         let held = lock::try_shared(&lease)?.ok_or_else(|| Error::Invalid {
             reason: format!(
                 "the publication lease for {} is already held; nothing else should hold the \
@@ -123,7 +134,14 @@ impl Lease {
         })?;
         let worktree = std::path::absolute(worktree)
             .map_err(error::at("resolve the publication workspace", worktree))?;
-        let record = branch_dir(identity, branch)?.join(format!("{}.json", ids::digest(&lease)));
+        // The lease's digest first, so the records of one lease sort together, and
+        // then this invocation's own name, so a holder that finishes removes its own
+        // record and never the one another holder of the same lease is still behind.
+        let record = branch_dir(identity, branch)?.join(format!(
+            "{}.{}.json",
+            ids::digest(&lease),
+            ids::unique()
+        ));
         let document = serde_json::to_string(&Record {
             identity: identity.to_owned(),
             branch: branch.to_owned(),
