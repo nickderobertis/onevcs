@@ -621,6 +621,28 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   NUL-delimited: git quotes a pathname carrying a newline or a quote in its default
   listing, and a reader that unquoted nothing would name a file nobody has.
 
+## Every landing says which GitHub issues it closes
+
+`closes` on `merge-completed` and `change-merged` is an amendment in `docs/contract.md`,
+and the engine moves board cards on it. `closing::report` is the one place it is written.
+Four things are easy to undo.
+
+- **A squash reports what it carries.** `local-direct` and the train resolve the closing
+  references `closing::references` collected for the message (`Closing::issue`, a bare
+  `#N` against `gh::slug` of the identity); an issue on another host stays in the message
+  and out of `closes`.
+- **A host merge reports what the merge read heard, and costs no request.**
+  `closingIssuesReferences` rides in `MERGE_FIELDS`, `MERGED_HEAD_FIELDS` and
+  `PULL_FIELDS`; the read keeps what it heard in `closing::HEARD` by change URL, and the
+  emitter asks `closing::heard_of`. `Heard::Unanswered` — a refused field
+  (`gh::invoke_unless_refused` asks once more without it, never on another refusal) or an
+  answer refused whole — reports `[]`, and nothing stands in for it.
+- **A landing only history found reads its commit's own closing lines**, unless a read in
+  this process already heard the change request (`release::closes_of`).
+- **The no-new-request proof is call logs recorded on the code before the change**
+  (`tests/fixtures/gh-call-baselines/`, held by `tests/e2e/call_baseline.rs`). Re-record
+  one only on behaviour that has not moved; its README says how.
+
 ## The subject policy is the repository's, and this crate holds none
 
 `publish::subject_for` composes the subject a publication lands under — an explicit
