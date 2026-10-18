@@ -333,6 +333,12 @@ case "$command" in
     # is left with. `checks-refused` is the credential that may not read those
     # either, and it declines here the way the API declines.
     if [ "$malformed" = "checks-refused" ]; then
+      # Asked `--include`, `gh` prints the refusal's status line and body too.
+      for argument in "$@"; do
+        if [ "$argument" = "--include" ]; then
+          printf 'HTTP/2.0 403 Forbidden\n\n{"message":"Resource not accessible by personal access token","status":"403"}\n'
+        fi
+      done
       printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
       exit 1
     fi
