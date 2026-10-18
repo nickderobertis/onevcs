@@ -57,6 +57,11 @@ impl Pid {
     fn new(raw: u32) -> Option<Self> {
         i32::try_from(raw).ok().filter(|pid| *pid > 1).map(Pid)
     }
+
+    /// The number, as a report that is not about signalling carries it.
+    pub(crate) fn number(self) -> u32 {
+        self.0.unsigned_abs()
+    }
 }
 
 impl fmt::Display for Pid {

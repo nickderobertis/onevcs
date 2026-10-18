@@ -513,11 +513,15 @@ fn publish(host: &FileHost, session: &Session) -> Publication {
 /// Hold the checks on the change request at `path` pending until the publication of
 /// `session` has opened or adopted it for the `nth` time — the moment its watch
 /// begins — and for `held` after that, then report `then`: what a host does while
-/// its CI runs. Answers when it reported `then`, in epoch milliseconds.
+/// its CI runs. Answers when it last reported `then`, in epoch milliseconds.
 ///
 /// The state is replaced whole and atomically, by a rename, because the publication
 /// is reading the same document the whole time: a file-backed host writes in place,
-/// and a reader that met the document half-written would read no host at all.
+/// and a reader that met the document half-written would read no host at all. And it
+/// is reported again for as long as that watch has not ended and the host no longer
+/// says `then`: the watch records every reading on the host's ledger, a read and a
+/// save, and a rename landing between the two is put back by that save — reported
+/// once, the checks would stay pending until the watch gave up.
 fn settle_after(
     world: &World,
     session: &Session,
@@ -531,14 +535,16 @@ fn settle_after(
         .join("streams")
         .join(format!("{}.ndjson", session.token.0));
     std::thread::spawn(move || {
+        let recorded = |kind: &str| {
+            let kind = format!(r#""kind":"{kind}""#);
+            std::fs::read_to_string(&stream)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains(&kind))
+                .count()
+        };
         let waiting = std::time::Instant::now();
-        while std::fs::read_to_string(&stream)
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.contains(r#""kind":"change-opened""#))
-            .count()
-            < nth
-        {
+        while recorded("change-opened") < nth {
             assert!(
                 waiting.elapsed() < Duration::from_secs(60),
                 "the publication opened its change request"
@@ -546,22 +552,32 @@ fn settle_after(
             std::thread::sleep(Duration::from_millis(10));
         }
         std::thread::sleep(held);
-        let mut state = FileHost::create(&path)
-            .and_then(|host| host.state())
-            .expect("the host is readable while its checks are pending");
-        state.checks.insert(first(), then);
-        let staged = path.with_extension("next");
-        std::fs::write(
-            &staged,
-            format!(
-                "{}\n",
-                serde_json::to_string_pretty(&state).expect("the state serializes")
-            ),
-        )
-        .expect("the next state is staged");
-        let at = now_ms();
-        std::fs::rename(&staged, &path).expect("the host's checks move");
-        at
+        let host =
+            FileHost::create(&path).expect("the host is readable while its checks are pending");
+        let mut at = None;
+        // Bounded, so a watch that never ends answers through the journey's own
+        // assertions rather than a flipper that never returns.
+        while recorded("gate-run") < nth && waiting.elapsed() < Duration::from_secs(60) {
+            let mut state = host
+                .state()
+                .expect("the host is readable while its checks are pending");
+            if at.is_none() || state.checks.get(&first()) != Some(&then) {
+                state.checks.insert(first(), then.clone());
+                let staged = path.with_extension("next");
+                std::fs::write(
+                    &staged,
+                    format!(
+                        "{}\n",
+                        serde_json::to_string_pretty(&state).expect("the state serializes")
+                    ),
+                )
+                .expect("the next state is staged");
+                at = Some(now_ms());
+                std::fs::rename(&staged, &path).expect("the host's checks move");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        at.expect("the host reported its checks before the watch ended")
     })
 }
 

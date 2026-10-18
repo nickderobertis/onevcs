@@ -2152,7 +2152,11 @@ pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity>
 pub struct WorkspaceCapacity { pub identity: String, pub pool: u32, pub slots: u32,
     pub idle: u32, pub in_use: u32, pub maintaining: u32, pub overflow: Bound,
     pub overflow_in_use: u32, pub admits: Bound,   // how many more opens the identity admits now
-    pub admitted: bool }                           // whether *this* request would be placed now
+    pub admitted: bool,                            // whether *this* request would be placed now
+    pub ineligible: Vec<IneligibleSlot> }          // every slot nobody is in that `idle` does not count
+pub struct IneligibleSlot { pub number: u32, pub reason: Ineligibility }
+pub enum Ineligibility { OtherLender { execution_checkout: PathBuf },   // tagged `kind`
+    HeldByProcess { pids: Vec<u32> }, Broken { detail: String }, NoLender { detail: String } }
 pub fn pool_status(repo: &str) -> Result<PoolStatus>;
 pub struct PoolStatus { pub capacity: WorkspaceCapacity, pub slots: Vec<SlotStatus>, pub maintenance: MaintenanceSource }
 pub struct SlotStatus { pub number: u32, pub path: PathBuf, pub execution_checkout: PathBuf,
@@ -2182,11 +2186,28 @@ keeps no run roots has nothing to place on.
 `workspace_capacity` is **advisory and `open` is authoritative**: it reads the same
 records `open` reads, applies the request's overrides over the same layering, and
 answers `admitted: true` for a request whose pinned `branch` an open session of the
-identity already holds (that open resumes in place and places nothing). A broken slot
-is counted in `slots` and in neither `idle`, `in_use` nor `maintaining`; `admits` and
-`admitted` still count it, since a session recreates one as it takes it. `pool status`
-renders `pool_status` (`--json` prints the type; the
-lender and the maintenance fields are shown per slot); `pool prune` renders
+identity already holds (that open resumes in place and places nothing — exactly one
+open session on that branch, from the request's execution checkout, against the base
+the open resolves, whose run root nothing holds exclusively). Every other count is **the request's**, judged slot by slot with
+the test placement takes a slot on: `idle` counts only the idle slots bound to the
+request's execution checkout that no live process is still working inside, and every
+other slot nobody is in is listed in `ineligible` with its `reason`, tagged `kind`:
+
+- `{"kind": "other-lender", "execution_checkout": "/abs"}` — bound to another checkout;
+- `{"kind": "held-by-process", "pids": [N]}` — its last session was never returned and
+  live processes are still working inside it;
+- `{"kind": "broken", "detail": "…"}` — broken, and bound to this checkout;
+- `{"kind": "no-lender", "detail": "…"}` — broken, and neither its record nor its clone
+  names a lender.
+
+So `slots` is always `idle + in_use + maintaining` plus the length of `ineligible`. The
+first two are never taken by this request, and `admits` and `admitted` do not count
+them; the last two are recreated in place by the open that takes them, so `admits` and
+`admitted` still do. `ineligible` is omitted from the JSON when it is empty. Whenever
+`admitted` is true the open is placed, and whenever it is false the open is refused.
+`pool status` renders `pool_status` (`--json` prints the type; the lender and the
+maintenance fields are shown per slot, and each `ineligible` slot is printed with its
+reason, judged for the identity's default execution checkout); `pool prune` renders
 `pool_prune`, and removes every idle slot whose clone holds no retained branch, keeping
 every idle slot whose clone does — naming the slot, the branch and that reason.
 

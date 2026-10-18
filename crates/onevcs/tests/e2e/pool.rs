@@ -1634,6 +1634,7 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
             overflow_in_use: 0,
             admits: Bound::Bounded(3),
             admitted: true,
+            ineligible: Vec::new(),
         }
     );
     assert!(empty.identity.ends_with("/project"), "{}", empty.identity);
@@ -1720,6 +1721,535 @@ fn workspace_capacity_answers_every_field_and_agrees_with_what_open_then_does() 
         .code(4);
     close(&fixture, &one);
     close(&fixture, &two);
+}
+
+/// What `workspace_capacity` answers for a session opened from `checkout` — the
+/// registered alias, or the identity's default where `None`.
+fn capacity_from(checkout: Option<&str>) -> onevcs::WorkspaceCapacity {
+    onevcs::workspace_capacity(&SessionRequest {
+        repo: "project".to_owned(),
+        branch: None,
+        branch_name: None,
+        branch_prefix: None,
+        base: None,
+        execution_checkout: checkout.map(str::to_owned),
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts: false,
+        caller_merges_base: false,
+    })
+    .expect("the capacity is answered")
+}
+
+/// The reasons a capacity lists, by slot number, as the amendment spells their kinds.
+fn reasons(capacity: &onevcs::WorkspaceCapacity) -> Vec<(u32, String)> {
+    capacity
+        .ineligible
+        .iter()
+        .map(|slot| {
+            let spelled = serde_json::to_value(&slot.reason).expect("a reason serializes");
+            (
+                slot.number,
+                spelled["kind"].as_str().expect("a kind").to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn capacity_counts_only_the_slots_open_would_take_and_names_why_it_passes_over_the_rest() {
+    let fixture = pooled(&sized(4, "0"));
+    fixture.verified_by("exit 0");
+    inhabit(&fixture.world);
+    let other = fixture.world.clone_of(&fixture.origin, "other");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &other.to_string_lossy()])
+        .assert()
+        .success();
+
+    // Slot 1: idle, and lent by the other checkout.
+    let (lent, _, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 1);
+    // Slot 2: a publication closed its session and left the tree for `session close`
+    // to return, and that session's worker is still inside it.
+    let (published, held_tree, placed) = open(&fixture, &["--branch", "feature/published"]);
+    assert_eq!(placed["slot"], 2);
+    // Slot 3: this checkout's, and broken.
+    let (broken, broken_tree, placed) = open(&fixture, &["--branch", "feature/broken"]);
+    assert_eq!(placed["slot"], 3);
+    // Slot 4: in use for the length of the journey, so the pool is full.
+    let (busy, _, placed) = open(&fixture, &["--branch", "feature/busy"]);
+    assert_eq!(placed["slot"], 4);
+    close(&fixture, &lent);
+    close(&fixture, &broken);
+    damage(broken_tree.parent().expect("slot 3"), Damage::LoseWorktree);
+    fixture
+        .world
+        .commit_file(&held_tree, "published.txt", "published\n", "feat: land it");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &published])
+        .assert()
+        .success();
+    let worker = orphan_working_in(&held_tree);
+
+    // Two slots read idle on disk, and neither is this checkout's to take; the broken
+    // one is, and is what the one open this capacity admits is placed on.
+    let listed = status(&fixture);
+    assert_eq!(listed["slots"][0]["state"]["state"], "idle");
+    assert_eq!(listed["slots"][1]["state"]["state"], "idle");
+    let capacity = capacity_from(None);
+    assert_eq!(
+        (
+            capacity.slots,
+            capacity.idle,
+            capacity.in_use,
+            capacity.maintaining
+        ),
+        (4, 0, 1, 0)
+    );
+    assert_eq!(
+        reasons(&capacity),
+        [
+            (1, "other-lender".to_owned()),
+            (2, "held-by-process".to_owned()),
+            (3, "broken".to_owned()),
+        ]
+    );
+    assert_eq!(
+        capacity.ineligible[0].reason,
+        onevcs::Ineligibility::OtherLender {
+            execution_checkout: PathBuf::from(
+                listed["slots"][0]["execution_checkout"]
+                    .as_str()
+                    .expect("slot 1's lender")
+            ),
+        }
+    );
+    assert_eq!(
+        capacity.ineligible[1].reason,
+        onevcs::Ineligibility::HeldByProcess { pids: vec![worker] }
+    );
+    assert_eq!(capacity.admits, Bound::Bounded(1));
+    assert!(capacity.admitted);
+    assert_eq!(
+        listed["capacity"],
+        serde_json::to_value(&capacity).expect("a capacity serializes"),
+        "`pool status --json` answers the same capacity for the default checkout"
+    );
+    // The human table says why each slot is passed over.
+    let table = fixture
+        .world
+        .onevcs()
+        .args(["pool", "status", "project"])
+        .output()
+        .expect("the binary runs");
+    let table = String::from_utf8_lossy(&table.stdout);
+    for line in [
+        format!(
+            "not idle for this checkout: slot 1: bound to another execution checkout, {}",
+            listed["slots"][0]["execution_checkout"]
+                .as_str()
+                .expect("slot 1's lender")
+        ),
+        format!("not idle for this checkout: slot 2: held by a live process (pid {worker})"),
+        "not idle for this checkout: slot 3: broken, recreated by the open that takes it"
+            .to_owned(),
+    ] {
+        assert!(table.contains(&line), "{line:?} is not in:\n{table}");
+    }
+
+    // Admitted, so the open is placed — on the broken slot, recreated.
+    let (recreated, _, placed) = open(&fixture, &["--branch", "feature/recreated"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 3, "created": true})
+    );
+    // Not admitted, so the open is refused — although two slots still read idle.
+    let capacity = capacity_from(None);
+    assert_eq!((capacity.idle, capacity.admits), (0, Bound::Bounded(0)));
+    assert!(!capacity.admitted, "{capacity:?}");
+    assert_eq!(
+        reasons(&capacity),
+        [
+            (1, "other-lender".to_owned()),
+            (2, "held-by-process".to_owned())
+        ]
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .code(4);
+
+    // The other checkout's request is judged for that checkout: slot 1 is its own, and
+    // every slot of this one is passed over as another lender's.
+    let theirs = capacity_from(Some("other"));
+    assert_eq!((theirs.idle, theirs.admits), (1, Bound::Bounded(1)));
+    assert!(theirs.admitted);
+    assert_eq!(reasons(&theirs), [(2, "other-lender".to_owned())]);
+
+    // Once the worker is gone the slot is this checkout's to take again, and the
+    // capacity and the open agree about that too.
+    stop_orphan(worker);
+    let freed = capacity_from(None);
+    assert_eq!((freed.idle, freed.admits), (1, Bound::Bounded(1)));
+    assert!(freed.admitted);
+    assert_eq!(reasons(&freed), [(1, "other-lender".to_owned())]);
+    let (returned, _, placed) = open(&fixture, &["--branch", "feature/returned"]);
+    assert_eq!(placed["slot"], 2);
+    let (theirs_opened, _, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 1);
+    assert!(!capacity_from(Some("other")).admitted);
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--execution-checkout",
+            "other",
+        ])
+        .assert()
+        .code(4);
+    for token in [&busy, &recreated, &returned, &theirs_opened] {
+        close(&fixture, token);
+    }
+}
+
+#[test]
+fn a_broken_slot_is_admitted_only_for_the_checkout_that_would_recreate_it() {
+    let fixture = pooled(&sized(3, "0"));
+    inhabit(&fixture.world);
+    let other = fixture.world.clone_of(&fixture.origin, "other");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", &other.to_string_lossy()])
+        .assert()
+        .success();
+    // Slot 1: the other checkout's, and broken with its record still naming it.
+    let (theirs, theirs_tree, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 1);
+    // Slot 2: broken with nothing left to name a lender — neither a record nor a clone.
+    let (ours, ours_tree, placed) = open(&fixture, &[]);
+    assert_eq!(placed["slot"], 2);
+    // Slot 3: the other checkout's again, its record unreadable and its clone intact,
+    // so only what the clone borrows its objects from names the lender.
+    let (again, again_tree, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 3);
+    close(&fixture, &theirs);
+    close(&fixture, &ours);
+    close(&fixture, &again);
+    damage(theirs_tree.parent().expect("slot 1"), Damage::LoseClone);
+    let unbound = ours_tree.parent().expect("slot 2");
+    damage(unbound, Damage::GarbleRecord);
+    damage(unbound, Damage::LoseClone);
+    damage(again_tree.parent().expect("slot 3"), Damage::GarbleRecord);
+
+    let capacity = capacity_from(None);
+    assert_eq!(capacity.idle, 0);
+    assert_eq!(
+        reasons(&capacity),
+        [
+            (1, "other-lender".to_owned()),
+            (2, "no-lender".to_owned()),
+            (3, "other-lender".to_owned())
+        ]
+    );
+    let lent_by_other = onevcs::Ineligibility::OtherLender {
+        execution_checkout: PathBuf::from(
+            status(&fixture)["slots"][0]["execution_checkout"]
+                .as_str()
+                .expect("slot 1's lender"),
+        ),
+    };
+    assert_eq!(capacity.ineligible[0].reason, lent_by_other);
+    assert_eq!(
+        capacity.ineligible[2].reason, lent_by_other,
+        "a clone whose record is gone is still bound to the checkout it borrows from"
+    );
+    assert_eq!(
+        capacity.admits,
+        Bound::Bounded(1),
+        "the slot with no lender is anybody's to recreate; the other checkout's is not"
+    );
+    assert!(capacity.admitted);
+    let table = fixture
+        .world
+        .onevcs()
+        .args(["pool", "status", "project"])
+        .output()
+        .expect("the binary runs");
+    let table = String::from_utf8_lossy(&table.stdout);
+    assert!(
+        table.contains(
+            "not idle for this checkout: slot 2: broken with no lender, recreated by the open \
+             that takes it — its record at"
+        ),
+        "{table}"
+    );
+    // For the other checkout both are its to recreate.
+    let for_them = capacity_from(Some("other"));
+    assert_eq!(
+        reasons(&for_them),
+        [
+            (1, "broken".to_owned()),
+            (2, "no-lender".to_owned()),
+            (3, "broken".to_owned())
+        ]
+    );
+    assert_eq!(for_them.admits, Bound::Bounded(3));
+
+    // Admitted, so placed: on the slot with no lender, recreated for this checkout.
+    let (recreated, _, placed) = open(&fixture, &[]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 2, "created": true})
+    );
+    // Not admitted, so refused: the slots left are the other checkout's.
+    let capacity = capacity_from(None);
+    assert_eq!(
+        reasons(&capacity),
+        [
+            (1, "other-lender".to_owned()),
+            (3, "other-lender".to_owned())
+        ]
+    );
+    assert!(!capacity.admitted, "{capacity:?}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .code(4);
+    // And the other checkout's requests are admitted onto them, and placed there.
+    assert_eq!(capacity_from(Some("other")).admits, Bound::Bounded(2));
+    let (rebuilt, _, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(
+        placed,
+        serde_json::json!({"kind": "slot", "slot": 1, "created": true})
+    );
+    let (rebound, _, placed) = open(&fixture, &["--execution-checkout", "other"]);
+    assert_eq!(placed["slot"], 3);
+    assert!(!capacity_from(Some("other")).admitted);
+    for token in [&recreated, &rebuilt, &rebound] {
+        close(&fixture, token);
+    }
+}
+
+#[test]
+fn a_slot_the_next_open_sheds_is_not_counted_as_one_it_could_take() {
+    let fixture = pooled(&sized(2, "0"));
+    inhabit(&fixture.world);
+    let (a, _, _) = open(&fixture, &[]);
+    let (b, _, placed) = open(&fixture, &[]);
+    assert_eq!(placed["slot"], 2);
+    close(&fixture, &a);
+    close(&fixture, &b);
+    // The file's pool is lowered below the slots: the next open removes slot 2 first.
+    configure_workspaces(&fixture.world, sized(1, "0"));
+    let capacity = capacity_from(None);
+    assert_eq!((capacity.slots, capacity.idle), (2, 2));
+    assert_eq!(
+        capacity.admits,
+        Bound::Bounded(1),
+        "the slot the shed removes is not one an open can be placed on"
+    );
+    assert!(capacity.admitted);
+    let (one, _, placed) = open(&fixture, &[]);
+    assert_eq!(placed["slot"], 1);
+    assert_eq!(status(&fixture)["capacity"]["slots"], 1, "slot 2 was shed");
+    let capacity = capacity_from(None);
+    assert_eq!(capacity.admits, Bound::Bounded(0));
+    assert!(!capacity.admitted);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project"])
+        .assert()
+        .code(4);
+    close(&fixture, &one);
+}
+
+/// What `workspace_capacity` answers for a session pinned to `branch`, against `base`
+/// where one is named.
+fn capacity_pinned(branch: &str, base: Option<&str>) -> onevcs::WorkspaceCapacity {
+    onevcs::workspace_capacity(&SessionRequest {
+        repo: "project".to_owned(),
+        branch: Some(branch.to_owned()),
+        branch_name: None,
+        branch_prefix: None,
+        base: base.map(str::to_owned),
+        execution_checkout: None,
+        pool: None,
+        overflow: None,
+        labels: Default::default(),
+        refuse_conflicts: false,
+        caller_merges_base: false,
+    })
+    .expect("the capacity is answered")
+}
+
+#[test]
+fn a_pin_is_admitted_on_a_full_pool_only_where_open_would_resume_it() {
+    let fixture = pooled(&sized(1, "0"));
+    inhabit(&fixture.world);
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["branch", "-q", "sibling", "main"]);
+    world.git(&fixture.checkout, &["push", "-q", "origin", "sibling"]);
+    let (held, _, placed) = open(&fixture, &["--branch", "feature/held"]);
+    assert_eq!(placed["slot"], 1);
+
+    // Against the base it was cut on, the pin resumes: admitted, and the open hands
+    // back the same session.
+    assert!(capacity_pinned("feature/held", None).admitted);
+    assert!(capacity_pinned("feature/held", Some("main")).admitted);
+    let (resumed, _) = fixture.open(&["--branch", "feature/held"]);
+    assert_eq!(resumed, held);
+
+    // Against another base it would be a new session, and the full pool refuses it.
+    assert!(!capacity_pinned("feature/held", Some("sibling")).admitted);
+    world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/held",
+            "--base",
+            "sibling",
+        ])
+        .assert()
+        .code(4);
+
+    // A root this checkout cannot name — no `origin/HEAD`, an origin that does not
+    // answer, and two branches it could be — is an open refused before it resumes.
+    let url = world.git(&fixture.checkout, &["remote", "get-url", "origin"]);
+    world.git(&fixture.checkout, &["remote", "set-head", "origin", "-d"]);
+    world.git(
+        &fixture.checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &world.path("gone").to_string_lossy(),
+        ],
+    );
+    assert!(!capacity_pinned("feature/held", None).admitted);
+    world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature/held"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "cannot determine the default branch of remote \"origin\"",
+        ));
+    world.git(&fixture.checkout, &["remote", "set-url", "origin", &url]);
+    world.git(&fixture.checkout, &["remote", "set-head", "origin", "main"]);
+    assert!(capacity_pinned("feature/held", None).admitted);
+
+    // A pin that is not a branch name resumes nothing, and the open refuses it.
+    assert!(!capacity_pinned("feature..held", None).admitted);
+    world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature..held"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("not a valid branch name"));
+    close(&fixture, &held);
+}
+
+#[test]
+fn a_pin_whose_session_is_occupied_is_admitted_only_once_its_lease_is_free() {
+    let fixture = pooled(&sized(1, "0"));
+    inhabit(&fixture.world);
+    // Placement's own lock exists from this first open, so the pinned open's one new
+    // lock is its slot's occupancy lease.
+    let (aside, _, placed) = open(&fixture, &["--pool", "0", "--overflow", "unlimited"]);
+    assert_eq!(placed["kind"], "run-root");
+    close(&fixture, &aside);
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock no
+    // command holds across time — each takes it, works, and releases it before the
+    // process that opened the session exits — so the one way a journey can make a pin
+    // decline to resume its session is to hold that lease while the real CLI meets
+    // it, exactly as `lifecycle.rs`'s occupied-pin journey does.
+    let before = fixture.world.locks();
+    let (held, _, placed) = open(&fixture, &["--branch", "feature/held"]);
+    assert_eq!(placed["slot"], 1);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening onto a new slot takes exactly one new lock, not {opened:?}");
+    };
+    let occupant = World::occupy(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // While somebody holds the session's lease the open cannot resume it, and the one
+    // slot is in use with no overflow: not admitted, and refused.
+    let capacity = capacity_pinned("feature/held", None);
+    assert!(!capacity.admitted, "{capacity:?}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature/held"])
+        .assert()
+        .code(4);
+
+    // Released, the pin resumes: admitted, and the open hands back the same session.
+    drop(occupant);
+    assert!(capacity_pinned("feature/held", None).admitted);
+    let (resumed, _) = fixture.open(&["--branch", "feature/held"]);
+    assert_eq!(resumed, held);
+    close(&fixture, &held);
+}
+
+#[test]
+fn a_pin_two_open_sessions_hold_is_not_admitted_on_a_full_pool() {
+    let fixture = pooled(&sized(2, "1"));
+    inhabit(&fixture.world);
+    // Placement's own lock exists from the first open, so the next open's one new
+    // lock is its slot's occupancy lease.
+    let (first, _, placed) = open(&fixture, &[]);
+    assert_eq!(placed["slot"], 1);
+    // llmlint: ignore-block[tests_mirror_real_usage] occupancy is an advisory lock no
+    // command holds across time — each takes it, works, and releases it before the
+    // process that opened the session exits — so the one way a journey can make a pin
+    // decline to resume its session is to hold that lease while the real CLI meets
+    // it, exactly as `lifecycle.rs`'s occupied-pin journey does.
+    let before = fixture.world.locks();
+    let (busy, _, placed) = open(&fixture, &["--branch", "feature/twice"]);
+    assert_eq!(placed["slot"], 2);
+    let opened: Vec<_> = fixture.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening onto a new slot takes exactly one new lock, not {opened:?}");
+    };
+    let occupant = World::occupy(lease);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let (twice, _, placed) = open(&fixture, &["--branch", "feature/twice"]);
+    assert_ne!(twice, busy, "an occupied session is not resumed");
+    assert_eq!(placed["kind"], "run-root");
+    drop(occupant);
+
+    // Two open sessions hold the pin, so an open resumes neither: with every slot and
+    // the overflow spent, it is not admitted, and the open is refused.
+    let capacity = capacity_pinned("feature/twice", None);
+    assert!(!capacity.admitted, "{capacity:?}");
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "open", "project", "--branch", "feature/twice"])
+        .assert()
+        .code(4);
+    for token in [&first, &busy, &twice] {
+        close(&fixture, token);
+    }
 }
 
 /// The worktree an open session was handed, off its record as `status` reports it.
