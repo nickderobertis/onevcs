@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.3](https://github.com/nickderobertis/onevcs/compare/v0.56.2...v0.56.3) - 2026-10-19
+
+### Fixed
+
+- *(release)* release the crate when the tooling that builds its artifacts changes ([#484](https://github.com/nickderobertis/onevcs/pull/484))
+
 ## [0.56.2](https://github.com/nickderobertis/onevcs/compare/v0.56.1...v0.56.2) - 2026-10-19
 
 ### Added
