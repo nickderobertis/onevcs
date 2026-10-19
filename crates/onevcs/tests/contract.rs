@@ -6981,7 +6981,8 @@ fn every_script_the_release_runs_is_packaged_so_a_fix_to_it_releases() {
     );
     let packaged: BTreeSet<String> = String::from_utf8_lossy(&listed.stdout)
         .lines()
-        .map(|file| format!("crates/onevcs/{file}"))
+        // Cargo lists a packaged path with the host's separator.
+        .map(|file| format!("crates/onevcs/{}", file.replace('\\', "/")))
         .collect();
     let unpackaged: Vec<&String> = followed.difference(&packaged).collect();
     assert!(

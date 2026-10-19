@@ -491,6 +491,10 @@ impl ThisRepository {
             released: String::new(),
             version: String::new(),
         };
+        // release-plz refuses a detached HEAD, and CI checks a pull request out
+        // detached, so the clone is put on a branch of its own whichever this was.
+        this.git(&["switch", "--quiet", "--force-create", "main"])
+            .succeeds();
         this.version = this.manifest_version("crates/onevcs/Cargo.toml");
         let testing = this.manifest_version("crates/onevcs-testing/Cargo.toml");
         this.git(&["tag", &format!("v{}", this.version)]).succeeds();
