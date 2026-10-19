@@ -1,7 +1,7 @@
 //! The published-artifact smoke test, run against the binary this build just
 //! compiled.
 //!
-//! `scripts/smoke-published.sh` is what `release.yml`'s verify jobs and the
+//! `crates/onevcs/release/smoke-published.sh` is what `release.yml`'s verify jobs and the
 //! `published-smoke.yml` sweep — which `release.yml` completing triggers — run
 //! over a binary installed from PyPI or npm. Running the identical file here is what stops a workflow's idea of "it
 //! works" from drifting from the binary that actually ships: a `--version | grep`
@@ -43,7 +43,7 @@ fn smoking(
     path.push(std::env::var_os("PATH").unwrap_or_default());
     let mut command = std::process::Command::new("bash");
     command
-        .arg(workspace_root().join("scripts/smoke-published.sh"))
+        .arg(workspace_root().join("crates/onevcs/release/smoke-published.sh"))
         .arg("--expect-version")
         .arg(expect_version)
         .arg("--label")
@@ -58,7 +58,7 @@ fn smoking(
 
 #[test]
 fn the_release_smoke_script_passes_against_this_build() {
-    let script = workspace_root().join("scripts/smoke-published.sh");
+    let script = workspace_root().join("crates/onevcs/release/smoke-published.sh");
     assert!(script.is_file(), "{} must exist", script.display());
 
     // The script resolves `onevcs` off PATH, exactly as it does against an

@@ -9,7 +9,7 @@
 #
 # The version is deliberately NOT set here (`dynamic = ["version"]`): maturin
 # sources it from the crate manifest, so release-plz stays the single version
-# driver — the same rule scripts/npm-build.mjs follows for the npm packages.
+# driver — the same rule crates/onevcs/release/npm-build.mjs follows for the npm packages.
 # Wheels are built and published by .github/workflows/release.yml.
 
 [build-system]

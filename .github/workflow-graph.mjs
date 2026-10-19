@@ -550,7 +550,7 @@ const artifactScope = (run) =>
 // `run-id: github.event.workflow_run.id`. An artifact nothing upstream of the job
 // made is one the job would have to build again, so it is added to the run as a
 // rebuild row — on a Mac when it is a Darwin artifact, because this repository
-// builds those only natively (`scripts/release-darwin.sh`). Returns the edges and
+// builds those only natively (`crates/onevcs/release/release-darwin.sh`). Returns the edges and
 // appends those rebuild rows to `run.rows`.
 export function traceArtifactsAddingRebuilds(run, upstream) {
     const edges = [];

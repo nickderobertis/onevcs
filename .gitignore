@@ -6,8 +6,8 @@
 # Preserved command output (scripts/preserved-log.sh). Owner-only, truncated per
 # run, and never a source: it is the evidence a captured run leaves behind.
 /.logs
-# Assembled by scripts/npm-build.mjs and maturin; the committed sources are
-# npm/onevcs/ and pyproject.toml.
+# Assembled by crates/onevcs/release/npm-build.mjs and maturin; the committed
+# sources are npm/onevcs/ and pyproject.toml.
 /npm/dist
 /dist
 # Coverage instrumentation writes these wherever an instrumented binary happens

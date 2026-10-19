@@ -60,7 +60,7 @@ pipelines or agents — only about repositories, hosts, and its own events.
 
 The version lives in `crates/onevcs/Cargo.toml` and nowhere else. The wheel takes
 it through maturin's `dynamic = ["version"]` and the npm packages through
-`scripts/npm-build.mjs`, so no human and no second manifest can disagree with the
+`crates/onevcs/release/npm-build.mjs`, so no human and no second manifest can disagree with the
 tag that was cut.
 
 ## The publication subject limit is the operator's, and it has one source

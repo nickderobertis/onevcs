@@ -26,7 +26,7 @@ skipped=""
 for package in "$@"; do
   if ! metadata="$(npm pack --dry-run --json "$package" 2>"$work/pack-error")"; then
     cat "$work/pack-error" >&2
-    fail "cannot read package metadata from '$package'; rebuild the npm artifact with scripts/npm-build.mjs"
+    fail "cannot read package metadata from '$package'; rebuild the npm artifact with crates/onevcs/release/npm-build.mjs"
   fi
   # The single-quoted program is JavaScript; its template expression is not shell.
   # shellcheck disable=SC2016
@@ -42,7 +42,7 @@ for package in "$@"; do
     });
   ' 2>"$work/metadata-error")"; then
     cat "$work/metadata-error" >&2
-    fail "npm returned invalid metadata for '$package'; rebuild the npm artifact with scripts/npm-build.mjs"
+    fail "npm returned invalid metadata for '$package'; rebuild the npm artifact with crates/onevcs/release/npm-build.mjs"
   fi
 
   if npm view "$identity" version >/dev/null 2>"$work/view-error"; then

@@ -384,7 +384,7 @@ jobs:
       - name: Smoke-test the installed binary
         run: |
           version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$version" \
             --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
       - name: Documented git install at this revision
@@ -447,7 +447,7 @@ jobs:
       - name: Smoke-test the installed binary
         run: |
           version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$version" \
             --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
     name: install (ubuntu-latest)
@@ -470,7 +470,7 @@ jobs:
       - name: Smoke-test the installed binary
         run: |
           version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' crates/onevcs/Cargo.toml | head -n1)"
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$version" \
             --label "cargo install onevcs $version on $RUNNER_OS/$RUNNER_ARCH"
     name: install (windows-latest)

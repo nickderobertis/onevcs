@@ -6,7 +6,7 @@
 //! with a loose end — it is a test that mutates the host it runs on, and it fails
 //! nothing while doing it.
 //!
-//! That is not hypothetical here. `scripts/smoke-published.sh` ran `onevcs resolve`
+//! That is not hypothetical here. `crates/onevcs/release/smoke-published.sh` ran `onevcs resolve`
 //! under a developer's real `HOME` from this suite; a build under test wrote a
 //! registry version the installed `onevcs` could not read into `~/.onevcs`; and
 //! every `onevcs` command on that host refused until an operator restored the file
@@ -181,7 +181,7 @@ fn no_committed_script_runs_this_crates_binary_against_whatever_root_it_finds() 
     // Named, and named as the *default* rather than only honoured when a caller
     // remembers — which is the difference between the script before the incident and
     // the script after it.
-    let smoke = read(&workspace_root().join("scripts/smoke-published.sh"));
+    let smoke = read(&workspace_root().join("crates/onevcs/release/smoke-published.sh"));
     assert!(
         smoke.contains(&format!("if [ -z \"${{{HOME_ENV}:-}}\" ]; then")),
         "smoke-published.sh must make itself a scratch state root when its caller named none"
@@ -206,6 +206,11 @@ fn test_sources() -> Vec<PathBuf> {
 fn scripts() -> Vec<PathBuf> {
     let mut found = Vec::new();
     collect(&workspace_root().join("scripts"), "sh", &mut found);
+    collect(
+        &workspace_root().join("crates/onevcs/release"),
+        "sh",
+        &mut found,
+    );
     assert!(!found.is_empty(), "the scan found no scripts");
     found
 }

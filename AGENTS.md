@@ -74,7 +74,7 @@ rationale; the mechanics live in the files named. -->
   `intersections/rust-cli`, `ci`, `llmlint`, `releasing`, `project-graph`.
 - **Excluded, and why:** **asdf / direnv** — `rust-toolchain.toml` and the
   committed lockfiles already pin everything. **`languages/bash`** — the shell
-  under `scripts/` is CI and release wiring, not a deliverable, and its decisions
+  under `scripts/` and `crates/onevcs/release/` is CI and release wiring, not a deliverable, and its decisions
   are gated by the Rust journeys that drive each script the way its caller does
   (the `onevcs-scripts-e2e` tier) rather than by bats and kcov. **A curl-pipe installer and a
   composite action** — all three documented install surfaces are registries, so
@@ -194,9 +194,23 @@ not tell you:
   in `release-plz.yml`: a job that has release-plz without it falls back to the
   commit type and says nothing. `just semver-check` asks the same question before
   you push, from the registry's baseline rather than the branch's.
+- **What releases is what the crate packages, so the release tooling lives in
+  it.** release-plz walks only commits that touch `crates/onevcs/` and counts one
+  only where it changed a file `cargo package --list -p onevcs` names. The scripts
+  `release.yml` runs to build, package and verify what it publishes are therefore
+  under `crates/onevcs/release/` and in the crate's `include`, so a `fix:` to one
+  ships; a script in the root `scripts/` never could, which is how a fix to the npm
+  build once merged and released nothing. A new script on the release path goes
+  there. CI-only scripts, the workflows, the docs and the tests stay out, so a
+  change that publishes nothing releases nothing — and so does the root
+  `justfile`, which Cargo cannot package: its `release-packaging` recipe is a
+  one-line delegation, so keep the logic in the script. `crates/onevcs/Cargo.lock`
+  is a symlink to the workspace lock for release-plz's sake (`release-plz.toml`
+  says why): without it every commit under `crates/onevcs/`, tests included,
+  released.
 - **One version source.** `crates/onevcs/Cargo.toml` is it, for the CLI and
   everything packaged from it: the wheel takes it via maturin's
-  `dynamic = ["version"]` and the npm packages via `scripts/npm-build.mjs`.
+  `dynamic = ["version"]` and the npm packages via `crates/onevcs/release/npm-build.mjs`.
   Never write a version into `pyproject.toml` or `npm/onevcs/package.json`.
 - **A lockfile outside the workspace is the release job's to carry.** `compat/`
   links `crates/onevcs` by path, so its `Cargo.lock` records the version a release

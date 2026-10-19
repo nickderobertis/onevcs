@@ -5,7 +5,7 @@
 //! execs it with the caller's argv, and propagates its exit status. Installing
 //! the crate exercises none of that, so these journeys do — through npm itself.
 //!
-//! `scripts/npm-build.mjs` assembles the packages exactly as the release job
+//! `crates/onevcs/release/npm-build.mjs` assembles the packages exactly as the release job
 //! does, `npm pack` turns each into the tarball the registry would serve, and
 //! `npm install` unpacks them into a project. What runs afterwards is
 //! `node_modules/.bin/onevcs`, the command npm put on the caller's path. The only
@@ -29,7 +29,7 @@ const INSTALLED_COMMAND: &str = if cfg!(windows) {
     "onevcs"
 };
 
-/// The Rust target triple this test is running on, as `scripts/npm-build.mjs`
+/// The Rust target triple this test is running on, as `crates/onevcs/release/npm-build.mjs`
 /// spells it.
 fn host_target() -> String {
     let output = Command::new("rustc")
@@ -47,7 +47,7 @@ fn host_target() -> String {
 fn npm_build(args: &[&std::ffi::OsStr]) -> PathBuf {
     let root = workspace_root();
     let output = Command::new("node")
-        .arg(root.join("scripts/npm-build.mjs"))
+        .arg(root.join("crates/onevcs/release/npm-build.mjs"))
         .args(args)
         .current_dir(&root)
         .output()

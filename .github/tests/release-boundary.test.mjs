@@ -4,24 +4,24 @@ import { spawnSync } from "node:child_process";
 test("release helper boundaries reject malformed input before building or installing", () => {
     for (const [command, args] of [
         ["node", [".github/required-result.mjs", "unknown", "{}"]],
-        ["python3", ["scripts/release-archive.py"]],
+        ["python3", ["crates/onevcs/release/release-archive.py"]],
         [
             "python3",
-            ["scripts/release-archive.py", "../../escape", "absent", "absent"],
+            ["crates/onevcs/release/release-archive.py", "../../escape", "absent", "absent"],
         ],
-        ["python3", ["scripts/release-payload-check.py"]],
+        ["python3", ["crates/onevcs/release/release-payload-check.py"]],
         [
             "python3",
             [
-                "scripts/release-payload-check.py",
+                "crates/onevcs/release/release-payload-check.py",
                 "unreleased-target",
                 "absent",
                 "absent",
                 "bad-version",
             ],
         ],
-        ["bash", ["scripts/release-stage.sh", "unreleased-target"]],
-        ["bash", ["scripts/release-local-install.sh", "unreleased-target"]],
+        ["bash", ["crates/onevcs/release/release-stage.sh", "unreleased-target"]],
+        ["bash", ["crates/onevcs/release/release-local-install.sh", "unreleased-target"]],
     ]) {
         const result = spawnSync(command, args, { encoding: "utf8" });
         assert.notEqual(
@@ -58,14 +58,14 @@ test("Darwin build reports registry/toolchain transport failures before compilat
             { mode: 0o755 },
         );
         for (const targets of ["--help", "x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin aarch64-apple-darwin"]) {
-            const invalid = spawnSync("bash", ["scripts/release-darwin.sh"], {env: {...process.env, PATH: dir + delimiter + process.env.PATH, DARWIN_TARGETS: targets, REAL_PYTHON: python, PIP_TRANSPORT_RESULT: "1"}, encoding: "utf8"});
+            const invalid = spawnSync("bash", ["crates/onevcs/release/release-darwin.sh"], {env: {...process.env, PATH: dir + delimiter + process.env.PATH, DARWIN_TARGETS: targets, REAL_PYTHON: python, PIP_TRANSPORT_RESULT: "1"}, encoding: "utf8"});
             assert.notEqual(invalid.status, 0);
             assert.match(invalid.stderr, /unsupported release target|non-Darwin target|duplicate target/);
             assert.match(invalid.stderr, /ACTION:/);
             assert.doesNotMatch(invalid.stderr, /maturin install failed|target installation failed/);
         }
         for (const result of ["1", "0"]) {
-            const run = spawnSync("bash", ["scripts/release-darwin.sh"], {
+            const run = spawnSync("bash", ["crates/onevcs/release/release-darwin.sh"], {
                 env: {
                     ...process.env,
                     PATH: dir + delimiter + process.env.PATH,
