@@ -6376,7 +6376,8 @@ fn landing_events_an_older_release_wrote_without_closes_read_as_closing_nothing(
     // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test:
     // no interface of this build writes a landing without `closes`, so the line an older
     // release wrote can only be put there directly. The lines are this build's own real
-    // landings less that one member, and every read goes through the real typed reader.
+    // landings less that one member (and, below, with a `closes` no build writes), and
+    // every read goes through the real typed reader.
     let legacy: String = written
         .lines()
         .map(|line| format!("{}\n", without(line)))
@@ -6405,6 +6406,7 @@ fn landing_events_an_older_release_wrote_without_closes_read_as_closing_nothing(
         usize::MAX,
     );
     std::fs::write(&path, &malformed).expect("a stream whose `closes` is not a list");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let events = EventStream::open(&session.token)
         .expect("the session's stream")
         .read()
