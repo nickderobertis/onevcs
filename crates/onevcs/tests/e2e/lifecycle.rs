@@ -4895,6 +4895,12 @@ fn the_integrate_train_carries_each_candidates_closing_lines_into_its_squash() {
     // `local-direct` squash uses.
     assert_eq!(paragraphs.len(), 2, "{published}");
     assert!(!published.contains("Prose the squash"), "{published}");
+
+    // The train reports what this commit closes on its `merge-completed`, which it emits
+    // only on an operation's stream — this command runs in none, so its own stream
+    // carries no such event. The same train driven through `integrate_in_operation`
+    // holds that event's `closes` to the lines its squash carries:
+    // `operation_progress::operation_progress_integration_reports_the_issues_each_squash_closes`.
 }
 
 #[test]
