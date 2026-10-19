@@ -5267,16 +5267,17 @@ mod collecting {
 ///
 /// macOS answers `kill(-pgid, 0)` with `EPERM` rather than `ESRCH` while a group's only
 /// members are killed processes not yet reaped, which is how
-/// `publication_watch`'s two cancellation-in-`pre-push` journeys failed there. Linux
-/// counts such a member as present and says so, so the group here is a real one with a
-/// real unreaped member, and the probe answers for it as macOS does: the platform's
-/// refusal in place of Linux's "present", and the real kernel's answer otherwise. On
-/// macOS that answer already *is* the refusal, so a refusal is counted whichever of the
-/// two gave it — the test then holds the same wait on both.
+/// `publication_watch`'s two cancellation-in-`pre-push` journeys failed there. The group
+/// here is a real one with a real killed member, and the probe itself answers `EPERM`
+/// for as long as that member is unreaped — the answer the wait gets on macOS — so the
+/// refusal is the test's own on every Unix, whatever the host kernel would have said.
+/// Only once the member is reaped does it ask the kernel, whose `ESRCH` ends the wait.
 #[cfg(all(test, unix))]
 mod reaping {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::{await_group_empty, REAP_BOUND};
@@ -5296,23 +5297,28 @@ mod reaping {
         let group = -(leader as libc::pid_t);
         // SAFETY: the group is the one `member` was just put in, owned by this test.
         assert_eq!(unsafe { libc::kill(group, libc::SIGKILL) }, 0);
-        let reaper = std::thread::spawn(move || {
-            std::thread::sleep(UNREAPED);
-            member.wait().expect("the killed member is reaped");
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reaper = std::thread::spawn({
+            let reaped = Arc::clone(&reaped);
+            move || {
+                std::thread::sleep(UNREAPED);
+                member.wait().expect("the killed member is reaped");
+                reaped.store(true, Ordering::SeqCst);
+            }
         });
 
         let mut refusals = 0;
         let answer = await_group_empty(leader, REAP_BOUND, || {
-            // SAFETY: signal 0 delivers nothing, to the group this test owns.
-            let answer = if unsafe { libc::kill(group, 0) } == 0 {
-                std::io::Error::from_raw_os_error(libc::EPERM)
-            } else {
-                std::io::Error::last_os_error()
-            };
-            if answer.raw_os_error() == Some(libc::EPERM) {
+            if !reaped.load(Ordering::SeqCst) {
                 refusals += 1;
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
-            Err(answer)
+            // SAFETY: signal 0 delivers nothing, to the group this test owns.
+            if unsafe { libc::kill(group, 0) } == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
         });
         reaper.join().expect("the reaper finishes");
 

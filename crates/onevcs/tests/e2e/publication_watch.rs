@@ -1124,9 +1124,9 @@ fn a_stop_whose_hook_group_keeps_an_unreaped_member_waits_out_the_bound_and_says
     // A member of the push's group that is never reaped: this process starts it in the
     // group once the hook is running (a group of the same session, which a process may
     // join), and collects it only after the publication answers. The group's kill
-    // leaves it a zombie still in the group, so the group never empties. Linux says the group still
-    // has a member; macOS refuses to say, with `EPERM`, as it does for a killed hook's
-    // processes init has not reaped yet. Either way the wait asks again rather than
+    // leaves it a zombie still in the group, so the group never empties. Linux says the
+    // group still has a member; macOS may refuse to say, with `EPERM`, as it does for a
+    // killed hook's processes init has not reaped yet. Either way the wait asks again rather than
     // taking the answer as final, and only at its bound reports that it could not
     // confirm the tree ended.
     let world = World::new();
@@ -1181,13 +1181,10 @@ fn a_stop_whose_hook_group_keeps_an_unreaped_member_waits_out_the_bound_and_says
         reason.contains("could not be confirmed") && reason.contains("may still be running"),
         "the tree is not claimed stopped: {reason}"
     );
-    let waited_out = if cfg!(target_os = "macos") {
-        "still refused 5s after it was killed: Operation not permitted"
-    } else {
-        "still had a running member 5s after it was killed"
-    };
+    // Which of the two the host gives is the kernel's to choose; that the wait asked
+    // until its bound, rather than stopping at the first answer, is the wait's.
     assert!(
-        reason.contains(waited_out),
+        reason.contains("5s after it was killed"),
         "the wait ran to its bound: {reason}"
     );
     let mut member = member
