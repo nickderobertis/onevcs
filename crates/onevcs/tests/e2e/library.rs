@@ -6308,6 +6308,118 @@ fn a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_wi
     assert_eq!(completed, 0, "a standings read records no merge-completed");
 }
 
+/// The landing events `token`'s persisted stream holds, by kind, each read back through
+/// `landing_closes` the way a consumer reads what it relays.
+fn closures_on_stream(token: &SessionToken) -> Vec<(onevcs::EventKind, Vec<String>)> {
+    EventStream::open(token)
+        .expect("the session's stream")
+        .read()
+        .expect("its events")
+        .iter()
+        .filter(|event| {
+            matches!(
+                kind_of(event),
+                onevcs::EventKind::ChangeMerged | onevcs::EventKind::MergeCompleted
+            )
+        })
+        .map(|event| {
+            let closes = onevcs::landing_closes(event).expect("the landing's closures read");
+            (kind_of(event), closes)
+        })
+        .collect()
+}
+
+#[test]
+fn landing_events_an_older_release_wrote_without_closes_read_as_closing_nothing() {
+    // A consumer adopting a run re-reads streams written before `closes` existed. Those
+    // landings are this build's own lines with the field absent, so the journey records
+    // a real watched merge and then takes `closes` out of its persisted landing lines —
+    // every other byte stays what a release wrote.
+    let (world, session) = session_with_work_to_publish(DIRECT, "feature/closes-legacy");
+    world.host_closes(1, &CLOSED_ISSUES);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let current = closures_on_stream(&session.token);
+    let issues: Vec<String> = CLOSED_ISSUES
+        .iter()
+        .map(|&issue| issue.to_owned())
+        .collect();
+    assert_eq!(
+        current,
+        vec![
+            (onevcs::EventKind::ChangeMerged, issues.clone()),
+            (onevcs::EventKind::MergeCompleted, issues),
+        ],
+        "this build's landings read back with what they closed"
+    );
+
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    let written = std::fs::read_to_string(&path).expect("the session's stream");
+    let without = |line: &str| -> String {
+        let Some(start) = line.find(",\"closes\":[") else {
+            return line.to_owned();
+        };
+        let end = start + line[start..].find(']').expect("the list ends") + 1;
+        format!("{}{}", &line[..start], &line[end..])
+    };
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test:
+    // no interface of this build writes a landing without `closes`, so the line an older
+    // release wrote can only be put there directly. The lines are this build's own real
+    // landings less that one member, and every read goes through the real typed reader.
+    let legacy: String = written
+        .lines()
+        .map(|line| format!("{}\n", without(line)))
+        .collect();
+    assert_eq!(
+        legacy.matches("\"closes\"").count(),
+        0,
+        "no landing line carries `closes` now: {legacy}"
+    );
+    assert_ne!(legacy, written, "the landing lines carried `closes` before");
+    std::fs::write(&path, &legacy).expect("the stream an older release wrote");
+    assert_eq!(
+        closures_on_stream(&session.token),
+        vec![
+            (onevcs::EventKind::ChangeMerged, Vec::new()),
+            (onevcs::EventKind::MergeCompleted, Vec::new()),
+        ],
+        "a landing with no `closes` reads as closing nothing, and is not refused"
+    );
+
+    // A `closes` that is present but is not a list of issues is refused, never read as
+    // part of a set.
+    let malformed = legacy.replacen(
+        "\"payload\":{",
+        "\"payload\":{\"closes\":\"acme-corp/hosted#12\",",
+        usize::MAX,
+    );
+    std::fs::write(&path, &malformed).expect("a stream whose `closes` is not a list");
+    let events = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("its events");
+    let landing = events
+        .iter()
+        .find(|event| kind_of(event) == onevcs::EventKind::MergeCompleted)
+        .expect("the landing is still on the stream");
+    let refused = onevcs::landing_closes(landing).expect_err("a string is not a list");
+    assert!(
+        refused.to_string().contains("`closes` is not a list"),
+        "{refused}"
+    );
+}
+
 /// A change request a `checks-unsettled` close stopped watching, which a person then
 /// merged at an older head than was published — so no read records that merge as the
 /// branch's landing, and `release status` finds it in the base's history instead.

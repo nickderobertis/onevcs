@@ -4868,6 +4868,15 @@ release emits carries it. **A reader of an event an older release wrote, which h
 envelope (still `v: 1`), `PublishOutcome`, `Publication` and every other public Rust type
 are unchanged, and every emitter builds the field through one function.
 
+One function is added, so a consumer reads the field the way this crate writes it rather
+than by its own reading of the payload. It changes no existing type:
+
+```rust
+pub fn landing_closes(envelope: &Envelope) -> Result<Vec<String>>;
+// an event without `closes` — an older release's landing, or any other kind — reads as `[]`;
+// a `closes` that is not a list of `owner/name#N` is `Error::Invalid`, never a partial set
+```
+
 **Where each landing's set comes from:**
 
 - **A `local-direct` squash**: the issue-closing references the squash message already

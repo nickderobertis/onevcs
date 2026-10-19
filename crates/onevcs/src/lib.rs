@@ -535,6 +535,17 @@ pub fn release_targets(repo: &str) -> Result<RepositoryReleases> {
     release::targets(&store::load()?, repo)
 }
 
+/// The GitHub issues a landing event reports closing, each `owner/name#N`, in the
+/// order the event lists them.
+///
+/// A `merge-completed` or `change-merged` an older release wrote carries no `closes`,
+/// and reads as `[]`, as does an event of any other kind; a `closes` that is not a list
+/// of `owner/name#N` is [`Error::Invalid`]. The field is `docs/contract.md`'s "Every
+/// landing reports the GitHub issues it closes".
+pub fn landing_closes(envelope: &Envelope) -> Result<Vec<String>> {
+    closing::reported(&envelope.payload)
+}
+
 /// Every target one repository has, and what each of them has released right now.
 ///
 /// The library form of `onevcs release discover`, and the answer a consumer that

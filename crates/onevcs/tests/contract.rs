@@ -762,6 +762,56 @@ fn the_closures_amendment_spells_one_field_on_the_landing_events_this_build_name
 }
 
 #[test]
+fn the_closures_amendment_declares_the_reader_and_the_reader_reads_its_example() {
+    // The one function the amendment adds is how a consumer reads `closes`, so it reads
+    // the documented landing as the amendment spells it, and that landing less the field
+    // — what an older release wrote — as closing nothing.
+    let declared = amendment_block_declaring("rust", "pub fn landing_closes(");
+    assert!(
+        declared.contains("pub fn landing_closes(envelope: &Envelope) -> Result<Vec<String>>;"),
+        "the closures amendment no longer declares the reader: {declared}"
+    );
+    let landing = documented_closing_landing();
+    let mut fixture = envelope_fixture("vcs", "merge-completed");
+    fixture["payload"] = landing["payload"].clone();
+    let envelope: Envelope =
+        serde_json::from_value(fixture.clone()).expect("the documented landing is an envelope");
+    let documented: Vec<String> =
+        serde_json::from_value(landing["payload"]["closes"].clone()).expect("a list of strings");
+    assert_eq!(
+        onevcs::landing_closes(&envelope).expect("the documented landing reads"),
+        documented
+    );
+
+    fixture["payload"]
+        .as_object_mut()
+        .expect("a payload object")
+        .remove("closes");
+    let older: Envelope = serde_json::from_value(fixture).expect("an older landing reads");
+    assert_eq!(
+        onevcs::landing_closes(&older).expect("a missing `closes` is not refused"),
+        Vec::<String>::new()
+    );
+
+    // Present, a `closes` is the whole set or it is refused: never part of one.
+    for (closes, refusal) in [
+        (
+            json!(["acme-corp/hosted#12", 7]),
+            "an item that is not a string",
+        ),
+        (json!(["acme-corp/hosted#07"]), "`acme-corp/hosted#07`"),
+        (json!(["acme-corp/hosted#0"]), "`acme-corp/hosted#0`"),
+        (json!(["hosted#12"]), "`hosted#12`"),
+    ] {
+        let mut fixture = envelope_fixture("vcs", "change-merged");
+        fixture["payload"] = json!({ "closes": closes });
+        let envelope: Envelope = serde_json::from_value(fixture).expect("an envelope");
+        let refused = onevcs::landing_closes(&envelope).expect_err("not a list of issues");
+        assert!(refused.to_string().contains(refusal), "{refused}");
+    }
+}
+
+#[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
     let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();
     // An amendment may retire a kind, and one has: nothing emits `gate-started` or

@@ -141,6 +141,45 @@ pub(crate) fn report(payload: &mut Map<String, Value>, issues: impl IntoIterator
     payload.insert("closes".to_owned(), Value::Array(closes));
 }
 
+/// The `closes` a landing event's payload reports, as [`report`] wrote it.
+///
+/// An event an older release wrote has no `closes`, and reads as `[]`. One that has
+/// the field is refused whole unless it is a list of `owner/name#N`, so a consumer is
+/// never handed part of a set as if it were the whole.
+pub(crate) fn reported(payload: &Map<String, Value>) -> crate::Result<Vec<String>> {
+    let Some(closes) = payload.get("closes") else {
+        return Ok(Vec::new());
+    };
+    let refused = |what: &str| crate::Error::Invalid {
+        reason: format!("a landing event's `closes` {what}: {closes}"),
+    };
+    let Value::Array(items) = closes else {
+        return Err(refused("is not a list"));
+    };
+    items
+        .iter()
+        .map(|item| {
+            let spelled = item
+                .as_str()
+                .ok_or_else(|| refused("holds an item that is not a string"))?;
+            let readable = spelled
+                .split_once('#')
+                .and_then(|(repository, number)| {
+                    let (owner, name) = repository.split_once('/')?;
+                    Issue::new(owner, name, number.parse().ok()?)
+                })
+                .is_some_and(|issue| issue.to_string() == spelled);
+            if readable {
+                Ok(spelled.to_owned())
+            } else {
+                Err(refused(&format!(
+                    "holds `{spelled}`, which is not `owner/name#N`"
+                )))
+            }
+        })
+        .collect()
+}
+
 /// The issues GitHub says a change request closes, out of its `closingIssuesReferences`
 /// as `gh pr view --json` answers it (a list) or a GraphQL connection does
 /// (`{nodes: [...]}`), or what about the answer is not that.
