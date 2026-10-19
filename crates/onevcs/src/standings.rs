@@ -820,6 +820,7 @@ impl Repository {
                 commit: &commit.0,
                 head: Some(&standing.head.0),
                 at: merged_at.and_then(crate::gate_run::Moment::reported),
+                found: release::Found::OnTheHost,
             },
             &standing.url,
             &mut releases,

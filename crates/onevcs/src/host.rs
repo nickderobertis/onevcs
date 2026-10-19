@@ -1635,6 +1635,49 @@ impl GitHub {
         let raw = gh::invoke(&["pr", "view", id, "--repo", &self.repo, "--json", fields])?;
         gh::json(&raw)
     }
+
+    /// The read a merge is recorded from: [`view`](Self::view) of `fields`, which name
+    /// [`CLOSES_FIELD`] beside what decides the merge, keeping what a merged change
+    /// request closes for the record of its landing — so reporting closures costs that
+    /// record no request of its own.
+    ///
+    /// A `gh` or a credential that refuses the closures field alone is asked again
+    /// without it ([`gh::invoke_unless_refused`]): whether the change merged is the
+    /// answer, and its closures are what the landing then reports none of, saying so.
+    fn merge_view(&self, cr: &ChangeRequest, fields: &str) -> Result<serde_json::Value> {
+        addressable(&cr.id.0, "change request id")?;
+        let without = fields
+            .split(',')
+            .filter(|field| *field != CLOSES_FIELD)
+            .collect::<Vec<_>>()
+            .join(",");
+        let base = ["pr", "view", &cr.id.0, "--repo", &self.repo, "--json"];
+        let (raw, answered) = gh::invoke_unless_refused(
+            &[&base[..], &[fields]].concat(),
+            CLOSES_FIELD,
+            &[&base[..], &[without.as_str()]].concat(),
+        )?;
+        let view = gh::json(&raw)?;
+        let merged = view
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("merged"));
+        match answered {
+            gh::Answered::AsAsked if merged => {
+                crate::closing::hear(cr.url.as_str(), view.get(CLOSES_FIELD));
+            }
+            gh::Answered::WithoutTheField { refusal } if merged => {
+                crate::closing::unanswered(cr.url.as_str());
+                eprintln!(
+                    "onevcs: warning: the host would not say which issues {} closes, so its \
+                     landing reports none: {refusal}",
+                    cr.url
+                );
+            }
+            _ => {}
+        }
+        Ok(view)
+    }
 }
 
 /// One value bound for `gh`'s argument vector, checked before it gets there.
@@ -2131,7 +2174,7 @@ impl RemoteHost for GitHub {
                 gh::invoke(&[
                     "pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash", "--auto",
                 ])?;
-                let view = self.view(&cr.id.0, MERGE_FIELDS)?;
+                let view = self.merge_view(cr, MERGE_FIELDS)?;
                 Ok(match merged_sha(&view, cr)? {
                     Some(sha) => MergeOutcome::Merged(sha),
                     None => MergeOutcome::Queued,
@@ -2140,7 +2183,7 @@ impl RemoteHost for GitHub {
             MergePolicy::ChangeDirect => {
                 addressable(&cr.id.0, "change request id")?;
                 gh::invoke(&["pr", "merge", &cr.id.0, "--repo", &self.repo, "--squash"])?;
-                let view = self.view(&cr.id.0, MERGE_FIELDS)?;
+                let view = self.merge_view(cr, MERGE_FIELDS)?;
                 match merged_sha(&view, cr)? {
                     Some(sha) => Ok(MergeOutcome::Merged(sha)),
                     None => Err(Error::GateFailed {
@@ -2299,16 +2342,14 @@ impl RemoteHost for GitHub {
     /// the same read `merge` makes, through the same parser, so watching a change
     /// request and merging one cannot come to disagree about what merged means.
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
-        addressable(&cr.id.0, "change request id")?;
-        merged_sha(&self.view(&cr.id.0, MERGE_FIELDS)?, cr)
+        merged_sha(&self.merge_view(cr, MERGE_FIELDS)?, cr)
     }
 
     /// One `gh pr view`, reading the two fields a merge is decided from and the head
     /// it was of — the read [`merged_at`](RemoteHost::merged_at) makes, through the same
     /// parser, with `headRefOid` beside it rather than in a second request.
     fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>> {
-        addressable(&cr.id.0, "change request id")?;
-        let view = self.view(&cr.id.0, MERGED_HEAD_FIELDS)?;
+        let view = self.merge_view(cr, MERGED_HEAD_FIELDS)?;
         let Some(commit) = merged_sha(&view, cr)? else {
             return Ok(None);
         };
@@ -2712,11 +2753,15 @@ pub(crate) fn reported_time(entry: &serde_json::Value, field: &str) -> Option<St
         .map(str::to_owned)
 }
 
-/// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for.
-const MERGE_FIELDS: &str = "state,mergeCommit";
+/// The field GitHub answers the issues a change request closes in.
+const CLOSES_FIELD: &str = "closingIssuesReferences";
+
+/// What [`merged_sha`] reads, which is what a merge asks `gh pr view` for — with the
+/// issues the change request closes, which the record of the merge reports.
+const MERGE_FIELDS: &str = "state,mergeCommit,closingIssuesReferences";
 
 /// What [`GitHub`]'s `merged_head` reads: [`MERGE_FIELDS`] and the head it merged.
-const MERGED_HEAD_FIELDS: &str = "state,mergeCommit,headRefOid";
+const MERGED_HEAD_FIELDS: &str = "state,mergeCommit,headRefOid,closingIssuesReferences";
 
 /// What [`GitHub`]'s `merge_time` reads.
 const MERGE_TIME_FIELDS: &str = "mergedAt";

@@ -587,6 +587,33 @@ impl World {
         std::fs::write(self.path("gh-state/merge-clock"), at).expect("a merge clock");
     }
 
+    /// The issues change request `number` closes, as the substituted host's
+    /// `closingIssuesReferences` answers them — each `owner/name#number`, in this order.
+    /// Unset, it closes none. Written before or after the change request is opened, as
+    /// GitHub links an issue from a body or by hand at either moment.
+    pub fn host_closes(&self, number: usize, issues: &[&str]) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(
+            self.path(format!("gh-state/closes-{number}")),
+            issues
+                .iter()
+                .map(|issue| format!("{issue}\n"))
+                .collect::<String>(),
+        )
+        .expect("the issues a change request closes");
+    }
+
+    /// Make the substituted host refuse every read that asks which issues a change
+    /// request closes, `how` the substituted `gh` spells it: `permission` (GitHub
+    /// refusing a credential the whole call, naming the field), `unknown-field` (a `gh`
+    /// predating the field), `unrelated` (a failure naming nothing of the field), or
+    /// `fallback-too` (refused naming the field, and the read without it failing too).
+    pub fn refuse_closing_references(&self, how: &str) {
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::write(self.path("gh-state/refuse-closing-references"), how)
+            .expect("a refused read of the closing issues");
+    }
+
     /// What the substituted host's **classic** branch protection requires on the
     /// base, which is the second of the two ways GitHub protects a branch and the one
     /// a credential may be refused. Unset, the branch has no classic protection —
@@ -1123,20 +1150,16 @@ impl World {
         let title = std::fs::read_to_string(self.path(format!("gh-state/pr-{number}.title")))
             .unwrap_or_default();
         match how {
-            PersonMerge::Squash => {
+            PersonMerge::Squash | PersonMerge::SquashSaying(_) => {
                 self.git(
                     &work,
                     &["merge", "-q", "--squash", &format!("origin/{branch}")],
                 );
-                self.git(
-                    &work,
-                    &[
-                        "commit",
-                        "-q",
-                        "-m",
-                        &format!("{} (#{number})", title.trim()),
-                    ],
-                );
+                let mut message = format!("{} (#{number})", title.trim());
+                if let PersonMerge::SquashSaying(body) = how {
+                    message = format!("{message}\n\n{body}");
+                }
+                self.git(&work, &["commit", "-q", "-m", &message]);
             }
             PersonMerge::MergeCommit => {
                 self.git(
@@ -1194,6 +1217,23 @@ impl World {
         }
         std::fs::remove_dir_all(&work).expect("the person's clone is disposable");
         commit
+    }
+
+    /// A person force-pushes change request `number`'s head branch back to `commit`, a
+    /// commit the origin already holds, and the host takes it as the change's head —
+    /// so a merge after it is a merge at an older head than anything here published.
+    pub fn person_force_pushes(&self, number: usize, commit: &str) {
+        let record = self.change_request(number);
+        let origin = std::fs::read_to_string(self.path("gh-state/origin")).expect("the origin");
+        self.git(
+            Path::new(origin.trim()),
+            &[
+                "update-ref",
+                &format!("refs/heads/{}", record["PR_HEAD"]),
+                commit,
+            ],
+        );
+        self.rewrite_change_request(number, &[("PR_HEAD_SHA", commit)]);
     }
 
     /// A person retargets change request `number` onto `base` on the host.
@@ -1279,6 +1319,9 @@ pub enum PersonMerge {
     /// One squash commit on the base, its subject the title and the change request's
     /// number, as GitHub writes one.
     Squash,
+    /// The same squash with a body beneath its subject, as GitHub writes the commit
+    /// messages of the change request's commits there.
+    SquashSaying(&'static str),
     /// A merge commit of the head into the base.
     MergeCommit,
 }

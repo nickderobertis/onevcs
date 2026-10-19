@@ -206,6 +206,35 @@ pub fn documented_sweep_report() -> serde_json::Value {
     serde_json::from_str(fixtures[0]).expect("the documented sweep report is JSON")
 }
 
+/// The landing event the contract's closures amendment spells: the one json block in
+/// the contract that carries `"closes"`, as `{kind, payload}`.
+///
+/// The amendment is what a consumer relaying landings builds against, so the journey
+/// beside this holds the payload the binary writes to it — every field it names, and
+/// the issues it says that publication closes.
+#[cfg(unix)]
+pub fn documented_closing_landing() -> serde_json::Value {
+    const MARKER: &str = "\"closes\": [";
+    let contract = contract();
+    let fixtures: Vec<&str> = contract
+        .split("\n```json\n")
+        .skip(1)
+        .map(|block| {
+            block
+                .split_once("\n```")
+                .expect("a json fence in the contract is closed")
+                .0
+        })
+        .filter(|body| body.contains(MARKER))
+        .collect();
+    assert_eq!(
+        fixtures.len(),
+        1,
+        "exactly one json block in the contract spells a landing's closes"
+    );
+    serde_json::from_str(fixtures[0]).expect("the documented landing is JSON")
+}
+
 /// The stopwatch the host-scale wall-clock bounds of this suite time under, held
 /// exclusively until the guard is dropped.
 ///

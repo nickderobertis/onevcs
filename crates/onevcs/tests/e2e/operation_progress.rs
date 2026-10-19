@@ -496,6 +496,64 @@ fn operation_progress_three_branch_integration_matches_the_actual_cwd_identity()
     }
 }
 
+#[test]
+fn operation_progress_integration_reports_the_issues_each_squash_closes() {
+    // The train's `merge-completed` names the GitHub issues the closing lines it carried
+    // into the squash close — a bare `#N` as one of this repository's own, and the same
+    // issue spelled twice, in two cases, once.
+    let world = World::new();
+    inhabit(&world);
+    let (_origin, _) = hosted(&world, LOCAL);
+    let checkout = world.path("hosted");
+    let identity = onevcs::resolve_repository(&Providers::real(), "hosted")
+        .expect("identity")
+        .identity;
+    world.git(&checkout, &["switch", "-c", "feature/closing", "main"]);
+    world.commit_file(
+        &checkout,
+        "closing.txt",
+        "closing\n",
+        "feat: close two issues\n\nCloses #7\nFixes acme-corp/tracker#3\n\
+         Resolves https://git.example.com/acme-corp/hosted/issues/4\nFixes ACME-CORP/hosted#7",
+    );
+    world.git(&checkout, &["switch", "main"]);
+    let operation = onevcs::OperationHandle::prepare(&onevcs::DirectOperation::Integrate {
+        repository: identity.clone(),
+    })
+    .expect("prepared train");
+    let previous = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(&checkout).expect("integration cwd");
+    let outcome = onevcs::integrate_in_operation(
+        &onevcs::IntegrateRequest {
+            branches: vec!["feature/closing".to_owned()],
+            push: onevcs::BasePush::Keep,
+            term_scope: Default::default(),
+        },
+        &operation,
+    );
+    std::env::set_current_dir(previous).expect("restore cwd");
+    outcome.expect("real integration train");
+
+    let message = world.git(&checkout, &["log", "-1", "--format=%B", "main"]);
+    assert!(
+        message.contains(
+            "Closes #7\nFixes acme-corp/tracker#3\n\
+             Resolves https://git.example.com/acme-corp/hosted/issues/4\nFixes ACME-CORP/hosted#7"
+        ),
+        "{message}"
+    );
+    let completed: Vec<onevcs::Envelope> = operation_batch(&operation, &identity)
+        .into_iter()
+        .filter(|event| event.kind.as_str() == "merge-completed")
+        .collect();
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    assert_eq!(
+        completed[0].payload["closes"],
+        serde_json::json!(["acme-corp/hosted#7", "acme-corp/tracker#3"]),
+        "{completed:#?}"
+    );
+}
+
 fn operation_check(conclusion: Option<&str>) -> Check {
     Check {
         name: "gate".to_owned(),

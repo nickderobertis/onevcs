@@ -172,6 +172,42 @@ pub fn invoke_content(args: &[&str]) -> Result<String> {
     invoke(args)
 }
 
+/// Run `asked`, and where `gh` turns it down naming `field`, run `without` instead —
+/// for a call that reads one field its caller can do without. Answers what was printed,
+/// and which of the two calls printed it.
+///
+/// Two refusals name the field, and neither is the answer to the rest of the call: a
+/// `gh` that predates it rejects it while parsing its arguments, before asking GitHub
+/// anything, and GitHub refuses a credential the field is not visible to by failing the
+/// *whole* call. So a read whose other fields decide something — whether a change
+/// merged — is not lost to the one it could do without. Every other refusal is
+/// `asked`'s, unchanged.
+pub fn invoke_unless_refused(
+    asked: &[&str],
+    field: &str,
+    without: &[&str],
+) -> Result<(String, Answered)> {
+    let answer = attempt(asked)?;
+    if answer.code == Some(0) {
+        return Ok((answer.stdout, Answered::AsAsked));
+    }
+    if !answer.stderr.contains(field) {
+        return Err(refused(asked, &answer));
+    }
+    let refusal = answer.detail();
+    Ok((invoke(without)?, Answered::WithoutTheField { refusal }))
+}
+
+/// Which of its two calls [`invoke_unless_refused`] answered with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answered {
+    /// The call as asked, the field included.
+    AsAsked,
+    /// The call without the field, which the first was refused over — carrying what
+    /// `gh` said in refusing it, so whoever reports the missing field names why.
+    WithoutTheField { refusal: String },
+}
+
 /// Parse one `gh --json` response.
 pub fn json(raw: &str) -> Result<Value> {
     serde_json::from_str(raw.trim()).map_err(|e| {

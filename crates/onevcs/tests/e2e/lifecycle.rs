@@ -23,7 +23,7 @@ use predicates::prelude::*;
 
 use crate::honesty::inhabit;
 use crate::registry::configure_rules;
-use crate::support::{documented_default_prefix, documented_trailer};
+use crate::support::{documented_closing_landing, documented_default_prefix, documented_trailer};
 use crate::world::{token_of, worktree_of, World};
 
 /// A registered repository: its origin, its checkout, and the policy it publishes
@@ -51,6 +51,36 @@ impl Fixture {
         Self::with_rules(&format!(
             "version: 2\ntrailer_prefix: {prefix}\nrules: []\ndefault: {default_policy}\n"
         ))
+    }
+
+    /// A registered repository whose origin GitHub hosts as `slug`, ruled
+    /// `default_policy` — so a bare `#N` in its commits names one of `slug`'s issues — on
+    /// the substituted host, which answers the visibility every publication asks.
+    pub fn on_github(default_policy: &str, slug: &str) -> Self {
+        let world = World::new();
+        let origin = world.bare_origin("project");
+        let checkout = world.clone_of(&origin, "project");
+        world
+            .onevcs()
+            .args([
+                "register",
+                &checkout.to_string_lossy(),
+                "--origin",
+                &format!("https://github.com/{slug}.git"),
+            ])
+            .assert()
+            .success();
+        world.install_fake_host(&origin);
+        world.host_visibility(slug, "private");
+        configure_rules(
+            &world,
+            format!("version: 1\nrules: []\ndefault: {default_policy}\n"),
+        );
+        Self {
+            world,
+            origin,
+            checkout,
+        }
     }
 
     fn with_rules(rules: &str) -> Self {
@@ -1981,22 +2011,23 @@ fn a_local_repository_publishes_one_squash_commit_and_only_fast_forwards_its_che
 #[test]
 fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subject_and_trailers() {
     // GitHub closes an issue only from the commit that reaches the default branch, so
-    // a squash that dropped these lines left every issue the work delivered open.
-    let fixture = Fixture::local(&local_direct());
+    // a squash that dropped these lines left every issue the work delivered open — and
+    // the landing reports the GitHub issues they close, as the contract spells it.
+    let fixture = Fixture::on_github(&local_direct(), "owner/name");
     let (token, worktree) = fixture.open(&["--branch", "feature/closes"]);
     fixture.world.commit_file(
         &worktree,
         "one.txt",
         "one\n",
         "feat: add the first thing\n\nProse that explains the change and does not survive.\n\n\
-         Closes owner/name#1071\nfixes: #7",
+         Closes #7\nfixes: owner/other#3",
     );
     fixture.world.commit_file(
         &worktree,
         "two.txt",
         "two\n",
-        "docs: describe it\n\nThis resolves https://github.com/owner/name/issues/1071 too.\n\
-         Resolves other/repo#3",
+        "docs: describe it\n\nResolves https://github.com/owner/name/issues/9\n\
+         Fixes #7\ncloses Owner/Name#9\nCloses https://git.example.com/owner/name/issues/4",
     );
 
     fixture
@@ -2013,8 +2044,11 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
     let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
     assert_eq!(paragraphs[0], "feat: add the first thing", "{published}");
     assert_eq!(
-        paragraphs[1], "Closes owner/name#1071\nFixes #7\nResolves other/repo#3",
-        "each distinct closing reference once, in order:\n{published}"
+        paragraphs[1],
+        "Closes #7\nFixes owner/other#3\nResolves owner/name#9\n\
+         Closes https://git.example.com/owner/name/issues/4",
+        "each distinct closing reference once, in order — `Owner/Name#9` is the URL's \
+         issue in another case:\n{published}"
     );
     assert!(
         paragraphs[2].starts_with(&documented_trailer(
@@ -2025,11 +2059,99 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
     );
     assert_eq!(paragraphs.len(), 3, "{published}");
     assert!(!published.contains("Prose that explains"), "{published}");
+
+    // The landing names the GitHub issues those lines close — a bare `#7` as this
+    // repository's, the github.com URL in its short form, each once ignoring case — and
+    // not the issue on another host, which the squash still carries.
+    let completed = fixture.world.events_of(&token, "merge-completed");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    let documented = documented_closing_landing();
+    assert_eq!(completed[0]["kind"], documented["kind"]);
+    let payload = completed[0]["payload"].as_object().expect("a payload");
+    let spelled = documented["payload"]
+        .as_object()
+        .expect("a documented payload");
+    assert_eq!(
+        payload.keys().collect::<Vec<_>>(),
+        spelled.keys().collect::<Vec<_>>(),
+        "the payload carries exactly the fields the contract spells: {payload:?}"
+    );
+    assert_eq!(payload["closes"], spelled["closes"], "{payload:?}");
+    assert_eq!(
+        payload["closes"],
+        serde_json::json!(["owner/name#7", "owner/other#3", "owner/name#9"])
+    );
+}
+
+#[test]
+fn a_bare_reference_on_a_repository_github_does_not_host_is_carried_and_not_reported() {
+    // `#7` names an issue of whatever host the repository is on, and this one is on
+    // none GitHub's: the squash still carries the line, and the landing names no GitHub
+    // issue for it — while one naming a GitHub repository outright is still reported,
+    // and one naming issue 0, which GitHub never numbers, is carried and not reported.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/bare"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing\n\nCloses #7\nFixes owner/name#3\nResolves owner/name#0",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(
+        paragraphs[1], "Closes #7\nFixes owner/name#3\nResolves owner/name#0",
+        "{published}"
+    );
+    let completed = fixture.world.events_of(&token, "merge-completed");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    assert_eq!(
+        completed[0]["payload"]["closes"],
+        serde_json::json!(["owner/name#3"])
+    );
+}
+
+#[test]
+fn a_bare_reference_alone_on_a_repository_github_does_not_host_reports_no_closures() {
+    // The only closing line is a bare `#7`, and the origin is on no GitHub repository it
+    // could be read against: the squash carries the line, and the landing closes nothing.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/bare-alone"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing\n\nCloses #7",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(paragraphs[1], "Closes #7", "{published}");
+    let completed = fixture.world.events_of(&token, "merge-completed");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    assert_eq!(completed[0]["payload"]["closes"], serde_json::json!([]));
 }
 
 #[test]
 fn a_local_squash_of_commits_that_close_nothing_lands_the_subject_and_trailers_alone() {
-    let fixture = Fixture::local(&local_direct());
+    let fixture = Fixture::on_github(&local_direct(), "owner/name");
     let (token, worktree) = fixture.open(&["--branch", "feature/plain"]);
     fixture.world.commit_file(
         &worktree,
@@ -2058,6 +2180,10 @@ fn a_local_squash_of_commits_that_close_nothing_lands_the_subject_and_trailers_a
         )),
         "{published}"
     );
+    // …and the landing says it closes nothing, rather than saying nothing.
+    let completed = fixture.world.events_of(&token, "merge-completed");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    assert_eq!(completed[0]["payload"]["closes"], serde_json::json!([]));
 }
 
 #[test]
@@ -4727,6 +4853,54 @@ fn the_integrate_train_keeps_going_past_a_failure_and_lands_one_commit_each() {
         ],
         "{subjects:?}"
     );
+}
+
+#[test]
+fn the_integrate_train_carries_each_candidates_closing_lines_into_its_squash() {
+    // The train squashes a candidate the way a `local-direct` publication does, so the
+    // lines that close its issues reach the base in the one commit GitHub reads them
+    // from — and what the train reports closing is what that commit carries.
+    let fixture = Fixture::on_github(&local_direct(), "owner/name");
+    let checkout = fixture.checkout.clone();
+    let world = &fixture.world;
+    world.git(
+        &checkout,
+        &["checkout", "-q", "-b", "claude/closing", "main"],
+    );
+    world.commit_file(
+        &checkout,
+        "closing.txt",
+        "closing\n",
+        "feat: close two issues\n\nProse the squash does not keep.\n\nCloses #7\nfixes: owner/other#3",
+    );
+    world.git(&checkout, &["checkout", "-q", "main"]);
+
+    world
+        .onevcs()
+        .args(["integrate", "claude/closing", "--push"])
+        .current_dir(&checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/closing: merged"));
+
+    let published = world.git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(paragraphs[0], "feat: close two issues", "{published}");
+    assert_eq!(
+        paragraphs[1], "Closes #7\nFixes owner/other#3",
+        "the closing lines follow the subject:\n{published}"
+    );
+    // A candidate nothing attested carries no trailers, so nothing follows them; where
+    // trailers are carried they come after, through the one composition a
+    // `local-direct` squash uses.
+    assert_eq!(paragraphs.len(), 2, "{published}");
+    assert!(!published.contains("Prose the squash"), "{published}");
+
+    // The train reports what this commit closes on its `merge-completed`, which it emits
+    // only on an operation's stream — this command runs in none, so its own stream
+    // carries no such event. The same train driven through `integrate_in_operation`
+    // holds that event's `closes` to the lines its squash carries:
+    // `operation_progress::operation_progress_integration_reports_the_issues_each_squash_closes`.
 }
 
 #[test]
