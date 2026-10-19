@@ -23,6 +23,7 @@
 // below still drives the real binary.
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Output;
 
 use predicates::prelude::*;
 
@@ -932,6 +933,8 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
     world.commit_file(&worktree, "one.txt", "one\n", "feat: land it directly");
+    // GitHub links two issues, in two repositories, to the change request it opens.
+    world.host_closes(1, &["acme-corp/direct#12", "acme-corp/tracker#3"]);
 
     world
         .onevcs()
@@ -943,7 +946,21 @@ fn a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it() {
         world.git(&origin, &["log", "-1", "--format=%s", "main"]),
         "feat: land it directly (#1)"
     );
-    assert!(!world.events_of(&token, "change-merged").is_empty());
+    // Both landing events the watched merge records say which issues it closed, read
+    // from the host in the request that found the merge — and that request is the only
+    // one: the journey asks the host nothing it did not ask before closures were read.
+    crate::call_baseline::assert_no_call_beyond(&world, "watched-merge");
+    let merged = world.events_of(&token, "change-merged");
+    let completed = world.events_of(&token, "merge-completed");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    for event in merged.iter().chain(&completed) {
+        assert_eq!(
+            event["payload"]["closes"],
+            serde_json::json!(["acme-corp/direct#12", "acme-corp/tracker#3"]),
+            "{event}"
+        );
+    }
 }
 
 #[test]
@@ -4066,5 +4083,204 @@ fn a_status_read_over_session_records_this_host_cannot_read_refuses_rather_than_
             .args(["status", spelling, "--json"])
             .assert()
             .success();
+    }
+}
+
+/// A `change-direct` publication of `acme-corp/<name>` the substituted host merges,
+/// after `host` has said what it holds about the change request's closures: answers
+/// the session's token and how the publication ended. Its branch and its commit are
+/// `a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it`'s, so of
+/// `acme-corp/direct` it is that journey, and its log can be held to that baseline.
+fn published_directly(name: &str, host: impl FnOnce(&World)) -> (World, String, Output) {
+    let world = World::new();
+    let origin = world.bare_origin(name);
+    let checkout = world.clone_of(&origin, name);
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            &format!("https://github.com/acme-corp/{name}.git"),
+        ])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 1\nrules: []\n\
+         default: {publication: change-direct, approvals: none}\n",
+    );
+    world.install_fake_host(&origin);
+    world.install_pre_push(&checkout, "exit 0");
+    host(&world);
+
+    let assert = world
+        .onevcs()
+        .args(["session", "open", name, "--branch", "feature/direct"])
+        .assert()
+        .success();
+    let token = token_of(&assert.get_output().stdout);
+    let worktree = worktree_of(&assert.get_output().stdout);
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: land it directly");
+
+    let published = world
+        .onevcs()
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    (world, token, published)
+}
+
+/// The publication landed, and both landing events of its watched merge report no
+/// closures; answers what it wrote on stderr.
+fn landed_reporting_no_closures(world: &World, token: &str, published: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&published.stderr).into_owned();
+    assert!(published.status.success(), "{stderr}");
+    assert!(
+        String::from_utf8_lossy(&published.stdout).contains("merged at"),
+        "{published:?}"
+    );
+    for kind in ["change-merged", "merge-completed"] {
+        let events = world.events_of(token, kind);
+        assert_eq!(events.len(), 1, "{events:#?}");
+        assert_eq!(events[0]["payload"]["closes"], serde_json::json!([]));
+    }
+    stderr
+}
+
+/// How many merge reads asked for the closures, and how many asked without them — the
+/// second only ever the fallback of a read of the first.
+fn merge_reads(world: &World) -> (usize, usize) {
+    let calls = world.host_calls();
+    let ending = |fields: &str| {
+        calls
+            .iter()
+            .filter(|call| call.ends_with(&format!("--json {fields}")))
+            .count()
+    };
+    (
+        ending("state,mergeCommit,closingIssuesReferences"),
+        ending("state,mergeCommit"),
+    )
+}
+
+#[test]
+fn a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none() {
+    // GitHub refuses the whole read of a merge to a credential that may not see the
+    // issues it closes, and a `gh` older than the field rejects it before asking
+    // anything. Either way the merge is what the read decides, so it is asked once
+    // more without the field: the change lands, reports no closures, and says why.
+    // The warning names the refusal the host gave, in the host's own words, so an
+    // operator reading it knows which of the two it was and what to grant or upgrade.
+    for (how, refusal) in [
+        (
+            "permission",
+            "GraphQL: Resource not accessible by personal access token \
+             (repository.pullRequest.closingIssuesReferences)",
+        ),
+        (
+            "unknown-field",
+            "Unknown JSON field: \"closingIssuesReferences\"\nAvailable fields:",
+        ),
+    ] {
+        let (world, token, published) = published_directly("direct", |world| {
+            world.host_closes(1, &["acme-corp/direct#12"]);
+            world.refuse_closing_references(how);
+        });
+        let stderr = landed_reporting_no_closures(&world, &token, &published);
+        assert!(
+            stderr.contains(&format!(
+                "the host would not say which issues \
+                 https://github.com/acme-corp/direct/pull/1 closes, so its landing reports \
+                 none: {refusal}"
+            )),
+            "{how}: {stderr}"
+        );
+        let (asked, without) = merge_reads(&world);
+        // One merge read found the merge, and its refusal cost exactly one request more.
+        assert_eq!(
+            (asked, without),
+            (1, 1),
+            "{how}: the refused read is asked again once, and nothing else is added"
+        );
+        // …which is the whole of what the journey asked beyond what it asked before
+        // closures were read: the merge read, once more.
+        crate::call_baseline::assert_one_call_beyond(
+            &world,
+            "watched-merge",
+            "pr view 1 --repo acme-corp/direct --json state,mergeCommit",
+        );
+    }
+}
+
+#[test]
+fn a_merge_read_refused_for_another_reason_or_refused_again_without_the_field_is_not_a_landing() {
+    // Only a refusal naming the closures field is answered by asking without it. A read
+    // failing for any other reason is that read's failure, asked about nothing else;
+    // and a fallback that fails too is a failure, never a landing reported unread.
+    for (how, retried) in [("unrelated", false), ("fallback-too", true)] {
+        let (world, token, published) = published_directly("refused", |world| {
+            world.refuse_closing_references(how);
+        });
+        let stderr = String::from_utf8_lossy(&published.stderr).into_owned();
+        assert!(!published.status.success(), "{how}: {published:?}");
+        assert!(
+            stderr.contains("Something went wrong while executing your query"),
+            "{how}: {stderr}"
+        );
+        let (asked, without) = merge_reads(&world);
+        assert!(asked >= 1, "{how}: the merge read asked for the closures");
+        assert_eq!(
+            without,
+            if retried { asked } else { 0 },
+            "{how}: only a refusal naming the field is asked again, once"
+        );
+        assert!(
+            world.events_of(&token, "change-merged").is_empty(),
+            "{how}: no landing is recorded from a read that failed"
+        );
+    }
+}
+
+#[test]
+fn a_closures_answer_nothing_can_be_read_out_of_is_refused_whole_not_read_in_part() {
+    // The host answered, but not with a list of issues: a node naming no repository or
+    // number, or one naming an issue or owner GitHub never has — beside a readable one —
+    // no field at all, or a field that is not a list. None of it is reported as what the
+    // change closes, the readable node included, and each says what was wrong.
+    for (record, says) in [
+        (
+            &["acme-corp/unreadable#12", "?"][..],
+            "names no repository and issue number",
+        ),
+        // A node GitHub never answers: issue 0, and an owner no GitHub account can have.
+        (
+            &["acme-corp/unreadable#12", "acme-corp/unreadable#0"][..],
+            "names no repository and issue number",
+        ),
+        (
+            &["acme-corp/unreadable#12", "not_an_owner/unreadable#3"][..],
+            "names no repository and issue number",
+        ),
+        (
+            &["!missing"][..],
+            "the answer carries no closingIssuesReferences",
+        ),
+        (
+            &["!not-a-list"][..],
+            "is neither a list nor a connection of nodes",
+        ),
+    ] {
+        let (world, token, published) = published_directly("unreadable", |world| {
+            world.host_closes(1, record);
+        });
+        let stderr = landed_reporting_no_closures(&world, &token, &published);
+        assert!(
+            stderr.contains(
+                "the host's answer about which issues \
+                 https://github.com/acme-corp/unreadable/pull/1 closes could not be read"
+            ) && stderr.contains(says),
+            "{record:?}: {stderr}"
+        );
     }
 }

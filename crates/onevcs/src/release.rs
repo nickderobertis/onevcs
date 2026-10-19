@@ -635,6 +635,7 @@ pub fn status(
                     commit: &commit,
                     head: None,
                     at: None,
+                    found: Found::InHistory,
                 },
                 change_url,
                 &mut stream,
@@ -953,6 +954,51 @@ pub(crate) struct Landing<'a> {
     /// what lets a later reader take the record in place of asking again.
     pub(crate) head: Option<&'a str>,
     pub(crate) at: Option<crate::gate_run::Moment>,
+    /// Where it was found, which decides where the issues it closes are read from.
+    pub(crate) found: Found,
+}
+
+/// Where a landing found after its publication ended was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// The host reported the merge, in a read that also says what it closes.
+    OnTheHost,
+    /// The base's history holds it, and the host was not asked about it.
+    InHistory,
+}
+
+/// The GitHub issues a landing found after the fact closes: what a host read this
+/// process made of `change` heard — none, where the host gave no readable answer — and,
+/// for a landing only the base's history holds and no read asked about, the closing
+/// lines of the landing commit's own message, read as a `local-direct` squash's are.
+fn closes_of(
+    publication: &Path,
+    identity: &str,
+    change: &Url,
+    landing: &Landing<'_>,
+) -> Vec<crate::closing::Issue> {
+    if let Some(heard) = crate::closing::heard_of(change.as_str()) {
+        return heard.issues();
+    }
+    if landing.found == Found::OnTheHost {
+        return Vec::new();
+    }
+    // The checkout was fast-forwarded onto the landing before this is asked, so it
+    // holds the commit; a message it cannot read carries no closing line.
+    // llmlint: ignore-block[changed_behavior_has_e2e] the default is unreachable from any
+    // journey: this runs only for a landing the landing tiers found in the base's
+    // history, and only once the fast-forward bringing that base into `publication`
+    // succeeded, so the commit is one git just read there; only git failing mid-call
+    // on it reaches the default.
+    let message = git::commit_message(publication, landing.commit)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    crate::closing::issues(
+        &crate::closing::references([message.as_str()]),
+        crate::gh::slug(identity).as_deref(),
+    )
 }
 
 /// Give a landing this host learned of after the fact what the publication that
@@ -996,6 +1042,7 @@ pub(crate) fn reconcile_landing(
         commit,
         head,
         at: landed_at,
+        found: _,
     } = landing;
     let identity = &located.releases.identity;
     let warn = |what: &str, failure: &dyn std::fmt::Display| {
@@ -1033,6 +1080,10 @@ pub(crate) fn reconcile_landing(
         merged.insert("head".to_owned(), json!(head));
     }
     crate::gate_run::landed(&mut merged, landed_at, commit);
+    crate::closing::report(
+        &mut merged,
+        closes_of(&publication, identity, change, &landing),
+    );
     let opened = match recording {
         // Labelled with the identity even on a stream that already says whose it is,
         // because a branch-keyed verb's stream is one per branch *name*: a record on it

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::closing::Closing;
 use crate::error::{Error, Result};
 use crate::event::{EventKind, Phase};
 use crate::gate_run::{self, Gate, Moment};
@@ -1761,7 +1762,8 @@ fn publish_locally(
             sync(context, stream, compared, None)?;
         }
         let (subject, trailers) = describe(context, compared)?;
-        let message = compose_squash(&subject, &closing_lines(context, compared)?, &trailers);
+        let closing = closing_references(context, compared)?;
+        let message = compose_squash(&subject, &closing, &trailers);
 
         let scratch_parent = context.run_root.join(format!("publish-{}", ids::unique()));
         home::ensure_dir(&scratch_parent)?;
@@ -1810,6 +1812,11 @@ fn publish_locally(
             let mut completed =
                 object(json!({"identity": identity, "sha": sha, "base": context.target.base()}));
             gate_run::landed(&mut completed, Some(ended), &sha);
+            // What the squash carried forward is what it closes.
+            crate::closing::report(
+                &mut completed,
+                crate::closing::issues(&closing, gh::slug(&context.resolution.key).as_deref()),
+            );
             stream.emit(EventKind::MergeCompleted, completed);
             stream.base_arrived(context.target.base(), &sha, &[context.branch.to_string()]);
             record_baselines(context, &sha, stream);
@@ -2679,11 +2686,17 @@ fn land_opened_change(
         // host cannot say. Never the moment this watch saw the merge, which is only
         // when somebody happened to ask, and never a time read from anywhere else.
         let landed_at = merge_time(host, change);
+        // What the host said it closes, in the read that found it merged.
+        let closes = crate::closing::heard_of(change.url.as_str())
+            .map(crate::closing::Heard::issues)
+            .unwrap_or_default();
         let mut merged = object(json!({"url": change.url.to_string(), "sha": sha.0}));
         gate_run::landed(&mut merged, landed_at, &sha.0);
+        crate::closing::report(&mut merged, closes.clone());
         stream.emit(EventKind::ChangeMerged, merged);
         let mut completed = object(json!({"identity": identity, "sha": sha.0}));
         gate_run::landed(&mut completed, landed_at, &sha.0);
+        crate::closing::report(&mut completed, closes);
         stream.emit(EventKind::MergeCompleted, completed);
         crate::verified::forget(&context.resolution.key, &context.branch);
         record_landing(context, &sha);
@@ -4631,14 +4644,14 @@ pub fn compose_message(subject: &str, trailers: &[String]) -> String {
     }
 }
 
-/// The issue-closing lines the commits a squash lands carry, each once.
+/// The issue-closing references the commits a squash lands carry, each once.
 ///
 /// Read from the branch's own commits past what it lands on, which after the sync is
 /// exactly the set the squash folds into one; see [`closing`](crate::closing) for why
 /// these lines, and only these, outlive the squash.
-fn closing_lines(context: &Context<'_>, compared: &str) -> Result<Vec<String>> {
+fn closing_references(context: &Context<'_>, compared: &str) -> Result<Vec<Closing>> {
     let commits = git::log_messages(&context.repo, compared, &context.branch)?;
-    Ok(crate::closing::lines(
+    Ok(crate::closing::references(
         commits.iter().map(|commit| commit.message.as_str()),
     ))
 }
@@ -4646,11 +4659,12 @@ fn closing_lines(context: &Context<'_>, compared: &str) -> Result<Vec<String>> {
 /// A squash's message: the subject, the issue-closing lines its commits carried, then
 /// the trailers — so a branch with no closing lines lands exactly as
 /// [`compose_message`] composes it.
-fn compose_squash(subject: &str, closing: &[String], trailers: &[String]) -> String {
+pub(crate) fn compose_squash(subject: &str, closing: &[Closing], trailers: &[String]) -> String {
     if closing.is_empty() {
         return compose_message(subject, trailers);
     }
-    compose_message(&format!("{subject}\n\n{}", closing.join("\n")), trailers)
+    let lines: Vec<String> = closing.iter().map(Closing::line).collect();
+    compose_message(&format!("{subject}\n\n{}", lines.join("\n")), trailers)
 }
 
 /// The policy a run publishes under, once the rules and any `--policy` have both
@@ -4822,6 +4836,7 @@ fn record_late_merge_observed(
             commit: &merged_commit.0,
             head: Some(head.as_str()),
             at: landed_at,
+            found: crate::release::Found::OnTheHost,
         },
         watched.url,
         &mut stream,

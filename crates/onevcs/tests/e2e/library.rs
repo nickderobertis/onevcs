@@ -6139,6 +6139,405 @@ fn a_change_request_merged_after_the_checks_bound_is_not_republished_by_the_next
     assert_eq!(nothing_to_ask.asks(), 0);
 }
 
+/// The two issues, in two repositories, GitHub reports a change request closing.
+const CLOSED_ISSUES: [&str; 2] = ["acme-corp/hosted#12", "acme-corp/tracker#3"];
+
+/// A session on a change-request identity ruled `policy`, against the substituted host,
+/// holding one commit of work ready to publish.
+fn session_with_work_to_publish(policy: &str, branch: &str) -> (World, Session) {
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _identity) = hosted(&world, policy);
+    world.install_fake_host(&origin);
+    world.install_pre_push(&world.path("hosted"), "exit 0");
+    let session = open(&Git, branch);
+    world.commit_file(
+        &session.worktree,
+        "closing.txt",
+        "closing\n",
+        "feat: add the thing that closes two issues",
+    );
+    (world, session)
+}
+
+/// The `change-merged` events `token`'s stream carries for change request `url`, read
+/// back the way a consumer re-reads a closed session's persisted stream.
+fn merges_recorded(token: &SessionToken, url: &str) -> (Vec<serde_json::Value>, usize) {
+    let events = EventStream::open(token)
+        .expect("the closed session's stream")
+        .read()
+        .expect("its events");
+    let merged = events
+        .iter()
+        .filter(|event| kind_of(event) == onevcs::EventKind::ChangeMerged)
+        .filter(|event| event.payload["url"] == url)
+        .map(|event| serde_json::Value::Object(event.payload.clone()))
+        .collect();
+    let completed = events
+        .iter()
+        .filter(|event| kind_of(event) == onevcs::EventKind::MergeCompleted)
+        .count();
+    (merged, completed)
+}
+
+#[test]
+fn a_change_merged_after_its_session_closed_is_recorded_by_the_next_status_with_the_issues_it_closes(
+) {
+    let (world, session) = session_with_work_to_publish(
+        "{publication: change-auto, approvals: required, drafts: {disabled: true}}",
+        "feature/closes-late",
+    );
+    // The required check never settles while the publication watches, so the watch
+    // runs out and the change request is left open, armed to merge. A poll longer than
+    // the bound reads the host at most twice however fast this host runs, so the calls
+    // the watch makes are a count the baseline can hold rather than a race.
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1");
+    std::env::set_var("ONEVCS_CHECKS_POLL_SECONDS", "2");
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("a bound that elapsed is an outcome");
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
+    std::env::set_var("ONEVCS_CHECKS_POLL_SECONDS", "0.02");
+    assert!(
+        matches!(
+            &published.outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                ..
+            }
+        ),
+        "{published:?}"
+    );
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+
+    // A person merges it on the host, which reports it closing two issues.
+    world.host_closes(1, &CLOSED_ISSUES);
+    let landed = world.person_merges(
+        1,
+        crate::world::PersonMerge::Squash,
+        "2026-10-11T09:30:00Z",
+        crate::world::HeadAfter::Kept,
+    );
+
+    let after = report(&world, "feature/closes-late", Providers::real().hosting);
+    assert_eq!(after["publication"]["landed"]["state"], "yes", "{after}");
+    crate::call_baseline::assert_no_call_beyond(&world, "late-merge-status");
+
+    let url = "https://github.com/acme-corp/hosted/pull/1";
+    let (merged, completed) = merges_recorded(&session.token, url);
+    assert_eq!(
+        merged.len(),
+        1,
+        "exactly one landing on the session's stream: {merged:#?}"
+    );
+    assert_eq!(merged[0]["sha"], landed, "{merged:#?}");
+    assert_eq!(
+        merged[0]["closes"],
+        serde_json::json!(CLOSED_ISSUES),
+        "{merged:#?}"
+    );
+    assert_eq!(completed, 0, "a late merge records no merge-completed");
+}
+
+#[test]
+fn a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_with_the_issues_it_closes(
+) {
+    let (world, session) = session_with_work_to_publish(REVIEWED, "feature/closes-standing");
+    world.host_visibility("acme-corp/hosted", "private");
+    let _reviews = world.serve_reviews("acme-corp/hosted");
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let PublishOutcome::ChangeReviewDraft(url) = &published.outcome else {
+        panic!("change-open leaves its change request open for review: {published:?}");
+    };
+    let url = url.clone();
+    // Closing a session whose publication already closed it is answered, not refused.
+    let _ = onevcs::close_session(&Providers::real(), &session.token);
+
+    world.host_closes(1, &CLOSED_ISSUES);
+    let landed = world.person_merges(
+        1,
+        crate::world::PersonMerge::Squash,
+        "2026-10-11T09:30:00Z",
+        crate::world::HeadAfter::Kept,
+    );
+
+    let read = onevcs::change_standings(
+        &Providers::real(),
+        &onevcs::ChangeStandingsRequest {
+            repo: "github.com/acme-corp/hosted".to_owned(),
+            root: "main".to_owned(),
+            changes: vec![url.clone()],
+        },
+    )
+    .expect("the standings read answers");
+    assert!(
+        matches!(
+            &read.standings[0].state,
+            onevcs::ChangeState::Merged { landing: true, .. }
+        ),
+        "{read:?}"
+    );
+    crate::call_baseline::assert_no_call_beyond(&world, "late-merge-standings");
+
+    let (merged, completed) = merges_recorded(&session.token, url.as_str());
+    assert_eq!(
+        merged.len(),
+        1,
+        "exactly one landing on the session's stream: {merged:#?}"
+    );
+    assert_eq!(merged[0]["sha"], landed, "{merged:#?}");
+    assert_eq!(
+        merged[0]["closes"],
+        serde_json::json!(CLOSED_ISSUES),
+        "{merged:#?}"
+    );
+    assert_eq!(completed, 0, "a standings read records no merge-completed");
+}
+
+/// The landing events `token`'s persisted stream holds, by kind, each read back through
+/// `landing_closes` the way a consumer reads what it relays.
+fn closures_on_stream(token: &SessionToken) -> Vec<(onevcs::EventKind, Vec<String>)> {
+    EventStream::open(token)
+        .expect("the session's stream")
+        .read()
+        .expect("its events")
+        .iter()
+        .filter(|event| {
+            matches!(
+                kind_of(event),
+                onevcs::EventKind::ChangeMerged | onevcs::EventKind::MergeCompleted
+            )
+        })
+        .map(|event| {
+            let closes = onevcs::landing_closes(event).expect("the landing's closures read");
+            (kind_of(event), closes)
+        })
+        .collect()
+}
+
+#[test]
+fn landing_events_an_older_release_wrote_without_closes_read_as_closing_nothing() {
+    // A consumer adopting a run re-reads streams written before `closes` existed. Those
+    // landings are this build's own lines with the field absent, so the journey records
+    // a real watched merge and then takes `closes` out of its persisted landing lines —
+    // every other byte stays what a release wrote.
+    let (world, session) = session_with_work_to_publish(DIRECT, "feature/closes-legacy");
+    world.host_closes(1, &CLOSED_ISSUES);
+    let published = onevcs::publish(
+        &Providers::real(),
+        &session.token,
+        &PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let current = closures_on_stream(&session.token);
+    let issues: Vec<String> = CLOSED_ISSUES
+        .iter()
+        .map(|&issue| issue.to_owned())
+        .collect();
+    assert_eq!(
+        current,
+        vec![
+            (onevcs::EventKind::ChangeMerged, issues.clone()),
+            (onevcs::EventKind::MergeCompleted, issues),
+        ],
+        "this build's landings read back with what they closed"
+    );
+
+    let path = world
+        .home()
+        .join("streams")
+        .join(format!("{}.ndjson", session.token.0));
+    let written = std::fs::read_to_string(&path).expect("the session's stream");
+    let without = |line: &str| -> String {
+        let Some(start) = line.find(",\"closes\":[") else {
+            return line.to_owned();
+        };
+        let end = start + line[start..].find(']').expect("the list ends") + 1;
+        format!("{}{}", &line[..start], &line[end..])
+    };
+    // llmlint: ignore-block[tests_mirror_real_usage] the file *is* the input under test:
+    // no interface of this build writes a landing without `closes`, so the line an older
+    // release wrote can only be put there directly. The lines are this build's own real
+    // landings less that one member (and, below, with a `closes` no build writes), and
+    // every read goes through the real typed reader.
+    let legacy: String = written
+        .lines()
+        .map(|line| format!("{}\n", without(line)))
+        .collect();
+    assert_eq!(
+        legacy.matches("\"closes\"").count(),
+        0,
+        "no landing line carries `closes` now: {legacy}"
+    );
+    assert_ne!(legacy, written, "the landing lines carried `closes` before");
+    std::fs::write(&path, &legacy).expect("the stream an older release wrote");
+    assert_eq!(
+        closures_on_stream(&session.token),
+        vec![
+            (onevcs::EventKind::ChangeMerged, Vec::new()),
+            (onevcs::EventKind::MergeCompleted, Vec::new()),
+        ],
+        "a landing with no `closes` reads as closing nothing, and is not refused"
+    );
+
+    // A `closes` that is present but is not a list of issues is refused, never read as
+    // part of a set.
+    let malformed = legacy.replacen(
+        "\"payload\":{",
+        "\"payload\":{\"closes\":\"acme-corp/hosted#12\",",
+        usize::MAX,
+    );
+    std::fs::write(&path, &malformed).expect("a stream whose `closes` is not a list");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let events = EventStream::open(&session.token)
+        .expect("the session's stream")
+        .read()
+        .expect("its events");
+    let landing = events
+        .iter()
+        .find(|event| kind_of(event) == onevcs::EventKind::MergeCompleted)
+        .expect("the landing is still on the stream");
+    let refused = onevcs::landing_closes(landing).expect_err("a string is not a list");
+    assert!(
+        refused.to_string().contains("`closes` is not a list"),
+        "{refused}"
+    );
+}
+
+/// A change request a `checks-unsettled` close stopped watching, which a person then
+/// merged at an older head than was published — so no read records that merge as the
+/// branch's landing, and `release status` finds it in the base's history instead.
+///
+/// Two reads in this one process: a `status` that asks the host about the merge while the
+/// host says the change closes `acme-corp/hosted#12` and records nothing, then — once
+/// `between` has changed what the host says — a `release status` that asks again and
+/// records the landing. Answers that landing's `change-merged` payload.
+fn read_twice_at_an_older_head(between: impl FnOnce(&World)) -> serde_json::Value {
+    let hosted = crate::host::Hosted::new(crate::host::AUTOMATED_READY);
+    let world = &hosted.world;
+    std::fs::write(
+        world.home().join("releases.yml"),
+        "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {name: '*'}\n    \
+         default_target: crate\n    targets:\n      - {name: crate, style: human-step, action: \
+         push the tag}\n",
+    )
+    .expect("a release-targets file");
+    world.install_pre_push(&hosted.checkout, "exit 0");
+    world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    let opened = world
+        .onevcs()
+        .args([
+            "session",
+            "open",
+            "hosted",
+            "--branch",
+            "feature/read-twice",
+        ])
+        .output()
+        .expect("the binary runs");
+    let token = crate::world::token_of(&opened.stdout);
+    let worktree = crate::world::worktree_of(&opened.stdout);
+    world.commit_file(&worktree, "first.txt", "first\n", "feat: the first half");
+    let older = world.git(&worktree, &["rev-parse", "HEAD"]);
+    world.commit_file(&worktree, "second.txt", "second\n", "feat: the second half");
+    let published = world
+        .onevcs()
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(published.status.code(), Some(1), "{published:?}");
+    let closed = world
+        .onevcs()
+        .args(["session", "close", &token])
+        .output()
+        .expect("the binary runs");
+    assert!(closed.status.success(), "{closed:?}");
+    world.person_force_pushes(1, &older);
+    world.host_closes(1, &["acme-corp/hosted#12"]);
+    world.person_merges(
+        1,
+        crate::world::PersonMerge::SquashSaying("Closes #5"),
+        "2026-10-11T09:30:00Z",
+        crate::world::HeadAfter::Kept,
+    );
+    let synced = world
+        .onevcs()
+        .args(["sync"])
+        .current_dir(&hosted.checkout)
+        .output()
+        .expect("the binary runs");
+    assert!(synced.status.success(), "{synced:?}");
+
+    inhabit(world);
+    let read = |args: &[&str]| {
+        stdout_of(|| assert_eq!(run(args, Providers::real()), 0, "{args:?}"));
+    };
+    read(&["onevcs", "status", "feature/read-twice", "--json"]);
+    assert!(
+        world.events_of(&token, "change-merged").is_empty(),
+        "the first read records no landing"
+    );
+    between(world);
+    read(&[
+        "onevcs",
+        "release",
+        "status",
+        "feature/read-twice",
+        "--json",
+    ]);
+    let merged = world.events_of(&token, "change-merged");
+    assert_eq!(merged.len(), 1, "{merged:#?}");
+    merged[0]["payload"].clone()
+}
+
+#[test]
+fn a_later_read_of_a_merges_closures_replaces_what_an_earlier_read_in_the_process_heard() {
+    let merged = read_twice_at_an_older_head(|world| {
+        world.host_closes(1, &["acme-corp/tracker#3"]);
+    });
+    assert_eq!(
+        merged["closes"],
+        serde_json::json!(["acme-corp/tracker#3"]),
+        "the latest answer, not the first read's: {merged}"
+    );
+}
+
+#[test]
+fn a_later_read_refused_the_closures_leaves_none_of_what_an_earlier_read_heard() {
+    let merged = read_twice_at_an_older_head(|world| {
+        world.refuse_closing_references("permission");
+    });
+    assert_eq!(
+        merged["closes"],
+        serde_json::json!([]),
+        "neither the first read's answer nor the commit's text stands in: {merged}"
+    );
+}
+
 /// `onevcs status --json` about one branch, run against these implementations and
 /// read back as the object a consumer reads.
 fn report(world: &World, branch: &str, hosting: &dyn Hosting) -> serde_json::Value {

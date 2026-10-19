@@ -708,6 +708,109 @@ fn the_phase_the_amendment_adds_is_the_approved_envelope_and_one_more_key() {
     assert_eq!(Phase::of(EventKind::ChangeOpened), Some(Phase::Review));
 }
 
+/// The landing the closures amendment spells, as `{kind, payload}`.
+fn documented_closing_landing() -> Value {
+    serde_json::from_str(&amendment_block_declaring("json", "\"closes\": ["))
+        .expect("the closures amendment's landing is JSON")
+}
+
+#[test]
+fn the_closures_amendment_spells_one_field_on_the_landing_events_this_build_names() {
+    // What a consumer relaying landings builds against: one field, on the two kinds that
+    // record a landing, each issue `owner/name#N` once. The e2e journey holds the payload
+    // the binary writes to this same block.
+    let landing = documented_closing_landing();
+    let kind: EventKind = serde_json::from_value(landing["kind"].clone())
+        .expect("the documented landing is of a kind this build names");
+    assert_eq!(kind, EventKind::MergeCompleted);
+    let closes = landing["payload"]["closes"]
+        .as_array()
+        .expect("`closes` is an array");
+    assert!(!closes.is_empty(), "the example closes something");
+    let mut seen = BTreeSet::new();
+    for issue in closes {
+        let spelled = issue.as_str().expect("each issue is a string");
+        let (repository, number) = spelled.split_once('#').expect("owner/name#N");
+        let (owner, name) = repository.split_once('/').expect("owner/name#N");
+        assert!(
+            !owner.is_empty() && !name.is_empty() && number.parse::<u64>().is_ok(),
+            "{spelled} is owner/name#N"
+        );
+        assert!(
+            seen.insert(spelled.to_lowercase()),
+            "{spelled} appears once, ignoring case"
+        );
+    }
+
+    let (amendments, _) = regions();
+    let section = amendments
+        .split("\n### ")
+        .find(|section| section.starts_with("Every landing reports the GitHub issues it closes"))
+        .expect("the closures amendment");
+    for named in [
+        "`merge-completed`",
+        "`change-merged`",
+        "`[]`",
+        "`closingIssuesReferences`",
+    ] {
+        assert!(section.contains(named), "the amendment names {named}");
+    }
+    assert!(
+        section.contains("Event kinds added: none."),
+        "the amendment adds no event kind"
+    );
+}
+
+#[test]
+fn the_closures_amendment_declares_the_reader_and_the_reader_reads_its_example() {
+    // The one function the amendment adds is how a consumer reads `closes`, so it reads
+    // the documented landing as the amendment spells it, and that landing less the field
+    // — what an older release wrote — as closing nothing.
+    let declared = amendment_block_declaring("rust", "pub fn landing_closes(");
+    assert!(
+        declared.contains("pub fn landing_closes(envelope: &Envelope) -> Result<Vec<String>>;"),
+        "the closures amendment no longer declares the reader: {declared}"
+    );
+    let landing = documented_closing_landing();
+    let mut fixture = envelope_fixture("vcs", "merge-completed");
+    fixture["payload"] = landing["payload"].clone();
+    let envelope: Envelope =
+        serde_json::from_value(fixture.clone()).expect("the documented landing is an envelope");
+    let documented: Vec<String> =
+        serde_json::from_value(landing["payload"]["closes"].clone()).expect("a list of strings");
+    assert_eq!(
+        onevcs::landing_closes(&envelope).expect("the documented landing reads"),
+        documented
+    );
+
+    fixture["payload"]
+        .as_object_mut()
+        .expect("a payload object")
+        .remove("closes");
+    let older: Envelope = serde_json::from_value(fixture).expect("an older landing reads");
+    assert_eq!(
+        onevcs::landing_closes(&older).expect("a missing `closes` is not refused"),
+        Vec::<String>::new()
+    );
+
+    // Present, a `closes` is the whole set or it is refused: never part of one.
+    for (closes, refusal) in [
+        (
+            json!(["acme-corp/hosted#12", 7]),
+            "an item that is not a string",
+        ),
+        (json!(["acme-corp/hosted#07"]), "`acme-corp/hosted#07`"),
+        (json!(["acme-corp/hosted#0"]), "`acme-corp/hosted#0`"),
+        (json!(["hosted#12"]), "`hosted#12`"),
+    ] {
+        let mut fixture = envelope_fixture("vcs", "change-merged");
+        fixture["payload"] = json!({ "closes": closes });
+        let envelope: Envelope = serde_json::from_value(fixture).expect("an envelope");
+        let refused = onevcs::landing_closes(&envelope).expect_err("not a list of issues");
+        assert!(refused.to_string().contains(refusal), "{refused}");
+    }
+}
+
 #[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
     let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();

@@ -621,6 +621,15 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   NUL-delimited: git quotes a pathname carrying a newline or a quote in its default
   listing, and a reader that unquoted nothing would name a file nobody has.
 
+## Every landing says which GitHub issues it closes
+
+The amendment in `docs/contract.md` is the whole statement of `closes`. What it does not
+say is how its one promise about cost is kept: reading closures may never add a request,
+and the proof is the call logs recorded on the code before the field existed
+(`tests/fixtures/gh-call-baselines/`, held by `tests/e2e/call_baseline.rs`). A journey
+failing against one has found a new request; re-record a baseline only on behaviour that
+has not moved, never to absorb one.
+
 ## The subject policy is the repository's, and this crate holds none
 
 `publish::subject_for` composes the subject a publication lands under — an explicit
@@ -864,8 +873,12 @@ the *type* side of the status report's serialized contract (`status.rs`), and a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
 driven into writing one. Healing a torn record sits beside it on the same call, and
-`lifecycle.rs` also drives that through `session close`. The collector's is the one
-that looks like a journey and cannot be: what it holds is
+`lifecycle.rs` also drives that through `session close`. A stopped push's wait for its
+process group (`git.rs`'s `reaping`) is one more: macOS answers `EPERM` for a killed
+group whose members are not yet reaped, and Linux has no spelling of that answer, so
+the test answers for a real unreaped group as macOS does; the unreaped-member journey
+in `publication_watch.rs` drives the bound through a publication on either. The
+collector's is the one that looks like a journey and cannot be: what it holds is
 an *interleaving* — a reader taking a read that finds the pipe empty, and finding
 its command already collected when it next looks — and on an idle host that window
 is nanoseconds wide, so it is arranged rather than waited for.

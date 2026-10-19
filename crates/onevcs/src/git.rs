@@ -1377,31 +1377,53 @@ impl Tree {
     /// no new process is given an id a live group holds.
     fn await_empty(&self, leader: u32) -> std::result::Result<(), String> {
         let group = -(leader as libc::pid_t);
-        let deadline = Instant::now() + REAP_BOUND;
-        loop {
+        await_group_empty(leader, REAP_BOUND, || {
             // SAFETY: signal 0 delivers nothing; it only asks whether the group, which
-            // was the stopped command's own, still has a member. `ESRCH` is the one
-            // answer that it has none: any other refusal (`EPERM` is a member this
-            // process may not signal) leaves a member that may be running.
-            if unsafe { libc::kill(group, 0) } != 0 {
-                let refused = std::io::Error::last_os_error();
-                if refused.raw_os_error() == Some(libc::ESRCH) {
-                    return Ok(());
-                }
-                return Err(format!(
-                    "asking whether process group {leader} still had a member was refused: \
-                     {refused}"
-                ));
+            // was the stopped command's own, still has a member.
+            if unsafe { libc::kill(group, 0) } == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
             }
-            if Instant::now() >= deadline {
-                return Err(format!(
+        })
+    }
+}
+
+/// Ask `probe` whether process group `leader` still has a member until it answers
+/// `ESRCH`, the one answer that it has none, for at most `bound`.
+///
+/// Any other answer is asked again, a refusal included. macOS answers `EPERM` rather
+/// than `ESRCH` for a group whose remaining members are killed processes init has not
+/// yet reaped, so a refusal is not the end of the wait; but it may also be a live
+/// member this process may not signal, so a group still refused at the bound is
+/// reported with that refusal rather than taken as empty.
+#[cfg(unix)]
+fn await_group_empty(
+    leader: u32,
+    bound: Duration,
+    mut probe: impl FnMut() -> std::io::Result<()>,
+) -> std::result::Result<(), String> {
+    let deadline = Instant::now() + bound;
+    loop {
+        let answer = probe();
+        if matches!(&answer, Err(refused) if refused.raw_os_error() == Some(libc::ESRCH)) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(match answer {
+                Err(refused) => format!(
+                    "asking whether process group {leader} still had a member was still \
+                     refused {}s after it was killed: {refused}",
+                    bound.as_secs()
+                ),
+                Ok(()) => format!(
                     "process group {leader} still had a running member {}s after it was \
                      killed",
-                    REAP_BOUND.as_secs()
-                ));
-            }
-            std::thread::sleep(EXIT_POLL);
+                    bound.as_secs()
+                ),
+            });
         }
+        std::thread::sleep(EXIT_POLL);
     }
 }
 
@@ -5236,6 +5258,91 @@ mod collecting {
         assert!(
             collected == expected.as_bytes(),
             "and they are the command's own bytes, in the order it wrote them"
+        );
+    }
+}
+
+/// What a stopped command's teardown waits on when the platform refuses to say whether
+/// a killed group still has a member.
+///
+/// macOS answers `kill(-pgid, 0)` with `EPERM` rather than `ESRCH` while a group's only
+/// members are killed processes not yet reaped, which is how
+/// `publication_watch`'s two cancellation-in-`pre-push` journeys failed there. The group
+/// here is a real one with a real killed member, and the probe itself answers `EPERM`
+/// for as long as that member is unreaped — the answer the wait gets on macOS — so the
+/// refusal is the test's own on every Unix, whatever the host kernel would have said.
+/// Only once the member is reaped does it ask the kernel, whose `ESRCH` ends the wait.
+#[cfg(all(test, unix))]
+mod reaping {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{await_group_empty, REAP_BOUND};
+
+    /// The group's member is left unreaped this long, so the wait meets several
+    /// refusals before the group empties.
+    const UNREAPED: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn a_group_refused_while_its_killed_members_are_unreaped_is_confirmed_empty_once_reaped() {
+        let mut member = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("sleep spawns");
+        let leader = member.id();
+        let group = -(leader as libc::pid_t);
+        // SAFETY: the group is the one `member` was just put in, owned by this test.
+        assert_eq!(unsafe { libc::kill(group, libc::SIGKILL) }, 0);
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reaper = std::thread::spawn({
+            let reaped = Arc::clone(&reaped);
+            move || {
+                std::thread::sleep(UNREAPED);
+                member.wait().expect("the killed member is reaped");
+                reaped.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let mut refusals = 0;
+        let answer = await_group_empty(leader, REAP_BOUND, || {
+            if !reaped.load(Ordering::SeqCst) {
+                refusals += 1;
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            // SAFETY: signal 0 delivers nothing, to the group this test owns.
+            if unsafe { libc::kill(group, 0) } == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+        reaper.join().expect("the reaper finishes");
+
+        assert_eq!(answer, Ok(()), "the group is confirmed empty once reaped");
+        assert!(
+            refusals > 1,
+            "the wait met the platform's refusal and asked again: {refusals}"
+        );
+    }
+
+    #[test]
+    fn a_group_still_refused_at_the_bound_is_reported_with_the_refusal() {
+        let answer = await_group_empty(7, Duration::from_millis(50), || {
+            Err(std::io::Error::from_raw_os_error(libc::EPERM))
+        });
+
+        let reason = answer.expect_err("a refusal that never ends is not an empty group");
+        assert!(
+            reason.contains("process group 7") && reason.contains("still refused"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(&std::io::Error::from_raw_os_error(libc::EPERM).to_string()),
+            "{reason}"
         );
     }
 }

@@ -103,6 +103,9 @@ mod coverage;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod drafts;
+// Unix only: it reads the call log `world.rs`'s substituted `gh` writes.
+#[cfg(unix)]
+mod call_baseline;
 #[cfg(unix)]
 mod edges;
 // Linux only: it lets a held fetch go once the kernel's lock table shows the second

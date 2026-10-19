@@ -1,0 +1,10 @@
+api repos/acme-corp/hosted --include 
+api user --jq .login 
+pr list --repo acme-corp/hosted --head feature/closes-standing --base main --state open --json number,url,state,headRefOid,isDraft,title,body 
+pr create --repo acme-corp/hosted --head feature/closes-standing --base main --title feat: add the thing that closes two issues --body  --draft 
+pr view 1 --repo acme-corp/hosted --json headRefOid 
+pr view 1 --repo acme-corp/hosted --json isDraft 
+api repos/acme-corp/hosted/rules/branches/main 
+api repos/acme-corp/hosted/branches/main/protection/required_status_checks 
+pr view 1 --repo acme-corp/hosted --json headRefOid,statusCheckRollup 
+api graphql -f query=query($owner: String!, $name: String!) { rateLimit { cost } repository(owner: $owner, name: $name) { defaultBranchRef { name } rulesets(first: 25, includeParents: true) { pageInfo { hasNextPage } nodes { target enforcement conditions { refName { include exclude } } rules(first: 25) { pageInfo { hasNextPage } nodes { type parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } } branchProtectionRules(first: 100) { pageInfo { hasNextPage } nodes { databaseId pattern requiredStatusCheckContexts } } c0: pullRequest(number: 1) { url number state isDraft body baseRefName headRefName headRefOid mergedAt mergeCommit { oid } baseRef { name } headRef { target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: 1) } ... on StatusContext { context state targetUrl createdAt isRequired(pullRequestNumber: 1) } } } } } } } } } } -f owner=acme-corp -f name=hosted 

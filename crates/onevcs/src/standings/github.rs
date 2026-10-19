@@ -46,9 +46,19 @@ mod pattern;
 
 use pattern::Pattern;
 
-/// What every alias reads of its change request, and whether its base still exists.
+/// What every alias reads of its change request, and whether its base still exists —
+/// and the issues it closes ([`CLOSES_FIELDS`]), which a merge found here reports.
 pub(crate) const PULL_FIELDS: &str = "url number state isDraft body baseRefName headRefName \
-headRefOid mergedAt mergeCommit { oid } baseRef { name }";
+headRefOid mergedAt mergeCommit { oid } baseRef { name } closingIssuesReferences(first: 100) { \
+nodes { number repository { name owner { login } } } }";
+
+/// The selection [`PULL_FIELDS`] reads the issues a change request closes with: what a
+/// credential that may not see them is asked again without, as `ask` says.
+const CLOSES_FIELDS: &str =
+    " closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } }";
+
+/// The field GitHub answers those issues in.
+const CLOSES_FIELD: &str = "closingIssuesReferences";
 
 /// What the host declares a merge into any of its branches requires, read once per call
 /// at the repository: its rulesets with the refs each applies to, and its classic
@@ -123,7 +133,7 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
     let mut cost = ReadCost::default();
     let mut required = Required::default();
     for (index, batch) in numbers.chunks(STANDINGS_BATCH).enumerate() {
-        let (data, points) = ask(repo, batch, false, index == 0)?;
+        let (data, points, answered) = ask(repo, batch, false, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
         if index == 0 {
             required.declared(&data)?;
@@ -134,6 +144,7 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
                 root,
                 *number,
                 &mut required,
+                &answered,
             )?);
         }
     }
@@ -160,14 +171,14 @@ pub(crate) fn read_with_reviews(
         .zip(changes.chunks(REVIEW_BATCH))
         .enumerate()
     {
-        let (data, points) = ask(repo, batch, true, index == 0)?;
+        let (data, points, answered) = ask(repo, batch, true, index == 0)?;
         cost.graphql_points = cost.graphql_points.saturating_add(points);
         if index == 0 {
             required.declared(&data)?;
         }
         for (at, (number, (change, since))) in batch.iter().zip(targets).enumerate() {
             let pull = pull_of(&data, at, *number, repo)?;
-            standings.push(standing(pull, root, *number, &mut required)?);
+            standings.push(standing(pull, root, *number, &mut required, &answered)?);
             let about = format!("pull request {number} of {repo}");
             let read = match review_github::first_page(pull)? {
                 Some(pages) => review_github::answer(&pages, since.as_ref(), &about)?,
@@ -246,21 +257,37 @@ pub(crate) fn reopen(repo: &str, change: &ChangeId) -> Result<ReadCost> {
     })
 }
 
-/// One query of one batch, answered: its `data`, and what GitHub charged for it.
-fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result<(Value, u32)> {
+/// One query of one batch, answered: its `data`, what GitHub charged for it, and whether
+/// it was the query as asked or the one without the closures selection.
+fn ask(
+    repo: &str,
+    numbers: &[u64],
+    reviews: bool,
+    declarations: bool,
+) -> Result<(Value, u32, gh::Answered)> {
     let (owner, name) = repo
         .split_once('/')
         .ok_or_else(|| invalid(format!("{repo:?} does not name one repository")))?;
-    let page = gh::json(&gh::invoke(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!("query={}", query(numbers, reviews, declarations)),
-        "-f",
-        &format!("owner={owner}"),
-        "-f",
-        &format!("name={name}"),
-    ])?)?;
+    // The issues each change request closes are what one field of the query reads, and
+    // GitHub refuses the whole query to a credential that may not see them — so such a
+    // credential is asked again without that selection, rather than losing the standing
+    // over a field the standing does not need ([`gh::invoke_unless_refused`]).
+    let asked = query(numbers, reviews, declarations);
+    let without = format!("query={}", asked.replace(CLOSES_FIELDS, ""));
+    let asked = format!("query={asked}");
+    let (owner, name) = (format!("owner={owner}"), format!("name={name}"));
+    let (raw, answered) = gh::invoke_unless_refused(
+        &["api", "graphql", "-f", &asked, "-f", &owner, "-f", &name],
+        CLOSES_FIELD,
+        &["api", "graphql", "-f", &without, "-f", &owner, "-f", &name],
+    )?;
+    if let gh::Answered::WithoutTheField { refusal } = &answered {
+        eprintln!(
+            "onevcs: warning: the host would not say which issues the change requests of \
+             {repo} close, so a landing this read records reports none: {refusal}"
+        );
+    }
+    let page = gh::json(&raw)?;
     let data = page.get("data").cloned().ok_or_else(|| {
         invalid(format!(
             "GitHub answered the standings read with no data: {page}"
@@ -272,7 +299,7 @@ fn ask(repo: &str, numbers: &[u64], reviews: bool, declarations: bool) -> Result
         .ok_or_else(|| {
             invalid("GitHub answered the standings read without what it charged for it")
         })?;
-    Ok((data, u32::try_from(cost).unwrap_or(u32::MAX)))
+    Ok((data, u32::try_from(cost).unwrap_or(u32::MAX), answered))
 }
 
 /// The alias for the `at`th change request of a batch, refused where GitHub holds none.
@@ -288,6 +315,7 @@ fn standing(
     root: &str,
     number: u64,
     required: &mut Required,
+    answered: &gh::Answered,
 ) -> Result<ChangeStanding> {
     let text = |name: &str| -> Result<String> {
         pull.get(name)
@@ -355,6 +383,14 @@ fn standing(
             "{base:?} is gone from the origin, so what a merge into it requires cannot be read"
         )),
     };
+    // What a merge found here closes, for the record of its landing — where the query
+    // asked, which for a credential that may not see it, it did not.
+    if matches!(state, ChangeState::Merged { .. }) {
+        match answered {
+            gh::Answered::AsAsked => crate::closing::hear(url.as_str(), pull.get(CLOSES_FIELD)),
+            gh::Answered::WithoutTheField { .. } => crate::closing::unanswered(url.as_str()),
+        }
+    }
     let head = Sha(head);
     let checks = rollup(pull, number, &head)?;
     Ok(ChangeStanding {

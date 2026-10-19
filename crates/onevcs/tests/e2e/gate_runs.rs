@@ -1137,6 +1137,13 @@ fn a_watched_merge_whose_host_has_no_time_records_none() {
         assert_eq!(landed.len(), 1, "{kind}: {landed:?}");
         assert_eq!(landed[0]["payload"]["landing"], sha.0.as_str(), "{kind}");
         assert_eq!(landed[0]["payload"]["landed_at"], Value::Null, "{kind}");
+        // A supplied host reports nothing about closures, so the landing closes none
+        // that this crate knows of — and says so, rather than leaving the field out.
+        assert_eq!(
+            landed[0]["payload"]["closes"],
+            serde_json::json!([]),
+            "{kind}"
+        );
     }
 }
 

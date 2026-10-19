@@ -1,0 +1,9 @@
+api repos/acme-corp/hosted --include 
+api user --jq .login 
+pr list --repo acme-corp/hosted --head feature/closed-in-history --base main --state open --json number,url,state,headRefOid,isDraft,title,body 
+pr create --repo acme-corp/hosted --head feature/closed-in-history --base main --title feat: close two issues --body  --draft 
+pr view 1 --repo acme-corp/hosted --json headRefOid 
+pr view 1 --repo acme-corp/hosted --json isDraft 
+api repos/acme-corp/hosted/rules/branches/main 
+api repos/acme-corp/hosted/branches/main/protection/required_status_checks 
+pr view 1 --repo acme-corp/hosted --json headRefOid,statusCheckRollup 
