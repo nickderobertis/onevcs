@@ -58,7 +58,7 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
             const build = `import json,sys,pathlib,zipfile,tarfile,io\nd=json.loads(sys.argv[1]);o=pathlib.Path(d['out']);b=pathlib.Path(d['binary']).read_bytes();v='0.0.0';name='onevcs.exe' if d['windows'] else 'onevcs'\ntag='win_amd64' if d['windows'] else 'macosx_11_0_arm64' if d['arm'] else 'macosx_10_12_x86_64'\nwith zipfile.ZipFile(o/'wheels'/f'onevcs_cli-{v}-py3-none-{tag}.whl','w') as z:\n z.writestr(f'onevcs_cli-{v}.data/scripts/{name}',b);z.writestr(f'onevcs_cli-{v}.dist-info/METADATA',f'Name: onevcs-cli\\nVersion: {v}\\n')\nplatform='win32' if d['windows'] else 'darwin';cpu='arm64' if d['arm'] else 'x64';carrier=f'onevcs-cli-{platform}-{cpu}'\nfor pkg,manifest,payload in [(carrier,{'name':carrier,'version':v,'os':[platform],'cpu':[cpu]},b),('onevcs-cli',{'name':'onevcs-cli','version':v,'bin':{'onevcs':'bin/onevcs.js'},'optionalDependencies':{carrier:v}},None)]:\n with tarfile.open(o/'npm'/f'{pkg}-{v}.tgz','w:gz') as t:\n  data=json.dumps(manifest).encode();i=tarfile.TarInfo('package/package.json');i.size=len(data);t.addfile(i,io.BytesIO(data))\n  if payload is None:\n   data=pathlib.Path('npm/onevcs/bin/onevcs.js').read_bytes();i=tarfile.TarInfo('package/bin/onevcs.js');i.size=len(data);t.addfile(i,io.BytesIO(data))\n  if payload is not None:\n   i=tarfile.TarInfo(f'package/bin/{name}');i.size=len(payload);t.addfile(i,io.BytesIO(payload))\n`;
             execFileSync("python3", ["-c", build, fixture]);
             execFileSync("python3", [
-                "scripts/release-archive.py",
+                "crates/onevcs/release/release-archive.py",
                 target,
                 binary,
                 join(out, "archives"),
@@ -67,7 +67,7 @@ test("foreign artifact contracts validate declared Mach-O/PE architectures and r
                 spawnSync(
                     "python3",
                     [
-                        "scripts/release-payload-check.py",
+                        "crates/onevcs/release/release-payload-check.py",
                         target,
                         binary,
                         out,

@@ -3,7 +3,7 @@
 #
 # A **separate cargo project**, deliberately, and not a workspace member. Two
 # packages named `onevcs` in one resolve graph make `--package onevcs` ambiguous,
-# and that spelling is on the release path — `scripts/publish-crates.sh` runs
+# and that spelling is on the release path — `crates/onevcs/release/publish-crates.sh` runs
 # `cargo pkgid --package onevcs` and `cargo publish --package onevcs`, and
 # `release.yml` builds the binaries with it. A dev-dependency that broke a release
 # nobody re-runs would cost far more than this directory does.

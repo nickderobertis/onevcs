@@ -3,7 +3,7 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 def fail(message):
@@ -11,10 +11,10 @@ def fail(message):
 
 
 def target(value):
-    assembler = (ROOT / "scripts/npm-build.mjs").read_text()
+    assembler = (ROOT / "crates/onevcs/release/npm-build.mjs").read_text()
     targets = re.findall(r'^  "([a-z0-9_]+-[a-z0-9_-]+)": \{ platform:', assembler, re.M)
     if not targets:
-        fail("cannot read target authority in scripts/npm-build.mjs")
+        fail("cannot read target authority in crates/onevcs/release/npm-build.mjs")
     if value not in targets:
         fail(f"unsupported release target {value!r}")
     return value

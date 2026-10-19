@@ -100,7 +100,7 @@ relies on nextest's process per test.
 
 Two packages named `onevcs` in one resolve graph make `--package onevcs`
 ambiguous — and that spelling is on the release path:
-`scripts/publish-crates.sh` runs `cargo pkgid --package onevcs` and `cargo publish
+`crates/onevcs/release/publish-crates.sh` runs `cargo pkgid --package onevcs` and `cargo publish
 --package onevcs`, and `release.yml` builds every platform binary with it. None of
 it would be caught here, because the publish journey stubs `cargo`; it would be
 caught by a release that shipped nothing, which this repository has already had

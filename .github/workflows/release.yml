@@ -25,7 +25,7 @@ name: Release
 #
 # The version is never written here: every artifact takes it from
 # crates/onevcs/Cargo.toml (maturin via `dynamic = ["version"]`, npm via
-# scripts/npm-build.mjs), so release-plz stays the single version driver.
+# crates/onevcs/release/npm-build.mjs), so release-plz stays the single version driver.
 #
 # llmlint: ignore-file[changed_behavior_has_e2e] the publish and verify jobs are steps
 # in a GitHub Actions job on a published Release: installing an exact version until the
@@ -33,7 +33,7 @@ name: Release
 # mean standing up a runner and a public release, or replacing both with a simulation —
 # and a simulation is what would then be under test. They are proven the only way they
 # can be, by running on every real release, and everything they call that *can* be driven
-# locally is: scripts/smoke-published.sh runs over the compiled binary in
+# locally is: crates/onevcs/release/smoke-published.sh runs over the compiled binary in
 # crates/onevcs/tests/e2e/smoke.rs, and the same install-then-smoke path runs on all
 # three platforms through ci.yml's platform install jobs and macos-pr lane.
 #
@@ -173,7 +173,7 @@ jobs:
           # `cargo publish` verifies the packaged crate by building it, which is
           # one more compile the gate never sees the output of.
           RUSTFLAGS: "-D warnings"
-        run: bash scripts/publish-crates.sh onevcs onevcs-testing
+        run: bash crates/onevcs/release/publish-crates.sh onevcs onevcs-testing
 
   # PyPI wheels: maturin's `bin` bindings wrap the prebuilt binary in per-platform
   # wheels (the ruff/uv pattern), so `pip install onevcs-cli` is a seconds-fast
@@ -252,9 +252,9 @@ jobs:
 
   # Post-publish gate: prove the just-published version is pip-installable on every
   # OS a user installs it on. PyPI propagation is not instant, so the install
-  # itself retries through scripts/retry-install.sh until the index a user resolves
+  # itself retries through crates/onevcs/release/retry-install.sh until the index a user resolves
   # from serves the version, then the real wheel it put on PATH goes to
-  # scripts/smoke-published.sh — the same script crates/onevcs/tests/e2e/smoke.rs
+  # crates/onevcs/release/smoke-published.sh — the same script crates/onevcs/tests/e2e/smoke.rs
   # runs against the build under test, so what a release asserts cannot drift from
   # what ships.
   #
@@ -303,7 +303,7 @@ jobs:
       - name: Install the published wheel
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          bash scripts/retry-install.sh \
+          bash crates/onevcs/release/retry-install.sh \
             --label "PyPI onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH" \
             --action "check https://pypi.org/project/onevcs-cli/ — publish-pypi may have uploaded no wheel for this platform" \
             -- pip install --no-cache-dir "onevcs-cli==${ver}"
@@ -312,11 +312,11 @@ jobs:
       - name: Smoke-test what PyPI served
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$ver" \
             --label "PyPI onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH"
 
-  # npm packages: scripts/npm-build.mjs wraps the prebuilt binary in a per-platform
+  # npm packages: crates/onevcs/release/npm-build.mjs wraps the prebuilt binary in a per-platform
   # package (onevcs-cli-<platform>-<arch>), the direct analogue of the maturin
   # wheels, on the same native-runner matrix as `upload`, then `npm pack`s each to
   # a tarball artifact.
@@ -360,7 +360,7 @@ jobs:
         run: |
           bin="target/$TARGET/release/onevcs"
           [ -f "$bin" ] || bin="${bin}.exe"
-          pkgdir="$(node scripts/npm-build.mjs platform --target "$TARGET" --binary "$bin" --out npm/dist)"
+          pkgdir="$(node crates/onevcs/release/npm-build.mjs platform --target "$TARGET" --binary "$bin" --out npm/dist)"
           mkdir -p npm-artifacts
           (cd "$pkgdir" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm-artifacts")
       - uses: actions/upload-artifact@v4
@@ -427,12 +427,12 @@ jobs:
           # reads a bare `dir/file.tgz` as a `user/repo` GitHub spec and tries to
           # git-clone it.
           for tgz in "$GITHUB_WORKSPACE"/npm-artifacts/*.tgz; do
-            bash scripts/publish-npm.sh "$tgz"
+            bash crates/onevcs/release/publish-npm.sh "$tgz"
           done
           # The launcher (onevcs-cli) carries no binary, so it needs no prebuilt
           # target — just the version-stamped manifest.
-          launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
-          bash scripts/publish-npm.sh "$launcher"
+          launcher="$(node crates/onevcs/release/npm-build.mjs launcher --out npm/dist)"
+          bash crates/onevcs/release/publish-npm.sh "$launcher"
 
   # Post-publish gate: prove the just-published version is npm-installable on every
   # OS a user installs it on, the same promise verify-pypi makes for the wheel and
@@ -473,14 +473,14 @@ jobs:
       - name: Install the published package
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          bash scripts/retry-install.sh \
+          bash crates/onevcs/release/retry-install.sh \
             --label "npm onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH" \
             --action "check https://www.npmjs.com/package/onevcs-cli — the platform package for this runner may not have published" \
             -- npm install -g --prefer-online "onevcs-cli@${ver}"
       - name: Smoke-test what npm served
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$ver" \
             --label "npm onevcs-cli $ver on $RUNNER_OS/$RUNNER_ARCH"
   build-darwin:
@@ -502,7 +502,7 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
         run: |-
-          bash scripts/release-darwin.sh
+          bash crates/onevcs/release/release-darwin.sh
       - uses: actions/upload-artifact@v4
         with:
           name: archives-aarch64-apple-darwin

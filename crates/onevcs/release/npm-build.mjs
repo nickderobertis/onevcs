@@ -24,9 +24,9 @@
 // --out; release.yml packs and publishes them.
 //
 // Usage:
-//   node scripts/npm-build.mjs platform --target <triple> --binary <path> \
+//   node crates/onevcs/release/npm-build.mjs platform --target <triple> --binary <path> \
 //        [--version <v>] [--out <dir>]
-//   node scripts/npm-build.mjs launcher [--version <v>] [--out <dir>]
+//   node crates/onevcs/release/npm-build.mjs launcher [--version <v>] [--out <dir>]
 //
 // Both modes print the created package directory on stdout.
 
@@ -43,7 +43,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 // The one version source: the published crate's manifest, which release-plz
 // maintains. The workspace root manifest has no [package] section at all.
 const CRATE_MANIFEST = join(REPO_ROOT, "crates", "onevcs", "Cargo.toml");

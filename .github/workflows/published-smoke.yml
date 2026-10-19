@@ -8,7 +8,7 @@ name: Published smoke
 # stopped serving for one platform — is invisible until a user hits it, because
 # nothing else in this repository installs from a registry between releases.
 #
-# So this runs the identical `scripts/smoke-published.sh` those jobs run, against
+# So this runs the identical `crates/onevcs/release/smoke-published.sh` those jobs run, against
 # `latest` rather than a tag, on Linux and Windows whenever release.yml finishes.
 # Darwin local installs run before publication in release.yml; an explicitly
 # opted-in manual diagnostic here can request one Mac runner. The registry's own idea of the version (`pip
@@ -38,7 +38,7 @@ name: Published smoke
 #
 # llmlint: ignore-file[changed_behavior_has_e2e] this workflow is a trigger, two registry
 # installs, and calls to two committed scripts. The scripts are what hold the behaviour,
-# and both are driven for real: scripts/smoke-published.sh by
+# and both are driven for real: crates/onevcs/release/smoke-published.sh by
 # crates/onevcs/tests/e2e/smoke.rs over the compiled binary, and
 # scripts/report-workflow-failure.sh by crates/onevcs/tests/e2e/scripts.rs over both of
 # its create-or-comment branches — same files, same assertions. What is left here is the
@@ -127,7 +127,7 @@ jobs:
         env:
           VERSION: ${{ steps.install.outputs.version }}
         run: |
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$VERSION" \
             --label "PyPI onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
 
@@ -166,7 +166,7 @@ jobs:
           # also why this install retries: `npm view` and the install resolve
           # independently, so a version published minutes ago can be on the edge one
           # read and not the other.
-          bash scripts/retry-install.sh \
+          bash crates/onevcs/release/retry-install.sh \
             --label "npm onevcs-cli $version on $RUNNER_OS/$RUNNER_ARCH" \
             --action "the platform package for this runner is missing or unpublished; check the onevcs-cli-* packages" \
             -- npm install -g --prefer-online "onevcs-cli@${version}"
@@ -175,7 +175,7 @@ jobs:
         env:
           VERSION: ${{ steps.install.outputs.version }}
         run: |
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$VERSION" \
             --label "npm onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
 
@@ -262,7 +262,7 @@ jobs:
         env:
           VERSION: ${{ steps.install.outputs.version }}
         run: |
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$VERSION" \
             --label "PyPI onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
         if: vars.PYPI_PUBLISH == 'true'
@@ -286,7 +286,7 @@ jobs:
           # also why this install retries: `npm view` and the install resolve
           # independently, so a version published minutes ago can be on the edge one
           # read and not the other.
-          bash scripts/retry-install.sh \
+          bash crates/onevcs/release/retry-install.sh \
             --label "npm onevcs-cli $version on $RUNNER_OS/$RUNNER_ARCH" \
             --action "the platform package for this runner is missing or unpublished; check the onevcs-cli-* packages" \
             -- npm install -g --prefer-online "onevcs-cli@${version}"
@@ -296,7 +296,7 @@ jobs:
         env:
           VERSION: ${{ steps.npm-install.outputs.version }}
         run: |
-          bash scripts/smoke-published.sh \
+          bash crates/onevcs/release/smoke-published.sh \
             --expect-version "$VERSION" \
             --label "npm onevcs-cli $VERSION on $RUNNER_OS/$RUNNER_ARCH"
         if: vars.NPM_PUBLISH == 'true'

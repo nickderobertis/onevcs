@@ -30,7 +30,7 @@ test("actual release routes retain every platform and package, Darwin needs prec
                 ).length,
                 1,
             );
-    const targetScript = read("scripts/release-darwin.sh");
+    const targetScript = read("crates/onevcs/release/release-darwin.sh");
     for (const target of macTargets) {
         assert.ok(
             wf.jobs["build-darwin"].env.DARWIN_TARGETS.split(" ").includes(
@@ -52,7 +52,7 @@ test("actual release routes retain every platform and package, Darwin needs prec
         targetScript,
         /release-stage.sh "\$target"[\s\S]*release-local-install.sh "\$target"/,
     );
-    const stage = read("scripts/release-stage.sh");
+    const stage = read("crates/onevcs/release/release-stage.sh");
     assert.equal(stage.match(/^maturin build/gm).length, 1);
     assert.doesNotMatch(targetScript, /cargo build/);
     assert.match(
@@ -65,7 +65,7 @@ test("actual release routes retain every platform and package, Darwin needs prec
     );
     assert.match(stage, /release-payload-check.py/);
     assert.match(stage, /release-wheel-binary.py/);
-    const install = read("scripts/release-local-install.sh");
+    const install = read("crates/onevcs/release/release-local-install.sh");
     // Darwin execution requires the real Mac runner; local proof checks the
     // commands and foreign payload contracts rather than executing Darwin on Linux.
     // Only Apple Silicon is built, natively: no Rosetta, no x86_64 cross-compile.
@@ -81,7 +81,7 @@ test("actual release routes retain every platform and package, Darwin needs prec
     assert.ok(!platforms.some((p) => p.includes("darwin-x64")));
     assert.match(install, /pip install --no-index --no-deps/);
     assert.match(install, /npm install .*--offline/);
-    assert.equal(install.match(/bash scripts\/smoke-published.sh/g).length, 2);
+    assert.equal(install.match(/bash crates\/onevcs\/release\/smoke-published.sh/g).length, 2);
     for (const a of macArtifacts) assert.equal(a["if-no-files-found"], "error");
     // download-artifact defaults to this run, checkout defaults to its release tag.
     for (const job of ["publish-pypi", "publish-npm", "upload-darwin"])

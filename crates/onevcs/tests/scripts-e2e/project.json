@@ -32,12 +32,10 @@
       ]
     },
     "release-packaging": {
-      "command": "bash scripts/release-native-journey.sh",
+      "command": "bash crates/onevcs/release/release-native-journey.sh",
       "cache": false,
       "inputs": [
-        "{workspaceRoot}/scripts/release-{native-journey,stage,archive,payload-check,local-install}.*",
-        "{workspaceRoot}/scripts/npm-build.mjs",
-        "{workspaceRoot}/scripts/smoke-published.sh",
+        "{workspaceRoot}/crates/onevcs/release/**/*",
         "{workspaceRoot}/npm/onevcs/**/*",
         "{workspaceRoot}/pyproject.toml",
         "{workspaceRoot}/crates/onevcs/src/**/*",
@@ -49,8 +47,6 @@
         "{workspaceRoot}/README.md",
         "{workspaceRoot}/LICENSE",
         "{workspaceRoot}/CHANGELOG.md",
-        "{workspaceRoot}/scripts/release_inputs.py",
-        "{workspaceRoot}/scripts/release-wheel-binary.py",
         "{workspaceRoot}/.github/workflows/release.yml"
       ]
     }

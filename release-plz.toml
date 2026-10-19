@@ -5,7 +5,14 @@
 #      patch, `!`/BREAKING -> minor; chore/docs/ci/test/style do not release).
 #      release-plz only *sees* a commit that touched the crate's packaged files,
 #      so what releases is governed by `[package] include` in
-#      crates/onevcs/Cargo.toml. See AGENTS.md.
+#      crates/onevcs/Cargo.toml: the crate's sources and readme, and the release
+#      tooling under crates/onevcs/release/ that release.yml runs to build,
+#      package and verify the published artifacts. It walks only commits that
+#      touch crates/onevcs/ itself, so nothing outside that directory can be
+#      made releasable — not the root justfile, whose one-line
+#      `release-packaging` recipe delegates to release/release-native-journey.sh,
+#      nor the workflows, the CI-only scripts in scripts/, the docs or the tests,
+#      none of which cut a release on their own. See AGENTS.md.
 #   2. The `release-pr` job opens/updates a PR that bumps the version in
 #      Cargo.toml + Cargo.lock and writes the CHANGELOG section.
 #   3. Merging that PR makes the `release` job tag `vX.Y.Z` and cut a GitHub

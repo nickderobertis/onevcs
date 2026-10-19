@@ -53,12 +53,12 @@ probe = "scripts/release-probe.sh"
 
 # The library and the `onevcs` binary. Its version is the one version source for
 # everything packaged from this repository — the wheel takes it through maturin's
-# `dynamic = ["version"]`, and the npm packages through scripts/npm-build.mjs.
+# `dynamic = ["version"]`, and the npm packages through crates/onevcs/release/npm-build.mjs.
 [[target]]
 id = "crate:onevcs"
 name = "crate"
 what = "The library and the `onevcs` binary, as a Rust dependent takes them."
-published_by = ".github/workflows/release.yml — the publish-crate job, first of the two names it passes scripts/publish-crates.sh, under crates/onevcs/Cargo.toml's [package] name."
+published_by = ".github/workflows/release.yml — the publish-crate job, first of the two names it passes crates/onevcs/release/publish-crates.sh, under crates/onevcs/Cargo.toml's [package] name."
 manifest = "crates/onevcs/Cargo.toml"
 # What a consumer does when this releases, said here because it is ours to say. The
 # three blocks are the ones the schema names — a consumer's own template may
@@ -88,7 +88,7 @@ either is a release of both.\
 id = "crate:onevcs-testing"
 name = "testing-crate"
 what = "The in-memory and file-backed Vcs and RemoteHost implementations, for a consumer's dev-dependencies."
-published_by = ".github/workflows/release.yml — the publish-crate job, second of the two names it passes scripts/publish-crates.sh, under crates/onevcs-testing/Cargo.toml's [package] name."
+published_by = ".github/workflows/release.yml — the publish-crate job, second of the two names it passes crates/onevcs/release/publish-crates.sh, under crates/onevcs-testing/Cargo.toml's [package] name."
 manifest = "crates/onevcs-testing/Cargo.toml"
 # The rule a consumer of this repository has no way to know from the outside, and the
 # reason per-target adoption instructions are worth declaring at all: the two crates

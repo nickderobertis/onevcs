@@ -6,7 +6,7 @@
 # Shared metadata lives in `[workspace.package]` and shared version requirements
 # in `[workspace.dependencies]`, so a member never pins its own copy of either.
 # The published *version* is deliberately NOT inherited: release-plz maintains it
-# in the member manifest, which is the one place `scripts/npm-build.mjs` and
+# in the member manifest, which is the one place `crates/onevcs/release/npm-build.mjs` and
 # maturin read it from.
 [workspace]
 resolver = "2"

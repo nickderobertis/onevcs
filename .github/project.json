@@ -9,7 +9,7 @@
     "workflowSource": [
       "{projectRoot}/**/*",
       "{workspaceRoot}/scripts/release-*",
-      "{workspaceRoot}/scripts/npm-build.mjs",
+      "{workspaceRoot}/crates/onevcs/release/**/*",
       "{workspaceRoot}/npm/**/*",
       "{workspaceRoot}/screencomp.toml",
       "{workspaceRoot}/pyproject.toml",

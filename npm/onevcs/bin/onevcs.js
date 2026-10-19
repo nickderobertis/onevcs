@@ -11,7 +11,7 @@
 // caller's argv.
 //
 // This file is committed source; the version and the optionalDependency versions
-// are stamped from Cargo.toml at publish time by scripts/npm-build.mjs, which
+// are stamped from Cargo.toml at publish time by crates/onevcs/release/npm-build.mjs, which
 // also generates the per-platform packages from the release binaries.
 
 "use strict";

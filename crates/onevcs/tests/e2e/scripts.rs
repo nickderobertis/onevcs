@@ -3,9 +3,9 @@
 //! `scripts/nx-affected.sh` fails closed: whenever it cannot derive a merge base
 //! it widens the scope and says so, because affected selection is a speed
 //! optimisation and one that can silently skip a check is a correctness hole.
-//! `scripts/retry-install.sh` retries a post-publish install until the index a
+//! `crates/onevcs/release/retry-install.sh` retries a post-publish install until the index a
 //! user resolves from actually serves it, and reports each attempt.
-//! `scripts/publish-crates.sh` decides whether a version is already live before it
+//! `crates/onevcs/release/publish-crates.sh` decides whether a version is already live before it
 //! publishes anything, and decides it by reading a path derived from the crate's
 //! name — crates.io's sharding rule, restated in shell because nothing can be
 //! asked for it. That derivation is gated below, for every class of the rule.
@@ -471,7 +471,7 @@ fn an_install_that_needed_a_second_attempt_reports_the_first_one() {
     // llmlint: ignore[e2e_not_mocked] see the note directly above.
     let (_dir, script) = flaky_command(1);
 
-    Run::script("scripts/retry-install.sh")
+    Run::script("crates/onevcs/release/retry-install.sh")
         .args(["--budget", "60", "--first-delay", "1", "--max-delay", "1"])
         .args(["--label", "onevcs-cli 9.9.9 from the test registry"])
         .arg("--")
@@ -497,7 +497,7 @@ fn an_install_the_registry_never_serves_fails_with_the_last_attempt_in_full() {
     // than by how loaded the machine is: after the second failure `SECONDS + delay`
     // is over the budget however fast the attempts were, and the first attempt has
     // three seconds of room before it could exhaust it on its own.
-    Run::script("scripts/retry-install.sh")
+    Run::script("crates/onevcs/release/retry-install.sh")
         .args(["--budget", "5", "--first-delay", "2", "--max-delay", "4"])
         .args(["--label", "onevcs-cli 9.9.9 from the test registry"])
         .args(["--action", "check that the release job published it"])
@@ -516,7 +516,7 @@ fn an_install_the_registry_never_serves_fails_with_the_last_attempt_in_full() {
 
 #[test]
 fn a_budget_that_is_not_a_number_of_seconds_is_rejected_before_anything_runs() {
-    Run::script("scripts/retry-install.sh")
+    Run::script("crates/onevcs/release/retry-install.sh")
         .args(["--budget", "ten minutes", "--", "true"])
         .output()
         .failed()
@@ -605,7 +605,7 @@ impl Registry {
     }
 
     fn run(&self) -> Run {
-        Run::script("scripts/publish-crates.sh").path_prefix(self.dir.path())
+        Run::script("crates/onevcs/release/publish-crates.sh").path_prefix(self.dir.path())
     }
 
     fn asked(&self) -> Vec<String> {
@@ -684,7 +684,7 @@ fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
         // Asked in whatever case, answered in the one the index is keyed by.
         ("OneVCS", "on/ev/onevcs"),
     ] {
-        Run::script("scripts/publish-crates.sh")
+        Run::script("crates/onevcs/release/publish-crates.sh")
             .args(["--index-path", name])
             .output()
             .succeeded()
@@ -695,7 +695,7 @@ fn the_index_path_a_publish_reads_is_derived_from_the_crates_name() {
     let workflow = std::fs::read_to_string(workspace_root().join(".github/workflows/release.yml"))
         .expect("the release workflow is readable");
     assert!(
-        workflow.contains("bash scripts/publish-crates.sh onevcs onevcs-testing"),
+        workflow.contains("bash crates/onevcs/release/publish-crates.sh onevcs onevcs-testing"),
         "the release must publish both crates through this script, in dependency order"
     );
 }
@@ -811,12 +811,12 @@ fn a_crate_this_workspace_does_not_hold_is_refused_before_anything_is_published(
 
 #[test]
 fn publish_crates_called_with_nothing_to_publish_says_how_to_call_it() {
-    Run::script("scripts/publish-crates.sh")
+    Run::script("crates/onevcs/release/publish-crates.sh")
         .output()
         .failed()
         .said("no crate was named, so there is nothing to publish")
         .said("ACTION: name every crate to publish, in dependency order");
-    Run::script("scripts/publish-crates.sh")
+    Run::script("crates/onevcs/release/publish-crates.sh")
         .arg("--index-path")
         .output()
         .failed()
@@ -1037,7 +1037,7 @@ fn a_script_the_macos_legs_run_still_reports_where_the_shell_has_no_bash_four_bu
 
     // …then that the script's refusal reaches the operator there anyway, rather than
     // the shell's own abort standing where the argument error should be.
-    let script = workspace_root().join("scripts/retry-install.sh");
+    let script = workspace_root().join("crates/onevcs/release/retry-install.sh");
     without_bash_four_builtins(&script, &["--budget", "ten minutes", "--", "true"])
         .failed()
         .said("--budget needs a whole number of seconds, not 'ten minutes'")
@@ -1136,6 +1136,7 @@ fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
     // would execute is read.
     let mut scripts = Vec::new();
     shell_scripts(&workspace_root().join("scripts"), &mut scripts);
+    shell_scripts(&workspace_root().join("crates/onevcs/release"), &mut scripts);
     assert!(
         scripts.len() > 1,
         "the scan found no scripts, so it is asserting nothing"
