@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.2](https://github.com/nickderobertis/onevcs/compare/v0.56.1...v0.56.2) - 2026-10-19
+
+### Added
+
+- *(events)* report the issues a landing closes ([#482](https://github.com/nickderobertis/onevcs/pull/482))
+
 ## [0.56.1](https://github.com/nickderobertis/onevcs/compare/v0.56.0...v0.56.1) - 2026-10-18
 
 ### Fixed
