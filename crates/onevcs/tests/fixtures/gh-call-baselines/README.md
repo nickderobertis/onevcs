@@ -9,7 +9,7 @@ set in a GraphQL query) as the same invocation.
 
 | Baseline | Journey |
 | --- | --- |
-| `watched-merge.log` | `edges::a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it` |
+| `watched-merge.log` | `edges::a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it`; and `edges::a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none`, the same journey with the closures refused, held to it **plus exactly one** merge read (`assert_one_call_beyond`) — the one request the manager's ruling allows |
 | `late-merge-status.log` | `library::a_change_merged_after_its_session_closed_is_recorded_by_the_next_status_with_the_issues_it_closes` |
 | `late-merge-standings.log` | `library::a_change_merged_after_its_session_closed_is_recorded_by_the_standings_read_with_the_issues_it_closes` |
 | `history-landing-release-status.log` | `landing::a_landing_found_only_in_the_bases_history_reports_the_issues_its_commit_closes` — held **exactly** (`assert_calls_unchanged`): that path must ask the host what it asked before, no less |

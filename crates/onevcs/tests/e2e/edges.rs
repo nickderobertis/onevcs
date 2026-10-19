@@ -4088,7 +4088,9 @@ fn a_status_read_over_session_records_this_host_cannot_read_refuses_rather_than_
 
 /// A `change-direct` publication of `acme-corp/<name>` the substituted host merges,
 /// after `host` has said what it holds about the change request's closures: answers
-/// the session's token and how the publication ended.
+/// the session's token and how the publication ended. Its branch and its commit are
+/// `a_change_merged_directly_lands_without_waiting_for_the_host_to_hold_it`'s, so of
+/// `acme-corp/direct` it is that journey, and its log can be held to that baseline.
 fn published_directly(name: &str, host: impl FnOnce(&World)) -> (World, String, Output) {
     let world = World::new();
     let origin = world.bare_origin(name);
@@ -4114,12 +4116,12 @@ fn published_directly(name: &str, host: impl FnOnce(&World)) -> (World, String, 
 
     let assert = world
         .onevcs()
-        .args(["session", "open", name, "--branch", "feature/landed"])
+        .args(["session", "open", name, "--branch", "feature/direct"])
         .assert()
         .success();
     let token = token_of(&assert.get_output().stdout);
     let worktree = worktree_of(&assert.get_output().stdout);
-    world.commit_file(&worktree, "one.txt", "one\n", "feat: land it anyway");
+    world.commit_file(&worktree, "one.txt", "one\n", "feat: land it directly");
 
     let published = world
         .onevcs()
@@ -4181,15 +4183,15 @@ fn a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none() {
             "Unknown JSON field: \"closingIssuesReferences\"\nAvailable fields:",
         ),
     ] {
-        let (world, token, published) = published_directly("refused", |world| {
-            world.host_closes(1, &["acme-corp/refused#12"]);
+        let (world, token, published) = published_directly("direct", |world| {
+            world.host_closes(1, &["acme-corp/direct#12"]);
             world.refuse_closing_references(how);
         });
         let stderr = landed_reporting_no_closures(&world, &token, &published);
         assert!(
             stderr.contains(&format!(
                 "the host would not say which issues \
-                 https://github.com/acme-corp/refused/pull/1 closes, so its landing reports \
+                 https://github.com/acme-corp/direct/pull/1 closes, so its landing reports \
                  none: {refusal}"
             )),
             "{how}: {stderr}"
@@ -4200,6 +4202,13 @@ fn a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none() {
             (asked, without),
             (1, 1),
             "{how}: the refused read is asked again once, and nothing else is added"
+        );
+        // …which is the whole of what the journey asked beyond what it asked before
+        // closures were read: the merge read, once more.
+        crate::call_baseline::assert_one_call_beyond(
+            &world,
+            "watched-merge",
+            "pr view 1 --repo acme-corp/direct --json state,mergeCommit",
         );
     }
 }

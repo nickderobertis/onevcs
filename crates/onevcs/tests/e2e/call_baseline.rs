@@ -131,3 +131,22 @@ pub fn assert_calls_unchanged(world: &World, name: &str) {
         calls.join("\n"),
     );
 }
+
+/// Hold `world`'s call log to the baseline named `name` plus exactly one more `call`:
+/// every invocation as many times as there, except that one, once more — for the one
+/// path allowed a request the baseline does not make.
+pub fn assert_one_call_beyond(world: &World, name: &str, call: &str) {
+    let path = baseline_path(name);
+    let recorded = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the baseline {} is committed: {e}", path.display()));
+    let mut allowed = tally(recorded.lines());
+    *allowed.entry(invocation(call)).or_insert(0) += 1;
+    let calls = world.host_calls();
+    assert_eq!(
+        tally(calls.iter().map(String::as_str)),
+        allowed,
+        "the journey's host calls are not {} and one more {call:?}; its whole log:\n{}",
+        path.display(),
+        calls.join("\n"),
+    );
+}
