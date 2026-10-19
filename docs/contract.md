@@ -4898,9 +4898,12 @@ pub fn landing_closes(envelope: &Envelope) -> Result<Vec<String>>;
   GitHub will not show the closing issues to, refuses the whole read naming it; that read
   alone is asked again without the field, because whether the change merged is the
   answer. Such a landing — and one whose answer names a node no issue can be read out of,
-  which is refused whole rather than read in part — reports `[]` and says so on stderr,
-  so a `[]` there is not evidence that it closed nothing. The one added request is sent
-  only on such a refusal *(the manager's ruling on this amendment)*. A host implementation other
+  which is refused whole rather than read in part — is still recorded, reports `[]`, and
+  says so on stderr in a warning that carries the host's own refusal. Such a `[]` means
+  the closures could not be read, not that none closed. A consumer treats it as closing
+  nothing: the card of an issue it did close then waits for the on-demand reconcile. The
+  one added request is sent only on such a refusal *(the manager's ruling on this
+  amendment)*. A host implementation other
   than this crate's `GitHub` reports none, so its landings carry `[]`.
 - **A landing found from the base's history alone** — `release status` reading the change
   request's number in the base with no read of that change request from the host in the

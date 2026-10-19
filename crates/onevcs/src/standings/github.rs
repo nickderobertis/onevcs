@@ -144,7 +144,7 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
                 root,
                 *number,
                 &mut required,
-                answered,
+                &answered,
             )?);
         }
     }
@@ -178,7 +178,7 @@ pub(crate) fn read_with_reviews(
         }
         for (at, (number, (change, since))) in batch.iter().zip(targets).enumerate() {
             let pull = pull_of(&data, at, *number, repo)?;
-            standings.push(standing(pull, root, *number, &mut required, answered)?);
+            standings.push(standing(pull, root, *number, &mut required, &answered)?);
             let about = format!("pull request {number} of {repo}");
             let read = match review_github::first_page(pull)? {
                 Some(pages) => review_github::answer(&pages, since.as_ref(), &about)?,
@@ -281,10 +281,10 @@ fn ask(
         CLOSES_FIELD,
         &["api", "graphql", "-f", &without, "-f", &owner, "-f", &name],
     )?;
-    if answered == gh::Answered::WithoutTheField {
+    if let gh::Answered::WithoutTheField { refusal } = &answered {
         eprintln!(
             "onevcs: warning: the host would not say which issues the change requests of \
-             {repo} close, so a landing this read records reports none"
+             {repo} close, so a landing this read records reports none: {refusal}"
         );
     }
     let page = gh::json(&raw)?;
@@ -315,7 +315,7 @@ fn standing(
     root: &str,
     number: u64,
     required: &mut Required,
-    answered: gh::Answered,
+    answered: &gh::Answered,
 ) -> Result<ChangeStanding> {
     let text = |name: &str| -> Result<String> {
         pull.get(name)
@@ -388,7 +388,7 @@ fn standing(
     if matches!(state, ChangeState::Merged { .. }) {
         match answered {
             gh::Answered::AsAsked => crate::closing::hear(url.as_str(), pull.get(CLOSES_FIELD)),
-            gh::Answered::WithoutTheField => crate::closing::unanswered(url.as_str()),
+            gh::Answered::WithoutTheField { .. } => crate::closing::unanswered(url.as_str()),
         }
     }
     let head = Sha(head);

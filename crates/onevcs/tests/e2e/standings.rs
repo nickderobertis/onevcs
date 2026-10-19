@@ -519,7 +519,8 @@ fn a_standing_read_by_a_credential_that_may_not_see_closed_issues_records_the_la
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(
             "the host would not say which issues the change requests of acme-corp/stacked \
-             close, so a landing this read records reports none"
+             close, so a landing this read records reports none: GraphQL: Resource not \
+             accessible by personal access token (repository.c0.closingIssuesReferences)"
         ),
         "{}",
         String::from_utf8_lossy(&output.stderr)

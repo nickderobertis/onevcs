@@ -4168,18 +4168,30 @@ fn a_read_refused_over_the_closures_field_alone_still_lands_and_reports_none() {
     // issues it closes, and a `gh` older than the field rejects it before asking
     // anything. Either way the merge is what the read decides, so it is asked once
     // more without the field: the change lands, reports no closures, and says why.
-    for how in ["permission", "unknown-field"] {
+    // The warning names the refusal the host gave, in the host's own words, so an
+    // operator reading it knows which of the two it was and what to grant or upgrade.
+    for (how, refusal) in [
+        (
+            "permission",
+            "GraphQL: Resource not accessible by personal access token \
+             (repository.pullRequest.closingIssuesReferences)",
+        ),
+        (
+            "unknown-field",
+            "Unknown JSON field: \"closingIssuesReferences\"\nAvailable fields:",
+        ),
+    ] {
         let (world, token, published) = published_directly("refused", |world| {
             world.host_closes(1, &["acme-corp/refused#12"]);
             world.refuse_closing_references(how);
         });
         let stderr = landed_reporting_no_closures(&world, &token, &published);
         assert!(
-            stderr.contains(
+            stderr.contains(&format!(
                 "the host would not say which issues \
                  https://github.com/acme-corp/refused/pull/1 closes, so its landing reports \
-                 none"
-            ),
+                 none: {refusal}"
+            )),
             "{how}: {stderr}"
         );
         let (asked, without) = merge_reads(&world);

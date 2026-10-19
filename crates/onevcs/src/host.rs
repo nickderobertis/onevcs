@@ -1666,11 +1666,11 @@ impl GitHub {
             gh::Answered::AsAsked if merged => {
                 crate::closing::hear(cr.url.as_str(), view.get(CLOSES_FIELD));
             }
-            gh::Answered::WithoutTheField if merged => {
+            gh::Answered::WithoutTheField { refusal } if merged => {
                 crate::closing::unanswered(cr.url.as_str());
                 eprintln!(
                     "onevcs: warning: the host would not say which issues {} closes, so its \
-                     landing reports none",
+                     landing reports none: {refusal}",
                     cr.url
                 );
             }

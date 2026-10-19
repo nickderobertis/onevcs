@@ -194,16 +194,18 @@ pub fn invoke_unless_refused(
     if !answer.stderr.contains(field) {
         return Err(refused(asked, &answer));
     }
-    Ok((invoke(without)?, Answered::WithoutTheField))
+    let refusal = answer.detail();
+    Ok((invoke(without)?, Answered::WithoutTheField { refusal }))
 }
 
 /// Which of its two calls [`invoke_unless_refused`] answered with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answered {
     /// The call as asked, the field included.
     AsAsked,
-    /// The call without the field, which the first was refused over.
-    WithoutTheField,
+    /// The call without the field, which the first was refused over — carrying what
+    /// `gh` said in refusing it, so whoever reports the missing field names why.
+    WithoutTheField { refusal: String },
 }
 
 /// Parse one `gh --json` response.
