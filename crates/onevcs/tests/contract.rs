@@ -6880,6 +6880,139 @@ fn publishes_here() -> Publishes {
     )
 }
 
+/// Where the release tooling lives: inside the crate, so release-plz sees a commit
+/// to it. It walks only commits under `crates/onevcs/` and counts one only where
+/// it changed a file the crate packages.
+const RELEASE_TOOLING: &str = "crates/onevcs/release/";
+
+/// Every script path named on these lines, other than in a comment: a token
+/// ending in a script extension and naming a directory, as `bash crates/…/x.sh`,
+/// `"$(node crates/…/x.mjs` and `(ROOT / "crates/…/x.mjs")` all do.
+fn script_paths_named(lines: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    lines
+        .into_iter()
+        .filter(|line| !line.trim_start().starts_with('#') && !line.trim_start().starts_with("//"))
+        .flat_map(|line| {
+            line.split(|c: char| c.is_whitespace() || "\"'()`$".contains(c))
+                .filter(|token| {
+                    token.contains('/')
+                        && [".sh", ".py", ".mjs"]
+                            .iter()
+                            .any(|ext| token.ends_with(ext))
+                })
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn every_script_the_release_runs_is_packaged_so_a_fix_to_it_releases() {
+    // What release.yml runs, directly and through the one recipe it calls
+    // (`just release-packaging`, whose body is the Nx target below), then every
+    // script those scripts run in turn.
+    let workflow = repo_file(".github/workflows/release.yml");
+    let run_lines = workflow_run_lines(&workflow);
+    assert!(
+        run_lines
+            .iter()
+            .any(|line| line == "just release-packaging"),
+        "release.yml no longer runs `just release-packaging`; follow what it runs instead"
+    );
+    let target: Value =
+        serde_json::from_str(&repo_file("crates/onevcs/tests/scripts-e2e/project.json"))
+            .expect("the scripts-e2e project is JSON");
+    let recipe = target["targets"]["release-packaging"]["command"]
+        .as_str()
+        .expect("the release-packaging target has a command")
+        .to_owned();
+    let mut reached = script_paths_named(run_lines.into_iter().chain([recipe]));
+    let mut followed = BTreeSet::new();
+    while let Some(script) = reached
+        .iter()
+        .find(|path| !followed.contains(*path))
+        .cloned()
+    {
+        followed.insert(script.clone());
+        assert!(
+            script.starts_with(RELEASE_TOOLING),
+            "the release runs {script}, outside {RELEASE_TOOLING}: release-plz cannot see a \
+             commit to it, so a fix there would never ship; move it under {RELEASE_TOOLING}"
+        );
+        reached.extend(script_paths_named(
+            repo_file(&script).lines().map(str::to_owned),
+        ));
+    }
+
+    // Exactly those, and nothing that only CI or a journey runs: a change that
+    // publishes nothing must release nothing.
+    let directory = repo_root().join(RELEASE_TOOLING);
+    let present: BTreeSet<String> = std::fs::read_dir(&directory)
+        .unwrap_or_else(|e| panic!("cannot list {}: {e}", directory.display()))
+        .map(|entry| {
+            let name = entry.expect("a readable directory entry").file_name();
+            format!("{RELEASE_TOOLING}{}", name.to_string_lossy())
+        })
+        .filter(|path| !path.ends_with("__pycache__"))
+        .collect();
+    assert_eq!(
+        present, followed,
+        "{RELEASE_TOOLING} holds exactly the scripts the release runs"
+    );
+
+    // And each one is in the crate's packaged files, which is what release-plz
+    // compares a commit's changed files against.
+    let listed = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "package",
+            "--list",
+            "--package",
+            "onevcs",
+            "--allow-dirty",
+            "--offline",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("cargo runs");
+    assert!(
+        listed.status.success(),
+        "cargo package --list failed: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let packaged: BTreeSet<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(|file| format!("crates/onevcs/{file}"))
+        .collect();
+    let unpackaged: Vec<&String> = followed.difference(&packaged).collect();
+    assert!(
+        unpackaged.is_empty(),
+        "the crate does not package {unpackaged:?}; add them to [package] include in \
+         crates/onevcs/Cargo.toml so release-plz counts a fix to them"
+    );
+}
+
+#[test]
+fn the_crates_lockfile_is_the_workspace_lock_so_a_test_alone_does_not_release() {
+    // release-plz resolves the packaged `Cargo.lock` against the crate directory and
+    // reads a failure as a package change, so without this every commit under
+    // crates/onevcs/ — a test, a doc — would cut a release. A checkout without
+    // symlink support holds git's record of the link: a file naming its target.
+    let lock = repo_root().join("crates/onevcs/Cargo.lock");
+    let metadata = std::fs::symlink_metadata(&lock).unwrap_or_else(|e| {
+        panic!("crates/onevcs/Cargo.lock must exist (see release-plz.toml): {e}")
+    });
+    let target = if metadata.file_type().is_symlink() {
+        std::fs::read_link(&lock).expect("a readable link")
+    } else {
+        PathBuf::from(std::fs::read_to_string(&lock).expect("a readable file"))
+    };
+    assert_eq!(
+        target,
+        Path::new("../../Cargo.lock"),
+        "crates/onevcs/Cargo.lock must be a symlink to the workspace lock (see release-plz.toml)"
+    );
+}
+
 /// What one release declaration declares, read through the crate's own reader —
 /// the same boundary a consumer reads a producer's document at, so a document this
 /// repository could not answer for is refused here rather than half-parsed by a

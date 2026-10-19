@@ -206,7 +206,11 @@ fn test_sources() -> Vec<PathBuf> {
 fn scripts() -> Vec<PathBuf> {
     let mut found = Vec::new();
     collect(&workspace_root().join("scripts"), "sh", &mut found);
-    collect(&workspace_root().join("crates/onevcs/release"), "sh", &mut found);
+    collect(
+        &workspace_root().join("crates/onevcs/release"),
+        "sh",
+        &mut found,
+    );
     assert!(!found.is_empty(), "the scan found no scripts");
     found
 }

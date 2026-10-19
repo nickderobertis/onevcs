@@ -24,7 +24,8 @@ categories = ["command-line-utilities", "development-tools"]
 # directory — so a script outside it can never cut a release, which is why the
 # release tooling lives here rather than in the root scripts/. A change to the
 # suite, to CI-only scripts or workflows, or to the workspace docs deliberately
-# does not cut a release on its own.
+# does not cut a release on its own — which holds only while Cargo.lock beside
+# this file is a symlink to the workspace lock (release-plz.toml says why).
 include = [
     "src/**/*.rs",
     "src/boundary/generic-words.txt",

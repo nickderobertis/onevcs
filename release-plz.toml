@@ -13,6 +13,13 @@
 #      `release-packaging` recipe delegates to release/release-native-journey.sh,
 #      nor the workflows, the CI-only scripts in scripts/, the docs or the tests,
 #      none of which cut a release on their own. See AGENTS.md.
+#
+#      crates/onevcs/Cargo.lock is a symlink to the workspace lock, and it is what
+#      keeps a test or a doc under crates/onevcs/ from releasing. `cargo package
+#      --list` names `Cargo.lock` for a crate with a binary, release-plz resolves
+#      that name against the crate directory, and when nothing is there it treats
+#      the failure as "this commit changed the package", which made every commit
+#      under crates/onevcs/ releasable. Do not delete it while that is so.
 #   2. The `release-pr` job opens/updates a PR that bumps the version in
 #      Cargo.toml + Cargo.lock and writes the CHANGELOG section.
 #   3. Merging that PR makes the `release` job tag `vX.Y.Z` and cut a GitHub

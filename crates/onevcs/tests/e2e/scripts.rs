@@ -1136,7 +1136,10 @@ fn no_script_reaches_for_something_the_shell_macos_ships_does_not_have() {
     // would execute is read.
     let mut scripts = Vec::new();
     shell_scripts(&workspace_root().join("scripts"), &mut scripts);
-    shell_scripts(&workspace_root().join("crates/onevcs/release"), &mut scripts);
+    shell_scripts(
+        &workspace_root().join("crates/onevcs/release"),
+        &mut scripts,
+    );
     assert!(
         scripts.len() > 1,
         "the scan found no scripts, so it is asserting nothing"

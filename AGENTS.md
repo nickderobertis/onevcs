@@ -204,7 +204,10 @@ not tell you:
   there. CI-only scripts, the workflows, the docs and the tests stay out, so a
   change that publishes nothing releases nothing — and so does the root
   `justfile`, which Cargo cannot package: its `release-packaging` recipe is a
-  one-line delegation, so keep the logic in the script.
+  one-line delegation, so keep the logic in the script. `crates/onevcs/Cargo.lock`
+  is a symlink to the workspace lock for release-plz's sake (`release-plz.toml`
+  says why): without it every commit under `crates/onevcs/`, tests included,
+  released.
 - **One version source.** `crates/onevcs/Cargo.toml` is it, for the CLI and
   everything packaged from it: the wheel takes it via maturin's
   `dynamic = ["version"]` and the npm packages via `crates/onevcs/release/npm-build.mjs`.

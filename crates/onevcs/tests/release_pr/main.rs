@@ -455,3 +455,209 @@ fn a_tree_that_carries_its_compat_lock_passes() {
              0.1.1) bootstraps",
         );
 }
+
+/// This repository's own tree, cloned at its `HEAD` commit and released there: the
+/// tree tagged `v<version>` (and `onevcs-testing-v<version>`) as the release job tags
+/// a merged release PR, so nothing releasable is pending and each journey below adds
+/// one commit and asks release-plz what it makes of it.
+///
+/// It reads the committed tree, because release-plz reads history: run it after
+/// committing what it is to judge.
+struct ThisRepository {
+    dir: tempfile::TempDir,
+    released: String,
+    version: String,
+}
+
+impl ThisRepository {
+    fn released() -> Self {
+        require_pinned_release_plz();
+        let dir = tempfile::tempdir().expect("a temporary directory for the clone");
+        let mut clone = Command::new("git");
+        hermetic_git(
+            clone
+                .args(["clone", "--quiet", "--no-local", "--no-tags"])
+                .arg(workspace_root())
+                .arg(dir.path()),
+        );
+        let cloned = clone.output().expect("git is available");
+        assert!(
+            cloned.status.success(),
+            "cloning this repository failed: {}",
+            text(&cloned)
+        );
+        let mut this = Self {
+            dir,
+            released: String::new(),
+            version: String::new(),
+        };
+        this.version = this.manifest_version("crates/onevcs/Cargo.toml");
+        let testing = this.manifest_version("crates/onevcs-testing/Cargo.toml");
+        this.git(&["tag", &format!("v{}", this.version)]).succeeds();
+        this.git(&["tag", &format!("onevcs-testing-v{testing}")])
+            .succeeds();
+        this.released = this.head();
+        this
+    }
+
+    fn manifest_version(&self, manifest: &str) -> String {
+        std::fs::read_to_string(self.dir.path().join(manifest))
+            .expect("the manifest is readable")
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("the manifest states a version")
+            .to_owned()
+    }
+
+    fn head(&self) -> String {
+        let mut command = Command::new("git");
+        hermetic_git(
+            command
+                .arg("-C")
+                .arg(self.dir.path())
+                .args(["rev-parse", "HEAD"]),
+        );
+        text(&command.output().expect("git is available"))
+            .trim()
+            .to_owned()
+    }
+
+    fn git(&self, args: &[&str]) -> Step {
+        let mut command = Command::new("git");
+        hermetic_git(command.arg("-C").arg(self.dir.path()).args(args));
+        Step(command)
+    }
+
+    /// One `fix:` commit touching only `path`, on top of the release.
+    fn fix(&self, path: &str) -> &Self {
+        let file = self.dir.path().join(path);
+        let comment = if path.ends_with(".mjs") || path.ends_with(".rs") {
+            "//"
+        } else {
+            "#"
+        };
+        let mut body = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("{path} is in this repository: {error}"));
+        body.push_str(&format!("{comment} a fix to {path}\n"));
+        std::fs::write(&file, body).expect("the fix is written");
+        self.git(&["add", "-A"]).succeeds();
+        self.git(&[
+            "-c",
+            "user.name=release-plz",
+            "-c",
+            "user.email=release-plz@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            &format!("fix: a change to {path}"),
+        ])
+        .succeeds();
+        self
+    }
+
+    /// release-plz's decision for `onevcs` at `HEAD`, made as release-plz.yml makes
+    /// it — `update` (what `release-pr` runs before it pushes) against the release tag's
+    /// tree — then undone, back to the release.
+    fn decision(&self) -> Decision {
+        let scratch = tempfile::tempdir().expect("a temporary directory for the baseline");
+        let baseline = scratch.path().join("baseline");
+        self.git(&["worktree", "add", "--quiet", "--detach"])
+            .arg_path(&baseline)
+            .arg(&format!("v{}", self.version))
+            .succeeds();
+        let decided = Command::new("release-plz")
+            .arg("update")
+            .arg("--registry-manifest-path")
+            .arg(baseline.join("crates/onevcs/Cargo.toml"))
+            .args(["--repo-url", "https://github.com/nickderobertis/onevcs"])
+            .current_dir(self.dir.path())
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .expect("release-plz runs");
+        assert!(
+            decided.status.success(),
+            "release-plz update failed: {}",
+            text(&decided)
+        );
+        let after = self.manifest_version("crates/onevcs/Cargo.toml");
+        self.git(&["worktree", "remove", "--force"])
+            .arg_path(&baseline)
+            .succeeds();
+        self.git(&["reset", "--quiet", "--hard", &self.released])
+            .succeeds();
+        self.git(&["clean", "-fdq"]).succeeds();
+        Decision {
+            before: self.version.clone(),
+            after,
+            said: text(&decided),
+        }
+    }
+}
+
+/// What release-plz decided for the `onevcs` crate.
+struct Decision {
+    before: String,
+    after: String,
+    said: String,
+}
+
+impl Decision {
+    fn releases(&self, what: &str) {
+        assert_ne!(
+            self.after, self.before,
+            "a fix: to {what} must release the onevcs crate, and release-plz left it at {}: {}",
+            self.before, self.said
+        );
+    }
+
+    fn releases_nothing(&self, what: &str) {
+        assert!(
+            self.after == self.before && self.said.contains("onevcs: already up to date"),
+            "a fix: to {what} must release nothing, and release-plz moved onevcs {} -> {}: {}",
+            self.before,
+            self.after,
+            self.said
+        );
+    }
+}
+
+#[test]
+fn a_fix_to_any_release_script_releases_the_crate_and_a_fix_beside_it_releases_nothing() {
+    // The rule as release-plz applies it to this repository's own tree: a commit
+    // releases where it changed a file the crate packages, and only there.
+    let repository = ThisRepository::released();
+    repository.decision().releases_nothing("nothing at all");
+
+    let release = workspace_root().join("crates/onevcs/release");
+    let mut scripts: Vec<String> = std::fs::read_dir(&release)
+        .expect("the release tooling is in the crate")
+        .map(|entry| entry.expect("a readable directory entry").file_name())
+        .map(|name| format!("crates/onevcs/release/{}", name.to_string_lossy()))
+        .filter(|path| !path.ends_with("__pycache__"))
+        .collect();
+    scripts.sort();
+    assert!(
+        scripts.len() > 1,
+        "found no release tooling, so this proves nothing"
+    );
+    for script in scripts
+        .iter()
+        .map(String::as_str)
+        .chain(["crates/onevcs/src/lib.rs"])
+    {
+        repository.fix(script).decision().releases(script);
+    }
+
+    for beside in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "scripts/nx.sh",
+        "justfile",
+        "AGENTS.md",
+        "crates/onevcs/AGENTS.md",
+        "crates/onevcs/tests/e2e/scripts.rs",
+    ] {
+        repository.fix(beside).decision().releases_nothing(beside);
+    }
+}
