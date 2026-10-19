@@ -2026,8 +2026,8 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
         &worktree,
         "two.txt",
         "two\n",
-        "docs: describe it\n\nThis resolves https://github.com/owner/name/issues/9 too.\n\
-         Fixes #7\nCloses https://git.example.com/owner/name/issues/4",
+        "docs: describe it\n\nResolves https://github.com/owner/name/issues/9\n\
+         Fixes #7\ncloses Owner/Name#9\nCloses https://git.example.com/owner/name/issues/4",
     );
 
     fixture
@@ -2047,7 +2047,8 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
         paragraphs[1],
         "Closes #7\nFixes owner/other#3\nResolves owner/name#9\n\
          Closes https://git.example.com/owner/name/issues/4",
-        "each distinct closing reference once, in order:\n{published}"
+        "each distinct closing reference once, in order — `Owner/Name#9` is the URL's \
+         issue in another case:\n{published}"
     );
     assert!(
         paragraphs[2].starts_with(&documented_trailer(
@@ -2060,8 +2061,8 @@ fn a_local_squash_carries_every_issue_closing_line_its_commits_did_between_subje
     assert!(!published.contains("Prose that explains"), "{published}");
 
     // The landing names the GitHub issues those lines close — a bare `#7` as this
-    // repository's, the github.com URL in its short form, each once — and not the issue
-    // on another host, which the squash still carries.
+    // repository's, the github.com URL in its short form, each once ignoring case — and
+    // not the issue on another host, which the squash still carries.
     let completed = fixture.world.events_of(&token, "merge-completed");
     assert_eq!(completed.len(), 1, "{completed:#?}");
     let documented = documented_closing_landing();
@@ -2117,6 +2118,35 @@ fn a_bare_reference_on_a_repository_github_does_not_host_is_carried_and_not_repo
         completed[0]["payload"]["closes"],
         serde_json::json!(["owner/name#3"])
     );
+}
+
+#[test]
+fn a_bare_reference_alone_on_a_repository_github_does_not_host_reports_no_closures() {
+    // The only closing line is a bare `#7`, and the origin is on no GitHub repository it
+    // could be read against: the squash carries the line, and the landing closes nothing.
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/bare-alone"]);
+    fixture.world.commit_file(
+        &worktree,
+        "one.txt",
+        "one\n",
+        "feat: add the thing\n\nCloses #7",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    let published = fixture
+        .world
+        .git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    let paragraphs: Vec<&str> = published.trim_end().split("\n\n").collect();
+    assert_eq!(paragraphs[1], "Closes #7", "{published}");
+    let completed = fixture.world.events_of(&token, "merge-completed");
+    assert_eq!(completed.len(), 1, "{completed:#?}");
+    assert_eq!(completed[0]["payload"]["closes"], serde_json::json!([]));
 }
 
 #[test]

@@ -4923,7 +4923,8 @@ whenever one exists, so a consumer re-reading that session's persisted stream
 
 A `local-direct` publication of `github.com/owner/name` whose commits carry `Closes #7`,
 `fixes: owner/other#3`, `Resolves https://github.com/owner/name/issues/9`, a second
-`Fixes #7`, and `Closes https://git.example.com/owner/name/issues/4` records:
+`Fixes #7`, `closes Owner/Name#9` (the URL's issue in another case), and
+`Closes https://git.example.com/owner/name/issues/4` records:
 
 ```json
 {"kind": "merge-completed",
