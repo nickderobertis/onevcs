@@ -5270,7 +5270,9 @@ mod collecting {
 /// `publication_watch`'s two cancellation-in-`pre-push` journeys failed there. Linux
 /// counts such a member as present and says so, so the group here is a real one with a
 /// real unreaped member, and the probe answers for it as macOS does: the platform's
-/// refusal in place of Linux's "present", and the real kernel's answer otherwise.
+/// refusal in place of Linux's "present", and the real kernel's answer otherwise. On
+/// macOS that answer already *is* the refusal, so a refusal is counted whichever of the
+/// two gave it — the test then holds the same wait on both.
 #[cfg(all(test, unix))]
 mod reaping {
     use std::os::unix::process::CommandExt;
@@ -5302,12 +5304,15 @@ mod reaping {
         let mut refusals = 0;
         let answer = await_group_empty(leader, REAP_BOUND, || {
             // SAFETY: signal 0 delivers nothing, to the group this test owns.
-            if unsafe { libc::kill(group, 0) } == 0 {
-                refusals += 1;
-                Err(std::io::Error::from_raw_os_error(libc::EPERM))
+            let answer = if unsafe { libc::kill(group, 0) } == 0 {
+                std::io::Error::from_raw_os_error(libc::EPERM)
             } else {
-                Err(std::io::Error::last_os_error())
+                std::io::Error::last_os_error()
+            };
+            if answer.raw_os_error() == Some(libc::EPERM) {
+                refusals += 1;
             }
+            Err(answer)
         });
         reaper.join().expect("the reaper finishes");
 
