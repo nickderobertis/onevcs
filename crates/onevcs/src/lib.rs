@@ -644,7 +644,9 @@ pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
 /// A view that re-reads the landing of every unlanded piece of work on each render
 /// asks one question per piece, and each [`landing_status`] call loads the registry,
 /// resolves the repository and reads this host's records from scratch. This answers
-/// them all from one load and one resolution: the registry, the event streams, the
+/// them all from one load and one resolution of `repo` and of its identity, whatever
+/// the number of references — once in all where `repo` is the identity key: the
+/// registry, the event streams, the
 /// repository's base and object store, its rules and the session records are read
 /// once, and each reference is then decided exactly as [`landing_status`] decides
 /// it alone, by the same tiers.

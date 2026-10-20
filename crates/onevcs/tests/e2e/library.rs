@@ -8395,3 +8395,136 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn several_landings_read_together_resolve_the_repository_once() {
+    // The repository a caller names is resolved by walking paths, which neither the
+    // registry's opens nor `git` see, so it is counted where the walk lands: a mount of
+    // this suite's own that counts each name looked up in it. The caller spells the
+    // repository through a link on that mount, and the mount is the working directory,
+    // which is where an identity key that is a relative path — `github.com/acme-corp/
+    // hosted` — is looked for when it is resolved. So each resolution of the spelling
+    // is a lookup of the link, and each resolution of the identity a lookup of
+    // `github.com`.
+    let world = World::new();
+    inhabit(&world);
+    let (origin, _) = hosted(&world, LOCAL);
+    let checkout = world.path("hosted");
+    let mut references = Vec::new();
+    for (branch, lands) in [
+        ("feature/landed", true),
+        ("feature/held", false),
+        ("feature/other", false),
+    ] {
+        let session = open(&Git, branch);
+        world.commit_file(&session.worktree, "work.txt", branch, "feat: the work");
+        if lands {
+            onevcs::publish(
+                &Providers::real(),
+                &session.token,
+                &PublishRequest::default(),
+            )
+            .expect("the publication runs");
+        }
+        onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+        references.push(branch);
+    }
+
+    let mount = world.path("resolving");
+    std::fs::create_dir_all(&mount).expect("a mount point");
+    let lookups = crate::lookups::Lookups::mount(&mount, "checkout", &checkout);
+    let repo = lookups.through("checkout").to_string_lossy().into_owned();
+    let repo = repo.as_str();
+    let resolved = |counted: &std::collections::HashMap<std::ffi::OsString, usize>| {
+        let named = |name: &str| counted.get(std::ffi::OsStr::new(name)).copied();
+        [
+            named("checkout").unwrap_or(0),
+            named("github.com").unwrap_or(0),
+        ]
+    };
+
+    // One reference alone: its repository spelling, then its identity.
+    let (answer, counted) = lookups.counting(|| onevcs::landing_status(references[0], Some(repo)));
+    assert!(
+        matches!(answer, Ok(Landed::Yes { .. })),
+        "the published work landed: {answer:?}"
+    );
+    assert_eq!(
+        resolved(&counted),
+        [1, 2],
+        "one read resolves the spelling, and the identity twice — to find the branch, \
+         and to judge it: {counted:?}"
+    );
+
+    // Each alone: both grow with the references.
+    let n = references.len();
+    let (_, counted) = lookups.counting(|| {
+        for reference in &references {
+            onevcs::landing_status(reference, Some(repo)).expect("the landing is decided");
+        }
+    });
+    assert_eq!(resolved(&counted), [n, 2 * n], "{counted:?}");
+
+    // Together: the spelling once and the identity once, however many references ask
+    // for it. The identity is resolved even though the spelling named the checkout it
+    // selects, because only resolving the key says so — a key can also be the path of
+    // another registered checkout — and each answer is judged against what it selects.
+    let (answers, counted) = lookups.counting(|| onevcs::landing_statuses(&references, repo));
+    assert_eq!(
+        resolved(&counted),
+        [1, 1],
+        "the spelling and the identity are each resolved once: {counted:?}"
+    );
+    for (reference, answer) in references.iter().zip(answers.expect("it resolves")) {
+        assert_eq!(
+            answer.expect("decided"),
+            onevcs::landing_status(reference, Some(repo)).expect("decided"),
+            "{reference}"
+        );
+    }
+
+    // Named by its identity key, the repository is resolved once in all: the spelling
+    // a caller passed is the key every reference's own resolution asks for.
+    let key = "github.com/acme-corp/hosted";
+    let (answers, counted) = lookups.counting(|| onevcs::landing_statuses(&references, key));
+    assert_eq!(
+        resolved(&counted),
+        [0, 1],
+        "the repository is resolved once in total: {counted:?}"
+    );
+    for (reference, answer) in references.iter().zip(answers.expect("it resolves")) {
+        assert_eq!(
+            answer.expect("decided"),
+            onevcs::landing_status(reference, Some(key)).expect("decided"),
+            "{reference}"
+        );
+    }
+
+    // A second registered checkout of the same identity, named directly: it is not the
+    // checkout the identity resolves to, and what each reference is judged against is
+    // that one — so the identity is resolved too, once for the whole read.
+    let second = world.clone_of(&origin, "hosted-second");
+    assert_eq!(
+        onevcs::run_with(
+            &<onevcs::cli::Cli as clap::Parser>::parse_from([
+                "onevcs",
+                "register",
+                &second.to_string_lossy(),
+                "--origin",
+                "https://github.com/acme-corp/hosted.git",
+            ]),
+            Providers::real(),
+        ),
+        0,
+        "the second checkout registers under the same identity"
+    );
+    let second = second.to_string_lossy().into_owned();
+    held_to_each_alone(&references, &second);
+    let (_, together) = lookups.counting(|| onevcs::landing_statuses(&references, &second));
+    assert_eq!(
+        resolved(&together),
+        [0, 1],
+        "the identity's own checkout is resolved once, not once per reference: {together:?}"
+    );
+}

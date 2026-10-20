@@ -6073,8 +6073,12 @@ pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<La
 spelling `landing_status`'s `repo` takes. Each reference takes the four spellings
 `landing_status` takes and is narrowed to `repo` exactly as that call narrows one, so a
 reference belonging to another identity is refused — as that reference's answer, not the
-call's. **The registry is loaded once and the repository resolved once in total**, and
-the event streams, the session records, the rules' provenance prefix, the repository's
+call's. **The registry is loaded once and the repository resolved once in total** —
+`repo` once and the identity it belongs to once, however many references ask for it,
+which is once in all where `repo` is the identity key. The two are resolved apart because
+the checkout a spelling selects need not be the one its identity selects, and the
+identity's is what every reference is judged against, as `landing_status` judges it. The
+event streams, the session records, the rules' provenance prefix, the repository's
 base and the object store every copy borrows are read once; each reference is then
 decided by the same tiers, from the same private decision, as `landing_status` decides it
 alone, so the tier that decided each answer travels inside it and every `unknown` is the

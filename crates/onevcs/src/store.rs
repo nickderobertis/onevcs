@@ -508,6 +508,15 @@ pub fn resolve_here(registry: &Registry) -> Result<Resolution> {
 /// Resolve a repository argument — an identity key, a registered alias, an origin
 /// URL, or a path — to the identity and checkout it selects.
 pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
+    if let Some(resolution) = already_resolved(registry, repo) {
+        return Ok(resolution);
+    }
+    let resolution = resolve_anew(registry, repo)?;
+    remember(registry, repo, &resolution);
+    Ok(resolution)
+}
+
+fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
     if let Some(checkout) = registry.checkouts.get(repo) {
         return build(registry, repo, checkout);
     }
@@ -552,6 +561,59 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
             }
         ),
     })
+}
+
+/// Run `read` resolving each spelling at most once.
+///
+/// Inside, a [`resolve`] of a spelling already resolved is answered with what the
+/// first one answered rather than walked again; a refusal is not kept, so the next
+/// asks again. A spelling only ever answers for itself: the checkout a repository's
+/// alias or path selects is not necessarily the one its identity key selects — a
+/// second registered checkout of the identity, or a key that is itself the path of a
+/// registered checkout — and only resolving the key says which. So a read about
+/// several pieces of work of one repository resolves the spelling it was handed once
+/// and the identity once, however often each piece's own resolution asks for it, and
+/// resolves once in all where the spelling is the identity key. Every [`resolve`]
+/// inside must be of `registry`.
+pub(crate) fn resolving_once<T>(registry: &Registry, read: impl FnOnce() -> T) -> T {
+    struct Leave(Option<(usize, BTreeMap<String, Resolution>)>);
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            RESOLVED.with(|resolved| *resolved.borrow_mut() = self.0.take());
+        }
+    }
+    let entered = (std::ptr::from_ref(registry) as usize, BTreeMap::new());
+    let _leave = Leave(RESOLVED.with(|resolved| resolved.borrow_mut().replace(entered)));
+    read()
+}
+
+thread_local! {
+    /// The resolutions made inside [`resolving_once`], by spelling, beside the
+    /// registry they were made of.
+    static RESOLVED: std::cell::RefCell<Option<(usize, BTreeMap<String, Resolution>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What [`resolving_once`] already answered for `repo` of `registry`.
+fn already_resolved(registry: &Registry, repo: &str) -> Option<Resolution> {
+    RESOLVED.with(|resolved| {
+        resolved
+            .borrow()
+            .as_ref()
+            .filter(|(of, _)| *of == std::ptr::from_ref(registry) as usize)
+            .and_then(|(_, answered)| answered.get(repo).cloned())
+    })
+}
+
+/// Keep `resolution` as [`resolving_once`]'s answer for `repo`.
+fn remember(registry: &Registry, repo: &str, resolution: &Resolution) {
+    RESOLVED.with(|resolved| {
+        if let Some((of, answered)) = resolved.borrow_mut().as_mut() {
+            if *of == std::ptr::from_ref(registry) as usize {
+                answered.insert(repo.to_owned(), resolution.clone());
+            }
+        }
+    });
 }
 
 /// Resolve a `--repo PATH` argument to the identity and checkout it selects.

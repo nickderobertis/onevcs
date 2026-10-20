@@ -1326,7 +1326,9 @@ fn landing_asking(
 /// The landing of each reference, every one narrowed to the one repository named.
 ///
 /// What [`crate::landing_statuses`] answers. The registry is the caller's one load,
-/// the repository is resolved once, the streams are read once, and what every
+/// the repository is resolved once — the spelling named, and the identity it belongs
+/// to, each once however many references ask for it ([`store::resolving_once`]) — the
+/// streams are read once, and what every
 /// reference of the identity is judged against — the rules' trailers, the base, the
 /// sessions on record and the store every copy borrows — is read once
 /// ([`Grounds`]); each reference is then decided by the same [`landing_among`] a
@@ -1339,17 +1341,27 @@ pub(crate) fn landings_within(
     references: &[&str],
     repo: &str,
 ) -> Result<Vec<Result<Landed>>> {
-    let scope = store::resolve(registry, repo)?.key;
-    let mut notes = Vec::new();
-    let streams = recorded_streams(&mut notes)?;
-    let mut grounds = Grounds::new(registry, &streams);
-    Ok(references
+    store::resolving_once(registry, || {
+        let scope = store::resolve(registry, repo)?.key;
+        let mut notes = Vec::new();
+        let streams = recorded_streams(&mut notes)?;
+        let mut grounds = Grounds::new(registry, &streams);
+        Ok(landings_among(&mut grounds, references, &scope))
+    })
+}
+
+fn landings_among(
+    grounds: &mut Grounds<'_>,
+    references: &[&str],
+    scope: &str,
+) -> Vec<Result<Landed>> {
+    references
         .iter()
         .map(|reference| {
             landing_among(
-                &mut grounds,
+                grounds,
                 reference,
-                Some(&scope),
+                Some(scope),
                 Asking {
                     late_merge: None,
                     attesting: None,
@@ -1358,7 +1370,7 @@ pub(crate) fn landings_within(
             )
             .map(|landing| landing.landed)
         })
-        .collect())
+        .collect()
 }
 
 /// What one landing read takes from this host's state before it asks about any one

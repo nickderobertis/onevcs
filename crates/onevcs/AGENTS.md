@@ -678,8 +678,12 @@ correct, and the absent-hook journey is what holds that.
   decided it. `landing_statuses` is that read for several references of one
   repository: `status::Grounds` holds what one identity's references share (registry,
   streams, sessions, rules, base, lent store), and each is decided by the same
-  `landing_among` a single read runs. Read a new per-identity input there, not per
-  reference — `several_landings_read_together_*` in `tests/e2e/library.rs` count it.
+  `landing_among` a single read runs, inside `store::resolving_once`, which answers
+  each spelling's resolution from its first — never one spelling's for another's, since
+  an alias and its identity key can select different checkouts. Read a new
+  per-identity input there, not per reference — `several_landings_read_together_*` in
+  `tests/e2e/library.rs` count it, the resolutions through the lookups a FUSE mount
+  sees (`tests/e2e/lookups.rs`).
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.
@@ -937,10 +941,11 @@ public registries this repository publishes to. It is in this binary because thi
 is the tier allowed to reach the network at all, and a check that quietly needed a
 registry would stop `just check` being offline.
 
-**A Linux host running this suite needs `fuse3`**, because one journey mounts a
-filesystem of its own to make a real removal fail. `just bootstrap` provisions the
-package; without it that journey refuses rather than skips, since one that passed
-without building its own premise would prove nothing.
+**A Linux host running this suite needs `fuse3`**, because two journeys mount a
+filesystem of their own: one to make a real removal fail, one to count the lookups a
+repository's resolution makes. `just bootstrap` provisions the package; without it
+those journeys refuse rather than skip, since one that passed without building its
+own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
