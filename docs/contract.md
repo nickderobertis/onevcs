@@ -6079,8 +6079,8 @@ base and the object store every copy borrows are read once; each reference is th
 decided by the same tiers, from the same private decision, as `landing_status` decides it
 alone, so the tier that decided each answer travels inside it and every `unknown` is the
 same `unknown`. The call itself refuses only where every reference would have met the
-same refusal: a registry that cannot be read, a repository nobody registered, or event
-streams that cannot be read. A shared read that fails is not kept, so the next reference
+same refusal: a registry that cannot be read, a repository nobody registered, or a state
+root with no location. A shared read that fails is not kept, so the next reference
 asks it again and meets the refusal its own `landing_status` would have met. Like
 `landing_status`, it asks no host.
 

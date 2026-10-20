@@ -655,8 +655,8 @@ pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
 /// the order of `references`, one each, and each is what that call would have
 /// answered — a refusal about one reference included, which is that reference's
 /// answer rather than the whole call's. The call itself refuses only where every
-/// answer would have been the same refusal: a repository nobody registered, or
-/// state no read could get past.
+/// answer would have been the same refusal: a registry that cannot be read, a
+/// repository nobody registered, or a state root with no location.
 pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<Landed>>> {
     status::landings_within(&store::load()?, references, repo)
 }

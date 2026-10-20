@@ -1333,7 +1333,7 @@ fn landing_asking(
 /// read of that reference alone runs. A refusal that is about one reference is that
 /// reference's answer, never the batch's: the batch refuses only for what every one
 /// of its references would have been refused for — a repository nobody registered,
-/// or streams nobody can read.
+/// or a state root with no location.
 pub(crate) fn landings_within(
     registry: &Registry,
     references: &[&str],
