@@ -153,6 +153,15 @@ impl Counting {
             .collect()
     }
 
+    /// This process, with this `git` first on `PATH`, for a journey that reads through
+    /// the library rather than the binary.
+    pub(crate) fn inhabit(&self) {
+        let mut path = std::ffi::OsString::from(&self.directory);
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        std::env::set_var("PATH", path);
+    }
+
     /// `onevcs`, with this `git` first on `PATH`.
     pub(crate) fn onevcs(&self, world: &World) -> assert_cmd::Command {
         let mut path = std::ffi::OsString::from(&self.directory);
@@ -252,11 +261,11 @@ fn directories(calls: &[Call]) -> BTreeSet<PathBuf> {
 }
 
 /// What one row of the tiered fixture below was built to answer.
-struct Expected {
+pub(crate) struct Expected {
     /// The `landed.state` the row answers with, and the tier that decided it where
     /// a record did.
-    state: &'static str,
-    tier: Option<&'static str>,
+    pub(crate) state: &'static str,
+    pub(crate) tier: Option<&'static str>,
     provenance: &'static str,
     change_url: Option<&'static str>,
     /// A phrase the row's own sentence about why the work stopped must carry.
@@ -276,7 +285,7 @@ const CHANGE_URL: &str = "https://github.com/acme-corp/project/pull/42";
 /// Built in the order a host reaches these states in, and the base moves *through*
 /// it — which is the condition every one of these answers has to survive, and the one
 /// the comparison of content cannot.
-fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
+pub(crate) fn tiered(fixture: &Fixture) -> BTreeMap<&'static str, Expected> {
     let prefix = documented_default_prefix();
     let change_url = documented_trailer("Change-Url", &prefix);
     let world = &fixture.world;

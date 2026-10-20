@@ -25,6 +25,8 @@
 // a real session record under a real state root, and the same substituted `gh` every
 // journey in this suite uses.
 
+use std::collections::BTreeSet;
+
 use onevcs::rules::Approvals;
 use onevcs::{
     ChangeId, ChangeRequest, Check, CheckSource, DraftReason, EventFilter, EventMatcher,
@@ -8124,4 +8126,139 @@ fn a_holder_record_an_earlier_build_named_by_its_lease_alone_still_holds_the_bra
     // Its holder has ended, so the lease is free, and a record whose lease is free is
     // one nobody is behind — whatever it is named.
     assert!(held(RESUMED).is_none(), "nothing holds the branch now");
+}
+
+/// One branch of every landing the read answers with — landed by a recorded landing
+/// and by a trailer, landed in part, not landed, and undecidable — registered under one
+/// identity, and the spelling of that identity's repository a caller passes.
+fn every_landing(fixture: &crate::lifecycle::Fixture) -> (Vec<&'static str>, String) {
+    let branches = crate::cost::tiered(fixture).into_keys().collect();
+    (branches, fixture.checkout.to_string_lossy().into_owned())
+}
+
+/// A landing as the JSON consumers read it: its state, and the tier that decided it.
+fn state_and_tier(landed: &Landed) -> (String, Option<String>) {
+    let value = serde_json::to_value(landed).expect("a landing serializes");
+    (
+        value["state"].as_str().expect("a state").to_owned(),
+        value["evidence"]["tier"].as_str().map(str::to_owned),
+    )
+}
+
+#[test]
+fn several_landings_read_together_answer_each_as_its_own_read_does() {
+    // onepipeline re-reads the landing of every unlanded node on each render, so the
+    // read of several is what a view acts on — and it must say, for each one, exactly
+    // what the read of that one alone says. The fixture is real: real sessions, real
+    // publications, a squash made on the host and the base moved under all of it.
+    let fixture = crate::lifecycle::Fixture::local(&crate::lifecycle::local_direct());
+    let (mut references, repo) = every_landing(&fixture);
+    // A reference nothing here knows: its refusal is its own answer, not the call's.
+    references.insert(2, "feature/nobody-cut-this");
+    inhabit(&fixture.world);
+
+    let together = onevcs::landing_statuses(&references, &repo).expect("the repository resolves");
+    assert_eq!(together.len(), references.len(), "one answer per reference");
+    let mut seen = BTreeSet::new();
+    for (reference, answer) in references.iter().zip(&together) {
+        let alone = onevcs::landing_status(reference, Some(&repo));
+        match (answer, &alone) {
+            (Ok(together), Ok(alone)) => {
+                assert_eq!(
+                    together, alone,
+                    "{reference} is answered as its own read answers it"
+                );
+                seen.insert(state_and_tier(together));
+            }
+            (Err(together), Err(alone)) => assert_eq!(
+                together.to_string(),
+                alone.to_string(),
+                "{reference} is refused as its own read refuses it"
+            ),
+            _ => panic!("{reference}: read together {answer:?}, alone {alone:?}"),
+        }
+    }
+    // The comparison is only as strong as the answers it covered.
+    for wanted in [
+        ("yes", Some("recorded-landing")),
+        ("yes", Some("trailer")),
+        ("in-part", Some("recorded-landing")),
+        ("no", None),
+        ("unknown", None),
+    ] {
+        let wanted = (wanted.0.to_owned(), wanted.1.map(str::to_owned));
+        assert!(seen.contains(&wanted), "{wanted:?} is among {seen:?}");
+    }
+    assert!(
+        together[2].is_err(),
+        "a branch nothing cut is refused: {:?}",
+        together[2]
+    );
+
+    // A repository nobody registered is every reference's refusal, so it is the call's.
+    let refused = onevcs::landing_statuses(&references, "nobody/registered-this")
+        .expect_err("an unregistered repository is refused");
+    let alone = onevcs::landing_status(references[0], Some("nobody/registered-this"))
+        .expect_err("and so is one reference of it");
+    assert_eq!(refused.to_string(), alone.to_string());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn several_landings_read_together_load_the_store_and_resolve_the_repository_once() {
+    // What the read of several removes is the repetition, counted where it lands: the
+    // kernel's record of every open of the registry and every listing of the event
+    // streams, and the real git's record of every time the repository's base was
+    // resolved. Read one at a time, each grows with the number of references; read
+    // together, it is what one reference costs.
+    let fixture = crate::lifecycle::Fixture::local(&crate::lifecycle::local_direct());
+    let (references, repo) = every_landing(&fixture);
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    inhabit(&fixture.world);
+    counting.inhabit();
+    let home = fixture.world.home();
+
+    // The work a read does once per repository, whatever it is asked about.
+    let measure = |read: &dyn Fn()| {
+        let registry = crate::listings::Listings::opens_of(&home.join("registry.json"));
+        let streams = crate::listings::Listings::of(&home.join("streams"));
+        counting.clear();
+        read();
+        let resolved = counting
+            .calls()
+            .iter()
+            .filter(|call| call.args == "symbolic-ref --short refs/remotes/origin/HEAD")
+            .count();
+        (registry.taken(), streams.taken(), resolved)
+    };
+
+    let one = measure(&|| {
+        onevcs::landing_status(references[0], Some(&repo)).expect("the landing is decided");
+    });
+    assert_eq!(
+        one,
+        (1, 1, 1),
+        "one read loads, lists and resolves once each"
+    );
+    let apart = measure(&|| {
+        for reference in &references {
+            onevcs::landing_status(reference, Some(&repo)).expect("the landing is decided");
+        }
+    });
+    let n = references.len();
+    assert_eq!(
+        apart,
+        (n, n, n),
+        "read one at a time, the work grows with the {n} references"
+    );
+    let together = measure(&|| {
+        for answer in onevcs::landing_statuses(&references, &repo).expect("the repository resolves")
+        {
+            answer.expect("the landing is decided");
+        }
+    });
+    assert_eq!(
+        together, one,
+        "read together, {n} references cost what one does"
+    );
 }

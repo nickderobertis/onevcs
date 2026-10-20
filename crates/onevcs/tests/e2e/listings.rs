@@ -49,6 +49,10 @@ impl Listings {
             "this counter watches an existing directory, and {} is not one",
             directory.display()
         );
+        Self::watching(directory, libc::IN_OPEN)
+    }
+
+    fn watching(path: &Path, mask: u32) -> Self {
         // SAFETY: no arguments to get wrong; the descriptor is checked below and
         // owned from here on.
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK) };
@@ -60,21 +64,37 @@ impl Listings {
         // SAFETY: `fd` is a fresh descriptor this call has just been handed and
         // nothing else owns.
         let watch = unsafe { OwnedFd::from_raw_fd(fd) };
-        let path = CString::new(directory.as_os_str().as_encoded_bytes())
+        let named = CString::new(path.as_os_str().as_encoded_bytes())
             .expect("a state-root path holds no NUL");
-        // SAFETY: `path` outlives the call, and `watch` is open for its duration.
-        let added =
-            unsafe { libc::inotify_add_watch(watch.as_raw_fd(), path.as_ptr(), libc::IN_OPEN) };
+        // SAFETY: `named` outlives the call, and `watch` is open for its duration.
+        let added = unsafe { libc::inotify_add_watch(watch.as_raw_fd(), named.as_ptr(), mask) };
         assert!(
             added >= 0,
             "this host watches {}: {}",
-            directory.display(),
+            path.display(),
             std::io::Error::last_os_error()
         );
         Self {
             watch,
-            directory: directory.to_path_buf(),
+            directory: path.to_path_buf(),
         }
+    }
+
+    /// Start counting opens of the file at `path`, which must already exist.
+    ///
+    /// A watch on a file reports each open of it with no name, exactly as a watch on a
+    /// directory reports a listing, so [`Listings::taken`] then counts the file's opens.
+    /// Its closes are watched too, and never counted: the kernel folds an event into an
+    /// identical one still unread, so two opens of one file with nothing between them
+    /// would arrive as one, and the close between them is what keeps them two. The file
+    /// must not be replaced while it is watched: the watch is on its inode.
+    pub fn opens_of(path: &Path) -> Self {
+        assert!(
+            path.is_file(),
+            "this counter watches an existing file, and {} is not one",
+            path.display()
+        );
+        Self::watching(path, libc::IN_OPEN | libc::IN_CLOSE_NOWRITE)
     }
 
     /// How many times the directory itself has been opened since the watch was taken,
@@ -116,7 +136,12 @@ impl Listings {
                         .expect("four bytes of length"),
                 );
                 let name = usize::try_from(name).expect("a name length this host reported");
-                if name == 0 {
+                let mask = u32::from_ne_bytes(
+                    buffer[at + 4..at + 8]
+                        .try_into()
+                        .expect("four bytes of mask"),
+                );
+                if name == 0 && mask & libc::IN_OPEN != 0 {
                     listings += 1;
                 }
                 at += HEADER + name;

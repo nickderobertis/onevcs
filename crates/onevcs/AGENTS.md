@@ -675,7 +675,11 @@ correct, and the absent-hook journey is what holds that.
   rather than two, because calling an undecidable landing `no` is what puts a
   paste-ready `publish-branch` under work the base already carries. What `status`
   adds over `recoverable` is the *exclusion reason*, stated with the tier that
-  decided it.
+  decided it. `landing_statuses` is that read for several references of one
+  repository: `status::Grounds` holds what one identity's references share (registry,
+  streams, sessions, rules, base, lent store), and each is decided by the same
+  `landing_among` a single read runs. Read a new per-identity input there, not per
+  reference — `several_landings_read_together_*` in `tests/e2e/library.rs` count it.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.

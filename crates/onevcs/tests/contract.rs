@@ -812,6 +812,42 @@ fn the_closures_amendment_declares_the_reader_and_the_reader_reads_its_example()
 }
 
 #[test]
+fn the_batched_landing_read_is_declared_as_the_crate_exports_it() {
+    // A consumer re-reading many landings per render is written against the amendment,
+    // so the function it declares is the one this crate exports, with that signature —
+    // and the single read beside it keeps the one the release amendment fixes.
+    let declared = amendment_block_declaring("rust", "pub fn landing_statuses(");
+    assert!(
+        declared.contains(
+            "pub fn landing_statuses(references: &[&str], repo: &str) \
+             -> Result<Vec<Result<Landed>>>;"
+        ),
+        "the batched landing amendment no longer declares the read: {declared}"
+    );
+    type Answers = onevcs::Result<Vec<onevcs::Result<onevcs::Landed>>>;
+    let _: fn(&[&str], &str) -> Answers = onevcs::landing_statuses;
+    let _: fn(&str, Option<&str>) -> onevcs::Result<onevcs::Landed> = onevcs::landing_status;
+
+    let (amendments, _) = regions();
+    let section = amendments
+        .split("\n### ")
+        .find(|section| section.starts_with("Several landings of one repository are read together"))
+        .expect("the batched landing amendment");
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for said in [
+        "**The registry is loaded once and the repository resolved once in total**",
+        "`landing_status` keeps its signature and its answers",
+        "as that reference's answer, not the call's",
+        "Event kinds added: none.",
+    ] {
+        assert!(
+            section.contains(said),
+            "the amendment no longer says: {said}"
+        );
+    }
+}
+
+#[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
     let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();
     // An amendment may retire a kind, and one has: nothing emits `gate-started` or

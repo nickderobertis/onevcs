@@ -6053,6 +6053,39 @@ one listing — and it is the one exception to a change request being read once 
 Event kinds added: none.
 
 
+### Several landings of one repository are read together
+
+A view that re-reads the landing of every unlanded piece of work on each render —
+onepipeline's attached run view, which never shows a stale landing — asks
+`landing_status` once per piece, and each call loads the registry, resolves the
+repository and reads this host's records from scratch, so a run with many open drafts
+pays for that repetition on every render. One function is added that
+answers several pieces of work of one repository from one such reading. It changes no
+existing type, and `landing_status` keeps its signature and its answers:
+
+```rust
+/// One answer per reference, in the order given; each is what
+/// `landing_status(reference, Some(repo))` answers for that reference over the same state.
+pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<Landed>>>;
+```
+
+`repo` is required, because what is shared is one identity's, and it takes every
+spelling `landing_status`'s `repo` takes. Each reference takes the four spellings
+`landing_status` takes and is narrowed to `repo` exactly as that call narrows one, so a
+reference belonging to another identity is refused — as that reference's answer, not the
+call's. **The registry is loaded once and the repository resolved once in total**, and
+the event streams, the session records, the rules' provenance prefix, the repository's
+base and the object store every copy borrows are read once; each reference is then
+decided by the same tiers, from the same private decision, as `landing_status` decides it
+alone, so the tier that decided each answer travels inside it and every `unknown` is the
+same `unknown`. The call itself refuses only where every reference would have met the
+same refusal: a registry that cannot be read, a repository nobody registered, or event
+streams that cannot be read. A shared read that fails is not kept, so the next reference
+asks it again and meets the refusal its own `landing_status` would have met. Like
+`landing_status`, it asks no host.
+
+Event kinds added: none.
+
 ## Prepared direct operation progress (#388)
 
 The following additive public APIs are re-exported from `lib.rs`. Their authoritative
