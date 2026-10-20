@@ -835,7 +835,7 @@ fn the_batched_landing_read_is_declared_as_the_crate_exports_it() {
         .expect("the batched landing amendment");
     let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
     for said in [
-        "**The registry is loaded once and the repository resolved once in total**",
+        "**The registry is loaded once, and the repository resolved at most once per spelling, however many references there are**",
         "`landing_status` keeps its signature and its answers",
         "as that reference's answer, not the call's",
         "Event kinds added: none.",

@@ -8411,6 +8411,27 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
     }
 }
 
+/// Each branch worked in a session of its own and closed, published first where it
+/// `lands`; the branches, in the order given.
+fn worked_branches(world: &World, branches: &[(&'static str, bool)]) -> Vec<&'static str> {
+    let mut references = Vec::new();
+    for &(branch, lands) in branches {
+        let session = open(&Git, branch);
+        world.commit_file(&session.worktree, "work.txt", branch, "feat: the work");
+        if lands {
+            onevcs::publish(
+                &Providers::real(),
+                &session.token,
+                &PublishRequest::default(),
+            )
+            .expect("the publication runs");
+        }
+        onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+        references.push(branch);
+    }
+    references
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn several_landings_read_together_resolve_the_repository_once() {
@@ -8426,25 +8447,14 @@ fn several_landings_read_together_resolve_the_repository_once() {
     inhabit(&world);
     let (origin, _) = hosted(&world, LOCAL);
     let checkout = world.path("hosted");
-    let mut references = Vec::new();
-    for (branch, lands) in [
-        ("feature/landed", true),
-        ("feature/held", false),
-        ("feature/other", false),
-    ] {
-        let session = open(&Git, branch);
-        world.commit_file(&session.worktree, "work.txt", branch, "feat: the work");
-        if lands {
-            onevcs::publish(
-                &Providers::real(),
-                &session.token,
-                &PublishRequest::default(),
-            )
-            .expect("the publication runs");
-        }
-        onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
-        references.push(branch);
-    }
+    let references = worked_branches(
+        &world,
+        &[
+            ("feature/landed", true),
+            ("feature/held", false),
+            ("feature/other", false),
+        ],
+    );
 
     let mount = world.path("resolving");
     std::fs::create_dir_all(&mount).expect("a mount point");
@@ -8542,4 +8552,102 @@ fn several_landings_read_together_resolve_the_repository_once() {
         [0, 1],
         "the identity's own checkout is resolved once, not once per reference: {together:?}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn several_landings_read_together_cost_the_same_however_many_there_are() {
+    // What a read of several costs must not grow with how many it is asked about, for
+    // every spelling of the repository a caller may hand it. Each is counted where it
+    // lands: the kernel's record of each open of the registry, which is the store's
+    // load, and the lookups a mount of this suite's own sees, which is the repository's
+    // resolution. The mount is the working directory and holds a link to the checkout,
+    // so a path spelled through the link is a lookup of `checkout`, an origin URL —
+    // which is tried as a relative path before it is read as a URL — a lookup of
+    // `https:`, and an identity key, tried the same way, a lookup of `github.com`. An
+    // alias is a name the registry holds, answered without walking anything, so what
+    // its read is counted by is the identity it belongs to.
+    let world = World::new();
+    inhabit(&world);
+    hosted(&world, LOCAL);
+    let checkout = world.path("hosted");
+    let references = worked_branches(
+        &world,
+        &[
+            ("feature/first", true),
+            ("feature/second", false),
+            ("feature/third", true),
+            ("feature/fourth", false),
+        ],
+    );
+    let mount = world.path("resolving");
+    std::fs::create_dir_all(&mount).expect("a mount point");
+    let lookups = crate::lookups::Lookups::mount(&mount, "checkout", &checkout);
+    let registry = world.home().join("registry.json");
+    let measure = |read: &dyn Fn()| {
+        let opens = crate::listings::Listings::opens_of(&registry);
+        let ((), counted) = lookups.counting(read);
+        let named = |name: &str| {
+            counted
+                .get(std::ffi::OsStr::new(name))
+                .copied()
+                .unwrap_or(0)
+        };
+        [
+            opens.taken(),
+            named("checkout"),
+            named("https:"),
+            named("github.com"),
+        ]
+    };
+
+    let path = lookups.through("checkout").to_string_lossy().into_owned();
+    for (form, repo, walks) in [
+        ("identity key", "github.com/acme-corp/hosted", [1, 0, 0, 1]),
+        ("path", path.as_str(), [1, 1, 0, 1]),
+        ("alias", "hosted", [1, 0, 0, 1]),
+        (
+            "origin URL",
+            "https://github.com/acme-corp/hosted.git",
+            [1, 0, 1, 1],
+        ),
+    ] {
+        for n in 1..=references.len() {
+            let asked = &references[..n];
+            let together = measure(&|| {
+                for answer in onevcs::landing_statuses(asked, repo).expect("it resolves") {
+                    answer.expect("the landing is decided");
+                }
+            });
+            assert_eq!(
+                together, walks,
+                "named by its {form}, {n} references load the store once and resolve each \
+                 spelling at most once — [registry opens, then lookups of `checkout`, \
+                 `https:` and `github.com`]"
+            );
+        }
+        // The instrument sees the repetition it is there to catch: read one at a time,
+        // every reference pays the whole of what one read costs, and one read costs at
+        // least what the read of all of them together does.
+        let one = measure(&|| {
+            onevcs::landing_status(references[0], Some(repo)).expect("the landing is decided");
+        });
+        assert!(
+            one.iter()
+                .zip(walks)
+                .all(|(alone, together)| *alone >= together),
+            "named by its {form}, one read alone costs {one:?}"
+        );
+        let apart = measure(&|| {
+            for reference in &references {
+                onevcs::landing_status(reference, Some(repo)).expect("the landing is decided");
+            }
+        });
+        assert_eq!(
+            apart,
+            one.map(|count| count * references.len()),
+            "named by its {form}, read apart the cost grows with the references"
+        );
+        held_to_each_alone(&references, repo);
+    }
 }
