@@ -838,6 +838,7 @@ fn the_batched_landing_read_is_declared_as_the_crate_exports_it() {
         "**The registry is loaded once, and the repository resolved at most once per spelling, however many references there are**",
         "`landing_status` keeps its signature and its answers",
         "as that reference's answer, not the call's",
+        "Where `ONEVCS_RESOLUTION_DIAGNOSTICS` names a file, each repository resolution a process makes appends one JSON line, `{\"resolution\": FORM}`",
         "Event kinds added: none.",
     ] {
         assert!(

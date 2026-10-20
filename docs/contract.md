@@ -6088,6 +6088,14 @@ root with no location. A shared read that fails is not kept, so the next referen
 asks it again and meets the refusal its own `landing_status` would have met. Like
 `landing_status`, it asks no host.
 
+**Diagnostics.** Where `ONEVCS_RESOLUTION_DIAGNOSTICS` names a file, each repository
+resolution a process makes appends one JSON line, `{"resolution": FORM}`, where FORM is
+the spelling's form: `alias`, `path`, `identity-key`, `origin` (a URL) or `unregistered`.
+A resolution answered from one the same read already made writes nothing. A line carries
+no spelling, identity or path. An alias walks no filesystem path, so this file is how its
+resolutions are counted beside the other forms'. A file that cannot be written gets a
+warning on stderr and changes nothing about the read.
+
 Event kinds added: none.
 
 ## Prepared direct operation progress (#388)

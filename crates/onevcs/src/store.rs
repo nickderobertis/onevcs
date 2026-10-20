@@ -518,6 +518,7 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
 
 fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
     if let Some(checkout) = registry.checkouts.get(repo) {
+        diagnose("alias");
         return build(registry, repo, checkout);
     }
     // A path, which is how a command that takes `--repo` is usually spelled. The
@@ -529,21 +530,24 @@ fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
             .iter()
             .find(|(_, checkout)| checkout.path == canonical)
         {
+            diagnose("path");
             return build(registry, alias, checkout);
         }
     }
-    let key = if registry.identities.contains_key(repo) {
-        repo.to_owned()
+    let (key, form) = if registry.identities.contains_key(repo) {
+        (repo.to_owned(), "identity-key")
     } else {
-        normalize(repo).key
+        (normalize(repo).key, "origin")
     };
     if let Some((alias, checkout)) = registry
         .checkouts
         .iter()
         .find(|(_, checkout)| checkout.identity == key)
     {
+        diagnose(form);
         return build(registry, alias, checkout);
     }
+    diagnose("unregistered");
     if registry.identities.contains_key(&key) {
         return Err(Error::Invalid {
             reason: format!("identity {key:?} has no registered checkout"),
@@ -561,6 +565,38 @@ fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
             }
         ),
     })
+}
+
+/// The variable naming the file each repository resolution is recorded in.
+const RESOLUTION_DIAGNOSTICS_ENV: &str = "ONEVCS_RESOLUTION_DIAGNOSTICS";
+
+/// Append one line saying a repository was resolved anew, and by which spelling, where
+/// [`RESOLUTION_DIAGNOSTICS_ENV`] names a file.
+///
+/// An alias is answered out of the registry already loaded and walks nothing, so no
+/// filesystem a caller watches can see one resolved; this is what counts it, beside the
+/// path, the identity key and the origin URL, and a spelling nothing registered. A
+/// resolution [`resolving_once`] answered from its first is not one made, and writes
+/// nothing. The line carries the form alone — never the spelling, the identity or a
+/// path. A file that cannot be written says so on stderr and changes nothing about
+/// the resolution.
+fn diagnose(form: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os(RESOLUTION_DIAGNOSTICS_ENV).filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{}", serde_json::json!({ "resolution": form })));
+    if let Err(error) = written {
+        eprintln!(
+            "onevcs: warning: the resolution diagnostics could not be written to {}: {error}",
+            Path::new(&path).display()
+        );
+    }
 }
 
 /// Run `read` resolving each spelling at most once.

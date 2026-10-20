@@ -682,8 +682,10 @@ correct, and the absent-hook journey is what holds that.
   each spelling's resolution from its first — never one spelling's for another's, since
   an alias and its identity key can select different checkouts. Read a new
   per-identity input there, not per reference — `several_landings_read_together_*` in
-  `tests/e2e/library.rs` count it, the resolutions through the lookups a FUSE mount
-  sees (`tests/e2e/lookups.rs`).
+  `tests/e2e/library.rs` count it: the walks through the lookups a FUSE mount sees
+  (`tests/e2e/lookups.rs`), and the resolutions, an alias's included, through the line
+  `store::diagnose` writes for each one made anew (`ONEVCS_RESOLUTION_DIAGNOSTICS`),
+  since an alias is answered out of the loaded registry and walks nothing.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.

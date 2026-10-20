@@ -8565,8 +8565,10 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
     // so a path spelled through the link is a lookup of `checkout`, an origin URL —
     // which is tried as a relative path before it is read as a URL — a lookup of
     // `https:`, and an identity key, tried the same way, a lookup of `github.com`. An
-    // alias is a name the registry holds, answered without walking anything, so what
-    // its read is counted by is the identity it belongs to.
+    // alias is a name the registry holds, answered without walking anything, so no
+    // mount sees it: every resolution is also counted where it is made, through the
+    // line `ONEVCS_RESOLUTION_DIAGNOSTICS` has the library write for each one by the
+    // form of its spelling — an alias's included.
     let world = World::new();
     inhabit(&world);
     hosted(&world, LOCAL);
@@ -8584,7 +8586,10 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
     std::fs::create_dir_all(&mount).expect("a mount point");
     let lookups = crate::lookups::Lookups::mount(&mount, "checkout", &checkout);
     let registry = world.home().join("registry.json");
+    let resolutions = world.path("resolutions.ndjson");
+    std::env::set_var("ONEVCS_RESOLUTION_DIAGNOSTICS", &resolutions);
     let measure = |read: &dyn Fn()| {
+        std::fs::write(&resolutions, "").expect("the resolutions file is emptied");
         let opens = crate::listings::Listings::opens_of(&registry);
         let ((), counted) = lookups.counting(read);
         let named = |name: &str| {
@@ -8593,23 +8598,42 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
                 .copied()
                 .unwrap_or(0)
         };
+        let recorded = std::fs::read_to_string(&resolutions).expect("the resolutions file");
+        let resolved = |form: &str| {
+            recorded
+                .lines()
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).expect("a resolution line")
+                })
+                .filter(|line| line["resolution"] == form)
+                .count()
+        };
         [
             opens.taken(),
             named("checkout"),
             named("https:"),
             named("github.com"),
+            resolved("alias"),
+            resolved("path"),
+            resolved("origin"),
+            resolved("identity-key"),
+            recorded.lines().count(),
         ]
     };
 
     let path = lookups.through("checkout").to_string_lossy().into_owned();
     for (form, repo, walks) in [
-        ("identity key", "github.com/acme-corp/hosted", [1, 0, 0, 1]),
-        ("path", path.as_str(), [1, 1, 0, 1]),
-        ("alias", "hosted", [1, 0, 0, 1]),
+        (
+            "identity key",
+            "github.com/acme-corp/hosted",
+            [1, 0, 0, 1, 0, 0, 0, 1, 1],
+        ),
+        ("path", path.as_str(), [1, 1, 0, 1, 0, 1, 0, 1, 2]),
+        ("alias", "hosted", [1, 0, 0, 1, 1, 0, 0, 1, 2]),
         (
             "origin URL",
             "https://github.com/acme-corp/hosted.git",
-            [1, 0, 1, 1],
+            [1, 0, 1, 1, 0, 0, 1, 1, 2],
         ),
     ] {
         for n in 1..=references.len() {
@@ -8623,7 +8647,8 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
                 together, walks,
                 "named by its {form}, {n} references load the store once and resolve each \
                  spelling at most once — [registry opens, then lookups of `checkout`, \
-                 `https:` and `github.com`]"
+                 `https:` and `github.com`, then resolutions of an alias, a path, an \
+                 origin URL and an identity key, then every resolution]"
             );
         }
         // The instrument sees the repetition it is there to catch: read one at a time,
