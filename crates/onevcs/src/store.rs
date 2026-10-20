@@ -518,7 +518,7 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
 
 fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
     if let Some(checkout) = registry.checkouts.get(repo) {
-        diagnose("alias");
+        diagnose(Spelled::Alias);
         return build(registry, repo, checkout);
     }
     // A path, which is how a command that takes `--repo` is usually spelled. The
@@ -530,14 +530,14 @@ fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
             .iter()
             .find(|(_, checkout)| checkout.path == canonical)
         {
-            diagnose("path");
+            diagnose(Spelled::Path);
             return build(registry, alias, checkout);
         }
     }
     let (key, form) = if registry.identities.contains_key(repo) {
-        (repo.to_owned(), "identity-key")
+        (repo.to_owned(), Spelled::IdentityKey)
     } else {
-        (normalize(repo).key, "origin")
+        (normalize(repo).key, Spelled::Origin)
     };
     if let Some((alias, checkout)) = registry
         .checkouts
@@ -547,7 +547,7 @@ fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
         diagnose(form);
         return build(registry, alias, checkout);
     }
-    diagnose("unregistered");
+    diagnose(Spelled::Unregistered);
     if registry.identities.contains_key(&key) {
         return Err(Error::Invalid {
             reason: format!("identity {key:?} has no registered checkout"),
@@ -570,6 +570,19 @@ fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
 /// The variable naming the file each repository resolution is recorded in.
 const RESOLUTION_DIAGNOSTICS_ENV: &str = "ONEVCS_RESOLUTION_DIAGNOSTICS";
 
+/// The form of the spelling a resolution was made by, as its diagnostics line names it.
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Spelled {
+    Alias,
+    Path,
+    IdentityKey,
+    /// An origin URL, normalized to the identity it names.
+    Origin,
+    /// A spelling that names no registered checkout.
+    Unregistered,
+}
+
 /// Append one line saying a repository was resolved anew, and by which spelling, where
 /// [`RESOLUTION_DIAGNOSTICS_ENV`] names a file.
 ///
@@ -580,7 +593,7 @@ const RESOLUTION_DIAGNOSTICS_ENV: &str = "ONEVCS_RESOLUTION_DIAGNOSTICS";
 /// nothing. The line carries the form alone — never the spelling, the identity or a
 /// path. A file that cannot be written says so on stderr and changes nothing about
 /// the resolution.
-fn diagnose(form: &str) {
+fn diagnose(form: Spelled) {
     use std::io::Write;
     let Some(path) = std::env::var_os(RESOLUTION_DIAGNOSTICS_ENV).filter(|value| !value.is_empty())
     else {

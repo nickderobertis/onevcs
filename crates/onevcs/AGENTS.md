@@ -676,16 +676,11 @@ correct, and the absent-hook journey is what holds that.
   paste-ready `publish-branch` under work the base already carries. What `status`
   adds over `recoverable` is the *exclusion reason*, stated with the tier that
   decided it. `landing_statuses` is that read for several references of one
-  repository: `status::Grounds` holds what one identity's references share (registry,
-  streams, sessions, rules, base, lent store), and each is decided by the same
-  `landing_among` a single read runs, inside `store::resolving_once`, which answers
-  each spelling's resolution from its first — never one spelling's for another's, since
-  an alias and its identity key can select different checkouts. Read a new
-  per-identity input there, not per reference — `several_landings_read_together_*` in
-  `tests/e2e/library.rs` count it: the walks through the lookups a FUSE mount sees
-  (`tests/e2e/lookups.rs`), and the resolutions, an alias's included, through the line
-  `store::diagnose` writes for each one made anew (`ONEVCS_RESOLUTION_DIAGNOSTICS`),
-  since an alias is answered out of the loaded registry and walks nothing.
+  repository: read a new per-identity input once per batch (`status::Grounds`), not
+  per reference, and never answer one spelling's resolution for another's — an alias
+  and its identity key can select different checkouts. `several_landings_read_together_*`
+  in `tests/e2e/library.rs` hold both by counting store loads and resolutions — an
+  alias's through `ONEVCS_RESOLUTION_DIAGNOSTICS`, since it walks no path a mount sees.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.
