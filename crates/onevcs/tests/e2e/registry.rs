@@ -936,6 +936,78 @@ fn a_verb_that_rewrites_the_registry_keeps_what_it_did_not_understand() {
 }
 
 #[test]
+fn each_resolution_is_recorded_by_the_form_of_its_spelling_and_names_nothing() {
+    // An alias is answered out of the registry and walks nothing, so the one place its
+    // resolution can be counted is where it is made: each resolution of a spelling
+    // `resolve` takes writes a line naming its form, and none names what it resolved.
+    let world = World::new();
+    let origin = world.bare_origin("widgets");
+    let checkout = world.clone_of(&origin, "widgets");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &checkout.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/widgets.git",
+        ])
+        .assert()
+        .success();
+    let diagnostics = world.path("resolutions.ndjson");
+    let path = checkout.to_string_lossy().into_owned();
+    for (spelling, form) in [
+        ("widgets", "alias"),
+        (path.as_str(), "path"),
+        ("github.com/acme-corp/widgets", "identity-key"),
+        ("https://github.com/acme-corp/widgets.git", "origin"),
+    ] {
+        std::fs::write(&diagnostics, "").expect("the diagnostics file is emptied");
+        world
+            .onevcs()
+            .args(["resolve", spelling])
+            .env("ONEVCS_RESOLUTION_DIAGNOSTICS", &diagnostics)
+            .assert()
+            .success();
+        let recorded = std::fs::read_to_string(&diagnostics).expect("the diagnostics file");
+        let line = format!("{{\"resolution\":\"{form}\"}}");
+        assert!(
+            !recorded.is_empty() && recorded.lines().all(|recorded| recorded == line),
+            "{spelling} is resolved as its form and recorded as nothing else: {recorded}"
+        );
+    }
+
+    // A spelling nothing registered is recorded as what it is, and still refused.
+    std::fs::write(&diagnostics, "").expect("the diagnostics file is emptied");
+    world
+        .onevcs()
+        .args(["resolve", "somewhere-else"])
+        .env("ONEVCS_RESOLUTION_DIAGNOSTICS", &diagnostics)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a registered repository"));
+    let refused = std::fs::read_to_string(&diagnostics).expect("the diagnostics file");
+    assert!(
+        !refused.is_empty()
+            && refused
+                .lines()
+                .all(|line| line == "{\"resolution\":\"unregistered\"}"),
+        "{refused}"
+    );
+
+    // A diagnostics file that cannot be written changes nothing but a warning.
+    world
+        .onevcs()
+        .args(["resolve", "widgets"])
+        .env("ONEVCS_RESOLUTION_DIAGNOSTICS", world.path(""))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"alias\":\"widgets\""))
+        .stderr(predicate::str::contains(
+            "the resolution diagnostics could not be written",
+        ));
+}
+
+#[test]
 fn an_unregistered_repository_names_what_is_registered() {
     let world = World::new();
     let origin = world.bare_origin("known");

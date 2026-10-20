@@ -639,6 +639,30 @@ pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
     Ok(status::landing_of_within(&store::load()?, reference, repo, None)?.landed)
 }
 
+/// [`landing_status`] for several pieces of work of one repository, read together.
+///
+/// A view that re-reads the landing of every unlanded piece of work on each render
+/// asks one question per piece, and each [`landing_status`] call loads the registry,
+/// resolves the repository and reads this host's records from scratch. This answers
+/// them all from one load and one resolution of `repo` and of its identity, whatever
+/// the number of references — once in all where `repo` is the identity key: the
+/// registry, the event streams, the
+/// repository's base and object store, its rules and the session records are read
+/// once, and each reference is then decided exactly as [`landing_status`] decides
+/// it alone, by the same tiers.
+///
+/// `repo` is required, because what is shared is one identity's: it takes every
+/// spelling [`landing_status`]'s `repo` takes, and each reference is narrowed to it
+/// exactly as `landing_status(reference, Some(repo))` narrows one. The answers are in
+/// the order of `references`, one each, and each is what that call would have
+/// answered — a refusal about one reference included, which is that reference's
+/// answer rather than the whole call's. The call itself refuses only where every
+/// answer would have been the same refusal: a registry that cannot be read, a
+/// repository nobody registered, or a state root with no location.
+pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<Landed>>> {
+    status::landings_within(&store::load()?, references, repo)
+}
+
 /// Record the release somebody says carries a landing.
 ///
 /// The library form of `onevcs release acknowledge`. It accepts an automated target

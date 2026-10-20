@@ -508,7 +508,17 @@ pub fn resolve_here(registry: &Registry) -> Result<Resolution> {
 /// Resolve a repository argument — an identity key, a registered alias, an origin
 /// URL, or a path — to the identity and checkout it selects.
 pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
+    if let Some(resolution) = already_resolved(registry, repo) {
+        return Ok(resolution);
+    }
+    let resolution = resolve_anew(registry, repo)?;
+    remember(registry, repo, &resolution);
+    Ok(resolution)
+}
+
+fn resolve_anew(registry: &Registry, repo: &str) -> Result<Resolution> {
     if let Some(checkout) = registry.checkouts.get(repo) {
+        diagnose(Spelled::Alias);
         return build(registry, repo, checkout);
     }
     // A path, which is how a command that takes `--repo` is usually spelled. The
@@ -520,21 +530,24 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
             .iter()
             .find(|(_, checkout)| checkout.path == canonical)
         {
+            diagnose(Spelled::Path);
             return build(registry, alias, checkout);
         }
     }
-    let key = if registry.identities.contains_key(repo) {
-        repo.to_owned()
+    let (key, form) = if registry.identities.contains_key(repo) {
+        (repo.to_owned(), Spelled::IdentityKey)
     } else {
-        normalize(repo).key
+        (normalize(repo).key, Spelled::Origin)
     };
     if let Some((alias, checkout)) = registry
         .checkouts
         .iter()
         .find(|(_, checkout)| checkout.identity == key)
     {
+        diagnose(form);
         return build(registry, alias, checkout);
     }
+    diagnose(Spelled::Unregistered);
     if registry.identities.contains_key(&key) {
         return Err(Error::Invalid {
             reason: format!("identity {key:?} has no registered checkout"),
@@ -552,6 +565,104 @@ pub fn resolve(registry: &Registry, repo: &str) -> Result<Resolution> {
             }
         ),
     })
+}
+
+/// The variable naming the file each repository resolution is recorded in.
+const RESOLUTION_DIAGNOSTICS_ENV: &str = "ONEVCS_RESOLUTION_DIAGNOSTICS";
+
+/// The form of the spelling a resolution was made by, as its diagnostics line names it.
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Spelled {
+    Alias,
+    Path,
+    IdentityKey,
+    /// An origin URL, normalized to the identity it names.
+    Origin,
+    /// A spelling that names no registered checkout.
+    Unregistered,
+}
+
+/// Append one line saying a repository was resolved anew, and by which spelling, where
+/// [`RESOLUTION_DIAGNOSTICS_ENV`] names a file.
+///
+/// An alias is answered out of the registry already loaded and walks nothing, so no
+/// filesystem a caller watches can see one resolved; this is what counts it, beside the
+/// path, the identity key and the origin URL, and a spelling nothing registered. A
+/// resolution [`resolving_once`] answered from its first is not one made, and writes
+/// nothing. The line carries the form alone — never the spelling, the identity or a
+/// path. A file that cannot be written says so on stderr and changes nothing about
+/// the resolution.
+fn diagnose(form: Spelled) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os(RESOLUTION_DIAGNOSTICS_ENV).filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{}", serde_json::json!({ "resolution": form })));
+    if let Err(error) = written {
+        eprintln!(
+            "onevcs: warning: the resolution diagnostics could not be written to {}: {error}",
+            Path::new(&path).display()
+        );
+    }
+}
+
+/// Run `read` resolving each spelling at most once.
+///
+/// Inside, a [`resolve`] of a spelling already resolved is answered with what the
+/// first one answered rather than walked again; a refusal is not kept, so the next
+/// asks again. A spelling only ever answers for itself: the checkout a repository's
+/// alias or path selects is not necessarily the one its identity key selects — a
+/// second registered checkout of the identity, or a key that is itself the path of a
+/// registered checkout — and only resolving the key says which. So a read about
+/// several pieces of work of one repository resolves the spelling it was handed once
+/// and the identity once, however often each piece's own resolution asks for it, and
+/// resolves once in all where the spelling is the identity key. Every [`resolve`]
+/// inside must be of `registry`.
+pub(crate) fn resolving_once<T>(registry: &Registry, read: impl FnOnce() -> T) -> T {
+    struct Leave(Option<(usize, BTreeMap<String, Resolution>)>);
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            RESOLVED.with(|resolved| *resolved.borrow_mut() = self.0.take());
+        }
+    }
+    let entered = (std::ptr::from_ref(registry) as usize, BTreeMap::new());
+    let _leave = Leave(RESOLVED.with(|resolved| resolved.borrow_mut().replace(entered)));
+    read()
+}
+
+thread_local! {
+    /// The resolutions made inside [`resolving_once`], by spelling, beside the
+    /// registry they were made of.
+    static RESOLVED: std::cell::RefCell<Option<(usize, BTreeMap<String, Resolution>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What [`resolving_once`] already answered for `repo` of `registry`.
+fn already_resolved(registry: &Registry, repo: &str) -> Option<Resolution> {
+    RESOLVED.with(|resolved| {
+        resolved
+            .borrow()
+            .as_ref()
+            .filter(|(of, _)| *of == std::ptr::from_ref(registry) as usize)
+            .and_then(|(_, answered)| answered.get(repo).cloned())
+    })
+}
+
+/// Keep `resolution` as [`resolving_once`]'s answer for `repo`.
+fn remember(registry: &Registry, repo: &str, resolution: &Resolution) {
+    RESOLVED.with(|resolved| {
+        if let Some((of, answered)) = resolved.borrow_mut().as_mut() {
+            if *of == std::ptr::from_ref(registry) as usize {
+                answered.insert(repo.to_owned(), resolution.clone());
+            }
+        }
+    });
 }
 
 /// Resolve a `--repo PATH` argument to the identity and checkout it selects.

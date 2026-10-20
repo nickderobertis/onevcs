@@ -186,6 +186,8 @@ mod operation_progress;
 // and the journeys that use it are gated the same way.
 #[cfg(target_os = "linux")]
 mod listings;
+#[cfg(target_os = "linux")]
+mod lookups;
 // Unix only: its maintenance command is a POSIX shell script, and a fired bound takes a
 // process *group*, which has no portable spelling. Its own header carries the reason.
 #[cfg(unix)]

@@ -961,7 +961,12 @@ struct Answering {
 /// it notices. An open session still wins where two chains end apart, which is the
 /// preference this always had.
 fn answering(work: &Work) -> Result<Answering> {
-    let held: Vec<workspace::Record> = workspace::all()?
+    Ok(answering_among(work, workspace::all()?))
+}
+
+/// [`answering`], over records the caller already read.
+fn answering_among(work: &Work, records: Vec<workspace::Record>) -> Answering {
+    let held: Vec<workspace::Record> = records
         .into_iter()
         .filter(|record| record.identity == work.identity && record.branch == work.branch)
         .collect();
@@ -975,7 +980,7 @@ fn answering(work: &Work) -> Result<Answering> {
             }
         }
     }
-    Ok(Answering {
+    Answering {
         session: ends
             .into_iter()
             .max_by_key(|record| record.state == Lifecycle::Open),
@@ -985,7 +990,7 @@ fn answering(work: &Work) -> Result<Answering> {
             .map(|record| record.token.to_string())
             .collect(),
         broken,
-    })
+    }
 }
 
 /// The copies of a branch whose answer about it is still that branch's.
@@ -1301,51 +1306,176 @@ fn landing_asking(
     asking: Asking<'_>,
     observing: Option<&crate::stream::Stream>,
 ) -> Result<LandingOf> {
-    let hosting = asking.late_merge;
     // Resolved before anything is searched, so a repository this host does not know is
     // refused as the unregistered repository it is rather than silently widening the
     // question to every identity there is.
     let scope = repo
         .map(|repo| store::resolve(registry, repo).map(|resolution| resolution.key))
         .transpose()?;
-    let within = scope.as_deref();
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
-    // Kept apart from the stream notes above: what this hands its caller is the list
-    // of *copies* git would not read, and a caller deciding whether an undecided
-    // landing is safe to act on is asking about those and nothing else.
+    landing_among(
+        &mut Grounds::new(registry, &streams),
+        reference,
+        scope.as_deref(),
+        asking,
+        observing,
+    )
+}
+
+/// The landing of each reference, every one narrowed to the one repository named.
+///
+/// What [`crate::landing_statuses`] answers. The registry is the caller's one load,
+/// the repository is resolved once — the spelling named, and the identity it belongs
+/// to, each once however many references ask for it ([`store::resolving_once`]) — the
+/// streams are read once, and what every
+/// reference of the identity is judged against — the rules' trailers, the base, the
+/// sessions on record and the store every copy borrows — is read once
+/// ([`Grounds`]); each reference is then decided by the same [`landing_among`] a
+/// read of that reference alone runs. A refusal that is about one reference is that
+/// reference's answer, never the batch's: the batch refuses only for what every one
+/// of its references would have been refused for — a repository nobody registered,
+/// or a state root with no location.
+pub(crate) fn landings_within(
+    registry: &Registry,
+    references: &[&str],
+    repo: &str,
+) -> Result<Vec<Result<Landed>>> {
+    store::resolving_once(registry, || {
+        let scope = store::resolve(registry, repo)?.key;
+        let mut notes = Vec::new();
+        let streams = recorded_streams(&mut notes)?;
+        let mut grounds = Grounds::new(registry, &streams);
+        Ok(landings_among(&mut grounds, references, &scope))
+    })
+}
+
+fn landings_among(
+    grounds: &mut Grounds<'_>,
+    references: &[&str],
+    scope: &str,
+) -> Vec<Result<Landed>> {
+    references
+        .iter()
+        .map(|reference| {
+            landing_among(
+                grounds,
+                reference,
+                Some(scope),
+                Asking {
+                    late_merge: None,
+                    attesting: None,
+                },
+                None,
+            )
+            .map(|landing| landing.landed)
+        })
+        .collect()
+}
+
+/// What one landing read takes from this host's state before it asks about any one
+/// piece of work, read at most once however many pieces it is asked about.
+///
+/// A read of one reference builds these fresh, so it reads its own state; a read of
+/// several shares them. The session records it holds are also the ones the newest
+/// record of the work is chosen from, so one read reads them once. Nothing that
+/// failed is kept: the next reference asks again and meets the same refusal its own
+/// read would have met.
+struct Grounds<'r> {
+    registry: &'r Registry,
+    streams: &'r [Recorded],
+    /// Each identity's ground, keyed by the identity, once one reference reached it.
+    identities: std::collections::BTreeMap<String, Ground>,
+}
+
+/// What every reference of one identity is judged against.
+struct Ground {
+    resolution: Resolution,
+    trailers: provenance::Trailers,
+    base: Ref,
+    /// The one reading of this host's records for the whole answer: which copies hold
+    /// the branch is decided from it, and so is which run a copy git will not read
+    /// belonged to.
+    sessions: Vec<workspace::Record>,
+    /// The store every copy is asked through, read once: it is the checkout every
+    /// publication fast-forwards, so a landing's evidence is in it whether or not the
+    /// copy holding the branch has fetched since.
+    lent: Option<PathBuf>,
+}
+
+impl<'r> Grounds<'r> {
+    fn new(registry: &'r Registry, streams: &'r [Recorded]) -> Self {
+        Grounds {
+            registry,
+            streams,
+            identities: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn of(&mut self, identity: &str) -> Result<&Ground> {
+        if !self.identities.contains_key(identity) {
+            let resolution = store::resolve(self.registry, identity)?;
+            let (file, _) = policy::load(self.registry)?;
+            let trailers = provenance::from_rules(&file);
+            let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
+            // A listing this host cannot read refuses here rather than turning into a
+            // finding that says nobody owns the torn clone.
+            let sessions = workspace::all()?;
+            let lent = git::objects_dir(&resolution.publication).ok();
+            self.identities.insert(
+                identity.to_owned(),
+                Ground {
+                    resolution,
+                    trailers,
+                    base,
+                    sessions,
+                    lent,
+                },
+            );
+        }
+        Ok(&self.identities[identity])
+    }
+}
+
+fn landing_among(
+    grounds: &mut Grounds<'_>,
+    reference: &str,
+    within: Option<&str>,
+    asking: Asking<'_>,
+    observing: Option<&crate::stream::Stream>,
+) -> Result<LandingOf> {
+    let hosting = asking.late_merge;
+    let registry = grounds.registry;
+    let streams = grounds.streams;
+    // Kept apart from the stream notes: what this hands its caller is the list of
+    // *copies* git would not read, and a caller deciding whether an undecided landing
+    // is safe to act on is asking about those and nothing else.
     let mut unreadable = Vec::new();
     let Resolved { work, attested, .. } = resolve(
         registry,
         reference,
-        &streams,
+        streams,
         within,
         asking.attesting,
         &mut unreadable,
     )?;
-    let resolution = store::resolve(registry, &work.identity)?;
-    let (file, _) = policy::load(registry)?;
-    let trailers = provenance::from_rules(&file);
-    let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);
-    // The one reading of this host's records for the whole answer: which copies hold
-    // the branch is decided from it, and so is which run a copy git will not read
-    // belonged to. A listing this host cannot read refuses here rather than turning
-    // into a finding that says nobody owns the torn clone.
-    let sessions = workspace::all()?;
-    let holders = holders_of(registry, &resolution, &work.branch, &sessions)?;
-    // The store every copy is asked through, read once: it is the checkout every
-    // publication fast-forwards, so a landing's evidence is in it whether or not the
-    // copy holding the branch has fetched since.
-    let lent = git::objects_dir(&resolution.publication).ok();
-    let answering = answering(&work)?;
+    let Ground {
+        resolution,
+        trailers,
+        base,
+        sessions,
+        lent,
+    } = grounds.of(&work.identity)?;
+    let holders = holders_of(registry, resolution, &work.branch, sessions)?;
+    let answering = answering_among(&work, sessions.clone());
     let held_by = answering
         .session
         .as_ref()
         .map(|record| record.token.to_string());
-    let mut told = from_streams(&streams, &work, held_by.as_deref());
+    let mut told = from_streams(streams, &work, held_by.as_deref());
     let change_stream = told.change_stream.clone();
     let carrying = carrying(&holders, &answering.superseded);
-    let base = own_base(&resolution, base, &answering, &carrying);
+    let base = own_base(resolution, base.clone(), &answering, &carrying);
     hold_landing_to_base(&mut told, &resolution.publication, &base);
     // Before the tiers are asked, because a landing it records is one tier 1 then
     // answers from — which is what puts a late merge into *this* read rather than
@@ -1356,26 +1486,26 @@ fn landing_asking(
     let (judged, unread) = judge(
         &carrying,
         &Judging {
-            resolution: &resolution,
+            resolution,
             lent: lent.as_deref(),
             base: &base,
             work: &work,
             recorded: &told.recorded,
-            trailers: &trailers,
-            sessions: &sessions,
+            trailers,
+            sessions,
         },
     );
     unreadable.extend(unread);
     let carrier = carrier_of(&judged);
-    let retired = retired_now(&streams, &work, &holders).and_then(|report| {
+    let retired = retired_now(streams, &work, &holders).and_then(|report| {
         let session = answering
             .session
             .as_ref()
             .map(|record| record.token.to_string());
         let on_base = landed_on_base(
-            &resolution,
+            resolution,
             &base,
-            &streams,
+            streams,
             &work,
             session.as_deref(),
             report.proof.as_ref(),
@@ -1409,7 +1539,7 @@ fn landing_asking(
             false => decided.unwrap_or(Landed::Unknown),
         },
         carrier,
-        lent,
+        lent: lent.clone(),
         change_stream,
         unreadable,
     })

@@ -67,23 +67,7 @@ pub enum Refuses {
 /// not asked for: `fusermount3` allows it only alongside `allow_other`, which needs
 /// `user_allow_other` in `/etc/fuse.conf` — a host change a suite must not require.
 pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> BackgroundSession {
-    // Checked before the mount rather than read out of whatever error it fails with:
-    // a host missing one package should be told which, not handed a errno.
-    let mounts = Command::new(MOUNTS).arg("--version").output();
-    assert!(
-        mounts.is_ok_and(|ran| ran.status.success()),
-        "this journey mounts a filesystem of its own and {MOUNTS} is not on PATH.\n\
-         ACTION: install it — on Debian and Ubuntu `sudo apt-get install -y fuse3`, on \
-         Fedora `sudo dnf install fuse3` — and re-run. This tier refuses rather than \
-         skipping: a journey that passed without building its own premise would prove \
-         nothing.",
-    );
-    assert!(
-        Path::new("/dev/fuse").exists(),
-        "this journey mounts a filesystem of its own and /dev/fuse is not there.\n\
-         ACTION: load the `fuse` module (`sudo modprobe fuse`) or run this suite on a \
-         host whose container is given /dev/fuse, and re-run.",
-    );
+    assert_mountable();
 
     // Everything else at its default, which is one event loop: the journeys' calls
     // are made one at a time by one sweep, so a second would only make the order
@@ -100,6 +84,27 @@ pub fn mount_over(path: &Path, aged: SystemTime, refuses: Refuses) -> Background
             path.display()
         )
     })
+}
+
+/// Refuse, naming the package or device, on a host that cannot mount a filesystem of
+/// this suite's own — checked before the mount rather than read out of whatever error
+/// it fails with: a host missing one package should be told which, not handed a errno.
+pub fn assert_mountable() {
+    let mounts = Command::new(MOUNTS).arg("--version").output();
+    assert!(
+        mounts.is_ok_and(|ran| ran.status.success()),
+        "this journey mounts a filesystem of its own and {MOUNTS} is not on PATH.\n\
+         ACTION: install it — on Debian and Ubuntu `sudo apt-get install -y fuse3`, on \
+         Fedora `sudo dnf install fuse3` — and re-run. This tier refuses rather than \
+         skipping: a journey that passed without building its own premise would prove \
+         nothing.",
+    );
+    assert!(
+        Path::new("/dev/fuse").exists(),
+        "this journey mounts a filesystem of its own and /dev/fuse is not there.\n\
+         ACTION: load the `fuse` module (`sudo modprobe fuse`) or run this suite on a \
+         host whose container is given /dev/fuse, and re-run.",
+    );
 }
 
 /// Unmount and wait for the mount's own thread, which a journey does last — what it
@@ -218,7 +223,7 @@ fn directory(ino: INodeNo, when: SystemTime) -> FileAttr {
 }
 
 /// One entry of either kind as the kernel is told about it.
-fn entry(ino: INodeNo, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
+pub(crate) fn entry(ino: INodeNo, when: SystemTime, kind: FileType, perm: u16) -> FileAttr {
     // SAFETY: both read this process's own credentials and cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     FileAttr {

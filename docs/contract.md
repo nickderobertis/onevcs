@@ -6053,6 +6053,51 @@ one listing — and it is the one exception to a change request being read once 
 Event kinds added: none.
 
 
+### Several landings of one repository are read together
+
+A view that re-reads the landing of every unlanded piece of work on each render —
+onepipeline's attached run view, which never shows a stale landing — asks
+`landing_status` once per piece, and each call loads the registry, resolves the
+repository and reads this host's records from scratch, so a run with many open drafts
+pays for that repetition on every render. One function is added that
+answers several pieces of work of one repository from one such reading. It changes no
+existing type, and `landing_status` keeps its signature and its answers:
+
+```rust
+/// One answer per reference, in the order given; each is what
+/// `landing_status(reference, Some(repo))` answers for that reference over the same state.
+pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<Landed>>>;
+```
+
+`repo` is required, because what is shared is one identity's, and it takes every
+spelling `landing_status`'s `repo` takes. Each reference takes the four spellings
+`landing_status` takes and is narrowed to `repo` exactly as that call narrows one, so a
+reference belonging to another identity is refused — as that reference's answer, not the
+call's. **The registry is loaded once, and the repository resolved at most once per
+spelling, however many references there are** — `repo` once and the identity it belongs
+to once, which is once in all where `repo` is the identity key. The two are resolved apart because
+the checkout a spelling selects need not be the one its identity selects, and the
+identity's is what every reference is judged against, as `landing_status` judges it. The
+event streams, the session records, the rules' provenance prefix, the repository's
+base and the object store every copy borrows are read once; each reference is then
+decided by the same tiers, from the same private decision, as `landing_status` decides it
+alone, so the tier that decided each answer travels inside it and every `unknown` is the
+same `unknown`. The call itself refuses only where every reference would have met the
+same refusal: a registry that cannot be read, a repository nobody registered, or a state
+root with no location. A shared read that fails is not kept, so the next reference
+asks it again and meets the refusal its own `landing_status` would have met. Like
+`landing_status`, it asks no host.
+
+**Diagnostics.** Where `ONEVCS_RESOLUTION_DIAGNOSTICS` names a file, each repository
+resolution a process makes appends one JSON line, `{"resolution": FORM}`, where FORM is
+the spelling's form: `alias`, `path`, `identity-key`, `origin` (a URL) or `unregistered`.
+A resolution answered from one the same read already made writes nothing. A line carries
+no spelling, identity or path. An alias walks no filesystem path, so this file is how its
+resolutions are counted beside the other forms'. A file that cannot be written gets a
+warning on stderr and changes nothing about the read.
+
+Event kinds added: none.
+
 ## Prepared direct operation progress (#388)
 
 The following additive public APIs are re-exported from `lib.rs`. Their authoritative

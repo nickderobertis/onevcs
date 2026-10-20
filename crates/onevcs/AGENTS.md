@@ -675,7 +675,12 @@ correct, and the absent-hook journey is what holds that.
   rather than two, because calling an undecidable landing `no` is what puts a
   paste-ready `publish-branch` under work the base already carries. What `status`
   adds over `recoverable` is the *exclusion reason*, stated with the tier that
-  decided it.
+  decided it. `landing_statuses` is that read for several references of one
+  repository: read a new per-identity input once per batch (`status::Grounds`), not
+  per reference, and never answer one spelling's resolution for another's — an alias
+  and its identity key can select different checkouts. `several_landings_read_together_*`
+  in `tests/e2e/library.rs` hold both by counting store loads and resolutions — an
+  alias's through `ONEVCS_RESOLUTION_DIAGNOSTICS`, since it walks no path a mount sees.
 - **A change request's URL resolves only through the event stream**, because nothing
   on a branch carries it: `status URL` cannot answer for a change something else
   opened, and widening that is a contract amendment.
@@ -933,10 +938,11 @@ public registries this repository publishes to. It is in this binary because thi
 is the tier allowed to reach the network at all, and a check that quietly needed a
 registry would stop `just check` being offline.
 
-**A Linux host running this suite needs `fuse3`**, because one journey mounts a
-filesystem of its own to make a real removal fail. `just bootstrap` provisions the
-package; without it that journey refuses rather than skips, since one that passed
-without building its own premise would prove nothing.
+**A Linux host running this suite needs `fuse3`**, because two journeys mount a
+filesystem of their own: one to make a real removal fail, one to count the lookups a
+repository's resolution makes. `just bootstrap` provisions the package; without it
+those journeys refuse rather than skip, since one that passed without building its
+own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
