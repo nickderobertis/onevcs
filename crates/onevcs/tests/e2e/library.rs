@@ -8281,6 +8281,21 @@ fn several_landings_read_together_are_refused_as_each_read_alone_is() {
         .expect_err("and so is one reference of it");
     assert_eq!(refused.to_string(), alone.to_string());
 
+    // Asked about nothing, a registered repository answers nothing, and one nobody
+    // registered is still refused: the repository is resolved before any reference.
+    assert!(
+        onevcs::landing_statuses(&[], &repo)
+            .expect("a registered repository resolves")
+            .is_empty(),
+        "no reference, no answer"
+    );
+    assert_eq!(
+        onevcs::landing_statuses(&[], "nobody/registered-this")
+            .expect_err("an unregistered repository is refused with nothing to ask")
+            .to_string(),
+        alone.to_string()
+    );
+
     // A rules file that is not one: every reference that resolves meets it, each on
     // its own read, and the one that does not resolve keeps its own refusal.
     let rules = fixture.world.home().join("rules.yml");
