@@ -947,8 +947,8 @@ own premise would prove nothing.
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
 fired timeout takes a process *group*, which has no portable spelling. Windows CI
-builds the crate and runs the contract, boundary, packaging, and inherited-pipe
-suites.
+builds the crate and runs the contract, boundary, packaging, inherited-pipe and
+concurrent-session suites.
 
 `tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
 `world.rs`'s, because it has to run where `world.rs` cannot. It holds one rule in
@@ -1455,6 +1455,18 @@ whoever holds the lease. The lease is asked afterwards and still answers for the
 command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
+
+**What another session reads must stay openable while siblings work.** Two writes
+made every git read beside them fail on Windows, and `tests/e2e/concurrent_sessions.rs`
+holds both on every platform. A shared checkout's `.git/config` is written only where
+the value would change (`git::configure_unless_set`): Git for Windows reads
+configuration through `_wfopen`, which does not share deletion, so a rename over it
+fails every read meeting it. And a search that reads closed sessions' run clones
+holds each under its shared occupancy lease (`workspace::checkouts_held`, kept by
+`branch::Located` for as long as the chosen copy is read), because a sibling's open
+reclaims one the moment its branches are on origin, and a file whose deletion is
+pending opens as `Permission denied`. Only a closed record's lease is waited for: an
+open one's exclusive holder is a command working in that session.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this

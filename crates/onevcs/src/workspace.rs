@@ -1076,15 +1076,25 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
 /// `Permission denied`. So each such run root's shared occupancy lease is taken
 /// first — which a reclamation's exclusive take is refused by, and which waits out
 /// one already removing it — and a clone reclaimed before its lease came is left to
-/// the reader's own test that it is a repository. A pool slot is not held: nothing
-/// that reclaims a run root removes a slot, and a shared lease on one would keep the
-/// placement that may want it off it.
+/// the reader's own test that it is a repository.
+///
+/// Only a closed session's lease is waited for. An open record keeps its run root
+/// out of every reclamation, and an exclusive holder of one is a command working in
+/// that session — a resumption, say — which may take as long as it takes; its lease is
+/// taken only where it is free, for the record that closes while this search reads.
+/// A pool slot is not held: nothing that reclaims a run root removes a slot, and a
+/// shared lease on one would keep the placement that may want it off it.
 pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Result<Searched> {
     let sessions = all()?;
     let mut held = Vec::new();
     for record in &sessions {
-        if record.identity == resolution.key && record.slot.is_none() && record.run_root.is_dir() {
-            held.push(lock::shared(&occupancy_identity(&record.run_root))?);
+        if record.identity != resolution.key || record.slot.is_some() || !record.run_root.is_dir() {
+            continue;
+        }
+        let lease = occupancy_identity(&record.run_root);
+        match record.state {
+            Lifecycle::Open => held.extend(lock::try_shared(&lease)?),
+            Lifecycle::Closed => held.push(lock::shared(&lease)?),
         }
     }
     Ok(Searched {
