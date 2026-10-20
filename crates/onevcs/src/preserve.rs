@@ -174,13 +174,14 @@ pub fn run(registry: &Registry, request: &PreserveRequest) -> Result<Preserved> 
     // The one location search `recover`, `publish-branch`, `import` and `status` use,
     // run clones included — so a branch a live dispatch committed to a moment ago is
     // found, and a branch this verb can preserve is a branch those verbs can land.
-    let from = branch::locate(
+    let located = branch::locate(
         registry,
         &resolution,
         branch,
         &base,
         &format!("preserve it with `{}`", command(&resolution, branch)),
     )?;
+    let from = located.checkout;
 
     let mut stream = open_stream(&resolution, branch)?;
     // Read before the origin is looked for, because every outcome names it — the commit

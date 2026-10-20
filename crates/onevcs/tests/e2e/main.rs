@@ -85,6 +85,9 @@ mod discovery;
 // real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
 // other rejects.
 mod comparison;
+// Every platform: concurrent sessions of one repository over real git, with a fixture
+// of its own because `world.rs` is Unix-only. Its own header carries the reason.
+mod concurrent_sessions;
 // Unix only: it installs a counting `git` on `PATH` as a POSIX shell script, and cuts
 // real sessions and real publications through `world.rs`'s fixture. Its own header
 // carries the reason in full.

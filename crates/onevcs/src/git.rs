@@ -1924,9 +1924,32 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
     #[cfg(not(unix))]
     let common = common_dir(cwd)?;
     let _configuration = lock::exclusive_at(&common.join("onevcs-retention.lock"))?;
-    checked(&["config", "gc.auto", "0"], Some(cwd))?;
-    checked(&["config", "gc.pruneExpire", "never"], Some(cwd))?;
+    for (key, value) in RETENTION {
+        configure_unless_set(cwd, key, value)?;
+    }
     Ok(())
+}
+
+/// What [`retain_objects_for_borrowers`] writes into a lender's own configuration.
+const RETENTION: [(&str, &str); 2] = [("gc.auto", "0"), ("gc.pruneExpire", "never")];
+
+/// Set `key` in a repository's own configuration, unless it already holds `value`.
+///
+/// Every session opened over a lender asks for the same two settings, and `git config`
+/// rewrites the whole file — a lock file renamed over `config` — even when the value
+/// it is given is the one already there. On Windows that rename is the one moment a
+/// concurrent git command cannot open the file at all: Git for Windows reads its
+/// configuration through `_wfopen`, which does not share deletion, while the rename
+/// holds the file open for exactly that, so every git read beside it fails with
+/// `unable to access '.git/config': Permission denied`. Each session in a repository
+/// is reading that file all the time, so a write that changes nothing is asked of git
+/// only where something would change.
+fn configure_unless_set(cwd: &Path, key: &str, value: &str) -> Result<()> {
+    let held = run(&["config", "--local", "--get", key], Some(cwd))?;
+    if held.ok() && held.trimmed() == value {
+        return Ok(());
+    }
+    checked(&["config", key, value], Some(cwd)).map(|_| ())
 }
 
 /// The object store a checkout keeps its own history in, which is what another

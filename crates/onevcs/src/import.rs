@@ -304,13 +304,16 @@ fn source_of(
         let named: &str = branch;
         let again =
             guidance::command(["onevcs", "import", named, "--repo", &repo.to_string_lossy()]);
-        return Ok(Source::Repository(branch::locate(
-            registry,
-            resolution,
-            branch,
-            &base,
-            &format!("run `{again}` again"),
-        )?));
+        return Ok(Source::Repository(
+            branch::locate(
+                registry,
+                resolution,
+                branch,
+                &base,
+                &format!("run `{again}` again"),
+            )?
+            .checkout,
+        ));
     };
     if git::is_repo(Path::new(from)) {
         return Ok(Source::Repository(PathBuf::from(from)));

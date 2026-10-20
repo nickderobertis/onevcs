@@ -1065,6 +1065,42 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
     Ok(checkouts_among(registry, resolution, &all()?))
 }
 
+/// [`checkouts_of`], with every run clone on it held against reclamation for as long
+/// as the answer is kept.
+///
+/// A closed session's run root under `runs/` stays on the list — its clone may hold
+/// the only copy of a branch — and another session's open may reclaim it at any
+/// moment, once its branches are on origin. A read made in a clone while it is being
+/// removed fails: here, because the directory is gone; on Windows, because a file
+/// whose deletion is pending cannot be opened, so even the clone's `.git/config` is
+/// `Permission denied`. So each such run root's shared occupancy lease is taken
+/// first — which a reclamation's exclusive take is refused by, and which waits out
+/// one already removing it — and a clone reclaimed before its lease came is left to
+/// the reader's own test that it is a repository. A pool slot is not held: nothing
+/// that reclaims a run root removes a slot, and a shared lease on one would keep the
+/// placement that may want it off it.
+pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Result<Searched> {
+    let sessions = all()?;
+    let mut held = Vec::new();
+    for record in &sessions {
+        if record.identity == resolution.key && record.slot.is_none() && record.run_root.is_dir() {
+            held.push(lock::shared(&occupancy_identity(&record.run_root))?);
+        }
+    }
+    Ok(Searched {
+        checkouts: checkouts_among(registry, resolution, &sessions),
+        _held: held,
+    })
+}
+
+/// What [`checkouts_held`] answers: the search, and the leases that keep it readable.
+pub(crate) struct Searched {
+    /// [`checkouts_of`]'s list, in its search order.
+    pub checkouts: Vec<PathBuf>,
+    /// Released when the answer is dropped.
+    _held: Vec<lock::Guard>,
+}
+
 /// The same search order over records a caller already validated and read.
 pub(crate) fn checkouts_among(
     registry: &Registry,
@@ -1244,9 +1280,11 @@ pub(crate) fn open_with(
     // Only for a pin: a generated name is this token's own and can stand for nothing
     // that already exists, and asking the question anyway would put a search of every
     // checkout and run clone of the identity in front of every session anybody opens.
-    let continued = match request.branch.is_some() {
+    // The copy a continuation found is held until this open has brought it into its
+    // own clone: a sibling's open may otherwise reclaim the run clone it is read from.
+    let (continued, _copy) = match request.branch.is_some() {
         true => continuation(registry, &resolution, &execution, &branch, &base)?,
-        false => None,
+        false => (None, None),
     };
 
     let identity_root = identity_dir(&resolution.key)?;
@@ -1972,38 +2010,45 @@ const RECONCILE_THEN: &str = "open this session again, which continues the copy 
 /// remote-tracking refs, which the fetch above has just brought up to date. Which of
 /// the checkouts answers is [`crate::branch::locate`], the one comparison the
 /// publishing verbs read a branch by, so a session and a landing cannot come to
-/// disagree about which copy of a name is the work.
+/// disagree about which copy of a name is the work — and whose answer comes back
+/// beside the continuation, still holding the run clones it read.
 fn continuation(
     registry: &Registry,
     resolution: &Resolution,
     execution: &Path,
     branch: &Ref,
     base: &Ref,
-) -> Result<Option<Continued>> {
+) -> Result<(Option<Continued>, Option<crate::branch::Located>)> {
     let anywhere = checkouts_of(registry, resolution)?
         .into_iter()
         .any(|repo| git::is_repo(&repo) && git::branch_exists(&repo, branch));
-    let held = match anywhere {
-        true => {
-            let checkout =
-                crate::branch::locate(registry, resolution, branch, base, RECONCILE_THEN)?;
-            git::tip(&checkout, &format!("refs/heads/{branch}")).map(|tip| Carried {
-                checkout: Some(checkout),
-                tip,
-            })
-        }
+    let located = match anywhere {
+        true => Some(crate::branch::locate(
+            registry,
+            resolution,
+            branch,
+            base,
+            RECONCILE_THEN,
+        )?),
         false => None,
     };
+    let held = located.as_ref().and_then(|located| {
+        git::tip(&located.checkout, &format!("refs/heads/{branch}")).map(|tip| Carried {
+            checkout: Some(located.checkout.clone()),
+            tip,
+        })
+    });
     let pushed = git::tip(execution, &format!("refs/remotes/origin/{branch}")).map(|tip| Carried {
         checkout: None,
         tip,
     });
-    Ok(match (held, pushed) {
+    let continued = match (held, pushed) {
         (Some(held), Some(pushed)) => Some(Continued::Both { held, pushed }),
         (Some(held), None) => Some(Continued::Held(held)),
         (None, Some(pushed)) => Some(Continued::Pushed(pushed)),
         (None, None) => None,
-    })
+    };
+    Ok((continued, located))
 }
 
 /// The copy a continued session opens at: the one that carries every other.

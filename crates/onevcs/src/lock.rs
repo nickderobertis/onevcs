@@ -88,6 +88,18 @@ pub fn exclusive_at(path: &Path) -> Result<Guard> {
     wait_for(path, file, &path.display().to_string(), timeout_seconds()?)
 }
 
+/// Take an identity's shared occupancy lease, queueing behind an exclusive holder
+/// under the configured bound.
+///
+/// For a reader that has to be inside a run root rather than told it is busy: every
+/// exclusive take of an occupancy lease is a reclamation deciding about the run root
+/// and removing it, so waiting it out is short, and what is left afterwards is either
+/// the run root or nothing.
+pub fn shared(identity: &str) -> Result<Guard> {
+    let (path, file) = open(identity)?;
+    wait_in_line(&path, file, identity, timeout_seconds()?, true)
+}
+
 /// Take an identity's shared occupancy lease if it is free *right now*.
 ///
 /// The lease mode: "somebody else is in here" is the answer, not something to wait
@@ -197,15 +209,26 @@ fn acquire(identity: &str, bound: f64) -> Result<Guard> {
 
 /// [`acquire`]'s wait, for a lock file already open; `what` names it in a refusal.
 fn wait_for(path: &Path, file: File, what: &str, bound: f64) -> Result<Guard> {
+    wait_in_line(path, file, what, bound, false)
+}
+
+/// Wait for a lock file already open, shared or exclusively.
+fn wait_in_line(path: &Path, file: File, what: &str, bound: f64, is_shared: bool) -> Result<Guard> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        if FileExt::lock_exclusive(&file).is_ok() {
+        let taken = match is_shared {
+            true => FileExt::lock_shared(&file),
+            false => FileExt::lock_exclusive(&file),
+        };
+        if taken.is_ok() {
             let _ = sender.send(file);
         }
     });
     match receiver.recv_timeout(Duration::from_secs_f64(bound)) {
         Ok(file) => {
-            record_owner(&file);
+            if !is_shared {
+                record_owner(&file);
+            }
             Ok(Guard { file })
         }
         Err(_) => Err(Error::Invalid {
