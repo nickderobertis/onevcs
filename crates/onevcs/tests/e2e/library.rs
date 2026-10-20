@@ -8412,7 +8412,9 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
 }
 
 /// Each branch worked in a session of its own and closed, published first where it
-/// `lands`; the branches, in the order given.
+/// `lands`; the branches, in the order given. Linux only, like the journeys that use
+/// it.
+#[cfg(target_os = "linux")]
 fn worked_branches(world: &World, branches: &[(&'static str, bool)]) -> Vec<&'static str> {
     let mut references = Vec::new();
     for &(branch, lands) in branches {

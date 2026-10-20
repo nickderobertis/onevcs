@@ -154,7 +154,8 @@ impl Counting {
     }
 
     /// This process, with this `git` first on `PATH`, for a journey that reads through
-    /// the library rather than the binary.
+    /// the library rather than the binary. Linux only, like the journeys that use it.
+    #[cfg(target_os = "linux")]
     pub(crate) fn inhabit(&self) {
         let mut path = std::ffi::OsString::from(&self.directory);
         path.push(":");
