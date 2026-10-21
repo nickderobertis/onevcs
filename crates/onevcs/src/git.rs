@@ -220,6 +220,28 @@ fn run_unless(
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
 ) -> Result<Output> {
+    let reading = reads::remembered(args)
+        || matches!(
+            args,
+            ["worktree", "list", ..]
+                | ["status", ..]
+                | ["remote"]
+                | ["ls-remote", ..]
+                | ["show", ..]
+        )
+        || matches!(args, ["config", "--get", ..])
+        || matches!(args, ["tag", option] if option.starts_with("--contains="))
+        // Landing comparisons write synthetic objects only into their scratch
+        // store. They still read this checkout and must keep its turn throughout.
+        || (args.first() == Some(&"merge-tree")
+            && env.iter().any(|(key, _)| key == "GIT_OBJECT_DIRECTORY"));
+    let _checkout = if reading {
+        cwd.map(crate::checkout_reads::checkout)
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
@@ -251,22 +273,29 @@ fn run_unless(
     };
     let mut command = Command::new(git_program());
     command.args(args);
-    let ran = bounded(
-        command,
-        cwd,
-        &shims
-            .as_ref()
-            .map(|shims| [env, &shims.env()].concat())
-            .unwrap_or_else(|| env.to_vec()),
-        if hooked {
-            Bound::Hooks
-        } else {
-            Bound::Ordinary
-        },
-        &format!("git {}", args.join(" ")),
-        |e| unstarted(&e, args, cwd),
-        stop,
-    );
+    let execute = || {
+        bounded(
+            command,
+            cwd,
+            &shims
+                .as_ref()
+                .map(|shims| [env, &shims.env()].concat())
+                .unwrap_or_else(|| env.to_vec()),
+            if hooked {
+                Bound::Hooks
+            } else {
+                Bound::Ordinary
+            },
+            &format!("git {}", args.join(" ")),
+            |e| unstarted(&e, args, cwd),
+            stop,
+        )
+    };
+    let ran = if reading || matches!(args, ["worktree", "remove" | "prune", ..] | ["clean", ..]) {
+        execute()
+    } else {
+        crate::checkout_reads::mutating(execute)
+    };
     drop(shims);
     let ran = ran?;
     let output = Output {
@@ -388,7 +417,7 @@ mod reads {
     /// which answers the same for the same arguments as long as nothing writes. The
     /// list is closed on purpose — a command not on it is either a read that is not
     /// worth remembering, or a write, and the second empties the memo.
-    fn remembered(args: &[&str]) -> bool {
+    pub(super) fn remembered(args: &[&str]) -> bool {
         match args.first().copied() {
             Some("--exec-path") => args.len() == 1,
             Some("config") => args == ["config", "--null", "--list", "--show-origin"],

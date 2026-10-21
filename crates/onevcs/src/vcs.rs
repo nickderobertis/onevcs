@@ -733,6 +733,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         narrowed.as_ref().map(|only| &only.checkouts),
     )?;
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for repo in workspace::checkouts_among(registry, &resolution, sessions) {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the

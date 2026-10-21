@@ -723,6 +723,7 @@ pub(crate) fn refuse_unfinished_merges(
     branch: &str,
     then: &str,
 ) -> Result<()> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for checkout in crate::workspace::checkouts_of(registry, resolution)? {
         if !git::is_repo(&checkout) {
             continue;
@@ -756,6 +757,7 @@ pub(crate) fn locate(
     base: &str,
     next: &str,
 ) -> Result<PathBuf> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let searched = crate::workspace::checkouts_of(registry, resolution)?;
     let current = crate::vcs::base_commit(&resolution.publication, base);
     let mut held: Vec<Held> = Vec::new();

@@ -1980,6 +1980,7 @@ fn continuation(
     branch: &Ref,
     base: &Ref,
 ) -> Result<Option<Continued>> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let anywhere = checkouts_of(registry, resolution)?
         .into_iter()
         .any(|repo| git::is_repo(&repo) && git::branch_exists(&repo, branch));
@@ -2494,6 +2495,7 @@ fn taken_names(
     execution: &Path,
 ) -> Result<std::collections::BTreeSet<String>> {
     let mut taken = std::collections::BTreeSet::new();
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for repo in checkouts_of(registry, resolution)? {
         if git::is_repo(&repo) {
             taken.extend(git::branches(&repo).unwrap_or_default());
@@ -2697,6 +2699,8 @@ struct Stray {
 /// then **refused over**: a close that reported nothing while work it was about to
 /// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
+    let record = load(token)?;
+    let _reads = crate::checkout_reads::identity(&record.identity)?;
     let record = load(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),

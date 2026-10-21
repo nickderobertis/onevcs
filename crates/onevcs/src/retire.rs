@@ -1078,6 +1078,8 @@ impl Copies {
 
 /// Everything one identity's classifications read, read once.
 pub(crate) struct Census<'a> {
+    /// Keep the places below stable until their last classification is read.
+    _reads: crate::checkout_reads::Turn,
     registry: &'a Registry,
     resolution: Resolution,
     base: Option<String>,
@@ -1176,6 +1178,7 @@ impl<'a> Census<'a> {
             )),
         };
         let base = base.ok();
+        let _reads = crate::checkout_reads::identity(identity)?;
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
             repo: publication.clone(),
@@ -1234,6 +1237,7 @@ impl<'a> Census<'a> {
             places.retain(|place| only.contains(&place.repo));
         }
         Ok(Census {
+            _reads,
             registry,
             heads: places.iter().map(|_| std::cell::OnceCell::new()).collect(),
             tracked: std::cell::OnceCell::new(),
