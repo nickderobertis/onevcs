@@ -1456,29 +1456,15 @@ command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
 
-**What another session reads must stay openable while siblings work.** Two writes
-made every git read beside them fail on Windows, and `tests/e2e/concurrent_sessions.rs`
-holds both on every platform. A shared checkout's `.git/config` is written only where
-the value would change (`git::configure_unless_set`): Git for Windows reads
-configuration through `_wfopen`, which does not share deletion, so a rename over it
-fails every read meeting it. And a search that reads closed sessions' run clones
-holds each under its shared occupancy lease (`workspace::checkouts_held`, kept by
-`branch::Located` for as long as the chosen copy is read), because a sibling's open
-reclaims one the moment its branches are on origin, and a file whose deletion is
-pending opens as `Permission denied`. Only a closed record's lease is waited for: an
-open one's exclusive holder is a command working in that session. Three more rules
-keep a shared `.git/config` still: the retention keys are first set at `register`,
-before any session of the checkout exists — and for a checkout an earlier release
-registered, by `workspace::lend`, which every open and close holds shared and the one
-write waits to take exclusively, so no session operation is reading the file as it is
-replaced; every clone is cut carrying them, and one an earlier release cut is given them
-by a publication only under its run root's exclusive lease (`Searched::alone`); a
-branch is cut `--no-track`
-(`git::NO_TRACK`), because the upstream git would record is two keys written into a
-warm slot's clone — one siblings read — on every session placed there; and a clone is
-cut beside its destination and moved in whole (`git::clone_sharing`), because a slot
-cut again in place is still named by closed records. The journey runs on run roots
-and on a pool.
+**What another session reads must stay openable while siblings work.** On Windows a
+git read fails while another process renames a new `.git/config` over the one it opens,
+or deletes the directory it reads. So a session operation never replaces a shared
+config whose content would not change; a required first write (retention keys on a
+checkout an earlier release registered, or on a clone it cut) waits for an exclusive
+take of the lease that same repository's readers hold shared (`workspace::lend`,
+`Searched::alone`); and a run clone a search reads is held against reclamation for as
+long as it is read. `tests/e2e/concurrent_sessions.rs` holds this on every platform,
+on run roots and on a pool.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this

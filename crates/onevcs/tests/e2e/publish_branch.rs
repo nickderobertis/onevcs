@@ -233,6 +233,11 @@ fn a_branch_read_out_of_a_run_clone_cut_before_retention_waits_for_its_readers_t
     // Only the closed session's clone keeps the branch now, so it is the copy the
     // publication reads and lends from — and, as a clone an earlier release cut, it
     // carries no retention keys of its own.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] a clone an earlier release cut is a
+    // state no interface of this build produces — every clone it cuts carries its keys —
+    // so the journey removes them from a clone this build cut, which leaves exactly what
+    // the earlier release left. Everything driven over it is the real CLI.
     world.git(&fixture.checkout, &["branch", "-q", "-D", branch]);
     let clone = worktree.parent().expect("a run root").join("clone");
     for key in ["gc.auto", "gc.pruneExpire"] {
@@ -244,6 +249,7 @@ fn a_branch_read_out_of_a_run_clone_cut_before_retention_waits_for_its_readers_t
             String::from_utf8_lossy(&unset.stderr)
         );
     }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     // llmlint: ignore-block[tests_mirror_real_usage] a sibling's search reads that clone
     // under the run root's shared occupancy lease for as long as it compares it, and no
