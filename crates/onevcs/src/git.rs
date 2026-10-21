@@ -2133,7 +2133,20 @@ fn append_in_place(common: &Path, settings: &[(&str, &str)]) -> Result<()> {
     (&file)
         .read_to_end(&mut content)
         .map_err(error::at("read the configuration at", &config))?;
-    for step in addition(&content, settings) {
+    let Some(steps) = addition(&content, settings) else {
+        let commands: Vec<String> = settings
+            .iter()
+            .map(|(key, value)| format!("git config {key} {value}"))
+            .collect();
+        return Err(error::invalid(format!(
+            "{} is empty or ends in a line continued by a backslash, which no write beside \
+             its readers can add to safely; run `{}` in that checkout while nothing is \
+             using it, then retry",
+            config.display(),
+            commands.join(" && ")
+        )));
+    };
+    for step in steps {
         put(&file, step.at, &step.bytes)
             .map_err(error::at("write the configuration at", &config))?;
     }
@@ -2148,17 +2161,19 @@ struct Step {
 }
 
 /// The writes that add `settings` to a configuration holding `content`, in order, each
-/// leaving a file git reads however much of it has landed.
+/// leaving a file git reads however much of it has landed — or `None` for a file no
+/// such writes exist for.
 ///
 /// A file ending in a line end has it turned into `#` first, so its last line ends in a
 /// comment, and the settings follow as `[gc] auto = 0#[gc] pruneExpire = never`; then
 /// the old line end comes back, which puts the first setting in force, and each `#`
 /// between settings becomes a line end in turn. A file whose last line is unended gets
 /// the settings behind a `#` of their own instead, whose own turn into a line end
-/// is the first one. The one shape that cannot end in a comment is a last line
-/// continued by a backslash, where `\#` is an escape git refuses: that file, and an
-/// empty one, take the second form, whose appended text starts a line.
-fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
+/// is the first one. Two shapes have no last line that can end in a comment: an empty
+/// file, and one whose last line is continued by a backslash, where `\#` is an escape
+/// git refuses. Text appended to either starts a line, where a reader handed zeros
+/// cannot read the file at all, so neither is written to. Git writes neither.
+fn addition(content: &[u8], settings: &[(&str, &str)]) -> Option<Vec<Step>> {
     let length = content.len() as u64;
     let lines: Vec<String> = settings
         .iter()
@@ -2167,8 +2182,12 @@ fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
             format!("[{section}] {name} = {value}")
         })
         .collect();
-    let ends_a_line = content.last() == Some(&b'\n')
-        && content.len().checked_sub(2).map(|at| content[at]) != Some(b'\\');
+    let ends_a_line = content.last() == Some(&b'\n');
+    let continued =
+        ends_a_line && content.len().checked_sub(2).map(|at| content[at]) == Some(b'\\');
+    if content.is_empty() || continued {
+        return None;
+    }
     let mut steps = Vec::new();
     let (appended, first_end) = if ends_a_line {
         steps.push(Step {
@@ -2194,7 +2213,7 @@ fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
             bytes: b"\n".to_vec(),
         });
     }
-    steps
+    Some(steps)
 }
 
 /// Write `bytes` at `at`, however many writes that takes.
@@ -5706,20 +5725,43 @@ mod config_addition_tests {
     use super::*;
 
     /// The configuration shapes a write meets: as `git init` leaves it, an operator's
-    /// last line with no end, one ended `\r\n`, one continued by a backslash, and none.
+    /// last line with no end, and one ended `\r\n`.
     fn shapes(initialized: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
         let unended = initialized[..initialized.len() - 1].to_vec();
         let mut crlf = unended.clone();
         crlf.extend_from_slice(b"\r\n");
-        let mut continued = initialized.to_vec();
-        continued.extend_from_slice(b"[onevcs-test]\n\tnote = kept \\\n");
         vec![
             ("as git init leaves it", initialized.to_vec()),
             ("with an unended last line", unended),
             ("ended with \\r\\n", crlf),
+        ]
+    }
+
+    /// The shapes no addition can keep behind a comment, both of which git reads and
+    /// neither of which it writes: a last line continued by a backslash, and none.
+    fn unwritable(initialized: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let mut continued = initialized.to_vec();
+        continued.extend_from_slice(b"[onevcs-test]\n\tnote = kept \\\n");
+        vec![
             ("continued by a backslash", continued),
             ("empty", Vec::new()),
         ]
+    }
+
+    /// A repository `git init` made, and the configuration it wrote.
+    fn initialized() -> (tempfile::TempDir, PathBuf, Vec<u8>) {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let repository = scratch.path().join("repository");
+        let made = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repository)
+            .output()
+            .expect("git runs");
+        assert!(made.status.success(), "git init");
+        let written = std::fs::read(repository.join(".git").join("config"))
+            .expect("git init's configuration");
+        assert!(written.ends_with(b"\n"), "the premise: git ends its lines");
+        (scratch, repository, written)
     }
 
     fn git(repository: &Path, arguments: &[&str]) -> std::process::Output {
@@ -5769,10 +5811,10 @@ mod config_addition_tests {
         state
     }
 
-    /// Every state of the plan for `base`, with whether it can be met only by the one
-    /// shape the plan cannot keep behind a comment: zeros at the start of a line.
-    fn states(base: &[u8]) -> Vec<(String, Vec<u8>, bool)> {
-        let steps = addition(base, &RETENTION);
+    /// Every state of the plan for `base`: each prefix of each write, and for one that
+    /// extends the file, each prefix followed by zeros to its end.
+    fn states(base: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let steps = addition(base, &RETENTION).expect("a plan for a shape git writes");
         let mut found = Vec::new();
         let mut content = base.to_vec();
         for (number, step) in steps.iter().enumerate() {
@@ -5781,18 +5823,14 @@ mod config_addition_tests {
                 found.push((
                     format!("step {number}, {landed} of {} bytes", step.bytes.len()),
                     applied(&content, step, landed, false),
-                    false,
                 ));
                 if extends && landed < step.bytes.len() {
-                    let at_a_line_start = landed == 0
-                        && (step.at == 0 || content.get(step.at as usize - 1) == Some(&b'\n'));
                     found.push((
                         format!(
                             "step {number}, {landed} of {} bytes then zeros",
                             step.bytes.len()
                         ),
                         applied(&content, step, landed, true),
-                        at_a_line_start,
                     ));
                 }
             }
@@ -5803,31 +5841,12 @@ mod config_addition_tests {
 
     #[test]
     fn every_state_of_an_addition_reads_and_every_failure_is_completed_by_the_next() {
-        let scratch = tempfile::tempdir().expect("a scratch directory");
-        let repository = scratch.path().join("repository");
-        let made = Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repository)
-            .output()
-            .expect("git runs");
-        assert!(made.status.success(), "git init");
+        let (_scratch, repository, initialized) = initialized();
         let config = repository.join(".git").join("config");
-        let initialized = std::fs::read(&config).expect("git init's configuration");
-        assert!(
-            initialized.ends_with(b"\n"),
-            "the premise: git ends its lines"
-        );
-
-        let mut excepted = Vec::new();
         for (shape, base) in shapes(&initialized) {
-            read(&repository, &base, "core.bare")
+            let bare = read(&repository, &base, "core.bare")
                 .unwrap_or_else(|e| panic!("the premise: git reads the base {shape}: {e}"));
-            let bare = read(&repository, &base, "core.bare").expect("the base reads");
-            for (label, state, line_start_zeros) in states(&base) {
-                if line_start_zeros {
-                    excepted.push(format!("{shape}: {label}"));
-                    continue;
-                }
+            for (label, state) in states(&base) {
                 let held = |key: &str| {
                     read(&repository, &state, key).unwrap_or_else(|e| {
                         panic!(
@@ -5869,15 +5888,33 @@ mod config_addition_tests {
                 );
             }
         }
-        // The one state no plan keeps behind a comment, and only where the appended text
-        // must start a line: a file that is empty or whose last line continues.
-        assert!(
-            excepted
-                .iter()
-                .all(|state| state.starts_with("continued by a backslash")
-                    || state.starts_with("empty")),
-            "{excepted:?}"
-        );
+    }
+
+    #[test]
+    fn a_configuration_no_addition_can_keep_behind_a_comment_is_refused_and_left_as_it_was() {
+        let (_scratch, repository, initialized) = initialized();
+        let config = repository.join(".git").join("config");
+        for (shape, base) in unwritable(&initialized) {
+            read(&repository, &base, "core.bare")
+                .unwrap_or_else(|e| panic!("the premise: git reads the base {shape}: {e}"));
+            assert_eq!(addition(&base, &RETENTION), None, "{shape}");
+            std::fs::write(&config, &base).expect("the shape");
+            let refused =
+                retain_objects_for_borrowers(&repository).expect_err("the write is refused");
+            assert!(
+                refused.to_string().contains("git config gc.auto 0"),
+                "{shape}: the refusal names the commands that set the keys: {refused}"
+            );
+            assert_eq!(
+                std::fs::read(&config).expect("the configuration"),
+                base,
+                "{shape}: nothing was written"
+            );
+            assert!(
+                !repository.join(".git").join("config.lock").exists(),
+                "{shape}: git's lock is let go"
+            );
+        }
     }
 
     fn held_now(repository: &Path, state: &[u8], key: &str) -> String {
