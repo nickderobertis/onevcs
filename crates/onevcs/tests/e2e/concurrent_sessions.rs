@@ -325,6 +325,68 @@ fn retention_keys_wait_for_a_git_config_write_in_flight_and_refuse_one_that_neve
 }
 
 #[test]
+fn an_upgraded_checkout_with_an_empty_local_configuration_opens_beside_its_readers() {
+    let _bound = watchdog(
+        "an_upgraded_checkout_with_an_empty_local_configuration_opens_beside_its_readers",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::RunRoots);
+    // llmlint: ignore-block[tests_mirror_real_usage] a checkout whose own configuration
+    // is empty — every setting it needs, its origin included, comes from the user's — is
+    // one git reads and no interface of this build leaves; the journey moves the origin
+    // into a file the global one includes for this checkout alone — every other
+    // repository keeps its own — and empties the local one. Everything over it is the
+    // real CLI.
+    let origin = journey.root.join("checkout-origin");
+    std::fs::write(
+        &origin,
+        format!(
+            "[remote \"origin\"]\n\turl = {}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+            journey.at("project.git")
+        ),
+    )
+    .expect("the checkout's origin, kept apart");
+    let mut global =
+        std::fs::read_to_string(journey.root.join("gitconfig")).expect("a global file");
+    global.push_str(&format!(
+        "[includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+        journey
+            .checkout
+            .join(".git")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+        origin.display().to_string().replace('\\', "/")
+    ));
+    std::fs::write(journey.root.join("gitconfig"), global)
+        .expect("the global file includes it for this checkout");
+    std::fs::write(journey.checkout.join(".git").join("config"), "").expect("an empty local file");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    journey.opened_beside_readers(&[]);
+}
+
+#[test]
+fn an_upgraded_checkout_whose_last_line_continues_opens_beside_its_readers() {
+    let _bound = watchdog(
+        "an_upgraded_checkout_whose_last_line_continues_opens_beside_its_readers",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::RunRoots);
+    // llmlint: ignore-block[tests_mirror_real_usage] a configuration an earlier release
+    // registered, whose last line an operator continued with a backslash: no interface
+    // of this build leaves either, so the journey writes both. The opens are the real CLI.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    let config = journey.checkout.join(".git").join("config");
+    let mut text = std::fs::read(&config).expect("the configuration");
+    text.extend_from_slice(b"[onevcs-journey]\n\tnote = kept \\\n");
+    std::fs::write(&config, text).expect("a last line that continues");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    journey.opened_beside_readers(&["onevcs-journey.note", "remote.origin.url"]);
+}
+
+#[test]
 fn a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot() {
     let _bound = watchdog(
         "a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot",
@@ -564,6 +626,15 @@ fn concurrent_sessions(placement: Placement) {
         "0",
         "the lender still keeps its objects for borrowers"
     );
+}
+
+/// Sets its flag when dropped, so whatever waits on the flag ends however its owner did.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// What a session's open answered that the journey goes on to use.
@@ -987,6 +1058,71 @@ impl Journey {
             }
         }
         found
+    }
+
+    /// Three sessions opened at once over a checkout whose own configuration has no
+    /// retention keys yet, with git reading the checkout from before the first open to
+    /// after the last close; every read and every operation succeeds, the keys are set
+    /// in the file that was there, and `kept` read the same after as before.
+    fn opened_beside_readers(&self, kept: &[&str]) {
+        let config = self.checkout.join(".git").join("config");
+        assert!(!self.retains(), "the premise: no retention keys yet");
+        let before: Vec<String> = kept
+            .iter()
+            .map(|key| self.git_output(&self.checkout, &["config", "--get", key]))
+            .collect();
+        let unwritten = Identity::of(&config);
+        let finished = AtomicBool::new(false);
+        let rounds = AtomicUsize::new(0);
+        let failed_reads = std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..2)
+                .map(|_| {
+                    let (finished, rounds) = (&finished, &rounds);
+                    scope.spawn(move || self.read_until(finished, &[], rounds))
+                })
+                .collect();
+            // However the operations below end, a panic included, the readers stop, or
+            // the scope would wait on them before it could report it.
+            let _stop = Stop(&finished);
+            let waited = Instant::now();
+            while rounds.load(Ordering::SeqCst) < 2 && waited.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let opening: Vec<_> = ["a", "b", "c"]
+                .iter()
+                .map(|node| self.spawn_open(&["--branch-name", &format!("placement/{node}")]))
+                .collect();
+            let opened: Vec<Opened> = opening
+                .into_iter()
+                .map(|open| self.opened(&open.wait_with_output().expect("the open finishes")))
+                .collect();
+            for session in &opened {
+                self.close(&session.token);
+            }
+            finished.store(true, Ordering::SeqCst);
+            readers
+                .into_iter()
+                .flat_map(|reader| reader.join().expect("a reading thread"))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            failed_reads.is_empty(),
+            "git reads of the checkout failed while its retention keys were written:\n{}",
+            failed_reads.join("\n")
+        );
+        assert!(self.retains(), "the keys are set");
+        assert!(
+            Identity::of(&config).is_the_file(&unwritten),
+            "{} was replaced rather than written in place",
+            config.display()
+        );
+        for (key, value) in kept.iter().zip(&before) {
+            assert_eq!(
+                &self.git_output(&self.checkout, &["config", "--get", key]),
+                value,
+                "{key} reads as it did"
+            );
+        }
     }
 
     /// Whether the registered checkout's own configuration holds both retention keys.

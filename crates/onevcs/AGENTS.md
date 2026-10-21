@@ -873,9 +873,9 @@ Windows' verbatim paths crossing every git boundary, a captured command's
 collector meeting its pipe empty at the instant the command exits, whether a
 name is a ref name decided in process rather than by a subprocess, and whether a
 fetch hands its checkout's turn back when git fails or is killed — which only a
-process outliving the fetch, as a linking consumer's does, can see — and every state
-a reader can be shown between and inside the writes that add a lender's retention
-keys (`git.rs`),
+process outliving the fetch, as a linking consumer's does, can see — and every view
+a reader's buffered reads can join together while a lender's retention keys are
+added (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), and a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`) —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
@@ -1465,9 +1465,10 @@ config whose content would not change; the one required write (retention keys on
 checkout an earlier release registered) is written into the file in place under
 git's own `config.lock` rather than renamed over it (`git::append_in_place`), so a
 reader outside this crate — which no lease of its reaches — never meets a moment the
-file cannot be opened; and in steps (`git::addition`) each of whose partial states git
-reads, because a write may land in part and NTFS shows zeros past what it has
-initialized. It waits for an exclusive take of the lease every session
+file cannot be opened; and as a comment whose `#`s become line ends one byte at a
+time (`git::addition`), because git reads a configuration in buffered `read`s and can
+join the old end of the file from one to part of what was appended in the next. It
+waits for an exclusive take of the lease every session
 operation over it holds shared (`workspace::lend`) from before its first read of the
 checkout, the check that it is a checkout included; no clone or slot is ever a
 lender, because a slot's worker holds no lease anything could wait on — a publication
