@@ -872,7 +872,27 @@ fn recovery_proofs_are_disposable_and_git_context_changes_stay_fresh() {
 /// so the history's root commit is read by the walk a proof caches and by nothing a
 /// decision-detail report asks git afresh. Answers `(fixture, token)`.
 fn deep_history_session(label: &str) -> (Fixture, String) {
+    deep_history_session_at(label, None)
+}
+
+fn deep_history_session_at(label: &str, clock: Option<&str>) -> (Fixture, String) {
     let fixture = Fixture::local(&local_direct());
+    let pin_clock = |checkout: &std::path::Path, later: bool| {
+        if let Some(clock) = clock {
+            let clock = if later { "2030-01-02T00:00:00Z" } else { clock };
+            fixture.world.git_env(
+                checkout,
+                &[("GIT_COMMITTER_DATE", clock)],
+                &["commit", "--amend", "--no-edit", "--date", clock],
+            );
+        }
+    };
+    pin_clock(&fixture.checkout, false);
+    if clock.is_some() {
+        fixture
+            .world
+            .git(&fixture.checkout, &["push", "--force", "origin", "main"]);
+    }
     for step in 0..6 {
         fixture.world.commit_file(
             &fixture.checkout,
@@ -880,6 +900,7 @@ fn deep_history_session(label: &str) -> (Fixture, String) {
             "history\n",
             &format!("chore: history {step}"),
         );
+        pin_clock(&fixture.checkout, step >= 1);
     }
     fixture
         .world
@@ -893,6 +914,7 @@ fn deep_history_session(label: &str) -> (Fixture, String) {
     fixture
         .world
         .commit_file(&worktree, "growth.txt", "work\n", "feat: growth work");
+    pin_clock(&worktree, true);
     fixture
         .world
         .onevcs()
@@ -1199,7 +1221,9 @@ fn proofs_one_git_program_derived_are_not_reused_through_another() {
 /// says once git has it back.
 #[test]
 fn an_answer_computed_while_an_object_was_missing_is_recomputed_once_it_arrives() {
-    let (fixture, token) = deep_history_session("missing");
+    // Pin the clock tick between the first two history commits: Git 2.55 can
+    // walk past their common base and meet the missing root with this ordering.
+    let (fixture, token) = deep_history_session_at("missing", Some("2030-01-01T00:00:00Z"));
     let args = decision_of(&token);
     let original = answered(&fixture, &args, false);
     assert_eq!(original.0, Some(0), "{original:?}");
