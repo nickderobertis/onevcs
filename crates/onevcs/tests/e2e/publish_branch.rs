@@ -208,6 +208,96 @@ fn a_complete_branch_of_a_local_identity_lands_on_its_base() {
 }
 
 #[test]
+fn a_branch_read_out_of_a_run_clone_cut_before_retention_waits_for_its_readers_to_set_it() {
+    let fixture = Fixture::local(&local_direct());
+    a_merge_path_that_accepts(&fixture);
+    let world = &fixture.world;
+    let branch = "feature/from-the-clone";
+    let before = world.locks();
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    world.commit_file(
+        &worktree,
+        "clone.txt",
+        "one\n",
+        "feat: work only its clone keeps",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    // Only the closed session's clone keeps the branch now, so it is the copy the
+    // publication reads and lends from — and, as a clone an earlier release cut, it
+    // carries no retention keys of its own.
+    world.git(&fixture.checkout, &["branch", "-q", "-D", branch]);
+    let clone = worktree.parent().expect("a run root").join("clone");
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        // Absent already is the same state: git answers 5 for a key there is no value of.
+        let unset = world.git_raw(&clone, &["config", "--unset", key]);
+        assert!(
+            matches!(unset.status.code(), Some(0 | 5)),
+            "{key} is unset in the clone: {}",
+            String::from_utf8_lossy(&unset.stderr)
+        );
+    }
+
+    // llmlint: ignore-block[tests_mirror_real_usage] a sibling's search reads that clone
+    // under the run root's shared occupancy lease for as long as it compares it, and no
+    // verb holds one across time; so the lock is found the way the occupancy journeys in
+    // `lifecycle.rs` find it, by what appeared when the session was opened, and held
+    // shared — as a search holds it — while the real CLI meets it.
+    let searching = World::occupy_shared(lease);
+    let mut publishing = world
+        .onevcs_std()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &fixture.checkout.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        publishing
+            .try_wait()
+            .expect("the publication can be asked")
+            .is_none(),
+        "the publication wrote the clone's configuration while a search was reading it"
+    );
+    assert_ne!(
+        world
+            .git_raw(&clone, &["config", "--get", "gc.auto"])
+            .status
+            .code(),
+        Some(0),
+        "nothing was written into the clone while the search held it"
+    );
+    drop(searching);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let published = publishing
+        .wait_with_output()
+        .expect("the publication finishes");
+    assert!(
+        published.status.success(),
+        "the publication lands once the search is done with the clone:\n{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    assert!(String::from_utf8_lossy(&published.stdout).contains("merged at"));
+    assert_eq!(
+        world.git(&clone, &["config", "--get", "gc.auto"]),
+        "0",
+        "the clone it lent from keeps its objects for the publication's clone"
+    );
+}
+
+#[test]
 fn a_complete_branch_of_a_team_identity_opens_the_change_request_its_rules_require() {
     let hosted = Hosted::new(REVIEWED);
     finished_hosted_branch(&hosted, "feature/reviewed", "feat: add the reviewed thing");

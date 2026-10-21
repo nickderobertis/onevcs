@@ -723,7 +723,7 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
     // `.git/config` over the one every concurrent session is reading, and on Windows
     // a read meeting that rename fails. Every later open finds them set and writes
     // nothing.
-    git::retain_objects_for_borrowers(&checkout)?;
+    crate::workspace::retain_alone(&checkout)?;
     let normalized = normalize(&origin);
     let gate = detect_gate(&checkout);
     let alias = alias_for(&checkout);

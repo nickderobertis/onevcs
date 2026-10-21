@@ -1092,14 +1092,15 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
             continue;
         }
         let lease = occupancy_identity(&record.run_root);
-        match record.state {
-            Lifecycle::Open => held.extend(lock::try_shared(&lease)?),
-            Lifecycle::Closed => held.push(lock::shared(&lease)?),
-        }
+        let guard = match record.state {
+            Lifecycle::Open => lock::try_shared(&lease)?,
+            Lifecycle::Closed => Some(lock::shared(&lease)?),
+        };
+        held.extend(guard.map(|guard| (record.run_root.clone(), guard)));
     }
     Ok(Searched {
         checkouts: checkouts_among(registry, resolution, &sessions),
-        _held: held,
+        held,
     })
 }
 
@@ -1107,7 +1108,40 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
 pub(crate) struct Searched {
     /// [`checkouts_of`]'s list, in its search order.
     pub checkouts: Vec<PathBuf>,
-    _held: Vec<lock::Guard>,
+    /// Each held run root, with the shared lease that holds it.
+    held: Vec<(PathBuf, lock::Guard)>,
+}
+
+impl Searched {
+    /// Run `write` on one of the searched repositories with nothing else reading it.
+    ///
+    /// A run clone this search holds is read by every other search of the identity,
+    /// under the same shared lease; its lease is traded for the exclusive take for the
+    /// length of the write, which those searches wait out. Any other repository is a
+    /// lender, whose readers are the session operations [`lend`] holds.
+    pub(crate) fn alone<T>(
+        &mut self,
+        repository: &Path,
+        write: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let Some(at) = self
+            .held
+            .iter()
+            .position(|(run_root, _)| run_root.join("clone") == repository)
+        else {
+            let _alone = lock::exclusive(&lender_lease(repository))?;
+            return write();
+        };
+        let (run_root, shared) = self.held.remove(at);
+        drop(shared);
+        let lease = occupancy_identity(&run_root);
+        let written = {
+            let _alone = lock::exclusive(&lease)?;
+            write()
+        };
+        self.held.push((run_root, lock::shared(&lease)?));
+        written
+    }
 }
 
 /// The same search order over records a caller already validated and read.
@@ -1198,6 +1232,8 @@ pub(crate) fn open_with(
             reason: format!("{} is not a git checkout", execution.display()),
         });
     }
+    // Held for the whole open, before the first read of the checkout's configuration.
+    let _lent = lend(&execution)?;
     // Before anything is resumed or cut, for the reason the branch names are: a label
     // a command line could not spell back is the request being wrong, not the host.
     label::validate(&request.labels)?;
@@ -1702,7 +1738,8 @@ fn opened(
     payload
 }
 
-/// Bring the execution checkout up to date, and keep its objects for borrowers.
+/// Bring the execution checkout up to date. Its objects are kept for borrowers by the
+/// [`lend`] the open holds.
 ///
 /// The fetch is deliberately outside every exclusive section: one slow origin must
 /// not hold another session out of the lock it is waiting for.
@@ -1714,7 +1751,49 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
             object(json!({"remote": "origin", "checkout": execution.display().to_string()})),
         );
     }
-    git::retain_objects_for_borrowers(execution)
+    Ok(())
+}
+
+/// The lease every session operation over a lender holds while it reads the lender.
+fn lender_lease(checkout: &Path) -> String {
+    format!("lender:{}", checkout.display())
+}
+
+/// Hold a checkout as a lender for one session operation, setting its retention keys
+/// first where they are not set yet.
+///
+/// `register` sets them before any session of a checkout exists, but a checkout an
+/// earlier release registered has none, and the first sessions to open over it after
+/// an upgrade arrive together. Setting them renames a new `.git/config` over the one
+/// every one of those sessions is reading, and on Windows a read meeting that rename
+/// fails (`git::configure_unless_set`). So every open and close holds this lease
+/// shared for as long as it runs, and the one write waits for an exclusive take of it:
+/// no session operation of the checkout is reading the file while it is replaced.
+pub(crate) fn lend(checkout: &Path) -> Result<lock::Guard> {
+    let lease = lender_lease(checkout);
+    let held = lock::shared(&lease)?;
+    if !git::is_repo(checkout) || git::retains_objects_for_borrowers(checkout)? {
+        return Ok(held);
+    }
+    drop(held);
+    retain_alone(checkout)?;
+    lock::shared(&lease)
+}
+
+/// Set a lender's retention keys while no session operation of it is reading it, unless
+/// they are set already. For a caller holding no [`lend`] of the same checkout: its
+/// shared take would keep this one's exclusive take waiting on itself.
+pub(crate) fn retain_alone(checkout: &Path) -> Result<()> {
+    let lease = lender_lease(checkout);
+    {
+        // Asked under the shared take, so this read cannot meet another's write.
+        let _reading = lock::shared(&lease)?;
+        if git::retains_objects_for_borrowers(checkout)? {
+            return Ok(());
+        }
+    }
+    let _alone = lock::exclusive(&lease)?;
+    git::retain_objects_for_borrowers(checkout)
 }
 
 /// The session a pinned branch is already held by, when exactly one is and nothing
@@ -2752,6 +2831,9 @@ struct Stray {
 /// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
     let record = load(token)?;
+    // The hand-back below writes into the lender and reads it, so a close is one of the
+    // session operations the lender's one-time configuration waits for.
+    let _lent = lend(&record.execution_checkout)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;

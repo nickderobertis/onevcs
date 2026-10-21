@@ -39,9 +39,13 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use assert_cmd::cargo::CommandCargoExt;
+use fs4::fs_std::FileExt;
+
+/// The file in a checkout's common directory every fetch into it takes turns under.
+const FETCH_LOCK: &str = "onevcs-fetch.lock";
 
 use crate::support::plain_path;
 
@@ -56,6 +60,98 @@ fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them
 #[test]
 fn concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them() {
     concurrent_sessions(Placement::Pool);
+}
+
+#[test]
+fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_session_reading_it()
+{
+    let journey = Journey::new(Placement::RunRoots);
+    // What a checkout an earlier release registered looks like: a valid registration
+    // whose own configuration carries no retention keys, because that release set them
+    // at a session's open rather than at registration.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    let config = journey.checkout.join(".git").join("config");
+
+    // llmlint: ignore-block[tests_mirror_real_usage] a session operation in flight is
+    // one whose fetch is still running, and no interface holds a fetch open on request:
+    // so the journey holds the checkout's fetch lock — the file every fetch into it takes
+    // turns under, in the checkout itself — as a slow fetch of another process would,
+    // while the real CLI meets it.
+    let fetch_lock = journey.checkout.join(".git").join(FETCH_LOCK);
+    let fetching = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&fetch_lock)
+        .expect("the fetch lock opens");
+    FileExt::lock_exclusive(&fetching).expect("the journey holds the fetch lock");
+
+    let mut first = journey.spawn_open(&["--branch-name", "placement/a"]);
+    // Until the keys are set or the first open has had ample time to set them, so a slow
+    // host is not mistaken for a build that writes later.
+    let waited = Instant::now();
+    while !journey.retains() && waited.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        first.try_wait().expect("the open can be asked").is_none(),
+        "the premise: the first open is still in flight, behind the fetch it waits for"
+    );
+    let in_flight = Identity::of(&config);
+
+    // A second session operation in flight beside it, and readers of the checkout.
+    let finished = AtomicBool::new(false);
+    let failed_reads = std::thread::scope(|scope| {
+        let journey = &journey;
+        let readers = {
+            let finished = &finished;
+            scope.spawn(move || journey.read_until(finished, &[]))
+        };
+        let second = journey.spawn_open(&["--branch-name", "placement/b"]);
+        std::thread::sleep(Duration::from_millis(1500));
+        FileExt::unlock(&fetching).expect("the fetch lock is released");
+        let opened: Vec<Opened> = [first.wait_with_output(), second.wait_with_output()]
+            .into_iter()
+            .map(|output| journey.opened(&output.expect("the open finishes")))
+            .collect();
+        // And what follows them: each branch worked on, handed back, and restacked.
+        for (node, session) in ["a", "b"].iter().zip(&opened) {
+            journey.commit(&session.worktree, &format!("{node}.txt"), node);
+        }
+        std::thread::scope(|inner| {
+            for session in &opened {
+                inner.spawn(move || journey.close(&session.token));
+            }
+        });
+        std::thread::scope(|inner| {
+            for node in ["a", "b"] {
+                inner.spawn(move || journey.restack(&format!("placement/{node}")));
+            }
+        });
+        finished.store(true, Ordering::SeqCst);
+        readers.join().expect("a reading thread")
+    });
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    assert!(
+        failed_reads.is_empty(),
+        "git reads of the checkout failed while its retention keys were set:\n{}",
+        failed_reads.join("\n")
+    );
+    assert!(
+        journey.retains(),
+        "the upgraded checkout keeps its objects for borrowers"
+    );
+    assert_eq!(
+        Identity::of(&config),
+        in_flight,
+        "{} was replaced while another session operation of the checkout was in flight, \
+         and on Windows every read that operation made beside it could fail",
+        config.display()
+    );
 }
 
 #[test]
@@ -147,6 +243,16 @@ fn concurrent_sessions(placement: Placement) {
         );
     }
     let slots_before: Vec<Identity> = slots.iter().map(|slot| Identity::of(slot)).collect();
+    // Every clone is cut carrying its own retention keys, so nothing that later lends
+    // from one — a publication of a branch read out of it — has to write them.
+    for slot in &slots {
+        assert_eq!(
+            journey.git_dir_config(slot, "gc.auto"),
+            "0",
+            "{} was cut without its retention keys",
+            slot.display()
+        );
+    }
 
     // The base moves on origin from elsewhere, so every open's fetch has something
     // to bring in and every restacked branch has a base to take.
@@ -394,7 +500,7 @@ impl Journey {
                     "remote.origin.url",
                 ];
                 let output = self.run(&mut self.git_command(&self.root, &read));
-                if !output.status.success() {
+                if !output.status.success() || !output.stderr.is_empty() {
                     failed.push(format!(
                         "git {}: {}",
                         read.join(" "),
@@ -404,11 +510,14 @@ impl Journey {
             }
             for read in reads {
                 let output = self.run(&mut self.git_command(&self.checkout, read));
-                // `diff --quiet` answers 1 for trees that differ, which is an answer.
-                let answered = match read[0] {
-                    "diff" => matches!(output.status.code(), Some(0 | 1)),
-                    _ => output.status.success(),
-                };
+                // `diff --quiet` answers 1 for trees that differ and `config --get` 1 for
+                // a key that is not set, and both are answers. What is not is anything
+                // on stderr: a configuration git could not open is a warning there.
+                let answered = output.stderr.is_empty()
+                    && match read[0] {
+                        "diff" | "config" => matches!(output.status.code(), Some(0 | 1)),
+                        _ => output.status.success(),
+                    };
                 if !answered {
                     failed.push(format!(
                         "git {}: {}",
@@ -449,6 +558,51 @@ impl Journey {
         }
         configs.sort();
         configs
+    }
+
+    /// Spawn `session open` of the registered checkout, and do not wait for it.
+    fn spawn_open(&self, arguments: &[&str]) -> std::process::Child {
+        self.onevcs()
+            .args(["session", "open", "project"])
+            .args(arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary runs")
+    }
+
+    /// What a finished `session open` answered, required to have succeeded.
+    fn opened(&self, output: &Output) -> Opened {
+        assert!(
+            output.status.success(),
+            "session open failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let answer: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("session open answers with one object");
+        let field = |name: &str| {
+            answer[name]
+                .as_str()
+                .unwrap_or_else(|| panic!("session open names its {name}: {answer}"))
+                .to_owned()
+        };
+        Opened {
+            token: field("token"),
+            worktree: PathBuf::from(field("worktree")),
+        }
+    }
+
+    /// Whether the registered checkout's own configuration holds both retention keys.
+    fn retains(&self) -> bool {
+        let read =
+            |key: &str| self.git_output(&self.checkout, &["config", "--local", "--get", key]);
+        read("gc.auto") == "0" && read("gc.pruneExpire") == "never"
+    }
+
+    /// One key of the repository whose `.git/config` is `config`, read from outside it.
+    fn git_dir_config(&self, config: &Path, key: &str) -> String {
+        let git_dir = config.parent().expect("a git directory").to_string_lossy();
+        self.git_output(&self.root, &["--git-dir", &git_dir, "config", "--get", key])
     }
 
     /// Every slot clone and every scratch copy of a clone under this host's

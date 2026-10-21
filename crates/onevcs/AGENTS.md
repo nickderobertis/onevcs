@@ -1468,7 +1468,12 @@ reclaims one the moment its branches are on origin, and a file whose deletion is
 pending opens as `Permission denied`. Only a closed record's lease is waited for: an
 open one's exclusive holder is a command working in that session. Three more rules
 keep a shared `.git/config` still: the retention keys are first set at `register`,
-before any session of the checkout exists; a branch is cut `--no-track`
+before any session of the checkout exists — and for a checkout an earlier release
+registered, by `workspace::lend`, which every open and close holds shared and the one
+write waits to take exclusively, so no session operation is reading the file as it is
+replaced; every clone is cut carrying them, and one an earlier release cut is given them
+by a publication only under its run root's exclusive lease (`Searched::alone`); a
+branch is cut `--no-track`
 (`git::NO_TRACK`), because the upstream git would record is two keys written into a
 warm slot's clone — one siblings read — on every session placed there; and a clone is
 cut beside its destination and moved in whole (`git::clone_sharing`), because a slot

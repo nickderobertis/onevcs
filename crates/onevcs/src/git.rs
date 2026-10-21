@@ -1766,6 +1766,12 @@ fn cut_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<B
     }
     let carried = carry_remote_refs(source, dest, base)?;
     carry_hooks(source, dest)?;
+    // A clone is itself lent from — a publication of a branch read out of it clones
+    // sharing its store — and keys set now, before anybody can read the clone, are keys
+    // no later reader has to meet being written.
+    for (key, value) in RETENTION {
+        configure_unless_set(dest, key, value)?;
+    }
     Ok(carried)
 }
 
@@ -1964,6 +1970,19 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 
 /// What [`retain_objects_for_borrowers`] writes into a lender's own configuration.
 const RETENTION: [(&str, &str); 2] = [("gc.auto", "0"), ("gc.pruneExpire", "never")];
+
+/// Whether a repository's own configuration already holds every retention key, asked
+/// without writing anything — so a caller can decide whether the write it would need
+/// has to wait for the repository's readers first.
+pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
+    for (key, value) in RETENTION {
+        let held = run(&["config", "--local", "--get", key], Some(cwd))?;
+        if !(held.ok() && held.trimmed() == value) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 /// Set `key` in a repository's own configuration, unless it already holds `value`.
 ///

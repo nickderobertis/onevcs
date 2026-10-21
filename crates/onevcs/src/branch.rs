@@ -249,7 +249,7 @@ pub fn prepare(
         &format!("land it with `{}`", verb.command(branch, repo)),
     )?;
     // Held until this landing's own clone has read everything it takes from the copy.
-    let located = locate(
+    let mut located = locate(
         registry,
         &resolution,
         branch,
@@ -315,7 +315,11 @@ pub fn prepare(
 
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
-    git::retain_objects_for_borrowers(&source)?;
+    // A copy this release cut carries its retention keys from the moment it was cut;
+    // one cut before carries none, and is written only with nothing reading it.
+    if !git::retains_objects_for_borrowers(&source)? {
+        located.alone(&source, || git::retain_objects_for_borrowers(&source))?;
+    }
     git::clone_sharing(&source, &clone, &origin, &base)?;
     if !git::import_branch(&clone, &source, branch)? {
         return Err(error::at("read branch out of", &source)(branch));
@@ -716,7 +720,18 @@ pub(crate) struct Located {
     /// The checkout the branch is read out of.
     pub checkout: PathBuf,
     /// Keeps every run clone the search read from being reclaimed until it is dropped.
-    _search: crate::workspace::Searched,
+    search: crate::workspace::Searched,
+}
+
+impl Located {
+    /// [`crate::workspace::Searched::alone`], over the search this copy was chosen from.
+    pub(crate) fn alone<T>(
+        &mut self,
+        repository: &Path,
+        write: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.search.alone(repository, write)
+    }
 }
 
 /// Refuse a branch some worktree of its identity holds an unfinished merge into.
@@ -808,14 +823,14 @@ pub(crate) fn locate(
         announce(branch, only, &held);
         return Ok(Located {
             checkout: only.checkout.clone(),
-            _search: search,
+            search,
         });
     };
     if held.iter().all(|copy| copy.holds == Holds::WhatTheBaseHas) {
         announce(branch, first, &held);
         return Ok(Located {
             checkout: first.checkout.clone(),
-            _search: search,
+            search,
         });
     }
     for copy in &held {
@@ -825,7 +840,7 @@ pub(crate) fn locate(
         announce(branch, copy, &held);
         return Ok(Located {
             checkout: copy.checkout.clone(),
-            _search: search,
+            search,
         });
     }
     // No copy carries the rest outright. One still may but for copies that hold nothing
@@ -860,7 +875,7 @@ pub(crate) fn locate(
         announce(branch, copy, &held);
         return Ok(Located {
             checkout: copy.checkout.clone(),
-            _search: search,
+            search,
         });
     }
     // The fetch the refusal prints has to be between copies at *different* commits:
