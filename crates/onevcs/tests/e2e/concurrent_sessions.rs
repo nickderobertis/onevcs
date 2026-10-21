@@ -390,9 +390,7 @@ impl Journey {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let root =
             plain_path(std::fs::canonicalize(directory.path()).expect("a canonical scratch root"));
-        // `maintenance.auto` is off for the reason `world.rs` gives: a detached
-        // `git maintenance` a commit leaves running inside a run root is a process a
-        // `session close` rightly refuses over.
+        // `maintenance.auto` is off for the reason `world.rs` gives.
         std::fs::write(
             root.join("gitconfig"),
             "[user]\n\tname = Journey\n\temail = journey@example.invalid\n\
