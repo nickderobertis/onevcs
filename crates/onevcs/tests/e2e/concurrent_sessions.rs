@@ -69,9 +69,15 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
     // What a checkout an earlier release registered looks like: a valid registration
     // whose own configuration carries no retention keys, because that release set them
     // at a session's open rather than at registration.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] a registration an earlier release
+    // made is a state no interface of this build produces — its `register` sets the keys
+    // — so the journey removes them from a registration this build made, which leaves
+    // exactly what the earlier release left. Everything driven over it is the real CLI.
     for key in ["gc.auto", "gc.pruneExpire"] {
         journey.git(&journey.checkout, &["config", "--unset", key]);
     }
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let config = journey.checkout.join(".git").join("config");
 
     // llmlint: ignore-block[tests_mirror_real_usage] a session operation in flight is
