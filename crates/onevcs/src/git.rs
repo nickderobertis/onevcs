@@ -1732,11 +1732,9 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "clone".to_owned());
+    // Its own name in a directory cut for this clone alone — a run root is one
+    // token's, and a slot cut again is emptied first — so nothing else is ever there.
     let cutting = dest.with_file_name(format!(".{name}.cutting"));
-    if cutting.exists() {
-        std::fs::remove_dir_all(&cutting)
-            .map_err(error::at("remove the unfinished clone at", &cutting))?;
-    }
     match cut_sharing(source, &cutting, origin, base) {
         Ok(carried) => {
             std::fs::rename(&cutting, dest).map_err(error::at("move the cut clone to", dest))?;

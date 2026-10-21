@@ -58,6 +58,42 @@ fn concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them() {
     concurrent_sessions(Placement::Pool);
 }
 
+#[test]
+fn a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recovers() {
+    let journey = Journey::new(Placement::Pool);
+    // A lender whose local branch `topic/x` and origin's `topic` cannot both be
+    // remote-tracking refs of one clone: `clone --shared` maps the first there, so
+    // bringing in the second is a ref that cannot be created, and the cut fails after
+    // the clone exists — the moment a sibling reading the slot would meet it half made.
+    journey.git(&journey.checkout, &["push", "-q", "origin", "HEAD:topic"]);
+    journey.git(&journey.checkout, &["branch", "topic/x"]);
+    journey.git(&journey.checkout, &["fetch", "-q", "origin"]);
+
+    let refused = journey.run(journey.onevcs().args(["session", "open", "project"]));
+    assert!(
+        !refused.status.success(),
+        "the premise: a lender whose refs collide cannot be cut a clone"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("refs/remotes/origin/topic"),
+        "the refusal names the ref that could not be made: {said}"
+    );
+    let left = journey.cut_leftovers();
+    assert!(
+        left.is_empty(),
+        "a failed cut left a clone where siblings read, or its scratch copy: {left:?}"
+    );
+
+    journey.git(&journey.checkout, &["branch", "-D", "topic/x"]);
+    let opened = journey.open(&[]);
+    assert!(
+        opened.worktree.join("README.md").is_file(),
+        "the next open cuts the slot whole once the lender's refs can be carried"
+    );
+    journey.close(&opened.token);
+}
+
 /// Where the host puts a session.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placement {
@@ -413,6 +449,34 @@ impl Journey {
         }
         configs.sort();
         configs
+    }
+
+    /// Every slot clone and every scratch copy of a clone under this host's
+    /// workspaces — what a cut that never finished could have left behind.
+    fn cut_leftovers(&self) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![self.root.join("state").join("workspaces")];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let in_a_slot = path
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .is_some_and(|parent| parent == "pool");
+                if name.ends_with(".cutting") || (in_a_slot && name == "clone") {
+                    found.push(path);
+                } else if path.is_dir() && name != ".git" {
+                    pending.push(path);
+                }
+            }
+        }
+        found
     }
 
     /// The `onevcs` binary, over this journey's own state root and git configuration.

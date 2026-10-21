@@ -97,7 +97,7 @@ pub fn exclusive_at(path: &Path) -> Result<Guard> {
 /// the run root or nothing.
 pub fn shared(identity: &str) -> Result<Guard> {
     let (path, file) = open(identity)?;
-    wait_in_line(&path, file, identity, timeout_seconds()?, true)
+    wait_in_line(&path, file, identity, timeout_seconds()?, Mode::Shared)
 }
 
 /// Take an identity's shared occupancy lease if it is free *right now*.
@@ -105,7 +105,7 @@ pub fn shared(identity: &str) -> Result<Guard> {
 /// The lease mode: "somebody else is in here" is the answer, not something to wait
 /// out. Returns `None` when an exclusive holder has it.
 pub fn try_shared(identity: &str) -> Result<Option<Guard>> {
-    try_acquire(identity, true)
+    try_acquire(identity, Mode::Shared)
 }
 
 /// Whether anybody holds an identity's occupancy lease right now.
@@ -157,7 +157,7 @@ pub fn is_occupied(identity: &str) -> Result<bool> {
 /// This is how occupancy is *probed*: an exclusive lock succeeds only while no
 /// shared holder remains, so taking one proves the run root is abandoned.
 pub fn try_exclusive(identity: &str) -> Result<Option<Guard>> {
-    try_acquire(identity, false)
+    try_acquire(identity, Mode::Exclusive)
 }
 
 fn open(identity: &str) -> Result<(PathBuf, File)> {
@@ -177,16 +177,22 @@ fn open_at(path: &Path) -> Result<File> {
         .map_err(error::at("open the lock at", path))
 }
 
-fn try_acquire(identity: &str, is_shared: bool) -> Result<Option<Guard>> {
+/// How a lock is held: by any number of occupants, or by one owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Shared,
+    Exclusive,
+}
+
+fn try_acquire(identity: &str, mode: Mode) -> Result<Option<Guard>> {
     let (_, file) = open(identity)?;
-    let taken = if is_shared {
-        FileExt::try_lock_shared(&file)
-    } else {
-        FileExt::try_lock_exclusive(&file)
+    let taken = match mode {
+        Mode::Shared => FileExt::try_lock_shared(&file),
+        Mode::Exclusive => FileExt::try_lock_exclusive(&file),
     };
     match taken {
         Ok(true) => {
-            if !is_shared {
+            if mode == Mode::Exclusive {
                 record_owner(&file);
             }
             Ok(Some(Guard { file }))
@@ -209,17 +215,17 @@ fn acquire(identity: &str, bound: f64) -> Result<Guard> {
 
 /// [`acquire`]'s wait, for a lock file already open; `what` names it in a refusal.
 fn wait_for(path: &Path, file: File, what: &str, bound: f64) -> Result<Guard> {
-    wait_in_line(path, file, what, bound, false)
+    wait_in_line(path, file, what, bound, Mode::Exclusive)
 }
 
 /// Only an exclusive holder stamps the file: a shared one is one of several, for the
 /// reason [`record_owner`] gives.
-fn wait_in_line(path: &Path, file: File, what: &str, bound: f64, is_shared: bool) -> Result<Guard> {
+fn wait_in_line(path: &Path, file: File, what: &str, bound: f64, mode: Mode) -> Result<Guard> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let taken = match is_shared {
-            true => FileExt::lock_shared(&file),
-            false => FileExt::lock_exclusive(&file),
+        let taken = match mode {
+            Mode::Shared => FileExt::lock_shared(&file),
+            Mode::Exclusive => FileExt::lock_exclusive(&file),
         };
         if taken.is_ok() {
             let _ = sender.send(file);
@@ -227,7 +233,7 @@ fn wait_in_line(path: &Path, file: File, what: &str, bound: f64, is_shared: bool
     });
     match receiver.recv_timeout(Duration::from_secs_f64(bound)) {
         Ok(file) => {
-            if !is_shared {
+            if mode == Mode::Exclusive {
                 record_owner(&file);
             }
             Ok(Guard { file })
