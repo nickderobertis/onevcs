@@ -348,10 +348,23 @@ fn an_upgraded_checkout_with_an_empty_local_configuration_opens_beside_its_reade
         &origin,
         format!(
             "[remote \"origin\"]\n\turl = {}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
-            journey.at("project.git")
+            journey.at("project.git").replace('\\', "/")
         ),
     )
     .expect("the checkout's origin, kept apart");
+    assert_eq!(
+        journey.git_output(
+            &journey.checkout,
+            &[
+                "config",
+                "--file",
+                &origin.to_string_lossy(),
+                "remote.origin.url"
+            ],
+        ),
+        journey.at("project.git").replace('\\', "/"),
+        "the included origin parses to its complete path on every platform"
+    );
     let mut global =
         std::fs::read_to_string(journey.root.join("gitconfig")).expect("a global file");
     global.push_str(&format!(
