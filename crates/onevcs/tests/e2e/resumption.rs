@@ -1771,3 +1771,82 @@ fn a_changed_target_over_a_moved_base_the_host_requires_is_verified_again_with_i
 fn a_changed_target_over_a_conflicting_moved_base_stops_at_bringing_it_in() {
     invalidated_over_a_moved_base(TARGET_CHANGED, MovedBase::Conflicting);
 }
+
+#[test]
+fn a_resumed_publication_waits_out_a_reclamation_of_a_run_clone_its_search_reads_and_resumes() {
+    let _bound = crate::support::watchdog(
+        "a_resumed_publication_waits_out_a_reclamation_of_a_run_clone_its_search_reads_and_resumes",
+        crate::support::CONCURRENT_JOURNEY_BOUND,
+    );
+    let hosted = verified_and_red();
+    // A closed session whose work never reached origin: its run clone is kept, and is
+    // one of the copies the resumed publication's search of its branch reads.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] what the search meets is a
+    // reclamation holding that run root's occupancy lease exclusively while it decides
+    // and removes it, and no verb holds one across time: each takes it, works, and drops
+    // it within one command. So the lock is found by what appeared when the session was
+    // opened, as `lifecycle.rs`'s reclamation journey finds it, and held exclusively — as
+    // `reclaim` holds it — while the real CLI meets it.
+    let before = hosted.world.locks();
+    let token = hosted.change("feature/kept", "feat: keep this work");
+    let opened: Vec<_> = hosted.world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    hosted
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    hosted.world.host_checks(&[required("success")]);
+    let reclaiming = World::occupy(lease);
+    let mut resuming = hosted
+        .world
+        .onevcs_std()
+        .args([
+            "publish-branch",
+            BRANCH,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        resuming
+            .try_wait()
+            .expect("the publication can be asked")
+            .is_none(),
+        "the resumed publication read a run clone while it was being reclaimed"
+    );
+    drop(reclaiming);
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let resumed = resuming
+        .wait_with_output()
+        .expect("the publication finishes");
+    let stderr = String::from_utf8_lossy(&resumed.stderr).into_owned();
+    assert!(
+        resumed.status.success(),
+        "the publication lands once the reclamation is over:\n{stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&resumed.stdout).contains("merged at"),
+        "{}",
+        String::from_utf8_lossy(&resumed.stdout)
+    );
+    assert!(
+        stderr.contains("resuming the verified publication"),
+        "the wait ended in a resumption rather than the whole path:\n{stderr}"
+    );
+    assert_eq!(hook_runs(&hosted), 1, "no local verification ran again");
+    assert_eq!(
+        publications(&hosted),
+        1,
+        "no second workspace was allocated"
+    );
+}

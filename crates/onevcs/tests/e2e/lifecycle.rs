@@ -1021,11 +1021,13 @@ fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_t
         .success();
 
     // One that does not end is waited for only as long as the lock bound, and every
-    // search that meets it — a continuation, an import — says what it was waiting for.
+    // search that meets it — a continuation, an import, a preservation — says what it
+    // was waiting for.
     let reclaiming = World::occupy(lease);
     let checkout = fixture.checkout.to_string_lossy().into_owned();
-    let searches: [&[&str]; 2] = [
+    let searches: [&[&str]; 3] = [
         &["session", "open", "project", "--branch", "feature/kept"],
+        &["preserve", "feature/kept", "--repo", &checkout],
         &[
             "import",
             "feature/kept",
@@ -1048,6 +1050,11 @@ fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_t
             .stderr(predicate::str::contains(&token));
     }
     drop(reclaiming);
+    world
+        .onevcs()
+        .args(["preserve", "feature/kept", "--repo", &checkout])
+        .assert()
+        .success();
     world
         .onevcs()
         .args([
