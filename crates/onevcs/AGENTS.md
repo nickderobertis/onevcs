@@ -1460,9 +1460,12 @@ protecting it would make a refused open's litter permanent.
 git read fails while another process renames a new `.git/config` over the one it opens,
 or deletes the directory it reads. So a session operation never replaces a shared
 config whose content would not change; the one required write (retention keys on a
-checkout an earlier release registered) waits for an exclusive take of the lease every
-session operation over it holds shared (`workspace::lend`) from before its first read
-of the checkout, the check that it is a checkout included; no clone or slot is ever a
+checkout an earlier release registered) is appended to the file in place under git's
+own `config.lock` rather than renamed over it (`git::append_in_place`), so a reader
+outside this crate — which no lease of its reaches — never meets a moment the file
+cannot be opened, and it waits for an exclusive take of the lease every session
+operation over it holds shared (`workspace::lend`) from before its first read of the
+checkout, the check that it is a checkout included; no clone or slot is ever a
 lender, because a slot's worker holds no lease anything could wait on — a publication
 borrows from a registered checkout and fetches the branch out of the copy
 (`git::clone_borrowing`); a run clone a search reads is held against reclamation

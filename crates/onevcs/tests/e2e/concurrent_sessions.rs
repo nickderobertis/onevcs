@@ -26,11 +26,13 @@
 //! slot clones beside the shared checkout.
 //!
 //! Linux cannot show a replacement as a failed read, which is why what is held there
-//! is each file's identity: a replaced file is a new inode with a new modification
-//! time, and a configuration nobody needed to change keeps both. The shared
-//! checkout's is held from the moment it is registered, so the first opens — the ones
-//! that used to set the retention keys while their siblings read the file — are inside
-//! it too.
+//! is each file's identity: a replaced file is a new file, born anew with a new
+//! modification time, and a configuration nobody needed to change keeps both. The
+//! shared checkout's is held from the moment it is registered, so the first opens —
+//! the ones that used to set the retention keys while their siblings read the file —
+//! are inside it too. A checkout an earlier release registered still needs those keys
+//! written once, while git reads it; that write appends to the file it is, so the
+//! upgrade journey holds the file to staying the one file through it.
 //!
 //! Every platform, so the Windows `cross` job runs it too: nothing here needs a shell
 //! or the substituted host `world.rs` installs. Real git, a real bare origin, a real
@@ -38,7 +40,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -68,9 +70,11 @@ fn concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them() {
 }
 
 #[test]
-fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_session_reading_it()
-{
-    let _bound = watchdog("a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_session_reading_it", CONCURRENT_JOURNEY_BOUND);
+fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_git_reads_it() {
+    let _bound = watchdog(
+        "a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_git_reads_it",
+        CONCURRENT_JOURNEY_BOUND,
+    );
     let journey = Journey::new(Placement::RunRoots);
     // What a checkout an earlier release registered looks like: a valid registration
     // whose own configuration carries no retention keys, because that release set them
@@ -120,33 +124,46 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
             );
         }
     }
-    drop(writing);
-
-    // Until the keys are set or the first open has had ample time to set them, so a slow
-    // host is not mistaken for a build that writes later.
-    let waited = Instant::now();
-    while !journey.retains() && waited.elapsed() < Duration::from_secs(30) {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        journey.retains(),
-        "the upgraded checkout keeps its objects for borrowers"
-    );
-    let written = Identity::of(&config);
-
-    // Every open beside the write, and what follows them — each branch worked on,
-    // handed back, and restacked — with git reading the checkout throughout.
+    // The configuration is openable again, the lease is still held, and the keys are
+    // not set: the moment before the real first write. Git reads the checkout from here
+    // on, the way anything working in it does — with no lease of this crate's, which
+    // nothing outside it holds — through that write and every session operation after.
+    let unwritten = Identity::of(&config);
     let finished = AtomicBool::new(false);
-    let failed_reads = std::thread::scope(|scope| {
+    let rounds = AtomicUsize::new(0);
+    let (failed_reads, before_the_write) = std::thread::scope(|scope| {
         let journey = &journey;
-        let readers = {
-            let finished = &finished;
-            scope.spawn(move || journey.read_until(finished, &[]))
-        };
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let (finished, rounds) = (&finished, &rounds);
+                scope.spawn(move || journey.read_until(finished, &[], rounds))
+            })
+            .collect();
+        let waited = Instant::now();
+        while rounds.load(Ordering::SeqCst) < 2 && waited.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let before_the_write = rounds.load(Ordering::SeqCst);
+        drop(writing);
+        // Until the keys are set or the first open has had ample time to set them, so a
+        // slow host is not mistaken for a build that writes later.
+        let waited = Instant::now();
+        while !journey.retains() && waited.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // And past it: reads that began after the write, beside every open still going.
+        let written_at = rounds.load(Ordering::SeqCst);
+        let waited = Instant::now();
+        while rounds.load(Ordering::SeqCst) < written_at + 2
+            && waited.elapsed() < Duration::from_secs(30)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let opened: Vec<Opened> = opens
             .into_iter()
             .map(|open| journey.opened(&open.wait_with_output().expect("the open finishes")))
             .collect();
+        // And what follows them: each branch worked on, handed back, and restacked.
         for (node, session) in ["a", "b", "c"].iter().zip(&opened) {
             journey.commit(&session.worktree, &format!("{node}.txt"), node);
         }
@@ -161,20 +178,32 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
             }
         });
         finished.store(true, Ordering::SeqCst);
-        readers.join().expect("a reading thread")
+        let failed: Vec<String> = readers
+            .into_iter()
+            .flat_map(|reader| reader.join().expect("a reading thread"))
+            .collect();
+        (failed, before_the_write)
     });
     // llmlint: ignore-end[tests_mirror_real_usage]
 
     assert!(
+        before_the_write >= 2,
+        "the premise: git was reading the checkout before its retention keys were written"
+    );
+    assert!(
+        journey.retains(),
+        "the upgraded checkout keeps its objects for borrowers"
+    );
+    assert!(
         failed_reads.is_empty(),
-        "git reads of the checkout failed beside its sessions:\n{}",
+        "git reads of the checkout failed while its retention keys were written and its \
+         sessions worked beside them:\n{}",
         failed_reads.join("\n")
     );
-    assert_eq!(
-        Identity::of(&config),
-        written,
-        "{} was replaced again after its retention keys were set, and on Windows every \
-         read beside that replacement could fail",
+    assert!(
+        Identity::of(&config).is_the_file(&unwritten),
+        "{} was replaced to set its retention keys, and on Windows a git read meeting that \
+         replacement cannot open it",
         config.display()
     );
 }
@@ -356,11 +385,12 @@ fn concurrent_sessions(placement: Placement) {
     // and closes, while git reads the shared checkout and every slot clone the whole
     // time.
     let finished = AtomicBool::new(false);
+    let rounds = AtomicUsize::new(0);
     let failed_reads = std::thread::scope(|scope| {
         let readers: Vec<_> = (0..2)
             .map(|_| {
-                let (journey, finished, slots) = (&journey, &finished, &slots);
-                scope.spawn(move || journey.read_until(finished, slots))
+                let (journey, finished, slots, rounds) = (&journey, &finished, &slots, &rounds);
+                scope.spawn(move || journey.read_until(finished, slots, rounds))
             })
             .collect();
         let operations: Vec<_> = NODES
@@ -432,12 +462,33 @@ struct Opened {
 struct Identity {
     #[cfg(unix)]
     inode: (u64, u64),
+    /// When the file came to be. An inode number alone does not tell a replaced file
+    /// from the one it replaced: two `git config` writes in a row hand the second
+    /// lock file the number the first rename freed.
+    #[cfg(unix)]
+    born: Option<SystemTime>,
     #[cfg(windows)]
     created: u64,
     modified: SystemTime,
 }
 
 impl Identity {
+    /// Whether two identities name one file, written to or not: a file replaced by a
+    /// rename is another file, and one appended to in place is the same one.
+    fn is_the_file(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        let same = {
+            assert!(
+                self.born.is_some() && other.born.is_some(),
+                "the premise: this filesystem records when a file was born"
+            );
+            self.inode == other.inode && self.born == other.born
+        };
+        #[cfg(windows)]
+        let same = self.created == other.created;
+        same
+    }
+
     fn of(path: &Path) -> Self {
         let metadata = std::fs::metadata(path)
             .unwrap_or_else(|e| panic!("{} is there to identify: {e}", path.display()));
@@ -451,6 +502,8 @@ impl Identity {
         Self {
             #[cfg(unix)]
             inode,
+            #[cfg(unix)]
+            born: metadata.created().ok(),
             #[cfg(windows)]
             created,
             modified: metadata.modified().expect("a modification time"),
@@ -643,7 +696,12 @@ impl Journey {
     /// Read the shared checkout the ways every session does — its configuration, a
     /// ref, a comparison of two trees — until `finished`, answering every read that
     /// failed.
-    fn read_until(&self, finished: &AtomicBool, slots: &[PathBuf]) -> Vec<String> {
+    fn read_until(
+        &self,
+        finished: &AtomicBool,
+        slots: &[PathBuf],
+        rounds: &AtomicUsize,
+    ) -> Vec<String> {
         let reads: [&[&str]; 3] = [
             &["config", "--get", "gc.auto"],
             &["rev-parse", "--verify", "origin/main"],
@@ -697,6 +755,7 @@ impl Journey {
                     ));
                 }
             }
+            rounds.fetch_add(1, Ordering::SeqCst);
         }
         failed
     }

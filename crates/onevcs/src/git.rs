@@ -1805,7 +1805,7 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 /// cut again in place is still named by the closed records of the sessions it held,
 /// so a sibling's search reads whatever is at `dest`; cut there directly, that search
 /// would meet a repository whose `.git/config` was still being renamed over by the
-/// configuration below, which on Windows it cannot open (see [`configure_unless_set`]).
+/// configuration below, which on Windows it cannot open (see [`append_in_place`]).
 /// Nothing in the clone records its own path, so the move changes nothing in it.
 pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
     clone_borrowing(source, source, dest, origin, base)
@@ -2061,10 +2061,14 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
     #[cfg(not(unix))]
     let common = common_dir(cwd)?;
     let _configuration = lock::exclusive_at(&common.join("onevcs-retention.lock"))?;
+    let mut missing = Vec::new();
     for (key, value) in RETENTION {
-        configure_unless_set(cwd, key, value)?;
+        let held = run(&["config", "--local", "--get", key], Some(cwd))?;
+        if !(held.ok() && held.trimmed() == value) {
+            missing.push((key, value));
+        }
     }
-    Ok(())
+    append_in_place(&common, &missing)
 }
 
 /// What [`retain_objects_for_borrowers`] writes into a lender's own configuration.
@@ -2083,23 +2087,95 @@ pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Set `key` in a repository's own configuration, unless it already holds `value`.
+/// Add settings to the end of a repository's own configuration without replacing the
+/// file, so no reader of it ever meets a moment it cannot be opened.
 ///
-/// Every session opened over a lender asks for the same two settings, and `git config`
-/// rewrites the whole file — a lock file renamed over `config` — even when the value
-/// it is given is the one already there. On Windows that rename is the one moment a
-/// concurrent git command cannot open the file at all: Git for Windows reads its
-/// configuration through `_wfopen`, which does not share deletion, while the rename
-/// holds the file open for exactly that, so every git read beside it fails with
-/// `unable to access '.git/config': Permission denied`. Each session in a repository
-/// is reading that file all the time, so a write that changes nothing is asked of git
-/// only where something would change.
-fn configure_unless_set(cwd: &Path, key: &str, value: &str) -> Result<()> {
-    let held = run(&["config", "--local", "--get", key], Some(cwd))?;
-    if held.ok() && held.trimmed() == value {
+/// `git config` writes a whole new file and renames it over `config`, and on Windows
+/// that rename is a moment a concurrent git command cannot open the file at all: Git
+/// for Windows reads its configuration through `_wfopen`, which does not share
+/// deletion, so every git read beside it fails with `unable to access '.git/config':
+/// Permission denied`. A lender's configuration is read by every session of it and by
+/// whatever else works in the checkout, none of which a lock of this crate's reaches.
+/// So the settings are appended to the file that is there, as one section in one
+/// write: a later section overrides an earlier value of the same key, and a reader
+/// sees the file as it was or with the whole section, because an appending write of a
+/// few bytes is not interleaved with a read of the same file — Linux updates the size
+/// only once the bytes are in place, and NTFS takes a file's resource exclusively for
+/// an extending write and shared for a read. Git's own `config.lock` is held for the
+/// write, so no `git config` can read the file before it and rename its copy over it
+/// after.
+fn append_in_place(common: &Path, settings: &[(&str, &str)]) -> Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    if settings.is_empty() {
         return Ok(());
     }
-    checked(&["config", key, value], Some(cwd)).map(|_| ())
+    let config = git_path(common).join("config");
+    let lock = git_path(common).join("config.lock");
+    let _held = ConfigLock::take(&lock)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(&config)
+        .map_err(error::at("open the configuration at", &config))?;
+    // A file whose last line has no end would run the new section into it.
+    let length = file
+        .seek(SeekFrom::End(0))
+        .map_err(error::at("read the configuration at", &config))?;
+    let mut text = String::new();
+    if length > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::End(-1))
+            .and_then(|_| file.read_exact(&mut last))
+            .map_err(error::at("read the configuration at", &config))?;
+        if last[0] != b'\n' {
+            text.push('\n');
+        }
+    }
+    let mut section = None;
+    for (key, value) in settings {
+        let (name, setting) = key.split_once('.').unwrap_or(("core", key));
+        if section != Some(name) {
+            text.push_str(&format!("[{name}]\n"));
+            section = Some(name);
+        }
+        text.push_str(&format!("\t{setting} = {value}\n"));
+    }
+    file.write_all(text.as_bytes())
+        .map_err(error::at("write the configuration at", &config))
+}
+
+/// Git's own lock on a repository's configuration, held while it is written and
+/// removed when dropped — the file every `git config` takes before it writes.
+struct ConfigLock(PathBuf);
+
+impl ConfigLock {
+    /// Take it, waiting a little for a `git config` that holds it: git holds it only
+    /// for the length of one write.
+    fn take(path: &Path) -> Result<Self> {
+        let started = Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(_) => return Ok(Self(path.to_path_buf())),
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        && started.elapsed() < Duration::from_secs(10) =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(error::at("take git's configuration lock at", path)(e)),
+            }
+        }
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// The object store a checkout keeps its own history in, which is what another
@@ -3516,7 +3592,7 @@ pub fn worktree_add(cwd: &Path, path: &Path, branch: &str, base: &str) -> Result
 /// the branch's upstream, writing two keys into the clone's `.git/config` — and a
 /// warm pool slot's clone is one every sibling session's search reads, so each session
 /// placed in it would rename a new configuration over the one a sibling is reading.
-/// On Windows that read fails (see [`configure_unless_set`]). Nothing here reads an
+/// On Windows that read fails (see [`append_in_place`]). Nothing here reads an
 /// upstream: every push and comparison names its refs, and the base is not the
 /// branch's own remote anyway.
 const NO_TRACK: &str = "--no-track";

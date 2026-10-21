@@ -1734,9 +1734,11 @@ fn lender_lease(checkout: &Path) -> String {
 ///
 /// `register` sets them before any session of a checkout exists, but a checkout an
 /// earlier release registered has none, and the first sessions to open over it after
-/// an upgrade arrive together, each reading the file the write replaces (see
-/// `git::configure_unless_set`). So every open and close holds this lease shared for
-/// as long as it runs, and the one write waits for an exclusive take of it.
+/// an upgrade arrive together. The write appends to the configuration rather than
+/// replacing it (`git::append_in_place`), so no reader of it can fail; the lease is
+/// what lets each session operation read the keys once and act on that answer for as
+/// long as it runs, so every open and close holds it shared and the one write waits
+/// for an exclusive take of it.
 pub(crate) fn lend(checkout: &Path) -> Result<lock::Guard> {
     let lease = lender_lease(checkout);
     let held = lock::shared(&lease)?;
