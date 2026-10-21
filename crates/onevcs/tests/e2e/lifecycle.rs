@@ -968,7 +968,8 @@ fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_t
     // and removes it, and no verb holds one across time: each takes it, works, and
     // drops it within one command. So the lock is found the way the occupied-session
     // journey above finds it, by what appeared when the session was opened, and held
-    // exclusively — as `reclaim` holds it — while the real CLI meets it.
+    // exclusively — as `reclaim` holds it — while the real CLI meets it, both times
+    // below.
     let before = world.locks();
     let (token, worktree) = fixture.open(&["--branch", "feature/kept"]);
     let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
@@ -1017,7 +1018,6 @@ fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_t
         .args(["session", "close", &token_of(&continued.stdout)])
         .assert()
         .success();
-    // llmlint: ignore-end[tests_mirror_real_usage]
 
     // One that does not end is waited for only as long as the lock bound, and every
     // search that meets it — a continuation, an import — says what it was waiting for.
@@ -1064,6 +1064,7 @@ fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_t
         world.git(&fixture.checkout, &["rev-parse", "feature/kept"]),
         "the import reads the branch once nothing holds the clone"
     );
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }
 
 #[test]
