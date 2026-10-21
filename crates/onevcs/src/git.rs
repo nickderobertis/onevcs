@@ -2068,12 +2068,30 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
     let _configuration = lock::exclusive_at(&common.join("onevcs-retention.lock"))?;
     let mut missing = Vec::new();
     for (key, value) in RETENTION {
-        let held = run(&["config", "--local", "--get", key], Some(cwd))?;
-        if !(held.ok() && held.trimmed() == value) {
+        if local_setting(cwd, key)?.as_deref() != Some(value) {
             missing.push((key, value));
         }
     }
     append_in_place(&common, &missing)
+}
+
+/// A repository's own value for `key`, or `None` where it sets none.
+///
+/// `git config --get` answers 1 for a key that is not set and something else for a
+/// configuration it could not read; only the first is an absent setting; the second is
+/// refused, so a file git cannot read is never taken for one that lacks the keys and
+/// written to.
+fn local_setting(cwd: &Path, key: &str) -> Result<Option<String>> {
+    let held = run(&["config", "--local", "--get", key], Some(cwd))?;
+    match held.status {
+        0 => Ok(Some(held.trimmed())),
+        1 => Ok(None),
+        _ => Err(error::invalid(format!(
+            "git could not read {key} in {}: {}",
+            cwd.display(),
+            held.diagnostic()
+        ))),
+    }
 }
 
 /// What [`retain_objects_for_borrowers`] writes into a lender's own configuration.
@@ -2084,8 +2102,7 @@ const RETENTION: [(&str, &str); 2] = [("gc.auto", "0"), ("gc.pruneExpire", "neve
 /// has to wait for the repository's readers first.
 pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
     for (key, value) in RETENTION {
-        let held = run(&["config", "--local", "--get", key], Some(cwd))?;
-        if !(held.ok() && held.trimmed() == value) {
+        if local_setting(cwd, key)?.as_deref() != Some(value) {
             return Ok(false);
         }
     }
@@ -2108,12 +2125,8 @@ pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
 /// What such a write cannot promise is that a reader sees it whole: `write` may write
 /// part of what it is given, a write that fails may leave part behind, and NTFS hands a
 /// reader zero bytes between what has been initialized and a new end of file. So the
-/// file is changed in steps of which every partial state is a configuration git reads
-/// ([`addition`]): the final line end becomes a comment, the settings are appended as
-/// the rest of that comment — no line end among them, so any prefix of them, and any
-/// zeros after one, are comment — and then each line end is put back, one byte at a
-/// time, which a reader sees as either byte. A step that fails leaves a file git reads,
-/// with the settings not yet in force, and the next attempt adds them after it.
+/// file is changed in the steps [`addition`] plans, every partial state of which git
+/// reads; a step that fails leaves such a state, and the next attempt completes it.
 ///
 /// Git's own `config.lock` is held throughout, so no `git config` can read the file
 /// before these steps and rename its copy over them after.
@@ -5915,6 +5928,27 @@ mod config_addition_tests {
                 "{shape}: git's lock is let go"
             );
         }
+    }
+
+    #[test]
+    fn a_configuration_git_cannot_read_is_refused_rather_than_taken_to_lack_the_keys() {
+        let (_scratch, repository, initialized) = initialized();
+        let config = repository.join(".git").join("config");
+        let mut broken = initialized.clone();
+        broken.extend_from_slice(b"[unterminated\n");
+        std::fs::write(&config, &broken).expect("a configuration git refuses");
+        assert!(
+            read(&repository, &broken, "core.bare").is_err(),
+            "the premise: git cannot read it"
+        );
+        let asked = retains_objects_for_borrowers(&repository)
+            .expect_err("whether it retains is not answered from a file git cannot read");
+        assert!(
+            asked.to_string().contains("could not read gc.auto"),
+            "{asked}"
+        );
+        retain_objects_for_borrowers(&repository).expect_err("nothing is written to it");
+        assert_eq!(std::fs::read(&config).expect("the configuration"), broken);
     }
 
     fn held_now(repository: &Path, state: &[u8], key: &str) -> String {
