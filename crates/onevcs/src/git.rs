@@ -1916,15 +1916,22 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseC
         )?;
     }
     // After the copy, which overwrites `origin/HEAD` with whatever the lender's own
-    // copy of it resolved to — a plain ref where this needs a symbolic one.
-    checked(
-        &[
-            "symbolic-ref",
-            "refs/remotes/origin/HEAD",
-            &format!("refs/remotes/origin/{base}"),
-        ],
+    // copy of it resolved to — a plain ref where this needs a symbolic one. Asked
+    // first, because `symbolic-ref` renames a new file over the ref even to write the
+    // value it holds, and a reused slot's clone is read by every sibling's search.
+    let head = format!("refs/remotes/origin/{base}");
+    if run(
+        &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
         Some(dest),
-    )?;
+    )?
+    .trimmed()
+        != head
+    {
+        checked(
+            &["symbolic-ref", "refs/remotes/origin/HEAD", &head],
+            Some(dest),
+        )?;
+    }
     carry_base(dest, base)
 }
 

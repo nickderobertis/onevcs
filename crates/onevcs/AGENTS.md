@@ -1460,8 +1460,12 @@ protecting it would make a refused open's litter permanent.
 
 **What another session reads must stay openable while siblings work.** On Windows a
 git read fails while another process renames a new `.git/config` over the one it opens,
-or deletes the directory it reads. So a session operation never replaces a shared
-config whose content would not change; the one required write (retention keys on a
+or deletes the directory it reads. Configuration alone, because Git for Windows reads
+it through `fopen`, which does not share deletion, and refs, `HEAD` and `packed-refs`
+through `open`, which does — so a ref that moves is renamed over safely. So a session
+operation never replaces a shared config whose content would not change, nor a ref of
+one (`git symbolic-ref` rewrites the value a ref already holds, so it is asked first);
+the one required write (retention keys on a
 checkout an earlier release registered) is written into the file in place under
 git's own `config.lock` rather than renamed over it (`git::append_in_place`), so a
 reader outside this crate — which no lease of its reaches — never meets a moment the

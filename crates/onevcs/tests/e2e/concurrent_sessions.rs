@@ -589,6 +589,19 @@ fn concurrent_sessions(placement: Placement) {
         );
     }
     let slots_before: Vec<Identity> = slots.iter().map(|slot| Identity::of(slot)).collect();
+    // Each slot clone's `origin/HEAD` too: a reused slot is re-pointed at its lender's
+    // view of origin on every take, and the symbolic ref already names the base.
+    let origin_heads: Vec<PathBuf> = slots
+        .iter()
+        .map(|slot| {
+            slot.with_file_name("refs")
+                .join("remotes")
+                .join("origin")
+                .join("HEAD")
+        })
+        .collect();
+    let origin_heads_before: Vec<Identity> =
+        origin_heads.iter().map(|head| Identity::of(head)).collect();
     // The base moves on origin from elsewhere, so every open's fetch has something
     // to bring in and every restacked branch has a base to take.
     let elsewhere = journey.root.join("elsewhere");
@@ -684,6 +697,14 @@ fn concurrent_sessions(placement: Placement) {
             "{} was replaced by a session placed in its reused slot, while its siblings' \
              searches read that clone",
             slot.display()
+        );
+    }
+    for (head, before) in origin_heads.iter().zip(&origin_heads_before) {
+        assert!(
+            Identity::of(head).is_the_file(before),
+            "{} was replaced by a session placed in its reused slot though it already named \
+             the base, while its siblings' searches read that clone",
+            head.display()
         );
     }
     assert_eq!(
