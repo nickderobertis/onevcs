@@ -450,60 +450,87 @@ fn the_branch_reads_as_held_until_its_workspace_is_released() {
     // which would otherwise point the read at that clone, and the hook's `errexit`,
     // under which the `sleep` the release stops beside it would end it before its trap
     // ran.
-    let fixture = Fixture::local(&local_direct());
-    let onevcs = onevcs_for_a_gate(&fixture.world);
-    gated(
-        &fixture,
-        &format!(
-            "root=$(cd ../.. && pwd)\n(\n  set +e\n  trap 'for v in $(compgen -e | grep \"^GIT_\"); do unset \"$v\"; done\n    \
-             [ -d \"$root/clone\" ] && touch \"$HOME/still-standing\"\n    \
-             {onevcs} recoverable --json --all > \"$HOME/read.json\" 2> \"$HOME/read.err\"\n    \
-             exit 0' TERM\n  while :; do sleep 0.05; done\n) >/dev/null 2>&1 </dev/null &\n\
-             echo $! > \"$HOME/daemon.pid\"\nexit 0",
-        ),
-    );
-    finished_branch(&fixture, "feature/watched");
+    //
+    // The release gives that process its grace and then kills it, and the read is only
+    // made *inside* the release if it ends within the grace: one a loaded host stretches
+    // past it is cut short, leaving the file its redirect opened empty — a premise never
+    // built rather than an answer. So the trap marks a read that finished, whatever it
+    // answered, and an attempt without the mark is arranged again.
+    const ATTEMPTS: usize = 3;
+    for attempt in 1..=ATTEMPTS {
+        let fixture = Fixture::local(&local_direct());
+        let onevcs = onevcs_for_a_gate(&fixture.world);
+        gated(
+            &fixture,
+            &format!(
+                "root=$(cd ../.. && pwd)\n(\n  set +e\n  trap 'for v in $(compgen -e | grep \"^GIT_\"); do unset \"$v\"; done\n    \
+                 [ -d \"$root/clone\" ] && touch \"$HOME/still-standing\"\n    \
+                 {onevcs} recoverable --json --all > \"$HOME/read.json\" 2> \"$HOME/read.err\"\n    \
+                 touch \"$HOME/read.done\"\n    \
+                 exit 0' TERM\n  while :; do sleep 0.05; done\n) >/dev/null 2>&1 </dev/null &\n\
+                 echo $! > \"$HOME/daemon.pid\"\nexit 0",
+            ),
+        );
+        finished_branch(&fixture, "feature/watched");
 
-    let (code, stderr) = publish(&fixture.world, &fixture.checkout, "feature/watched");
-    assert_eq!(code, Some(0), "{stderr}");
-    released(&fixture.world, &stderr);
+        let (code, stderr) = publish(&fixture.world, &fixture.checkout, "feature/watched");
+        assert_eq!(code, Some(0), "{stderr}");
+        released(&fixture.world, &stderr);
 
-    assert!(
-        fixture.world.path("still-standing").exists(),
-        "the premise: the read was made before the workspace was removed"
-    );
-    let read = std::fs::read_to_string(fixture.world.path("read.json")).unwrap_or_else(|e| {
-        panic!(
-            "the inventory read made during the release: {e}\n{}",
-            std::fs::read_to_string(fixture.world.path("read.err")).unwrap_or_default()
-        )
-    });
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&read)
-        .unwrap_or_else(|e| panic!("the read printed JSON ({e}):\n{read}"));
-    let row = rows
-        .iter()
-        .find(|row| row["branch"]["branch"] == "feature/watched")
-        .unwrap_or_else(|| panic!("the read reported the branch: {rows:#?}"));
-    assert_eq!(
-        row["held_by"]["holding"], "publication-running",
-        "a read made while the workspace was being released found the branch held: {row:#}"
-    );
+        assert!(
+            fixture.world.path("still-standing").exists(),
+            "the premise: the read was made before the workspace was removed"
+        );
+        if !fixture.world.path("read.done").exists() {
+            eprintln!(
+                "attempt {attempt}: the release stopped the reading process before its read \
+                 finished, so nothing was read inside the release; arranging it again"
+            );
+            continue;
+        }
+        let read = std::fs::read_to_string(fixture.world.path("read.json")).unwrap_or_else(|e| {
+            panic!(
+                "the inventory read made during the release: {e}\n{}",
+                std::fs::read_to_string(fixture.world.path("read.err")).unwrap_or_default()
+            )
+        });
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&read).unwrap_or_else(|e| {
+            panic!(
+                "the read printed JSON ({e}):\n{read}\n{}",
+                std::fs::read_to_string(fixture.world.path("read.err")).unwrap_or_default()
+            )
+        });
+        let row = rows
+            .iter()
+            .find(|row| row["branch"]["branch"] == "feature/watched")
+            .unwrap_or_else(|| panic!("the read reported the branch: {rows:#?}"));
+        assert_eq!(
+            row["held_by"]["holding"], "publication-running",
+            "a read made while the workspace was being released found the branch held: {row:#}"
+        );
 
-    // And once the landing has ended, nothing holds it.
-    let assert = fixture
-        .world
-        .onevcs()
-        .args(["recoverable", "--json", "--all"])
-        .assert()
-        .success();
-    let after: Vec<serde_json::Value> =
-        serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
-    let row = after
-        .iter()
-        .find(|row| row["branch"]["branch"] == "feature/watched")
-        .expect("the branch is still reported");
-    assert!(
-        row.get("held_by").is_none_or(serde_json::Value::is_null),
-        "a finished publication holds nothing: {row:#}"
+        // And once the landing has ended, nothing holds it.
+        let assert = fixture
+            .world
+            .onevcs()
+            .args(["recoverable", "--json", "--all"])
+            .assert()
+            .success();
+        let after: Vec<serde_json::Value> =
+            serde_json::from_slice(&assert.get_output().stdout).expect("recoverable prints JSON");
+        let row = after
+            .iter()
+            .find(|row| row["branch"]["branch"] == "feature/watched")
+            .expect("the branch is still reported");
+        assert!(
+            row.get("held_by").is_none_or(serde_json::Value::is_null),
+            "a finished publication holds nothing: {row:#}"
+        );
+        return;
+    }
+    panic!(
+        "in {ATTEMPTS} attempts the release stopped the reading process before its read \
+         finished every time, so no read was made inside a release: this host could not \
+         answer `recoverable` within the release's grace"
     );
 }
