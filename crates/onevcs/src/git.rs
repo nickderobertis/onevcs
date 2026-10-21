@@ -1720,7 +1720,37 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 ///
 /// What comes back is what became of the clone's own copy of the base — see
 /// [`carry_base`] — which the caller opening a session is the one that can report.
+///
+/// The clone is cut beside `dest` and moved there only once it is whole. A pool slot
+/// cut again in place is still named by the closed records of the sessions it held,
+/// so a sibling's search reads whatever is at `dest`; cut there directly, that search
+/// would meet a repository whose `.git/config` was still being renamed over by the
+/// configuration below, which on Windows it cannot open (see [`configure_unless_set`]).
+/// Nothing in the clone records its own path, so the move changes nothing in it.
 pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "clone".to_owned());
+    let cutting = dest.with_file_name(format!(".{name}.cutting"));
+    if cutting.exists() {
+        std::fs::remove_dir_all(&cutting)
+            .map_err(error::at("remove the unfinished clone at", &cutting))?;
+    }
+    match cut_sharing(source, &cutting, origin, base) {
+        Ok(carried) => {
+            std::fs::rename(&cutting, dest).map_err(error::at("move the cut clone to", dest))?;
+            Ok(carried)
+        }
+        Err(refused) => {
+            let _ = std::fs::remove_dir_all(&cutting);
+            Err(refused)
+        }
+    }
+}
+
+/// [`clone_sharing`]'s clone and configuration, at the scratch path it is cut in.
+fn cut_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
     let source_arg = git_path(source).to_string_lossy();
     let dest_arg = git_path(dest).to_string_lossy();
     let origin_arg = git_location(origin);
@@ -1728,10 +1758,14 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         &["clone", "--shared", "--no-checkout", &source_arg, &dest_arg],
         None,
     )?;
-    checked(
-        &["remote", "set-url", "origin", origin_arg.as_ref()],
-        Some(dest),
-    )?;
+    // A lender with no origin of its own is lent as itself, which is the URL the
+    // clone was just given: asked again, git would rewrite the file to say the same.
+    if run(&["remote", "get-url", "origin"], Some(dest))?.trimmed() != origin_arg.as_ref() {
+        checked(
+            &["remote", "set-url", "origin", origin_arg.as_ref()],
+            Some(dest),
+        )?;
+    }
     let carried = carry_remote_refs(source, dest, base)?;
     carry_hooks(source, dest)?;
     Ok(carried)
@@ -3349,10 +3383,27 @@ pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
 }
 
 /// Create `branch` off `base`, checked out in a new worktree at `path`.
+///
+/// With no upstream, for the reason [`NO_TRACK`] gives.
 pub fn worktree_add(cwd: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
     let path = git_path(path).to_string_lossy();
-    checked(&["worktree", "add", "-b", branch, &path, base], Some(cwd)).map(|_| ())
+    checked(
+        &["worktree", "add", NO_TRACK, "-b", branch, &path, base],
+        Some(cwd),
+    )
+    .map(|_| ())
 }
+
+/// What a branch this crate cuts is given instead of git's default upstream.
+///
+/// Cut from `origin/<base>`, git's `branch.autoSetupMerge` would record the base as
+/// the branch's upstream, writing two keys into the clone's `.git/config` — and a
+/// warm pool slot's clone is one every sibling session's search reads, so each session
+/// placed in it would rename a new configuration over the one a sibling is reading.
+/// On Windows that read fails (see [`configure_unless_set`]). Nothing here reads an
+/// upstream: every push and comparison names its refs, and the base is not the
+/// branch's own remote anyway.
+const NO_TRACK: &str = "--no-track";
 
 /// Check out an existing local branch in a new worktree.
 pub fn worktree_add_existing(cwd: &Path, path: &Path, branch: &str) -> Result<()> {
@@ -3375,8 +3426,14 @@ pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result
 /// The in-place form of [`worktree_add`], for a pool slot whose worktree stands
 /// detached on the base: git rewrites only the files that differ between the two
 /// trees, which is what lets an incremental build in the slot see a branch diff.
+///
+/// With no upstream, for the reason [`NO_TRACK`] gives.
 pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<()> {
-    checked(&["checkout", "-q", "-b", branch, base], Some(worktree)).map(|_| ())
+    checked(
+        &["checkout", "-q", NO_TRACK, "-b", branch, base],
+        Some(worktree),
+    )
+    .map(|_| ())
 }
 
 /// Check out an existing local branch in the worktree that is already there.

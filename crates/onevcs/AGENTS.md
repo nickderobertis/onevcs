@@ -1466,7 +1466,14 @@ holds each under its shared occupancy lease (`workspace::checkouts_held`, kept b
 `branch::Located` for as long as the chosen copy is read), because a sibling's open
 reclaims one the moment its branches are on origin, and a file whose deletion is
 pending opens as `Permission denied`. Only a closed record's lease is waited for: an
-open one's exclusive holder is a command working in that session.
+open one's exclusive holder is a command working in that session. Three more rules
+keep a shared `.git/config` still: the retention keys are first set at `register`,
+before any session of the checkout exists; a branch is cut `--no-track`
+(`git::NO_TRACK`), because the upstream git would record is two keys written into a
+warm slot's clone — one siblings read — on every session placed there; and a clone is
+cut beside its destination and moved in whole (`git::clone_sharing`), because a slot
+cut again in place is still named by closed records. The journey runs on run roots
+and on a pool.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this

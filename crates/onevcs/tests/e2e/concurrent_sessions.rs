@@ -19,9 +19,18 @@
 //!   Here that reads as a directory that does not exist; on Windows, a file whose
 //!   deletion is pending opens as `Permission denied`.
 //!
-//! Linux cannot show the first as a failed read, which is why what is held there is
-//! the file's identity: a replaced file is a new inode with a new modification time,
-//! and a configuration nobody needed to change keeps both.
+//! A host that keeps a pool of warm slots adds a third: each session placed in a
+//! reused slot cut its branch with an upstream, which git records in the slot clone's
+//! `.git/config` — a clone every sibling's search reads, because closed records name
+//! it. So the journey runs twice, once on run roots and once on a pool, and reads the
+//! slot clones beside the shared checkout.
+//!
+//! Linux cannot show a replacement as a failed read, which is why what is held there
+//! is each file's identity: a replaced file is a new inode with a new modification
+//! time, and a configuration nobody needed to change keeps both. The shared
+//! checkout's is held from the moment it is registered, so the first opens — the ones
+//! that used to set the retention keys while their siblings read the file — are inside
+//! it too.
 //!
 //! Every platform, so the Windows `cross` job runs it too: nothing here needs a shell
 //! or the substituted host `world.rs` installs. Real git, a real bare origin, a real
@@ -41,7 +50,28 @@ const NODES: [&str; 3] = ["a", "b", "c"];
 
 #[test]
 fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them() {
-    let journey = Journey::new();
+    concurrent_sessions(Placement::RunRoots);
+}
+
+#[test]
+fn concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them() {
+    concurrent_sessions(Placement::Pool);
+}
+
+/// Where the host puts a session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// A run root cut for each session, which is what a host configuring no pool does.
+    RunRoots,
+    /// A pool of as many warm slots as there are nodes, sessions past it admitted.
+    Pool,
+}
+
+fn concurrent_sessions(placement: Placement) {
+    let journey = Journey::new(placement);
+    // From the moment the checkout is registered: no session of it exists before this.
+    let config = journey.checkout.join(".git").join("config");
+    let registered = Identity::of(&config);
 
     // The first placement of every node, at once, each committed to and pushed the
     // way a worker does, and closed at once. Its branches are on origin, so their
@@ -70,6 +100,18 @@ fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them
         }
     });
 
+    // Every node's first placement took a slot, which its close returned warm; each
+    // restack below continues its branch in one of them.
+    let slots = journey.slot_configs();
+    if placement == Placement::Pool {
+        assert_eq!(
+            slots.len(),
+            NODES.len(),
+            "the premise: one warm slot per node"
+        );
+    }
+    let slots_before: Vec<Identity> = slots.iter().map(|slot| Identity::of(slot)).collect();
+
     // The base moves on origin from elsewhere, so every open's fetch has something
     // to bring in and every restacked branch has a base to take.
     let elsewhere = journey.root.join("elsewhere");
@@ -80,19 +122,16 @@ fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them
     journey.commit(&elsewhere, "base.txt", "moved");
     journey.git(&elsewhere, &["push", "-q", "origin", "main"]);
 
-    // Every open from here on finds both retention keys already set.
-    let config = journey.checkout.join(".git").join("config");
-    let before = Identity::of(&config);
-
     // Each node restacked — its branch continued on the moved base, the base merged
     // in by the caller, committed, closed — beside a fresh sibling session that opens
-    // and closes, while git reads the shared checkout the whole time.
+    // and closes, while git reads the shared checkout and every slot clone the whole
+    // time.
     let finished = AtomicBool::new(false);
     let failed_reads = std::thread::scope(|scope| {
         let readers: Vec<_> = (0..2)
             .map(|_| {
-                let (journey, finished) = (&journey, &finished);
-                scope.spawn(move || journey.read_until(finished))
+                let (journey, finished, slots) = (&journey, &finished, &slots);
+                scope.spawn(move || journey.read_until(finished, slots))
             })
             .collect();
         let operations: Vec<_> = NODES
@@ -125,17 +164,26 @@ fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them
 
     assert!(
         failed_reads.is_empty(),
-        "git reads of the shared checkout failed while its sessions opened, fetched, \
-         restacked and closed:\n{}",
+        "git reads of the shared checkout or a slot clone failed while its sessions \
+         opened, fetched, restacked and closed:\n{}",
         failed_reads.join("\n")
     );
     assert_eq!(
         Identity::of(&config),
-        before,
+        registered,
         "{} was replaced by session operations that had nothing to change in it, and \
          on Windows every git read beside such a replacement fails to open it",
         config.display()
     );
+    for (slot, before) in slots.iter().zip(&slots_before) {
+        assert_eq!(
+            &Identity::of(slot),
+            before,
+            "{} was replaced by a session placed in its reused slot, while its siblings' \
+             searches read that clone",
+            slot.display()
+        );
+    }
     assert_eq!(
         journey.git_output(&journey.checkout, &["config", "--get", "gc.auto"]),
         "0",
@@ -190,7 +238,7 @@ struct Journey {
 }
 
 impl Journey {
-    fn new() -> Self {
+    fn new(placement: Placement) -> Self {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let root =
             plain_path(std::fs::canonicalize(directory.path()).expect("a canonical scratch root"));
@@ -209,6 +257,18 @@ impl Journey {
             checkout: root.join("project"),
             root,
         };
+        if placement == Placement::Pool {
+            // How a host keeps a pool: the host file, which is also what sheds against.
+            std::fs::create_dir_all(journey.root.join("state")).expect("a state root");
+            std::fs::write(
+                journey.root.join("state").join("workspaces.yml"),
+                format!(
+                    "version: 1\ndefault:\n  pool: {}\n  overflow: unlimited\n",
+                    NODES.len()
+                ),
+            )
+            .expect("a workspaces file");
+        }
         let seed = journey.root.join("seed");
         std::fs::create_dir(&seed).expect("a seed directory");
         journey.git(&seed, &["init", "-q", "-b", "main"]);
@@ -277,7 +337,7 @@ impl Journey {
     /// Read the shared checkout the ways every session does — its configuration, a
     /// ref, a comparison of two trees — until `finished`, answering every read that
     /// failed.
-    fn read_until(&self, finished: &AtomicBool) -> Vec<String> {
+    fn read_until(&self, finished: &AtomicBool, slots: &[PathBuf]) -> Vec<String> {
         let reads: [&[&str]; 3] = [
             &["config", "--get", "gc.auto"],
             &["rev-parse", "--verify", "origin/main"],
@@ -285,6 +345,27 @@ impl Journey {
         ];
         let mut failed = Vec::new();
         while !finished.load(Ordering::SeqCst) {
+            for slot in slots {
+                // Addressed from outside the slot: a process whose working directory is
+                // inside a run root is one `session close` rightly refuses to close over.
+                let git_dir = slot.parent().expect("a slot clone's git directory");
+                let git_dir = git_dir.to_string_lossy();
+                let read = [
+                    "--git-dir",
+                    &git_dir,
+                    "config",
+                    "--get",
+                    "remote.origin.url",
+                ];
+                let output = self.run(&mut self.git_command(&self.root, &read));
+                if !output.status.success() {
+                    failed.push(format!(
+                        "git {}: {}",
+                        read.join(" "),
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ));
+                }
+            }
             for read in reads {
                 let output = self.run(&mut self.git_command(&self.checkout, read));
                 // `diff --quiet` answers 1 for trees that differ, which is an answer.
@@ -308,6 +389,30 @@ impl Journey {
         std::fs::write(checkout.join(file), contents).expect("a file to commit");
         self.git(checkout, &["add", "-A"]);
         self.git(checkout, &["commit", "-q", "-m", &format!("feat: {file}")]);
+    }
+
+    /// The `.git/config` of every pool slot's clone this host has.
+    fn slot_configs(&self) -> Vec<PathBuf> {
+        let workspaces = self.root.join("state").join("workspaces");
+        let mut configs = Vec::new();
+        for identity in std::fs::read_dir(&workspaces)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            for slot in std::fs::read_dir(identity.path().join("pool"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let config = slot.path().join("clone").join(".git").join("config");
+                if config.is_file() {
+                    configs.push(config);
+                }
+            }
+        }
+        configs.sort();
+        configs
     }
 
     /// The `onevcs` binary, over this journey's own state root and git configuration.

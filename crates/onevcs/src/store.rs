@@ -718,6 +718,12 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
         Some(value) => value.to_owned(),
         None => git::remote_url(&checkout, "origin")?,
     };
+    // Set here, where no session of this checkout can exist yet, rather than first at
+    // a session's open: the first write of a lender's retention keys renames a new
+    // `.git/config` over the one every concurrent session is reading, and on Windows
+    // a read meeting that rename fails. Every later open finds them set and writes
+    // nothing.
+    git::retain_objects_for_borrowers(&checkout)?;
     let normalized = normalize(&origin);
     let gate = detect_gate(&checkout);
     let alias = alias_for(&checkout);
