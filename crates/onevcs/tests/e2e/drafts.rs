@@ -3041,3 +3041,61 @@ fn a_required_commit_status_in_error_fails_the_publication_naming_it() {
         .stderr(predicate::str::contains("deploy/preview"));
     assert!(hosted.world.events_of(&token, "draft-lifted").is_empty());
 }
+
+#[test]
+fn change_check_records_host_times_without_completion_only_duplicates() {
+    let (world, _origin, session) = scene(TEAM, "60", "20");
+    let mut queued = check("gate", None, true, 1);
+    queued.status = "queued".to_owned();
+    queued.started_at = None;
+    let running = check("gate", None, true, 1);
+    let mut completed = check("gate", Some("success"), true, 1);
+    completed.completed_at = Some("2026-09-30T12:02:00Z".to_owned());
+    let mut completion_only = completed.clone();
+    completion_only.completed_at = Some("2026-09-30T12:02:01Z".to_owned());
+    let mut waiting = queued.clone();
+    waiting.name = "external".to_owned();
+    let mut missing_start = check("external", Some("success"), true, 2);
+    missing_start.started_at = None;
+    missing_start.completed_at = Some("2026-09-30T12:03:00Z".to_owned());
+    let host = scripted(
+        None,
+        vec![
+            vec![queued, waiting.clone()],
+            vec![running, waiting.clone()],
+            vec![completed, waiting.clone()],
+            vec![completion_only.clone(), waiting],
+            vec![completion_only, missing_start],
+        ],
+        None,
+        vec![],
+    );
+
+    let published = publish(&host, &session, &PublishRequest::default());
+    assert!(
+        matches!(published.outcome, PublishOutcome::ChangeReviewDraft(_)),
+        "{published:?}"
+    );
+    let payloads: Vec<Value> = world
+        .events_of(&session.token.0, "change-check")
+        .into_iter()
+        .map(|event| event["payload"].clone())
+        .collect();
+    let expected: Value = serde_json::from_str(include_str!("../golden/change-check-times.json"))
+        .expect("the current change-check payload fixture");
+    assert_eq!(
+        serde_json::json!(payloads),
+        expected,
+        "all fields survive, and completion alone does not emit a sixth record"
+    );
+    let contract = include_str!("../../../../docs/contract.md");
+    let (_, example) = contract
+        .split_once("<!-- change-check-payload -->\n```json\n")
+        .expect("the authoritative change-check example");
+    let (example, _) = example.split_once("\n```").expect("the JSON block ends");
+    let documented: Value = serde_json::from_str(example).expect("the contract example is JSON");
+    assert_eq!(
+        payloads[3], documented,
+        "the emitted completed check and fixture agree with the contract"
+    );
+}

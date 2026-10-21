@@ -2364,6 +2364,11 @@ report, so nothing new is written to a stream.
 
 Event kinds added: none.
 
+**oneharness history is retained.** Run journals point into oneharness's history
+store. `onevcs` never removes anything under that store: sweeps, reclamation, and
+worktree reaping included. Its files remain until an explicit
+`oneharness history clear --yes`.
+
 **`onevcs sweep` reports in a machine-readable form, and every family it names is
 swept or owned.** The verb takes `--format text|json`, defaulting to `text`, so every
 caller that says nothing sees what it saw. Under `json` it writes **one JSON object**
@@ -3955,7 +3960,26 @@ impl Check { pub fn state(&self) -> CheckState; }
 // pending: not yet settled · failed: every other settled conclusion
 ```
 
-It surfaces in three places. The `change-check` event's payload gains `state` beside the
+The `change-check` payload carries `name`, `required`, `status`, `from_status`,
+`conclusion`, and `state`, retaining their existing names, types, and meanings. It also
+carries `started_at` and `completed_at`, each a string (RFC 3339, UTC) or `null`:
+`started_at` is when the host says the check started, or `null` while queued or when
+the host reports no start; `completed_at` is when the host says it completed, or
+`null` until it has or when the host cannot report it. Hosts that cannot say answer
+`null` independently for each field. A change in `completed_at` alone emits no extra
+record beyond the state changes the watch already reports. These additive payload
+fields retain the event envelope's `v: 1`.
+
+The watch journey holds its completed payload and current fixture to this example:
+
+<!-- change-check-payload -->
+```json
+{"name":"gate","required":true,"status":"completed","from_status":"in_progress",
+ "conclusion":"success","state":"passed","started_at":"2026-09-30T12:01:00Z",
+ "completed_at":"2026-09-30T12:02:00Z"}
+```
+
+It surfaces in three places. The `change-check` event's payload carries `state` beside the
 host's raw `status` and `conclusion`. `checks-settled`, above. And `onevcs status` — the
 read `just work-status` renders — shows each check's state, in its human rendering and in
 its `--json`, whose report version is **10**: every check carries `state`, and
