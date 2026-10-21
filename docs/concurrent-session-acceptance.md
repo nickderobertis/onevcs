@@ -63,8 +63,9 @@ Trace observations (fixture setup is distinguished from session operations):
   `packed-refs`, or `refs/remotes/origin/HEAD` at published run/slot clone paths.
   Their clone-construction replacements were under `.clone.cutting`.
 - The upgrade writes opened the existing checkout `config` with `O_RDWR`, without
-  `O_TRUNC`. For example PID 3214511 opened `.tmphicYMu/project/.git/config` as fd 5
-  and used `pwrite64` to add the comment containing the retention settings. This
+  `O_TRUNC`. For example PID 3215415, whose exec was `onevcs session open project
+  --branch-name placement/b`, opened `.tmpSlRB6c/project/.git/config`
+  and used `pwrite64` on fd 5 to add the retention-settings comment at offset 0. This
   is an in-place write, followed by the single-byte line-ending changes.
 - The original-tree trace below captured repeated registered-checkout
   `config.lock -> config` renames and pool-clone config replacements. PID 3288033
