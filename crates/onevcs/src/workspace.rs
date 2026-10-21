@@ -1107,7 +1107,6 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
 pub(crate) struct Searched {
     /// [`checkouts_of`]'s list, in its search order.
     pub checkouts: Vec<PathBuf>,
-    /// Released when the answer is dropped.
     _held: Vec<lock::Guard>,
 }
 

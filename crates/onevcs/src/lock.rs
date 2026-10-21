@@ -212,7 +212,8 @@ fn wait_for(path: &Path, file: File, what: &str, bound: f64) -> Result<Guard> {
     wait_in_line(path, file, what, bound, false)
 }
 
-/// Wait for a lock file already open, shared or exclusively.
+/// Only an exclusive holder stamps the file: a shared one is one of several, for the
+/// reason [`record_owner`] gives.
 fn wait_in_line(path: &Path, file: File, what: &str, bound: f64, is_shared: bool) -> Result<Guard> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {

@@ -957,6 +957,116 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
 }
 
 #[test]
+fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_that_does_not_end() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    // A closed session whose work never reached origin: its run clone is kept, and is
+    // one of the copies every search of the branch reads.
+    //
+    // llmlint: ignore-block[tests_mirror_real_usage] what a search meets is a
+    // reclamation holding that run root's occupancy lease exclusively while it decides
+    // and removes it, and no verb holds one across time: each takes it, works, and
+    // drops it within one command. So the lock is found the way the occupied-session
+    // journey above finds it, by what appeared when the session was opened, and held
+    // exclusively — as `reclaim` holds it — while the real CLI meets it.
+    let before = world.locks();
+    let (token, worktree) = fixture.open(&["--branch", "feature/kept"]);
+    let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
+    let [lease] = opened.as_slice() else {
+        panic!("opening one session takes exactly one new lease, not {opened:?}");
+    };
+    world.commit_file(&worktree, "kept.txt", "kept\n", "feat: keep this work");
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+
+    // A continuation waits for the reclamation to end rather than reading a clone
+    // that may be half removed, and goes on once it has.
+    let reclaiming = World::occupy(lease);
+    let mut continuing = world
+        .onevcs_std()
+        .args(["session", "open", "project", "--branch", "feature/kept"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(
+        continuing
+            .try_wait()
+            .expect("the open can be asked")
+            .is_none(),
+        "the continuation went on while the clone it reads was being reclaimed"
+    );
+    drop(reclaiming);
+    let continued = continuing.wait_with_output().expect("the open finishes");
+    assert!(
+        continued.status.success(),
+        "the continuation opens once the reclamation is over:\n{}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    let resumed_at = worktree_of(&continued.stdout);
+    assert!(
+        resumed_at.join("kept.txt").is_file(),
+        "the continued branch carries the closed session's work"
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token_of(&continued.stdout)])
+        .assert()
+        .success();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    // One that does not end is waited for only as long as the lock bound, and every
+    // search that meets it — a continuation, an import — says what it was waiting for.
+    let reclaiming = World::occupy(lease);
+    let checkout = fixture.checkout.to_string_lossy().into_owned();
+    let searches: [&[&str]; 2] = [
+        &["session", "open", "project", "--branch", "feature/kept"],
+        &[
+            "import",
+            "feature/kept",
+            "--repo",
+            &checkout,
+            "--as",
+            "kept/copy",
+        ],
+    ];
+    for search in searches {
+        world
+            .onevcs()
+            .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "1")
+            .args(search)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "timed out after 1s waiting for run:",
+            ))
+            .stderr(predicate::str::contains(&token));
+    }
+    drop(reclaiming);
+    world
+        .onevcs()
+        .args([
+            "import",
+            "feature/kept",
+            "--repo",
+            &checkout,
+            "--as",
+            "kept/copy",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        world.git(&fixture.checkout, &["rev-parse", "kept/copy"]),
+        world.git(&fixture.checkout, &["rev-parse", "feature/kept"]),
+        "the import reads the branch once nothing holds the clone"
+    );
+}
+
+#[test]
 fn a_pin_resumes_only_the_session_it_asked_for() {
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
