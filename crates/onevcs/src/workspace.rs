@@ -1195,13 +1195,15 @@ pub(crate) fn open_with(
     let resolution = store::resolve(registry, &request.repo)?;
     let execution =
         execution_checkout(registry, &resolution, request.execution_checkout.as_deref())?;
+    // Held for the whole open, before the first read of the checkout's configuration —
+    // the check that it is a checkout at all is one, and before the lease it could meet
+    // another open's retention write.
+    let _lent = lend(&execution)?;
     if !git::is_repo(&execution) {
         return Err(Error::Invalid {
             reason: format!("{} is not a git checkout", execution.display()),
         });
     }
-    // Held for the whole open, before the first read of the checkout's configuration.
-    let _lent = lend(&execution)?;
     // Before anything is resumed or cut, for the reason the branch names are: a label
     // a command line could not spell back is the request being wrong, not the host.
     label::validate(&request.labels)?;

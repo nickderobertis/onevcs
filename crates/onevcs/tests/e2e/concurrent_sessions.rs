@@ -44,9 +44,6 @@ use std::time::{Duration, Instant, SystemTime};
 use assert_cmd::cargo::CommandCargoExt;
 use fs4::fs_std::FileExt;
 
-/// The file in a checkout's common directory every fetch into it takes turns under.
-const FETCH_LOCK: &str = "onevcs-fetch.lock";
-
 use crate::support::{plain_path, watchdog, CONCURRENT_JOURNEY_BOUND};
 
 /// How many nodes are placed, and then restacked, at once.
@@ -89,35 +86,56 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
     // llmlint: ignore-end[tests_mirror_real_usage]
     let config = journey.checkout.join(".git").join("config");
 
-    // llmlint: ignore-block[tests_mirror_real_usage] a session operation in flight is
-    // one whose fetch is still running, and no interface holds a fetch open on request:
-    // so the journey holds the checkout's fetch lock — the file every fetch into it takes
-    // turns under, in the checkout itself — as a slow fetch of another process would,
-    // while the real CLI meets it.
-    let fetch_lock = journey.checkout.join(".git").join(FETCH_LOCK);
-    let fetching = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&fetch_lock)
-        .expect("the fetch lock opens");
-    FileExt::lock_exclusive(&fetching).expect("the journey holds the fetch lock");
+    // llmlint: ignore-block[tests_mirror_real_usage] a retention write in flight is one
+    // whose `git config` has not finished replacing the file, and no interface holds a
+    // write open on request: so the journey takes the checkout's lender lease alone, as
+    // that write holds it, and makes the configuration what Windows makes of a file
+    // being renamed over — one no reader can open. The first opens arrive inside it, and
+    // each one's check that the checkout is a checkout reads that file. Then the lease
+    // is let go, and the first of them makes the real write with the others queued
+    // beside it. Everything that meets either is the real CLI.
+    let writing = journey.lender_lease_taken_alone();
+    let mut opens = Vec::new();
+    {
+        let _unopenable = Unopenable::make(&journey, &config);
+        for node in ["a", "b", "c"] {
+            opens.push(journey.spawn_open(&["--branch-name", &format!("placement/{node}")]));
+        }
+        // Long enough for an open that reads the checkout before the lease to have read
+        // it, failed, and exited.
+        std::thread::sleep(Duration::from_millis(1500));
+        if let Some(index) = opens
+            .iter_mut()
+            .position(|open| open.try_wait().expect("an open can be asked").is_some())
+        {
+            let ended = opens
+                .remove(index)
+                .wait_with_output()
+                .expect("the open ended");
+            panic!(
+                "a session open ended while a retention write of the checkout was in \
+                 flight, so it read the configuration that write replaces — on Windows, a \
+                 file no reader can open:\n{}",
+                String::from_utf8_lossy(&ended.stderr)
+            );
+        }
+    }
+    drop(writing);
 
-    let mut first = journey.spawn_open(&["--branch-name", "placement/a"]);
     // Until the keys are set or the first open has had ample time to set them, so a slow
     // host is not mistaken for a build that writes later.
     let waited = Instant::now();
-    while !journey.retains() && waited.elapsed() < Duration::from_secs(10) {
+    while !journey.retains() && waited.elapsed() < Duration::from_secs(30) {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(
-        first.try_wait().expect("the open can be asked").is_none(),
-        "the premise: the first open is still in flight, behind the fetch it waits for"
+        journey.retains(),
+        "the upgraded checkout keeps its objects for borrowers"
     );
-    let in_flight = Identity::of(&config);
+    let written = Identity::of(&config);
 
-    // A second session operation in flight beside it, and readers of the checkout.
+    // Every open beside the write, and what follows them — each branch worked on,
+    // handed back, and restacked — with git reading the checkout throughout.
     let finished = AtomicBool::new(false);
     let failed_reads = std::thread::scope(|scope| {
         let journey = &journey;
@@ -125,15 +143,11 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
             let finished = &finished;
             scope.spawn(move || journey.read_until(finished, &[]))
         };
-        let second = journey.spawn_open(&["--branch-name", "placement/b"]);
-        std::thread::sleep(Duration::from_millis(1500));
-        FileExt::unlock(&fetching).expect("the fetch lock is released");
-        let opened: Vec<Opened> = [first.wait_with_output(), second.wait_with_output()]
+        let opened: Vec<Opened> = opens
             .into_iter()
-            .map(|output| journey.opened(&output.expect("the open finishes")))
+            .map(|open| journey.opened(&open.wait_with_output().expect("the open finishes")))
             .collect();
-        // And what follows them: each branch worked on, handed back, and restacked.
-        for (node, session) in ["a", "b"].iter().zip(&opened) {
+        for (node, session) in ["a", "b", "c"].iter().zip(&opened) {
             journey.commit(&session.worktree, &format!("{node}.txt"), node);
         }
         std::thread::scope(|inner| {
@@ -142,7 +156,7 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
             }
         });
         std::thread::scope(|inner| {
-            for node in ["a", "b"] {
+            for node in ["a", "b", "c"] {
                 inner.spawn(move || journey.restack(&format!("placement/{node}")));
             }
         });
@@ -153,18 +167,14 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
 
     assert!(
         failed_reads.is_empty(),
-        "git reads of the checkout failed while its retention keys were set:\n{}",
+        "git reads of the checkout failed beside its sessions:\n{}",
         failed_reads.join("\n")
-    );
-    assert!(
-        journey.retains(),
-        "the upgraded checkout keeps its objects for borrowers"
     );
     assert_eq!(
         Identity::of(&config),
-        in_flight,
-        "{} was replaced while another session operation of the checkout was in flight, \
-         and on Windows every read that operation made beside it could fail",
+        written,
+        "{} was replaced again after its retention keys were set, and on Windows every \
+         read beside that replacement could fail",
         config.display()
     );
 }
@@ -375,6 +385,85 @@ impl Identity {
             #[cfg(windows)]
             created,
             modified: metadata.modified().expect("a modification time"),
+        }
+    }
+}
+
+/// A lock file, created where it is not there, held exclusively until it is unlocked
+/// or dropped.
+fn held_exclusively(path: &Path) -> std::fs::File {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap_or_else(|e| panic!("{} opens: {e}", path.display()));
+    FileExt::lock_exclusive(&file)
+        .unwrap_or_else(|e| panic!("the journey holds {}: {e}", path.display()));
+    file
+}
+
+/// A file no reader can open, for as long as this is held: what Windows makes of a
+/// file while another process renames a new one over it.
+struct Unopenable {
+    path: PathBuf,
+    #[cfg(unix)]
+    mode: u32,
+    #[cfg(windows)]
+    _held: std::fs::File,
+}
+
+impl Unopenable {
+    fn make(journey: &Journey, path: &Path) -> Self {
+        #[cfg(unix)]
+        let made = {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path)
+                .expect("the file is there")
+                .permissions()
+                .mode();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+                .expect("the file's permissions can be taken away");
+            Self {
+                path: path.to_owned(),
+                mode,
+            }
+        };
+        #[cfg(windows)]
+        let made = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Shared with nobody, as a rename in flight holds it.
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(path)
+                .expect("the file can be held unshared");
+            Self {
+                path: path.to_owned(),
+                _held: held,
+            }
+        };
+        // The premise, which a user no permissions bind (root) would not meet.
+        let read = journey.run(
+            &mut journey.git_command(&journey.checkout, &["config", "--get", "remote.origin.url"]),
+        );
+        assert!(
+            !read.status.success(),
+            "the premise: git cannot read {} while it is unopenable",
+            made.path.display()
+        );
+        made
+    }
+}
+
+impl Drop for Unopenable {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
         }
     }
 }
@@ -603,6 +692,31 @@ impl Journey {
             token: field("token"),
             worktree: PathBuf::from(field("worktree")),
         }
+    }
+
+    /// The registered checkout's lender lease, taken alone as a retention write in
+    /// flight holds it: every session operation over the checkout waits on it.
+    fn lender_lease_taken_alone(&self) -> std::fs::File {
+        // The lease is the lock file the state root keeps for this identity, named after
+        // the checkout as the registry holds it — which is why it is asked for here.
+        let resolved = self.run(self.onevcs().args(["resolve", "project"]));
+        assert!(
+            resolved.status.success(),
+            "the registered checkout resolves:\n{}",
+            String::from_utf8_lossy(&resolved.stderr)
+        );
+        let answer: serde_json::Value =
+            serde_json::from_slice(&resolved.stdout).expect("resolve answers with one object");
+        let checkout = answer["publication_checkout"]
+            .as_str()
+            .expect("resolve names the publication checkout");
+        let locks = self.root.join("state").join("locks");
+        std::fs::create_dir_all(&locks).expect("a locks directory");
+        let digest = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(format!("lender:{checkout}").as_bytes())
+        };
+        held_exclusively(&locks.join(format!("{digest:x}.lock")))
     }
 
     /// Whether the registered checkout's own configuration holds both retention keys.
