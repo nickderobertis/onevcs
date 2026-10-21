@@ -317,8 +317,11 @@ fn from_outside(args: &[&str], cwd: Option<&Path>) -> Option<(PathBuf, PathBuf)>
     }
     // Absolute, both: a relative state root names its workspaces from this process's
     // own directory, and the git directory is handed to a process started elsewhere.
-    let workspaces = std::path::absolute(crate::home::workspaces_dir().ok()?).ok()?;
-    let cwd = std::path::absolute(cwd).ok()?;
+    // And spelled alike, both: a record holds a canonical path, which on Windows is the
+    // verbatim form no plain state root starts with.
+    let workspaces = crate::home::workspaces_dir().ok()?;
+    let workspaces = std::path::absolute(git_path(&workspaces)).ok()?;
+    let cwd = std::path::absolute(git_path(cwd)).ok()?;
     if !cwd.starts_with(&workspaces) || cwd == workspaces {
         return None;
     }
