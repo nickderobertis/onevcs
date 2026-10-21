@@ -3660,6 +3660,8 @@ impl<'a> Watcher<'a> {
                     "from_status": previous.map(|(status, _, _)| status),
                     "conclusion": check.conclusion,
                     "state": check.state(),
+                    "started_at": check.started_at,
+                    "completed_at": check.completed_at,
                 })),
                 artifacts,
                 crate::event::EmissionResult::Check {

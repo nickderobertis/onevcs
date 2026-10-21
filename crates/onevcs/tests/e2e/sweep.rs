@@ -383,11 +383,27 @@ fn a_finished_publication_workspace_older_than_the_age_floor_is_reclaimed() {
     );
     backdate(&run_root, 72);
 
+    // Run journals may point here even after the workspace that produced them is
+    // gone. Age must not turn the host's history into reclaimable onevcs storage.
+    let history = fixture
+        .world
+        .path(".local/state/oneharness/history/acme-corp-hosted");
+    std::fs::create_dir_all(&history).expect("the host's history store");
+    let session_file = history.join("retained-session.jsonl");
+    let session_bytes = b"{\"session_id\":\"retained-session\"}\n";
+    std::fs::write(&session_file, session_bytes).expect("a history session file");
+    backdate(&history, 72);
+
     // An ordinary sweep: no flags, so the age floor is the documented default.
     let (report, diagnosis) = swept_with_diagnosis(&fixture, &[]);
     assert!(
         !run_root.exists(),
         "a publication that was gated and is nobody's is reclaimed:\n{report}"
+    );
+    assert_eq!(
+        std::fs::read(&session_file).expect("sweep retains the aged history session"),
+        session_bytes,
+        "reclaiming a workspace preserves the history its journal points to"
     );
     assert_eq!(
         diagnosis, "",

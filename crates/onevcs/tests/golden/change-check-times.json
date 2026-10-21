@@ -1,0 +1,52 @@
+[
+  {
+    "name": "gate",
+    "required": true,
+    "status": "queued",
+    "from_status": null,
+    "conclusion": null,
+    "state": "pending",
+    "started_at": null,
+    "completed_at": null
+  },
+  {
+    "name": "external",
+    "required": true,
+    "status": "queued",
+    "from_status": null,
+    "conclusion": null,
+    "state": "pending",
+    "started_at": null,
+    "completed_at": null
+  },
+  {
+    "name": "gate",
+    "required": true,
+    "status": "in_progress",
+    "from_status": "queued",
+    "conclusion": null,
+    "state": "pending",
+    "started_at": "2026-09-30T12:01:00Z",
+    "completed_at": null
+  },
+  {
+    "name": "gate",
+    "required": true,
+    "status": "completed",
+    "from_status": "in_progress",
+    "conclusion": "success",
+    "state": "passed",
+    "started_at": "2026-09-30T12:01:00Z",
+    "completed_at": "2026-09-30T12:02:00Z"
+  },
+  {
+    "name": "external",
+    "required": true,
+    "status": "completed",
+    "from_status": "queued",
+    "conclusion": "success",
+    "state": "passed",
+    "started_at": null,
+    "completed_at": "2026-09-30T12:03:00Z"
+  }
+]
