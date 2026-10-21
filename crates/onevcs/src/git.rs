@@ -249,11 +249,19 @@ fn run_unless(
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
+    let outside = from_outside(args, cwd);
     let mut command = Command::new(git_program());
-    command.args(args);
+    match &outside {
+        Some((git_dir, _)) => {
+            command.arg("--git-dir").arg(git_dir).args(args);
+        }
+        None => {
+            command.args(args);
+        }
+    }
     let ran = bounded(
         command,
-        cwd,
+        outside.as_ref().map(|(_, from)| from.as_path()).or(cwd),
         &shims
             .as_ref()
             .map(|shims| [env, &shims.env()].concat())
@@ -286,6 +294,75 @@ fn run_unless(
     }
     reads::remember(args, cwd, env, &output);
     Ok(output)
+}
+
+/// Where a read of a session's repository is made from when it is not made inside it:
+/// the repository's git directory, and the directory the process starts in.
+///
+/// Every session's search reads the run clones and slots of its siblings — whether
+/// each is a repository, which branches it holds, where they stand — and a process
+/// whose working directory is inside a run root is exactly what `session close` and a
+/// reclamation count as somebody working there (`processes::holding`). So a sibling's
+/// read that happened to be running made a close refuse a session nobody was in. A
+/// read of a repository under the state root's workspaces is therefore addressed by
+/// `--git-dir` from the workspaces directory itself, which is inside no run root; git
+/// takes the directory it starts in as the top of the work tree when none is named,
+/// and none of these reads looks at the work tree's files. Anything else — a command
+/// that writes, reads the work tree, or answers a path relative to where it ran —
+/// runs where it was asked to.
+fn from_outside(args: &[&str], cwd: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    let cwd = cwd?;
+    if !reads_no_work_tree(args) {
+        return None;
+    }
+    // Absolute, both: a relative state root names its workspaces from this process's
+    // own directory, and the git directory is handed to a process started elsewhere.
+    let workspaces = std::path::absolute(crate::home::workspaces_dir().ok()?).ok()?;
+    let cwd = std::path::absolute(cwd).ok()?;
+    if !cwd.starts_with(&workspaces) || cwd == workspaces {
+        return None;
+    }
+    let git_dir = cwd.join(".git");
+    if !git_dir.exists() {
+        return None;
+    }
+    Some((git_path(&git_dir).to_path_buf(), workspaces))
+}
+
+/// Whether a git command reads refs and objects alone, answering nothing relative to
+/// the directory it ran in — which is what lets it run from anywhere.
+fn reads_no_work_tree(args: &[&str]) -> bool {
+    match args.first().copied() {
+        Some("rev-parse") => !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "--show-toplevel"
+                    | "--git-dir"
+                    | "--absolute-git-dir"
+                    | "--git-common-dir"
+                    | "--git-path"
+                    | "--show-prefix"
+                    | "--show-cdup"
+                    | "--show-superproject-working-tree"
+                    | "--is-inside-git-dir"
+                    | "--resolve-git-dir"
+            )
+        }),
+        Some("show-ref" | "for-each-ref" | "rev-list" | "merge-base" | "log") => true,
+        Some("cat-file") => args.get(1) == Some(&"-e"),
+        // Two revisions compared, never the work tree or the index.
+        Some("diff") => {
+            args.iter()
+                .skip(1)
+                .take_while(|arg| **arg != "--")
+                .filter(|arg| !arg.starts_with('-'))
+                .count()
+                == 2
+                && !args.contains(&"--cached")
+        }
+        Some("symbolic-ref") => args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1,
+        _ => false,
+    }
 }
 
 /// Run `read` with every repeated git read inside it answered once.

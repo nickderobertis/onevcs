@@ -1807,11 +1807,23 @@ fn proof_stores(
     let mut stores = std::collections::BTreeSet::new();
     for call in counting.calls() {
         let mut words = call.args.split_whitespace();
-        if matches!(words.next(), Some("diff" | "merge-tree")) {
-            let common = fixture.world.git(
-                &call.cwd,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            );
+        // A read of a run root is addressed by its git directory from outside it.
+        let mut first = words.next();
+        let git_dir = match first {
+            Some("--git-dir") => {
+                let named = words.next().map(str::to_owned);
+                first = words.next();
+                named
+            }
+            _ => None,
+        };
+        if matches!(first, Some("diff" | "merge-tree")) {
+            let mut asked = Vec::new();
+            if let Some(git_dir) = &git_dir {
+                asked.extend(["--git-dir", git_dir.as_str()]);
+            }
+            asked.extend(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+            let common = fixture.world.git(&call.cwd, &asked);
             stores.insert(std::path::PathBuf::from(common.trim()));
         }
     }

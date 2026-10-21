@@ -1465,9 +1465,11 @@ session operation over it holds shared (`workspace::lend`) from before its first
 of the checkout, the check that it is a checkout included; no clone or slot is ever a
 lender, because a slot's worker holds no lease anything could wait on — a publication
 borrows from a registered checkout and fetches the branch out of the copy
-(`git::clone_borrowing`); and a run clone a search reads is held against reclamation
-for as long as it is read. `tests/e2e/concurrent_sessions.rs` holds this on every platform,
-on run roots and on a pool.
+(`git::clone_borrowing`); a run clone a search reads is held against reclamation
+for as long as it is read; and a read of a run root or slot runs from outside it
+(`git::from_outside`), because a process whose working directory is inside one is what
+`session close` counts as somebody working there. `tests/e2e/concurrent_sessions.rs`
+holds this on every platform, on run roots and on a pool.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this

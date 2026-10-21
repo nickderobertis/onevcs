@@ -180,6 +180,75 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
 }
 
 #[test]
+fn a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot() {
+    let _bound = watchdog(
+        "a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::Pool);
+    // A branch a later session continues, handed back by a session already closed.
+    let earlier = journey.open(&["--branch-name", "placement/c"]);
+    journey.commit(&earlier.worktree, "c.txt", "c");
+    journey.close(&earlier.token);
+    // A live dispatch: its session open in a slot, its worker committing there.
+    let live = journey.open(&["--branch-name", "placement/a"]);
+    journey.commit(&live.worktree, "a.txt", "a");
+    let slot = plain_path(
+        std::fs::canonicalize(live.worktree.parent().expect("a slot")).expect("the slot is there"),
+    );
+
+    // Siblings open and close beside it — one continuing a branch, which searches
+    // every clone of the identity for it, and one cut fresh — with git recording, in
+    // its own trace, the work tree of every process they start.
+    let trace = journey.root.join("trace2");
+    std::fs::create_dir(&trace).expect("a trace directory");
+    for arguments in [
+        &["--branch", "placement/c", "--caller-merges-base"][..],
+        &["--branch-name", "sibling/b"][..],
+    ] {
+        let opened = journey.opened(
+            &journey
+                .onevcs()
+                .env("GIT_TRACE2_EVENT", &trace)
+                .args(["session", "open", "project"])
+                .args(arguments)
+                .output()
+                .expect("the binary runs"),
+        );
+        let closed = journey
+            .onevcs()
+            .env("GIT_TRACE2_EVENT", &trace)
+            .args(["session", "close", &opened.token])
+            .output()
+            .expect("the binary runs");
+        assert!(
+            closed.status.success(),
+            "the sibling closes:\n{}",
+            String::from_utf8_lossy(&closed.stderr)
+        );
+    }
+
+    let inside: Vec<String> = journey
+        .traced_work_trees(&trace)
+        .into_iter()
+        .filter(|work_tree| work_tree.starts_with(&slot))
+        .map(|work_tree| work_tree.display().to_string())
+        .collect();
+    assert!(
+        !journey.traced_work_trees(&trace).is_empty(),
+        "the premise: git traced the siblings' processes"
+    );
+    assert!(
+        inside.is_empty(),
+        "a sibling's git ran inside the live session's slot {}, where `session close` \
+         counts it as somebody working:\n{}",
+        slot.display(),
+        inside.join("\n")
+    );
+    journey.close(&live.token);
+}
+
+#[test]
 fn a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recovers() {
     let _bound = watchdog(
         "a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recovers",
@@ -717,6 +786,32 @@ impl Journey {
             Sha256::digest(format!("lender:{checkout}").as_bytes())
         };
         held_exclusively(&locks.join(format!("{digest:x}.lock")))
+    }
+
+    /// The work tree of every git process a trace2 event directory recorded: the
+    /// directory a process ran in, where it named no work tree of its own.
+    fn traced_work_trees(&self, trace: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(trace)
+            .expect("the trace directory")
+            .flatten()
+        {
+            let events = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            for event in events.lines() {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(event) else {
+                    continue;
+                };
+                if event["event"] == "def_repo" {
+                    if let Some(work_tree) = event["worktree"].as_str() {
+                        let work_tree = PathBuf::from(work_tree);
+                        found.push(plain_path(
+                            std::fs::canonicalize(&work_tree).unwrap_or(work_tree),
+                        ));
+                    }
+                }
+            }
+        }
+        found
     }
 
     /// Whether the registered checkout's own configuration holds both retention keys.
