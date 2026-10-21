@@ -969,7 +969,7 @@ fn fit(slot: &Surveyed, execution: &Path) -> Option<Fit> {
 /// A shared clone records its lender's object store in `objects/info/alternates`,
 /// which for a checkout is `<checkout>/.git/objects`; anything else there is not a
 /// lender this crate can name, and answers `None`.
-fn lender_of(clone: &Path) -> Option<PathBuf> {
+pub(crate) fn lender_of(clone: &Path) -> Option<PathBuf> {
     let alternates = git::objects_dir(clone).ok()?.join("info/alternates");
     let recorded = std::fs::read_to_string(alternates).ok()?;
     let objects = PathBuf::from(recorded.lines().next()?.trim());

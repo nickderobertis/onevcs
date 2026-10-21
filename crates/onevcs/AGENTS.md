@@ -1459,11 +1459,13 @@ protecting it would make a refused open's litter permanent.
 **What another session reads must stay openable while siblings work.** On Windows a
 git read fails while another process renames a new `.git/config` over the one it opens,
 or deletes the directory it reads. So a session operation never replaces a shared
-config whose content would not change; a required first write (retention keys on a
-checkout an earlier release registered, or on a clone it cut) waits for an exclusive
-take of the lease that same repository's readers hold shared (`workspace::lend`,
-`Searched::alone`); and a run clone a search reads is held against reclamation for as
-long as it is read. `tests/e2e/concurrent_sessions.rs` holds this on every platform,
+config whose content would not change; the one required write (retention keys on a
+checkout an earlier release registered) waits for an exclusive take of the lease every
+session operation over it holds shared (`workspace::lend`); no clone or slot is ever a
+lender, because a slot's worker holds no lease anything could wait on — a publication
+borrows from a registered checkout and fetches the branch out of the copy
+(`git::clone_borrowing`); and a run clone a search reads is held against reclamation
+for as long as it is read. `tests/e2e/concurrent_sessions.rs` holds this on every platform,
 on run roots and on a pool.
 
 **A close is held to the same standard, and refuses rather than skipping.**

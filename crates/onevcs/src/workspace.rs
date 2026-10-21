@@ -1096,11 +1096,11 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
             Lifecycle::Open => lock::try_shared(&lease)?,
             Lifecycle::Closed => Some(lock::shared(&lease)?),
         };
-        held.extend(guard.map(|guard| (record.run_root.clone(), guard)));
+        held.extend(guard);
     }
     Ok(Searched {
         checkouts: checkouts_among(registry, resolution, &sessions),
-        held,
+        _held: held,
     })
 }
 
@@ -1108,40 +1108,8 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
 pub(crate) struct Searched {
     /// [`checkouts_of`]'s list, in its search order.
     pub checkouts: Vec<PathBuf>,
-    /// Each held run root, with the shared lease that holds it.
-    held: Vec<(PathBuf, lock::Guard)>,
-}
-
-impl Searched {
-    /// Run `write` on one of the searched repositories with nothing else reading it.
-    ///
-    /// A run clone this search holds is read by every other search of the identity,
-    /// under the same shared lease; its lease is traded for the exclusive take for the
-    /// length of the write, which those searches wait out. Any other repository is a
-    /// lender, whose readers are the session operations [`lend`] holds.
-    pub(crate) fn alone<T>(
-        &mut self,
-        repository: &Path,
-        write: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let Some(at) = self
-            .held
-            .iter()
-            .position(|(run_root, _)| run_root.join("clone") == repository)
-        else {
-            let _alone = lock::exclusive(&lender_lease(repository))?;
-            return write();
-        };
-        let (run_root, shared) = self.held.remove(at);
-        drop(shared);
-        let lease = occupancy_identity(&run_root);
-        let written = {
-            let _alone = lock::exclusive(&lease)?;
-            write()
-        };
-        self.held.push((run_root, lock::shared(&lease)?));
-        written
-    }
+    /// Released when the answer is dropped.
+    _held: Vec<lock::Guard>,
 }
 
 /// The same search order over records a caller already validated and read.

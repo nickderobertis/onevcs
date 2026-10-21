@@ -207,18 +207,45 @@ fn a_complete_branch_of_a_local_identity_lands_on_its_base() {
     );
 }
 
+/// Which file a path names: a file replaced by a rename is a new inode with a new
+/// modification time, and one nothing wrote keeps both.
+fn identity(path: &Path) -> (u64, std::time::SystemTime) {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)
+        .unwrap_or_else(|e| panic!("{} is there to identify: {e}", path.display()));
+    (
+        metadata.ino(),
+        metadata.modified().expect("a modification time"),
+    )
+}
+
+/// Take a repository back to what an earlier release left: no retention keys of its own.
+///
+/// No interface of this build produces that state, so it is made by removing them, and
+/// absent already is the same state — git answers 5 for a key there is no value of.
+fn as_an_earlier_release_left(world: &World, repository: &Path) {
+    // llmlint: ignore-block[tests_mirror_real_usage] see the paragraph above: the state
+    // a repository an earlier release made is in is reachable by no verb of this build,
+    // and everything a journey drives over it afterwards is the real CLI.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        let unset = world.git_raw(repository, &["config", "--unset", key]);
+        assert!(
+            matches!(unset.status.code(), Some(0 | 5)),
+            "{key} is unset in {}: {}",
+            repository.display(),
+            String::from_utf8_lossy(&unset.stderr)
+        );
+    }
+    // llmlint: ignore-end[tests_mirror_real_usage]
+}
+
 #[test]
-fn a_branch_read_out_of_a_run_clone_cut_before_retention_waits_for_its_readers_to_set_it() {
+fn a_branch_read_out_of_a_closed_sessions_run_clone_is_published_without_writing_into_it() {
     let fixture = Fixture::local(&local_direct());
     a_merge_path_that_accepts(&fixture);
     let world = &fixture.world;
     let branch = "feature/from-the-clone";
-    let before = world.locks();
     let (token, worktree) = fixture.open(&["--branch", branch]);
-    let opened: Vec<_> = world.locks().difference(&before).cloned().collect();
-    let [lease] = opened.as_slice() else {
-        panic!("opening one session takes exactly one new lease, not {opened:?}");
-    };
     world.commit_file(
         &worktree,
         "clone.txt",
@@ -231,75 +258,181 @@ fn a_branch_read_out_of_a_run_clone_cut_before_retention_waits_for_its_readers_t
         .assert()
         .success();
     // Only the closed session's clone keeps the branch now, so it is the copy the
-    // publication reads and lends from — and, as a clone an earlier release cut, it
-    // carries no retention keys of its own.
-    //
-    // llmlint: ignore-block[tests_mirror_real_usage] a clone an earlier release cut is a
-    // state no interface of this build produces — every clone it cuts carries its keys —
-    // so the journey removes them from a clone this build cut, which leaves exactly what
-    // the earlier release left. Everything driven over it is the real CLI.
+    // publication reads it out of — a clone every sibling's search reads too.
     world.git(&fixture.checkout, &["branch", "-q", "-D", branch]);
     let clone = worktree.parent().expect("a run root").join("clone");
-    for key in ["gc.auto", "gc.pruneExpire"] {
-        // Absent already is the same state: git answers 5 for a key there is no value of.
-        let unset = world.git_raw(&clone, &["config", "--unset", key]);
-        assert!(
-            matches!(unset.status.code(), Some(0 | 5)),
-            "{key} is unset in the clone: {}",
-            String::from_utf8_lossy(&unset.stderr)
-        );
-    }
-    // llmlint: ignore-end[tests_mirror_real_usage]
+    as_an_earlier_release_left(world, &clone);
+    let config = clone.join(".git").join("config");
+    let before = identity(&config);
 
-    // llmlint: ignore-block[tests_mirror_real_usage] a sibling's search reads that clone
-    // under the run root's shared occupancy lease for as long as it compares it, and no
-    // verb holds one across time; so the lock is found the way the occupancy journeys in
-    // `lifecycle.rs` find it, by what appeared when the session was opened, and held
-    // shared — as a search holds it — while the real CLI meets it.
-    let searching = World::occupy_shared(lease);
-    let mut publishing = world
-        .onevcs_std()
+    world
+        .onevcs()
         .args([
             "publish-branch",
             branch,
             "--repo",
             &fixture.checkout.to_string_lossy(),
         ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the binary runs");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    assert!(
-        publishing
-            .try_wait()
-            .expect("the publication can be asked")
-            .is_none(),
-        "the publication wrote the clone's configuration while a search was reading it"
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert_eq!(
+        identity(&config),
+        before,
+        "the publication wrote into the clone it read the branch out of"
     );
+}
+
+#[test]
+fn a_branch_read_out_of_a_reused_pool_slot_is_published_while_siblings_read_the_slot() {
+    let fixture = crate::pool::pooled(&crate::pool::sized(2, "unlimited"));
+    a_merge_path_that_accepts(&fixture);
+    let world = &fixture.world;
+    let branch = "feature/in-the-slot";
+    // The checkout has the branch checked out, so the close cannot hand the session's
+    // work back to it and the slot retains it: the slot's clone is then the copy a
+    // publication reads it out of — one sibling sessions' searches read, and that an
+    // earlier release cut without retention keys.
+    world.git(&fixture.checkout, &["switch", "-q", "-c", branch]);
+    let (token, worktree) = fixture.open(&["--branch", branch]);
+    world.commit_file(
+        &worktree,
+        "slot.txt",
+        "one\n",
+        "feat: work only the slot keeps",
+    );
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    world.git(&fixture.checkout, &["switch", "-q", "main"]);
+    let slot = worktree.parent().expect("a slot").join("clone");
     assert_ne!(
-        world
-            .git_raw(&clone, &["config", "--get", "gc.auto"])
-            .status
-            .code(),
-        Some(0),
-        "nothing was written into the clone while the search held it"
+        world.git(&slot, &["rev-parse", &format!("refs/heads/{branch}")]),
+        world.git(
+            &fixture.checkout,
+            &["rev-parse", &format!("refs/heads/{branch}")]
+        ),
+        "the premise: the slot's copy is ahead of the checkout's"
     );
-    drop(searching);
-    // llmlint: ignore-end[tests_mirror_real_usage]
-    let published = publishing
-        .wait_with_output()
-        .expect("the publication finishes");
+    as_an_earlier_release_left(world, &slot);
+    let config = slot.join(".git").join("config");
+    let before = identity(&config);
+
+    // The publication, beside sibling sessions opening and closing — each one's search
+    // reads the slot's clone — and a reader of that clone's configuration throughout.
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    let (published, siblings, failed_reads) = std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let git_dir = slot.join(".git");
+            let mut failed = Vec::new();
+            while !finished.load(std::sync::atomic::Ordering::SeqCst) {
+                let read = world.git_raw(
+                    &fixture.checkout,
+                    &[
+                        "--git-dir",
+                        &git_dir.to_string_lossy(),
+                        "config",
+                        "--get",
+                        "remote.origin.url",
+                    ],
+                );
+                if !read.status.success() || !read.stderr.is_empty() {
+                    failed.push(String::from_utf8_lossy(&read.stderr).into_owned());
+                }
+            }
+            failed
+        });
+        // Each sibling answers what it met rather than asserting here: a panic inside
+        // the scope would leave the reader spinning and the journey waiting for ever.
+        let siblings: Vec<_> = (0..3)
+            .map(|n| {
+                scope.spawn(move || -> Result<(), String> {
+                    let opened = world
+                        .onevcs_std()
+                        .args([
+                            "session",
+                            "open",
+                            "project",
+                            "--branch-name",
+                            &format!("sibling/{n}"),
+                        ])
+                        .output()
+                        .map_err(|e| e.to_string())?;
+                    if !opened.status.success() {
+                        return Err(format!(
+                            "sibling {n} did not open: {}",
+                            String::from_utf8_lossy(&opened.stderr)
+                        ));
+                    }
+                    // A sibling placed in the slot the publication is reading the branch
+                    // out of is refused its close while that read runs inside the slot,
+                    // and told to re-run it once the read is done — as a dispatcher does.
+                    let token = token_of(&opened.stdout);
+                    for _ in 0..50 {
+                        let closed = world
+                            .onevcs_std()
+                            .args(["session", "close", &token])
+                            .output()
+                            .map_err(|e| e.to_string())?;
+                        let said = String::from_utf8_lossy(&closed.stderr).into_owned();
+                        if closed.status.success() {
+                            return Ok(());
+                        }
+                        if !said.contains("is still working inside its run root") {
+                            return Err(format!("sibling {n} did not close: {said}"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(format!(
+                        "sibling {n} was refused its close for five seconds"
+                    ))
+                })
+            })
+            .collect();
+        let published = world
+            .onevcs_std()
+            .args([
+                "publish-branch",
+                branch,
+                "--repo",
+                &fixture.checkout.to_string_lossy(),
+            ])
+            .output();
+        let siblings: Vec<Result<(), String>> = siblings
+            .into_iter()
+            .map(|sibling| {
+                sibling
+                    .join()
+                    .unwrap_or_else(|_| Err("a sibling panicked".into()))
+            })
+            .collect();
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        (
+            published.expect("the publication runs"),
+            siblings,
+            reader.join().expect("a reading thread"),
+        )
+    });
+
+    for sibling in siblings {
+        sibling.unwrap_or_else(|failure| panic!("{failure}"));
+    }
     assert!(
         published.status.success(),
-        "the publication lands once the search is done with the clone:\n{}",
+        "the publication from the slot lands:\n{}",
         String::from_utf8_lossy(&published.stderr)
     );
     assert!(String::from_utf8_lossy(&published.stdout).contains("merged at"));
+    assert!(
+        failed_reads.is_empty(),
+        "reads of the slot's configuration failed: {failed_reads:?}"
+    );
     assert_eq!(
-        world.git(&clone, &["config", "--get", "gc.auto"]),
-        "0",
-        "the clone it lent from keeps its objects for the publication's clone"
+        identity(&config),
+        before,
+        "the publication, or a sibling, replaced the configuration of a slot its siblings read"
     );
 }
 

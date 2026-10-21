@@ -1728,6 +1728,25 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 /// configuration below, which on Windows it cannot open (see [`configure_unless_set`]).
 /// Nothing in the clone records its own path, so the move changes nothing in it.
 pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
+    clone_borrowing(source, source, dest, origin, base)
+}
+
+/// [`clone_sharing`] from `lender`, carrying the hooks `hooks_from` would run.
+///
+/// For a clone whose branch comes from a repository it must not borrow from: a run
+/// clone or a pool slot is read by every sibling session's search, and a slot by the
+/// worker inside it, so a lender's retention keys could only be written into one
+/// while somebody is reading it. Its own objects are borrowed from a registered
+/// checkout anyway, which is the lender asked for here; the branch is fetched out of
+/// `hooks_from` afterwards, and what that repository would verify it with is what it
+/// carries.
+pub fn clone_borrowing(
+    lender: &Path,
+    hooks_from: &Path,
+    dest: &Path,
+    origin: &str,
+    base: &str,
+) -> Result<BaseCarried> {
     let name = dest
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1735,7 +1754,7 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
     // Its own name in a directory cut for this clone alone — a run root is one
     // token's, and a slot cut again is emptied first — so nothing else is ever there.
     let cutting = dest.with_file_name(format!(".{name}.cutting"));
-    match cut_sharing(source, &cutting, origin, base) {
+    match cut_sharing(lender, hooks_from, &cutting, origin, base) {
         Ok(carried) => {
             std::fs::rename(&cutting, dest).map_err(error::at("move the cut clone to", dest))?;
             Ok(carried)
@@ -1747,8 +1766,14 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
     }
 }
 
-/// [`clone_sharing`]'s clone and configuration, at the scratch path it is cut in.
-fn cut_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
+/// [`clone_borrowing`]'s clone and configuration, at the scratch path it is cut in.
+fn cut_sharing(
+    source: &Path,
+    hooks_from: &Path,
+    dest: &Path,
+    origin: &str,
+    base: &str,
+) -> Result<BaseCarried> {
     let source_arg = git_path(source).to_string_lossy();
     let dest_arg = git_path(dest).to_string_lossy();
     let origin_arg = git_location(origin);
@@ -1765,13 +1790,7 @@ fn cut_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<B
         )?;
     }
     let carried = carry_remote_refs(source, dest, base)?;
-    carry_hooks(source, dest)?;
-    // A clone is itself lent from — a publication of a branch read out of it clones
-    // sharing its store — and keys set now, before anybody can read the clone, are keys
-    // no later reader has to meet being written.
-    for (key, value) in RETENTION {
-        configure_unless_set(dest, key, value)?;
-    }
+    carry_hooks(hooks_from, dest)?;
     Ok(carried)
 }
 

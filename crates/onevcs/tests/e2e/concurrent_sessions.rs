@@ -249,17 +249,6 @@ fn concurrent_sessions(placement: Placement) {
         );
     }
     let slots_before: Vec<Identity> = slots.iter().map(|slot| Identity::of(slot)).collect();
-    // Every clone is cut carrying its own retention keys, so nothing that later lends
-    // from one — a publication of a branch read out of it — has to write them.
-    for slot in &slots {
-        assert_eq!(
-            journey.git_dir_config(slot, "gc.auto"),
-            "0",
-            "{} was cut without its retention keys",
-            slot.display()
-        );
-    }
-
     // The base moves on origin from elsewhere, so every open's fetch has something
     // to bring in and every restacked branch has a base to take.
     let elsewhere = journey.root.join("elsewhere");
@@ -601,12 +590,6 @@ impl Journey {
         let read =
             |key: &str| self.git_output(&self.checkout, &["config", "--local", "--get", key]);
         read("gc.auto") == "0" && read("gc.pruneExpire") == "never"
-    }
-
-    /// One key of the repository whose `.git/config` is `config`, read from outside it.
-    fn git_dir_config(&self, config: &Path, key: &str) -> String {
-        let git_dir = config.parent().expect("a git directory").to_string_lossy();
-        self.git_output(&self.root, &["--git-dir", &git_dir, "config", "--get", key])
     }
 
     /// Every slot clone and every scratch copy of a clone under this host's
