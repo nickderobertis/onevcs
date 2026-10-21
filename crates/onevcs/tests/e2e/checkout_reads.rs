@@ -626,3 +626,103 @@ fn a_close_hands_back_work_through_a_hook_that_reads_the_same_identity() {
         .git(&fixture.checkout, &["show", "feature/hook-read:work.txt"])
         .contains("work"));
 }
+
+fn pooled_ordering(reader_first: bool) {
+    let fixture = crate::pool::pooled(&crate::pool::sized(1, "unlimited"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/pooled-reader"]);
+    assert_eq!(crate::pool::slot_of(&worktree), Some(1));
+    let root = run_root_of(&fixture.world, &token);
+    let clone = root.join("clone");
+    let shim = HeldGit::installed(&fixture);
+    let mut first = if reader_first {
+        let mut reader = shim.command(&fixture, &clone);
+        reader
+            .env("HOLD_READER", "1")
+            .args(["status", "feature/pooled-reader", "--json"]);
+        reader
+    } else {
+        let mut close = shim.command(&fixture, &worktree);
+        close
+            .env("HOLD_READER", "1")
+            .env("HOLD_ARGS", "clean -q -f -d")
+            .args(["session", "close", &token]);
+        close
+    };
+    let first = first
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    shim.entered();
+    let mut entries = Entries::watching(&fixture.world.path(""));
+    let mut next = shim.command(&fixture, &clone);
+    if reader_first {
+        next.args(["session", "close", &token]);
+    } else {
+        next.args(["status", "main", "--json"]);
+    }
+    let lock = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("onevcs-reads.lock");
+    let notice = fixture.world.path("turn-notices");
+    next.env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", lock)
+        .env("READ_TURN_NOTICE", &notice);
+    let following = std::thread::spawn(move || {
+        let output = next.output().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(notice)
+            .unwrap()
+            .write_all(b"finished\n")
+            .unwrap();
+        output
+    });
+    let queued = entries.entered_or_finished();
+    shim.release();
+    success(first.wait_with_output().unwrap());
+    success(following.join().unwrap());
+    assert!(
+        queued,
+        "the second operation reached its turn while the first held the slot"
+    );
+    assert!(worktree.is_dir(), "return retains the pooled worktree");
+    assert_eq!(fixture.world.git(&worktree, &["status", "--porcelain"]), "");
+    assert!(
+        !fixture
+            .world
+            .git_raw(&worktree, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .success(),
+        "the returned worktree is detached"
+    );
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixture.world.sessions_dir().join(format!("{token}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["state"], "closed");
+    let (next, reused) = fixture.open(&["--branch", "feature/after-reader"]);
+    assert_eq!(
+        reused, worktree,
+        "the next session reuses the returned slot"
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &next])
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_pooled_close_waits_for_its_status_reader_and_returns_a_reusable_slot() {
+    pooled_ordering(true);
+}
+
+#[test]
+fn a_reader_arriving_during_slot_return_waits_and_reads_the_returned_slot() {
+    pooled_ordering(false);
+}
