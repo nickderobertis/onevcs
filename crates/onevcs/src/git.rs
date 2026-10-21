@@ -1846,7 +1846,8 @@ pub fn clone_borrowing(
     }
 }
 
-/// [`clone_borrowing`]'s clone and configuration, at the scratch path it is cut in.
+/// Every write into a new clone, kept apart from the move into place so that a
+/// sibling's search, which reads whatever is at the destination, only finds it whole.
 fn cut_sharing(
     source: &Path,
     hooks_from: &Path,

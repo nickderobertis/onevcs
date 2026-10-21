@@ -48,7 +48,7 @@ use fs4::fs_std::FileExt;
 
 use crate::support::{plain_path, watchdog, CONCURRENT_JOURNEY_BOUND};
 
-/// How many nodes are placed, and then restacked, at once.
+/// Three rather than two, so every open overlaps more than one sibling in flight.
 const NODES: [&str; 3] = ["a", "b", "c"];
 
 #[test]
@@ -840,7 +840,7 @@ impl Journey {
         configs
     }
 
-    /// Spawn `session open` of the registered checkout, and do not wait for it.
+    /// `session open`, left running, so the journey can arrange what it meets mid-flight.
     fn spawn_open(&self, arguments: &[&str]) -> std::process::Child {
         self.onevcs()
             .args(["session", "open", "project"])

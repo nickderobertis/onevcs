@@ -1108,7 +1108,8 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
 pub(crate) struct Searched {
     /// [`checkouts_of`]'s list, in its search order.
     pub checkouts: Vec<PathBuf>,
-    /// Released when the answer is dropped.
+    /// Kept for as long as any of `checkouts` is read: once they go, a sibling's open may
+    /// reclaim a clone the caller is still comparing.
     _held: Vec<lock::Guard>,
 }
 
