@@ -209,6 +209,56 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_gi
 }
 
 #[test]
+fn retention_keys_appended_to_a_configuration_override_its_own_values_and_keep_the_rest() {
+    let _bound = watchdog(
+        "retention_keys_appended_to_a_configuration_override_its_own_values_and_keep_the_rest",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::RunRoots);
+    // llmlint: ignore-block[tests_mirror_real_usage] a configuration an earlier release
+    // left, as an operator then edited it by hand: no retention keys of this build's, a
+    // `gc.auto` of the operator's own, and a last line with no end. No interface of this
+    // build leaves that state, so the journey writes it; the open over it is the real CLI.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    journey.git(&journey.checkout, &["config", "gc.auto", "6700"]);
+    // The last line belongs to another section, so a write run into it changes its value.
+    journey.git(
+        &journey.checkout,
+        &["config", "onevcs-journey.note", "kept"],
+    );
+    let config = journey.checkout.join(".git").join("config");
+    let text = std::fs::read_to_string(&config).expect("the configuration");
+    std::fs::write(&config, text.trim_end_matches('\n')).expect("a configuration with no last end");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let before = Identity::of(&config);
+
+    let opened = journey.open(&["--branch-name", "placement/a"]);
+    journey.close(&opened.token);
+
+    assert!(
+        journey.retains(),
+        "the appended keys are the ones git reads, the operator's own value included"
+    );
+    for (key, value) in [
+        ("remote.origin.url", journey.at("project.git")),
+        ("onevcs-journey.note", "kept".to_owned()),
+    ] {
+        assert_eq!(
+            journey.git_output(&journey.checkout, &["config", "--get", key]),
+            value,
+            "every setting the file held before still reads as it was"
+        );
+    }
+    assert!(
+        Identity::of(&config).is_the_file(&before),
+        "{} was replaced rather than appended to",
+        config.display()
+    );
+}
+
+#[test]
 fn a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot() {
     let _bound = watchdog(
         "a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot",
