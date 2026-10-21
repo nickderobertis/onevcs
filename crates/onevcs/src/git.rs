@@ -2093,60 +2093,129 @@ pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
 }
 
 /// Add settings to the end of a repository's own configuration without replacing the
-/// file, so no reader of it ever meets a moment it cannot be opened.
+/// file, so no reader of it ever meets a moment it cannot be opened, nor a moment its
+/// contents do not parse.
 ///
 /// `git config` writes a whole new file and renames it over `config`, and on Windows
 /// that rename is a moment a concurrent git command cannot open the file at all: Git
 /// for Windows reads its configuration through `_wfopen`, which does not share
-/// deletion, so every git read beside it fails with `unable to access '.git/config':
+/// deletion, so a git read beside it fails with `unable to access '.git/config':
 /// Permission denied`. A lender's configuration is read by every session of it and by
 /// whatever else works in the checkout, none of which a lock of this crate's reaches.
-/// So the settings are appended to the file that is there, as one section in one
-/// write: a later section overrides an earlier value of the same key, and a reader
-/// sees the file as it was or with the whole section, because an appending write of a
-/// few bytes is not interleaved with a read of the same file — Linux updates the size
-/// only once the bytes are in place, and NTFS takes a file's resource exclusively for
-/// an extending write and shared for a read. Git's own `config.lock` is held for the
-/// write, so no `git config` can read the file before it and rename its copy over it
-/// after.
+/// Writing into the file that is there opens it for writing alone, which every
+/// reader's sharing admits.
+///
+/// What such a write cannot promise is that a reader sees it whole: `write` may write
+/// part of what it is given, a write that fails may leave part behind, and NTFS hands a
+/// reader zero bytes between what has been initialized and a new end of file. So the
+/// file is changed in steps of which every partial state is a configuration git reads
+/// ([`addition`]): the final line end becomes a comment, the settings are appended as
+/// the rest of that comment — no line end among them, so any prefix of them, and any
+/// zeros after one, are comment — and then each line end is put back, one byte at a
+/// time, which a reader sees as either byte. A step that fails leaves a file git reads,
+/// with the settings not yet in force, and the next attempt adds them after it.
+///
+/// Git's own `config.lock` is held throughout, so no `git config` can read the file
+/// before these steps and rename its copy over them after.
 fn append_in_place(common: &Path, settings: &[(&str, &str)]) -> Result<()> {
-    use std::io::{Seek, SeekFrom, Write};
     if settings.is_empty() {
         return Ok(());
     }
     let config = git_path(common).join("config");
     let lock = git_path(common).join("config.lock");
     let _held = ConfigLock::take(&lock)?;
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
-        .append(true)
+        .write(true)
         .open(&config)
         .map_err(error::at("open the configuration at", &config))?;
-    // A file whose last line has no end would run the new section into it.
-    let length = file
-        .seek(SeekFrom::End(0))
+    let mut content = Vec::new();
+    (&file)
+        .read_to_end(&mut content)
         .map_err(error::at("read the configuration at", &config))?;
-    let mut text = String::new();
-    if length > 0 {
-        let mut last = [0u8; 1];
-        file.seek(SeekFrom::End(-1))
-            .and_then(|_| file.read_exact(&mut last))
-            .map_err(error::at("read the configuration at", &config))?;
-        if last[0] != b'\n' {
-            text.push('\n');
-        }
+    for step in addition(&content, settings) {
+        put(&file, step.at, &step.bytes)
+            .map_err(error::at("write the configuration at", &config))?;
     }
-    let mut section = None;
-    for (key, value) in settings {
-        let (name, setting) = key.split_once('.').unwrap_or(("core", key));
-        if section != Some(name) {
-            text.push_str(&format!("[{name}]\n"));
-            section = Some(name);
-        }
-        text.push_str(&format!("\t{setting} = {value}\n"));
+    Ok(())
+}
+
+/// One write [`addition`] makes: these bytes, at this offset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Step {
+    at: u64,
+    bytes: Vec<u8>,
+}
+
+/// The writes that add `settings` to a configuration holding `content`, in order, each
+/// leaving a file git reads however much of it has landed.
+///
+/// A file ending in a line end has it turned into `#` first, so its last line ends in a
+/// comment, and the settings follow as `[gc] auto = 0#[gc] pruneExpire = never`; then
+/// the old line end comes back, which puts the first setting in force, and each `#`
+/// between settings becomes a line end in turn. A file whose last line is unended gets
+/// the settings behind a `#` of their own instead, whose own turn into a line end
+/// is the first one. The one shape that cannot end in a comment is a last line
+/// continued by a backslash, where `\#` is an escape git refuses: that file, and an
+/// empty one, take the second form, whose appended text starts a line.
+fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
+    let length = content.len() as u64;
+    let lines: Vec<String> = settings
+        .iter()
+        .map(|(key, value)| {
+            let (section, name) = key.split_once('.').unwrap_or(("core", key));
+            format!("[{section}] {name} = {value}")
+        })
+        .collect();
+    let ends_a_line = content.last() == Some(&b'\n')
+        && content.len().checked_sub(2).map(|at| content[at]) != Some(b'\\');
+    let mut steps = Vec::new();
+    let (appended, first_end) = if ends_a_line {
+        steps.push(Step {
+            at: length - 1,
+            bytes: b"#".to_vec(),
+        });
+        (lines.join("#"), length - 1)
+    } else {
+        (format!("#{}", lines.join("#")), length)
+    };
+    steps.push(Step {
+        at: length,
+        bytes: appended.clone().into_bytes(),
+    });
+    let separators = appended
+        .bytes()
+        .enumerate()
+        .filter(|(at, byte)| *byte == b'#' && !(*at == 0 && !ends_a_line))
+        .map(|(at, _)| length + at as u64);
+    for at in std::iter::once(first_end).chain(separators) {
+        steps.push(Step {
+            at,
+            bytes: b"\n".to_vec(),
+        });
     }
-    file.write_all(text.as_bytes())
-        .map_err(error::at("write the configuration at", &config))
+    steps
+}
+
+/// Write `bytes` at `at`, however many writes that takes.
+fn put(file: &std::fs::File, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < bytes.len() {
+        #[cfg(unix)]
+        let wrote =
+            std::os::unix::fs::FileExt::write_at(file, &bytes[written..], at + written as u64)?;
+        #[cfg(windows)]
+        let wrote = std::os::windows::fs::FileExt::seek_write(
+            file,
+            &bytes[written..],
+            at + written as u64,
+        )?;
+        if wrote == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        written += wrote;
+    }
+    Ok(())
 }
 
 /// Git's own lock on a repository's configuration, held while it is written and
@@ -5621,5 +5690,197 @@ mod reaping {
             reason.contains(&std::io::Error::from_raw_os_error(libc::EPERM).to_string()),
             "{reason}"
         );
+    }
+}
+
+/// Every state a reader can be shown while [`append_in_place`] adds settings, read by
+/// the real git, and every state a failure can leave, recovered by the real write.
+///
+/// The states are an interleaving no journey can stop the binary in: what is held is
+/// what a reader sees between, and inside, single writes. So the plan the write
+/// executes ([`addition`]) is walked byte by byte here instead — each prefix of each
+/// write, and, for one that extends the file, each prefix followed by the zero bytes
+/// NTFS hands a reader up to the new end of file before they are initialized.
+#[cfg(test)]
+mod config_addition_tests {
+    use super::*;
+
+    /// The configuration shapes a write meets: as `git init` leaves it, an operator's
+    /// last line with no end, one ended `\r\n`, one continued by a backslash, and none.
+    fn shapes(initialized: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let unended = initialized[..initialized.len() - 1].to_vec();
+        let mut crlf = unended.clone();
+        crlf.extend_from_slice(b"\r\n");
+        let mut continued = initialized.to_vec();
+        continued.extend_from_slice(b"[onevcs-test]\n\tnote = kept \\\n");
+        vec![
+            ("as git init leaves it", initialized.to_vec()),
+            ("with an unended last line", unended),
+            ("ended with \\r\\n", crlf),
+            ("continued by a backslash", continued),
+            ("empty", Vec::new()),
+        ]
+    }
+
+    fn git(repository: &Path, arguments: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                repository.join(".git").join("no-global"),
+            )
+            .output()
+            .expect("git runs")
+    }
+
+    /// Whether git reads a repository whose configuration is `state`, and with what
+    /// for `key`.
+    fn read(repository: &Path, state: &[u8], key: &str) -> std::result::Result<String, String> {
+        std::fs::write(repository.join(".git").join("config"), state).expect("a state");
+        for asked in [&["status", "--porcelain"][..], &["config", "--list"][..]] {
+            let output = git(repository, asked);
+            if !output.status.success() || !output.stderr.is_empty() {
+                return Err(format!(
+                    "git {}: {}",
+                    asked.join(" "),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+        let value = git(repository, &["config", "--get", key]);
+        Ok(String::from_utf8_lossy(&value.stdout).trim().to_owned())
+    }
+
+    fn applied(content: &[u8], step: &Step, landed: usize, zeros_to_end: bool) -> Vec<u8> {
+        let mut state = content.to_vec();
+        let at = step.at as usize;
+        let end = at
+            + if zeros_to_end {
+                step.bytes.len()
+            } else {
+                landed
+            };
+        if state.len() < end {
+            state.resize(end, 0);
+        }
+        state[at..at + landed].copy_from_slice(&step.bytes[..landed]);
+        state
+    }
+
+    /// Every state of the plan for `base`, with whether it can be met only by the one
+    /// shape the plan cannot keep behind a comment: zeros at the start of a line.
+    fn states(base: &[u8]) -> Vec<(String, Vec<u8>, bool)> {
+        let steps = addition(base, &RETENTION);
+        let mut found = Vec::new();
+        let mut content = base.to_vec();
+        for (number, step) in steps.iter().enumerate() {
+            let extends = step.at as usize + step.bytes.len() > content.len();
+            for landed in 0..=step.bytes.len() {
+                found.push((
+                    format!("step {number}, {landed} of {} bytes", step.bytes.len()),
+                    applied(&content, step, landed, false),
+                    false,
+                ));
+                if extends && landed < step.bytes.len() {
+                    let at_a_line_start = landed == 0
+                        && (step.at == 0 || content.get(step.at as usize - 1) == Some(&b'\n'));
+                    found.push((
+                        format!(
+                            "step {number}, {landed} of {} bytes then zeros",
+                            step.bytes.len()
+                        ),
+                        applied(&content, step, landed, true),
+                        at_a_line_start,
+                    ));
+                }
+            }
+            content = applied(&content, step, step.bytes.len(), false);
+        }
+        found
+    }
+
+    #[test]
+    fn every_state_of_an_addition_reads_and_every_failure_is_completed_by_the_next() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let repository = scratch.path().join("repository");
+        let made = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repository)
+            .output()
+            .expect("git runs");
+        assert!(made.status.success(), "git init");
+        let config = repository.join(".git").join("config");
+        let initialized = std::fs::read(&config).expect("git init's configuration");
+        assert!(
+            initialized.ends_with(b"\n"),
+            "the premise: git ends its lines"
+        );
+
+        let mut excepted = Vec::new();
+        for (shape, base) in shapes(&initialized) {
+            read(&repository, &base, "core.bare")
+                .unwrap_or_else(|e| panic!("the premise: git reads the base {shape}: {e}"));
+            let bare = read(&repository, &base, "core.bare").expect("the base reads");
+            for (label, state, line_start_zeros) in states(&base) {
+                if line_start_zeros {
+                    excepted.push(format!("{shape}: {label}"));
+                    continue;
+                }
+                let held = |key: &str| {
+                    read(&repository, &state, key).unwrap_or_else(|e| {
+                        panic!(
+                            "{shape}, {label}: git cannot read {:?}: {e}",
+                            String::from_utf8_lossy(&state)
+                        )
+                    })
+                };
+                // Nothing the file held moves, and a setting is in force whole or not at all.
+                assert_eq!(held("core.bare"), bare, "{shape}, {label}");
+                assert!(
+                    matches!(held("gc.auto").as_str(), "" | "0"),
+                    "{shape}, {label}"
+                );
+                assert!(
+                    matches!(held("gc.pruneExpire").as_str(), "" | "never"),
+                    "{shape}, {label}"
+                );
+
+                // A failure here leaves exactly this state; the next write completes it.
+                std::fs::write(&config, &state).expect("a failed write's state");
+                retain_objects_for_borrowers(&repository)
+                    .unwrap_or_else(|e| panic!("{shape}, {label}: the next write fails: {e}"));
+                let after = std::fs::read(&config).expect("the completed configuration");
+                assert_eq!(
+                    held_now(&repository, &after, "gc.auto"),
+                    "0",
+                    "{shape}, {label}"
+                );
+                assert_eq!(
+                    held_now(&repository, &after, "gc.pruneExpire"),
+                    "never",
+                    "{shape}, {label}"
+                );
+                assert_eq!(
+                    held_now(&repository, &after, "core.bare"),
+                    bare,
+                    "{shape}, {label}"
+                );
+            }
+        }
+        // The one state no plan keeps behind a comment, and only where the appended text
+        // must start a line: a file that is empty or whose last line continues.
+        assert!(
+            excepted
+                .iter()
+                .all(|state| state.starts_with("continued by a backslash")
+                    || state.starts_with("empty")),
+            "{excepted:?}"
+        );
+    }
+
+    fn held_now(repository: &Path, state: &[u8], key: &str) -> String {
+        read(repository, state, key).unwrap_or_else(|e| panic!("the completed file reads: {e}"))
     }
 }
