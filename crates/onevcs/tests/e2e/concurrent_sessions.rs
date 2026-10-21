@@ -259,6 +259,72 @@ fn retention_keys_appended_to_a_configuration_override_its_own_values_and_keep_t
 }
 
 #[test]
+fn retention_keys_wait_for_a_git_config_write_in_flight_and_refuse_one_that_never_ends() {
+    let _bound = watchdog(
+        "retention_keys_wait_for_a_git_config_write_in_flight_and_refuse_one_that_never_ends",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::RunRoots);
+    // llmlint: ignore-block[tests_mirror_real_usage] a checkout an earlier release
+    // registered, with a `git config` of somebody else's in flight over it: no interface
+    // of this build leaves the keys unset, and no `git config` holds its lock on request,
+    // so the journey unsets the keys and creates `config.lock` exactly as git does —
+    // the file must not exist, and whoever creates it owns the write. The open that
+    // meets it is the real CLI.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    let lock = journey.checkout.join(".git").join("config.lock");
+    let take = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .expect("the journey takes git's configuration lock");
+    };
+
+    // A write that ends: the open waits for it rather than reading the file before it
+    // and writing after, and then appends.
+    take();
+    let mut waiting = journey.spawn_open(&["--branch-name", "placement/a"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        waiting.try_wait().expect("the open can be asked").is_none(),
+        "the open wrote the configuration while a git write of it was in flight"
+    );
+    assert!(!journey.retains(), "nothing was written beside the lock");
+    std::fs::remove_file(&lock).expect("the write in flight ends");
+    let opened = journey.opened(&waiting.wait_with_output().expect("the open finishes"));
+    assert!(journey.retains(), "the keys are set once the lock is free");
+    journey.close(&opened.token);
+
+    // One that never ends is refused, naming the lock, and the lock is left to whoever
+    // holds it.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    take();
+    let refused = journey.run(journey.onevcs().args([
+        "session",
+        "open",
+        "project",
+        "--branch-name",
+        "placement/b",
+    ]));
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success() && stderr.contains("config.lock"),
+        "the open refuses naming the lock it could not take:\n{stderr}"
+    );
+    assert!(lock.exists(), "the lock is not this build's to remove");
+    assert!(
+        !journey.retains(),
+        "nothing was written while the lock was held"
+    );
+}
+
+#[test]
 fn a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot() {
     let _bound = watchdog(
         "a_siblings_open_and_close_run_no_git_inside_a_live_sessions_slot",

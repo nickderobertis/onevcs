@@ -1836,6 +1836,10 @@ pub fn clone_borrowing(
     let cutting = dest.with_file_name(format!(".{name}.cutting"));
     match cut_sharing(lender, hooks_from, &cutting, origin, base) {
         Ok(carried) => {
+            // llmlint: ignore[changed_behavior_has_e2e] a rename between two names in one
+            // directory of the state root, the first of which this process just made and
+            // the second of which nothing else creates, fails only on a filesystem fault;
+            // no interface produces one, and the refusal is what any failed cut answers.
             std::fs::rename(&cutting, dest).map_err(error::at("move the cut clone to", dest))?;
             Ok(carried)
         }
