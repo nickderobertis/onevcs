@@ -136,7 +136,7 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_gi
         let readers: Vec<_> = (0..2)
             .map(|_| {
                 let (finished, rounds) = (&finished, &rounds);
-                scope.spawn(move || journey.read_until(finished, &[], rounds))
+                scope.spawn(move || journey.read_until(finished, &[], &[], rounds))
             })
             .collect();
         let waited = Instant::now();
@@ -595,6 +595,15 @@ fn concurrent_sessions(placement: Placement) {
     );
     journey.commit(&elsewhere, "base.txt", "moved");
     journey.git(&elsewhere, &["push", "-q", "origin", "main"]);
+    let replaced = || -> Vec<String> {
+        NODES
+            .iter()
+            .map(|node| format!("refs/heads/placement/{node}"))
+            .chain(["refs/remotes/origin/main".to_owned()])
+            .map(|reference| journey.git_output(&journey.checkout, &["rev-parse", &reference]))
+            .collect()
+    };
+    let refs_before = replaced();
 
     // Each node restacked — its branch continued on the moved base, the base merged
     // in by the caller, committed, closed — beside a fresh sibling session that opens
@@ -606,7 +615,14 @@ fn concurrent_sessions(placement: Placement) {
         let readers: Vec<_> = (0..2)
             .map(|_| {
                 let (journey, finished, slots, rounds) = (&journey, &finished, &slots, &rounds);
-                scope.spawn(move || journey.read_until(finished, slots, rounds))
+                scope.spawn(move || {
+                    journey.read_until(
+                        finished,
+                        slots,
+                        &["placement/a", "placement/b", "placement/c"],
+                        rounds,
+                    )
+                })
             })
             .collect();
         let operations: Vec<_> = NODES
@@ -643,6 +659,14 @@ fn concurrent_sessions(placement: Placement) {
          opened, fetched, restacked and closed:\n{}",
         failed_reads.join("\n")
     );
+    // The premise of the reads above: every branch a restack's close handed back, and
+    // the tracking ref an open's fetch moved, was renamed over while they ran.
+    for (before, after) in refs_before.iter().zip(replaced()) {
+        assert_ne!(
+            before, &after,
+            "the premise: the readers ran beside a rename of every ref they read"
+        );
+    }
     assert_eq!(
         Identity::of(&config),
         registered,
@@ -925,13 +949,27 @@ impl Journey {
         &self,
         finished: &AtomicBool,
         slots: &[PathBuf],
+        branches: &[&str],
         rounds: &AtomicUsize,
     ) -> Vec<String> {
-        let reads: [&[&str]; 3] = [
-            &["config", "--get", "gc.auto"],
+        // Every node's branch is listed, which reads each ref file a hand-back renames
+        // over and warns on one it cannot read; a branch not handed back yet lists as
+        // nothing. `branches`, which the caller names only once they exist, are read
+        // by name as well, the way the failing read in the module comment read one.
+        let listing: &[&str] = &["for-each-ref", "refs/heads/placement/"];
+        let by_name: Vec<[&str; 5]> = branches
+            .iter()
+            .map(|branch| ["diff", "--quiet", "origin/main", branch, "--"])
+            .collect();
+        let reads: Vec<&[&str]> = [
+            &["config", "--get", "gc.auto"][..],
             &["rev-parse", "--verify", "origin/main"],
             &["diff", "--quiet", "main", "origin/main", "--"],
-        ];
+            listing,
+        ]
+        .into_iter()
+        .chain(by_name.iter().map(|read| &read[..]))
+        .collect();
         let mut failed = Vec::new();
         // Bounded on its own as well, so nothing that waits on this reader can wait on
         // it for ever: a scope joins it however the threads beside it ended.
@@ -962,7 +1000,7 @@ impl Journey {
                     ));
                 }
             }
-            for read in reads {
+            for &read in &reads {
                 let output = self.run(&mut self.git_command(&self.checkout, read));
                 // `diff --quiet` answers 1 for trees that differ and `config --get` 1 for
                 // a key that is not set, and both are answers. What is not is anything
@@ -1113,7 +1151,7 @@ impl Journey {
             let readers: Vec<_> = (0..2)
                 .map(|_| {
                     let (finished, rounds) = (&finished, &rounds);
-                    scope.spawn(move || self.read_until(finished, &[], rounds))
+                    scope.spawn(move || self.read_until(finished, &[], &[], rounds))
                 })
                 .collect();
             // However the operations below end, a panic included, the readers stop, or
