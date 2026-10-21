@@ -514,8 +514,11 @@ fn a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recover
         "the premise: a lender whose refs collide cannot be cut a clone"
     );
     let said = String::from_utf8_lossy(&refused.stderr);
+    // git words this by version: 2.43 adds `cannot lock ref 'refs/remotes/origin/topic'`,
+    // and 2.55 prints only the `origin/topic -> origin/topic` update line. Both name the
+    // ref that way, and the refspec the refusal quotes (`origin/*`) never does.
     assert!(
-        said.contains("refs/remotes/origin/topic"),
+        said.contains("origin/topic"),
         "the refusal names the ref that could not be made: {said}"
     );
     let left = journey.cut_leftovers();
