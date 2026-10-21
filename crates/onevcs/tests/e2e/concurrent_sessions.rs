@@ -700,8 +700,9 @@ fn concurrent_sessions(placement: Placement) {
         );
     }
     for (head, before) in origin_heads.iter().zip(&origin_heads_before) {
-        assert!(
-            Identity::of(head).is_the_file(before),
+        assert_eq!(
+            &Identity::of(head),
+            before,
             "{} was replaced by a session placed in its reused slot though it already named \
              the base, while its siblings' searches read that clone",
             head.display()
