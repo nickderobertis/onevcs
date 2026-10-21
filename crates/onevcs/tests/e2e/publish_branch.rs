@@ -241,6 +241,10 @@ fn as_an_earlier_release_left(world: &World, repository: &Path) {
 
 #[test]
 fn a_branch_read_out_of_a_closed_sessions_run_clone_is_published_without_writing_into_it() {
+    let _bound = crate::support::watchdog(
+        "a_branch_read_out_of_a_closed_sessions_run_clone_is_published_without_writing_into_it",
+        crate::support::CONCURRENT_JOURNEY_BOUND,
+    );
     let fixture = Fixture::local(&local_direct());
     a_merge_path_that_accepts(&fixture);
     let world = &fixture.world;
@@ -285,6 +289,10 @@ fn a_branch_read_out_of_a_closed_sessions_run_clone_is_published_without_writing
 
 #[test]
 fn a_branch_read_out_of_a_reused_pool_slot_is_published_while_siblings_read_the_slot() {
+    let _bound = crate::support::watchdog(
+        "a_branch_read_out_of_a_reused_pool_slot_is_published_while_siblings_read_the_slot",
+        crate::support::CONCURRENT_JOURNEY_BOUND,
+    );
     let fixture = crate::pool::pooled(&crate::pool::sized(2, "unlimited"));
     a_merge_path_that_accepts(&fixture);
     let world = &fixture.world;
@@ -327,7 +335,13 @@ fn a_branch_read_out_of_a_reused_pool_slot_is_published_while_siblings_read_the_
         let reader = scope.spawn(|| {
             let git_dir = slot.join(".git");
             let mut failed = Vec::new();
+            // Bounded on its own, so the scope can never wait on this reader for ever.
+            let deadline = std::time::Instant::now() + crate::support::CONCURRENT_JOURNEY_BOUND;
             while !finished.load(std::sync::atomic::Ordering::SeqCst) {
+                if std::time::Instant::now() > deadline {
+                    failed.push("the reader outlived the journey's bound".to_owned());
+                    break;
+                }
                 let read = world.git_raw(
                     &fixture.checkout,
                     &[

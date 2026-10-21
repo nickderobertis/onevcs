@@ -958,6 +958,7 @@ fn a_pinned_branch_whose_session_is_occupied_opens_a_fresh_one_rather_than_refus
 
 #[test]
 fn a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_that_does_not_end() {
+    let _bound = crate::support::watchdog("a_search_waits_out_a_reclamation_of_a_closed_sessions_clone_and_refuses_one_that_does_not_end", crate::support::CONCURRENT_JOURNEY_BOUND);
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;
     // A closed session whose work never reached origin: its run clone is kept, and is

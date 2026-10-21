@@ -47,24 +47,33 @@ use fs4::fs_std::FileExt;
 /// The file in a checkout's common directory every fetch into it takes turns under.
 const FETCH_LOCK: &str = "onevcs-fetch.lock";
 
-use crate::support::plain_path;
+use crate::support::{plain_path, watchdog, CONCURRENT_JOURNEY_BOUND};
 
 /// How many nodes are placed, and then restacked, at once.
 const NODES: [&str; 3] = ["a", "b", "c"];
 
 #[test]
 fn concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them() {
+    let _bound = watchdog(
+        "concurrent_session_operations_in_one_repository_never_fail_a_read_beside_them",
+        CONCURRENT_JOURNEY_BOUND,
+    );
     concurrent_sessions(Placement::RunRoots);
 }
 
 #[test]
 fn concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them() {
+    let _bound = watchdog(
+        "concurrent_sessions_in_reused_pool_slots_never_fail_a_read_beside_them",
+        CONCURRENT_JOURNEY_BOUND,
+    );
     concurrent_sessions(Placement::Pool);
 }
 
 #[test]
 fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_session_reading_it()
 {
+    let _bound = watchdog("a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_session_reading_it", CONCURRENT_JOURNEY_BOUND);
     let journey = Journey::new(Placement::RunRoots);
     // What a checkout an earlier release registered looks like: a valid registration
     // whose own configuration carries no retention keys, because that release set them
@@ -162,6 +171,10 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_with_no_
 
 #[test]
 fn a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recovers() {
+    let _bound = watchdog(
+        "a_clone_that_cannot_be_cut_leaves_nothing_half_made_and_the_next_open_recovers",
+        CONCURRENT_JOURNEY_BOUND,
+    );
     let journey = Journey::new(Placement::Pool);
     // A lender whose local branch `topic/x` and origin's `topic` cannot both be
     // remote-tracking refs of one clone: `clone --shared` maps the first there, so
@@ -479,7 +492,14 @@ impl Journey {
             &["diff", "--quiet", "main", "origin/main", "--"],
         ];
         let mut failed = Vec::new();
+        // Bounded on its own as well, so nothing that waits on this reader can wait on
+        // it for ever: a scope joins it however the threads beside it ended.
+        let deadline = Instant::now() + CONCURRENT_JOURNEY_BOUND;
         while !finished.load(Ordering::SeqCst) {
+            if Instant::now() > deadline {
+                failed.push("the readers outlived the journey's bound".to_owned());
+                break;
+            }
             for slot in slots {
                 // Addressed from outside the slot: a process whose working directory is
                 // inside a run root is one `session close` rightly refuses to close over.
