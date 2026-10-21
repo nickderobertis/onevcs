@@ -233,6 +233,7 @@ fn retention_keys_appended_to_a_configuration_override_its_own_values_and_keep_t
     std::fs::write(&config, text.trim_end_matches('\n')).expect("a configuration with no last end");
     // llmlint: ignore-end[tests_mirror_real_usage]
     let before = Identity::of(&config);
+    let settings = journey.own_settings();
 
     let opened = journey.open(&["--branch-name", "placement/a"]);
     journey.close(&opened.token);
@@ -251,6 +252,11 @@ fn retention_keys_appended_to_a_configuration_override_its_own_values_and_keep_t
             "every setting the file held before still reads as it was"
         );
     }
+    assert_eq!(
+        journey.own_settings(),
+        settings,
+        "every setting the file held reads as it did, to the byte"
+    );
     assert!(
         Identity::of(&config).is_the_file(&before),
         "{} was replaced rather than appended to",
@@ -362,7 +368,7 @@ fn an_upgraded_checkout_with_an_empty_local_configuration_opens_beside_its_reade
         .expect("the global file includes it for this checkout");
     std::fs::write(journey.checkout.join(".git").join("config"), "").expect("an empty local file");
     // llmlint: ignore-end[tests_mirror_real_usage]
-    journey.opened_beside_readers(&[]);
+    journey.opened_beside_readers();
 }
 
 #[test]
@@ -383,7 +389,39 @@ fn an_upgraded_checkout_whose_last_line_continues_opens_beside_its_readers() {
     text.extend_from_slice(b"[onevcs-journey]\n\tnote = kept \\\n");
     std::fs::write(&config, text).expect("a last line that continues");
     // llmlint: ignore-end[tests_mirror_real_usage]
-    journey.opened_beside_readers(&["onevcs-journey.note", "remote.origin.url"]);
+    journey.opened_beside_readers();
+}
+
+#[test]
+fn an_upgraded_checkout_whose_last_line_continues_into_the_end_of_the_file_opens_beside_its_readers(
+) {
+    let _bound = watchdog(
+        "an_upgraded_checkout_whose_last_line_continues_into_the_end_of_the_file_opens_beside_its_readers",
+        CONCURRENT_JOURNEY_BOUND,
+    );
+    let journey = Journey::new(Placement::RunRoots);
+    // llmlint: ignore-block[tests_mirror_real_usage] a configuration an earlier release
+    // registered, whose last line an operator continued with a backslash and then saved
+    // with no line end — which git reads, the end of the file ending the value. No
+    // interface of this build leaves either, so the journey writes both. The opens are
+    // the real CLI.
+    for key in ["gc.auto", "gc.pruneExpire"] {
+        journey.git(&journey.checkout, &["config", "--unset", key]);
+    }
+    let config = journey.checkout.join(".git").join("config");
+    let mut text = std::fs::read(&config).expect("the configuration");
+    text.extend_from_slice(b"[onevcs-journey]\n\tnote = kept \\");
+    std::fs::write(&config, text).expect("a last line that continues into the end");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    assert_eq!(
+        journey.git_output(
+            &journey.checkout,
+            &["config", "--get", "onevcs-journey.note"]
+        ),
+        "kept",
+        "the premise: git reads the file as it is"
+    );
+    journey.opened_beside_readers();
 }
 
 #[test]
@@ -1064,13 +1102,10 @@ impl Journey {
     /// retention keys yet, with git reading the checkout from before the first open to
     /// after the last close; every read and every operation succeeds, the keys are set
     /// in the file that was there, and `kept` read the same after as before.
-    fn opened_beside_readers(&self, kept: &[&str]) {
+    fn opened_beside_readers(&self) {
         let config = self.checkout.join(".git").join("config");
         assert!(!self.retains(), "the premise: no retention keys yet");
-        let before: Vec<String> = kept
-            .iter()
-            .map(|key| self.git_output(&self.checkout, &["config", "--get", key]))
-            .collect();
+        let before = self.own_settings();
         let unwritten = Identity::of(&config);
         let finished = AtomicBool::new(false);
         let rounds = AtomicUsize::new(0);
@@ -1116,13 +1151,31 @@ impl Journey {
             "{} was replaced rather than written in place",
             config.display()
         );
-        for (key, value) in kept.iter().zip(&before) {
-            assert_eq!(
-                &self.git_output(&self.checkout, &["config", "--get", key]),
-                value,
-                "{key} reads as it did"
-            );
-        }
+        assert_eq!(
+            self.own_settings(),
+            before,
+            "every setting the file held reads as it did, to the byte"
+        );
+    }
+
+    /// Every setting of the checkout's own configuration but the retention keys, as git
+    /// lists them, values untrimmed — a value's trailing space is part of it.
+    fn own_settings(&self) -> Vec<String> {
+        let listed = self
+            .run(&mut self.git_command(&self.checkout, &["config", "--local", "--null", "--list"]));
+        assert!(
+            listed.status.success() && listed.stderr.is_empty(),
+            "git reads the checkout's configuration:\n{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        String::from_utf8_lossy(&listed.stdout)
+            .split_terminator('\0')
+            .filter(|setting| {
+                let key = setting.split_once('\n').map_or(*setting, |(key, _)| key);
+                key != "gc.auto" && key != "gc.pruneexpire"
+            })
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Whether the registered checkout's own configuration holds both retention keys.

@@ -1467,7 +1467,9 @@ git's own `config.lock` rather than renamed over it (`git::append_in_place`), so
 reader outside this crate — which no lease of its reaches — never meets a moment the
 file cannot be opened; and as a comment whose `#`s become line ends one byte at a
 time (`git::addition`), because git reads a configuration in buffered `read`s and can
-join the old end of the file from one to part of what was appended in the next. It
+join the old end of the file from one to part of what was appended in the next —
+behind a line end of its own where the last line has none, since a backslash there
+continues a value into whatever follows it. It
 waits for an exclusive take of the lease every session
 operation over it holds shared (`workspace::lend`) from before its first read of the
 checkout, the check that it is a checkout included; no clone or slot is ever a

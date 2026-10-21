@@ -2170,17 +2170,23 @@ struct Step {
 /// of it, whether behind the file's last line or behind a line end the reader read
 /// before the write began — starts with `#`, so it is comment until a whole setting is
 /// put in force by its own line end. That holds for any file git reads: one ending in
-/// a line end or not, empty, or ending in a line a backslash continues, where the
-/// comment is the continued value's own. A write that fails leaves such a state, and
-/// the next attempt appends after it.
+/// a line end, empty, or ending in a line a backslash continues, where the comment is
+/// the continued value's own. A last line with no end of its own is given one first:
+/// git reads the end of the file as a line end, so a value continued into it ends
+/// there, and a `#` written straight after its backslash would be an escape git
+/// refuses — and, once that `#` is a line end, a continuation taking the next setting
+/// into the value. A write that fails leaves such a state, and the next attempt appends
+/// after it.
 fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
     let length = content.len() as u64;
-    let appended: String = settings
-        .iter()
-        .map(|(key, value)| {
+    let ended = content.last().is_none_or(|last| *last == b'\n');
+    let appended: String = (!ended)
+        .then_some("\n".to_owned())
+        .into_iter()
+        .chain(settings.iter().map(|(key, value)| {
             let (section, name) = key.split_once('.').unwrap_or(("core", key));
             format!("#[{section}] {name} = {value}")
-        })
+        }))
         .collect();
     let mut steps = vec![Step {
         at: length,
@@ -5715,13 +5721,17 @@ mod config_addition_tests {
 
     /// The local configuration shapes git reads: as `git init` leaves it, an operator's
     /// last line with no end, one ended `\r\n`, one whose last line a backslash
-    /// continues, none at all, and one spanning several read buffers.
+    /// continues — ended, and not — one whose last value ends in an escaped backslash
+    /// and no line end, none at all, and one spanning several read buffers.
     fn shapes(initialized: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
         let unended = initialized[..initialized.len() - 1].to_vec();
         let mut crlf = unended.clone();
         crlf.extend_from_slice(b"\r\n");
         let mut continued = initialized.to_vec();
         continued.extend_from_slice(b"[onevcs-test]\n\tnote = kept \\\n");
+        let unended_continuation = continued[..continued.len() - 1].to_vec();
+        let mut escaped = initialized.to_vec();
+        escaped.extend_from_slice(b"[onevcs-test]\n\tnote = kept\\\\");
         let mut large = initialized.to_vec();
         for remote in 0..300 {
             large.extend_from_slice(
@@ -5736,6 +5746,11 @@ mod config_addition_tests {
             ("with an unended last line", unended),
             ("ended with \\r\\n", crlf),
             ("continued by a backslash", continued),
+            (
+                "continued by a backslash with no line end",
+                unended_continuation,
+            ),
+            ("ending in an escaped backslash", escaped),
             ("empty", Vec::new()),
             ("larger than three read buffers", large),
         ]
