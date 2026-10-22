@@ -227,6 +227,14 @@ pub(crate) struct Addressed<'a> {
 
 impl<'a> Addressed<'a> {
     pub(crate) fn of(providers: &Providers<'_>, token: &'a SessionToken) -> Result<Self> {
+        // A supplied Vcs need not have a disk record. Where Git does have one,
+        // keep its clone and subsequent stack-base resolution in the same turn,
+        // including the fetch that refreshes the target's remote refs.
+        let stored = workspace::load(&token.0).ok();
+        let _reads = stored
+            .as_ref()
+            .map(|stored| crate::checkout_reads::identity(&stored.identity))
+            .transpose()?;
         let record = providers.vcs.session(token)?;
         // The same question a publication asks of the identity, with the same two
         // answers: a local identity has no host at all, and a hosted one this build
@@ -299,6 +307,7 @@ impl<'a> Addressed<'a> {
     /// without one, and this asks it nothing.
     fn hold_to_repository_policy(&self, title: &Subject) -> Result<()> {
         let worktree = &self.record.session.worktree;
+        let _reads = crate::checkout_reads::checkout(worktree)?;
         if !git::is_repo(worktree) {
             return Ok(());
         }

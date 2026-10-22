@@ -21,6 +21,7 @@ struct Snapshot {
 /// A repository, and the store it is lent where it is lent one.
 type Lending = (PathBuf, Option<PathBuf>);
 thread_local! {
+    static TURNS: RefCell<HashMap<PathBuf, crate::checkout_reads::Turn>> = RefCell::new(HashMap::new());
     static OBJECT_REPOSITORIES: RefCell<HashMap<(PathBuf, Option<PathBuf>), git2::Repository>> = RefCell::new(HashMap::new());
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
     /// One object store read on its own, by its path, for every repository that
@@ -35,6 +36,8 @@ thread_local! {
     static CANONICAL: RefCell<HashMap<PathBuf, Option<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
+    #[cfg(test)]
+    clear_race::before_clear();
     // Closed here, inside the read that opened them, so what a read costs its caller
     // is all of it: nothing it opened outlives it or waits for anything later.
     crate::native_objects::clear();
@@ -44,6 +47,7 @@ pub(crate) fn clear() {
     STORES.with(|stores| stores.borrow_mut().clear());
     BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
     CANONICAL.with(|canonical| canonical.borrow_mut().clear());
+    TURNS.with(|turns| turns.borrow_mut().clear());
 }
 /// `std::fs::canonicalize`, resolved once per path within a read.
 ///
@@ -85,10 +89,28 @@ pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
     });
     resolved
 }
+// Native repository handles must close before their read turns: on Windows an
+// open object store can itself keep a disposable clone from being removed.
+fn keep_turn(path: &Path) -> Option<Option<crate::checkout_reads::Turn>> {
+    let turn = crate::checkout_reads::checkout(path).ok()?;
+    if crate::recovery_cache::enabled() {
+        if let Some(turn) = &turn {
+            TURNS.with(|turns| {
+                turns
+                    .borrow_mut()
+                    .entry(path.to_owned())
+                    .or_insert_with(|| turn.clone());
+            });
+        }
+    }
+    Some(turn)
+}
+
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
         return None;
     }
+    let _turn = keep_turn(repo)?;
     SNAPSHOTS.with(|snapshots| {
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
@@ -293,6 +315,7 @@ pub(crate) fn with_objects<T>(
     borrowing: Option<&Path>,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(at)?;
     let borrowing = beyond_alternates(at, borrowing);
     let mut choose = Some(choose);
     if borrowing.is_none() {
@@ -334,6 +357,7 @@ pub(crate) fn with_objects_holding<T>(
     named: &[git2::Oid],
     choose: impl Fn(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(at)?;
     for store in borrowed(at, borrowing) {
         let answer = with_store(&store, |repository| {
             let odb = repository.odb().ok()?;
@@ -355,6 +379,7 @@ pub(crate) fn with_store<T>(
     store: &Path,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(store)?;
     STORES.with(|stores| {
         let mut stores = stores.borrow_mut();
         let repository = stores
@@ -1119,5 +1144,53 @@ mod tests {
         assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).len(), 64);
         differential(root.path(), &["main", "HEAD"]);
         crate::recovery_cache::scope(|| assert!(heads(root.path()).is_none()));
+    }
+}
+
+// The public recovery call owns this cache. A test-only rendezvous lets its real
+// caller pause during destruction, after traversal guards have gone out of scope.
+#[cfg(test)]
+pub(crate) mod clear_race {
+    use std::path::PathBuf;
+    use std::sync::{mpsc, Mutex};
+
+    struct Hold {
+        path: PathBuf,
+        entered: mpsc::Sender<bool>,
+        release: mpsc::Receiver<()>,
+    }
+    static HOLD: Mutex<Option<Hold>> = Mutex::new(None);
+
+    pub(crate) fn arm(path: PathBuf, entered: mpsc::Sender<bool>, release: mpsc::Receiver<()>) {
+        *HOLD.lock().unwrap() = Some(Hold {
+            path,
+            entered,
+            release,
+        });
+    }
+
+    pub(super) fn before_clear() {
+        let mut held = HOLD.lock().unwrap();
+        let Some(hold) = held.as_ref() else {
+            return;
+        };
+        // Keyed by the retained turn rather than a ref snapshot: on Windows a
+        // snapshot may decline (and Git be read instead) while the turn is kept.
+        let checkout = crate::checkout_reads::closing_path(&hold.path)
+            .ok()
+            .flatten();
+        if checkout.is_none()
+            || !super::TURNS.with(|turns| {
+                turns.borrow().keys().any(|path| {
+                    crate::checkout_reads::closing_path(path).ok().flatten() == checkout
+                })
+            })
+        {
+            return;
+        }
+        let hold = held.take().unwrap();
+        drop(held);
+        hold.entered.send(true).unwrap();
+        hold.release.recv().unwrap();
     }
 }

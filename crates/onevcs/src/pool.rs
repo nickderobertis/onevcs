@@ -523,6 +523,16 @@ fn state_of(
     };
     let clone = dir.join("clone");
     let worktree = dir.join("worktree");
+    if matches!(crate::checkout_reads::available(&clone), Ok(false)) {
+        if let Some(holder) = open.iter().find(|held| held.run_root == dir) {
+            return (
+                Some(record),
+                SlotState::InUse {
+                    session: SessionToken(holder.token.to_string()),
+                },
+            );
+        }
+    }
     if !git::is_repo(&clone) {
         return (
             Some(record),
@@ -655,6 +665,9 @@ fn keeps(slot: &Surveyed, judge: &Path) -> Option<String> {
 /// Remove one slot that is proven idle, under the exclusive take that proves nobody is
 /// inside it right now.
 fn remove(slot: &Surveyed) -> std::result::Result<(), String> {
+    let _closing = crate::checkout_reads::try_closing(&slot.clone_dir())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "a read is working in it right now".to_owned())?;
     let Some(_exclusive) = lock::try_exclusive(&workspace::occupancy_identity(&slot.dir))
         .map_err(|e| e.to_string())?
     else {
@@ -748,6 +761,7 @@ pub(crate) struct Ask<'a> {
 /// A `--pool 0` skips the slots and spends the overflow, because the cap is about disk
 /// and a session that opted out of reuse still spends it.
 pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
+    let _reads = crate::checkout_reads::teardown(&ask.resolution.key)?;
     let pool = pool_dir(ask.identity_root);
     crate::home::ensure_dir(&pool)?;
     let serial = lock::exclusive(&placement_identity(&pool))?;
@@ -859,6 +873,9 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         if !matches!(slot.state, SlotState::Broken { .. }) {
             continue;
         }
+        let Some(_closing) = crate::checkout_reads::try_closing(&slot.clone_dir())? else {
+            continue;
+        };
         let clone = slot.clone_dir();
         let worktree = slot.worktree();
         // A slot bound to another lender is not this request's to rebuild any more
@@ -1294,6 +1311,7 @@ fn resumes(asked: &Asked, request: &SessionRequest) -> bool {
 /// itself would be placed.
 pub fn workspace_capacity(request: &SessionRequest) -> Result<WorkspaceCapacity> {
     let asked = asked(request)?;
+    let _reads = crate::checkout_reads::identity(&asked.resolution.key)?;
     let survey = survey(&asked.resolution.key, &pool_dir(&asked.identity_root))?;
     Ok(capacity_of(&asked, &survey, request))
 }
@@ -1314,6 +1332,7 @@ pub fn pool_status(repo: &str) -> Result<PoolStatus> {
         caller_merges_base: false,
     };
     let asked = asked(&request)?;
+    let _reads = crate::checkout_reads::identity(&asked.resolution.key)?;
     let survey = survey(&asked.resolution.key, &pool_dir(&asked.identity_root))?;
     Ok(PoolStatus {
         maintenance: crate::repository_config::resolve(&asked.resolution, &asked.resolved),
@@ -1343,6 +1362,7 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
         caller_merges_base: false,
     };
     let asked = asked(&request)?;
+    let _reads = crate::checkout_reads::teardown(&asked.resolution.key)?;
     let pool = pool_dir(&asked.identity_root);
     let mut report = PruneReport {
         removed: Vec::new(),

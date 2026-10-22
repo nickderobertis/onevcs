@@ -1178,7 +1178,10 @@ impl<'a> Census<'a> {
             )),
         };
         let base = base.ok();
-        let _reads = crate::checkout_reads::identity(identity)?;
+        let _reads = match reach {
+            Reach::Fetch => crate::checkout_reads::teardown(identity)?,
+            Reach::Offline | Reach::Remote => crate::checkout_reads::identity(identity)?,
+        };
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
             repo: publication.clone(),
@@ -1231,6 +1234,7 @@ impl<'a> Census<'a> {
                 slot: record.slot.map(|_| record.run_root.clone()),
             });
         }
+        places.retain(|place| !matches!(crate::checkout_reads::available(&place.repo), Ok(false)));
         // A read narrowed to some sessions looks only where those sessions can hold a
         // branch, which is the whole promise of the narrowing.
         if let Some(only) = only {
@@ -2924,6 +2928,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
                 Done {
                     deleted: Vec::new(),
                     failed: Vec::new(),
+                    _closing: Vec::new(),
                 },
                 (acting, Trigger::Verb),
             ),
@@ -3273,6 +3278,7 @@ enum Deletion {
 struct Done {
     deleted: Vec<BranchHolder>,
     failed: Vec<FailedHolder>,
+    _closing: Vec<crate::checkout_reads::Closing>,
 }
 
 impl Census<'_> {
@@ -3329,6 +3335,7 @@ impl Census<'_> {
     /// Delete every copy, locally by compare-and-delete and on the origin under a
     /// lease, putting back what was deleted if any copy turns out to have moved.
     fn delete(&self, branch: &str, copies: &Copies) -> Deletion {
+        let mut closing = Vec::new();
         let mut deleted: Vec<(BranchHolder, Option<(PathBuf, String)>)> = Vec::new();
         let mut failed: Vec<FailedHolder> = Vec::new();
         let restore = |deleted: &[(BranchHolder, Option<(PathBuf, String)>)]| {
@@ -3350,6 +3357,23 @@ impl Census<'_> {
             };
             let place = &self.places[index];
             let holder = self.holder(copy.at);
+            // Earlier copies' hooks may still continue this copy. Mark it only
+            // when its own deletion starts, then retain the lease through finish.
+            match crate::checkout_reads::try_closing(&place.repo) {
+                Ok(Some(guard)) => closing.push(guard),
+                refused => {
+                    failed.push(FailedHolder {
+                        kind: holder.kind,
+                        location: holder.location,
+                        error: match refused {
+                            Err(failure) => failure.to_string(),
+                            _ => "a read or teardown is working in it right now".to_owned(),
+                        },
+                    });
+                    continue;
+                }
+            }
+
             // A worktree standing on the branch is stood off it first — at the commit it
             // is on, which is clean or this branch would have been kept — because a
             // branch a worktree has checked out is not one git lets go of quietly.
@@ -3410,6 +3434,7 @@ impl Census<'_> {
         Deletion::Done(Done {
             deleted: deleted.into_iter().map(|(holder, _)| holder).collect(),
             failed,
+            _closing: closing,
         })
     }
 
@@ -3425,6 +3450,7 @@ impl Census<'_> {
         let Done {
             deleted,
             mut failed,
+            mut _closing,
         } = done;
         let mut sessions_closed = Vec::new();
         for record in &plan.sessions {
@@ -3460,7 +3486,15 @@ impl Census<'_> {
         }
         let mut run_roots_removed = Vec::new();
         for run_root in &plan.run_roots {
-            match remove_run_root(run_root) {
+            let removed = crate::checkout_reads::try_closing(&run_root.join("clone"))
+                .map_err(|failure| failure.to_string())
+                .and_then(|guard| {
+                    _closing.push(guard.ok_or_else(|| {
+                        "a read or teardown is working in it right now".to_owned()
+                    })?);
+                    remove_run_root(run_root)
+                });
+            match removed {
                 Ok(true) => run_roots_removed.push(run_root.clone()),
                 Ok(false) => {}
                 Err(why) => failed.push(FailedHolder {
@@ -3472,7 +3506,15 @@ impl Census<'_> {
         }
         let mut slots_returned = Vec::new();
         for slot in &plan.slots {
-            match self.return_slot(slot) {
+            let returned = crate::checkout_reads::try_closing(&slot.join("clone"))
+                .map_err(|failure| failure.to_string())
+                .and_then(|guard| {
+                    _closing.push(guard.ok_or_else(|| {
+                        "a read or teardown is working in it right now".to_owned()
+                    })?);
+                    self.return_slot(slot)
+                });
+            match returned {
                 Ok(true) => slots_returned.push(slot.clone()),
                 Ok(false) => {}
                 Err(why) => failed.push(FailedHolder {

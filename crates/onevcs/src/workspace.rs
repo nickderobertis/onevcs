@@ -617,22 +617,28 @@ pub(crate) fn record_path(token: &str) -> Result<PathBuf> {
 /// Read one session record.
 ///
 /// A record that is **not there** is no session; a record that is there and will not
-/// be read is a record naming itself and what stopped it. The two used to answer the
-/// same way, and [`all`] is why they no longer may: a listing that has just
-/// enumerated the file cannot then tell its caller no such session is open.
+/// be read is a record naming itself and what stopped it. A listing may pass over
+/// a record removed after enumeration; a read by token still names that session.
 pub fn load(token: &str) -> Result<Record> {
+    existing(token)?.ok_or_else(|| Error::Invalid {
+        reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
+    })
+}
+
+/// A listing may lose a record to a concurrent sweep. Only absence is skipped;
+/// unreadable or invalid records remain errors, even outside a read's selection.
+pub(crate) fn existing(token: &str) -> Result<Option<Record>> {
     if !ids::is_safe_name(token) {
         return Err(error::invalid(format!(
             "{token:?} is not a session token; `onevcs session open` prints one"
         )));
     }
     let path = record_path(token)?;
-    let raw = std::fs::read_to_string(&path).map_err(|failure| match failure.kind() {
-        std::io::ErrorKind::NotFound => Error::Invalid {
-            reason: format!("no session {token:?} is open; `onevcs session open` prints a token"),
-        },
-        _ => error::at("read the session record at", &path)(failure),
-    })?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(failure) => return Err(error::at("read the session record at", &path)(failure)),
+    };
     let document: Value =
         serde_json::from_str(&raw).map_err(error::at("read the session record at", &path))?;
     let mut record: Record = serde_json::from_value(document.clone())
@@ -645,7 +651,7 @@ pub fn load(token: &str) -> Result<Record> {
         &serde_json::to_value(&record).map_err(error::at("read the session record at", &path))?,
     );
     usable(&path, token, &record)?;
-    Ok(record)
+    Ok(Some(record))
 }
 
 /// Reject a session record that disagrees with itself or with what it is for.
@@ -831,7 +837,9 @@ pub fn all() -> Result<Vec<Record>> {
         else {
             continue;
         };
-        records.push(load(&token)?);
+        if let Some(record) = existing(&token)? {
+            records.push(record);
+        }
     }
     records.sort_by(|a, b| a.token.cmp(&b.token));
     Ok(records)
@@ -855,6 +863,7 @@ pub fn all() -> Result<Vec<Record>> {
 pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     let registry = store::load()?;
     let resolution = store::resolve(&registry, repo)?;
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     // One listing for the whole scan, and the ownership snapshot taken from it: the
     // records are what say whether a closed session's slot was taken, and asking that
     // per record re-read every record on the host once per record on the host.
@@ -1078,7 +1087,10 @@ pub(crate) fn checkouts_among(
         }
     }
     for record in sessions {
-        if record.identity == resolution.key && !searched.contains(&record.clone) {
+        if record.identity == resolution.key
+            && !searched.contains(&record.clone)
+            && !matches!(crate::checkout_reads::available(&record.clone), Ok(false))
+        {
             searched.push(record.clone.clone());
         }
     }
@@ -1252,7 +1264,7 @@ pub(crate) fn open_with(
     let identity_root = identity_dir(&resolution.key)?;
     let runs = identity_root.join("runs");
     home::ensure_dir(&runs)?;
-    reclaim(&runs)?;
+    reclaim(&resolution.key, &runs)?;
 
     // Where this session goes: a warm slot of the identity's pool, a slot cut for it,
     // a disposable run root under `runs/`, or nowhere. A host that configures no pool
@@ -2700,7 +2712,15 @@ struct Stray {
 /// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
     let record = load(token)?;
-    let _reads = crate::checkout_reads::identity(&record.identity)?;
+    let closing = if record.tree_is_its_own()? {
+        Some(crate::checkout_reads::closing(&record.clone)?)
+    } else {
+        None
+    };
+    let _reads = crate::checkout_reads::teardown(&record.identity)?;
+    // The marker must drop while the identity is still exclusive: a reader
+    // admitted after this turn must see the completed checkout, not a busy marker.
+    let mut _closing = closing;
     let record = load(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
@@ -2719,6 +2739,15 @@ pub fn close(token: &str) -> Result<Record> {
         if !occupants.is_empty() {
             return Err(occupied(&record, &occupants));
         }
+    }
+    if ours && _closing.is_none() {
+        _closing = Some(
+            crate::checkout_reads::try_closing(&record.clone)?.ok_or_else(|| {
+                error::invalid(format!(
+                    "session {token:?} is occupied by another read or teardown"
+                ))
+            })?,
+        );
     }
     let mut stream = Stream::open(token)?;
     let mut closed = json!({"token": record.token, "branch": record.branch});
@@ -3288,7 +3317,7 @@ fn run_roots_of_open_sessions() -> Result<Vec<PathBuf>> {
 /// it yet — and a session that opened a minute ago and has committed nothing
 /// answers no to all of them while somebody is working in it. The record is the one
 /// thing that says a session exists at all.
-fn reclaim(runs: &Path) -> Result<()> {
+fn reclaim(identity: &str, runs: &Path) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(runs) else {
         return Ok(());
     };
@@ -3303,12 +3332,18 @@ fn reclaim(runs: &Path) -> Result<()> {
     let open = run_roots_of_open_sessions()?;
     #[cfg(test)]
     reclaim_race::after_snapshot();
+    let _reads = crate::checkout_reads::teardown(identity)?;
     // Newest first, by when the directory was last written: a session token is a
     // digest and sorts arbitrarily, so ordering by name would retain an arbitrary
     // three rather than the three somebody is most likely to reach for. Each is kept
     // with its exclusive lease, held until it is removed or the walk is done with it,
     // so what [`abandoned`] decided is still true when the retention bound acts on it.
-    let mut holding_work: Vec<(std::time::SystemTime, PathBuf, lock::Guard)> = Vec::new();
+    let mut holding_work: Vec<(
+        std::time::SystemTime,
+        PathBuf,
+        lock::Guard,
+        crate::checkout_reads::Closing,
+    )> = Vec::new();
     for entry in entries.flatten() {
         let run_root = entry.path();
         if !run_root.is_dir() {
@@ -3334,6 +3369,9 @@ fn reclaim(runs: &Path) -> Result<()> {
         if open.iter().any(|held| held == &run_root) {
             continue;
         }
+        let Some(closing) = crate::checkout_reads::try_closing(&run_root.join("clone"))? else {
+            continue;
+        };
         let Some(exclusive) = abandoned(&run_root)? else {
             continue;
         };
@@ -3350,11 +3388,11 @@ fn reclaim(runs: &Path) -> Result<()> {
             let written = std::fs::metadata(&run_root)
                 .and_then(|meta| meta.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            holding_work.push((written, run_root, exclusive));
+            holding_work.push((written, run_root, exclusive, closing));
         }
     }
-    holding_work.sort_by_key(|(written, _, _)| std::cmp::Reverse(*written));
-    for (_, reclaimed, exclusive) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
+    holding_work.sort_by_key(|(written, _, _, _)| std::cmp::Reverse(*written));
+    for (_, reclaimed, exclusive, _closing) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
         let _ = std::fs::remove_dir_all(&reclaimed);
         drop(exclusive);
     }
@@ -3506,6 +3544,59 @@ mod reclaim_race {
         )
         .expect("a rules file");
         root
+    }
+
+    #[test]
+    fn public_recovery_closes_native_handles_before_releasing_its_checkout_turns() {
+        use crate::Vcs;
+        let _host = host();
+        for (key, _) in
+            std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
+        {
+            std::env::remove_var(key);
+        }
+        let session = opened();
+        std::fs::write(session.worktree.join("work.txt"), "work\n").unwrap();
+        git(&session.worktree, &["add", "work.txt"]);
+        git(
+            &session.worktree,
+            &["commit", "-q", "-m", "feat: native recovery work"],
+        );
+        let record = super::load(&session.token.0).unwrap();
+        let (entered, ready) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        crate::native_refs::clear_race::arm(record.clone.clone(), entered.clone(), released);
+        let read = std::thread::spawn(move || {
+            let answer = crate::Git.recoverable(crate::Scope::Repo("project".to_owned()));
+            entered.send(false).unwrap();
+            answer
+        });
+        if !ready.recv().unwrap() {
+            panic!(
+                "the public recovery must keep a native read turn on the clone: {:?}",
+                read.join().unwrap()
+            );
+        }
+        let excluded = crate::checkout_reads::try_closing(&record.clone)
+            .unwrap()
+            .is_none();
+        let token = session.token.clone();
+        let close = std::thread::spawn(move || crate::Git.close_session(&token));
+        release.send(()).unwrap();
+        let recovered = read.join().unwrap().unwrap();
+        let closed = close.join().unwrap().unwrap();
+        assert!(
+            excluded,
+            "the kernel keeps teardown out until the native handles close"
+        );
+        assert!(recovered
+            .iter()
+            .any(|row| row.branch.branch == session.branch));
+        assert_eq!(closed.token, session.token);
+        assert!(
+            !session.worktree.exists(),
+            "the real close can remove the checkout after native handles close"
+        );
     }
 
     /// B reads which sessions are open before A's record exists, and walks `runs/`
