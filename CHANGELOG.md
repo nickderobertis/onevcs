@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.6](https://github.com/nickderobertis/onevcs/compare/v0.56.5...v0.56.6) - 2026-10-22
+
+### Fixed
+
+- *(session)* keep every multi-step session read whole against a concurrent close ([#519](https://github.com/nickderobertis/onevcs/pull/519))
+
 ## [0.56.5](https://github.com/nickderobertis/onevcs/compare/v0.56.4...v0.56.5) - 2026-10-22
 
 ### Fixed
