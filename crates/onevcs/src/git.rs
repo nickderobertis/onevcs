@@ -220,6 +220,28 @@ fn run_unless(
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
 ) -> Result<Output> {
+    let reading = reads::remembered(args)
+        || matches!(
+            args,
+            ["worktree", "list", ..]
+                | ["status", ..]
+                | ["remote"]
+                | ["ls-remote", ..]
+                | ["show", ..]
+        )
+        || matches!(args, ["config", "--get", ..])
+        || matches!(args, ["tag", option] if option.starts_with("--contains="))
+        // Landing comparisons write synthetic objects only into their scratch
+        // store. They still read this checkout and must keep its turn throughout.
+        || (args.first() == Some(&"merge-tree")
+            && env.iter().any(|(key, _)| key == "GIT_OBJECT_DIRECTORY"));
+    let _checkout = if reading {
+        cwd.map(crate::checkout_reads::checkout)
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
@@ -251,22 +273,29 @@ fn run_unless(
     };
     let mut command = Command::new(git_program());
     command.args(args);
-    let ran = bounded(
-        command,
-        cwd,
-        &shims
-            .as_ref()
-            .map(|shims| [env, &shims.env()].concat())
-            .unwrap_or_else(|| env.to_vec()),
-        if hooked {
-            Bound::Hooks
-        } else {
-            Bound::Ordinary
-        },
-        &format!("git {}", args.join(" ")),
-        |e| unstarted(&e, args, cwd),
-        stop,
-    );
+    let execute = || {
+        bounded(
+            command,
+            cwd,
+            &shims
+                .as_ref()
+                .map(|shims| [env, &shims.env()].concat())
+                .unwrap_or_else(|| env.to_vec()),
+            if hooked {
+                Bound::Hooks
+            } else {
+                Bound::Ordinary
+            },
+            &format!("git {}", args.join(" ")),
+            |e| unstarted(&e, args, cwd),
+            stop,
+        )
+    };
+    let ran = if reading || matches!(args, ["worktree", "remove" | "prune", ..] | ["clean", ..]) {
+        execute()
+    } else {
+        crate::checkout_reads::mutating(execute)
+    };
     drop(shims);
     let ran = ran?;
     let output = Output {
@@ -388,7 +417,7 @@ mod reads {
     /// which answers the same for the same arguments as long as nothing writes. The
     /// list is closed on purpose — a command not on it is either a read that is not
     /// worth remembering, or a write, and the second empties the memo.
-    fn remembered(args: &[&str]) -> bool {
+    pub(super) fn remembered(args: &[&str]) -> bool {
         match args.first().copied() {
             Some("--exec-path") => args.len() == 1,
             Some("config") => args == ["config", "--null", "--list", "--show-origin"],
@@ -2109,8 +2138,19 @@ pub const FETCH_LOCK: &str = "onevcs-fetch.lock";
 /// kept outside of. And it is dropped on every return: a fetch git failed, or whose
 /// process was killed, leaves the next one free to run.
 pub fn fetch(cwd: &Path, remote: &str) -> Result<()> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
+    fetching(cwd, || {
+        checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
+    })
+}
+
+/// Release read turns before queueing for a fetch, and release the fetch lock
+/// before regaining them. A census can need objects while another pass fetches.
+fn fetching<T>(cwd: &Path, fetch: impl FnOnce() -> Result<T>) -> Result<T> {
+    let path = common_dir(cwd)?.join(FETCH_LOCK);
+    crate::checkout_reads::mutating(|| {
+        let _turn = lock::exclusive_at(&path)?;
+        fetch()
+    })
 }
 
 /// The remote's default branch, refusing to guess when the answer is ambiguous.
@@ -4665,11 +4705,12 @@ pub fn delete_remote_branch(
 /// deleted — and one that will not is answered `false`, never an error, so the caller
 /// says what it could not restore.
 pub fn fetch_commit(cwd: &Path, remote: &str, commit: &str) -> Result<bool> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    let fetched = run(
-        &["fetch", "--no-tags", "--refmap=", remote, commit],
-        Some(cwd),
-    )?
+    let fetched = fetching(cwd, || {
+        run(
+            &["fetch", "--no-tags", "--refmap=", remote, commit],
+            Some(cwd),
+        )
+    })?
     .ok();
     Ok(fetched && has_commit(cwd, &Sha(commit.to_owned())))
 }
@@ -4680,17 +4721,18 @@ pub fn fetch_commit(cwd: &Path, remote: &str, commit: &str) -> Result<bool> {
 /// `--refmap=` is what keeps it from moving the remote-tracking ref too, which a fetch
 /// naming one branch otherwise updates on the side.
 pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    Ok(run(
-        &[
-            "fetch",
-            "--no-tags",
-            "--refmap=",
-            remote,
-            &format!("refs/heads/{branch}"),
-        ],
-        Some(cwd),
-    )?
+    Ok(fetching(cwd, || {
+        run(
+            &[
+                "fetch",
+                "--no-tags",
+                "--refmap=",
+                remote,
+                &format!("refs/heads/{branch}"),
+            ],
+            Some(cwd),
+        )
+    })?
     .ok())
 }
 

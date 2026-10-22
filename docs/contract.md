@@ -2682,6 +2682,15 @@ One existing kind gains fields: `session-closed` gains, on a close taken from th
 record, `landed` (the landing commit), `unreadable_clone` (what git said) and the existing
 `retained` naming the clone left in place.
 
+### Session teardown waits for repository readers
+
+Session teardown and onevcs's bounded read-only repository reads take turns across
+an identity's managed checkouts. A close waits for an admitted read before asking
+which processes occupy its run root; those reads therefore cannot themselves
+refuse the close. A checkout traversal admitted after teardown reads the remaining
+checkouts, without starting a child in a removed directory. Other processes working
+inside the run root still refuse closure with the existing occupancy diagnostic.
+
 ### A session record carries the labels its opener stamped, and the listings filter on them
 
 **The join between a run and the session its node opened belongs on the session
