@@ -11,9 +11,7 @@ use std::process::{Command, Output};
 use crate::lifecycle::{local_direct, run_root_of, Fixture};
 
 fn hosted_fixture(policy: &str) -> Fixture {
-    // llmlint: ignore[e2e_not_mocked] Only the third-party GitHub boundary uses the
-    // repository's offline gh fixture. These journeys prove checkout exclusion,
-    // never host behavior: git, session records, read APIs and teardown are real.
+    // llmlint: ignore[e2e_not_mocked] Only the third-party GitHub boundary uses the repository's offline gh fixture. These journeys prove checkout exclusion, never host behavior: git, session records, read APIs and teardown are real.
     Fixture::on_github(policy, "acme-corp/project")
 }
 
