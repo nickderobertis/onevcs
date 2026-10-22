@@ -147,7 +147,7 @@ pub(crate) fn available(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn closing_path(path: &Path) -> Result<Option<PathBuf>> {
+pub(crate) fn closing_path(path: &Path) -> Result<Option<PathBuf>> {
     let Some(root) = root_of(path)? else {
         return Ok(None);
     };

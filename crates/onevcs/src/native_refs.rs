@@ -1174,12 +1174,18 @@ pub(crate) mod clear_race {
         let Some(hold) = held.as_ref() else {
             return;
         };
-        if !super::SNAPSHOTS.with(|snapshots| {
-            snapshots
-                .borrow()
-                .get(&hold.path)
-                .is_some_and(Option::is_some)
-        }) {
+        // Keyed by the retained turn rather than a ref snapshot: on Windows a
+        // snapshot may decline (and Git be read instead) while the turn is kept.
+        let checkout = crate::checkout_reads::closing_path(&hold.path)
+            .ok()
+            .flatten();
+        if checkout.is_none()
+            || !super::TURNS.with(|turns| {
+                turns.borrow().keys().any(|path| {
+                    crate::checkout_reads::closing_path(path).ok().flatten() == checkout
+                })
+            })
+        {
             return;
         }
         let hold = held.take().unwrap();

@@ -3573,7 +3573,7 @@ mod reclaim_race {
         });
         if !ready.recv().unwrap() {
             panic!(
-                "the public recovery must open native handles: {:?}",
+                "the public recovery must keep a native read turn on the clone: {:?}",
                 read.join().unwrap()
             );
         }
