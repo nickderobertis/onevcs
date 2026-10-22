@@ -1495,10 +1495,16 @@ fn read_during_close_hook(end: HookCloseEnd) {
             .git(&worktree, &["checkout", "feature/closing-hook"]);
     }
     let (survivor, survivor_tree) = fixture.open(&["--branch", "feature/hook-survivor"]);
-    let clone = run_root_of(&fixture.world, &token).join("clone");
-    let surviving_clone = run_root_of(&fixture.world, &survivor).join("clone");
+    let closing_root = run_root_of(&fixture.world, &token);
+    let clone = closing_root.join("clone");
+    let surviving_root = run_root_of(&fixture.world, &survivor);
+    let surviving_clone = surviving_root.join("clone");
     let held = HeldGit::installed(&fixture);
     let report = fixture.world.path("hook-status.json");
+    // Every git child a read starts while the close has yielded to its hook. An
+    // empty GIT_NAMESPACE refuses in-process answers, so each read spawns its git;
+    // the hook puts the logging git back ahead of the exec-path git gave it.
+    let during = fixture.world.path("during-hook.log");
     fixture.world.install_hook(
         &fixture.checkout,
         "reference-transaction",
@@ -1507,7 +1513,8 @@ fn read_during_close_hook(end: HookCloseEnd) {
          if mkdir '{once}' 2>/dev/null; then\n\
            unset $(git rev-parse --local-env-vars)\n\
            cd '{root}'\n\
-           '{binary}' status main --json > '{report}' || exit 1\n\
+           PATH='{shim}':\"$PATH\" GIT_NAMESPACE= READ_LOG='{during}' \\\n\
+             '{binary}' status main --json > '{report}' || exit 1\n\
            printf 'inside\\n' > '{ready}'\n\
            read -r released < '{release}'\n\
          fi",
@@ -1515,6 +1522,8 @@ fn read_during_close_hook(end: HookCloseEnd) {
             root = fixture.world.path("").display(),
             binary = assert_cmd::cargo::cargo_bin("onevcs").display(),
             report = report.display(),
+            during = during.display(),
+            shim = held.bin.display(),
             ready = held.ready.display(),
             release = held.release.display(),
         ),
@@ -1562,7 +1571,9 @@ fn read_during_close_hook(end: HookCloseEnd) {
             "--nocapture",
         ])
         .env("READ_SESSION_TOKEN", &token)
-        .env("READ_EXPECT_GONE", "1");
+        .env("READ_EXPECT_GONE", "1")
+        .env("READ_LOG", &during)
+        .env("GIT_NAMESPACE", "");
     let pool = if end == HookCloseEnd::Pooled {
         Some(
             fixture
@@ -1581,6 +1592,8 @@ fn read_during_close_hook(end: HookCloseEnd) {
     let absent = read.output().unwrap();
     let change = held
         .command(&fixture, &clone)
+        .env("READ_LOG", &during)
+        .env("GIT_NAMESPACE", "")
         .args(["change", "show", &token])
         .output()
         .unwrap();
@@ -1601,6 +1614,15 @@ fn read_during_close_hook(end: HookCloseEnd) {
     assert!(
         survived && survivor_tree.is_dir(),
         "the hook still reads the other session: {hook}"
+    );
+    let started = std::fs::read_to_string(&during).unwrap();
+    assert!(
+        started.contains(surviving_root.to_str().unwrap()),
+        "the yielded reads ran git in the surviving checkout: {started}"
+    );
+    assert!(
+        !started.contains(closing_root.to_str().unwrap()),
+        "no read started a process in the closing session's run root: {started}"
     );
     success(absent);
     let failure = String::from_utf8_lossy(&change.stderr);

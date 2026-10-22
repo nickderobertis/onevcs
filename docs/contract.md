@@ -2694,10 +2694,14 @@ the read yields its identity turn to fetch objects. Close waits for that lease
 before taking its identity turn. Other removers already holding an identity turn
 keep a checkout whose reader has yielded, so that reader can resume. A close
 retains a per-checkout lease while yielding its identity turn for repository
-hooks. Reads admitted during that yield treat the closing session as absent,
-naming it when addressed directly, and traverse every other checkout. A refused
-or failed close releases that lease, and process death releases it in the
-operating system, so neither outcome hides a session from subsequent reads. A
+hooks. From the moment a close holds that lease, every read treats the closing
+session as absent: one addressed to it answers that it is being torn down,
+naming it, and none starts a process in its clone or worktree. Reads admitted
+during the hook yield, including a hook's own `status`, traverse every other
+checkout. A refused or failed close releases that lease, and process death
+releases it in the operating system, so a lease file a dead closer left behind
+is stale and hides nothing; neither outcome hides a session from subsequent
+reads. No environment variable or flag changes any of this. A
 read arriving after teardown either reads the remaining checkouts or answers
 that the session it names no longer exists, naming that session, without
 starting a child in a removed directory. A record removed after a listing
