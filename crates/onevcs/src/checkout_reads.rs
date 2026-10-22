@@ -47,10 +47,6 @@ pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
     Ok(turn)
 }
 
-pub(crate) fn removing(path: &Path) -> Result<Option<Turn>> {
-    root_of(path)?.map(|root| at(root, true)).transpose()
-}
-
 fn root_of(path: &Path) -> Result<Option<PathBuf>> {
     let workspaces = home::workspaces_dir()?;
     let Some(relative) = relative_checkout(path, &workspaces) else {
@@ -343,5 +339,54 @@ mod tests {
             )
             .is_none());
         }
+    }
+
+    #[test]
+    fn windows_spellings_admit_real_read_leases_and_exclude_teardown() {
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                std::env::set_current_dir(&self.0).unwrap();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let restore = Restore(std::env::current_dir().unwrap());
+        std::env::set_current_dir(root.path()).unwrap();
+        #[cfg(windows)]
+        let base = dunce::simplified(root.path())
+            .join("state")
+            .to_string_lossy()
+            .into_owned();
+        // These are ordinary directory names on Linux; the admission code still
+        // compares Windows spellings and takes the real kernel's lock on the root.
+        #[cfg(not(windows))]
+        let base = r"C:\state".to_owned();
+        for root_prefix in ["", r"\\?\"] {
+            for path_prefix in ["", r"\\?\"] {
+                for root_drive in [base[..1].to_uppercase(), base[..1].to_lowercase()] {
+                    for path_drive in [base[..1].to_uppercase(), base[..1].to_lowercase()] {
+                        let home = format!("{root_prefix}{root_drive}{}", &base[1..]);
+                        std::env::set_var(crate::home::HOME_ENV, &home);
+                        let path = PathBuf::from(format!(
+                            r"{path_prefix}{path_drive}{}\workspaces\repo\runs\s-admitted\clone",
+                            &base[1..]
+                        ));
+                        let turn = checkout(&path)
+                            .unwrap()
+                            .expect("a managed checkout is admitted");
+                        assert!(
+                            try_closing(&path).unwrap().is_none(),
+                            "{path:?} under {home}"
+                        );
+                        drop(turn);
+                        assert!(
+                            try_closing(&path).unwrap().is_some(),
+                            "teardown resumes after {path:?}"
+                        );
+                    }
+                }
+            }
+        }
+        drop(restore);
     }
 }

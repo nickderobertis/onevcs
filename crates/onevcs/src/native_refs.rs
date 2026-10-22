@@ -36,6 +36,8 @@ thread_local! {
     static CANONICAL: RefCell<HashMap<PathBuf, Option<PathBuf>>> = RefCell::new(HashMap::new());
 }
 pub(crate) fn clear() {
+    #[cfg(test)]
+    clear_race::before_clear();
     // Closed here, inside the read that opened them, so what a read costs its caller
     // is all of it: nothing it opened outlives it or waits for anything later.
     crate::native_objects::clear();
@@ -1142,5 +1144,47 @@ mod tests {
         assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).len(), 64);
         differential(root.path(), &["main", "HEAD"]);
         crate::recovery_cache::scope(|| assert!(heads(root.path()).is_none()));
+    }
+}
+
+// The public recovery call owns this cache. A test-only rendezvous lets its real
+// caller pause during destruction, after traversal guards have gone out of scope.
+#[cfg(test)]
+pub(crate) mod clear_race {
+    use std::path::PathBuf;
+    use std::sync::{mpsc, Mutex};
+
+    struct Hold {
+        path: PathBuf,
+        entered: mpsc::Sender<bool>,
+        release: mpsc::Receiver<()>,
+    }
+    static HOLD: Mutex<Option<Hold>> = Mutex::new(None);
+
+    pub(crate) fn arm(path: PathBuf, entered: mpsc::Sender<bool>, release: mpsc::Receiver<()>) {
+        *HOLD.lock().unwrap() = Some(Hold {
+            path,
+            entered,
+            release,
+        });
+    }
+
+    pub(super) fn before_clear() {
+        let mut held = HOLD.lock().unwrap();
+        let Some(hold) = held.as_ref() else {
+            return;
+        };
+        if !super::SNAPSHOTS.with(|snapshots| {
+            snapshots
+                .borrow()
+                .get(&hold.path)
+                .is_some_and(Option::is_some)
+        }) {
+            return;
+        }
+        let hold = held.take().unwrap();
+        drop(held);
+        hold.entered.send(true).unwrap();
+        hold.release.recv().unwrap();
     }
 }

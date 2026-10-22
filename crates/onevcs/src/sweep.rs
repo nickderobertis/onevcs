@@ -890,7 +890,6 @@ struct Holding {
 /// comes last, because it is the only question that runs a `git` of its own and
 /// every answer above it has already kept the workspace without needing one.
 fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verdict> {
-    let _reads = crate::checkout_reads::checkout(&run_root.join("clone"))?;
     if !run_root.is_dir() {
         return Ok(Verdict::Retain(Kept::OwnerUnproven(
             "it is not a directory, and every run root is one",
@@ -980,7 +979,6 @@ fn judge(run_root: &Path, min_age: Duration, landings: &Landings) -> Result<Verd
 /// want, and the report that offers such work for recovery cannot come to disagree
 /// with the rule that keeps its workspace.
 fn unpublished_work(clone: &Path, landings: &Landings) -> Result<Vec<String>> {
-    let _reads = crate::checkout_reads::checkout(clone)?;
     let base = git::default_branch(clone, "origin")?;
     let known = landings.known(clone, &base);
     let asked = git::Asked::borrowing(clone, known.lent.as_deref());
@@ -1097,8 +1095,6 @@ fn landings() -> Result<Landings> {
 /// daemon is still writing into is worse than the tree that was there, and its blocks
 /// would not have come back anyway.
 fn reclaim(report: &mut Report, run_root: PathBuf, lease: lock::Guard) -> Result<()> {
-    let _closing = crate::checkout_reads::closing(&run_root.join("clone"))?;
-    let _reads = crate::checkout_reads::removing(&run_root.join("clone"))?;
     // Measured before anything is stopped, so what a daemon holds open is counted.
     let bytes = size_of(&run_root);
     let holding = processes::holding(&run_root);

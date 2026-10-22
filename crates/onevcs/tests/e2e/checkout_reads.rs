@@ -10,6 +10,13 @@ use std::process::{Command, Output};
 
 use crate::lifecycle::{local_direct, run_root_of, Fixture};
 
+fn hosted_fixture(policy: &str) -> Fixture {
+    // llmlint: ignore[e2e_not_mocked] Only the third-party GitHub boundary uses the
+    // repository's offline gh fixture. These journeys prove checkout exclusion,
+    // never host behavior: git, session records, read APIs and teardown are real.
+    Fixture::on_github(policy, "acme-corp/project")
+}
+
 fn closing_lock(root: &Path) -> PathBuf {
     root.parent().unwrap().parent().unwrap().join(format!(
         "onevcs-closing-{}-{}.lock",
@@ -95,6 +102,9 @@ const OBSERVER: &str = r#"
 static atomic_flag notified = ATOMIC_FLAG_INIT;
 static atomic_uint resume_opens = 0;
 static atomic_uint pause_opens = 0;
+static atomic_int close_fd = -1;
+static atomic_bool close_armed = 0;
+static atomic_flag close_notified = ATOMIC_FLAG_INIT;
 static void pause_at(const char *path) {
     const char *pause = getenv("READ_PAUSE_FILE");
     if (pause && strcmp(path, pause) == 0 && atomic_fetch_add(&pause_opens, 1) == 0) {
@@ -108,6 +118,7 @@ static void pause_at(const char *path) {
         char byte;
         if (pipe < 0 || read(pipe, &byte, 1) != 1) _exit(125);
         close(pipe);
+        atomic_store(&close_armed, 1);
     }
 }
 int open64(const char *path, int flags, ...) {
@@ -125,6 +136,8 @@ int open64(const char *path, int flags, ...) {
     int (*real_open)(const char *, int, ...) = (int (*)(const char *, int, ...))symbol;
     if (getenv("READ_PAUSE_BEFORE")) pause_at(path);
     int fd = real_open(path, flags, mode);
+    const char *closing = getenv("READ_PAUSE_CLOSE_FILE");
+    if (fd >= 0 && closing && strcmp(path, closing) == 0) atomic_store(&close_fd, fd);
     const char *target = getenv("READ_TURN_LOCK");
     if (fd >= 0 && target && strcmp(path, target) == 0 && !atomic_flag_test_and_set(&notified)) {
         const char *notice = getenv("READ_TURN_NOTICE");
@@ -151,6 +164,25 @@ int open64(const char *path, int flags, ...) {
     }
     if (fd >= 0 && !getenv("READ_PAUSE_BEFORE")) pause_at(path);
     return fd;
+}
+
+int close(int fd) {
+    void *symbol = dlsym(RTLD_NEXT, "close");
+    if (!symbol) _exit(125);
+    int (*real_close)(int) = (int (*)(int))symbol;
+    if (fd == atomic_load(&close_fd) && atomic_load(&close_armed) && !atomic_flag_test_and_set(&close_notified)) {
+        const char *ready = getenv("READ_READY");
+        const char *release = getenv("READ_RELEASE");
+        if (!ready || !release) _exit(125);
+        int pipe = open(ready, O_WRONLY);
+        if (pipe < 0 || write(pipe, "inside\n", 7) != 7) _exit(125);
+        real_close(pipe);
+        pipe = open(release, O_RDONLY);
+        char byte;
+        if (pipe < 0 || read(pipe, &byte, 1) != 1) _exit(125);
+        real_close(pipe);
+    }
+    return real_close(fd);
 }
 
 static void removed(const char *path, int result) {
@@ -1161,7 +1193,7 @@ fn addressed_read_and_close_take_one_turn_including_its_ref_refresh() {
 
 fn session_read_then_close(addressed: bool) {
     let fixture = if addressed {
-        Fixture::on_github(crate::host::REVIEWED, "acme-corp/project")
+        hosted_fixture(crate::host::REVIEWED)
     } else {
         Fixture::local(&local_direct())
     };
@@ -1308,17 +1340,42 @@ fn two_identity_readers_share_their_turn_and_close_waits_for_both() {
 
 #[test]
 fn a_holder_listing_passes_over_an_unrelated_record_removed_by_a_real_sweep() {
-    listing_during_sweep(false);
+    listing_during_sweep(Listing::Holders);
 }
 
 #[test]
 fn a_cached_recovery_listing_passes_over_an_unrelated_record_removed_by_a_real_sweep() {
-    listing_during_sweep(true);
+    listing_during_sweep(Listing::ChangedHint);
 }
 
-fn listing_during_sweep(cached: bool) {
+#[derive(Clone, Copy)]
+enum Listing {
+    Holders,
+    ChangedHint,
+    UnchangedHint,
+}
+
+#[test]
+fn an_unchanged_cached_hint_can_disappear_before_its_record_is_reread() {
+    listing_during_sweep(Listing::UnchangedHint);
+}
+
+fn listing_during_sweep(mode: Listing) {
+    let cached = !matches!(mode, Listing::Holders);
+    let unchanged = matches!(mode, Listing::UnchangedHint);
     let fixture = Fixture::local(&local_direct());
+    if unchanged {
+        crate::pool::configure_workspaces(&fixture.world, crate::pool::sized(1, "unlimited"));
+    }
     let (spent, _) = fixture.open(&["--branch", "feature/spent-record"]);
+    if unchanged {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &spent])
+            .assert()
+            .success();
+    }
     let (survivor, worktree) = fixture.open(&["--branch", "feature/retained-record"]);
     fixture
         .world
@@ -1333,12 +1390,14 @@ fn listing_during_sweep(cached: bool) {
     }
     // Closing through the real interface makes this record spent and changes the
     // stamp a warm recovery index has remembered. The survivor still holds work.
-    fixture
-        .world
-        .onevcs()
-        .args(["session", "close", &spent])
-        .assert()
-        .success();
+    if !unchanged {
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &spent])
+            .assert()
+            .success();
+    }
     let record = fixture.world.sessions_dir().join(format!("{spent}.json"));
     let shim = HeldGit::installed(&fixture);
     let mut read = shim.command(&fixture, &worktree);
@@ -1398,6 +1457,7 @@ enum HookCloseEnd {
     Closed,
     Refused,
     Killed,
+    Pooled,
 }
 
 #[test]
@@ -1416,7 +1476,11 @@ fn a_dead_closer_does_not_hide_its_session_from_the_next_read_or_close() {
 }
 
 fn read_during_close_hook(end: HookCloseEnd) {
-    let fixture = Fixture::local(&local_direct());
+    let fixture = if end == HookCloseEnd::Pooled {
+        crate::pool::pooled(&crate::pool::sized(1, "unlimited"))
+    } else {
+        Fixture::local(&local_direct())
+    };
     let (token, worktree) = fixture.open(&["--branch", "feature/closing-hook"]);
     fixture
         .world
@@ -1501,6 +1565,21 @@ fn read_during_close_hook(end: HookCloseEnd) {
         ])
         .env("READ_SESSION_TOKEN", &token)
         .env("READ_EXPECT_GONE", "1");
+    let pool = if end == HookCloseEnd::Pooled {
+        Some(
+            fixture
+                .world
+                .onevcs()
+                .args(["pool", "status", "project", "--json"])
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone(),
+        )
+    } else {
+        None
+    };
     let absent = read.output().unwrap();
     let change = held
         .command(&fixture, &clone)
@@ -1531,7 +1610,24 @@ fn read_during_close_hook(end: HookCloseEnd) {
         !change.status.success() && failure.contains(&token) && failure.contains("being torn down"),
         "{change:?}"
     );
-    if end == HookCloseEnd::Closed {
+    if end == HookCloseEnd::Pooled {
+        success(closed);
+        let pool: serde_json::Value = serde_json::from_slice(&pool.unwrap()).unwrap();
+        assert_eq!(pool["slots"][0]["state"]["state"], "in-use", "{pool}");
+        assert_eq!(pool["slots"][0]["state"]["session"], token);
+        assert!(worktree.is_dir());
+        let after = fixture
+            .world
+            .onevcs()
+            .args(["pool", "status", "project", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let after: serde_json::Value = serde_json::from_slice(&after).unwrap();
+        assert_eq!(after["slots"][0]["state"]["state"], "idle");
+    } else if end == HookCloseEnd::Closed {
         success(closed);
         assert!(!worktree.exists());
     } else {
@@ -1569,4 +1665,496 @@ fn read_during_close_hook(end: HookCloseEnd) {
             assert!(!worktree.exists());
         }
     }
+}
+
+#[test]
+fn pool_status_reports_a_slot_in_use_during_a_yielded_close_hook() {
+    read_during_close_hook(HookCloseEnd::Pooled);
+}
+
+struct YieldedRead {
+    held: HeldGit,
+    read: std::thread::JoinHandle<Output>,
+}
+
+impl YieldedRead {
+    fn start(fixture: &Fixture, token: &str) -> Self {
+        let clone = run_root_of(&fixture.world, token).join("clone");
+        let held = HeldGit::named(fixture, "yielded");
+        let mut command = held.command(fixture, &clone);
+        command
+            .args(["change", "show", token, "--json"])
+            .env("LD_PRELOAD", observer())
+            .env("READ_PAUSE_FILE", clone.join(".git/onevcs-fetch.lock"));
+        let read = notifying(command, vec![held.ready.clone()]);
+        let mut ready = String::new();
+        BufReader::new(&held.ready_pipe)
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(
+            ready, "inside\n",
+            "the real change read yields its identity turn"
+        );
+        Self { held, read }
+    }
+
+    fn finish(self) -> Output {
+        self.held.release();
+        self.read.join().unwrap()
+    }
+}
+
+fn hosted_pool() -> Fixture {
+    let fixture = hosted_fixture(&local_direct());
+    crate::pool::configure_workspaces(&fixture.world, crate::pool::sized(1, "unlimited"));
+    fixture
+}
+
+#[test]
+fn pool_prune_keeps_a_checkout_whose_reader_yielded_then_removes_it_after_the_read() {
+    let fixture = hosted_pool();
+    let (token, worktree) = fixture.open(&["--branch", "feature/pruned-reader"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let read = YieldedRead::start(&fixture, &token);
+    let output = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let retained = worktree.is_dir();
+    let answer = read.finish();
+    assert!(
+        retained && report["removed"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+    assert!(
+        report["kept"][0][1]
+            .as_str()
+            .unwrap()
+            .contains("a read is working"),
+        "{report}"
+    );
+    success(answer);
+    let output = fixture
+        .world
+        .onevcs()
+        .args(["pool", "prune", "project", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["removed"], serde_json::json!([1]));
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn a_broken_slot_is_not_recreated_until_its_yielded_reader_finishes() {
+    let fixture = hosted_pool();
+    let (token, worktree) = fixture.open(&["--branch", "feature/broken-reader"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let clone = run_root_of(&fixture.world, &token).join("clone");
+    fixture.world.git(
+        &clone,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
+    let read = YieldedRead::start(&fixture, &token);
+    let (other, placed) = fixture.open(&["--branch", "feature/overflow-reader"]);
+    let retained = clone.is_dir() && !worktree.exists();
+    let answer = read.finish();
+    assert!(
+        retained,
+        "the broken slot stays untouched while its clone is being read"
+    );
+    assert_eq!(
+        crate::pool::slot_of(&placed),
+        None,
+        "opening uses overflow while recreation is excluded"
+    );
+    success(answer);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &other])
+        .assert()
+        .success();
+    let (_, rebuilt) = fixture.open(&["--branch", "feature/rebuilt-reader"]);
+    assert_eq!(rebuilt, worktree);
+    assert_eq!(crate::pool::slot_of(&rebuilt), Some(1));
+}
+
+#[test]
+fn session_open_reclamation_keeps_a_yielded_read_and_reclaims_other_abandoned_clones() {
+    let fixture = hosted_fixture(&local_direct());
+    let (token, _) = fixture.open(&["--branch", "feature/retained-reader"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let root = run_root_of(&fixture.world, &token);
+    let read = YieldedRead::start(&fixture, &token);
+    let (other, _) = fixture.open(&["--branch", "feature/other-abandoned"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &other])
+        .assert()
+        .success();
+    let other_root = run_root_of(&fixture.world, &other);
+    let other_existed = other_root.is_dir();
+    let (_, fresh) = fixture.open(&["--branch", "feature/fresh-reader"]);
+    let retained = root.is_dir();
+    let abandoned_gone = !other_root.exists();
+    let answer = read.finish();
+    assert!(
+        retained && other_existed && abandoned_gone && fresh.is_dir(),
+        "the same reclamation pass keeps the reader and removes another abandoned clone"
+    );
+    success(answer);
+    fixture.open(&["--branch", "feature/after-reader"]);
+    assert!(!root.exists());
+}
+
+fn hosted_yard() -> crate::retire::Yard {
+    let fixture = hosted_pool();
+    let worker = fixture.world.clone_of(&fixture.origin, "worker");
+    fixture
+        .world
+        .onevcs()
+        .args([
+            "register",
+            worker.to_str().unwrap(),
+            "--origin",
+            "https://github.com/acme-corp/project.git",
+        ])
+        .assert()
+        .success();
+    crate::retire::Yard { fixture, worker }
+}
+
+#[test]
+fn retirement_keeps_a_yielded_readers_branch_and_run_root_then_reclaims_them() {
+    retirement_during_yield(false);
+}
+
+#[test]
+fn retirement_keeps_a_yielded_readers_slot_until_it_can_return_it() {
+    retirement_during_yield(true);
+}
+
+fn retirement_during_yield(pooled: bool) {
+    let yard = hosted_yard();
+    yard.landed("feature/retiring-reader", "landed.txt");
+    let (token, worktree) = if pooled {
+        yard.fixture.open(&["--branch", "feature/retiring-reader"])
+    } else {
+        yard.stale_session("feature/retiring-reader")
+    };
+    let root = run_root_of(yard.world(), &token);
+    let clone = root.join("clone");
+    let read = YieldedRead::start(&yard.fixture, &token);
+    let (code, report) = yard.verb(&["retire", "feature/retiring-reader"]);
+    let retained = root.is_dir() && worktree.is_dir();
+    let branch_kept = yard
+        .world()
+        .git_raw(
+            &clone,
+            &["show-ref", "--verify", "refs/heads/feature/retiring-reader"],
+        )
+        .status
+        .success();
+    let still_on_branch = if pooled {
+        yard.world()
+            .git_raw(&worktree, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .success()
+    } else {
+        true
+    };
+    let answer = read.finish();
+    assert_eq!(code, 1, "{report}");
+    assert_eq!(report["outcome"], "incomplete", "{report}");
+    assert!(
+        retained && branch_kept && still_on_branch,
+        "retirement keeps the checkout being read: {report}"
+    );
+    let failed = report["failed"].as_array().unwrap();
+    for path in [&clone, &root] {
+        assert!(
+            failed
+                .iter()
+                .any(|failure| failure["location"].as_str() == path.to_str()
+                    && failure["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("a read or teardown")),
+            "{report}"
+        );
+    }
+    success(answer);
+    let (code, after) = yard.verb(&["retire", "feature/retiring-reader"]);
+    assert_eq!(code, 0, "{after}");
+    if pooled {
+        assert_eq!(after["slots_returned"], serde_json::json!([root]));
+        assert!(worktree.is_dir());
+        assert!(!yard
+            .world()
+            .git_raw(&worktree, &["symbolic-ref", "-q", "HEAD"])
+            .status
+            .success());
+    } else {
+        assert!(!root.exists());
+        assert!(after["run_roots_removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str() == root.to_str()));
+    }
+}
+
+#[test]
+fn a_title_policy_read_excludes_teardown_until_the_real_hook_finishes() {
+    title_policy_then_close(false);
+}
+
+#[test]
+fn a_rejected_title_policy_read_releases_its_turn_before_close_continues() {
+    title_policy_then_close(true);
+}
+
+fn title_policy_then_close(reject: bool) {
+    let fixture = hosted_fixture(crate::host::REVIEWED);
+    let (token, worktree) = fixture.open(&["--branch", "feature/policy-reader"]);
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "feat: policy work");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    let root = run_root_of(&fixture.world, &token);
+    let held = HeldGit::installed(&fixture);
+    fixture.world.install_hook(
+        &worktree,
+        "commit-msg",
+        &format!(
+            "printf 'inside\\n' > '{}'\nread -r released < '{}'\nexit {}",
+            held.ready.display(),
+            held.release.display(),
+            if reject { 37 } else { 0 },
+        ),
+    );
+    let body = fixture.world.path("description.md");
+    std::fs::write(&body, "finished policy description\n").unwrap();
+    let mut describe = held.command(&fixture, &root.join("clone"));
+    describe.args([
+        "change",
+        "describe",
+        &token,
+        "--title",
+        "feat: approved title",
+        "--body-file",
+        body.to_str().unwrap(),
+        "--json",
+    ]);
+    let describing = notifying(describe, vec![held.ready.clone()]);
+    held.entered();
+    let mut notices = Entries::watching(&fixture.world.path(""));
+    let mut close = held.command(&fixture, &root.join("clone"));
+    close
+        .args(["session", "close", &token])
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", closing_lock(&root))
+        .env("READ_TURN_PROBE", "1")
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"));
+    let closing = notifying(close, vec![fixture.world.path("turn-notices")]);
+    let mut state = String::new();
+    BufReader::new(&mut notices.0)
+        .read_line(&mut state)
+        .unwrap();
+    held.release();
+    let description = describing.join().unwrap();
+    let closed = closing.join().unwrap();
+    assert_eq!(
+        state, "blocked\n",
+        "teardown waits for the title policy's checkout read"
+    );
+    success(closed);
+    if reject {
+        assert!(!description.status.success(), "{description:?}");
+        assert!(
+            String::from_utf8_lossy(&description.stderr).contains("37"),
+            "{description:?}"
+        );
+    } else {
+        assert!(description.status.success(), "{description:?}");
+        let description: serde_json::Value = serde_json::from_slice(&description.stdout).unwrap();
+        assert_eq!(description["title"], "feat: approved title");
+        assert_eq!(description["body"], "finished policy description\n");
+    }
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn capacity_reads_and_teardown_take_whole_turns() {
+    if let Ok(expected) = std::env::var("READ_CAPACITY_EXPECTED") {
+        let expected: u32 = expected.parse().unwrap();
+        let capacity = onevcs::workspace_capacity(&onevcs::SessionRequest {
+            repo: "project".to_owned(),
+            branch: None,
+            branch_name: None,
+            branch_prefix: None,
+            base: None,
+            execution_checkout: None,
+            pool: None,
+            overflow: None,
+            labels: Default::default(),
+            refuse_conflicts: false,
+            caller_merges_base: false,
+        })
+        .unwrap();
+        assert_eq!(capacity.slots, 1);
+        assert_eq!(capacity.in_use, expected);
+        assert_eq!(capacity.idle, 1 - expected);
+        return;
+    }
+    pool_query_ordering(true, true);
+    pool_query_ordering(true, false);
+}
+
+#[test]
+fn pool_status_reads_and_teardown_take_whole_turns() {
+    pool_query_ordering(false, true);
+    pool_query_ordering(false, false);
+}
+
+fn pool_query_ordering(capacity: bool, read_first: bool) {
+    let fixture = crate::pool::pooled(&crate::pool::sized(1, "unlimited"));
+    let (token, worktree) = fixture.open(&["--branch", "feature/pool-query"]);
+    let root = run_root_of(&fixture.world, &token);
+    let held = HeldGit::installed(&fixture);
+    let mut query = if capacity {
+        let prepared = held.command(&fixture, &root.join("clone"));
+        let mut query = Command::new(std::env::current_exe().unwrap());
+        query
+            .env_clear()
+            .envs(
+                prepared
+                    .get_envs()
+                    .filter_map(|(key, value)| value.map(|value| (key, value))),
+            )
+            .current_dir(fixture.world.path(""))
+            .args([
+                "--exact",
+                "checkout_reads::capacity_reads_and_teardown_take_whole_turns",
+                "--nocapture",
+            ])
+            .env("READ_CAPACITY_EXPECTED", if read_first { "1" } else { "0" });
+        query
+    } else {
+        let mut query = held.command(&fixture, &root.join("clone"));
+        query.args(["pool", "status", "project", "--json"]);
+        query
+    };
+    let mut close = held.command(&fixture, &worktree);
+    close.args(["session", "close", &token]);
+    let (first, next) = if read_first {
+        query
+            .env("LD_PRELOAD", observer())
+            .env("READ_PAUSE_FILE", root.join("slot.json"))
+            .env("READ_PAUSE_BEFORE", "1");
+        (query, close)
+    } else {
+        // This is the final record update, after every hook-running write.
+        // Unlike a clean/reset pause, no later identity-turn yield can admit the
+        // query before the closed record has been saved.
+        close
+            .env("LD_PRELOAD", observer())
+            .env(
+                "READ_PAUSE_FILE",
+                fixture
+                    .world
+                    .home()
+                    .join("locks/sessions")
+                    .join(format!("{token}.lock")),
+            )
+            .env("READ_PAUSE_BEFORE", "1")
+            .env(
+                "READ_PAUSE_CLOSE_FILE",
+                root.parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("onevcs-reads.lock"),
+            );
+        (close, query)
+    };
+    let first = notifying(first, vec![held.ready.clone()]);
+    held.entered();
+    let mut notices = Entries::watching(&fixture.world.path(""));
+    let mut next = next;
+    next.env("LD_PRELOAD", observer())
+        .env("READ_TURN_PROBE", "1")
+        .env(
+            "READ_TURN_LOCK",
+            root.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("onevcs-reads.lock"),
+        )
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"));
+    let next = notifying(next, vec![fixture.world.path("turn-notices")]);
+    let mut state = String::new();
+    BufReader::new(&mut notices.0)
+        .read_line(&mut state)
+        .unwrap();
+    held.release();
+    let (closed, query) = if read_first {
+        let query = first.join().unwrap();
+        (next.join().unwrap(), query)
+    } else {
+        // The first pause was before the final record write. This second one is
+        // the identity lock's file close, after its kernel unlock: the query must
+        // already see an idle slot even while the closer is paused here.
+        held.entered();
+        let query = next.join().unwrap();
+        held.release();
+        (first.join().unwrap(), query)
+    };
+    assert_eq!(
+        state, "blocked\n",
+        "the pool query and teardown exclude one another for the whole turn"
+    );
+    success(closed);
+    assert!(query.status.success(), "{query:?}");
+    if !capacity {
+        let report: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+        assert_eq!(report["capacity"]["in_use"], if read_first { 1 } else { 0 });
+        assert_eq!(
+            report["slots"][0]["state"]["state"],
+            if read_first { "in-use" } else { "idle" }
+        );
+    }
+    assert!(worktree.is_dir());
 }

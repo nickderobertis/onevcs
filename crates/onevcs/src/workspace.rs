@@ -2712,12 +2712,15 @@ struct Stray {
 /// delete existed is a report an operator has no way to disbelieve.
 pub fn close(token: &str) -> Result<Record> {
     let record = load(token)?;
-    let mut _closing = if record.tree_is_its_own()? {
+    let closing = if record.tree_is_its_own()? {
         Some(crate::checkout_reads::closing(&record.clone)?)
     } else {
         None
     };
     let _reads = crate::checkout_reads::teardown(&record.identity)?;
+    // The marker must drop while the identity is still exclusive: a reader
+    // admitted after this turn must see the completed checkout, not a busy marker.
+    let mut _closing = closing;
     let record = load(token)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
@@ -3541,6 +3544,59 @@ mod reclaim_race {
         )
         .expect("a rules file");
         root
+    }
+
+    #[test]
+    fn public_recovery_closes_native_handles_before_releasing_its_checkout_turns() {
+        use crate::Vcs;
+        let _host = host();
+        for (key, _) in
+            std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
+        {
+            std::env::remove_var(key);
+        }
+        let session = opened();
+        std::fs::write(session.worktree.join("work.txt"), "work\n").unwrap();
+        git(&session.worktree, &["add", "work.txt"]);
+        git(
+            &session.worktree,
+            &["commit", "-q", "-m", "feat: native recovery work"],
+        );
+        let record = super::load(&session.token.0).unwrap();
+        let (entered, ready) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        crate::native_refs::clear_race::arm(record.clone.clone(), entered.clone(), released);
+        let read = std::thread::spawn(move || {
+            let answer = crate::Git.recoverable(crate::Scope::Repo("project".to_owned()));
+            entered.send(false).unwrap();
+            answer
+        });
+        if !ready.recv().unwrap() {
+            panic!(
+                "the public recovery must open native handles: {:?}",
+                read.join().unwrap()
+            );
+        }
+        let excluded = crate::checkout_reads::try_closing(&record.clone)
+            .unwrap()
+            .is_none();
+        let token = session.token.clone();
+        let close = std::thread::spawn(move || crate::Git.close_session(&token));
+        release.send(()).unwrap();
+        let recovered = read.join().unwrap().unwrap();
+        let closed = close.join().unwrap().unwrap();
+        assert!(
+            excluded,
+            "the kernel keeps teardown out until the native handles close"
+        );
+        assert!(recovered
+            .iter()
+            .any(|row| row.branch.branch == session.branch));
+        assert_eq!(closed.token, session.token);
+        assert!(
+            !session.worktree.exists(),
+            "the real close can remove the checkout after native handles close"
+        );
     }
 
     /// B reads which sessions are open before A's record exists, and walks `runs/`
