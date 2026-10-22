@@ -10,6 +10,19 @@ use std::process::{Command, Output};
 
 use crate::lifecycle::{local_direct, run_root_of, Fixture};
 
+fn closing_lock(root: &Path) -> PathBuf {
+    root.parent().unwrap().parent().unwrap().join(format!(
+        "onevcs-closing-{}-{}.lock",
+        root.parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        root.file_name().unwrap().to_str().unwrap(),
+    ))
+}
+
 fn fifo(path: &Path) {
     let path = CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
     // SAFETY: the path is NUL terminated and remains live for this call.
@@ -71,6 +84,8 @@ const OBSERVER: &str = r#"
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <sys/file.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -79,6 +94,22 @@ const OBSERVER: &str = r#"
 
 static atomic_flag notified = ATOMIC_FLAG_INIT;
 static atomic_uint resume_opens = 0;
+static atomic_uint pause_opens = 0;
+static void pause_at(const char *path) {
+    const char *pause = getenv("READ_PAUSE_FILE");
+    if (pause && strcmp(path, pause) == 0 && atomic_fetch_add(&pause_opens, 1) == 0) {
+        const char *ready = getenv("READ_READY");
+        const char *release = getenv("READ_RELEASE");
+        if (!ready || !release) _exit(125);
+        int pipe = open(ready, O_WRONLY);
+        if (pipe < 0 || write(pipe, "inside\n", 7) != 7) _exit(125);
+        close(pipe);
+        pipe = open(release, O_RDONLY);
+        char byte;
+        if (pipe < 0 || read(pipe, &byte, 1) != 1) _exit(125);
+        close(pipe);
+    }
+}
 int open64(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -92,13 +123,22 @@ int open64(const char *path, int flags, ...) {
     void *symbol = dlsym(RTLD_NEXT, "open64");
     if (!symbol) _exit(125);
     int (*real_open)(const char *, int, ...) = (int (*)(const char *, int, ...))symbol;
+    if (getenv("READ_PAUSE_BEFORE")) pause_at(path);
     int fd = real_open(path, flags, mode);
     const char *target = getenv("READ_TURN_LOCK");
     if (fd >= 0 && target && strcmp(path, target) == 0 && !atomic_flag_test_and_set(&notified)) {
         const char *notice = getenv("READ_TURN_NOTICE");
         if (!notice) _exit(125);
         int pipe = real_open(notice, O_WRONLY);
-        if (pipe < 0 || write(pipe, "entered\n", 8) != 8) _exit(125);
+        if (pipe < 0) _exit(125);
+        if (getenv("READ_TURN_PROBE")) {
+            int taken = flock(fd, LOCK_EX | LOCK_NB);
+            if (taken == 0) {
+                if (flock(fd, LOCK_UN) != 0 || write(pipe, "free\n", 5) != 5) _exit(125);
+            } else {
+                if ((errno != EWOULDBLOCK && errno != EAGAIN) || write(pipe, "blocked\n", 8) != 8) _exit(125);
+            }
+        } else if (write(pipe, "entered\n", 8) != 8) _exit(125);
         close(pipe);
     }
     const char *resume = getenv("READ_RESUME_LOCK");
@@ -109,8 +149,37 @@ int open64(const char *path, int flags, ...) {
         if (pipe < 0 || write(pipe, "entered\n", 8) != 8) _exit(125);
         close(pipe);
     }
+    if (fd >= 0 && !getenv("READ_PAUSE_BEFORE")) pause_at(path);
     return fd;
 }
+
+static void removed(const char *path, int result) {
+    const char *target = getenv("READ_REMOVED_FILE");
+    if (result == 0 && target && strcmp(path, target) == 0) {
+        const char *notice = getenv("READ_REMOVED_NOTICE");
+        if (!notice) _exit(125);
+        int pipe = open(notice, O_WRONLY);
+        if (pipe < 0 || write(pipe, "removed\n", 8) != 8) _exit(125);
+        close(pipe);
+    }
+}
+int unlink(const char *path) {
+    void *symbol = dlsym(RTLD_NEXT, "unlink");
+    if (!symbol) _exit(125);
+    int (*real_unlink)(const char *) = (int (*)(const char *))symbol;
+    int result = real_unlink(path);
+    removed(path, result);
+    return result;
+}
+int unlinkat(int directory, const char *path, int flags) {
+    void *symbol = dlsym(RTLD_NEXT, "unlinkat");
+    if (!symbol) _exit(125);
+    int (*real_unlinkat)(int, const char *, int) = (int (*)(int, const char *, int))symbol;
+    int result = real_unlinkat(directory, path, flags);
+    removed(path, result);
+    return result;
+}
+
 "#;
 
 struct HeldGit {
@@ -254,8 +323,7 @@ fn a_close_waits_for_its_own_status_reader_then_closes_the_session() {
     );
     let locks = fixture.world.path("");
     let mut entries = Entries::watching(&locks);
-    let identity_root = root.parent().unwrap().parent().unwrap();
-    let lock = identity_root.join("onevcs-reads.lock");
+    let lock = closing_lock(&root);
     let mut close = shim.command(&fixture, &clone);
     close
         .args(["session", "close", &token])
@@ -291,6 +359,12 @@ fn a_close_waits_for_its_own_status_reader_then_closes_the_session() {
 fn a_status_reader_waits_for_teardown_and_answers_from_the_remaining_checkouts() {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/closing"]);
+    let (survivor, survivor_tree) = fixture.open(&["--branch", "feature/surviving"]);
+    let (another, another_tree) = fixture.open(&["--branch", "feature/another-survivor"]);
+    let survivor_clones = [
+        run_root_of(&fixture.world, &survivor).join("clone"),
+        run_root_of(&fixture.world, &another).join("clone"),
+    ];
     let root = run_root_of(&fixture.world, &token);
     let clone = root.join("clone");
     let shim = HeldGit::installed(&fixture);
@@ -340,6 +414,18 @@ fn a_status_reader_waits_for_teardown_and_answers_from_the_remaining_checkouts()
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["branch"]["name"], "main");
     assert!(!worktree.exists());
+    assert!(survivor_tree.is_dir() && another_tree.is_dir());
+    for clone in survivor_clones {
+        assert!(
+            report["branch"]["holders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|holder| holder["path"].as_str() == clone.to_str()),
+            "the traversal still answers for surviving checkout {}: {report}",
+            clone.display()
+        );
+    }
     assert!(
         admitted,
         "the status reader reached its turn while teardown held the tree"
@@ -472,12 +558,7 @@ fn other_read_then_close(read: Scenario) {
     });
     shim.entered();
     let mut entries = Entries::watching(&fixture.world.path(""));
-    let lock = root
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("onevcs-reads.lock");
+    let lock = closing_lock(&root);
     let mut close = shim.command(&fixture, &clone);
     close
         .args(["session", "close", &token])
@@ -563,12 +644,7 @@ fn the_public_landing_query_and_close_take_turns() {
     let reader = std::thread::spawn(move || onevcs::landing_status("main", Some(&repo)));
     shim.entered();
     let mut entries = Entries::watching(&fixture.world.path(""));
-    let lock = root
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("onevcs-reads.lock");
+    let lock = closing_lock(&root);
     let mut close = shim.command(&fixture, &clone);
     close
         .args(["session", "close", &token])
@@ -674,12 +750,15 @@ fn pooled_ordering(reader_first: bool) {
     } else {
         next.args(["status", "main", "--json"]);
     }
-    let lock = root
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("onevcs-reads.lock");
+    let lock = if reader_first {
+        closing_lock(&root)
+    } else {
+        root.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("onevcs-reads.lock")
+    };
     let notice = fixture.world.path("turn-notices");
     next.env("LD_PRELOAD", observer())
         .env("READ_TURN_LOCK", lock)
@@ -775,6 +854,13 @@ fn retirement_fetch_ordering(end: FetchEnd) {
         .args(["session", "close", &token])
         .assert()
         .success();
+    let secondary = fixture.world.clone_of(&fixture.origin, "secondary");
+    fixture
+        .world
+        .onevcs()
+        .args(["register", secondary.to_str().unwrap()])
+        .assert()
+        .success();
     let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
     fixture
         .world
@@ -786,8 +872,8 @@ fn retirement_fetch_ordering(end: FetchEnd) {
         .world
         .git(&elsewhere, &["push", "origin", "feature/remote-only"]);
 
-    // A real opener owns the fetch turn. The retirement pass must let a status
-    // reader enter while it queues behind that opener for missing objects.
+    // A real opener owns the fetch turn. The retirement pass must let another
+    // teardown enter while it queues behind that opener for missing objects.
     let opening_git = HeldGit::named(&fixture, "opening");
     let opening = if end == FetchEnd::RestorationTimeout {
         None
@@ -851,11 +937,24 @@ fn retirement_fetch_ordering(end: FetchEnd) {
         shim.entered();
     }
 
+    // This checkout did not exist in the census snapshot, so its close can take
+    // an exclusive identity turn while the census retains its old checkout leases.
+    let (blocking_token, blocking_worktree) = fixture.open(&[
+        "--branch",
+        "feature/restoration-blocker",
+        "--execution-checkout",
+        "secondary",
+    ]);
+    let blocking_clone = run_root_of(&fixture.world, &blocking_token).join("clone");
     let status_git = HeldGit::named(&fixture, "status");
-    let mut status = status_git.command(&fixture, &root.join("clone"));
+    let mut status = status_git.command(&fixture, &blocking_clone);
     status
-        .args(["status", "main", "--json"])
+        .args(["session", "close", &blocking_token])
         .env("HOLD_READER", "1")
+        .env(
+            "HOLD_ARGS",
+            format!("worktree remove --force {}", blocking_worktree.display()),
+        )
         .env("READ_LOG", fixture.world.path("status.log"))
         .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "1");
     let status = notifying(status, vec![status_git.ready.clone()]);
@@ -965,11 +1064,17 @@ fn refused_initial_turn(closing: bool) {
     let (token, worktree) = fixture.open(&["--branch", "feature/timeout"]);
     let root = run_root_of(&fixture.world, &token);
     let clone = root.join("clone");
+    let (blocking_token, blocking_worktree) = fixture.open(&["--branch", "feature/turn-holder"]);
+    let blocking_clone = run_root_of(&fixture.world, &blocking_token).join("clone");
     let held = HeldGit::installed(&fixture);
-    let mut reader = held.command(&fixture, &clone);
+    let mut reader = held.command(&fixture, &blocking_clone);
     reader
-        .args(["status", "main", "--json"])
-        .env("HOLD_READER", "1");
+        .args(["session", "close", &blocking_token])
+        .env("HOLD_READER", "1")
+        .env(
+            "HOLD_ARGS",
+            format!("worktree remove --force {}", blocking_worktree.display()),
+        );
     let reader = notifying(reader, Vec::new());
     held.entered();
     let mut contender = held.command(&fixture, &clone);
@@ -1023,4 +1128,445 @@ fn a_status_reader_whose_initial_turn_times_out_never_enters_the_checkout() {
 #[test]
 fn a_close_whose_initial_read_turn_times_out_leaves_the_session_open() {
     refused_initial_turn(true);
+}
+
+/// The library-only read runs in its own process so the loader can pause a real
+/// rules-file open after the session record was read, before its git reads start.
+#[test]
+fn git_session_read_and_close_take_one_turn() {
+    if let Ok(token) = std::env::var("READ_SESSION_TOKEN") {
+        use onevcs::Vcs;
+        let read = onevcs::Git.session(&onevcs::SessionToken(token.clone()));
+        if std::env::var_os("READ_EXPECT_GONE").is_some() {
+            let failure = read.unwrap_err().to_string();
+            assert!(
+                failure.contains(&token) && failure.contains("being torn down"),
+                "{failure}"
+            );
+            return;
+        }
+        let record = read.unwrap();
+        assert_eq!(record.session.token.0, token);
+        assert_eq!(record.lifecycle, onevcs::Lifecycle::Open);
+        println!("session read completed");
+        return;
+    }
+    session_read_then_close(false);
+}
+
+#[test]
+fn addressed_read_and_close_take_one_turn_including_its_ref_refresh() {
+    session_read_then_close(true);
+}
+
+fn session_read_then_close(addressed: bool) {
+    let fixture = if addressed {
+        Fixture::on_github(crate::host::REVIEWED, "acme-corp/project")
+    } else {
+        Fixture::local(&local_direct())
+    };
+    let (token, worktree) = fixture.open(&["--branch", "feature/session-reader"]);
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "feat: session work");
+    let root = run_root_of(&fixture.world, &token);
+    let clone = root.join("clone");
+    let shim = HeldGit::installed(&fixture);
+    let prepared = shim.command(&fixture, &clone);
+    let mut read = if addressed {
+        let mut command = prepared;
+        command.args(["change", "show", &token, "--json"]);
+        command
+    } else {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .env_clear()
+            .envs(
+                prepared
+                    .get_envs()
+                    .filter_map(|(key, value)| value.map(|value| (key, value))),
+            )
+            .current_dir(fixture.world.path(""))
+            .args([
+                "--exact",
+                "checkout_reads::git_session_read_and_close_take_one_turn",
+                "--nocapture",
+            ])
+            .env("READ_SESSION_TOKEN", &token);
+        command
+    };
+    read.env("LD_PRELOAD", observer()).env(
+        "READ_PAUSE_FILE",
+        if addressed {
+            clone.join(".git/onevcs-fetch.lock")
+        } else {
+            fixture.world.home().join("rules.yml")
+        },
+    );
+    let reading = notifying(read, vec![shim.ready.clone()]);
+    let mut entered = String::new();
+    BufReader::new(&shim.ready_pipe)
+        .read_line(&mut entered)
+        .unwrap();
+    if entered != "inside\n" {
+        let output = reading.join().unwrap();
+        panic!("the real read must reach its between-step pause: {output:?}");
+    }
+    let mut notices = Entries::watching(&fixture.world.path(""));
+    let mut close = shim.command(&fixture, &clone);
+    close
+        .args(["session", "close", &token])
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", closing_lock(&root))
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"))
+        .env("READ_TURN_PROBE", "1");
+    let closing = notifying(close, vec![fixture.world.path("turn-notices")]);
+    let mut state = String::new();
+    BufReader::new(&mut notices.0)
+        .read_line(&mut state)
+        .unwrap();
+    shim.release();
+    let read = reading.join().unwrap();
+    let closed = closing.join().unwrap();
+    assert_eq!(
+        state, "blocked\n",
+        "close must meet the read's enclosing turn between steps"
+    );
+    success(read);
+    success(closed);
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn two_identity_readers_share_their_turn_and_close_waits_for_both() {
+    use fs4::fs_std::FileExt;
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/two-readers"]);
+    let root = run_root_of(&fixture.world, &token);
+    let clone = root.join("clone");
+    let first = HeldGit::named(&fixture, "first");
+    let second = HeldGit::named(&fixture, "second");
+    let mut read = first.command(&fixture, &clone);
+    read.args(["status", "main", "--json"])
+        .env("HOLD_READER", "1");
+    let reading_first = notifying(read, vec![]);
+    first.entered();
+    let mut read = second.command(&fixture, &clone);
+    read.args(["status", "main", "--json"])
+        .env("HOLD_READER", "1")
+        .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "0.1");
+    let reading_second = notifying(read, vec![second.ready.clone()]);
+    let mut admitted = String::new();
+    BufReader::new(&second.ready_pipe)
+        .read_line(&mut admitted)
+        .unwrap();
+    if admitted != "inside\n" {
+        first.release();
+        success(reading_first.join().unwrap());
+        panic!(
+            "a second read must enter beside the first: {:?}",
+            reading_second.join().unwrap()
+        );
+    }
+    let mut entries = Entries::watching(&fixture.world.path(""));
+    let lock = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("onevcs-reads.lock");
+    let mut close = first.command(&fixture, &clone);
+    close
+        .args(["session", "close", &token])
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", closing_lock(&root))
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"));
+    let closing = notifying(close, vec![fixture.world.path("turn-notices")]);
+    assert!(entries.entered_or_finished());
+    let probe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock)
+        .unwrap();
+    let both_held = !FileExt::try_lock_exclusive(&probe).unwrap();
+    first.release();
+    success(reading_first.join().unwrap());
+    let second_held = !FileExt::try_lock_exclusive(&probe).unwrap();
+    second.release();
+    success(reading_second.join().unwrap());
+    success(closing.join().unwrap());
+    assert!(
+        both_held,
+        "teardown is excluded while both readers are admitted"
+    );
+    assert!(
+        second_held,
+        "teardown is still excluded after just one reader leaves"
+    );
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn a_holder_listing_passes_over_an_unrelated_record_removed_by_a_real_sweep() {
+    listing_during_sweep(false);
+}
+
+#[test]
+fn a_cached_recovery_listing_passes_over_an_unrelated_record_removed_by_a_real_sweep() {
+    listing_during_sweep(true);
+}
+
+fn listing_during_sweep(cached: bool) {
+    let fixture = Fixture::local(&local_direct());
+    let (spent, _) = fixture.open(&["--branch", "feature/spent-record"]);
+    let (survivor, worktree) = fixture.open(&["--branch", "feature/retained-record"]);
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "retained\n", "feat: retained work");
+    if cached {
+        fixture
+            .world
+            .onevcs()
+            .args(["recoverable", "--json", "--session", &survivor])
+            .assert()
+            .success();
+    }
+    // Closing through the real interface makes this record spent and changes the
+    // stamp a warm recovery index has remembered. The survivor still holds work.
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &spent])
+        .assert()
+        .success();
+    let record = fixture.world.sessions_dir().join(format!("{spent}.json"));
+    let shim = HeldGit::installed(&fixture);
+    let mut read = shim.command(&fixture, &worktree);
+    if cached {
+        read.args(["recoverable", "--json", "--session", &survivor]);
+    } else {
+        read.args(["session", "holders", "project", "--json"]);
+    }
+    read.env("LD_PRELOAD", observer())
+        .env("READ_PAUSE_FILE", &record)
+        .env("READ_PAUSE_BEFORE", "1");
+    let reading = notifying(read, vec![shim.ready.clone()]);
+    let mut ready = String::new();
+    BufReader::new(&shim.ready_pipe)
+        .read_line(&mut ready)
+        .unwrap();
+    if ready != "inside\n" {
+        panic!(
+            "the listing must reach its enumerated record: {:?}",
+            reading.join().unwrap()
+        );
+    }
+    let mut removed = Entries::watching(&fixture.world.path(""));
+    let mut sweep = shim.command(&fixture, &worktree);
+    sweep
+        .args(["sweep", "--min-age-hours", "0"])
+        .env("LD_PRELOAD", observer())
+        .env("READ_REMOVED_FILE", &record)
+        .env("READ_REMOVED_NOTICE", fixture.world.path("turn-notices"));
+    let sweeping = notifying(sweep, vec![fixture.world.path("turn-notices")]);
+    let mut notice = String::new();
+    BufReader::new(&mut removed.0)
+        .read_line(&mut notice)
+        .unwrap();
+    let gone = !record.exists();
+    shim.release();
+    let read = reading.join().unwrap();
+    let swept = sweeping.join().unwrap();
+    assert_eq!(
+        notice, "removed\n",
+        "the real sweep removed its spent record: {swept:?}"
+    );
+    assert!(gone);
+    assert!(
+        read.status.success(),
+        "the surviving selection still answers: {read:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&read.stdout).contains(&survivor),
+        "the surviving session is still reported: {read:?}"
+    );
+    success(swept);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HookCloseEnd {
+    Closed,
+    Refused,
+    Killed,
+}
+
+#[test]
+fn reads_during_a_close_hook_skip_only_the_closing_session() {
+    read_during_close_hook(HookCloseEnd::Closed);
+}
+
+#[test]
+fn a_failed_close_releases_its_closing_lease_and_the_session_reads_again() {
+    read_during_close_hook(HookCloseEnd::Refused);
+}
+
+#[test]
+fn a_dead_closer_does_not_hide_its_session_from_the_next_read_or_close() {
+    read_during_close_hook(HookCloseEnd::Killed);
+}
+
+fn read_during_close_hook(end: HookCloseEnd) {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/closing-hook"]);
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "feat: hook work");
+    if end == HookCloseEnd::Refused {
+        fixture
+            .world
+            .git(&worktree, &["checkout", "-b", "feature/stray"]);
+        fixture
+            .world
+            .commit_file(&worktree, "stray.txt", "stray\n", "feat: stray work");
+        fixture
+            .world
+            .git(&worktree, &["checkout", "feature/closing-hook"]);
+    }
+    let (survivor, survivor_tree) = fixture.open(&["--branch", "feature/hook-survivor"]);
+    let clone = run_root_of(&fixture.world, &token).join("clone");
+    let surviving_clone = run_root_of(&fixture.world, &survivor).join("clone");
+    let held = HeldGit::installed(&fixture);
+    let report = fixture.world.path("hook-status.json");
+    fixture.world.install_hook(
+        &fixture.checkout,
+        "reference-transaction",
+        &format!(
+            "[ \"$1\" = committed ] || exit 0\n\
+         if mkdir '{once}' 2>/dev/null; then\n\
+           unset $(git rev-parse --local-env-vars)\n\
+           cd '{root}'\n\
+           '{binary}' status main --json > '{report}' || exit 1\n\
+           printf 'inside\\n' > '{ready}'\n\
+           read -r released < '{release}'\n\
+         fi",
+            once = fixture.world.path("hook-once").display(),
+            root = fixture.world.path("").display(),
+            binary = assert_cmd::cargo::cargo_bin("onevcs").display(),
+            report = report.display(),
+            ready = held.ready.display(),
+            release = held.release.display(),
+        ),
+    );
+    let mut close = held.command(&fixture, &clone);
+    let closing = close
+        .args(["session", "close", &token])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let closing_pid = closing.id();
+    let ready = held.ready.clone();
+    let closing = std::thread::spawn(move || {
+        let output = closing.wait_with_output().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(ready)
+            .unwrap()
+            .write_all(b"finished\n")
+            .unwrap();
+        output
+    });
+    held.entered();
+    let hook: serde_json::Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    let holders = hook["branch"]["holders"].as_array().unwrap();
+    let skipped = !holders
+        .iter()
+        .any(|holder| holder["path"].as_str() == clone.to_str());
+    let survived = holders
+        .iter()
+        .any(|holder| holder["path"].as_str() == surviving_clone.to_str());
+    let prepared = held.command(&fixture, &clone);
+    let mut read = Command::new(std::env::current_exe().unwrap());
+    read.env_clear()
+        .envs(
+            prepared
+                .get_envs()
+                .filter_map(|(key, value)| value.map(|value| (key, value))),
+        )
+        .current_dir(fixture.world.path(""))
+        .args([
+            "--exact",
+            "checkout_reads::git_session_read_and_close_take_one_turn",
+            "--nocapture",
+        ])
+        .env("READ_SESSION_TOKEN", &token)
+        .env("READ_EXPECT_GONE", "1");
+    let absent = read.output().unwrap();
+    let change = held
+        .command(&fixture, &clone)
+        .args(["change", "show", &token])
+        .output()
+        .unwrap();
+    if end == HookCloseEnd::Killed {
+        // This is the exact child this fixture spawned, never a name or PID search.
+        // SAFETY: this is the PID captured from this fixture's own child at spawn.
+        assert_eq!(
+            unsafe { libc::kill(closing_pid as libc::pid_t, libc::SIGKILL) },
+            0
+        );
+    }
+    held.release();
+    let closed = closing.join().unwrap();
+    assert!(
+        skipped,
+        "the hook starts no read in its closing clone: {hook}"
+    );
+    assert!(
+        survived && survivor_tree.is_dir(),
+        "the hook still reads the other session: {hook}"
+    );
+    success(absent);
+    let failure = String::from_utf8_lossy(&change.stderr);
+    assert!(
+        !change.status.success() && failure.contains(&token) && failure.contains("being torn down"),
+        "{change:?}"
+    );
+    if end == HookCloseEnd::Closed {
+        success(closed);
+        assert!(!worktree.exists());
+    } else {
+        assert!(!closed.status.success(), "{closed:?}");
+        if end == HookCloseEnd::Refused {
+            let reason = String::from_utf8_lossy(&closed.stderr);
+            assert!(
+                reason.contains("was not closed") && reason.contains("feature/stray"),
+                "{reason}"
+            );
+        }
+        let mut read = Command::new(std::env::current_exe().unwrap());
+        read.env_clear()
+            .envs(
+                prepared
+                    .get_envs()
+                    .filter_map(|(key, value)| value.map(|value| (key, value))),
+            )
+            .current_dir(fixture.world.path(""))
+            .args([
+                "--exact",
+                "checkout_reads::git_session_read_and_close_take_one_turn",
+                "--nocapture",
+            ])
+            .env("READ_SESSION_TOKEN", &token);
+        success(read.output().unwrap());
+        assert!(worktree.is_dir());
+        if end == HookCloseEnd::Killed {
+            fixture
+                .world
+                .onevcs()
+                .args(["session", "close", &token])
+                .assert()
+                .success();
+            assert!(!worktree.exists());
+        }
+    }
 }

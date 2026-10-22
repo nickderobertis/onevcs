@@ -2684,12 +2684,27 @@ record, `landed` (the landing commit), `unreadable_clone` (what git said) and th
 
 ### Session teardown waits for repository readers
 
-Session teardown and onevcs's bounded read-only repository reads take turns across
-an identity's managed checkouts. A close waits for an admitted read before asking
-which processes occupy its run root; those reads therefore cannot themselves
-refuse the close. A checkout traversal admitted after teardown reads the remaining
-checkouts, without starting a child in a removed directory. Other processes working
-inside the run root still refuse closure with the existing occupancy diagnostic.
+Session teardown excludes onevcs's bounded read-only repository reads across an
+identity's managed checkouts. Read-only reads share their turns with each other;
+a close waits for every admitted read before asking which processes occupy its
+run root. One turn covers the read's session records and git commands, including
+a change-request read's refresh of remote refs, so teardown cannot enter between
+its steps. Each admitted checkout retains a shared per-checkout lease even when
+the read yields its identity turn to fetch objects. Close waits for that lease
+before taking its identity turn. Other removers already holding an identity turn
+keep a checkout whose reader has yielded, so that reader can resume. A close
+retains a per-checkout lease while yielding its identity turn for repository
+hooks. Reads admitted during that yield treat the closing session as absent,
+naming it when addressed directly, and traverse every other checkout. A refused
+or failed close releases that lease, and process death releases it in the
+operating system, so neither outcome hides a session from subsequent reads. A
+read arriving after teardown either reads the remaining checkouts or answers
+that the session it names no longer exists, naming that session, without
+starting a child in a removed directory. A record removed after a listing
+enumerated it contributes nothing to that listing; unreadable or invalid records
+still refuse the read. Managed-clone reclamation, retirement and pool removal
+use the same exclusion. Other processes working inside the run root still refuse
+closure with the existing occupancy diagnostic.
 
 ### A session record carries the labels its opener stamped, and the listings filter on them
 

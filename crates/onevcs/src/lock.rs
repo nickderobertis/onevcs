@@ -85,7 +85,48 @@ pub fn exclusive(identity: &str) -> Result<Guard> {
 /// `ONEVCS_HOME` it runs under. The file's directory must already exist.
 pub fn exclusive_at(path: &Path) -> Result<Guard> {
     let file = open_at(path)?;
-    wait_for(path, file, &path.display().to_string(), timeout_seconds()?)
+    wait_for(
+        path,
+        file,
+        &path.display().to_string(),
+        timeout_seconds()?,
+        false,
+    )
+}
+
+/// Wait for a shared read turn at a resource-owned lock file.
+pub(crate) fn shared_at(path: &Path) -> Result<Guard> {
+    wait_for(
+        path,
+        open_at(path)?,
+        &path.display().to_string(),
+        timeout_seconds()?,
+        true,
+    )
+}
+
+/// Probe a resource-owned shared lease without waiting for its exclusive holder.
+pub(crate) fn try_shared_at(path: &Path) -> Result<Option<Guard>> {
+    try_at(path, true)
+}
+
+/// Probe a resource-owned exclusive lease without waiting for its holder.
+pub(crate) fn try_exclusive_at(path: &Path) -> Result<Option<Guard>> {
+    try_at(path, false)
+}
+
+fn try_at(path: &Path, shared: bool) -> Result<Option<Guard>> {
+    let file = open_at(path)?;
+    let taken = if shared {
+        FileExt::try_lock_shared(&file)
+    } else {
+        FileExt::try_lock_exclusive(&file)
+    };
+    match taken {
+        Ok(true) => Ok(Some(Guard { file })),
+        Ok(false) => Ok(None),
+        Err(failure) => Err(error::at("read the lock at", path)(failure)),
+    }
 }
 
 /// Take an identity's shared occupancy lease if it is free *right now*.
@@ -192,20 +233,27 @@ fn try_acquire(identity: &str, is_shared: bool) -> Result<Option<Guard>> {
 /// served rather than deadlocked behind a caller that already gave up.
 fn acquire(identity: &str, bound: f64) -> Result<Guard> {
     let (path, file) = open(identity)?;
-    wait_for(&path, file, identity, bound)
+    wait_for(&path, file, identity, bound, false)
 }
 
 /// [`acquire`]'s wait, for a lock file already open; `what` names it in a refusal.
-fn wait_for(path: &Path, file: File, what: &str, bound: f64) -> Result<Guard> {
+fn wait_for(path: &Path, file: File, what: &str, bound: f64, shared: bool) -> Result<Guard> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        if FileExt::lock_exclusive(&file).is_ok() {
+        let locked = if shared {
+            FileExt::lock_shared(&file)
+        } else {
+            FileExt::lock_exclusive(&file)
+        };
+        if locked.is_ok() {
             let _ = sender.send(file);
         }
     });
     match receiver.recv_timeout(Duration::from_secs_f64(bound)) {
         Ok(file) => {
-            record_owner(&file);
+            if !shared {
+                record_owner(&file);
+            }
             Ok(Guard { file })
         }
         Err(_) => Err(Error::Invalid {

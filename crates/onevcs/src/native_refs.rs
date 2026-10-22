@@ -21,6 +21,7 @@ struct Snapshot {
 /// A repository, and the store it is lent where it is lent one.
 type Lending = (PathBuf, Option<PathBuf>);
 thread_local! {
+    static TURNS: RefCell<HashMap<PathBuf, crate::checkout_reads::Turn>> = RefCell::new(HashMap::new());
     static OBJECT_REPOSITORIES: RefCell<HashMap<(PathBuf, Option<PathBuf>), git2::Repository>> = RefCell::new(HashMap::new());
     static SNAPSHOTS: RefCell<HashMap<PathBuf,Option<Snapshot>>> = RefCell::new(HashMap::new());
     /// One object store read on its own, by its path, for every repository that
@@ -44,6 +45,7 @@ pub(crate) fn clear() {
     STORES.with(|stores| stores.borrow_mut().clear());
     BORROWED.with(|borrowed| borrowed.borrow_mut().clear());
     CANONICAL.with(|canonical| canonical.borrow_mut().clear());
+    TURNS.with(|turns| turns.borrow_mut().clear());
 }
 /// `std::fs::canonicalize`, resolved once per path within a read.
 ///
@@ -85,10 +87,28 @@ pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
     });
     resolved
 }
+// Native repository handles must close before their read turns: on Windows an
+// open object store can itself keep a disposable clone from being removed.
+fn keep_turn(path: &Path) -> Option<Option<crate::checkout_reads::Turn>> {
+    let turn = crate::checkout_reads::checkout(path).ok()?;
+    if crate::recovery_cache::enabled() {
+        if let Some(turn) = &turn {
+            TURNS.with(|turns| {
+                turns
+                    .borrow_mut()
+                    .entry(path.to_owned())
+                    .or_insert_with(|| turn.clone());
+            });
+        }
+    }
+    Some(turn)
+}
+
 fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T> {
     if !crate::recovery_cache::enabled() {
         return None;
     }
+    let _turn = keep_turn(repo)?;
     SNAPSHOTS.with(|snapshots| {
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
@@ -293,6 +313,7 @@ pub(crate) fn with_objects<T>(
     borrowing: Option<&Path>,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(at)?;
     let borrowing = beyond_alternates(at, borrowing);
     let mut choose = Some(choose);
     if borrowing.is_none() {
@@ -334,6 +355,7 @@ pub(crate) fn with_objects_holding<T>(
     named: &[git2::Oid],
     choose: impl Fn(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(at)?;
     for store in borrowed(at, borrowing) {
         let answer = with_store(&store, |repository| {
             let odb = repository.odb().ok()?;
@@ -355,6 +377,7 @@ pub(crate) fn with_store<T>(
     store: &Path,
     choose: impl FnOnce(&git2::Repository) -> Option<T>,
 ) -> Option<T> {
+    let _turn = keep_turn(store)?;
     STORES.with(|stores| {
         let mut stores = stores.borrow_mut();
         let repository = stores
