@@ -8,21 +8,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
+use crate::lock::Mode;
 use crate::{error::Result, home, lock, workspace};
 
 pub(crate) struct Lease {
     guard: RefCell<Option<lock::Guard>>,
-    exclusive: bool,
+    mode: Mode,
     checkouts: RefCell<HashMap<PathBuf, lock::Guard>>,
 }
 
 impl Lease {
     fn acquire(&self, root: &Path) -> Result<lock::Guard> {
         let path = root.join("onevcs-reads.lock");
-        if self.exclusive {
-            lock::exclusive_at(&path)
-        } else {
-            lock::shared_at(&path)
+        match self.mode {
+            Mode::Exclusive => lock::exclusive_at(&path),
+            Mode::Shared => lock::shared_at(&path),
         }
     }
 }
@@ -35,12 +35,14 @@ thread_local! {
 
 /// Hold an identity's checkouts stable across a traversal and its git children.
 pub(crate) fn identity(identity: &str) -> Result<Turn> {
-    at(workspace::identity_dir(identity)?, false)
+    at(workspace::identity_dir(identity)?, Mode::Shared)
 }
 
 /// Protect a managed checkout even when its session record is no longer open.
 pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
-    let turn = root_of(path)?.map(|root| at(root, false)).transpose()?;
+    let turn = root_of(path)?
+        .map(|root| at(root, Mode::Shared))
+        .transpose()?;
     if !available(path)? {
         return Err(unavailable(path)?);
     }
@@ -141,7 +143,7 @@ pub(crate) fn available(path: &Path) -> Result<bool> {
     let Some(guard) = lock::try_shared_at(&path)? else {
         return Ok(false);
     };
-    if let Some(turn) = turn.filter(|turn| !turn.exclusive) {
+    if let Some(turn) = turn.filter(|turn| turn.mode == Mode::Shared) {
         turn.checkouts.borrow_mut().insert(path, guard);
     }
     Ok(true)
@@ -206,7 +208,7 @@ pub(crate) fn mutating<T>(write: impl FnOnce() -> Result<T>) -> Result<T> {
 
 /// Teardown excludes every admitted reader, before probing process occupancy.
 pub(crate) fn teardown(identity: &str) -> Result<Turn> {
-    at(workspace::identity_dir(identity)?, true)
+    at(workspace::identity_dir(identity)?, Mode::Exclusive)
 }
 
 /// Discover the identity from the durable record, then reload under its turn.
@@ -223,10 +225,10 @@ pub(crate) fn session(token: &str) -> Result<(Turn, workspace::Record)> {
     Ok((turn, record))
 }
 
-fn at(root: PathBuf, exclusive: bool) -> Result<Turn> {
+fn at(root: PathBuf, mode: Mode) -> Result<Turn> {
     HELD.with(|held| {
         if let Some(guard) = held.borrow().get(&root).and_then(Weak::upgrade) {
-            if exclusive && !guard.exclusive {
+            if mode == Mode::Exclusive && guard.mode == Mode::Shared {
                 return Err(crate::error::invalid(
                     "cannot tear down an identity inside its read turn",
                 ));
@@ -239,7 +241,7 @@ fn at(root: PathBuf, exclusive: bool) -> Result<Turn> {
         home::ensure_dir(&root)?;
         let guard = Rc::new(Lease {
             guard: RefCell::new(None),
-            exclusive,
+            mode,
             checkouts: RefCell::new(HashMap::new()),
         });
         *guard.guard.borrow_mut() = Some(guard.acquire(&root)?);
