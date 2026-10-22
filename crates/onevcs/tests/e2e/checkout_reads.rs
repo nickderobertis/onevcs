@@ -123,8 +123,12 @@ struct HeldGit {
 
 impl HeldGit {
     fn installed(fixture: &Fixture) -> Self {
+        Self::named(fixture, "reader")
+    }
+
+    fn named(fixture: &Fixture, name: &str) -> Self {
         let world = &fixture.world;
-        let bin = world.path("held-git");
+        let bin = world.path(format!("held-git-{name}"));
         std::fs::create_dir(&bin).unwrap();
         let real = String::from_utf8(
             Command::new("sh")
@@ -136,8 +140,8 @@ impl HeldGit {
         .unwrap()
         .trim()
         .to_owned();
-        let ready = world.path("reader-ready");
-        let release = world.path("reader-release");
+        let ready = world.path(format!("{name}-ready"));
+        let release = world.path(format!("{name}-release"));
         fifo(&ready);
         fifo(&release);
         let shim = bin.join("git");
@@ -152,7 +156,6 @@ if [ "${HOLD_READER:-}" = 1 ] && [ "$PWD" = "$READ_CLONE" ]; then
                 : > "$READ_ONCE"
                 printf 'inside\n' > "$READ_READY"
                 read -r released < "$READ_RELEASE"
-                if [ "${FAIL_HELD:-}" = 1 ]; then exit 1; fi
             fi
             ;;
     esac
@@ -186,7 +189,7 @@ exec "$REAL_GIT" "$@"
             .env("READ_READY", &self.ready)
             .env("READ_RELEASE", &self.release)
             .env("READ_LOG", fixture.world.path("reader.log"))
-            .env("READ_ONCE", fixture.world.path("read-once"))
+            .env("READ_ONCE", self.bin.join("read-once"))
             .env("REAL_GIT", &self.real);
         command
     }
@@ -737,9 +740,29 @@ fn a_reader_arriving_during_slot_return_waits_and_reads_the_returned_slot() {
     pooled_ordering(false);
 }
 
-fn retirement_fetch_ordering(fetch_fails: bool) {
-    use fs4::fs_std::FileExt;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchEnd {
+    Success,
+    MissingBranch,
+    RestorationTimeout,
+}
 
+fn notifying(mut command: Command, notices: Vec<PathBuf>) -> std::thread::JoinHandle<Output> {
+    std::thread::spawn(move || {
+        let output = command.output().unwrap();
+        for notice in notices {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(notice)
+                .unwrap()
+                .write_all(b"finished\n")
+                .unwrap();
+        }
+        output
+    })
+}
+
+fn retirement_fetch_ordering(end: FetchEnd) {
     let fixture = Fixture::local(&local_direct());
     let (token, worktree) = fixture.open(&["--branch", "feature/remote-only"]);
     fixture
@@ -763,89 +786,139 @@ fn retirement_fetch_ordering(fetch_fails: bool) {
         .world
         .git(&elsewhere, &["push", "origin", "feature/remote-only"]);
 
-    let fetch_lock = fixture.checkout.join(".git/onevcs-fetch.lock");
-    let fetching = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&fetch_lock)
-        .unwrap();
-    FileExt::lock_exclusive(&fetching).unwrap();
-    let read_lock = root
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("onevcs-reads.lock");
-    let reads = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&read_lock)
-        .unwrap();
+    // A real opener owns the fetch turn. The retirement pass must let a status
+    // reader enter while it queues behind that opener for missing objects.
+    let opening_git = HeldGit::named(&fixture, "opening");
+    let opening = if end == FetchEnd::RestorationTimeout {
+        None
+    } else {
+        let mut command = opening_git.command(&fixture, &fixture.checkout);
+        command
+            .args([
+                "session",
+                "open",
+                &fixture.checkout.to_string_lossy(),
+                "--branch",
+                "feature/fetcher",
+            ])
+            .env("HOLD_READER", "1")
+            .env("HOLD_ARGS", "fetch origin --prune")
+            .env("READ_LOG", fixture.world.path("opening.log"));
+        let child = notifying(command, Vec::new());
+        opening_git.entered();
+        Some(child)
+    };
+    let shim = HeldGit::installed(&fixture);
+    let mut entries = Entries::watching(&fixture.world.path(""));
     let resumed = fixture.world.path("resume");
     std::fs::create_dir(&resumed).unwrap();
     let mut resume = Entries::watching(&resumed);
-    let mut entries = Entries::watching(&fixture.world.path(""));
-    let shim = HeldGit::installed(&fixture);
     let mut command = shim.command(&fixture, &fixture.checkout);
     command
         .args(["retire-finished", "--dry-run", "--json"])
         .env("HOLD_READER", "1")
         .env("HOLD_ARGS", "fetch --no-tags --refmap=")
-        .env("FAIL_HELD", if fetch_fails { "1" } else { "0" })
-        .env("READ_RESUME_LOCK", &read_lock)
+        .env(
+            "READ_RESUME_LOCK",
+            root.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("onevcs-reads.lock"),
+        )
         .env("READ_RESUME_NOTICE", resumed.join("turn-notices"))
         .env("LD_PRELOAD", observer())
-        .env("READ_TURN_LOCK", &fetch_lock)
+        .env(
+            "READ_TURN_LOCK",
+            fixture.checkout.join(".git/onevcs-fetch.lock"),
+        )
         .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"));
-    let notice = fixture.world.path("turn-notices");
-    let resume_notice = resumed.join("turn-notices");
-    let pass = std::thread::spawn(move || {
-        let output = command.output().unwrap();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(notice)
-            .unwrap()
-            .write_all(b"finished\n")
-            .unwrap();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(resume_notice)
-            .unwrap()
-            .write_all(b"finished\n")
-            .unwrap();
-        output
-    });
+    if end == FetchEnd::RestorationTimeout {
+        command.env("ONEVCS_LOCK_TIMEOUT_SECONDS", "0.1");
+    }
+    let pass = notifying(
+        command,
+        vec![
+            fixture.world.path("turn-notices"),
+            resumed.join("turn-notices"),
+        ],
+    );
     assert!(
         entries.entered_or_finished(),
-        "the pass queued for its missing objects"
+        "the pass asks for missing objects"
     );
-    let released_before_queue = FileExt::try_lock_exclusive(&reads).unwrap();
-    if released_before_queue {
-        FileExt::unlock(&reads).unwrap();
+    if opening.is_none() {
+        shim.entered();
     }
-    FileExt::unlock(&fetching).unwrap();
-    shim.entered();
-    let released_during_fetch = FileExt::try_lock_exclusive(&reads).unwrap();
+
+    let status_git = HeldGit::named(&fixture, "status");
+    let mut status = status_git.command(&fixture, &root.join("clone"));
+    status
+        .args(["status", "main", "--json"])
+        .env("HOLD_READER", "1")
+        .env("READ_LOG", fixture.world.path("status.log"))
+        .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "1");
+    let status = notifying(status, vec![status_git.ready.clone()]);
+    let mut notice = String::new();
+    BufReader::new(&status_git.ready_pipe)
+        .read_line(&mut notice)
+        .unwrap();
+    let admitted = notice == "inside\n";
+    if opening.is_some() {
+        opening_git.release();
+        shim.entered();
+    }
+    if end == FetchEnd::MissingBranch {
+        fixture.world.git(
+            &elsewhere,
+            &["push", "origin", "--delete", "feature/remote-only"],
+        );
+    }
     let before_resume = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
     shim.release();
-    assert!(
-        resume.entered_or_finished(),
-        "the census queues to restore its read turn"
-    );
-    let while_queued = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
+    let restoring = resume.entered_or_finished();
     let still_waiting = !pass.is_finished();
-    if released_during_fetch {
-        FileExt::unlock(&reads).unwrap();
+    let while_queued = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
+    let (timed_out, pending) = if end == FetchEnd::RestorationTimeout {
+        (Some(pass.join().unwrap()), None)
+    } else {
+        (None, Some(pass))
+    };
+    if admitted {
+        status_git.release();
     }
-    let output = pass.join().unwrap();
+    let status_output = status.join().unwrap();
+    if let Some(opening) = opening {
+        let opened = opening.join().unwrap();
+        success(opened.clone());
+        let token = crate::world::token_of(&opened.stdout);
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+    }
+    let output = match timed_out {
+        Some(output) => output,
+        None => pending.unwrap().join().unwrap(),
+    };
+    assert!(
+        admitted,
+        "the census releases its turn while waiting for a fetch: {status_output:?}"
+    );
+    success(status_output);
+    assert!(restoring, "the census queues to restore its read turn");
     assert_eq!(
         before_resume, while_queued,
-        "no further repository read before restoration"
+        "no repository read before restoration"
     );
-    assert!(
-        still_waiting,
-        "the pass cannot finish before regaining its turn"
-    );
+    if end != FetchEnd::RestorationTimeout {
+        assert!(
+            still_waiting,
+            "the pass cannot finish before regaining its turn"
+        );
+    }
     assert!(output.status.success(), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let branch = report["examined"]
@@ -856,29 +929,98 @@ fn retirement_fetch_ordering(fetch_fails: bool) {
         .unwrap();
     assert_eq!(
         branch["reason"],
-        if fetch_fails {
-            "unknown"
-        } else {
+        if end == FetchEnd::Success {
             "unmerged-unique-commits"
+        } else {
+            "unknown"
         },
         "{branch}"
     );
-    assert!(
-        released_before_queue,
-        "a waiting fetch must not retain the census read turn"
-    );
-    assert!(
-        released_during_fetch,
-        "nested Git execution must not regain the suspended turn"
-    );
+    if end == FetchEnd::RestorationTimeout {
+        assert_eq!(
+            before_resume,
+            std::fs::read_to_string(fixture.world.path("reader.log")).unwrap(),
+            "failed restoration must not resume repository reads"
+        );
+    }
 }
 
 #[test]
 fn a_retirement_fetch_releases_its_read_turn_before_queueing_for_objects() {
-    retirement_fetch_ordering(false);
+    retirement_fetch_ordering(FetchEnd::Success);
 }
 
 #[test]
 fn a_failed_retirement_fetch_restores_its_read_turn_before_resuming() {
-    retirement_fetch_ordering(true);
+    retirement_fetch_ordering(FetchEnd::MissingBranch);
+}
+
+#[test]
+fn a_retirement_fetch_whose_read_turn_times_out_does_not_resume_repository_reads() {
+    retirement_fetch_ordering(FetchEnd::RestorationTimeout);
+}
+
+fn refused_initial_turn(closing: bool) {
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/timeout"]);
+    let root = run_root_of(&fixture.world, &token);
+    let clone = root.join("clone");
+    let held = HeldGit::installed(&fixture);
+    let mut reader = held.command(&fixture, &clone);
+    reader
+        .args(["status", "main", "--json"])
+        .env("HOLD_READER", "1");
+    let reader = notifying(reader, Vec::new());
+    held.entered();
+    let mut contender = held.command(&fixture, &clone);
+    if closing {
+        contender.args(["session", "close", &token]);
+    } else {
+        contender.args(["status", "main", "--json"]);
+    }
+    let log = fixture.world.path("refused.log");
+    let output = contender
+        .env("READ_LOG", &log)
+        .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "0.1")
+        .output()
+        .unwrap();
+    let untouched = !log.exists()
+        || !std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with(root.to_string_lossy().as_ref()));
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixture.world.sessions_dir().join(format!("{token}.json"))).unwrap(),
+    )
+    .unwrap();
+    let still_open = worktree.is_dir() && record["state"] == "open";
+    held.release();
+    success(reader.join().unwrap());
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    assert!(!output.status.success(), "{output:?}");
+    let failure = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        failure.contains("timed out after 0.1s") && failure.contains("onevcs-reads.lock"),
+        "{failure}"
+    );
+    assert!(
+        untouched,
+        "the refused operation starts no Git child inside the protected tree"
+    );
+    assert!(still_open, "the refused operation leaves its session open");
+}
+
+#[test]
+fn a_status_reader_whose_initial_turn_times_out_never_enters_the_checkout() {
+    refused_initial_turn(false);
+}
+
+#[test]
+fn a_close_whose_initial_read_turn_times_out_leaves_the_session_open() {
+    refused_initial_turn(true);
 }
