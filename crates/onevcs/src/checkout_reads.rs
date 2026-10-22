@@ -51,7 +51,11 @@ pub(crate) fn mutating<T>(write: impl FnOnce() -> Result<T>) -> Result<T> {
     let mut turns = HELD.with(|held| {
         held.borrow()
             .iter()
-            .filter_map(|(root, held)| held.upgrade().map(|held| (root.clone(), held)))
+            .filter_map(|(root, held)| {
+                held.upgrade()
+                    .filter(|held| held.borrow().is_some())
+                    .map(|held| (root.clone(), held))
+            })
             .collect::<Vec<_>>()
     });
     turns.sort_by(|left, right| left.0.cmp(&right.0));

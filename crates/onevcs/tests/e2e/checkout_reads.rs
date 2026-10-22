@@ -78,6 +78,7 @@ const OBSERVER: &str = r#"
 #include <unistd.h>
 
 static atomic_flag notified = ATOMIC_FLAG_INIT;
+static atomic_uint resume_opens = 0;
 int open64(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -95,6 +96,14 @@ int open64(const char *path, int flags, ...) {
     const char *target = getenv("READ_TURN_LOCK");
     if (fd >= 0 && target && strcmp(path, target) == 0 && !atomic_flag_test_and_set(&notified)) {
         const char *notice = getenv("READ_TURN_NOTICE");
+        if (!notice) _exit(125);
+        int pipe = real_open(notice, O_WRONLY);
+        if (pipe < 0 || write(pipe, "entered\n", 8) != 8) _exit(125);
+        close(pipe);
+    }
+    const char *resume = getenv("READ_RESUME_LOCK");
+    if (fd >= 0 && resume && strcmp(path, resume) == 0 && atomic_fetch_add(&resume_opens, 1) == 1) {
+        const char *notice = getenv("READ_RESUME_NOTICE");
         if (!notice) _exit(125);
         int pipe = real_open(notice, O_WRONLY);
         if (pipe < 0 || write(pipe, "entered\n", 8) != 8) _exit(125);
@@ -143,6 +152,7 @@ if [ "${HOLD_READER:-}" = 1 ] && [ "$PWD" = "$READ_CLONE" ]; then
                 : > "$READ_ONCE"
                 printf 'inside\n' > "$READ_READY"
                 read -r released < "$READ_RELEASE"
+                if [ "${FAIL_HELD:-}" = 1 ]; then exit 1; fi
             fi
             ;;
     esac
@@ -725,4 +735,150 @@ fn a_pooled_close_waits_for_its_status_reader_and_returns_a_reusable_slot() {
 #[test]
 fn a_reader_arriving_during_slot_return_waits_and_reads_the_returned_slot() {
     pooled_ordering(false);
+}
+
+fn retirement_fetch_ordering(fetch_fails: bool) {
+    use fs4::fs_std::FileExt;
+
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/remote-only"]);
+    fixture
+        .world
+        .commit_file(&worktree, "local.txt", "local\n", "feat: local work");
+    let root = run_root_of(&fixture.world, &token);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let elsewhere = fixture.world.clone_of(&fixture.origin, "elsewhere");
+    fixture
+        .world
+        .git(&elsewhere, &["checkout", "-b", "feature/remote-only"]);
+    fixture
+        .world
+        .commit_file(&elsewhere, "remote.txt", "remote\n", "feat: remote only");
+    fixture
+        .world
+        .git(&elsewhere, &["push", "origin", "feature/remote-only"]);
+
+    let fetch_lock = fixture.checkout.join(".git/onevcs-fetch.lock");
+    let fetching = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fetch_lock)
+        .unwrap();
+    FileExt::lock_exclusive(&fetching).unwrap();
+    let read_lock = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("onevcs-reads.lock");
+    let reads = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&read_lock)
+        .unwrap();
+    let resumed = fixture.world.path("resume");
+    std::fs::create_dir(&resumed).unwrap();
+    let mut resume = Entries::watching(&resumed);
+    let mut entries = Entries::watching(&fixture.world.path(""));
+    let shim = HeldGit::installed(&fixture);
+    let mut command = shim.command(&fixture, &fixture.checkout);
+    command
+        .args(["retire-finished", "--dry-run", "--json"])
+        .env("HOLD_READER", "1")
+        .env("HOLD_ARGS", "fetch --no-tags --refmap=")
+        .env("FAIL_HELD", if fetch_fails { "1" } else { "0" })
+        .env("READ_RESUME_LOCK", &read_lock)
+        .env("READ_RESUME_NOTICE", resumed.join("turn-notices"))
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", &fetch_lock)
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"));
+    let notice = fixture.world.path("turn-notices");
+    let resume_notice = resumed.join("turn-notices");
+    let pass = std::thread::spawn(move || {
+        let output = command.output().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(notice)
+            .unwrap()
+            .write_all(b"finished\n")
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(resume_notice)
+            .unwrap()
+            .write_all(b"finished\n")
+            .unwrap();
+        output
+    });
+    assert!(
+        entries.entered_or_finished(),
+        "the pass queued for its missing objects"
+    );
+    let released_before_queue = FileExt::try_lock_exclusive(&reads).unwrap();
+    if released_before_queue {
+        FileExt::unlock(&reads).unwrap();
+    }
+    FileExt::unlock(&fetching).unwrap();
+    shim.entered();
+    let released_during_fetch = FileExt::try_lock_exclusive(&reads).unwrap();
+    let before_resume = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
+    shim.release();
+    assert!(
+        resume.entered_or_finished(),
+        "the census queues to restore its read turn"
+    );
+    let while_queued = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
+    let still_waiting = !pass.is_finished();
+    if released_during_fetch {
+        FileExt::unlock(&reads).unwrap();
+    }
+    let output = pass.join().unwrap();
+    assert_eq!(
+        before_resume, while_queued,
+        "no further repository read before restoration"
+    );
+    assert!(
+        still_waiting,
+        "the pass cannot finish before regaining its turn"
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let branch = report["examined"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["branch"] == "feature/remote-only")
+        .unwrap();
+    assert_eq!(
+        branch["reason"],
+        if fetch_fails {
+            "unknown"
+        } else {
+            "unmerged-unique-commits"
+        },
+        "{branch}"
+    );
+    assert!(
+        released_before_queue,
+        "a waiting fetch must not retain the census read turn"
+    );
+    assert!(
+        released_during_fetch,
+        "nested Git execution must not regain the suspended turn"
+    );
+}
+
+#[test]
+fn a_retirement_fetch_releases_its_read_turn_before_queueing_for_objects() {
+    retirement_fetch_ordering(false);
+}
+
+#[test]
+fn a_failed_retirement_fetch_restores_its_read_turn_before_resuming() {
+    retirement_fetch_ordering(true);
 }

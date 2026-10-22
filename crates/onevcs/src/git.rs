@@ -2138,8 +2138,19 @@ pub const FETCH_LOCK: &str = "onevcs-fetch.lock";
 /// kept outside of. And it is dropped on every return: a fetch git failed, or whose
 /// process was killed, leaves the next one free to run.
 pub fn fetch(cwd: &Path, remote: &str) -> Result<()> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
+    fetching(cwd, || {
+        checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
+    })
+}
+
+/// Release read turns before queueing for a fetch, and release the fetch lock
+/// before regaining them. A census can need objects while another pass fetches.
+fn fetching<T>(cwd: &Path, fetch: impl FnOnce() -> Result<T>) -> Result<T> {
+    let path = common_dir(cwd)?.join(FETCH_LOCK);
+    crate::checkout_reads::mutating(|| {
+        let _turn = lock::exclusive_at(&path)?;
+        fetch()
+    })
 }
 
 /// The remote's default branch, refusing to guess when the answer is ambiguous.
@@ -4694,11 +4705,12 @@ pub fn delete_remote_branch(
 /// deleted — and one that will not is answered `false`, never an error, so the caller
 /// says what it could not restore.
 pub fn fetch_commit(cwd: &Path, remote: &str, commit: &str) -> Result<bool> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    let fetched = run(
-        &["fetch", "--no-tags", "--refmap=", remote, commit],
-        Some(cwd),
-    )?
+    let fetched = fetching(cwd, || {
+        run(
+            &["fetch", "--no-tags", "--refmap=", remote, commit],
+            Some(cwd),
+        )
+    })?
     .ok();
     Ok(fetched && has_commit(cwd, &Sha(commit.to_owned())))
 }
@@ -4709,17 +4721,18 @@ pub fn fetch_commit(cwd: &Path, remote: &str, commit: &str) -> Result<bool> {
 /// `--refmap=` is what keeps it from moving the remote-tracking ref too, which a fetch
 /// naming one branch otherwise updates on the side.
 pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
-    let _turn = lock::exclusive_at(&common_dir(cwd)?.join(FETCH_LOCK))?;
-    Ok(run(
-        &[
-            "fetch",
-            "--no-tags",
-            "--refmap=",
-            remote,
-            &format!("refs/heads/{branch}"),
-        ],
-        Some(cwd),
-    )?
+    Ok(fetching(cwd, || {
+        run(
+            &[
+                "fetch",
+                "--no-tags",
+                "--refmap=",
+                remote,
+                &format!("refs/heads/{branch}"),
+            ],
+            Some(cwd),
+        )
+    })?
     .ok())
 }
 
