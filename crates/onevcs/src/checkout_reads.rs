@@ -511,7 +511,9 @@ mod tests {
         }
 
         // A teardown that ends while other threads still read hands the identity back
-        // to other processes' readers, and still keeps their teardowns out.
+        // to other processes' readers, and still keeps their teardowns out — where
+        // the platform converts a held lock in place. Elsewhere it stays exclusive
+        // until the last of this process's readers leaves.
         let reader = identity(identity_name).unwrap();
         let (release, released) = mpsc::channel::<()>();
         let (entered, entering) = mpsc::channel();
@@ -528,9 +530,10 @@ mod tests {
         );
         release.send(()).unwrap();
         writer.join().unwrap();
-        assert!(
+        assert_eq!(
             elsewhere(Mode::Shared),
-            "readers elsewhere proceed beside ours"
+            cfg!(unix),
+            "readers elsewhere proceed beside ours where the hold converts in place"
         );
         assert!(
             !elsewhere(Mode::Exclusive),
@@ -668,13 +671,14 @@ mod tests {
         );
         assert!(lock::try_shared_at(&file).unwrap().is_some());
 
-        // The upgrade now succeeds, and hands the readers' hold back as it ends.
+        // The upgrade now succeeds, and hands the readers' hold back as it ends where
+        // the platform converts a held lock in place.
         let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
         writer.recv().unwrap().unwrap();
         assert!(lock::try_shared_at(&file).unwrap().is_none());
         release_writer.send(()).unwrap();
         writer_thread.join().unwrap();
-        assert!(lock::try_shared_at(&file).unwrap().is_some());
+        assert_eq!(lock::try_shared_at(&file).unwrap().is_some(), cfg!(unix));
         assert!(lock::try_exclusive_at(&file).unwrap().is_none());
 
         // A lease file that can no longer be opened refuses the upgrade and the
