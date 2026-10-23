@@ -36,6 +36,24 @@ pub struct Guard {
     file: File,
 }
 
+impl Guard {
+    /// Turn an exclusive hold into a shared one in place, never letting it go.
+    ///
+    /// Only where the platform converts a held lock without a gap another taker could
+    /// enter: Unix `flock`, where nothing can conflict with a shared lock while this
+    /// file description holds the exclusive one. Elsewhere the hold stays exclusive.
+    pub(crate) fn share(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(FileExt::try_lock_shared(&self.file), Ok(true))
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+}
+
 impl Drop for Guard {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
@@ -95,7 +113,7 @@ pub fn exclusive_at(path: &Path) -> Result<Guard> {
 }
 
 /// How a lock file is held: beside other shared holders, or alone.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
     Shared,
     Exclusive,
