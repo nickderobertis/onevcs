@@ -348,3 +348,11 @@ The operation/file inventory and historical failures above remain applicable.
 `just fmt-check` and `CARGO_TARGET_DIR=/tmp/onevcs-continuation-target just lint`
 both exited 0 on this merge. Final full-suite and judged-lint results are recorded
 in the dispatch response; no Windows execution or CI action is claimed here.
+
+The final judged-lint pass over the evidence note identified two independently
+optional reclamation guards in `import::source_of` and `workspace::continuation`.
+The continuation now owns the guard in each variant carrying a checkout copy;
+imports distinguish explicit sources from searched copies that own `Located`.
+This private type refactoring preserves the guarded read span and changes no
+public interface or serialized document. The concurrency and import journeys
+exercise it through the real CLI.

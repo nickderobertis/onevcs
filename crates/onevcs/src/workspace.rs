@@ -1311,9 +1311,9 @@ pub(crate) fn open_with(
     // checkout and run clone of the identity in front of every session anybody opens.
     // The copy a continuation found is held until this open has brought it into its
     // own clone: a sibling's open may otherwise reclaim the run clone it is read from.
-    let (continued, _copy) = match request.branch.is_some() {
+    let continued = match request.branch.is_some() {
         true => continuation(registry, &resolution, &execution, &branch, &base)?,
-        false => (None, None),
+        false => None,
     };
 
     let identity_root = identity_dir(&resolution.key)?;
@@ -2041,10 +2041,12 @@ impl Carried {
 ///
 /// One of these three and never "nowhere": a name nothing carries is not a
 /// continuation at all, and [`continuation`] answers `None` for it.
-#[derive(Debug, Clone)]
 enum Continued {
     /// A checkout of this identity holds the branch and origin does not.
-    Held(Carried),
+    Held {
+        copy: Carried,
+        _guard: crate::branch::Located,
+    },
     /// Origin holds it and no checkout of this identity does — a branch pushed from
     /// another host, or from a run root this one has since reclaimed.
     Pushed(Carried),
@@ -2053,6 +2055,8 @@ enum Continued {
     Both {
         /// The checkout's copy.
         held: Carried,
+        /// Holds the checkout copy against reclamation.
+        _guard: crate::branch::Located,
         /// Origin's.
         pushed: Carried,
     },
@@ -2090,7 +2094,7 @@ fn continuation(
     execution: &Path,
     branch: &Ref,
     base: &Ref,
-) -> Result<(Option<Continued>, Option<crate::branch::Located>)> {
+) -> Result<Option<Continued>> {
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let anywhere = checkouts_of(registry, resolution)?
         .into_iter()
@@ -2105,10 +2109,13 @@ fn continuation(
         )?),
         false => None,
     };
-    let held = located.as_ref().and_then(|located| {
-        git::tip(&located.checkout, &format!("refs/heads/{branch}")).map(|tip| Carried {
-            checkout: Some(located.checkout.clone()),
-            tip,
+    let held = located.and_then(|located| {
+        git::tip(&located.checkout, &format!("refs/heads/{branch}")).map(|tip| {
+            let copy = Carried {
+                checkout: Some(located.checkout.clone()),
+                tip,
+            };
+            (copy, located)
         })
     });
     let pushed = git::tip(execution, &format!("refs/remotes/origin/{branch}")).map(|tip| Carried {
@@ -2116,12 +2123,19 @@ fn continuation(
         tip,
     });
     let continued = match (held, pushed) {
-        (Some(held), Some(pushed)) => Some(Continued::Both { held, pushed }),
-        (Some(held), None) => Some(Continued::Held(held)),
+        (Some((held, guard)), Some(pushed)) => Some(Continued::Both {
+            held,
+            _guard: guard,
+            pushed,
+        }),
+        (Some((copy, guard)), None) => Some(Continued::Held {
+            copy,
+            _guard: guard,
+        }),
         (None, Some(pushed)) => Some(Continued::Pushed(pushed)),
         (None, None) => None,
     };
-    Ok((continued, located))
+    Ok(continued)
 }
 
 /// The copy a continued session opens at: the one that carries every other.
@@ -2146,11 +2160,11 @@ fn opened_at(
     continued: &Continued,
 ) -> Result<Carried> {
     match continued {
-        Continued::Held(only) | Continued::Pushed(only) => {
+        Continued::Held { copy: only, .. } | Continued::Pushed(only) => {
             only.bring_into(clone, branch)?;
             Ok(only.clone())
         }
-        Continued::Both { held, pushed } => {
+        Continued::Both { held, pushed, .. } => {
             held.bring_into(clone, branch)?;
             pushed.bring_into(clone, branch)?;
             if git::is_ancestor(clone, &pushed.tip, &held.tip)? {
