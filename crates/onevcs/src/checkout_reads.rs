@@ -68,19 +68,23 @@ enum File {
     /// A thread is taking the first hold.
     Acquiring,
     Held(Mode, lock::Guard),
-    /// A thread is turning the shared hold exclusive: the shared hold while it
-    /// waits on the intent lock, then nothing while it waits on other processes'
-    /// readers with the intent held.
-    Upgrading {
-        /// Given up once the intent is held, or by the last reader to leave before.
-        shared: Option<lock::Guard>,
-        /// Whether this process's readers are kept from other processes' teardowns:
-        /// by the shared hold, then by an intent taken while it still stood. Once
-        /// the hold lapses with the intent not yet held, a teardown elsewhere may be
-        /// granted the file, and no intent taken afterwards can say otherwise — so a
-        /// reader arriving then waits for the upgrade to settle.
-        covered: bool,
-    },
+    /// A thread is turning the shared hold exclusive.
+    Upgrading(Upgrade),
+}
+
+/// How far an upgrade has come, and so whether it keeps this process's readers from
+/// other processes' teardowns — which is whether another reader of it may enter.
+enum Upgrade {
+    /// The shared hold stands while the intent lock is awaited: readers are covered.
+    Sharing(lock::Guard),
+    /// The intent, taken while the shared hold still stood, replaces it while other
+    /// processes' readers are awaited: readers are covered.
+    Intended,
+    /// The last reader left with the intent not yet taken, and the shared hold went
+    /// with it. A teardown elsewhere may have been granted the file since, and no
+    /// intent taken afterwards can say otherwise, so a reader arriving waits for the
+    /// upgrade to settle.
+    Lapsed,
 }
 
 impl Holders {
@@ -158,16 +162,14 @@ impl Process {
             File::Held(_, guard) => guard,
             _ => unreachable!("only a shared hold is upgraded"),
         };
-        holders.file = File::Upgrading {
-            shared: Some(shared),
-            covered: true,
-        };
+        holders.file = File::Upgrading(Upgrade::Sharing(shared));
         drop(holders);
         let intent = lock::exclusive_at(&files.intent);
         let mut holders = self.holders();
         // The shared hold, unless every reader left while the intent was awaited.
-        let (shared, covered) = match std::mem::take(&mut holders.file) {
-            File::Upgrading { shared, covered } => (shared, covered),
+        let shared = match std::mem::take(&mut holders.file) {
+            File::Upgrading(Upgrade::Sharing(shared)) => Some(shared),
+            File::Upgrading(Upgrade::Lapsed) => None,
             _ => unreachable!("an upgrade owns the file until it settles it"),
         };
         let intent = match intent {
@@ -178,11 +180,11 @@ impl Process {
                 return Err(error);
             }
         };
+        holders.file = File::Upgrading(match shared {
+            Some(_) => Upgrade::Intended,
+            None => Upgrade::Lapsed,
+        });
         drop(shared);
-        holders.file = File::Upgrading {
-            shared: None,
-            covered,
-        };
         drop(holders);
         let taken = lock::exclusive_at(&files.lease);
         let mut holders = self.holders();
@@ -247,7 +249,8 @@ impl Hold {
             let covered = match &holders.file {
                 File::Held(Mode::Exclusive, _) => true,
                 File::Held(Mode::Shared, _) => mode == Mode::Shared,
-                File::Upgrading { covered, .. } => mode == Mode::Shared && *covered,
+                File::Upgrading(Upgrade::Sharing(_) | Upgrade::Intended) => mode == Mode::Shared,
+                File::Upgrading(Upgrade::Lapsed) => false,
                 File::Free | File::Acquiring => false,
             };
             if covered {
@@ -258,7 +261,7 @@ impl Hold {
             holders = match holders.file {
                 File::Free => process.acquire(holders, &files, mode)?,
                 File::Held(..) => process.upgrade(holders, &files)?,
-                File::Acquiring | File::Upgrading { .. } => process
+                File::Acquiring | File::Upgrading(_) => process
                     .settled
                     .wait(holders)
                     .unwrap_or_else(PoisonError::into_inner),
@@ -278,14 +281,11 @@ impl Drop for Hold {
             match &mut holders.file {
                 File::Held(..) => holders.file = File::Free,
                 // An upgrade still waiting on the intent lock has nobody left to
-                // keep the shared hold for, and its intent will no longer cover the
-                // next reader.
-                File::Upgrading { shared, covered } => {
-                    if shared.take().is_some() {
-                        *covered = false;
-                    }
-                }
-                File::Free | File::Acquiring => {}
+                // keep the shared hold for, and its intent will cover no next reader.
+                File::Upgrading(upgrade @ Upgrade::Sharing(_)) => *upgrade = Upgrade::Lapsed,
+                File::Upgrading(Upgrade::Intended | Upgrade::Lapsed)
+                | File::Free
+                | File::Acquiring => {}
             }
         } else if self.mode == Mode::Exclusive && holders.writers == 0 {
             // Other processes' readers proceed beside this process's again.
