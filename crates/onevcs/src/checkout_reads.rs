@@ -427,7 +427,8 @@ pub(crate) struct Closing {
 /// Wait before taking the identity turn: a reader can retain its checkout lease
 /// while yielding the identity turn to fetch objects, and must be able to resume.
 pub(crate) fn closing(path: &Path) -> Result<Closing> {
-    Ok(take_closing(path, true, true)?.expect("a blocking lease is acquired or returns an error"))
+    Ok(take_closing(path, true, Holder::Teardown)?
+        .expect("a blocking lease is acquired or returns an error"))
 }
 
 /// Callers already holding an exclusive identity turn must not wait for a
@@ -438,7 +439,7 @@ pub(crate) fn closing(path: &Path) -> Result<Closing> {
 /// again by a thread already probing the checkout, it marks the held lease as a
 /// teardown from then on.
 pub(crate) fn try_closing(path: &Path) -> Result<Option<Closing>> {
-    take_closing(path, false, true)
+    take_closing(path, false, Holder::Teardown)
 }
 
 /// [`try_closing`] for a caller that only probes or tidies the checkout and will not
@@ -447,10 +448,26 @@ pub(crate) fn try_closing(path: &Path) -> Result<Option<Closing>> {
 /// session read meeting it waits for it to end rather than answering that the session
 /// is being torn down.
 pub(crate) fn try_probing(path: &Path) -> Result<Option<Closing>> {
-    take_closing(path, false, false)
+    take_closing(path, false, Holder::Probe)
 }
 
-fn take_closing(path: &Path, wait: bool, removal: bool) -> Result<Option<Closing>> {
+/// What a holder of a checkout's closing lease is doing there, which is what a
+/// session read meeting it asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Holder {
+    /// Probing or tidying a checkout it will not remove: a read waits it out.
+    Probe,
+    /// Removing the checkout, or closing the session reading it: a read is refused.
+    Teardown,
+}
+
+/// Every closing lease this process took on a managed checkout, with the holder it
+/// was taken as, in order — so a test driving a real retirement, reclamation or pool
+/// placement can say which each path is.
+#[cfg(test)]
+pub(crate) static TAKEN: Mutex<Vec<(PathBuf, Holder)>> = Mutex::new(Vec::new());
+
+fn take_closing(path: &Path, wait: bool, holder: Holder) -> Result<Option<Closing>> {
     let Some(path) = closing_path(path)? else {
         return Ok(Some(Closing {
             _guard: None,
@@ -482,10 +499,15 @@ fn take_closing(path: &Path, wait: bool, removal: bool) -> Result<Option<Closing
     let Some(guard) = guard else {
         return Ok(None);
     };
-    let removing = match removal {
-        true => Some(mark_removal(&path)?),
-        false => None,
+    let removing = match holder {
+        Holder::Teardown => Some(mark_removal(&path)?),
+        Holder::Probe => None,
     };
+    #[cfg(test)]
+    TAKEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((path, holder));
     Ok(Some(Closing {
         _guard: Some(guard),
         _removing: removing,

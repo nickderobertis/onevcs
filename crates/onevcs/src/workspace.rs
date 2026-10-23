@@ -3591,7 +3591,7 @@ mod reclaim_race {
         }
     }
 
-    fn git(cwd: &Path, args: &[&str]) {
+    pub(super) fn git(cwd: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -3911,6 +3911,255 @@ mod probe_reads {
             .expect_err("a probe turned removal still admitted a read")
             .to_string()
             .contains("its checkout is being torn down"));
+    }
+
+    /// The other readers of a session's checkout: a repository read run in it, and a
+    /// pin taken under a teardown turn, whose lease is not one the turn keeps.
+    #[test]
+    fn a_repository_read_and_a_pin_wait_out_a_probe_and_refuse_a_teardown() {
+        let _host = host();
+        bounded();
+        let session = opened();
+        let record = super::load(&session.token.0).unwrap();
+        let read = || crate::git::run(&["rev-parse", "HEAD"], Some(&record.worktree));
+
+        let (release, holder) = held_on_a_thread(record.clone.clone(), checkout_reads::try_probing);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            release.send(()).unwrap();
+        });
+        let asked = Instant::now();
+        let answer = read();
+        let waited = asked.elapsed();
+        releaser.join().unwrap();
+        holder.join().unwrap();
+        assert_eq!(
+            answer
+                .expect("a probed checkout is read once the probe ends")
+                .status,
+            0
+        );
+        assert!(waited >= HELD / 2, "read inside a probe ({waited:?})");
+
+        let (release, holder) = held_on_a_thread(record.clone.clone(), checkout_reads::try_closing);
+        let refused = read().expect_err("a repository read entered a checkout being torn down");
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(refused.to_string().contains("being torn down"), "{refused}");
+
+        let turn = checkout_reads::teardown(&record.identity).unwrap();
+        let (release, holder) = held_on_a_thread(record.clone.clone(), checkout_reads::try_probing);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            release.send(()).unwrap();
+        });
+        let asked = Instant::now();
+        let pinned = checkout_reads::pin(&record.clone);
+        let waited = asked.elapsed();
+        releaser.join().unwrap();
+        holder.join().unwrap();
+        let pinned = pinned.unwrap_or_else(|refused| panic!("a probe refused a pin: {refused}"));
+        assert!(waited >= HELD / 2, "pinned inside a probe ({waited:?})");
+        // The pin keeps the checkout from a teardown after the turn is gone.
+        drop(turn);
+        assert!(checkout_reads::try_closing(&record.clone)
+            .unwrap()
+            .is_none());
+        drop(pinned);
+
+        let turn = checkout_reads::teardown(&record.identity).unwrap();
+        let (release, holder) = held_on_a_thread(record.clone.clone(), checkout_reads::try_closing);
+        let refused = checkout_reads::pin(&record.clone).err();
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        drop(turn);
+        assert!(
+            refused.is_some_and(|refused| refused.to_string().contains("being torn down")),
+            "a pin entered a checkout being torn down"
+        );
+    }
+
+    /// A probe that outlasts the lock bound fails the read naming the bound, rather
+    /// than waiting for ever or answering that the session is torn down; the next read
+    /// after it ends is answered.
+    #[test]
+    fn a_read_outlasted_by_a_probe_fails_at_the_lock_bound_and_the_next_one_is_answered() {
+        let _host = host();
+        let session = opened();
+        let clone = super::load(&session.token.0).unwrap().clone;
+        std::env::set_var(crate::lock::TIMEOUT_ENV, "1");
+        let (release, holder) = held_on_a_thread(clone, checkout_reads::try_probing);
+        let refused = crate::session(&Providers::real(), &session.token)
+            .expect_err("a read outwaited the lock bound");
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        let said = refused.to_string();
+        assert!(
+            said.contains("timed out after 1s waiting for a probe")
+                && said.contains(crate::lock::TIMEOUT_ENV)
+                && !said.contains("being torn down"),
+            "{said}"
+        );
+        let read = crate::session(&Providers::real(), &session.token).unwrap();
+        assert_eq!(read.lifecycle, Lifecycle::Open);
+    }
+
+    fn taken_on(clone: &std::path::Path) -> Vec<checkout_reads::Holder> {
+        let lease = checkout_reads::closing_path(clone).unwrap().unwrap();
+        checkout_reads::TAKEN
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| *path == lease)
+            .map(|(_, holder)| *holder)
+            .collect()
+    }
+
+    fn forget_taken() {
+        checkout_reads::TAKEN.lock().unwrap().clear();
+    }
+
+    fn open_on(branch: Option<&str>, pool: u32) -> crate::Session {
+        crate::Git
+            .open_session(crate::SessionRequest {
+                repo: "project".to_owned(),
+                branch: branch.map(str::to_owned),
+                branch_name: None,
+                branch_prefix: None,
+                base: None,
+                execution_checkout: None,
+                pool: Some(pool),
+                overflow: None,
+                labels: Default::default(),
+                refuse_conflicts: false,
+                caller_merges_base: false,
+            })
+            .expect("a session opens")
+    }
+
+    fn cli(args: &[&str]) -> u8 {
+        use clap::Parser;
+        let cli =
+            crate::cli::Cli::try_parse_from(std::iter::once("onevcs").chain(args.iter().copied()))
+                .expect("the arguments parse");
+        crate::run_with(&cli, Providers::real())
+    }
+
+    /// A retirement deleting a landed branch's copy out of a slot's clone, and
+    /// returning that slot, probes it; neither tears it down.
+    #[test]
+    fn retirement_probes_the_slot_it_deletes_a_copy_from_and_returns() {
+        let host = host();
+        bounded();
+        let checkout = host.path().canonicalize().unwrap().join("project");
+        let session = open_on(Some("feature/done"), 1);
+        std::fs::write(session.worktree.join("done.txt"), "done\n").unwrap();
+        super::reclaim_race::git(&session.worktree, &["add", "done.txt"]);
+        super::reclaim_race::git(&session.worktree, &["commit", "-q", "-m", "feat: done"]);
+        let slot_clone = super::load(&session.token.0).unwrap().clone;
+        crate::Git.close_session(&session.token).unwrap();
+        assert_eq!(
+            cli(&[
+                "publish-branch",
+                "feature/done",
+                "--repo",
+                &checkout.to_string_lossy()
+            ]),
+            0
+        );
+        // A copy in the slot's clone that no session record names, the way a forgotten
+        // record leaves one (as `tests/e2e/retire.rs` arranges it).
+        super::reclaim_race::git(
+            &slot_clone,
+            &[
+                "fetch",
+                "-q",
+                &checkout.to_string_lossy(),
+                "feature/done:feature/done",
+            ],
+        );
+        forget_taken();
+        assert_eq!(cli(&["retire", "feature/done", "--repo", "project"]), 0);
+        assert!(
+            !crate::git::branch_exists(&slot_clone, "feature/done"),
+            "the premise: the slot's copy was deleted"
+        );
+        let taken = taken_on(&slot_clone);
+        assert!(!taken.is_empty(), "the slot's clone was not leased at all");
+        assert!(
+            taken
+                .iter()
+                .all(|holder| *holder == checkout_reads::Holder::Probe),
+            "retirement tore down a slot it only deletes a copy from and returns: {taken:?}"
+        );
+    }
+
+    /// Reclamation probes a run root it has not yet found abandoned, and marks the
+    /// teardown only once it removes it.
+    #[test]
+    fn reclamation_probes_a_run_root_and_tears_it_down_only_to_remove_it() {
+        let _host = host();
+        bounded();
+        let left = open_on(None, 0);
+        let record = super::load(&left.token.0).unwrap();
+        crate::Git.close_session(&left.token).unwrap();
+        assert!(
+            record.run_root.is_dir(),
+            "the premise: a closed session's run root"
+        );
+        forget_taken();
+        // The next open reclaims what the last one left.
+        let _next = open_on(None, 0);
+        assert!(
+            !record.run_root.exists(),
+            "the premise: the run root was reclaimed"
+        );
+        assert_eq!(
+            taken_on(&record.clone),
+            [
+                checkout_reads::Holder::Probe,
+                checkout_reads::Holder::Teardown
+            ]
+        );
+    }
+
+    /// A broken slot is probed while it is examined, and torn down only where part of
+    /// it is removed.
+    #[test]
+    fn a_broken_slot_is_probed_and_torn_down_only_where_part_of_it_is_removed() {
+        let _host = host();
+        bounded();
+        // The host's own pool, so the slot is kept and rebuilt rather than shed.
+        std::fs::write(
+            crate::home::root().unwrap().join("workspaces.yml"),
+            "version: 1\ndefault: {pool: 1}\n",
+        )
+        .unwrap();
+        let first = open_on(None, 1);
+        let clone = super::load(&first.token.0).unwrap().clone;
+        let slot = clone.parent().unwrap().to_path_buf();
+        crate::Git.close_session(&first.token).unwrap();
+
+        // An unreadable record: rewritten beside the clone and worktree, both kept.
+        std::fs::write(slot.join("slot.json"), "not a record").unwrap();
+        forget_taken();
+        let second = open_on(None, 1);
+        assert_eq!(super::load(&second.token.0).unwrap().run_root, slot);
+        assert_eq!(taken_on(&clone), [checkout_reads::Holder::Probe]);
+        crate::Git.close_session(&second.token).unwrap();
+
+        // A worktree that is not a repository: removed and cut again.
+        std::fs::remove_file(slot.join("worktree").join(".git")).unwrap();
+        forget_taken();
+        let third = open_on(None, 1);
+        assert_eq!(super::load(&third.token.0).unwrap().run_root, slot);
+        assert_eq!(
+            taken_on(&clone),
+            [
+                checkout_reads::Holder::Probe,
+                checkout_reads::Holder::Teardown
+            ]
+        );
     }
 
     /// A probe holds the checkout while a reader and a real close both queue behind
