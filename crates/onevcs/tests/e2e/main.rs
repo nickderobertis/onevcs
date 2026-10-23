@@ -342,3 +342,7 @@ mod sweep;
 mod verdicts;
 #[cfg(unix)]
 mod world;
+
+// Linux loader interposition observes the real lock open without timing.
+#[cfg(target_os = "linux")]
+mod checkout_reads;

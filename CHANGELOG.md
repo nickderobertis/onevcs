@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.6](https://github.com/nickderobertis/onevcs/compare/v0.56.5...v0.56.6) - 2026-10-22
+
+### Fixed
+
+- *(session)* keep every multi-step session read whole against a concurrent close ([#519](https://github.com/nickderobertis/onevcs/pull/519))
+
+## [0.56.5](https://github.com/nickderobertis/onevcs/compare/v0.56.4...v0.56.5) - 2026-10-22
+
+### Fixed
+
+- *(session)* close a session safely while onevcs's own reads are inside its clone ([#517](https://github.com/nickderobertis/onevcs/pull/517))
+
+## [0.56.4](https://github.com/nickderobertis/onevcs/compare/v0.56.3...v0.56.4) - 2026-10-21
+
+### Added
+
+- *(events)* carry each check's start and finish time on change-check ([#516](https://github.com/nickderobertis/onevcs/pull/516))
+- *(landing)* answer several branches' landing status over one repository handle ([#497](https://github.com/nickderobertis/onevcs/pull/497))
+
 ## [0.56.3](https://github.com/nickderobertis/onevcs/compare/v0.56.2...v0.56.3) - 2026-10-19
 
 ### Fixed

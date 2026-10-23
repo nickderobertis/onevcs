@@ -2364,6 +2364,11 @@ report, so nothing new is written to a stream.
 
 Event kinds added: none.
 
+**oneharness history is retained.** Run journals point into oneharness's history
+store. `onevcs` never removes anything under that store: sweeps, reclamation, and
+worktree reaping included. Its files remain until an explicit
+`oneharness history clear --yes`.
+
 **`onevcs sweep` reports in a machine-readable form, and every family it names is
 swept or owned.** The verb takes `--format text|json`, defaulting to `text`, so every
 caller that says nothing sees what it saw. Under `json` it writes **one JSON object**
@@ -2676,6 +2681,34 @@ Event kinds added: none.
 One existing kind gains fields: `session-closed` gains, on a close taken from the landing
 record, `landed` (the landing commit), `unreadable_clone` (what git said) and the existing
 `retained` naming the clone left in place.
+
+### Session teardown waits for repository readers
+
+Session teardown excludes onevcs's bounded read-only repository reads across an
+identity's managed checkouts. Read-only reads share their turns with each other;
+a close waits for every admitted read before asking which processes occupy its
+run root. One turn covers the read's session records and git commands, including
+a change-request read's refresh of remote refs, so teardown cannot enter between
+its steps. Each admitted checkout retains a shared per-checkout lease even when
+the read yields its identity turn to fetch objects. Close waits for that lease
+before taking its identity turn. Other removers already holding an identity turn
+keep a checkout whose reader has yielded, so that reader can resume. A close
+retains a per-checkout lease while yielding its identity turn for repository
+hooks. From the moment a close holds that lease, every read treats the closing
+session as absent: one addressed to it answers that it is being torn down,
+naming it, and none starts a process in its clone or worktree. Reads admitted
+during the hook yield, including a hook's own `status`, traverse every other
+checkout. A refused or failed close releases that lease, and process death
+releases it in the operating system, so a lease file a dead closer left behind
+is stale and hides nothing; neither outcome hides a session from subsequent
+reads. No environment variable or flag changes any of this. A
+read arriving after teardown either reads the remaining checkouts or answers
+that the session it names no longer exists, naming that session, without
+starting a child in a removed directory. A record removed after a listing
+enumerated it contributes nothing to that listing; unreadable or invalid records
+still refuse the read. Managed-clone reclamation, retirement and pool removal
+use the same exclusion. Other processes working inside the run root still refuse
+closure with the existing occupancy diagnostic.
 
 ### A session record carries the labels its opener stamped, and the listings filter on them
 
@@ -3955,7 +3988,26 @@ impl Check { pub fn state(&self) -> CheckState; }
 // pending: not yet settled · failed: every other settled conclusion
 ```
 
-It surfaces in three places. The `change-check` event's payload gains `state` beside the
+The `change-check` payload carries `name`, `required`, `status`, `from_status`,
+`conclusion`, and `state`, retaining their existing names, types, and meanings. It also
+carries `started_at` and `completed_at`, each a string (RFC 3339, UTC) or `null`:
+`started_at` is when the host says the check started, or `null` while queued or when
+the host reports no start; `completed_at` is when the host says it completed, or
+`null` until it has or when the host cannot report it. Hosts that cannot say answer
+`null` independently for each field. A change in `completed_at` alone emits no extra
+record beyond the state changes the watch already reports. These additive payload
+fields retain the event envelope's `v: 1`.
+
+The watch journey holds its completed payload and current fixture to this example:
+
+<!-- change-check-payload -->
+```json
+{"name":"gate","required":true,"status":"completed","from_status":"in_progress",
+ "conclusion":"success","state":"passed","started_at":"2026-09-30T12:01:00Z",
+ "completed_at":"2026-09-30T12:02:00Z"}
+```
+
+It surfaces in three places. The `change-check` event's payload carries `state` beside the
 host's raw `status` and `conclusion`. `checks-settled`, above. And `onevcs status` — the
 read `just work-status` renders — shows each check's state, in its human rendering and in
 its `--json`, whose report version is **10**: every check carries `state`, and

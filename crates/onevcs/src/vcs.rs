@@ -166,7 +166,7 @@ impl Vcs for Git {
     }
 
     fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
-        let record = workspace::load(&token.0)?;
+        let (_reads, record) = crate::checkout_reads::session(&token.0)?;
         let trailers = provenance::configured()?;
         // Where the branch is now. A session's clone holds it for the session's
         // life, and a run root's clone keeps holding it after the close — but a slot's
@@ -733,6 +733,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         narrowed.as_ref().map(|only| &only.checkouts),
     )?;
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for repo in workspace::checkouts_among(registry, &resolution, sessions) {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the

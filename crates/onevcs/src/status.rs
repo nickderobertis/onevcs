@@ -1459,6 +1459,7 @@ fn landing_among(
         asking.attesting,
         &mut unreadable,
     )?;
+    let _reads = crate::checkout_reads::identity(&work.identity)?;
     let Ground {
         resolution,
         trailers,
@@ -1574,6 +1575,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     )?;
 
     let resolution = store::resolve(registry, &work.identity)?;
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let (file, source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     let normalized = store::normalize(&resolution.identity.origin);
@@ -2204,6 +2206,7 @@ fn holders_of(
     sessions: &[workspace::Record],
 ) -> Result<Vec<Holder>> {
     let mut holders = Vec::new();
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for path in workspace::checkouts_of(registry, resolution)? {
         if !git::is_repo(&path) || !git::branch_exists(&path, branch) {
             continue;
@@ -4597,6 +4600,7 @@ fn by_branch(registry: &Registry, branch: &Ref, within: Option<&str>) -> Result<
     let mut found = Vec::new();
     for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
+        let _reads = crate::checkout_reads::identity(&resolution.key)?;
         for path in workspace::checkouts_of(registry, &resolution)? {
             if git::is_repo(&path) && git::branch_exists(&path, branch) {
                 found.push(Work {
@@ -4629,6 +4633,7 @@ fn by_commit(
     for identity in identities(registry, within) {
         let resolution = store::resolve(registry, &identity)?;
         let root = git::default_branch(&resolution.publication, "origin").ok();
+        let _reads = crate::checkout_reads::identity(&resolution.key)?;
         for path in workspace::checkouts_of(registry, &resolution)? {
             if !git::is_repo(&path) || !git::has_commit(&path, &crate::host::Sha(commit.to_owned()))
             {

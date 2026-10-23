@@ -443,11 +443,13 @@ mod unix {
         // Raw validation precedes narrowing, including unrelated records. Each is
         // its own file, so they are read side by side, and the first refusal in
         // listing order is the one reported, as reading them in turn would.
-        let read = crate::vcs::concurrently(&changed, |(token, _)| workspace::load(token));
+        let read = crate::vcs::concurrently(&changed, |(token, _)| workspace::existing(token));
         let moved = !changed.is_empty() || fresh.len() != remembered;
         let mut loaded = HashMap::new();
         for ((token, stamp), record) in changed.into_iter().zip(read) {
-            let record = record?;
+            let Some(record) = record? else {
+                continue;
+            };
             fresh.push(tables.hint(stamp, &record));
             loaded.insert(token.to_string(), record);
         }
@@ -491,21 +493,24 @@ mod unix {
             .copied()
             .filter(|token| !loaded.contains_key(*token))
             .collect();
-        let mut reread: BTreeMap<&str, Result<Record>> = unread
+        let mut reread: BTreeMap<&str, Result<Option<Record>>> = unread
             .iter()
             .copied()
             .zip(crate::vcs::concurrently(&unread, |token| {
-                workspace::load(token)
+                workspace::existing(token)
             }))
             .collect();
         let mut records = Vec::with_capacity(wanted.len());
         for token in &wanted {
-            records.push(match loaded.remove(*token) {
-                Some(record) => record,
+            let record = match loaded.remove(*token) {
+                Some(record) => Some(record),
                 None => reread
                     .remove(token)
                     .expect("every unread wanted record was read")?,
-            });
+            };
+            if let Some(record) = record {
+                records.push(record);
+            }
         }
         if moved {
             store(&path, &directory, &tables, &fresh);
