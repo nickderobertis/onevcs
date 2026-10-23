@@ -876,9 +876,12 @@ fetch hands its checkout's turn back when git fails or is killed — which only 
 process outliving the fetch, as a linking consumer's does, can see (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`), and
-threads of one process taking an identity's read turns while a sibling holds one
-(`checkout_reads.rs`) — the turns are private and no verb holds one across a wait on
-another thread, so only the lease API itself can arrange that interleaving —
+threads of one process taking an identity's read turns while a sibling holds one,
+and a teardown in another process arriving while one process's upgrade is waiting
+(`checkout_reads.rs`) — the turns are private, no verb holds one across a wait on
+another thread, and the second needs a process stopped mid-upgrade, so only the
+lease API itself, re-running its own test binary as the other processes, can arrange
+either —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
 driven into writing one. Healing a torn record sits beside it on the same call, and
 `lifecycle.rs` also drives that through `session close`. A stopped push's wait for its

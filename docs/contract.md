@@ -2719,7 +2719,13 @@ the identity's turn on behalf of all its threads, in the strongest mode any of t
 holds: while one of its threads tears down, other processes' readers and teardowns
 wait for it; once none does, other processes' readers proceed beside its remaining
 readers again (on Unix, where the hold converts in place; elsewhere once its last
-thread leaves). A teardown in one thread therefore does not wait for a sibling
+thread leaves). Turning a shared hold exclusive cannot be done in place, so while
+an upgrade waits for other processes' readers the process holds the identity's
+upgrade intent lock instead, taken before the shared hold is given up; a teardown
+in another process that is granted the read lease while that intent is held hands
+the lease back and waits for the upgrade, so it never enters while the upgrading
+process's readers are inside. A process running onevcs 0.56.6 does not honour the
+intent lock, and its teardown can enter during another process's upgrade wait. A teardown in one thread therefore does not wait for a sibling
 thread's read; what keeps it out of a checkout that read has admitted is the
 per-checkout lease, which close waits for and every other remover passes over,
 exactly as between processes.

@@ -13,6 +13,13 @@
 //! back to shared once no teardown of this process remains. What keeps a teardown
 //! from removing a checkout a sibling thread is inside is that checkout's own lease
 //! (`available`, `closing`), which every thread opens for itself.
+//!
+//! `flock` cannot turn a shared lock into an exclusive one without letting it go,
+//! so an upgrade gives up the process's shared hold while it waits — and its readers
+//! must stay excluded from other processes' teardowns across that wait. The upgrade
+//! therefore takes the identity's intent lock first, and every exclusive take
+//! checks it once granted: one made while an upgrade holds it hands the lease back
+//! and waits for that upgrade to finish. Readers never consult it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -47,6 +54,10 @@ struct Holders {
     lock: Option<(Mode, lock::Guard)>,
     /// A thread is waiting on other processes for the file, outside the mutex.
     acquiring: bool,
+    /// A thread is turning the shared hold into an exclusive one, outside the mutex.
+    /// This process's readers are kept from other processes' teardowns throughout,
+    /// so another reader of it enters at once.
+    upgrading: bool,
     readers: usize,
     writers: usize,
 }
@@ -81,67 +92,128 @@ impl Process {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Wait on other processes alone for the file in `mode`, with the mutex released
-    /// so that sibling threads can still leave theirs meanwhile.
-    fn wait_for<'a>(
+    /// Take the file in `mode` when this process holds nothing, waiting on other
+    /// processes alone with the mutex released so sibling threads can leave theirs.
+    fn acquire<'a>(
         &'a self,
         mut holders: MutexGuard<'a, Holders>,
-        path: &Path,
+        files: &Files,
         mode: Mode,
-    ) -> (MutexGuard<'a, Holders>, Result<()>) {
+    ) -> Result<MutexGuard<'a, Holders>> {
         holders.acquiring = true;
         drop(holders);
         let taken = match mode {
-            Mode::Exclusive => lock::exclusive_at(path),
-            Mode::Shared => lock::shared_at(path),
+            Mode::Exclusive => files.exclusive(),
+            Mode::Shared => lock::shared_at(&files.lease),
         };
         let mut holders = self.holders();
         holders.acquiring = false;
         self.settled.notify_all();
-        match taken {
-            Ok(guard) => {
-                holders.lock = Some((mode, guard));
-                (holders, Ok(()))
+        holders.lock = Some((mode, taken?));
+        Ok(holders)
+    }
+
+    /// Turn the shared hold exclusive. The intent lock is taken while the shared hold
+    /// still stands, and kept until the exclusive one is granted or the shared one is
+    /// back, so no other process's teardown can enter while this one's readers are
+    /// inside.
+    fn upgrade<'a>(
+        &'a self,
+        mut holders: MutexGuard<'a, Holders>,
+        files: &Files,
+    ) -> Result<MutexGuard<'a, Holders>> {
+        holders.upgrading = true;
+        drop(holders);
+        let intent = lock::exclusive_at(&files.intent);
+        let mut holders = self.holders();
+        let intent = match intent {
+            Ok(intent) => intent,
+            Err(error) => {
+                holders.upgrading = false;
+                self.settled.notify_all();
+                return Err(error);
             }
-            Err(error) => (holders, Err(error)),
+        };
+        holders.lock = None;
+        drop(holders);
+        let taken = lock::exclusive_at(&files.lease);
+        let mut holders = self.holders();
+        let answer = match taken {
+            Ok(guard) => {
+                holders.lock = Some((Mode::Exclusive, guard));
+                Ok(())
+            }
+            Err(error) => {
+                // This process's readers are still inside: take their hold back
+                // before the intent goes.
+                if holders.readers > 0 {
+                    drop(holders);
+                    let restored = lock::shared_at(&files.lease);
+                    holders = self.holders();
+                    if let (Ok(guard), true) = (restored, holders.readers > 0) {
+                        holders.lock = Some((Mode::Shared, guard));
+                    }
+                }
+                Err(error)
+            }
+        };
+        holders.upgrading = false;
+        self.settled.notify_all();
+        drop(intent);
+        answer.map(|()| holders)
+    }
+}
+
+/// An identity's lease file, and the intent lock an upgrade holds across its wait.
+struct Files {
+    lease: PathBuf,
+    intent: PathBuf,
+}
+
+impl Files {
+    /// An exclusive take that is never kept while another process's upgrade is in
+    /// flight: that process gave up its shared hold under the intent lock with its
+    /// readers still inside.
+    fn exclusive(&self) -> Result<lock::Guard> {
+        loop {
+            let guard = lock::exclusive_at(&self.lease)?;
+            if lock::try_exclusive_at(&self.intent)?.is_some() {
+                return Ok(guard);
+            }
+            drop(guard);
+            drop(lock::exclusive_at(&self.intent)?);
         }
     }
 }
 
 impl Hold {
     fn take(root: &Path, mode: Mode) -> Result<Hold> {
-        let path = root.join("onevcs-reads.lock");
+        let files = Files {
+            lease: root.join("onevcs-reads.lock"),
+            intent: root.join("onevcs-reads-upgrade.lock"),
+        };
         let process = Process::of(root);
         let mut holders = process.holders();
         loop {
-            while holders.acquiring {
-                holders = process
-                    .settled
-                    .wait(holders)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-            let covered = match &holders.lock {
-                Some((held, _)) => *held == Mode::Exclusive || mode == Mode::Shared,
-                None => false,
-            };
+            let held = holders.lock.as_ref().map(|(held, _)| *held);
+            let covered = held == Some(Mode::Exclusive)
+                || (mode == Mode::Shared && (held == Some(Mode::Shared) || holders.upgrading));
             if covered {
                 holders.enter(mode);
                 drop(holders);
                 return Ok(Hold { process, mode });
             }
-            // An upgrade cannot be made in place without waiting on this process's
-            // own readers, so the shared hold is given up while other processes are
-            // waited for. The readers keep their checkouts' leases across that gap.
-            holders.lock = None;
-            let (back, taken) = process.wait_for(holders, &path, mode);
-            holders = back;
-            if let Err(error) = taken {
-                // This process's readers are still inside: take their hold back.
-                if holders.readers > 0 && holders.lock.is_none() && !holders.acquiring {
-                    drop(process.wait_for(holders, &path, Mode::Shared));
-                }
-                return Err(error);
+            if holders.acquiring || holders.upgrading {
+                holders = process
+                    .settled
+                    .wait(holders)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
             }
+            holders = match held {
+                None => process.acquire(holders, &files, mode)?,
+                Some(_) => process.upgrade(holders, &files)?,
+            };
         }
     }
 }
@@ -439,7 +511,7 @@ mod tests {
     /// Each step is one thread taking a lease on the identity while the thread before
     /// it still holds its own and waits for that step to finish — the shape an
     /// embedder dispatching several sessions of one repository from one process
-    /// produces. Another process is stood in for by a separate open of the lease file,
+    /// produces. A teardown after a read is an upgrade, through the intent lock. Another process is stood in for by a separate open of the lease file,
     /// which `flock` treats exactly as it treats another process's.
     #[test]
     fn threads_of_one_process_holding_leases_never_wait_on_one_another() {
@@ -704,6 +776,246 @@ mod tests {
         second_thread.join().unwrap();
         drop(reader);
         assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    const PROCESS_ROLE: &str = "ONEVCS_TEST_LEASE_ROLE";
+    const PROCESS_IDENTITY: &str = "github.com/owner/two-processes";
+
+    /// One of the two processes below: this test binary run again, taking leases
+    /// through the real API on the commands its parent writes to its stdin and
+    /// printing `lease:<event>` as each lease is taken.
+    #[cfg(unix)]
+    fn lease_process(role: &str) {
+        use std::io::BufRead;
+        let say = |event: &str| println!("lease:{event}");
+        let mut reader = None;
+        if role == "idle" {
+            say("ready");
+        } else {
+            reader = Some(identity(PROCESS_IDENTITY).unwrap());
+            say("reader");
+        }
+        let mut writer = None;
+        for command in std::io::stdin().lock().lines() {
+            match command.unwrap().as_str() {
+                "teardown" => {
+                    let (release, released) = std::sync::mpsc::channel::<()>();
+                    writer = Some((
+                        release,
+                        std::thread::spawn(move || match teardown(PROCESS_IDENTITY) {
+                            Ok(turn) => {
+                                println!("lease:writer");
+                                let _ = released.recv();
+                                drop(turn);
+                            }
+                            Err(error) => println!("lease:refused {error}"),
+                        }),
+                    ));
+                }
+                "release-writer" => {
+                    let (release, thread) = writer.take().unwrap();
+                    release.send(()).unwrap();
+                    thread.join().unwrap();
+                    say("writer-released");
+                }
+                "release-reader" => {
+                    reader.take();
+                    say("reader-released");
+                }
+                "exit" => break,
+                other => panic!("{role}: unknown command {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    struct LeaseProcess {
+        child: std::process::Child,
+        stdin: std::process::ChildStdin,
+        events: std::sync::mpsc::Receiver<String>,
+    }
+
+    #[cfg(unix)]
+    impl LeaseProcess {
+        fn start(test: &str, role: &str, home: &Path) -> Self {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    &format!("checkout_reads::tests::{test}"),
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(PROCESS_ROLE, role)
+                .env(crate::home::HOME_ENV, home)
+                .env(lock::TIMEOUT_ENV, "60")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdin = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let (sender, events) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    // libtest's own `test NAME ... ` precedes the first line unterminated.
+                    if let Some((_, event)) = line.split_once("lease:") {
+                        let _ = sender.send(event.to_owned());
+                    }
+                }
+            });
+            LeaseProcess {
+                child,
+                stdin,
+                events,
+            }
+        }
+
+        fn tell(&mut self, command: &str) {
+            use std::io::Write;
+            writeln!(self.stdin, "{command}").unwrap();
+            self.stdin.flush().unwrap();
+        }
+
+        fn expect(&self, event: &str, why: &str) {
+            let seen = self
+                .events
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("no {event:?} within the bound: {why}"));
+            assert_eq!(seen, event, "{why}");
+        }
+
+        fn quiet(&self, why: &str) {
+            if let Ok(seen) = self
+                .events
+                .recv_timeout(std::time::Duration::from_millis(1500))
+            {
+                panic!("{why}, but it reported {seen:?}");
+            }
+        }
+
+        fn signal(&self, signal: libc::c_int) {
+            let pid = libc::pid_t::try_from(self.child.id()).unwrap();
+            // SAFETY: `kill` is asked to signal a child this test spawned and still owns.
+            assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for LeaseProcess {
+        fn drop(&mut self) {
+            if matches!(self.child.try_wait(), Ok(None)) {
+                // A process a failed assertion left stopped is resumed to be killed.
+                if let Ok(pid) = libc::pid_t::try_from(self.child.id()) {
+                    // SAFETY: the child is this test's own and has not been reaped.
+                    unsafe { libc::kill(pid, libc::SIGCONT) };
+                }
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Process A reads and starts a teardown, which must wait for process B's reader.
+    /// A is then stopped while that upgrade waits, so nothing of A can move, and B
+    /// starts a teardown of its own: it must not enter while A's reader is still
+    /// inside, however A's upgrade had arranged its hold on the lease file. Then each
+    /// lease is let go in turn and B's teardown enters only after A's reader leaves.
+    #[cfg(unix)]
+    #[test]
+    fn a_teardown_in_another_process_never_enters_while_an_upgrading_process_still_reads() {
+        if let Ok(role) = std::env::var(PROCESS_ROLE) {
+            return lease_process(&role);
+        }
+        let home = tempfile::tempdir().unwrap();
+        const TEST: &str =
+            "a_teardown_in_another_process_never_enters_while_an_upgrading_process_still_reads";
+        let mut b = LeaseProcess::start(TEST, "b", home.path());
+        b.expect("reader", "B takes a shared lease");
+        let mut a = LeaseProcess::start(TEST, "a", home.path());
+        a.expect("reader", "A takes a shared lease beside B's");
+        a.tell("teardown");
+        a.quiet("A's teardown waits for B's reader");
+        a.signal(libc::SIGSTOP);
+        b.tell("teardown");
+        b.quiet("B's teardown must not enter while A's reader is inside");
+        a.signal(libc::SIGCONT);
+        b.quiet("nor once A runs again");
+        b.tell("release-reader");
+        b.expect("reader-released", "B's reader leaves");
+        a.expect("writer", "A's teardown enters once B's reader has left");
+        b.quiet("B's teardown waits for A's");
+        a.tell("release-writer");
+        a.expect("writer-released", "A's teardown ends");
+        b.quiet("B's teardown must not enter while A's reader is still inside");
+        a.tell("release-reader");
+        a.expect("reader-released", "A's reader leaves");
+        b.expect("writer", "B's teardown enters once A holds nothing");
+        b.tell("release-writer");
+        b.expect("writer-released", "B's teardown ends");
+        LeaseProcess::finish([&mut a, &mut b]);
+    }
+
+    /// A teardown in a process that reads nothing is granted the lease file the
+    /// moment A's upgrade has let its shared hold go and a third process's reader
+    /// leaves — A being stopped, nothing of it can compete. It must hand that back
+    /// rather than enter while A's reader is inside.
+    #[cfg(unix)]
+    #[test]
+    fn a_teardown_granted_during_another_process_upgrade_hands_the_lease_back() {
+        if let Ok(role) = std::env::var(PROCESS_ROLE) {
+            return lease_process(&role);
+        }
+        const TEST: &str = "a_teardown_granted_during_another_process_upgrade_hands_the_lease_back";
+        let home = tempfile::tempdir().unwrap();
+        let mut c = LeaseProcess::start(TEST, "c", home.path());
+        c.expect("reader", "C takes a shared lease");
+        let mut a = LeaseProcess::start(TEST, "a", home.path());
+        a.expect("reader", "A takes a shared lease beside C's");
+        a.tell("teardown");
+        a.quiet("A's teardown waits for C's reader");
+        a.signal(libc::SIGSTOP);
+        let mut b = LeaseProcess::start(TEST, "idle", home.path());
+        b.expect("ready", "B holds nothing");
+        b.tell("teardown");
+        b.quiet("B's teardown waits for C's reader");
+        c.tell("release-reader");
+        c.expect("reader-released", "C's reader leaves");
+        b.quiet("B's teardown must not enter while A's reader is inside");
+        a.signal(libc::SIGCONT);
+        a.expect(
+            "writer",
+            "A's upgrade enters: B let the lease file go before waiting on the intent \
+             lock, so the two locks never wait on each other in a cycle",
+        );
+        b.quiet("B's teardown waits for A's");
+        a.tell("release-writer");
+        a.expect("writer-released", "A's teardown ends");
+        b.quiet("B's teardown must not enter while A's reader is still inside");
+        a.tell("release-reader");
+        a.expect("reader-released", "A's reader leaves");
+        b.expect("writer", "B's teardown enters once A holds nothing");
+        b.tell("release-writer");
+        b.expect("writer-released", "B's teardown ends");
+        LeaseProcess::finish([&mut a, &mut b, &mut c]);
+    }
+
+    #[cfg(unix)]
+    impl LeaseProcess {
+        fn finish<const N: usize>(processes: [&mut LeaseProcess; N]) {
+            for process in processes {
+                process.tell("exit");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while process.child.try_wait().unwrap().is_none() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "a lease process exits"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
     }
 
     #[test]
