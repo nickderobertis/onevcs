@@ -317,6 +317,13 @@ pub(crate) fn placement_identity(pool: &Path) -> String {
     format!("pool:{}", pool.display())
 }
 
+/// Yield checkout turns while queueing for placement: the current placer keeps
+/// this lock through its record save and may need a checkout read to finish.
+/// Reacquire the caller's turn before it surveys or changes any slot.
+pub(crate) fn placement_turn(pool: &Path) -> Result<lock::Guard> {
+    crate::checkout_reads::mutating(|| lock::exclusive(&placement_identity(pool)))
+}
+
 /// Where one slot's record is written.
 fn record_path(slot: &Path) -> PathBuf {
     slot.join("slot.json")
@@ -764,7 +771,7 @@ pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
     let _reads = crate::checkout_reads::teardown(&ask.resolution.key)?;
     let pool = pool_dir(ask.identity_root);
     crate::home::ensure_dir(&pool)?;
-    let serial = lock::exclusive(&placement_identity(&pool))?;
+    let serial = placement_turn(&pool)?;
     let mut survey = survey(&ask.resolution.key, &pool)?;
     shed(&mut survey, ask.resolved.file_pool, ask.execution);
     let wanted = ask.resolved.pool.value;
@@ -986,7 +993,7 @@ fn fit(slot: &Surveyed, execution: &Path) -> Option<Fit> {
 /// A shared clone records its lender's object store in `objects/info/alternates`,
 /// which for a checkout is `<checkout>/.git/objects`; anything else there is not a
 /// lender this crate can name, and answers `None`.
-fn lender_of(clone: &Path) -> Option<PathBuf> {
+pub(crate) fn lender_of(clone: &Path) -> Option<PathBuf> {
     let alternates = git::objects_dir(clone).ok()?.join("info/alternates");
     let recorded = std::fs::read_to_string(alternates).ok()?;
     let objects = PathBuf::from(recorded.lines().next()?.trim());
@@ -1373,7 +1380,7 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
     }
     // Serialized against placement, so a slot this is removing is not one an open is
     // in the middle of taking.
-    let _serial = lock::exclusive(&placement_identity(&pool))?;
+    let _serial = placement_turn(&pool)?;
     let survey = survey(&asked.resolution.key, &pool)?;
     for slot in &survey.slots {
         if let Some(why) = keeps(slot, &asked.resolution.publication) {

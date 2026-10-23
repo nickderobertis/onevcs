@@ -3550,8 +3550,7 @@ impl Census<'_> {
         let pool = slot
             .parent()
             .ok_or_else(|| format!("{} has no pool above it", slot.display()))?;
-        let _serial =
-            lock::exclusive(&pool::placement_identity(pool)).map_err(|e| e.to_string())?;
+        let _serial = pool::placement_turn(pool).map_err(|e| e.to_string())?;
         if !pool::is_idle(&self.resolution.key, slot).map_err(|e| e.to_string())? {
             return Ok(false);
         }

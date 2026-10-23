@@ -1074,6 +1074,55 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
     Ok(checkouts_among(registry, resolution, &all()?))
 }
 
+/// [`checkouts_of`], with every run clone on it held against reclamation for as long
+/// as the answer is kept.
+///
+/// A closed session's run root under `runs/` stays on the list — its clone may hold
+/// the only copy of a branch — and another session's open may reclaim it at any
+/// moment, once its branches are on origin. A read made in a clone while it is being
+/// removed fails: here, because the directory is gone; on Windows, because a file
+/// whose deletion is pending cannot be opened, so even the clone's `.git/config` is
+/// `Permission denied`. So each such run root's shared occupancy lease is taken
+/// first — which a reclamation's exclusive take is refused by, and which waits out
+/// one already removing it — and a clone reclaimed before its lease came is left to
+/// the reader's own test that it is a repository.
+///
+/// Only a closed session's lease is waited for. An open record keeps its run root
+/// out of every reclamation, and an exclusive holder of one is a command working in
+/// that session — a resumption, say — which may take as long as it takes; its lease is
+/// taken only where it is free, for the record that closes while this search reads.
+/// A pool slot is not held: nothing that reclaims a run root removes a slot, and a
+/// shared lease on one would keep the placement that may want it off it.
+pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Result<Searched> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
+    let sessions = all()?;
+    let mut held = Vec::new();
+    for record in &sessions {
+        if record.identity != resolution.key || record.slot.is_some() || !record.run_root.is_dir() {
+            continue;
+        }
+        let lease = occupancy_identity(&record.run_root);
+        let guard = match record.state {
+            Lifecycle::Open => lock::try_shared(&lease)?,
+            Lifecycle::Closed => Some(lock::shared(&lease)?),
+        };
+        held.extend(guard);
+    }
+    Ok(Searched {
+        checkouts: checkouts_among(registry, resolution, &sessions),
+        _held: held,
+    })
+}
+
+/// What [`checkouts_held`] answers: the search, and the leases that keep it readable.
+pub(crate) struct Searched {
+    /// [`checkouts_of`]'s list, in its search order.
+    pub checkouts: Vec<PathBuf>,
+    /// Kept for as long as any of `checkouts` is read: once they go, a sibling's open may
+    /// reclaim a clone the caller is still comparing.
+    _held: Vec<lock::Guard>,
+}
+
 /// The same search order over records a caller already validated and read.
 pub(crate) fn checkouts_among(
     registry: &Registry,
@@ -1160,6 +1209,10 @@ pub(crate) fn open_with(
     let resolution = store::resolve(registry, &request.repo)?;
     let execution =
         execution_checkout(registry, &resolution, request.execution_checkout.as_deref())?;
+    // Held for the whole open, before the first read of the checkout's configuration —
+    // the check that it is a checkout at all is one, and before the lease it could meet
+    // another open's retention write.
+    let _lent = lend(&execution)?;
     if !git::is_repo(&execution) {
         return Err(Error::Invalid {
             reason: format!("{} is not a git checkout", execution.display()),
@@ -1256,6 +1309,8 @@ pub(crate) fn open_with(
     // Only for a pin: a generated name is this token's own and can stand for nothing
     // that already exists, and asking the question anyway would put a search of every
     // checkout and run clone of the identity in front of every session anybody opens.
+    // The copy a continuation found is held until this open has brought it into its
+    // own clone: a sibling's open may otherwise reclaim the run clone it is read from.
     let continued = match request.branch.is_some() {
         true => continuation(registry, &resolution, &execution, &branch, &base)?,
         false => None,
@@ -1667,7 +1722,8 @@ fn opened(
     payload
 }
 
-/// Bring the execution checkout up to date, and keep its objects for borrowers.
+/// Bring the execution checkout up to date. Its objects are kept for borrowers by the
+/// [`lend`] the open holds.
 ///
 /// The fetch is deliberately outside every exclusive section: one slow origin must
 /// not hold another session out of the lock it is waiting for.
@@ -1679,7 +1735,49 @@ fn refresh(execution: &Path, stream: &mut Stream) -> Result<()> {
             object(json!({"remote": "origin", "checkout": execution.display().to_string()})),
         );
     }
-    git::retain_objects_for_borrowers(execution)
+    Ok(())
+}
+
+/// The lease every session operation over a lender holds while it reads the lender.
+fn lender_lease(checkout: &Path) -> String {
+    format!("lender:{}", checkout.display())
+}
+
+/// Hold a checkout as a lender for one session operation, setting its retention keys
+/// first where they are not set yet.
+///
+/// `register` sets them before any session of a checkout exists, but a checkout an
+/// earlier release registered has none, and the first sessions to open over it after
+/// an upgrade arrive together. The write appends to the configuration rather than
+/// replacing it (`git::append_in_place`), so no reader of it can fail; the lease is
+/// what lets each session operation read the keys once and act on that answer for as
+/// long as it runs, so every open and close holds it shared and the one write waits
+/// for an exclusive take of it.
+pub(crate) fn lend(checkout: &Path) -> Result<lock::Guard> {
+    let lease = lender_lease(checkout);
+    let held = lock::shared(&lease)?;
+    if !git::is_repo(checkout) || git::retains_objects_for_borrowers(checkout)? {
+        return Ok(held);
+    }
+    drop(held);
+    retain_alone(checkout)?;
+    lock::shared(&lease)
+}
+
+/// Set a lender's retention keys while no session operation of it is reading it, unless
+/// they are set already. For a caller holding no [`lend`] of the same checkout: its
+/// shared take would keep this one's exclusive take waiting on itself.
+pub(crate) fn retain_alone(checkout: &Path) -> Result<()> {
+    let lease = lender_lease(checkout);
+    {
+        // Asked under the shared take, so this read cannot meet another's write.
+        let _reading = lock::shared(&lease)?;
+        if git::retains_objects_for_borrowers(checkout)? {
+            return Ok(());
+        }
+    }
+    let _alone = lock::exclusive(&lease)?;
+    git::retain_objects_for_borrowers(checkout)
 }
 
 /// The session a pinned branch is already held by, when exactly one is and nothing
@@ -1943,10 +2041,12 @@ impl Carried {
 ///
 /// One of these three and never "nowhere": a name nothing carries is not a
 /// continuation at all, and [`continuation`] answers `None` for it.
-#[derive(Debug, Clone)]
 enum Continued {
     /// A checkout of this identity holds the branch and origin does not.
-    Held(Carried),
+    Held {
+        copy: Carried,
+        _guard: crate::branch::Located,
+    },
     /// Origin holds it and no checkout of this identity does — a branch pushed from
     /// another host, or from a run root this one has since reclaimed.
     Pushed(Carried),
@@ -1955,6 +2055,8 @@ enum Continued {
     Both {
         /// The checkout's copy.
         held: Carried,
+        /// Holds the checkout copy against reclamation.
+        _guard: crate::branch::Located,
         /// Origin's.
         pushed: Carried,
     },
@@ -1984,7 +2086,8 @@ const RECONCILE_THEN: &str = "open this session again, which continues the copy 
 /// remote-tracking refs, which the fetch above has just brought up to date. Which of
 /// the checkouts answers is [`crate::branch::locate`], the one comparison the
 /// publishing verbs read a branch by, so a session and a landing cannot come to
-/// disagree about which copy of a name is the work.
+/// disagree about which copy of a name is the work — and whose answer comes back
+/// beside the continuation, still holding the run clones it read.
 fn continuation(
     registry: &Registry,
     resolution: &Resolution,
@@ -1996,27 +2099,43 @@ fn continuation(
     let anywhere = checkouts_of(registry, resolution)?
         .into_iter()
         .any(|repo| git::is_repo(&repo) && git::branch_exists(&repo, branch));
-    let held = match anywhere {
-        true => {
-            let checkout =
-                crate::branch::locate(registry, resolution, branch, base, RECONCILE_THEN)?;
-            git::tip(&checkout, &format!("refs/heads/{branch}")).map(|tip| Carried {
-                checkout: Some(checkout),
-                tip,
-            })
-        }
+    let located = match anywhere {
+        true => Some(crate::branch::locate(
+            registry,
+            resolution,
+            branch,
+            base,
+            RECONCILE_THEN,
+        )?),
         false => None,
     };
+    let held = located.and_then(|located| {
+        git::tip(&located.checkout, &format!("refs/heads/{branch}")).map(|tip| {
+            let copy = Carried {
+                checkout: Some(located.checkout.clone()),
+                tip,
+            };
+            (copy, located)
+        })
+    });
     let pushed = git::tip(execution, &format!("refs/remotes/origin/{branch}")).map(|tip| Carried {
         checkout: None,
         tip,
     });
-    Ok(match (held, pushed) {
-        (Some(held), Some(pushed)) => Some(Continued::Both { held, pushed }),
-        (Some(held), None) => Some(Continued::Held(held)),
+    let continued = match (held, pushed) {
+        (Some((held, guard)), Some(pushed)) => Some(Continued::Both {
+            held,
+            _guard: guard,
+            pushed,
+        }),
+        (Some((copy, guard)), None) => Some(Continued::Held {
+            copy,
+            _guard: guard,
+        }),
         (None, Some(pushed)) => Some(Continued::Pushed(pushed)),
         (None, None) => None,
-    })
+    };
+    Ok(continued)
 }
 
 /// The copy a continued session opens at: the one that carries every other.
@@ -2041,11 +2160,11 @@ fn opened_at(
     continued: &Continued,
 ) -> Result<Carried> {
     match continued {
-        Continued::Held(only) | Continued::Pushed(only) => {
+        Continued::Held { copy: only, .. } | Continued::Pushed(only) => {
             only.bring_into(clone, branch)?;
             Ok(only.clone())
         }
-        Continued::Both { held, pushed } => {
+        Continued::Both { held, pushed, .. } => {
             held.bring_into(clone, branch)?;
             pushed.bring_into(clone, branch)?;
             if git::is_ancestor(clone, &pushed.tip, &held.tip)? {
@@ -2722,6 +2841,9 @@ pub fn close(token: &str) -> Result<Record> {
     // admitted after this turn must see the completed checkout, not a busy marker.
     let mut _closing = closing;
     let record = load(token)?;
+    // The hand-back below writes into the lender and reads it, so a close is one of the
+    // session operations the lender's one-time configuration waits for.
+    let _lent = lend(&record.execution_checkout)?;
     let lease = lock::try_shared(&record.lease())?.ok_or_else(|| Error::Invalid {
         reason: format!("session {token:?} is occupied by another process"),
     })?;

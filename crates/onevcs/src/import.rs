@@ -167,7 +167,9 @@ pub fn run(
         })?,
         None => asked.clone(),
     };
-    let source = source_of(registry, &resolution, repo, &destination, &asked, from)?;
+    // Held until the fetch below has read the branch out of whichever copy was chosen.
+    let guarded = source_of(registry, &resolution, repo, &destination, &asked, from)?;
+    let source = guarded.source();
     // Refused before anything is fetched: the whole promise of this verb is that no
     // working tree moves, and pointing a checked-out branch somewhere else leaves
     // git holding an index and a tree that describe a commit the ref no longer names.
@@ -278,6 +280,21 @@ fn refuse_a_rewrite(
     })
 }
 
+/// A searched copy owns its reclamation guard for the entire import.
+enum ImportSource {
+    Explicit(Source),
+    Located(branch::Located),
+}
+
+impl ImportSource {
+    fn source(&self) -> Source {
+        match self {
+            Self::Explicit(source) => source.clone(),
+            Self::Located(located) => Source::Repository(located.checkout.clone()),
+        }
+    }
+}
+
 /// Where the branch is read from: what `--from` named, or wherever this identity
 /// left it.
 ///
@@ -287,6 +304,10 @@ fn refuse_a_rewrite(
 /// branch the remote names differently. A value that is neither is refused naming
 /// both, because a fetch that silently fell through to the wrong one would import
 /// somebody else's commit under this name.
+///
+/// A copy found by the search comes back with it, still holding the run clones it
+/// read: the copy is often a closed session's, which a sibling's open may otherwise
+/// reclaim before the fetch reads it.
 fn source_of(
     registry: &Registry,
     resolution: &Resolution,
@@ -294,7 +315,7 @@ fn source_of(
     destination: &Path,
     branch: &Ref,
     from: Option<&str>,
-) -> Result<Source> {
+) -> Result<ImportSource> {
     let Some(from) = from else {
         let base = git::default_branch(destination, "origin")?;
         // Copies of the branch that have diverged are the search's own refusal, and
@@ -304,23 +325,26 @@ fn source_of(
         let named: &str = branch;
         let again =
             guidance::command(["onevcs", "import", named, "--repo", &repo.to_string_lossy()]);
-        return Ok(Source::Repository(branch::locate(
+        let located = branch::locate(
             registry,
             resolution,
             branch,
             &base,
             &format!("run `{again}` again"),
-        )?));
+        )?;
+        return Ok(ImportSource::Located(located));
     };
     if git::is_repo(Path::new(from)) {
-        return Ok(Source::Repository(PathBuf::from(from)));
+        return Ok(ImportSource::Explicit(Source::Repository(PathBuf::from(
+            from,
+        ))));
     }
     let remotes = git::remotes(destination)?;
     if remotes.iter().any(|remote| remote == from) {
-        return Ok(Source::Remote {
+        return Ok(ImportSource::Explicit(Source::Remote {
             remote: from.to_owned(),
             branch: branch.clone(),
-        });
+        }));
     }
     if let Some((remote, named)) = from.split_once('/') {
         if remotes.iter().any(|candidate| candidate == remote) {
@@ -334,10 +358,10 @@ fn source_of(
                      `{remote}/<branch>`"
                 ),
             })?;
-            return Ok(Source::Remote {
+            return Ok(ImportSource::Explicit(Source::Remote {
                 remote: remote.to_owned(),
                 branch: named,
-            });
+            }));
         }
     }
     Err(Error::Invalid {

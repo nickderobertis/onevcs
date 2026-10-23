@@ -383,3 +383,31 @@ pub fn commands() -> Vec<String> {
     assert!(!names.is_empty(), "no commands parsed out of the contract");
     names
 }
+
+/// How long a concurrent journey may run before it is failed rather than waited on.
+///
+/// Every one finishes in seconds; this is a bound on a defect, not on a slow host.
+pub const CONCURRENT_JOURNEY_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Fail the running journey, by aborting its process, if it is still running when
+/// `bound` elapses; dropped when the journey ends.
+///
+/// A journey that runs threads beside each other can wait on one that will never end
+/// — a scope joins every thread it spawned, however the others ended — and nextest
+/// waits on a hung test for ever. An abort is reported as a failure naming the test,
+/// which is what a hang has to become.
+pub fn watchdog(journey: &'static str, bound: std::time::Duration) -> Watchdog {
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(bound) {
+            eprintln!("{journey} was still running after {bound:?}, so it is failed rather than left hanging");
+            std::process::abort();
+        }
+    });
+    Watchdog { _done: done }
+}
+
+/// A running [`watchdog`]; dropping it stands the watchdog down.
+pub struct Watchdog {
+    _done: std::sync::mpsc::Sender<()>,
+}

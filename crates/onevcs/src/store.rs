@@ -718,6 +718,11 @@ pub fn register(path: &Path, origin_override: Option<&str>) -> Result<Resolution
         Some(value) => value.to_owned(),
         None => git::remote_url(&checkout, "origin")?,
     };
+    // Set here, where no session of this checkout can exist yet, rather than first at
+    // a session's open: then the first sessions after registration never wait for an
+    // exclusive take of the lender lease, and every open finds the keys set and writes
+    // nothing to a file all of them read.
+    crate::workspace::retain_alone(&checkout)?;
     let normalized = normalize(&origin);
     let gate = detect_gate(&checkout);
     let alias = alias_for(&checkout);

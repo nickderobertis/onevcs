@@ -227,6 +227,9 @@ pub fn prepare(
     // A path this build cannot read as text is refused where every `--repo` is,
     // rather than resolved through a lossy rendering of itself.
     let resolution = store::resolve_path(registry, repo)?;
+    // Held for the whole preparation, as every session operation over the checkout
+    // holds it: the search below reads the checkout, and so does the clone it lends.
+    let _lent = crate::workspace::lend(&resolution.publication)?;
     let (file, rules_source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     if !git::is_valid_branch_name(branch) {
@@ -248,13 +251,15 @@ pub fn prepare(
         branch,
         &format!("land it with `{}`", verb.command(branch, repo)),
     )?;
-    let source = locate(
+    // Held until this landing's own clone has read everything it takes from the copy.
+    let located = locate(
         registry,
         &resolution,
         branch,
         &base,
         &format!("land it with `{}`", verb.command(branch, repo)),
     )?;
+    let source = located.checkout.clone();
 
     // The retention rule, enforced where the run roots are made and before this run's
     // own is cut, so it is never a candidate. A landing is not refused over it: what
@@ -313,8 +318,13 @@ pub fn prepare(
 
     let origin = git::remote_url(&source, "origin")
         .unwrap_or_else(|_| source.to_string_lossy().into_owned());
-    git::retain_objects_for_borrowers(&source)?;
-    git::clone_sharing(&source, &clone, &origin, &base)?;
+    // Borrowed from a registered checkout, never from the copy the branch is read out
+    // of: that copy may be a run clone or a pool slot, and making one a lender would
+    // mean writing its retention keys while sibling searches — and a slot's worker —
+    // read it. The checkout's keys are set with no session operation reading it.
+    let lender = lender_for(registry, &resolution, &source);
+    crate::workspace::retain_alone(&lender)?;
+    git::clone_borrowing(&lender, &source, &clone, &origin, &base)?;
     if !git::import_branch(&clone, &source, branch)? {
         return Err(error::at("read branch out of", &source)(branch));
     }
@@ -709,6 +719,35 @@ impl Held {
     }
 }
 
+/// The copy [`locate`] chose, and the search it chose it from, still held.
+pub(crate) struct Located {
+    /// The checkout the branch is read out of.
+    pub checkout: PathBuf,
+    /// Keeps every run clone the search read from being reclaimed until it is dropped.
+    _search: crate::workspace::Searched,
+    /// Keeps a close from excluding the chosen checkout before its caller reads it.
+    _checkout: crate::checkout_reads::Pinned,
+}
+
+/// The registered checkout a publication of a branch read out of `source` borrows its
+/// objects from: `source` itself where it is one, else the checkout `source` borrows
+/// from, else the identity's publication checkout — whatever of the branch none of them
+/// holds is fetched out of `source` into the publication's own store.
+fn lender_for(registry: &Registry, resolution: &Resolution, source: &Path) -> PathBuf {
+    let registered = |path: &Path| {
+        registry
+            .checkouts
+            .values()
+            .any(|checkout| checkout.identity == resolution.key && checkout.path == path)
+    };
+    if registered(source) {
+        return source.to_path_buf();
+    }
+    crate::pool::lender_of(source)
+        .filter(|lender| registered(lender))
+        .unwrap_or_else(|| resolution.publication.clone())
+}
+
 /// Refuse a branch some worktree of its identity holds an unfinished merge into.
 ///
 /// What a session opened over a conflicted continuation leaves until its worker
@@ -724,11 +763,12 @@ pub(crate) fn refuse_unfinished_merges(
     then: &str,
 ) -> Result<()> {
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
-    for checkout in crate::workspace::checkouts_of(registry, resolution)? {
-        if !git::is_repo(&checkout) {
+    let search = crate::workspace::checkouts_held(registry, resolution)?;
+    for checkout in &search.checkouts {
+        if !git::is_repo(checkout) {
             continue;
         }
-        for (worktree, on) in git::worktree_heads(&checkout)? {
+        for (worktree, on) in git::worktree_heads(checkout)? {
             if on.as_deref() == Some(branch) {
                 crate::vcs::refuse_unfinished_merge(&worktree, branch, then)?;
             }
@@ -750,18 +790,24 @@ pub(crate) fn refuse_unfinished_merges(
 /// [`Verb`] because the three verbs that reach here are not all landing one: `import`
 /// comes here for the source it takes when nobody passed `--from`, and what it sends an
 /// operator back to is that same import.
+///
+/// Every run clone searched is held against reclamation while it is compared, and the
+/// answer keeps holding them ([`Located`]) for a caller that goes on reading the copy
+/// it chose: another session's open reclaims a closed session's clone the moment its
+/// branches are on origin, and that clone is often the copy a continuation is after.
 pub(crate) fn locate(
     registry: &Registry,
     resolution: &Resolution,
     branch: &str,
     base: &str,
     next: &str,
-) -> Result<PathBuf> {
+) -> Result<Located> {
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
-    let searched = crate::workspace::checkouts_of(registry, resolution)?;
+    let search = crate::workspace::checkouts_held(registry, resolution)?;
+    let searched = &search.checkouts;
     let current = crate::vcs::base_commit(&resolution.publication, base);
     let mut held: Vec<Held> = Vec::new();
-    for candidate in &searched {
+    for candidate in searched {
         // The branch's own commit, by its full ref name so that a tag or a
         // remote-tracking ref of the same name is not read as a copy of the branch:
         // what the copies are chosen between by is commits. A checkout that is not a
@@ -788,21 +834,33 @@ pub(crate) fn locate(
     // way: there was nothing to compare.
     let [first, second, ..] = held.as_slice() else {
         let Some(only) = held.first() else {
-            return Err(nowhere(&resolution.key, branch, &searched));
+            return Err(nowhere(&resolution.key, branch, searched));
         };
         announce(branch, only, &held);
-        return Ok(only.checkout.clone());
+        return Ok(Located {
+            checkout: only.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&only.checkout)?,
+            _search: search,
+        });
     };
     if held.iter().all(|copy| copy.holds == Holds::WhatTheBaseHas) {
         announce(branch, first, &held);
-        return Ok(first.checkout.clone());
+        return Ok(Located {
+            checkout: first.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&first.checkout)?,
+            _search: search,
+        });
     }
     for copy in &held {
         if !carries_the_rest(copy, &held)? {
             continue;
         }
         announce(branch, copy, &held);
-        return Ok(copy.checkout.clone());
+        return Ok(Located {
+            checkout: copy.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&copy.checkout)?,
+            _search: search,
+        });
     }
     // No copy carries the rest outright. One still may but for copies that hold nothing
     // beyond it except clean merges of base commits — what a continuation that merged
@@ -834,7 +892,11 @@ pub(crate) fn locate(
             );
         }
         announce(branch, copy, &held);
-        return Ok(copy.checkout.clone());
+        return Ok(Located {
+            checkout: copy.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&copy.checkout)?,
+            _search: search,
+        });
     }
     // The fetch the refusal prints has to be between copies at *different* commits:
     // copies at one commit are one copy for this purpose, and fetching between them

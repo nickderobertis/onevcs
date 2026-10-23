@@ -873,7 +873,9 @@ Windows' verbatim paths crossing every git boundary, a captured command's
 collector meeting its pipe empty at the instant the command exits, whether a
 name is a ref name decided in process rather than by a subprocess, and whether a
 fetch hands its checkout's turn back when git fails or is killed — which only a
-process outliving the fetch, as a linking consumer's does, can see (`git.rs`),
+process outliving the fetch, as a linking consumer's does, can see — and every view
+a reader's buffered reads can join together while a lender's retention keys are
+added (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), a
 credential nested in an object reaching `Stream`'s own record call (`stream.rs`), and
 threads of one process taking an identity's read turns while a sibling holds one,
@@ -952,9 +954,7 @@ own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
-fired timeout takes a process *group*, which has no portable spelling. Windows CI
-builds the crate and runs the contract, boundary, packaging, and inherited-pipe
-suites.
+fired timeout takes a process *group*, which has no portable spelling.
 
 `tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
 `world.rs`'s, because it has to run where `world.rs` cannot. It holds one rule in
@@ -1461,6 +1461,17 @@ whoever holds the lease. The lease is asked afterwards and still answers for the
 command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
+
+**What another session reads must stay openable while siblings work.** Windows
+Git config readers do not share deletion; ref readers do. Never replace unchanged
+shared configuration or refs. Upgrading retention settings must preserve config
+parseability throughout the write, including buffered readers and a final backslash
+without a newline. A session's first repository check needs the same lender
+protection as its later reads. Only registered checkouts lend objects: an idle slot
+can have a worker whose occupancy no lender lease covers. Keep searched clones
+protected against reclamation, and run sibling Git reads outside session trees so
+close does not mistake them for workers. Yield identity turns while waiting for
+placement: its holder may need a checkout read before releasing placement.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this

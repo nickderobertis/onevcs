@@ -271,12 +271,20 @@ fn run_unless(
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
+    let outside = from_outside(args, cwd);
     let mut command = Command::new(git_program());
-    command.args(args);
+    match &outside {
+        Some((git_dir, _)) => {
+            command.arg("--git-dir").arg(git_dir).args(args);
+        }
+        None => {
+            command.args(args);
+        }
+    }
     let execute = || {
         bounded(
             command,
-            cwd,
+            outside.as_ref().map(|(_, from)| from.as_path()).or(cwd),
             &shims
                 .as_ref()
                 .map(|shims| [env, &shims.env()].concat())
@@ -315,6 +323,78 @@ fn run_unless(
     }
     reads::remember(args, cwd, env, &output);
     Ok(output)
+}
+
+/// Where a read of a session's repository is made from when it is not made inside it:
+/// the repository's git directory, and the directory the process starts in.
+///
+/// Every session's search reads the run clones and slots of its siblings — whether
+/// each is a repository, which branches it holds, where they stand — and a process
+/// whose working directory is inside a run root is exactly what `session close` and a
+/// reclamation count as somebody working there (`processes::holding`). So a sibling's
+/// read that happened to be running made a close refuse a session nobody was in. A
+/// read of a repository under the state root's workspaces is therefore addressed by
+/// `--git-dir` from the workspaces directory itself, which is inside no run root; git
+/// takes the directory it starts in as the top of the work tree when none is named,
+/// and none of these reads looks at the work tree's files. Anything else — a command
+/// that writes, reads the work tree, or answers a path relative to where it ran —
+/// runs where it was asked to.
+fn from_outside(args: &[&str], cwd: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    let cwd = cwd?;
+    if !reads_no_work_tree(args) {
+        return None;
+    }
+    // Absolute, both: a relative state root names its workspaces from this process's
+    // own directory, and the git directory is handed to a process started elsewhere.
+    // And spelled alike, both: a record holds a canonical path, which on Windows is the
+    // verbatim form no plain state root starts with.
+    let workspaces = crate::home::workspaces_dir().ok()?;
+    let workspaces = std::path::absolute(git_path(&workspaces)).ok()?;
+    let cwd = std::path::absolute(git_path(cwd)).ok()?;
+    if !cwd.starts_with(&workspaces) || cwd == workspaces {
+        return None;
+    }
+    let git_dir = cwd.join(".git");
+    if !git_dir.exists() {
+        return None;
+    }
+    Some((git_path(&git_dir).to_path_buf(), workspaces))
+}
+
+/// Whether a git command reads refs and objects alone, answering nothing relative to
+/// the directory it ran in — which is what lets it run from anywhere.
+fn reads_no_work_tree(args: &[&str]) -> bool {
+    match args.first().copied() {
+        Some("rev-parse") => !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "--show-toplevel"
+                    | "--git-dir"
+                    | "--absolute-git-dir"
+                    | "--git-common-dir"
+                    | "--git-path"
+                    | "--show-prefix"
+                    | "--show-cdup"
+                    | "--show-superproject-working-tree"
+                    | "--is-inside-git-dir"
+                    | "--resolve-git-dir"
+            )
+        }),
+        Some("show-ref" | "for-each-ref" | "rev-list" | "merge-base" | "log") => true,
+        Some("cat-file") => args.get(1) == Some(&"-e"),
+        // Two revisions compared, never the work tree or the index.
+        Some("diff") => {
+            args.iter()
+                .skip(1)
+                .take_while(|arg| **arg != "--")
+                .filter(|arg| !arg.starts_with('-'))
+                .count()
+                == 2
+                && !args.contains(&"--cached")
+        }
+        Some("symbolic-ref") => args.iter().skip(1).filter(|a| !a.starts_with('-')).count() == 1,
+        _ => false,
+    }
 }
 
 /// Run `read` with every repeated git read inside it answered once.
@@ -1749,7 +1829,65 @@ pub fn has_remote(cwd: &Path, remote: &str) -> bool {
 ///
 /// What comes back is what became of the clone's own copy of the base — see
 /// [`carry_base`] — which the caller opening a session is the one that can report.
+///
+/// The clone is cut beside `dest` and moved there only once it is whole. A pool slot
+/// cut again in place is still named by the closed records of the sessions it held,
+/// so a sibling's search reads whatever is at `dest`; cut there directly, that search
+/// would meet a repository whose `.git/config` was still being renamed over by the
+/// configuration below, which on Windows it cannot open (see [`append_in_place`]).
+/// Nothing in the clone records its own path, so the move changes nothing in it.
 pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Result<BaseCarried> {
+    clone_borrowing(source, source, dest, origin, base)
+}
+
+/// [`clone_sharing`] from `lender`, carrying the hooks `hooks_from` would run.
+///
+/// For a clone whose branch comes from a repository it must not borrow from: a run
+/// clone or a pool slot is read by every sibling session's search, and a slot by the
+/// worker inside it, so a lender's retention keys could only be written into one
+/// while somebody is reading it. Its own objects are borrowed from a registered
+/// checkout anyway, which is the lender asked for here; the branch is fetched out of
+/// `hooks_from` afterwards, and what that repository would verify it with is what it
+/// carries.
+pub fn clone_borrowing(
+    lender: &Path,
+    hooks_from: &Path,
+    dest: &Path,
+    origin: &str,
+    base: &str,
+) -> Result<BaseCarried> {
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "clone".to_owned());
+    // Its own name in a directory cut for this clone alone — a run root is one
+    // token's, and a slot cut again is emptied first — so nothing else is ever there.
+    let cutting = dest.with_file_name(format!(".{name}.cutting"));
+    match cut_sharing(lender, hooks_from, &cutting, origin, base) {
+        Ok(carried) => {
+            // llmlint: ignore[changed_behavior_has_e2e] a rename between two names in one
+            // directory of the state root, the first of which this process just made and
+            // the second of which nothing else creates, fails only on a filesystem fault;
+            // no interface produces one, and the refusal is what any failed cut answers.
+            std::fs::rename(&cutting, dest).map_err(error::at("move the cut clone to", dest))?;
+            Ok(carried)
+        }
+        Err(refused) => {
+            let _ = std::fs::remove_dir_all(&cutting);
+            Err(refused)
+        }
+    }
+}
+
+/// Every write into a new clone, kept apart from the move into place so that a
+/// sibling's search, which reads whatever is at the destination, only finds it whole.
+fn cut_sharing(
+    source: &Path,
+    hooks_from: &Path,
+    dest: &Path,
+    origin: &str,
+    base: &str,
+) -> Result<BaseCarried> {
     let source_arg = git_path(source).to_string_lossy();
     let dest_arg = git_path(dest).to_string_lossy();
     let origin_arg = git_location(origin);
@@ -1757,12 +1895,16 @@ pub fn clone_sharing(source: &Path, dest: &Path, origin: &str, base: &str) -> Re
         &["clone", "--shared", "--no-checkout", &source_arg, &dest_arg],
         None,
     )?;
-    checked(
-        &["remote", "set-url", "origin", origin_arg.as_ref()],
-        Some(dest),
-    )?;
+    // A lender with no origin of its own is lent as itself, which is the URL the
+    // clone was just given: asked again, git would rewrite the file to say the same.
+    if run(&["remote", "get-url", "origin"], Some(dest))?.trimmed() != origin_arg.as_ref() {
+        checked(
+            &["remote", "set-url", "origin", origin_arg.as_ref()],
+            Some(dest),
+        )?;
+    }
     let carried = carry_remote_refs(source, dest, base)?;
-    carry_hooks(source, dest)?;
+    carry_hooks(hooks_from, dest)?;
     Ok(carried)
 }
 
@@ -1803,15 +1945,22 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseC
         )?;
     }
     // After the copy, which overwrites `origin/HEAD` with whatever the lender's own
-    // copy of it resolved to — a plain ref where this needs a symbolic one.
-    checked(
-        &[
-            "symbolic-ref",
-            "refs/remotes/origin/HEAD",
-            &format!("refs/remotes/origin/{base}"),
-        ],
+    // copy of it resolved to — a plain ref where this needs a symbolic one. Asked
+    // first, because `symbolic-ref` renames a new file over the ref even to write the
+    // value it holds, and a reused slot's clone is read by every sibling's search.
+    let head = format!("refs/remotes/origin/{base}");
+    if run(
+        &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
         Some(dest),
-    )?;
+    )?
+    .trimmed()
+        != head
+    {
+        checked(
+            &["symbolic-ref", "refs/remotes/origin/HEAD", &head],
+            Some(dest),
+        )?;
+    }
     carry_base(dest, base)
 }
 
@@ -1953,9 +2102,198 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
     #[cfg(not(unix))]
     let common = common_dir(cwd)?;
     let _configuration = lock::exclusive_at(&common.join("onevcs-retention.lock"))?;
-    checked(&["config", "gc.auto", "0"], Some(cwd))?;
-    checked(&["config", "gc.pruneExpire", "never"], Some(cwd))?;
+    let mut missing = Vec::new();
+    for (key, value) in RETENTION {
+        if local_setting(cwd, key)?.as_deref() != Some(value) {
+            missing.push((key, value));
+        }
+    }
+    append_in_place(&common, &missing)
+}
+
+/// A repository's own value for `key`, or `None` where it sets none.
+///
+/// `git config --get` answers 1 for a key that is not set and something else for a
+/// configuration it could not read; only the first is an absent setting; the second is
+/// refused, so a file git cannot read is never taken for one that lacks the keys and
+/// written to.
+fn local_setting(cwd: &Path, key: &str) -> Result<Option<String>> {
+    let held = run(&["config", "--local", "--get", key], Some(cwd))?;
+    match held.status {
+        0 => Ok(Some(held.trimmed())),
+        1 => Ok(None),
+        _ => Err(error::invalid(format!(
+            "git could not read {key} in {}: {}",
+            cwd.display(),
+            held.diagnostic()
+        ))),
+    }
+}
+
+/// What [`retain_objects_for_borrowers`] writes into a lender's own configuration.
+const RETENTION: [(&str, &str); 2] = [("gc.auto", "0"), ("gc.pruneExpire", "never")];
+
+/// Whether a repository's own configuration already holds every retention key, asked
+/// without writing anything — so a caller can decide whether the write it would need
+/// has to wait for the repository's readers first.
+pub fn retains_objects_for_borrowers(cwd: &Path) -> Result<bool> {
+    for (key, value) in RETENTION {
+        if local_setting(cwd, key)?.as_deref() != Some(value) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Add settings to the end of a repository's own configuration without replacing the
+/// file, so no reader of it ever meets a moment it cannot be opened, nor contents it
+/// cannot parse.
+///
+/// `git config` writes a whole new file and renames it over `config`, and on Windows
+/// that rename is a moment a concurrent git command cannot open the file at all: Git
+/// for Windows reads its configuration through `_wfopen`, which does not share
+/// deletion, so a git read beside it fails with `unable to access '.git/config':
+/// Permission denied`. A lender's configuration is read by every session of it and by
+/// whatever else works in the checkout, none of which a lock of this crate's reaches.
+/// Writing into the file that is there opens it for writing alone, which every
+/// reader's sharing admits.
+///
+/// What a reader can see of the write instead is planned by [`addition`]. Git parses a
+/// configuration through stdio, one buffered `read` after another, until one finds the
+/// end — so a reader can hold the file's old end from one `read` and be handed what has
+/// been appended since by the next, and on Linux a write that crosses a page can be
+/// seen in part. NTFS shows a reader no part of a write at the end of a file until the
+/// whole of it is in place ([MS-FSA] 2.1.5.4: the stream's size and valid data length
+/// move only "upon successful completion"), and Linux puts each page's bytes in place
+/// before moving the size, so neither hands a reader zeros. Git's own `config.lock` is
+/// held throughout, so no `git config` can read the file before these writes and
+/// rename its copy over them after.
+fn append_in_place(common: &Path, settings: &[(&str, &str)]) -> Result<()> {
+    if settings.is_empty() {
+        return Ok(());
+    }
+    let config = git_path(common).join("config");
+    let lock = git_path(common).join("config.lock");
+    let _held = ConfigLock::take(&lock)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&config)
+        .map_err(error::at("open the configuration at", &config))?;
+    let mut content = Vec::new();
+    (&file)
+        .read_to_end(&mut content)
+        .map_err(error::at("read the configuration at", &config))?;
+    for step in addition(&content, settings) {
+        put(&file, step.at, &step.bytes)
+            .map_err(error::at("write the configuration at", &config))?;
+    }
     Ok(())
+}
+
+/// One write [`addition`] makes: these bytes, at this offset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Step {
+    at: u64,
+    bytes: Vec<u8>,
+}
+
+/// The writes that add `settings` to a configuration holding `content`, in order.
+///
+/// The settings are appended as one comment, `#[gc] auto = 0#[gc] pruneExpire = never`,
+/// and then each `#` becomes a line end in turn, one byte in place, which a reader sees
+/// as either byte. Every part of the appended text a reader can be shown — any prefix
+/// of it, whether behind the file's last line or behind a line end the reader read
+/// before the write began — starts with `#`, so it is comment until a whole setting is
+/// put in force by its own line end. That holds for any file git reads: one ending in
+/// a line end, empty, or ending in a line a backslash continues, where the comment is
+/// the continued value's own. A last line with no end of its own is given one first:
+/// git reads the end of the file as a line end, so a value continued into it ends
+/// there, and a `#` written straight after its backslash would be an escape git
+/// refuses — and, once that `#` is a line end, a continuation taking the next setting
+/// into the value. A write that fails leaves such a state, and the next attempt appends
+/// after it.
+fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
+    let length = content.len() as u64;
+    let ended = content.last().is_none_or(|last| *last == b'\n');
+    let appended: String = (!ended)
+        .then_some("\n".to_owned())
+        .into_iter()
+        .chain(settings.iter().map(|(key, value)| {
+            let (section, name) = key.split_once('.').unwrap_or(("core", key));
+            format!("#[{section}] {name} = {value}")
+        }))
+        .collect();
+    let mut steps = vec![Step {
+        at: length,
+        bytes: appended.clone().into_bytes(),
+    }];
+    steps.extend(
+        appended
+            .bytes()
+            .enumerate()
+            .filter(|(_, byte)| *byte == b'#')
+            .map(|(at, _)| Step {
+                at: length + at as u64,
+                bytes: b"\n".to_vec(),
+            }),
+    );
+    steps
+}
+
+/// Write `bytes` at `at`, however many writes that takes.
+fn put(file: &std::fs::File, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < bytes.len() {
+        #[cfg(unix)]
+        let wrote =
+            std::os::unix::fs::FileExt::write_at(file, &bytes[written..], at + written as u64)?;
+        #[cfg(windows)]
+        let wrote = std::os::windows::fs::FileExt::seek_write(
+            file,
+            &bytes[written..],
+            at + written as u64,
+        )?;
+        if wrote == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        written += wrote;
+    }
+    Ok(())
+}
+
+/// Git's own lock on a repository's configuration, held while it is written and
+/// removed when dropped — the file every `git config` takes before it writes.
+struct ConfigLock(PathBuf);
+
+impl ConfigLock {
+    /// Take it, waiting a little for a `git config` that holds it: git holds it only
+    /// for the length of one write.
+    fn take(path: &Path) -> Result<Self> {
+        let started = Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(_) => return Ok(Self(path.to_path_buf())),
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        && started.elapsed() < Duration::from_secs(10) =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(error::at("take git's configuration lock at", path)(e)),
+            }
+        }
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// The object store a checkout keeps its own history in, which is what another
@@ -3366,10 +3704,27 @@ pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
 }
 
 /// Create `branch` off `base`, checked out in a new worktree at `path`.
+///
+/// With no upstream, for the reason [`NO_TRACK`] gives.
 pub fn worktree_add(cwd: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
     let path = git_path(path).to_string_lossy();
-    checked(&["worktree", "add", "-b", branch, &path, base], Some(cwd)).map(|_| ())
+    checked(
+        &["worktree", "add", NO_TRACK, "-b", branch, &path, base],
+        Some(cwd),
+    )
+    .map(|_| ())
 }
+
+/// What a branch this crate cuts is given instead of git's default upstream.
+///
+/// Cut from `origin/<base>`, git's `branch.autoSetupMerge` would record the base as
+/// the branch's upstream, writing two keys into the clone's `.git/config` — and a
+/// warm pool slot's clone is one every sibling session's search reads, so each session
+/// placed in it would rename a new configuration over the one a sibling is reading.
+/// On Windows that read fails (see [`append_in_place`]). Nothing here reads an
+/// upstream: every push and comparison names its refs, and the base is not the
+/// branch's own remote anyway.
+const NO_TRACK: &str = "--no-track";
 
 /// Check out an existing local branch in a new worktree.
 pub fn worktree_add_existing(cwd: &Path, path: &Path, branch: &str) -> Result<()> {
@@ -3392,8 +3747,14 @@ pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result
 /// The in-place form of [`worktree_add`], for a pool slot whose worktree stands
 /// detached on the base: git rewrites only the files that differ between the two
 /// trees, which is what lets an incremental build in the slot see a branch diff.
+///
+/// With no upstream, for the reason [`NO_TRACK`] gives.
 pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<()> {
-    checked(&["checkout", "-q", "-b", branch, base], Some(worktree)).map(|_| ())
+    checked(
+        &["checkout", "-q", NO_TRACK, "-b", branch, base],
+        Some(worktree),
+    )
+    .map(|_| ())
 }
 
 /// Check out an existing local branch in the worktree that is already there.
@@ -5386,5 +5747,220 @@ mod reaping {
             reason.contains(&std::io::Error::from_raw_os_error(libc::EPERM).to_string()),
             "{reason}"
         );
+    }
+}
+
+/// Every view a reader can be shown while [`append_in_place`] adds settings, read by
+/// the real git, and every state a failure can leave, recovered by the real write.
+///
+/// What is held is an interleaving no journey can stop the binary in: git reads a
+/// configuration in buffered `read`s, one after another, until one finds the end, so a
+/// reader can join what one `read` returned before a write to what the next returns
+/// after it. The plan the write executes ([`addition`]) is walked byte by byte here
+/// instead: every prefix of every write — a write across a page can be seen in part on
+/// Linux — and every view that joins one such state, up to a read boundary, to a later
+/// one beyond it.
+#[cfg(test)]
+mod config_addition_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// The read buffer git's stdio refills: one `read` of this many bytes at a time.
+    const READ_BUFFER: usize = 4096;
+
+    /// The local configuration shapes git reads: as `git init` leaves it, an operator's
+    /// last line with no end, one ended `\r\n`, one whose last line a backslash
+    /// continues — ended, and not — one whose last value ends in an escaped backslash
+    /// and no line end, none at all, and one spanning several read buffers.
+    fn shapes(initialized: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let unended = initialized[..initialized.len() - 1].to_vec();
+        let mut crlf = unended.clone();
+        crlf.extend_from_slice(b"\r\n");
+        let mut continued = initialized.to_vec();
+        continued.extend_from_slice(b"[onevcs-test]\n\tnote = kept \\\n");
+        let unended_continuation = continued[..continued.len() - 1].to_vec();
+        let mut escaped = initialized.to_vec();
+        escaped.extend_from_slice(b"[onevcs-test]\n\tnote = kept\\\\");
+        let mut large = initialized.to_vec();
+        for remote in 0..300 {
+            large.extend_from_slice(
+                format!(
+                    "[remote \"r{remote:03}\"]\n\turl = https://example.invalid/{remote:03}.git\n"
+                )
+                .as_bytes(),
+            );
+        }
+        vec![
+            ("as git init leaves it", initialized.to_vec()),
+            ("with an unended last line", unended),
+            ("ended with \\r\\n", crlf),
+            ("continued by a backslash", continued),
+            (
+                "continued by a backslash with no line end",
+                unended_continuation,
+            ),
+            ("ending in an escaped backslash", escaped),
+            ("empty", Vec::new()),
+            ("larger than three read buffers", large),
+        ]
+    }
+
+    /// A repository `git init` made, and the configuration it wrote.
+    fn initialized() -> (tempfile::TempDir, PathBuf, Vec<u8>) {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let repository = scratch.path().join("repository");
+        let made = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repository)
+            .output()
+            .expect("git runs");
+        assert!(made.status.success(), "git init");
+        let written = std::fs::read(repository.join(".git").join("config"))
+            .expect("git init's configuration");
+        (scratch, repository, written)
+    }
+
+    /// Every setting git reads from a repository whose configuration is `state`, or why
+    /// it could not.
+    fn listing(repository: &Path, state: &[u8]) -> std::result::Result<String, String> {
+        std::fs::write(repository.join(".git").join("config"), state).expect("a state");
+        let output = Command::new("git")
+            .args(["config", "--local", "--list"])
+            .current_dir(repository)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                repository.join(".git").join("no-global"),
+            )
+            .output()
+            .expect("git runs");
+        if output.status.success() && output.stderr.is_empty() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        }
+    }
+
+    /// The listing without the retention keys, and each key's values, in file order.
+    fn split(listing: &str) -> (Vec<&str>, Vec<&str>, Vec<&str>) {
+        let (mut rest, mut auto, mut prune) = (Vec::new(), Vec::new(), Vec::new());
+        for line in listing.lines() {
+            match line.split_once('=') {
+                Some(("gc.auto", value)) => auto.push(value),
+                Some(("gc.pruneexpire", value)) => prune.push(value),
+                _ => rest.push(line),
+            }
+        }
+        (rest, auto, prune)
+    }
+
+    fn applied(content: &[u8], step: &Step, landed: usize) -> Vec<u8> {
+        let mut state = content.to_vec();
+        let at = step.at as usize;
+        if state.len() < at + landed {
+            state.resize(at + landed, 0);
+        }
+        state[at..at + landed].copy_from_slice(&step.bytes[..landed]);
+        state
+    }
+
+    /// Every state of the plan for `base`, in the order they occur: each prefix of each
+    /// write.
+    fn states(base: &[u8]) -> Vec<Vec<u8>> {
+        let mut found = vec![base.to_vec()];
+        let mut content = base.to_vec();
+        for step in addition(base, &RETENTION) {
+            for landed in 1..=step.bytes.len() {
+                found.push(applied(&content, &step, landed));
+            }
+            content = applied(&content, &step, step.bytes.len());
+        }
+        found
+    }
+
+    /// Every view a reader can be shown: each state, and each join of an earlier state,
+    /// up to a read boundary, to a later one beyond it. A boundary is where a `read`
+    /// ended — a buffer's end or the end of the file as that `read` found it — or, for
+    /// a reader whose buffers fall elsewhere, any byte of what the write changed.
+    fn views(base: &[u8], states: &[Vec<u8>]) -> BTreeSet<Vec<u8>> {
+        let mut found: BTreeSet<Vec<u8>> = states.iter().cloned().collect();
+        for (earlier, before) in states.iter().enumerate() {
+            let mut boundaries: BTreeSet<usize> = (base.len()..=before.len()).collect();
+            boundaries.extend((READ_BUFFER..before.len()).step_by(READ_BUFFER));
+            for after in &states[earlier + 1..] {
+                for &boundary in &boundaries {
+                    let mut view = before[..boundary].to_vec();
+                    view.extend_from_slice(&after[boundary.min(after.len())..]);
+                    found.insert(view);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn every_view_of_an_addition_reads_and_every_failure_is_completed_by_the_next() {
+        let (_scratch, repository, initialized) = initialized();
+        let config = repository.join(".git").join("config");
+        for (shape, base) in shapes(&initialized) {
+            let before = listing(&repository, &base)
+                .unwrap_or_else(|e| panic!("the premise: git reads the base {shape}: {e}"));
+            let (kept, _, _) = split(&before);
+            let states = states(&base);
+            let views = views(&base, &states);
+            assert!(
+                views.len() > states.len(),
+                "{shape}: the premise: views join states"
+            );
+            for view in &views {
+                let shown = String::from_utf8_lossy(view);
+                let read = listing(&repository, view)
+                    .unwrap_or_else(|e| panic!("{shape}: git cannot read {shown:?}: {e}"));
+                // Nothing the file held moves, and a setting is in force whole or not at all.
+                let (rest, auto, prune) = split(&read);
+                assert_eq!(rest, kept, "{shape}: {shown:?}");
+                assert!(auto.iter().all(|value| *value == "0"), "{shape}: {shown:?}");
+                assert!(
+                    prune.iter().all(|value| *value == "never"),
+                    "{shape}: {shown:?}"
+                );
+            }
+            // A failure leaves one of the states; the next write completes it.
+            for state in &states {
+                std::fs::write(&config, state).expect("a failed write's state");
+                retain_objects_for_borrowers(&repository).unwrap_or_else(|e| {
+                    panic!(
+                        "{shape}: the next write after {:?} fails: {e}",
+                        String::from_utf8_lossy(state)
+                    )
+                });
+                let after = std::fs::read(&config).expect("the completed configuration");
+                let read = listing(&repository, &after).expect("the completed file reads");
+                let (rest, auto, prune) = split(&read);
+                assert_eq!(rest, kept, "{shape}");
+                assert_eq!(auto.last(), Some(&"0"), "{shape}");
+                assert_eq!(prune.last(), Some(&"never"), "{shape}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_configuration_git_cannot_read_is_refused_rather_than_taken_to_lack_the_keys() {
+        let (_scratch, repository, initialized) = initialized();
+        let config = repository.join(".git").join("config");
+        let mut broken = initialized.clone();
+        broken.extend_from_slice(b"[unterminated\n");
+        assert!(
+            listing(&repository, &broken).is_err(),
+            "the premise: git cannot read it"
+        );
+        let asked = retains_objects_for_borrowers(&repository)
+            .expect_err("whether it retains is not answered from a file git cannot read");
+        assert!(
+            asked.to_string().contains("could not read gc.auto"),
+            "{asked}"
+        );
+        retain_objects_for_borrowers(&repository).expect_err("nothing is written to it");
+        assert_eq!(std::fs::read(&config).expect("the configuration"), broken);
     }
 }

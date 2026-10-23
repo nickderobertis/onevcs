@@ -164,9 +164,10 @@ fn resumable(
     if branch::refuse_unfinished_merges(registry, &resolution, branch, &then).is_err() {
         return Ok(None);
     }
-    let Ok(source) = branch::locate(registry, &resolution, branch, &root, &then) else {
+    let Ok(located) = branch::locate(registry, &resolution, branch, &root, &then) else {
         return Ok(None);
     };
+    let source = located.checkout;
     // Taken before anything below is read, and held until the resumed publication's
     // last event: from here the branch reads as held by a running publication.
     let publication = publishing::Lease::take(&resolution.key, branch, &source, &source)?;

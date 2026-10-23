@@ -61,10 +61,11 @@ fn within_allowance(shape: &Shape<'_>, repo: &Path, borrowing: Option<&Path>) ->
     }
     // A count or a range the graph above declined is a walk of a long history, which
     // libgit2 would make in full each time; its proof, where one is stored, is the
-    // cheaper answer, so those are left to the proofs and to git.
+    // cheaper answer, so those are left to the proofs and to git. A declined merge
+    // base goes there too: libgit2 may overlook the missing parent that declined it.
     if matches!(
         shape,
-        Shape::Count(..) | Shape::Listed(..) | Shape::Messages(..)
+        Shape::MergeBase(..) | Shape::Count(..) | Shape::Listed(..) | Shape::Messages(..)
     ) {
         return None;
     }
@@ -232,15 +233,10 @@ impl<'a> Shape<'a> {
 
     fn answer(&self, repository: &git2::Repository) -> Option<Output> {
         match self {
-            Self::MergeBase(a, b) => {
-                let (a, b) = (commit(repository, *a)?.id(), commit(repository, *b)?.id());
-                // Exactly one best common ancestor is the only answer whose choice
-                // git and this cannot make differently.
-                let bases = repository.merge_bases(a, b).ok()?;
-                match bases.iter().collect::<Vec<_>>().as_slice() {
-                    [only] => printed(format!("{only}\n")),
-                    _ => None,
-                }
+            Self::MergeBase(..) => {
+                // A declined graph walk goes to git: libgit2 can stop before a
+                // missing ancestor that the executable's walk would report.
+                None
             }
             Self::IsAncestor(a, b) => {
                 let (a, b) = (commit(repository, *a)?.id(), commit(repository, *b)?.id());
@@ -569,23 +565,54 @@ mod graph {
         ) -> Option<(HashMap<git2::Oid, u8>, Vec<git2::Oid>)> {
             let mut flags: HashMap<git2::Oid, u8> = HashMap::new();
             let mut queue: BinaryHeap<(i64, std::cmp::Reverse<u64>, git2::Oid)> = BinaryHeap::new();
+            let mut enqueued = HashSet::new();
+            let mut oldest_nonstale = None;
             let mut pushed = 0_u64;
-            let mut push = |queue: &mut BinaryHeap<_>, id: git2::Oid, time: i64| {
+            let mut push = |queue: &mut BinaryHeap<_>,
+                            enqueued: &mut HashSet<_>,
+                            oldest: &mut Option<(i64, git2::Oid)>,
+                            id: git2::Oid,
+                            time: i64,
+                            stale: bool| {
+                if !enqueued.insert(id) {
+                    return;
+                }
                 queue.push((time, std::cmp::Reverse(pushed), id));
                 pushed += 1;
+                if !stale && oldest.is_none_or(|(when, _)| time <= when) {
+                    *oldest = Some((time, id));
+                }
             };
             flags.insert(one, PARENT1);
-            push(&mut queue, one, self.commit(one)?.time);
+            push(
+                &mut queue,
+                &mut enqueued,
+                &mut oldest_nonstale,
+                one,
+                self.commit(one)?.time,
+                false,
+            );
             *flags.entry(two).or_insert(0) |= PARENT2;
-            push(&mut queue, two, self.commit(two)?.time);
+            push(
+                &mut queue,
+                &mut enqueued,
+                &mut oldest_nonstale,
+                two,
+                self.commit(two)?.time,
+                false,
+            );
             let mut results = Vec::new();
-            while queue
-                .iter()
-                .any(|(_, _, id)| flags.get(id).is_some_and(|flag| flag & STALE == 0))
-            {
+            while oldest_nonstale.is_some() {
                 let Some((_, _, id)) = queue.pop() else {
                     break;
                 };
+                // Git's queue remembers its oldest nonstale entry even if later
+                // painting makes it stale. Stopping as soon as all current flags
+                // are stale can skip a missing parent Git 2.55 still reads.
+                if oldest_nonstale.is_some_and(|(_, oldest)| oldest == id) {
+                    oldest_nonstale = None;
+                }
+                enqueued.remove(&id);
                 let held = flags.get(&id).copied().unwrap_or(0);
                 let mut marks = held & (PARENT1 | PARENT2 | STALE);
                 if marks == PARENT1 | PARENT2 {
@@ -602,7 +629,14 @@ mod graph {
                     }
                     let time = self.commit(parent)?.time;
                     flags.insert(parent, carried | marks);
-                    push(&mut queue, parent, time);
+                    push(
+                        &mut queue,
+                        &mut enqueued,
+                        &mut oldest_nonstale,
+                        parent,
+                        time,
+                        marks & STALE != 0,
+                    );
                 }
             }
             Some((flags, results))

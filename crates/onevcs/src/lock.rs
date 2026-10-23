@@ -153,12 +153,24 @@ fn try_at(path: &Path, mode: Mode) -> Result<Option<Guard>> {
     }
 }
 
+/// Take an identity's shared occupancy lease, queueing behind an exclusive holder
+/// under the configured bound.
+///
+/// For a reader that has to be inside a run root rather than told it is busy: every
+/// exclusive take of an occupancy lease is a reclamation deciding about the run root
+/// and removing it, so waiting it out is short, and what is left afterwards is either
+/// the run root or nothing.
+pub fn shared(identity: &str) -> Result<Guard> {
+    let (path, file) = open(identity)?;
+    wait_for(&path, file, identity, timeout_seconds()?, Mode::Shared)
+}
+
 /// Take an identity's shared occupancy lease if it is free *right now*.
 ///
 /// The lease mode: "somebody else is in here" is the answer, not something to wait
 /// out. Returns `None` when an exclusive holder has it.
 pub fn try_shared(identity: &str) -> Result<Option<Guard>> {
-    try_acquire(identity, true)
+    try_acquire(identity, Mode::Shared)
 }
 
 /// Whether anybody holds an identity's occupancy lease right now.
@@ -210,7 +222,7 @@ pub fn is_occupied(identity: &str) -> Result<bool> {
 /// This is how occupancy is *probed*: an exclusive lock succeeds only while no
 /// shared holder remains, so taking one proves the run root is abandoned.
 pub fn try_exclusive(identity: &str) -> Result<Option<Guard>> {
-    try_acquire(identity, false)
+    try_acquire(identity, Mode::Exclusive)
 }
 
 fn open(identity: &str) -> Result<(PathBuf, File)> {
@@ -230,16 +242,15 @@ fn open_at(path: &Path) -> Result<File> {
         .map_err(error::at("open the lock at", path))
 }
 
-fn try_acquire(identity: &str, is_shared: bool) -> Result<Option<Guard>> {
+fn try_acquire(identity: &str, mode: Mode) -> Result<Option<Guard>> {
     let (_, file) = open(identity)?;
-    let taken = if is_shared {
-        FileExt::try_lock_shared(&file)
-    } else {
-        FileExt::try_lock_exclusive(&file)
+    let taken = match mode {
+        Mode::Shared => FileExt::try_lock_shared(&file),
+        Mode::Exclusive => FileExt::try_lock_exclusive(&file),
     };
     match taken {
         Ok(true) => {
-            if !is_shared {
+            if mode == Mode::Exclusive {
                 record_owner(&file);
             }
             Ok(Some(Guard { file }))

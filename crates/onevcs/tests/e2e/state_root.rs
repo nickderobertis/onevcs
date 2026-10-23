@@ -46,6 +46,7 @@ const HELPERS: &[(&str, &str)] = &[
     ("crates/onevcs/tests/e2e/world.rs", "onevcs_std"),
     ("crates/onevcs/tests/e2e/world.rs", "shell"),
     ("crates/onevcs/tests/e2e/inherited_pipes.rs", "onevcs"),
+    ("crates/onevcs/tests/e2e/concurrent_sessions.rs", "onevcs"),
     ("crates/onevcs/tests/e2e/smoke.rs", "smoking"),
     ("crates/onevcs/tests/e2e/packaging.rs", "run_installed"),
     // A process a publication's gate leaves running, which reads the inventory from
