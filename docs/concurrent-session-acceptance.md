@@ -252,3 +252,13 @@ zero renames onto published clones' `config`, `packed-refs` or
 `refs/remotes/origin/HEAD`; construction writes to those files remain under
 `.clone.cutting`. The operation/file inventory above remains applicable.
 `just lint` and `just fmt-check` both exited 0 over this corrected code.
+
+
+Main's `HeldGit` fixture originally recognized readers only by a clone working
+directory. This branch addresses shared reads with `--git-dir` from outside the
+clone, so two inherited tests waited for a fixture notice that never arrived.
+The fixture now resolves either invocation to the same repository before holding
+the real Git read; command forwarding and raw invocation logs are unchanged.
+On `02fa581`, `just test-one checkout_reads` exited 0: **40 passed in 9.307s**.
+The earlier stalled fixture waits were released and their run is not acceptance
+evidence. No production workaround or test assertion was removed.
