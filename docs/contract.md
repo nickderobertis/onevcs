@@ -2707,8 +2707,15 @@ that the session it names no longer exists, naming that session, without
 starting a child in a removed directory. A record removed after a listing
 enumerated it contributes nothing to that listing; unreadable or invalid records
 still refuse the read. Managed-clone reclamation, retirement and pool removal
-use the same exclusion. Other processes working inside the run root still refuse
-closure with the existing occupancy diagnostic.
+use the same exclusion. Wherever a pool's placement lock and an identity turn are
+both held, the placement lock is taken first: placement and pool pruning take it
+before their identity turn, and a retirement returning a slot yields its identity
+turn while it queues for that lock, keeping its per-checkout leases, as it does for
+a write. So a session open that holds the placement lock while its reads wait for
+their turn never waits on a placement, a prune or a retirement that is waiting on
+it, and two concurrent opens on one pooled identity, one on a slot and one in
+overflow, both complete. Other processes working inside the run root still refuse closure with the
+existing occupancy diagnostic.
 
 ### A session record carries the labels its opener stamped, and the listings filter on them
 

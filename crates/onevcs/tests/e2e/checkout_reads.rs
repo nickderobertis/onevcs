@@ -2183,10 +2183,25 @@ fn pool_query_ordering(capacity: bool, read_first: bool) {
 /// serial would cross: the slot open inside a write in its slot, holding the serial
 /// and no read turn, and the overflow open at the serial's lock file. Both proceed
 /// from there and must both open, within the fixture's lock bound.
-#[test]
-fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
+/// The lock file of the placement serial over the pool a slot belongs to.
+fn placement_serial(fixture: &Fixture, slot: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
 
+    let pool = slot.parent().unwrap();
+    let serial = fixture.world.home().join("locks").join(format!(
+        "{:x}.lock",
+        Sha256::digest(format!("pool:{}", pool.display()).as_bytes())
+    ));
+    assert!(
+        serial.is_file(),
+        "the placement serial is {}",
+        serial.display()
+    );
+    serial
+}
+
+#[test]
+fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
     let fixture = crate::pool::pooled(&crate::pool::sized(1, "unlimited"));
     let (warmed, slot_worktree) = fixture.open(&["--branch", "feature/warm-up"]);
     fixture
@@ -2196,12 +2211,7 @@ fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
         .assert()
         .success();
     let slot = slot_worktree.parent().unwrap();
-    let pool = slot.parent().unwrap();
-    let serial = fixture.world.home().join("locks").join(format!(
-        "{:x}.lock",
-        Sha256::digest(format!("pool:{}", pool.display()).as_bytes())
-    ));
-    assert!(serial.is_file(), "the placement serial is {}", serial.display());
+    let serial = placement_serial(&fixture, slot);
 
     let shim = HeldGit::installed(&fixture);
     let mut slotted = shim.command(&fixture, &slot.join("clone"));
@@ -2228,7 +2238,13 @@ fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
         .env("READ_PAUSE_FILE", &serial)
         .env("READ_READY", &ready)
         .env("READ_RELEASE", &release)
-        .args(["session", "open", "project", "--branch", "feature/overflowed"]);
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/overflowed",
+        ]);
     let overflowed = notifying(overflowed, Vec::new());
     let mut paused = String::new();
     BufReader::new(&ready_pipe).read_line(&mut paused).unwrap();
@@ -2247,4 +2263,67 @@ fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
     let overflowed = crate::world::worktree_of(&overflowed.stdout);
     assert_eq!(crate::pool::slot_of(&slotted), Some(1));
     assert_eq!(crate::pool::slot_of(&overflowed), None, "{overflowed:?}");
+}
+
+/// A retirement returning a slot queues for the placement serial while an overflow
+/// open holds it inside its clone, which takes no read turn. The open's later reads
+/// then need the turn the retirement holds; both must still finish, within the
+/// fixture's lock bound, and the slot is returned.
+#[test]
+fn a_retirement_returning_a_slot_and_an_open_holding_the_placement_serial_both_complete() {
+    let yard = hosted_yard();
+    yard.landed("feature/retiring-slot", "landed.txt");
+    let (token, worktree) = yard.fixture.open(&["--branch", "feature/retiring-slot"]);
+    let slot = worktree.parent().unwrap().to_owned();
+    assert_eq!(crate::pool::slot_of(&worktree), Some(1));
+    let serial = placement_serial(&yard.fixture, &slot);
+
+    let shim = HeldGit::installed(&yard.fixture);
+    let mut opening = shim.command(&yard.fixture, yard.world().home().parent().unwrap());
+    opening
+        .env("HOLD_READER", "1")
+        .env("HOLD_ARGS", "clone --shared")
+        .args([
+            "session",
+            "open",
+            "project",
+            "--branch",
+            "feature/overflowing",
+        ]);
+    let opening = notifying(opening, Vec::new());
+    shim.entered();
+
+    let mut entries = Entries::watching(&yard.world().path(""));
+    let notice = yard.world().path("turn-notices");
+    let mut retiring = yard.world().onevcs_std();
+    retiring
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", &serial)
+        .env("READ_TURN_NOTICE", &notice)
+        .args(["retire", "feature/retiring-slot", "--json"]);
+    let retiring = notifying(retiring, vec![notice]);
+    let queued = entries.entered_or_finished();
+    shim.release();
+
+    let opened = opening.join().unwrap();
+    let retired = retiring.join().unwrap();
+    assert!(queued, "the retirement reached the placement serial");
+    success(opened.clone());
+    success(retired.clone());
+    assert_eq!(
+        crate::pool::slot_of(&crate::world::worktree_of(&opened.stdout)),
+        None
+    );
+    let report: serde_json::Value = serde_json::from_slice(&retired.stdout).unwrap();
+    assert_eq!(report["outcome"], "retired", "{report}");
+    assert_eq!(
+        report["slots_returned"],
+        serde_json::json!([slot]),
+        "{report}"
+    );
+    assert_eq!(
+        report["sessions_closed"],
+        serde_json::json!([token]),
+        "{report}"
+    );
 }

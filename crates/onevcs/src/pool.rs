@@ -761,10 +761,13 @@ pub(crate) struct Ask<'a> {
 /// A `--pool 0` skips the slots and spends the overflow, because the cap is about disk
 /// and a session that opted out of reuse still spends it.
 pub(crate) fn place(ask: &Ask<'_>) -> Result<Placement> {
-    let _reads = crate::checkout_reads::teardown(&ask.resolution.key)?;
     let pool = pool_dir(ask.identity_root);
     crate::home::ensure_dir(&pool)?;
+    // The serial before the read turn, never after: the open keeps the serial while
+    // its git reads queue for that turn, so a placement holding the turn while it
+    // queued for the serial would wait on an open that waits on it.
     let serial = lock::exclusive(&placement_identity(&pool))?;
+    let _reads = crate::checkout_reads::teardown(&ask.resolution.key)?;
     let mut survey = survey(&ask.resolution.key, &pool)?;
     shed(&mut survey, ask.resolved.file_pool, ask.execution);
     let wanted = ask.resolved.pool.value;
@@ -1362,7 +1365,6 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
         caller_merges_base: false,
     };
     let asked = asked(&request)?;
-    let _reads = crate::checkout_reads::teardown(&asked.resolution.key)?;
     let pool = pool_dir(&asked.identity_root);
     let mut report = PruneReport {
         removed: Vec::new(),
@@ -1372,8 +1374,9 @@ pub fn pool_prune(repo: &str) -> Result<PruneReport> {
         return Ok(report);
     }
     // Serialized against placement, so a slot this is removing is not one an open is
-    // in the middle of taking.
+    // in the middle of taking — and taken before the read turn, in placement's order.
     let _serial = lock::exclusive(&placement_identity(&pool))?;
+    let _reads = crate::checkout_reads::teardown(&asked.resolution.key)?;
     let survey = survey(&asked.resolution.key, &pool)?;
     for slot in &survey.slots {
         if let Some(why) = keeps(slot, &asked.resolution.publication) {

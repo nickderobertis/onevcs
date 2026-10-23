@@ -3550,8 +3550,12 @@ impl Census<'_> {
         let pool = slot
             .parent()
             .ok_or_else(|| format!("{} has no pool above it", slot.display()))?;
+        // The census holds this identity's read turn, and an open holding the serial
+        // queues for that turn: queue for the serial with the turn yielded, as a write
+        // does, and take the turn back after it, in placement's order.
         let _serial =
-            lock::exclusive(&pool::placement_identity(pool)).map_err(|e| e.to_string())?;
+            crate::checkout_reads::mutating(|| lock::exclusive(&pool::placement_identity(pool)))
+                .map_err(|e| e.to_string())?;
         if !pool::is_idle(&self.resolution.key, slot).map_err(|e| e.to_string())? {
             return Ok(false);
         }
