@@ -153,13 +153,6 @@ impl Process {
     /// still stands, and kept until the exclusive one is granted or the shared one is
     /// back, so no other process's teardown can enter while this one's readers are
     /// inside.
-    // llmlint: ignore[changed_behavior_has_e2e] each branch past the first grant is an
-    // interleaving with a process stopped mid-upgrade — its intent awaited, its readers
-    // leaving, or its exclusive take refused by the lock bound — and no verb holds a turn
-    // across a wait, so no journey can stop one there. The upgrade's ordinary path is the
-    // public journey `library::threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one`;
-    // the module's tests below arrange each other branch through the lease API, re-running
-    // their own binary as the other process, as `crates/onevcs/AGENTS.md` records.
     fn upgrade<'a>(
         &'a self,
         mut holders: MutexGuard<'a, Holders>,
@@ -179,6 +172,13 @@ impl Process {
             File::Upgrading(Upgrade::Lapsed) => None,
             _ => unreachable!("an upgrade owns the file until it settles it"),
         };
+        // llmlint: ignore-block[changed_behavior_has_e2e] the intent refused, the exclusive take refused, and
+        // the readers' hold restored or lost are each an interleaving with this process
+        // stopped mid-upgrade under the lock bound, and no verb holds a turn across a wait, so
+        // no journey can stop one here. The module's tests arrange each through the lease
+        // API (`a_failed_upgrade_restores_the_readers_hold_or_leaves_it_to_the_next_lease`);
+        // the granted path is the public journey
+        // `library::threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one`.
         let intent = match intent {
             Ok(intent) => intent,
             Err(error) => {
@@ -216,6 +216,7 @@ impl Process {
                 Err(error)
             }
         };
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         drop(intent);
         answer.map(|()| holders)
     }
@@ -232,12 +233,12 @@ impl Files {
     /// flight: that process gave up its shared hold under the intent lock with its
     /// readers still inside. The lease is let go before the intent is waited on, so
     /// the two locks are never awaited in a cycle.
-    // llmlint: ignore[changed_behavior_has_e2e] the intent is found held only while another
-    // process is stopped between giving up its shared hold and being granted the
-    // exclusive one, which no verb can be held at; the module's tests arrange it with a
-    // second process running the lease API (`a_teardown_granted_during_another_process_upgrade_hands_the_lease_back`,
-    // `an_exclusive_take_that_cannot_clear_the_intent_lets_the_lease_go`).
     fn exclusive(&self) -> Result<lock::Guard> {
+        // llmlint: ignore-block[changed_behavior_has_e2e] the intent is found held only while another process
+        // is stopped between giving up its shared hold and being granted the exclusive one,
+        // which no verb can be held at; the module's tests arrange it with a second process
+        // running the lease API (`a_teardown_granted_during_another_process_upgrade_hands_the_lease_back`,
+        // `an_exclusive_take_that_cannot_clear_the_intent_lets_the_lease_go`).
         loop {
             let guard = lock::exclusive_at(&self.lease)?;
             if lock::try_exclusive_at(&self.intent)?.is_some() {
@@ -246,6 +247,7 @@ impl Files {
             drop(guard);
             drop(lock::exclusive_at(&self.intent)?);
         }
+        // llmlint: ignore-end[changed_behavior_has_e2e]
     }
 }
 
@@ -258,6 +260,11 @@ impl Hold {
         let process = Process::of(root);
         let mut holders = process.holders();
         loop {
+            // llmlint: ignore-block[changed_behavior_has_e2e] which state a sibling meets — an upgrade awaiting
+            // its intent, one whose shared hold lapsed, a first take still waiting on another
+            // process — is decided by where another process holds this one, which no verb can
+            // pause; the module's tests arrange each (`siblings_arrive_and_leave_while_the_process_waits_on_another_process`,
+            // `a_reader_arriving_after_an_upgrade_lost_its_shared_hold_waits_for_the_upgrade`).
             let covered = match &holders.file {
                 File::Held(Mode::Exclusive, _) => true,
                 File::Held(Mode::Shared, _) => mode == Mode::Shared,
@@ -278,6 +285,7 @@ impl Hold {
                     .wait(holders)
                     .unwrap_or_else(PoisonError::into_inner),
             };
+            // llmlint: ignore-end[changed_behavior_has_e2e]
         }
     }
 }
@@ -290,6 +298,10 @@ impl Drop for Hold {
             Mode::Exclusive => holders.writers -= 1,
         }
         if holders.readers + holders.writers == 0 {
+            // llmlint: ignore-block[changed_behavior_has_e2e] the last reader leaving an upgrade still awaiting
+            // its intent needs another process holding that intent at that moment, which no
+            // verb can arrange; `an_upgrade_whose_readers_leave_while_it_awaits_the_intent_holds_nothing_for_them`
+            // does, through the lease API.
             match &mut holders.file {
                 File::Held(..) => holders.file = File::Free,
                 // An upgrade still waiting on the intent lock has nobody left to
@@ -299,6 +311,7 @@ impl Drop for Hold {
                 | File::Free
                 | File::Acquiring => {}
             }
+            // llmlint: ignore-end[changed_behavior_has_e2e]
         } else if self.mode == Mode::Exclusive && holders.writers == 0 {
             // Other processes' readers proceed beside this process's again.
             if let File::Held(held @ Mode::Exclusive, guard) = &mut holders.file {
