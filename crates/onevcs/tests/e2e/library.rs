@@ -8678,3 +8678,78 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
         held_to_each_alone(&references, repo);
     }
 }
+
+/// A host factory that, asked for a host, waits for sibling threads of this process to
+/// take the same identity's read turns through the public pool operations — the shape
+/// an engine dispatching several nodes of one repository from several threads has.
+struct WaitingOnSiblings {
+    inner: MemoryHost,
+    repo: &'static str,
+    met: std::sync::Mutex<Option<Result<(), String>>>,
+}
+
+impl Hosting for WaitingOnSiblings {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        let (done, finished) = std::sync::mpsc::channel();
+        let repo = self.repo;
+        let pruning = done.clone();
+        // A teardown of the identity, and a reader of it beside that teardown.
+        std::thread::spawn(move || {
+            let _ = pruning.send(
+                onevcs::pool_prune(repo)
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        std::thread::spawn(move || {
+            let _ = done.send(
+                onevcs::pool_status(repo)
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        let bound = std::time::Duration::from_secs(20);
+        let met = (0..2).try_for_each(|_| match finished.recv_timeout(bound) {
+            Ok(answer) => answer,
+            Err(_) => Err(format!(
+                "a sibling thread's read turn on {repo} did not finish within {bound:?} \
+                 while this thread held one"
+            )),
+        });
+        *self.met.lock().expect("the record") = Some(met);
+        self.inner.for_repo(slug)
+    }
+}
+
+#[test]
+fn threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one() {
+    // `session_change` holds the identity's read turn while it asks the supplied host
+    // factory for a host, and this factory waits there on two sibling threads — one
+    // tearing the identity's pool down, one reading it. Each of those is a lease on the
+    // same identity taken by another thread of this process, so a lease that conflicted
+    // across threads as it does across processes would hold them behind this one, which
+    // is waiting on them: the deadlock an embedding engine met in 0.56.6.
+    let world = World::new();
+    inhabit(&world);
+    hosted(&world, OPEN);
+    let session = worked(&world, "feature/threaded");
+    let host = WaitingOnSiblings {
+        inner: MemoryHost::default(),
+        repo: "hosted",
+        met: std::sync::Mutex::new(None),
+    };
+    let providers = Providers {
+        vcs: &Git,
+        hosting: &host,
+    };
+
+    let read = onevcs::session_change(&providers, &session.token).expect("the read runs");
+
+    assert_eq!(read, None, "nothing has opened a change request yet");
+    let met = host.met.lock().expect("the record").take();
+    assert_eq!(
+        met,
+        Some(Ok(())),
+        "both siblings took and released their turns while this thread held its own"
+    );
+}
