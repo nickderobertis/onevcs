@@ -1041,7 +1041,10 @@ fn a_check_running_after_the_lift_is_a_new_run_only_by_a_start_of_its_own_never_
         ("the draft's own start", Some(started(1))),
         ("no start at all", None),
     ] {
-        let (world, origin, session) = scene(AUTO, "0.3", "5");
+        // The bound only has to outlast forty readings, which a slow macOS runner
+        // took longer than 5s to make; the ending asserted is the one the finished
+        // reading brings, never the bound's.
+        let (world, origin, session) = scene(AUTO, "0.3", "20");
         let base = origin_tip(&world, &origin, "main");
         let running = Check {
             started_at: started_at.clone(),
