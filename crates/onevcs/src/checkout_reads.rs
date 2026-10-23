@@ -822,7 +822,12 @@ mod tests {
         assert!(lock::try_exclusive_at(&file).unwrap().is_none());
 
         // A lease file that can no longer be opened refuses the upgrade and the
-        // restoration both; once it can be, the next lease takes it afresh.
+        // restoration both; once it can be, the next lease takes it afresh. Where the
+        // hold did not convert in place the process still holds the file exclusive,
+        // which would admit the teardown without opening anything, so the reader
+        // takes a fresh shared hold first.
+        drop(reader);
+        let reader = identity(NAME).unwrap();
         let moved = file.with_extension("moved");
         std::fs::rename(&file, &moved).unwrap();
         std::fs::create_dir(&file).unwrap();
@@ -1036,7 +1041,9 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const PROCESS_ROLE: &str = "ONEVCS_TEST_LEASE_ROLE";
+    #[cfg(unix)]
     const PROCESS_IDENTITY: &str = "github.com/owner/two-processes";
 
     /// One of the two processes below: this test binary run again, taking leases
