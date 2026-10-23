@@ -321,3 +321,30 @@ After the corrected fixture and historical replay,
 `CARGO_TARGET_DIR=/tmp/onevcs-continuation-target just test-one concurrent_sessions`
 exited 0: **11 passed in 14.242s**, output at
 `/tmp/onevcs-continuation-final-tests.log`.
+
+## Merge continuation through `e3b5486`
+
+Merge `e3b5486` concludes the merge of
+`98d478a2c744f20213ce9c79dba99436a715343b` into `27aed76`; both are
+its parents. The sole conflicted path, `crates/onevcs/AGENTS.md`, preserves both
+sides' explanations of the private retention-write and checkout-read lease tests.
+Main's process-local read-turn fix and its tests are retained. No merge remains
+in progress and no path is unmerged.
+
+A fresh trace of the merged implementation ran:
+
+```sh
+CARGO_TARGET_DIR=/tmp/onevcs-continuation-target \
+strace -f -qq -s 180 \
+  -e trace=execve,openat,rename,renameat,renameat2,unlink,unlinkat,write,pwrite64 \
+  -o /tmp/onevcs-current-session.strace \
+  just test-one concurrent_sessions > /tmp/onevcs-current-session.log 2>&1
+```
+
+Exit 0; **11 passed in 89.176s**. Successful rename calls again contain zero
+replacements onto published workspace clones' `config`, `packed-refs`, or
+`refs/remotes/origin/HEAD`, excluding construction paths under `.cutting`.
+The operation/file inventory and historical failures above remain applicable.
+`just fmt-check` and `CARGO_TARGET_DIR=/tmp/onevcs-continuation-target just lint`
+both exited 0 on this merge. Final full-suite and judged-lint results are recorded
+in the dispatch response; no Windows execution or CI action is claimed here.
