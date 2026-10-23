@@ -2870,6 +2870,40 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
         );
     }
 
+    // The bus stamps time before acquiring the shared append lock. A process
+    // can therefore append after a later-stamped process. Reproduce that clock
+    // order deterministically on the real CLI's completed stream: only timestamps
+    // change, leaving the writer's line order, numbers and observations intact.
+    // llmlint: ignore-block[tests_mirror_real_usage] a persisted stream fixture with
+    // inverted timestamps reproduces pre-lock stamping without a scheduler race;
+    // all events and sequence numbers are written by the real concurrent CLI asks.
+    let stream = releasing.events_of("release-observed")[0]["stream"]
+        .as_str()
+        .expect("an observation names its stream")
+        .to_owned();
+    let path = releasing
+        .fixture
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{stream}.ndjson"));
+    let raw = std::fs::read_to_string(&path).expect("the release stream exists");
+    let mut lines: Vec<Value> = raw
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a real envelope"))
+        .collect();
+    let count = lines.len();
+    assert_eq!(count, ASKING + 1, "one probe per ask and one observation");
+    for (index, event) in lines.iter_mut().enumerate() {
+        event["ts"] = Value::String(format!("2026-01-01T00:00:{:02}.000Z", count - index));
+    }
+    let fixture = lines
+        .iter()
+        .map(|event| format!("{event}\n"))
+        .collect::<String>();
+    std::fs::write(&path, fixture).expect("the timestamp interleaving is staged");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
     // The landing commit as the base carries it, in full: it is the only thing that
     // correlates this event, because it fires outside any session.
     let landing = releasing
@@ -2894,15 +2928,22 @@ fn simultaneous_asks_about_one_released_landing_observe_it_exactly_once() {
     // Every event the asks wrote together is one whole line with a number of its
     // own: a shared stream is numbered under the lock that orders it, so a consumer
     // reading these for loss sees a series rather than the same number four times.
-    let numbers: Vec<u64> = releasing
-        .events()
-        .iter()
-        .filter(|event| {
-            event["stream"]
-                .as_str()
-                .is_some_and(|stream| stream.starts_with("releases-"))
+    // Merge order is only for comparing streams. Within this one stream, read
+    // through the public cursor in append order; sorting by timestamp can reverse
+    // writers that obtained their timestamps before contending the append lock.
+    let read = releasing
+        .fixture
+        .world
+        .onevcs()
+        .args(["events", &stream])
+        .assert()
+        .success();
+    let numbers: Vec<u64> = String::from_utf8_lossy(&read.get_output().stdout)
+        .lines()
+        .map(|line| {
+            let event: Value = serde_json::from_str(line).expect("an event envelope");
+            event["seq"].as_u64().expect("every event is numbered")
         })
-        .map(|event| event["seq"].as_u64().expect("every event is numbered"))
         .collect();
     let mut ordered = numbers.clone();
     ordered.sort_unstable();
