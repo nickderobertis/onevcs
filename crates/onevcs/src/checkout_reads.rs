@@ -51,15 +51,26 @@ struct Process {
 
 #[derive(Default)]
 struct Holders {
-    lock: Option<(Mode, lock::Guard)>,
-    /// A thread is waiting on other processes for the file, outside the mutex.
-    acquiring: bool,
-    /// A thread is turning the shared hold into an exclusive one, outside the mutex.
-    /// This process's readers are kept from other processes' teardowns throughout,
-    /// so another reader of it enters at once.
-    upgrading: bool,
+    file: File,
     readers: usize,
     writers: usize,
+}
+
+/// Where this process's hold on the lease file stands. A thread changing it waits
+/// on other processes outside the mutex, in one of the two transitional states.
+#[derive(Default)]
+enum File {
+    /// Nothing is held and nobody is taking it.
+    #[default]
+    Free,
+    /// A thread is taking the first hold.
+    Acquiring,
+    Held(Mode, lock::Guard),
+    /// A thread is turning the shared hold exclusive: the shared hold while it
+    /// waits on the intent lock, then nothing while it waits on other processes'
+    /// readers with the intent held. This process's readers stay kept from other
+    /// processes' teardowns throughout, so another reader of it enters at once.
+    Upgrading(Option<lock::Guard>),
 }
 
 impl Holders {
@@ -92,6 +103,12 @@ impl Process {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Settle the file and wake every thread waiting for it to settle.
+    fn settle(&self, holders: &mut Holders, file: File) {
+        holders.file = file;
+        self.settled.notify_all();
+    }
+
     /// Take the file in `mode` when this process holds nothing, waiting on other
     /// processes alone with the mutex released so sibling threads can leave theirs.
     fn acquire<'a>(
@@ -100,17 +117,23 @@ impl Process {
         files: &Files,
         mode: Mode,
     ) -> Result<MutexGuard<'a, Holders>> {
-        holders.acquiring = true;
+        holders.file = File::Acquiring;
         drop(holders);
         let taken = match mode {
             Mode::Exclusive => files.exclusive(),
             Mode::Shared => lock::shared_at(&files.lease),
         };
         let mut holders = self.holders();
-        holders.acquiring = false;
-        self.settled.notify_all();
-        holders.lock = Some((mode, taken?));
-        Ok(holders)
+        match taken {
+            Ok(guard) => {
+                self.settle(&mut holders, File::Held(mode, guard));
+                Ok(holders)
+            }
+            Err(error) => {
+                self.settle(&mut holders, File::Free);
+                Err(error)
+            }
+        }
     }
 
     /// Turn the shared hold exclusive. The intent lock is taken while the shared hold
@@ -122,43 +145,53 @@ impl Process {
         mut holders: MutexGuard<'a, Holders>,
         files: &Files,
     ) -> Result<MutexGuard<'a, Holders>> {
-        holders.upgrading = true;
+        let shared = match std::mem::take(&mut holders.file) {
+            File::Held(_, guard) => guard,
+            _ => unreachable!("only a shared hold is upgraded"),
+        };
+        holders.file = File::Upgrading(Some(shared));
         drop(holders);
         let intent = lock::exclusive_at(&files.intent);
         let mut holders = self.holders();
+        // The shared hold, unless every reader left while the intent was awaited.
+        let shared = match std::mem::take(&mut holders.file) {
+            File::Upgrading(shared) => shared,
+            _ => unreachable!("an upgrade owns the file until it settles it"),
+        };
         let intent = match intent {
             Ok(intent) => intent,
             Err(error) => {
-                holders.upgrading = false;
-                self.settled.notify_all();
+                let file = shared.map_or(File::Free, |guard| File::Held(Mode::Shared, guard));
+                self.settle(&mut holders, file);
                 return Err(error);
             }
         };
-        holders.lock = None;
+        drop(shared);
+        holders.file = File::Upgrading(None);
         drop(holders);
         let taken = lock::exclusive_at(&files.lease);
         let mut holders = self.holders();
         let answer = match taken {
             Ok(guard) => {
-                holders.lock = Some((Mode::Exclusive, guard));
+                self.settle(&mut holders, File::Held(Mode::Exclusive, guard));
                 Ok(())
             }
             Err(error) => {
                 // This process's readers are still inside: take their hold back
                 // before the intent goes.
+                let mut file = File::Free;
                 if holders.readers > 0 {
                     drop(holders);
                     let restored = lock::shared_at(&files.lease);
                     holders = self.holders();
                     if let (Ok(guard), true) = (restored, holders.readers > 0) {
-                        holders.lock = Some((Mode::Shared, guard));
+                        file = File::Held(Mode::Shared, guard);
                     }
                 }
+                self.settle(&mut holders, file);
                 Err(error)
             }
         };
-        holders.upgrading = false;
-        self.settled.notify_all();
         drop(intent);
         answer.map(|()| holders)
     }
@@ -173,7 +206,8 @@ struct Files {
 impl Files {
     /// An exclusive take that is never kept while another process's upgrade is in
     /// flight: that process gave up its shared hold under the intent lock with its
-    /// readers still inside.
+    /// readers still inside. The lease is let go before the intent is waited on, so
+    /// the two locks are never awaited in a cycle.
     fn exclusive(&self) -> Result<lock::Guard> {
         loop {
             let guard = lock::exclusive_at(&self.lease)?;
@@ -195,24 +229,23 @@ impl Hold {
         let process = Process::of(root);
         let mut holders = process.holders();
         loop {
-            let held = holders.lock.as_ref().map(|(held, _)| *held);
-            let covered = held == Some(Mode::Exclusive)
-                || (mode == Mode::Shared && (held == Some(Mode::Shared) || holders.upgrading));
+            let covered = match &holders.file {
+                File::Held(Mode::Exclusive, _) => true,
+                File::Held(Mode::Shared, _) | File::Upgrading(_) => mode == Mode::Shared,
+                File::Free | File::Acquiring => false,
+            };
             if covered {
                 holders.enter(mode);
                 drop(holders);
                 return Ok(Hold { process, mode });
             }
-            if holders.acquiring || holders.upgrading {
-                holders = process
+            holders = match holders.file {
+                File::Free => process.acquire(holders, &files, mode)?,
+                File::Held(..) => process.upgrade(holders, &files)?,
+                File::Acquiring | File::Upgrading(_) => process
                     .settled
                     .wait(holders)
-                    .unwrap_or_else(PoisonError::into_inner);
-                continue;
-            }
-            holders = match held {
-                None => process.acquire(holders, &files, mode)?,
-                Some(_) => process.upgrade(holders, &files)?,
+                    .unwrap_or_else(PoisonError::into_inner),
             };
         }
     }
@@ -226,10 +259,16 @@ impl Drop for Hold {
             Mode::Exclusive => holders.writers -= 1,
         }
         if holders.readers + holders.writers == 0 {
-            holders.lock = None;
+            match &mut holders.file {
+                File::Held(..) => holders.file = File::Free,
+                // An upgrade still waiting on the intent lock has nobody left to
+                // keep the shared hold for.
+                File::Upgrading(shared) => *shared = None,
+                File::Free | File::Acquiring => {}
+            }
         } else if self.mode == Mode::Exclusive && holders.writers == 0 {
             // Other processes' readers proceed beside this process's again.
-            if let Some((held, guard)) = &mut holders.lock {
+            if let File::Held(held @ Mode::Exclusive, guard) = &mut holders.file {
                 if guard.share() {
                     *held = Mode::Shared;
                 }
@@ -775,6 +814,133 @@ mod tests {
         release_second.send(()).unwrap();
         second_thread.join().unwrap();
         drop(reader);
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    /// A first take refused by another process's teardown fails every sibling
+    /// queued behind it rather than leaving them waiting on a take nobody is making,
+    /// and the next take after the teardown ends succeeds.
+    #[test]
+    fn a_refused_first_take_fails_its_queued_siblings_and_the_next_take_succeeds() {
+        use fs4::fs_std::FileExt;
+        use std::time::Duration;
+        const NAME: &str = "github.com/owner/first-refused";
+        let (_home, file) = scratch_identity(NAME);
+        std::env::set_var(lock::TIMEOUT_ENV, "1");
+        let other = another_process(&file);
+        other.lock_exclusive().unwrap();
+        let takers: Vec<_> = (0..3).map(|_| held_in_thread(|| identity(NAME))).collect();
+        for (answer, _, thread) in takers {
+            let refused = answer
+                .recv_timeout(Duration::from_secs(20))
+                .expect("a queued sibling is answered")
+                .expect_err("another process's teardown holds the file throughout");
+            assert!(refused.contains("timed out"), "{refused}");
+            thread.join().unwrap();
+        }
+        FileExt::unlock(&other).unwrap();
+        let reader = identity(NAME).unwrap();
+        assert!(lock::try_exclusive_at(&file).unwrap().is_none());
+        drop(reader);
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    /// While an upgrade waits on the intent lock — another process's upgrade holds
+    /// it — a new sibling reader enters at once, the shared hold never lapses, and a
+    /// refused upgrade leaves it standing for a later one to complete.
+    #[test]
+    fn an_upgrade_awaiting_the_intent_admits_readers_and_keeps_the_shared_hold() {
+        use fs4::fs_std::FileExt;
+        use std::time::Duration;
+        const NAME: &str = "github.com/owner/intent-held";
+        let (_home, file) = scratch_identity(NAME);
+        let intent = file.with_file_name("onevcs-reads-upgrade.lock");
+        std::env::set_var(lock::TIMEOUT_ENV, "2");
+        let reader = identity(NAME).unwrap();
+        let other_upgrade = another_process(&intent);
+        other_upgrade.lock_exclusive().unwrap();
+        let (writer, _, writer_thread) = held_in_thread(|| teardown(NAME));
+        std::thread::sleep(Duration::from_millis(300));
+        let (sibling, release_sibling, sibling_thread) = held_in_thread(|| identity(NAME));
+        sibling
+            .recv_timeout(Duration::from_millis(500))
+            .expect("a sibling reader enters while the upgrade is pending")
+            .unwrap();
+        assert!(
+            lock::try_exclusive_at(&file).unwrap().is_none(),
+            "the shared hold stands while the intent is awaited"
+        );
+        let refused = writer
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .expect_err("the intent lock stays held");
+        assert!(refused.contains("timed out"), "{refused}");
+        writer_thread.join().unwrap();
+        assert!(lock::try_exclusive_at(&file).unwrap().is_none());
+        assert!(lock::try_shared_at(&file).unwrap().is_some());
+        FileExt::unlock(&other_upgrade).unwrap();
+        let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
+        writer
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .unwrap();
+        assert!(lock::try_shared_at(&file).unwrap().is_none());
+        release_writer.send(()).unwrap();
+        writer_thread.join().unwrap();
+        release_sibling.send(()).unwrap();
+        sibling_thread.join().unwrap();
+        drop(reader);
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    /// An exclusive take that cannot consult the intent lock — an upgrade elsewhere
+    /// holds it past the bound, or it cannot be opened — lets the lease file go
+    /// rather than keeping a take it could not clear, and the next take succeeds.
+    #[test]
+    fn an_exclusive_take_that_cannot_clear_the_intent_lets_the_lease_go() {
+        use fs4::fs_std::FileExt;
+        use std::time::Duration;
+        const NAME: &str = "github.com/owner/intent-unclear";
+        let (_home, file) = scratch_identity(NAME);
+        let intent = file.with_file_name("onevcs-reads-upgrade.lock");
+        std::env::set_var(lock::TIMEOUT_ENV, "1");
+
+        let other_upgrade = another_process(&intent);
+        other_upgrade.lock_exclusive().unwrap();
+        let (writer, _, writer_thread) = held_in_thread(|| teardown(NAME));
+        let refused = writer
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .expect_err("the upgrade elsewhere outlasts the bound");
+        assert!(refused.contains("timed out"), "{refused}");
+        writer_thread.join().unwrap();
+        assert!(
+            lock::try_exclusive_at(&file).unwrap().is_some(),
+            "the lease file was handed back before the intent was awaited"
+        );
+        FileExt::unlock(&other_upgrade).unwrap();
+        drop(other_upgrade);
+
+        std::fs::remove_file(&intent).unwrap();
+        std::fs::create_dir(&intent).unwrap();
+        let (writer, _, writer_thread) = held_in_thread(|| teardown(NAME));
+        let refused = writer
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .expect_err("the intent lock will not open");
+        assert!(refused.contains("lock at"), "{refused}");
+        writer_thread.join().unwrap();
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+        std::fs::remove_dir(&intent).unwrap();
+
+        let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
+        writer
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .unwrap();
+        assert!(lock::try_shared_at(&file).unwrap().is_none());
+        release_writer.send(()).unwrap();
+        writer_thread.join().unwrap();
         assert!(lock::try_exclusive_at(&file).unwrap().is_some());
     }
 
