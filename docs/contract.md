@@ -2710,6 +2710,20 @@ still refuse the read. Managed-clone reclamation, retirement and pool removal
 use the same exclusion. Other processes working inside the run root still refuse
 closure with the existing occupancy diagnostic.
 
+That exclusion is between processes. Within one process — an embedder calling the
+library from several threads — threads holding or taking shared turns on one
+identity never block one another, and no turn one thread holds blocks another
+thread of the same process, so a thread holding a turn while it waits on a sibling
+that takes one on the same identity cannot deadlock the process. The process holds
+the identity's turn on behalf of all its threads, in the strongest mode any of them
+holds: while one of its threads tears down, other processes' readers and teardowns
+wait for it; once none does, other processes' readers proceed beside its remaining
+readers again (on Unix, where the hold converts in place; elsewhere once its last
+thread leaves). A teardown in one thread therefore does not wait for a sibling
+thread's read; what keeps it out of a checkout that read has admitted is the
+per-checkout lease, which close waits for and every other remover passes over,
+exactly as between processes.
+
 ### A session record carries the labels its opener stamped, and the listings filter on them
 
 **The join between a run and the session its node opened belongs on the session

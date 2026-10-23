@@ -1,29 +1,169 @@
 //! Turns shared by repository reads and session teardown.
 //!
 //! The lock lives outside the tree it protects. Nested reads on this thread reuse
-//! its turn; another process or thread queues before it can enter the tree.
+//! its turn; another process queues before it can enter the tree.
+//!
+//! Within one process the identity's lock file is opened once and held on behalf
+//! of every thread, because `flock` conflicts per open file description: a second
+//! open by a sibling thread conflicts with the first exactly as another process
+//! would, so a thread holding a lease while it waited on a sibling taking one
+//! deadlocked the process. Threads therefore never wait on one another's identity
+//! leases. The process holds the file in the strongest mode any of its threads
+//! holds: a teardown upgrades it — waiting only for other processes — and hands it
+//! back to shared once no teardown of this process remains. What keeps a teardown
+//! from removing a checkout a sibling thread is inside is that checkout's own lease
+//! (`available`, `closing`), which every thread opens for itself.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::lock::Mode;
 use crate::{error::Result, home, lock, workspace};
 
 pub(crate) struct Lease {
-    guard: RefCell<Option<lock::Guard>>,
+    guard: RefCell<Option<Hold>>,
     mode: Mode,
     checkouts: RefCell<HashMap<PathBuf, lock::Guard>>,
 }
 
 impl Lease {
-    fn acquire(&self, root: &Path) -> Result<lock::Guard> {
-        let path = root.join("onevcs-reads.lock");
-        match self.mode {
-            Mode::Exclusive => lock::exclusive_at(&path),
-            Mode::Shared => lock::shared_at(&path),
+    fn acquire(&self, root: &Path) -> Result<Hold> {
+        Hold::take(root, self.mode)
+    }
+}
+
+/// This process's one open of an identity's lease file, and who holds it.
+#[derive(Default)]
+struct Process {
+    state: Mutex<Holders>,
+    settled: Condvar,
+}
+
+#[derive(Default)]
+struct Holders {
+    lock: Option<(Mode, lock::Guard)>,
+    /// A thread is waiting on other processes for the file, outside the mutex.
+    acquiring: bool,
+    readers: usize,
+    writers: usize,
+}
+
+impl Holders {
+    fn enter(&mut self, mode: Mode) {
+        match mode {
+            Mode::Shared => self.readers += 1,
+            Mode::Exclusive => self.writers += 1,
         }
+    }
+}
+
+static PROCESS: Mutex<Option<HashMap<PathBuf, Arc<Process>>>> = Mutex::new(None);
+
+/// One thread's share of the process's hold on an identity's lease file.
+pub(crate) struct Hold {
+    process: Arc<Process>,
+    mode: Mode,
+}
+
+impl Process {
+    fn of(root: &Path) -> Arc<Process> {
+        let mut all = PROCESS.lock().unwrap_or_else(PoisonError::into_inner);
+        all.get_or_insert_with(HashMap::new)
+            .entry(root.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    fn holders(&self) -> MutexGuard<'_, Holders> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wait on other processes alone for the file in `mode`, with the mutex released
+    /// so that sibling threads can still leave theirs meanwhile.
+    fn wait_for<'a>(
+        &'a self,
+        mut holders: MutexGuard<'a, Holders>,
+        path: &Path,
+        mode: Mode,
+    ) -> (MutexGuard<'a, Holders>, Result<()>) {
+        holders.acquiring = true;
+        drop(holders);
+        let taken = match mode {
+            Mode::Exclusive => lock::exclusive_at(path),
+            Mode::Shared => lock::shared_at(path),
+        };
+        let mut holders = self.holders();
+        holders.acquiring = false;
+        self.settled.notify_all();
+        match taken {
+            Ok(guard) => {
+                holders.lock = Some((mode, guard));
+                (holders, Ok(()))
+            }
+            Err(error) => (holders, Err(error)),
+        }
+    }
+}
+
+impl Hold {
+    fn take(root: &Path, mode: Mode) -> Result<Hold> {
+        let path = root.join("onevcs-reads.lock");
+        let process = Process::of(root);
+        let mut holders = process.holders();
+        loop {
+            while holders.acquiring {
+                holders = process
+                    .settled
+                    .wait(holders)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            let covered = match &holders.lock {
+                Some((held, _)) => *held == Mode::Exclusive || mode == Mode::Shared,
+                None => false,
+            };
+            if covered {
+                holders.enter(mode);
+                drop(holders);
+                return Ok(Hold { process, mode });
+            }
+            // An upgrade cannot be made in place without waiting on this process's
+            // own readers, so the shared hold is given up while other processes are
+            // waited for. The readers keep their checkouts' leases across that gap.
+            holders.lock = None;
+            let (back, taken) = process.wait_for(holders, &path, mode);
+            holders = back;
+            if let Err(error) = taken {
+                // This process's readers are still inside: take their hold back.
+                if holders.readers > 0 && holders.lock.is_none() && !holders.acquiring {
+                    drop(process.wait_for(holders, &path, Mode::Shared));
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut holders = self.process.holders();
+        match self.mode {
+            Mode::Shared => holders.readers -= 1,
+            Mode::Exclusive => holders.writers -= 1,
+        }
+        if holders.readers + holders.writers == 0 {
+            holders.lock = None;
+        } else if self.mode == Mode::Exclusive && holders.writers == 0 {
+            // Other processes' readers proceed beside this process's again.
+            if let Some((held, guard)) = &mut holders.lock {
+                if guard.share() {
+                    *held = Mode::Shared;
+                }
+            }
+        }
+        self.process.settled.notify_all();
     }
 }
 pub(crate) type Turn = Rc<Lease>;
@@ -295,6 +435,110 @@ fn windows_relative(path: &str, root: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each step is one thread taking a lease on the identity while the thread before
+    /// it still holds its own and waits for that step to finish — the shape an
+    /// embedder dispatching several sessions of one repository from one process
+    /// produces. Another process is stood in for by a separate open of the lease file,
+    /// which `flock` treats exactly as it treats another process's.
+    #[test]
+    fn threads_of_one_process_holding_leases_never_wait_on_one_another() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::home::HOME_ENV, home.path());
+        let identity_name = "github.com/owner/service";
+        let file = workspace::identity_dir(identity_name)
+            .unwrap()
+            .join("onevcs-reads.lock");
+        let elsewhere = move |mode: Mode| match mode {
+            Mode::Shared => lock::try_shared_at(&file).unwrap().is_some(),
+            Mode::Exclusive => lock::try_exclusive_at(&file).unwrap().is_some(),
+        };
+        let take = move |mode: Mode| match mode {
+            Mode::Shared => identity(identity_name).unwrap(),
+            Mode::Exclusive => teardown(identity_name).unwrap(),
+        };
+        // Takes `modes[0]`, then — still holding it — waits for a new thread to take
+        // the rest the same way, and answers what another process could take while
+        // the innermost lease is held.
+        fn nested(
+            modes: Vec<Mode>,
+            take: &'static (dyn Fn(Mode) -> Turn + Sync),
+            elsewhere: &'static (dyn Fn(Mode) -> bool + Sync),
+        ) -> (bool, bool) {
+            let _held = take(modes[0]);
+            if modes.len() == 1 {
+                return (elsewhere(Mode::Shared), elsewhere(Mode::Exclusive));
+            }
+            std::thread::spawn(move || nested(modes[1..].to_vec(), take, elsewhere))
+                .join()
+                .unwrap()
+        }
+        let take: &'static (dyn Fn(Mode) -> Turn + Sync) = Box::leak(Box::new(take));
+        let elsewhere: &'static (dyn Fn(Mode) -> bool + Sync) = Box::leak(Box::new(elsewhere));
+        use Mode::{Exclusive as X, Shared as S};
+        for (modes, other_reader_proceeds) in [
+            (vec![S, S], true),
+            (vec![S, X], false),
+            (vec![X, S], false),
+            (vec![X, X], false),
+            (vec![S, S, X], false),
+            (vec![X, S, S], false),
+            (vec![S, X, S, X], false),
+        ] {
+            let (answer, answered) = mpsc::channel();
+            let asked = modes.clone();
+            std::thread::spawn(move || {
+                let _ = answer.send(nested(asked, take, elsewhere));
+            });
+            let (shared, exclusive) = answered
+                .recv_timeout(Duration::from_secs(20))
+                .unwrap_or_else(|_| panic!("threads taking {modes:?} in turn deadlocked"));
+            assert_eq!(
+                shared, other_reader_proceeds,
+                "another process's reader while {modes:?} are held"
+            );
+            assert!(
+                !exclusive,
+                "another process's teardown while {modes:?} are held"
+            );
+            assert!(
+                elsewhere(Mode::Exclusive),
+                "every lease is released once {modes:?} are dropped"
+            );
+        }
+
+        // A teardown that ends while other threads still read hands the identity back
+        // to other processes' readers, and still keeps their teardowns out.
+        let reader = identity(identity_name).unwrap();
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, entering) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let held = teardown(identity_name).unwrap();
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            drop(held);
+        });
+        entering.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(
+            !elsewhere(Mode::Shared),
+            "a held teardown excludes other processes"
+        );
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        assert!(
+            elsewhere(Mode::Shared),
+            "readers elsewhere proceed beside ours"
+        );
+        assert!(
+            !elsewhere(Mode::Exclusive),
+            "teardown elsewhere waits for ours"
+        );
+        drop(reader);
+        assert!(elsewhere(Mode::Exclusive));
+    }
 
     #[test]
     fn windows_checkout_paths_match_every_prefix_and_drive_case() {
