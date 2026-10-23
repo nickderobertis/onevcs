@@ -248,17 +248,25 @@ impl HeldGit {
             &shim,
             r#"#!/bin/sh
 printf '%s|%s\n' "$PWD" "$*" >> "$READ_LOG"
-if [ "${HOLD_READER:-}" = 1 ] && [ "$PWD" = "$READ_CLONE" ]; then
-    case "$*" in
-        "${HOLD_ARGS:-rev-parse --is-inside-work-tree}"*)
-            if [ ! -f "$READ_ONCE" ]; then
-                : > "$READ_ONCE"
-                printf 'inside\n' > "$READ_READY"
-                read -r released < "$READ_RELEASE"
-            fi
-            ;;
-    esac
-fi
+hold_reader() {
+    read_repo=$PWD
+    if [ "$1" = --git-dir ]; then
+        read_repo=${2%/.git}
+        shift 2
+    fi
+    if [ "${HOLD_READER:-}" = 1 ] && [ "$read_repo" = "$READ_CLONE" ]; then
+        case "$*" in
+            "${HOLD_ARGS:-rev-parse --is-inside-work-tree}"*)
+                if [ ! -f "$READ_ONCE" ]; then
+                    : > "$READ_ONCE"
+                    printf 'inside\n' > "$READ_READY"
+                    read -r released < "$READ_RELEASE"
+                fi
+                ;;
+        esac
+    fi
+}
+hold_reader "$@"
 exec "$REAL_GIT" "$@"
 "#,
         )

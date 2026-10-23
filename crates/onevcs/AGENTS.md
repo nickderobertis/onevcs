@@ -948,9 +948,7 @@ own premise would prove nothing.
 
 `tests/e2e/world.rs` is the fixture, and it is Unix-only: the program it installs
 as `gh` and the `pre-push` hooks the verification journeys write are POSIX shell, and a
-fired timeout takes a process *group*, which has no portable spelling. Windows CI
-builds the crate and runs the contract, boundary, packaging, inherited-pipe and
-concurrent-session suites.
+fired timeout takes a process *group*, which has no portable spelling.
 
 `tests/e2e/inherited_pipes.rs` carries a fixture of its own rather than
 `world.rs`'s, because it has to run where `world.rs` cannot. It holds one rule in
@@ -1458,32 +1456,16 @@ command that is inside a run root *now*, which is the state a record does not
 cover; a run root no record names has only that answer, and is reclaimable, since
 protecting it would make a refused open's litter permanent.
 
-**What another session reads must stay openable while siblings work.** On Windows a
-git read fails while another process renames a new `.git/config` over the one it opens,
-or deletes the directory it reads. Configuration alone, because Git for Windows reads
-it through `fopen`, which does not share deletion, and refs, `HEAD` and `packed-refs`
-through `open`, which does — so a ref that moves is renamed over safely. So a session
-operation never replaces a shared config whose content would not change, nor a ref of
-one (`git symbolic-ref` rewrites the value a ref already holds, so it is asked first);
-the one required write (retention keys on a
-checkout an earlier release registered) is written into the file in place under
-git's own `config.lock` rather than renamed over it (`git::append_in_place`), so a
-reader outside this crate — which no lease of its reaches — never meets a moment the
-file cannot be opened; and as a comment whose `#`s become line ends one byte at a
-time (`git::addition`), because git reads a configuration in buffered `read`s and can
-join the old end of the file from one to part of what was appended in the next —
-behind a line end of its own where the last line has none, since a backslash there
-continues a value into whatever follows it. It
-waits for an exclusive take of the lease every session
-operation over it holds shared (`workspace::lend`) from before its first read of the
-checkout, the check that it is a checkout included; no clone or slot is ever a
-lender, because a slot's worker holds no lease anything could wait on — a publication
-borrows from a registered checkout and fetches the branch out of the copy
-(`git::clone_borrowing`); a run clone a search reads is held against reclamation
-for as long as it is read; and a read of a run root or slot runs from outside it
-(`git::from_outside`), because a process whose working directory is inside one is what
-`session close` counts as somebody working there. `tests/e2e/concurrent_sessions.rs`
-holds this on every platform, on run roots and on a pool.
+**What another session reads must stay openable while siblings work.** Windows
+Git config readers do not share deletion; ref readers do. Never replace unchanged
+shared configuration or refs. Upgrading retention settings must preserve config
+parseability throughout the write, including buffered readers and a final backslash
+without a newline. A session's first repository check needs the same lender
+protection as its later reads. Only registered checkouts lend objects: an idle slot
+can have a worker whose occupancy no lender lease covers. Keep searched clones
+protected against reclamation, and run sibling Git reads outside session trees so
+close does not mistake them for workers. Yield identity turns while waiting for
+placement: its holder may need a checkout read before releasing placement.
 
 **A close is held to the same standard, and refuses rather than skipping.**
 `workspace::close` asks `processes::holding` of the run root — the one answer this
