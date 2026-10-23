@@ -540,6 +540,168 @@ mod tests {
         assert!(elsewhere(Mode::Exclusive));
     }
 
+    /// Another process's hold on an identity's lease file, stood in for by a separate
+    /// open of it, which `flock` treats exactly as it treats another process's.
+    fn another_process(file: &Path) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(file)
+            .unwrap()
+    }
+
+    fn scratch_identity(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::home::HOME_ENV, home.path());
+        let root = workspace::identity_dir(name).unwrap();
+        home::ensure_dir(&root).unwrap();
+        (home, root.join("onevcs-reads.lock"))
+    }
+
+    /// A lease taken in a thread that is told when to let it go.
+    fn held_in_thread(
+        take: fn() -> Result<Turn>,
+    ) -> (
+        std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+        std::sync::mpsc::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (entered, entering) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || match take() {
+            Ok(turn) => {
+                entered.send(Ok(())).unwrap();
+                let _ = released.recv();
+                drop(turn);
+            }
+            Err(error) => entered.send(Err(error.to_string())).unwrap(),
+        });
+        (entering, release, thread)
+    }
+
+    /// While one thread waits on another process for the file, a sibling arriving is
+    /// served by that same wait, and a sibling leaving is never held up by it.
+    #[test]
+    fn siblings_arrive_and_leave_while_the_process_waits_on_another_process() {
+        use fs4::fs_std::FileExt;
+        use std::time::Duration;
+        const NAME: &str = "github.com/owner/waited";
+        let (_home, file) = scratch_identity(NAME);
+        let quiet = Duration::from_millis(300);
+        let bound = Duration::from_secs(20);
+
+        let other = another_process(&file);
+        other.lock_exclusive().unwrap();
+        let (first, release_first, first_thread) = held_in_thread(|| identity(NAME));
+        std::thread::sleep(quiet);
+        let (second, release_second, second_thread) = held_in_thread(|| identity(NAME));
+        assert!(
+            first.recv_timeout(quiet).is_err(),
+            "another process's teardown holds the first"
+        );
+        assert!(
+            second.recv_timeout(quiet).is_err(),
+            "and the sibling queued behind it"
+        );
+        FileExt::unlock(&other).unwrap();
+        first.recv_timeout(bound).unwrap().unwrap();
+        second.recv_timeout(bound).unwrap().unwrap();
+        assert!(lock::try_shared_at(&file).unwrap().is_some());
+        assert!(lock::try_exclusive_at(&file).unwrap().is_none());
+
+        // A teardown upgrading behind another process's reader: this process's own
+        // readers leave meanwhile without waiting for it.
+        other.lock_shared().unwrap();
+        let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
+        assert!(
+            writer.recv_timeout(quiet).is_err(),
+            "the teardown waits on the other reader"
+        );
+        release_first.send(()).unwrap();
+        release_second.send(()).unwrap();
+        let (left, leaving) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            first_thread.join().unwrap();
+            second_thread.join().unwrap();
+            left.send(()).unwrap();
+        });
+        leaving
+            .recv_timeout(bound)
+            .expect("readers leave while a sibling's upgrade waits");
+        assert!(
+            writer.recv_timeout(quiet).is_err(),
+            "still waiting on the other reader"
+        );
+        FileExt::unlock(&other).unwrap();
+        writer.recv_timeout(bound).unwrap().unwrap();
+        assert!(
+            lock::try_shared_at(&file).unwrap().is_none(),
+            "the teardown excludes readers"
+        );
+        release_writer.send(()).unwrap();
+        writer_thread.join().unwrap();
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    /// An upgrade that fails hands this process's remaining readers their hold back,
+    /// and where even that cannot be taken the next lease takes the file afresh.
+    #[test]
+    fn a_failed_upgrade_restores_the_readers_hold_or_leaves_it_to_the_next_lease() {
+        use fs4::fs_std::FileExt;
+        const NAME: &str = "github.com/owner/refused";
+        let (_home, file) = scratch_identity(NAME);
+        std::env::set_var(lock::TIMEOUT_ENV, "1");
+        let reader = identity(NAME).unwrap();
+
+        let other = another_process(&file);
+        other.lock_shared().unwrap();
+        let (writer, _, writer_thread) = held_in_thread(|| teardown(NAME));
+        let refused = writer.recv().unwrap().expect_err("the upgrade times out");
+        assert!(refused.contains("timed out"), "{refused}");
+        writer_thread.join().unwrap();
+        FileExt::unlock(&other).unwrap();
+        assert!(
+            lock::try_exclusive_at(&file).unwrap().is_none(),
+            "the remaining reader's hold was restored"
+        );
+        assert!(lock::try_shared_at(&file).unwrap().is_some());
+
+        // The upgrade now succeeds, and hands the readers' hold back as it ends.
+        let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
+        writer.recv().unwrap().unwrap();
+        assert!(lock::try_shared_at(&file).unwrap().is_none());
+        release_writer.send(()).unwrap();
+        writer_thread.join().unwrap();
+        assert!(lock::try_shared_at(&file).unwrap().is_some());
+        assert!(lock::try_exclusive_at(&file).unwrap().is_none());
+
+        // A lease file that can no longer be opened refuses the upgrade and the
+        // restoration both; once it can be, the next lease takes it afresh.
+        let moved = file.with_extension("moved");
+        std::fs::rename(&file, &moved).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let (writer, _, writer_thread) = held_in_thread(|| teardown(NAME));
+        let refused = writer
+            .recv()
+            .unwrap()
+            .expect_err("the lease file will not open");
+        assert!(refused.contains("open the lock at"), "{refused}");
+        writer_thread.join().unwrap();
+        std::fs::remove_dir(&file).unwrap();
+        let (second, release_second, second_thread) = held_in_thread(|| identity(NAME));
+        second.recv().unwrap().unwrap();
+        assert!(
+            lock::try_exclusive_at(&file).unwrap().is_none(),
+            "the next reader holds the file afresh"
+        );
+        release_second.send(()).unwrap();
+        second_thread.join().unwrap();
+        drop(reader);
+        assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
     #[test]
     fn windows_checkout_paths_match_every_prefix_and_drive_case() {
         for root_prefix in ["", r"\\?\"] {
