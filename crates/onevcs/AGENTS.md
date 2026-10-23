@@ -883,7 +883,10 @@ and a teardown in another process arriving while one process's upgrade is waitin
 (`checkout_reads.rs`) — the turns are private, no verb holds one across a wait on
 another thread, and the second needs a process stopped mid-upgrade, so only the
 lease API itself, re-running its own test binary as the other processes, can arrange
-either —
+either — and a session read meeting a probe or a teardown of its checkout
+(`workspace.rs`'s `probe_reads`), because no verb can be held while it probes, so the
+probe is held through the lease API retirement, a slot's return and reclamation take,
+and the read and the close beside it are the real ones —
 `Stream` is private and no kind nests an object in its payload, so no verb can be
 driven into writing one. Healing a torn record sits beside it on the same call, and
 `lifecycle.rs` also drives that through `session close`. A stopped push's wait for its

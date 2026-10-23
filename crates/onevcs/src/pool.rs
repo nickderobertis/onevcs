@@ -880,7 +880,8 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         if !matches!(slot.state, SlotState::Broken { .. }) {
             continue;
         }
-        let Some(_closing) = crate::checkout_reads::try_closing(&slot.clone_dir())? else {
+        // A probe until something is removed: most of a broken slot is kept.
+        let Some(_closing) = crate::checkout_reads::try_probing(&slot.clone_dir())? else {
             continue;
         };
         let clone = slot.clone_dir();
@@ -898,6 +899,7 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
                 Cut::Warm
             } else {
                 if worktree.exists() {
+                    let _removing = crate::checkout_reads::try_closing(&clone)?;
                     std::fs::remove_dir_all(&worktree)
                         .map_err(error::at("remove the broken worktree at", &worktree))?;
                 }
@@ -907,6 +909,7 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
                 Cut::KeptClone
             }
         } else {
+            let _removing = crate::checkout_reads::try_closing(&clone)?;
             std::fs::remove_dir_all(&slot.dir)
                 .map_err(error::at("remove the broken slot at", &slot.dir))?;
             std::fs::create_dir(&slot.dir).map_err(error::at("create", &slot.dir))?;
@@ -993,10 +996,16 @@ fn fit(slot: &Surveyed, execution: &Path) -> Option<Fit> {
 /// A shared clone records its lender's object store in `objects/info/alternates`,
 /// which for a checkout is `<checkout>/.git/objects`; anything else there is not a
 /// lender this crate can name, and answers `None`.
+///
+/// Git records the path in the plain spelling it was handed (`git::git_path`), which
+/// on Windows is not the verbatim one `canonicalize` gives every registered checkout,
+/// so the path is canonicalized where it still resolves: compared unconverted, a
+/// broken slot was never its own lender's on Windows, and the open passed it over.
 pub(crate) fn lender_of(clone: &Path) -> Option<PathBuf> {
     let alternates = git::objects_dir(clone).ok()?.join("info/alternates");
     let recorded = std::fs::read_to_string(alternates).ok()?;
     let objects = PathBuf::from(recorded.lines().next()?.trim());
+    let objects = std::fs::canonicalize(&objects).unwrap_or(objects);
     let git_dir = objects
         .file_name()
         .is_some_and(|name| name == "objects")

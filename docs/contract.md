@@ -2710,6 +2710,27 @@ still refuse the read. Managed-clone reclamation, retirement and pool removal
 use the same exclusion. Other processes working inside the run root still refuse
 closure with the existing occupancy diagnostic.
 
+Only a teardown of a session's checkout refuses a read of that session. A
+teardown is a holder of the per-checkout lease that tears the checkout down: a
+close, a reclamation or retirement removing a run root, and a pool removing or
+rebuilding a slot. Each also holds that checkout's removal marker
+(`onevcs-removing-<family>-<name>.lock`, beside the lease), and a read that meets
+one answers that the session is being torn down, as above. Every other holder
+only probes or tidies a checkout it does not remove — retirement deleting a
+branch's copies, a slot's return, a reclamation before it has found a run root
+abandoned, a pool examining a broken slot — and holds the lease without the
+marker. A read of a session (the library's `session` read, and every repository
+read in its checkout) that meets such a probe waits for it to end, bounded by
+`ONEVCS_LOCK_TIMEOUT_SECONDS`, with its identity turns yielded as a write yields
+them, and then reads the session as the probe left it; a census that passes over
+busy checkouts still passes over a probed one without waiting. The lease, not the
+marker, is what excludes readers, so a read admitted after a probe holds the
+lease and the checkout's removal waits for it, and a read that was waiting when a
+teardown took the lease answers that the session is being torn down or, where
+the teardown completed between two askings, reads the record it left. A process
+running onevcs 0.56.7 or earlier marks no teardown, so a read waits out its
+teardowns as probes and then reads what they left.
+
 That exclusion is between processes. Within one process — an embedder calling the
 library from several threads — threads holding or taking shared turns on one
 identity never block one another, and no turn one thread holds blocks another

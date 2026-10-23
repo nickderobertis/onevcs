@@ -22,6 +22,16 @@
 //! and waits for that upgrade to finish. Readers never consult it. The intent covers
 //! the process's readers only when taken while the shared hold still stood: one whose
 //! last reader left first lets the next reader of the process wait for the upgrade.
+//!
+//! A checkout's closing lease is taken exclusively by two kinds of holder, and a read
+//! tells them apart. A **teardown** — a close, or a removal of the run root or slot —
+//! also holds the checkout's removal marker (`onevcs-removing-…`), and a session read
+//! that meets it answers that the session is being torn down. A **probe** — retirement
+//! deleting a branch's copies, a slot's return, reclamation deciding whether a run
+//! root is abandoned — holds the closing lease alone, and a session read that meets it
+//! waits for it to end, under the lock bound, with its identity turns yielded so the
+//! probe can finish. The closing lease is still what keeps every reader out of a
+//! removal; the marker decides only whether a read refuses or waits.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -328,7 +338,13 @@ pub(crate) type Turn = Rc<Lease>;
 thread_local! {
     static HELD: RefCell<HashMap<PathBuf, Weak<Lease>>> = RefCell::new(HashMap::new());
     static CLOSING: RefCell<HashMap<PathBuf, Weak<lock::Guard>>> = RefCell::new(HashMap::new());
+    static REMOVING: RefCell<HashMap<PathBuf, Weak<lock::Guard>>> = RefCell::new(HashMap::new());
 }
+
+/// How long a read waiting out a probe sleeps between askings. A probe holds the
+/// closing lease for the length of a few git commands, and the read must ask the
+/// removal marker between attempts, which a queued kernel wait could not.
+const PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Hold an identity's checkouts stable across a traversal and its git children.
 pub(crate) fn identity(identity: &str) -> Result<Turn> {
@@ -340,7 +356,7 @@ pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
     let turn = root_of(path)?
         .map(|root| at(root, Mode::Shared))
         .transpose()?;
-    if !available(path)? {
+    if admit(path, true)? == Admission::Refused {
         return Err(unavailable(path)?);
     }
     Ok(turn)
@@ -366,7 +382,7 @@ pub(crate) fn pin(path: &Path) -> Result<Pinned> {
     let guard = match guard {
         Some(guard) => guard,
         None => Rc::new(
-            lock::try_shared_at(&path)?
+            read_lease(&path)?
                 .ok_or_else(|| crate::error::invalid("the selected checkout is being torn down"))?,
         ),
     };
@@ -400,31 +416,67 @@ fn root_of(path: &Path) -> Result<Option<PathBuf>> {
 /// A close retains this per-checkout lease while yielding its identity turn to
 /// repository hooks. New readers treat only that checkout as absent. The OS
 /// releases the lease on process death; the file itself is not an activity marker.
+///
+/// A teardown's also holds the checkout's removal marker, which is what a read
+/// meeting the lease asks to decide whether to refuse or to wait; a probe's does not.
 pub(crate) struct Closing {
     _guard: Option<Rc<lock::Guard>>,
+    _removing: Option<Rc<lock::Guard>>,
 }
 
 /// Wait before taking the identity turn: a reader can retain its checkout lease
 /// while yielding the identity turn to fetch objects, and must be able to resume.
 pub(crate) fn closing(path: &Path) -> Result<Closing> {
-    Ok(take_closing(path, true)?.expect("a blocking lease is acquired or returns an error"))
+    Ok(take_closing(path, true, Holder::Teardown)?
+        .expect("a blocking lease is acquired or returns an error"))
 }
 
 /// Callers already holding an exclusive identity turn must not wait for a
 /// checkout reader that yielded that turn. They keep the checkout instead.
+///
+/// For a caller about to remove the checkout, or tear down the session reading it: a
+/// session read meeting this answers that the session is being torn down. Taken
+/// again by a thread already probing the checkout, it marks the held lease as a
+/// teardown from then on.
 pub(crate) fn try_closing(path: &Path) -> Result<Option<Closing>> {
-    take_closing(path, false)
+    take_closing(path, false, Holder::Teardown)
 }
 
-fn take_closing(path: &Path, wait: bool) -> Result<Option<Closing>> {
+/// [`try_closing`] for a caller that only probes or tidies the checkout and will not
+/// remove it — retirement deleting a branch's copies, a slot's return, reclamation
+/// before it has decided. Readers stay out exactly as they do of a teardown, but a
+/// session read meeting it waits for it to end rather than answering that the session
+/// is being torn down.
+pub(crate) fn try_probing(path: &Path) -> Result<Option<Closing>> {
+    take_closing(path, false, Holder::Probe)
+}
+
+/// What a holder of a checkout's closing lease is doing there, which is what a
+/// session read meeting it asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Holder {
+    /// Probing or tidying a checkout it will not remove: a read waits it out.
+    Probe,
+    /// Removing the checkout, or closing the session reading it: a read is refused.
+    Teardown,
+}
+
+/// Every closing lease this process took on a managed checkout, with the holder it
+/// was taken as, in order — so a test driving a real retirement, reclamation or pool
+/// placement can say which each path is.
+#[cfg(test)]
+pub(crate) static TAKEN: Mutex<Vec<(PathBuf, Holder)>> = Mutex::new(Vec::new());
+
+fn take_closing(path: &Path, wait: bool, holder: Holder) -> Result<Option<Closing>> {
     let Some(path) = closing_path(path)? else {
-        return Ok(Some(Closing { _guard: None }));
+        return Ok(Some(Closing {
+            _guard: None,
+            _removing: None,
+        }));
     };
-    CLOSING.with(|held| {
+    let guard = CLOSING.with(|held| {
         if let Some(guard) = held.borrow().get(&path).and_then(Weak::upgrade) {
-            return Ok(Some(Closing {
-                _guard: Some(guard),
-            }));
+            return Ok(Some(guard));
         }
         home::ensure_dir(
             path.parent()
@@ -441,38 +493,140 @@ fn take_closing(path: &Path, wait: bool) -> Result<Option<Closing>> {
         let guard = Rc::new(guard);
         let mut held = held.borrow_mut();
         held.retain(|_, guard| guard.strong_count() > 0);
+        held.insert(path.clone(), Rc::downgrade(&guard));
+        Ok(Some(guard))
+    })?;
+    let Some(guard) = guard else {
+        return Ok(None);
+    };
+    let removing = match holder {
+        Holder::Teardown => Some(mark_removal(&path)?),
+        Holder::Probe => None,
+    };
+    #[cfg(test)]
+    TAKEN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((path, holder));
+    Ok(Some(Closing {
+        _guard: Some(guard),
+        _removing: removing,
+    }))
+}
+
+/// The removal marker beside a held closing lease. Only a holder of that lease takes
+/// it exclusively, so the wait is for nothing but a reader's momentary ask of it.
+fn mark_removal(lease: &Path) -> Result<Rc<lock::Guard>> {
+    let path = removal_path(lease);
+    REMOVING.with(|held| {
+        if let Some(guard) = held.borrow().get(&path).and_then(Weak::upgrade) {
+            return Ok(guard);
+        }
+        let guard = Rc::new(lock::exclusive_at(&path)?);
+        let mut held = held.borrow_mut();
+        held.retain(|_, guard| guard.strong_count() > 0);
         held.insert(path, Rc::downgrade(&guard));
-        Ok(Some(Closing {
-            _guard: Some(guard),
-        }))
+        Ok(guard)
     })
+}
+
+fn removal_path(lease: &Path) -> PathBuf {
+    let name = lease
+        .file_name()
+        .expect("a closing lease has a file name")
+        .to_string_lossy()
+        .replacen("onevcs-closing-", "onevcs-removing-", 1);
+    lease.with_file_name(name)
 }
 
 /// Admit a checkout under an enclosing read turn. Its shared lease outlives an
 /// identity-turn yield, so the same read can safely resume after a fetch.
+///
+/// Never waits: a checkout any holder of its closing lease is in answers `false`,
+/// which is what a census passing over busy checkouts asks.
 pub(crate) fn available(path: &Path) -> Result<bool> {
+    Ok(admit(path, false)? != Admission::Refused)
+}
+
+/// How a read was admitted to a checkout, if it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    /// At once.
+    Now,
+    /// Once the probe holding the checkout's closing lease had ended — after which
+    /// anything read before the wait may have moved.
+    AfterProbe,
+    /// The checkout is being torn down.
+    Refused,
+}
+
+/// [`available`], waiting out a probe where `wait` says so.
+fn admit(path: &Path, wait: bool) -> Result<Admission> {
     let Some(root) = root_of(path)? else {
-        return Ok(true);
+        return Ok(Admission::Now);
     };
     let path = closing_path(path)?.expect("a managed checkout has a lease path");
     if CLOSING.with(|held| held.borrow().get(&path).and_then(Weak::upgrade).is_some()) {
-        return Ok(true);
+        return Ok(Admission::Now);
     }
-    let turn = HELD.with(|held| held.borrow().get(&root).and_then(Weak::upgrade));
-    if turn
-        .as_ref()
-        .is_some_and(|turn| turn.checkouts.borrow().contains_key(&path))
-    {
-        return Ok(true);
+    let held = |root: &Path| HELD.with(|held| held.borrow().get(root).and_then(Weak::upgrade));
+    if held(&root).is_some_and(|turn| turn.checkouts.borrow().contains_key(&path)) {
+        return Ok(Admission::Now);
     }
     home::ensure_dir(&root)?;
-    let Some(guard) = lock::try_shared_at(&path)? else {
-        return Ok(false);
+    let (guard, admission) = match lock::try_shared_at(&path)? {
+        Some(guard) => (guard, Admission::Now),
+        None if wait => match read_lease(&path)? {
+            Some(guard) => (guard, Admission::AfterProbe),
+            None => return Ok(Admission::Refused),
+        },
+        None => return Ok(Admission::Refused),
     };
-    if let Some(turn) = turn.filter(|turn| turn.mode == Mode::Shared) {
+    if let Some(turn) = held(&root).filter(|turn| turn.mode == Mode::Shared) {
         turn.checkouts.borrow_mut().insert(path, Rc::new(guard));
     }
-    Ok(true)
+    Ok(admission)
+}
+
+/// A read's shared hold on a checkout's closing lease, waiting out a probe holding it
+/// and answering `None` for a teardown.
+///
+/// The wait yields this thread's identity turns, as a write does: a probe may need
+/// its own identity turn back to finish, and a reader holding a turn while it waited
+/// on that probe would wait out the whole bound. Leases on checkouts this read has
+/// already admitted are kept across it, as they are across any yield.
+fn read_lease(lease: &Path) -> Result<Option<lock::Guard>> {
+    if let Some(guard) = lock::try_shared_at(lease)? {
+        return Ok(Some(guard));
+    }
+    let removal = removal_path(lease);
+    if lock::try_shared_at(&removal)?.is_none() {
+        return Ok(None);
+    }
+    mutating(|| {
+        let bound = lock::timeout_seconds()?;
+        let started = std::time::Instant::now();
+        loop {
+            // The lease first, then the marker: a teardown takes the marker only once
+            // it holds the lease, so a lease still held with the marker free is a probe
+            // or a teardown that has not marked yet, and either is asked again.
+            if let Some(guard) = lock::try_shared_at(lease)? {
+                return Ok(Some(guard));
+            }
+            if lock::try_shared_at(&removal)?.is_none() {
+                return Ok(None);
+            }
+            if started.elapsed().as_secs_f64() >= bound {
+                return Err(crate::error::invalid(format!(
+                    "timed out after {bound}s waiting for a probe of the checkout guarded by \
+                     {} to end (raise {} if this wait is legitimate)",
+                    lease.display(),
+                    lock::TIMEOUT_ENV
+                )));
+            }
+            std::thread::sleep(PROBE_POLL);
+        }
+    })
 }
 
 pub(crate) fn closing_path(path: &Path) -> Result<Option<PathBuf>> {
@@ -539,16 +693,21 @@ pub(crate) fn teardown(identity: &str) -> Result<Turn> {
 
 /// Discover the identity from the durable record, then reload under its turn.
 /// A record removed while queueing answers with `load`'s named no-session error.
+///
+/// Only a teardown of the session's checkout refuses the read. A probe holding its
+/// closing lease is waited out, and the record is then read again, since a close may
+/// have run to completion between two askings of the marker.
 pub(crate) fn session(token: &str) -> Result<(Turn, workspace::Record)> {
     let first = workspace::load(token)?;
     let turn = identity(&first.identity)?;
     let record = workspace::load(token)?;
-    if !available(&record.clone)? {
-        return Err(crate::error::invalid(format!(
+    match admit(&record.clone, true)? {
+        Admission::Now => Ok((turn, record)),
+        Admission::AfterProbe => Ok((turn, workspace::load(token)?)),
+        Admission::Refused => Err(crate::error::invalid(format!(
             "no session {token:?} is open; its checkout is being torn down"
-        )));
+        ))),
     }
-    Ok((turn, record))
 }
 
 fn at(root: PathBuf, mode: Mode) -> Result<Turn> {

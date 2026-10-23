@@ -3358,8 +3358,10 @@ impl Census<'_> {
             let place = &self.places[index];
             let holder = self.holder(copy.at);
             // Earlier copies' hooks may still continue this copy. Mark it only
-            // when its own deletion starts, then retain the lease through finish.
-            match crate::checkout_reads::try_closing(&place.repo) {
+            // when its own deletion starts, then retain the lease through finish. A
+            // probe: deleting a branch removes no checkout, so a session reading this
+            // one waits for the deletion rather than being told it is torn down.
+            match crate::checkout_reads::try_probing(&place.repo) {
                 Ok(Some(guard)) => closing.push(guard),
                 refused => {
                     failed.push(FailedHolder {
@@ -3506,7 +3508,8 @@ impl Census<'_> {
         }
         let mut slots_returned = Vec::new();
         for slot in &plan.slots {
-            let returned = crate::checkout_reads::try_closing(&slot.join("clone"))
+            // A return tidies the slot and removes nothing, so it only probes.
+            let returned = crate::checkout_reads::try_probing(&slot.join("clone"))
                 .map_err(|failure| failure.to_string())
                 .and_then(|guard| {
                     _closing.push(guard.ok_or_else(|| {
