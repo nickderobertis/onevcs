@@ -85,7 +85,16 @@ fn a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_gi
     // — so the journey removes them from a registration this build made, which leaves
     // exactly what the earlier release left. Everything driven over it is the real CLI.
     for key in ["gc.auto", "gc.pruneExpire"] {
-        journey.git(&journey.checkout, &["config", "--unset", key]);
+        let setting = journey
+            .run(&mut journey.git_command(&journey.checkout, &["config", "--local", "--get", key]));
+        match setting.status.code() {
+            Some(0) => journey.git(&journey.checkout, &["config", "--unset", key]),
+            Some(1) => {} // Earlier releases already leave the key absent.
+            _ => panic!(
+                "git could not read {key}: {}",
+                String::from_utf8_lossy(&setting.stderr)
+            ),
+        }
     }
     // llmlint: ignore-end[tests_mirror_real_usage]
     let config = journey.checkout.join(".git").join("config");
