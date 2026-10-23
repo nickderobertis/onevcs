@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.7](https://github.com/nickderobertis/onevcs/compare/v0.56.6...v0.56.7) - 2026-10-23
+
+### Fixed
+
+- *(session)* keep a process's own threads from blocking on its checkout read lease ([#523](https://github.com/nickderobertis/onevcs/pull/523))
+
 ## [0.56.6](https://github.com/nickderobertis/onevcs/compare/v0.56.5...v0.56.6) - 2026-10-22
 
 ### Fixed
