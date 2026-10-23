@@ -3913,6 +3913,96 @@ mod probe_reads {
             .contains("its checkout is being torn down"));
     }
 
+    /// A read waiting out another process's probe lets go of its identity turn, so a
+    /// probe that needs that identity's exclusive turn to finish — as retirement and a
+    /// slot's return take it — is not held up by the very read waiting on it. Threads
+    /// of one process share a turn, so the probe is another process's: its own opens
+    /// of the two lease files, as `a_session_read_waits_out_another_processs_probe`
+    /// takes them.
+    #[test]
+    fn a_read_waiting_on_a_probe_yields_the_identity_turn_the_probe_needs() {
+        let _host = host();
+        std::env::set_var(crate::lock::TIMEOUT_ENV, "5");
+        let session = opened();
+        let record = super::load(&session.token.0).unwrap();
+        let open = |path: &std::path::Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .unwrap()
+        };
+        let probe = open(
+            &checkout_reads::closing_path(&record.clone)
+                .unwrap()
+                .unwrap(),
+        );
+        let turn = open(
+            &super::identity_dir(&record.identity)
+                .unwrap()
+                .join("onevcs-reads.lock"),
+        );
+        fs4::fs_std::FileExt::lock_exclusive(&probe).unwrap();
+        let prober = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            // The probe's own work, which waits on every other process's read turn.
+            fs4::fs_std::FileExt::lock_exclusive(&turn).unwrap();
+            fs4::fs_std::FileExt::unlock(&turn).unwrap();
+            fs4::fs_std::FileExt::unlock(&probe).unwrap();
+        });
+        let read = crate::session(&Providers::real(), &session.token);
+        prober.join().unwrap();
+        let read = read.unwrap_or_else(|refused| {
+            panic!("a read held the turn the probe it waited on needed: {refused}")
+        });
+        assert_eq!(read.lifecycle, Lifecycle::Open);
+    }
+
+    /// A probe that turns into a removal while a read is already waiting on it refuses
+    /// that read as soon as it marks the removal, not once it lets the lease go.
+    #[test]
+    fn a_read_already_waiting_on_a_probe_is_refused_once_the_probe_turns_removal() {
+        let _host = host();
+        bounded();
+        let session = opened();
+        let clone = super::load(&session.token.0).unwrap().clone;
+        let (entered, entering) = mpsc::channel();
+        let (escalate, escalating) = mpsc::channel::<()>();
+        let (release, released) = mpsc::channel::<()>();
+        let prober = std::thread::spawn(move || {
+            let _probe = checkout_reads::try_probing(&clone).unwrap().unwrap();
+            entered.send(()).unwrap();
+            escalating.recv().unwrap();
+            let _removal = checkout_reads::try_closing(&clone).unwrap().unwrap();
+            released.recv().unwrap();
+        });
+        entering.recv().unwrap();
+        let (answered, answer) = mpsc::channel();
+        let token = session.token.clone();
+        let reader = std::thread::spawn(move || {
+            let read = crate::session(&Providers::real(), &token)
+                .map(|read| read.lifecycle)
+                .map_err(|refused| refused.to_string());
+            answered.send(read).unwrap();
+        });
+        // Long enough that the read is waiting, rather than meeting the marker first.
+        std::thread::sleep(HELD);
+        escalate.send(()).unwrap();
+        let read = answer.recv_timeout(Duration::from_secs(10));
+        release.send(()).unwrap();
+        prober.join().unwrap();
+        reader.join().unwrap();
+        let refused = read
+            .expect("a waiting read outlasted the removal it should have been refused by")
+            .expect_err("a read was admitted to a checkout being removed");
+        assert!(
+            refused.contains("its checkout is being torn down"),
+            "{refused}"
+        );
+    }
+
     /// The other readers of a session's checkout: a repository read run in it, and a
     /// pin taken under a teardown turn, whose lease is not one the turn keeps.
     #[test]
