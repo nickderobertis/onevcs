@@ -4068,7 +4068,10 @@ mod probe_reads {
             0
         );
         // A copy in the slot's clone that no session record names, the way a forgotten
-        // record leaves one (as `tests/e2e/retire.rs` arranges it).
+        // record leaves one (as `tests/e2e/retire.rs` arranges it). Git for Windows reads
+        // a verbatim `\\?\` path argument as a host name, so it is handed the plain one.
+        #[cfg(windows)]
+        let checkout = dunce::simplified(&checkout).to_path_buf();
         super::reclaim_race::git(
             &slot_clone,
             &[
