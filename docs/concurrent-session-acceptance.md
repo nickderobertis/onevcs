@@ -262,3 +262,62 @@ the real Git read; command forwarding and raw invocation logs are unchanged.
 On `02fa581`, `just test-one checkout_reads` exited 0: **40 passed in 9.307s**.
 The earlier stalled fixture waits were released and their run is not acceptance
 evidence. No production workaround or test assertion was removed.
+
+## Final continuation through `587b30b`
+
+The continuation preserved the production fixes and added only a fixture correction:
+`9c2ab4b` lets the upgraded-registration journey start with retention keys already
+absent, as `register` on the original branch base actually leaves them. It queries
+Git for each key, removes a present key, and rejects any read error. All behavioral
+assertions are unchanged. The initial original-base replay stopped at an attempted
+unset of an absent key; that setup failure is not regression evidence.
+
+With the corrected fixture, the original branch base `1bf557c` fails the upgraded
+registration journey at its intended assertion: an open finishes while the lender
+lease is held and config is unopenable, reporting `project is not a git checkout`.
+Exit 100; one failed in 1.678s. This extends the earlier pre-lease replay to the
+actual branch base required by acceptance. Commands from the implementation tree:
+
+```sh
+git worktree add --detach /tmp/onevcs-continuation-before 1bf557c
+cp crates/onevcs/tests/e2e/concurrent_sessions.rs /tmp/onevcs-continuation-before/crates/onevcs/tests/e2e/concurrent_sessions.rs
+cp crates/onevcs/tests/e2e/support.rs /tmp/onevcs-continuation-before/crates/onevcs/tests/e2e/support.rs
+cat > /tmp/onevcs-continuation-before/crates/onevcs/tests/acceptance.rs <<'RS'
+#[path = "e2e/support.rs"]
+mod support;
+#[path = "e2e/concurrent_sessions.rs"]
+mod concurrent_sessions;
+RS
+cd /tmp/onevcs-continuation-before
+CARGO_TARGET_DIR=/tmp/onevcs-continuation-target cargo nextest run --locked \
+  -p onevcs --test acceptance \
+  -E 'test(a_checkout_an_earlier_release_registered_is_given_its_retention_keys_while_git_reads_it)' \
+  --no-fail-fast --status-level fail
+```
+
+Output is retained at `/tmp/onevcs-continuation-upgrade-before.log`. The disposable
+worktree was removed after replay. The historical build reused the continuation's
+build directory too early, overlapping the first full-suite run; that full-suite
+run is not accepted as finished-tree evidence. Subsequent finished-tree checks
+rebuild the final sources after the historical replay, without another historical
+build beside them.
+
+Before the fixture-only correction, the continuation ran a fresh trace on
+`587b30b` (unchanged production implementation):
+
+```sh
+CARGO_TARGET_DIR=/tmp/onevcs-continuation-target \
+strace -f -qq -s 180 \
+  -e trace=execve,openat,rename,renameat,renameat2,unlink,unlinkat,write,pwrite64 \
+  -o /tmp/onevcs-continuation-session.strace \
+  just test-one concurrent_sessions > /tmp/onevcs-continuation-session.log 2>&1
+```
+
+Exit 0; **11 passed in 147.930s**. Inspection found zero rename calls onto
+published clones' `config`, `packed-refs`, or `refs/remotes/origin/HEAD` (excluding
+construction paths under `.clone.cutting`). The earlier file/operation inventory
+and placement-cycle evidence therefore still describe the production tree.
+After the corrected fixture and historical replay,
+`CARGO_TARGET_DIR=/tmp/onevcs-continuation-target just test-one concurrent_sessions`
+exited 0: **11 passed in 14.242s**, output at
+`/tmp/onevcs-continuation-final-tests.log`.
