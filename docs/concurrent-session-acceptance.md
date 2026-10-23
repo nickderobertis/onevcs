@@ -241,3 +241,14 @@ the read turn, `just test-one concurrent_sessions` exited 100 with 10 passed and
 only the reused-slot journey failing in 240.859s, with the lock cycle above.
 These are observed integration failures, in addition to the original-tree failures
 recorded earlier; the regression was not weakened to pass them.
+
+
+On corrected implementation `ae0e862`, the same traced command with paths
+`/tmp/onevcs-merge-fixed-session.strace` and
+`/tmp/onevcs-merge-fixed-session.log` exited 0: **11 passed in 108.574s**.
+This includes the upgraded registration, unchanged-file identity assertions,
+configuration endings, simultaneous restacks and pool reuse. The trace contains
+zero renames onto published clones' `config`, `packed-refs` or
+`refs/remotes/origin/HEAD`; construction writes to those files remain under
+`.clone.cutting`. The operation/file inventory above remains applicable.
+`just lint` and `just fmt-check` both exited 0 over this corrected code.
