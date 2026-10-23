@@ -3491,7 +3491,9 @@ fn reclaim(identity: &str, runs: &Path) -> Result<()> {
         if open.iter().any(|held| held == &run_root) {
             continue;
         }
-        let Some(closing) = crate::checkout_reads::try_closing(&run_root.join("clone"))? else {
+        // Only a probe until the run root is found abandoned: a session opened since
+        // the snapshot above must read on rather than be told it is torn down.
+        let Some(closing) = crate::checkout_reads::try_probing(&run_root.join("clone"))? else {
             continue;
         };
         let Some(exclusive) = abandoned(&run_root)? else {
@@ -3504,6 +3506,9 @@ fn reclaim(identity: &str, runs: &Path) -> Result<()> {
             Vec::new()
         };
         if unpublished.is_empty() {
+            // Marked a teardown now that it is one. The probe's lease is what keeps
+            // readers out; the mark tells a waiting one to stop waiting.
+            let _removing = crate::checkout_reads::try_closing(&clone).ok();
             let _ = std::fs::remove_dir_all(&run_root);
             drop(exclusive);
         } else {
@@ -3515,6 +3520,7 @@ fn reclaim(identity: &str, runs: &Path) -> Result<()> {
     }
     holding_work.sort_by_key(|(written, _, _, _)| std::cmp::Reverse(*written));
     for (_, reclaimed, exclusive, _closing) in holding_work.into_iter().skip(RETAINED_DEAD_RUNS) {
+        let _removing = crate::checkout_reads::try_closing(&reclaimed.join("clone")).ok();
         let _ = std::fs::remove_dir_all(&reclaimed);
         drop(exclusive);
     }
@@ -3602,7 +3608,7 @@ mod reclaim_race {
 
     /// A session on a generated branch, which stands exactly at its base: published,
     /// so nothing but its record and its lease says anybody is working in it.
-    fn opened() -> crate::Session {
+    pub(super) fn opened() -> crate::Session {
         Providers::real()
             .vcs
             .open_session(SessionRequest {
@@ -3622,7 +3628,7 @@ mod reclaim_race {
     }
 
     /// A host with one registered checkout of a bare origin, and nothing opened yet.
-    fn host() -> tempfile::TempDir {
+    pub(super) fn host() -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("a scratch host");
         let at = root.path().canonicalize().expect("a canonical root");
         // On Windows `canonicalize` is the verbatim `\\?\` spelling, and Git for Windows
@@ -3758,6 +3764,254 @@ mod reclaim_race {
             handed.display()
         );
         assert!(b.worktree.is_dir(), "B opened into its own worktree");
+    }
+}
+
+/// A session read meeting a holder of its checkout's closing lease, through the public
+/// read the engine makes (`crate::session`) and the lease API the holders take.
+///
+/// A probe is held the way retirement, a slot's return and reclamation hold it — by
+/// [`crate::checkout_reads::try_probing`] on a sibling thread, which is the engine's
+/// shape (several sessions of one repository driven from one process), or by a
+/// separate open of the lease file, which `flock` treats as another process's. A
+/// teardown is a real close, or [`crate::checkout_reads::try_closing`], which every
+/// remover takes. No verb can be held mid-probe, so this is the layer that can arrange
+/// one.
+#[cfg(test)]
+mod probe_reads {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::reclaim_race::{host, opened};
+    use crate::checkout_reads::{self, Closing};
+    use crate::session::Lifecycle;
+    use crate::{Providers, Vcs};
+
+    /// How long a probe is held before it is let go, which a waiting read must outlast.
+    const HELD: Duration = Duration::from_millis(400);
+
+    fn bounded() {
+        std::env::set_var(crate::lock::TIMEOUT_ENV, "30");
+    }
+
+    /// A closing lease taken on its own thread by `take`, released on the word.
+    fn held_on_a_thread(
+        clone: std::path::PathBuf,
+        take: fn(&std::path::Path) -> crate::error::Result<Option<Closing>>,
+    ) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let held = take(&clone)
+                .unwrap()
+                .expect("nothing else holds the checkout");
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            drop(held);
+        });
+        entering.recv().unwrap();
+        (release, holder)
+    }
+
+    #[test]
+    fn a_session_read_waits_out_a_sibling_threads_probe_and_answers_the_open_session() {
+        let _host = host();
+        bounded();
+        let session = opened();
+        let clone = super::load(&session.token.0).unwrap().clone;
+        let (release, holder) = held_on_a_thread(clone, checkout_reads::try_probing);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            release.send(()).unwrap();
+        });
+        let asked = Instant::now();
+        let read = crate::session(&Providers::real(), &session.token);
+        let waited = asked.elapsed();
+        releaser.join().unwrap();
+        holder.join().unwrap();
+        let read = read.unwrap_or_else(|refused| {
+            panic!("a probe of the checkout refused a read of the open session: {refused}")
+        });
+        assert_eq!(read.lifecycle, Lifecycle::Open);
+        assert_eq!(read.session.token, session.token);
+        assert!(
+            waited >= HELD / 2,
+            "the read was admitted while the probe held the checkout ({waited:?})"
+        );
+    }
+
+    #[test]
+    fn a_session_read_waits_out_another_processs_probe() {
+        let _host = host();
+        bounded();
+        let session = opened();
+        let clone = super::load(&session.token.0).unwrap().clone;
+        let lease = checkout_reads::closing_path(&clone).unwrap().unwrap();
+        // Another process probing: its own open of the lease file, holding it
+        // exclusively and leaving the removal marker alone.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lease)
+            .unwrap();
+        fs4::fs_std::FileExt::lock_exclusive(&file).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            fs4::fs_std::FileExt::unlock(&file).unwrap();
+        });
+        let read = crate::session(&Providers::real(), &session.token);
+        releaser.join().unwrap();
+        let read = read.unwrap_or_else(|refused| {
+            panic!("another process's probe refused a read of the open session: {refused}")
+        });
+        assert_eq!(read.lifecycle, Lifecycle::Open);
+    }
+
+    #[test]
+    fn a_session_read_meeting_a_teardown_answers_that_it_is_being_torn_down_without_waiting() {
+        let _host = host();
+        bounded();
+        let session = opened();
+        let clone = super::load(&session.token.0).unwrap().clone;
+        let (release, holder) = held_on_a_thread(clone.clone(), checkout_reads::try_closing);
+        let asked = Instant::now();
+        let read = crate::session(&Providers::real(), &session.token);
+        let answered = asked.elapsed();
+        // A probe a remover then turns into a removal is a teardown from that moment.
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        let refused = read.expect_err("a read was admitted to a checkout being torn down");
+        assert!(
+            refused
+                .to_string()
+                .contains("its checkout is being torn down")
+                && refused.to_string().contains(&session.token.0),
+            "{refused}"
+        );
+        assert!(
+            answered < Duration::from_secs(5),
+            "a teardown is answered, not waited out ({answered:?})"
+        );
+
+        let (escalated, escalating) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _probe = checkout_reads::try_probing(&clone).unwrap().unwrap();
+            let _removal = checkout_reads::try_closing(&clone).unwrap().unwrap();
+            escalated.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        escalating.recv().unwrap();
+        let read = crate::session(&Providers::real(), &session.token);
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(read
+            .expect_err("a probe turned removal still admitted a read")
+            .to_string()
+            .contains("its checkout is being torn down"));
+    }
+
+    /// A probe holds the checkout while a reader and a real close both queue behind
+    /// it. Whichever the probe's end lets in first, the reader never holds a record
+    /// while the close is removing the checkout: either it is admitted and the close
+    /// waits for it, with the clone and worktree whole for as long as it reads, or the
+    /// close goes first and the read answers that the session is being torn down, or
+    /// it reads the record the close left.
+    #[test]
+    fn a_reader_released_by_a_probe_never_overlaps_a_real_close() {
+        let _host = host();
+        bounded();
+        for close_first in [true, false] {
+            let session = opened();
+            let token = session.token.clone();
+            let clone = super::load(&token.0).unwrap().clone;
+            let (release_probe, prober) =
+                held_on_a_thread(clone.clone(), checkout_reads::try_probing);
+
+            let (closed, closing) = mpsc::channel();
+            let mut start_close = Some({
+                let token = token.clone();
+                move || {
+                    std::thread::spawn(move || {
+                        let answer = crate::Git.close_session(&token);
+                        closed.send(answer.map(|_| ())).unwrap();
+                    })
+                }
+            });
+            let mut start_close = move || start_close.take().expect("one close per session")();
+            let (admitted, admitting) = mpsc::channel();
+            let (finish_read, finished) = mpsc::channel::<()>();
+            let reader = {
+                let token = token.clone();
+                std::thread::spawn(move || {
+                    let answer = checkout_reads::session(&token.0);
+                    let seen = answer
+                        .as_ref()
+                        .map(|(_, record)| {
+                            (
+                                record.state,
+                                record.clone.is_dir(),
+                                record.worktree.is_dir(),
+                            )
+                        })
+                        .map_err(ToString::to_string);
+                    admitted.send(seen).unwrap();
+                    finished.recv().unwrap();
+                    drop(answer);
+                })
+            };
+            let closer = if close_first {
+                let closer = start_close();
+                // The close queues on the probe's lease; the reader polls beside it.
+                std::thread::sleep(HELD);
+                release_probe.send(()).unwrap();
+                Some(closer)
+            } else {
+                std::thread::sleep(HELD);
+                release_probe.send(()).unwrap();
+                None
+            };
+            prober.join().unwrap();
+            let seen = admitting
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the read answered");
+            let closer = closer.unwrap_or_else(&mut start_close);
+            match &seen {
+                Ok((Lifecycle::Open, clone_whole, worktree_whole)) => {
+                    assert!(
+                        *clone_whole && *worktree_whole,
+                        "an open session was read with its checkout gone"
+                    );
+                    std::thread::sleep(HELD);
+                    assert!(
+                        closing.try_recv().is_err(),
+                        "the close finished while an admitted reader still held the checkout"
+                    );
+                    assert!(clone.is_dir(), "the checkout was removed under its reader");
+                }
+                Ok((Lifecycle::Closed, _, _)) => {}
+                Err(refused) => assert!(
+                    refused.contains("its checkout is being torn down"),
+                    "{refused}"
+                ),
+            }
+            finish_read.send(()).unwrap();
+            reader.join().unwrap();
+            closer.join().unwrap();
+            closing
+                .recv()
+                .unwrap()
+                .expect("the close completes once the probe and reader are done");
+            if !close_first {
+                assert!(
+                    matches!(seen, Ok((Lifecycle::Open, true, true))),
+                    "a read released by the probe before any close reads the open session: \
+                     {seen:?}"
+                );
+            }
+        }
     }
 }
 

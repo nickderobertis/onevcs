@@ -880,7 +880,8 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
         if !matches!(slot.state, SlotState::Broken { .. }) {
             continue;
         }
-        let Some(_closing) = crate::checkout_reads::try_closing(&slot.clone_dir())? else {
+        // A probe until something is removed: most of a broken slot is kept.
+        let Some(_closing) = crate::checkout_reads::try_probing(&slot.clone_dir())? else {
             continue;
         };
         let clone = slot.clone_dir();
@@ -898,6 +899,7 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
                 Cut::Warm
             } else {
                 if worktree.exists() {
+                    let _removing = crate::checkout_reads::try_closing(&clone)?;
                     std::fs::remove_dir_all(&worktree)
                         .map_err(error::at("remove the broken worktree at", &worktree))?;
                 }
@@ -907,6 +909,7 @@ fn recreate_broken(survey: &Survey, ask: &Ask<'_>) -> Result<Option<Taken>> {
                 Cut::KeptClone
             }
         } else {
+            let _removing = crate::checkout_reads::try_closing(&clone)?;
             std::fs::remove_dir_all(&slot.dir)
                 .map_err(error::at("remove the broken slot at", &slot.dir))?;
             std::fs::create_dir(&slot.dir).map_err(error::at("create", &slot.dir))?;
