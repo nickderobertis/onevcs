@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    placement_identity, pool_dir, shed, state_of, survey, write_record, Claim, MaintenanceOutcome,
+    placement_turn, pool_dir, shed, state_of, survey, write_record, Claim, MaintenanceOutcome,
     SlotRecord, SlotState, Timestamp,
 };
 use crate::error::{self, Result};
@@ -253,7 +253,7 @@ fn maintain_identity(resolution: &Resolution, older_than: Option<Span>) -> Resul
     // before any slot is looked at; only the numbers survive the lock, because a
     // state read here is stale by the time an earlier slot's command has run.
     let numbers: Vec<u32> = {
-        let _serial = lock::exclusive(&placement_identity(&pool))?;
+        let _serial = placement_turn(&pool)?;
         let mut survey = survey(&resolution.key, &pool)?;
         shed(&mut survey, resolved.file_pool, &resolution.publication);
         survey.slots.iter().map(|slot| slot.number).collect()
@@ -388,7 +388,7 @@ fn claim(
     number: u32,
     older_than: Option<Span>,
 ) -> Result<std::result::Result<Claimed, SlotOutcome>> {
-    let _serial = lock::exclusive(&placement_identity(pool))?;
+    let _serial = placement_turn(pool)?;
     let dir = pool.join(number.to_string());
     let open: Vec<workspace::Record> = workspace::all()?
         .into_iter()

@@ -1,9 +1,9 @@
 # Concurrent session Git-file acceptance evidence
 
-Implementation tested: `96ac537` (including the portable Windows fixture repair).
+Original implementation tested: `96ac537` (including the portable Windows fixture repair).
 Evidence collected by this dispatch on Linux with Git 2.43.0, through the compiled
 `onevcs` CLI and real Git repositories. No CI was triggered, rerun, or cancelled.
-The report commit changes documentation only.
+The original report commit changed documentation only; the merge continuation below records the subsequent integration checks.
 
 ## Files and operations
 
@@ -197,3 +197,47 @@ CI already includes these journeys without OS exclusions:
 The report adds no behavior or enforcement changes. Documentation-only final
 checks are recorded in the dispatch response. Temporary historical worktrees and
 build output are removed after replay; raw trace/log evidence remains under `/tmp`.
+
+
+## Merge continuation
+
+Merge `363ecd3` concludes the merge of `471b657fc112546e0faa848263fc198cbd834bfc`
+into `f06d4ee2`; both are its parents. No merge remains in progress. The resolution
+keeps outside-checkout Git execution, lender configuration protection, and main's
+checkout read turns and mutation yields. Branch searches hold an identity read
+turn only through the search, while retaining occupancy leases on the selected
+clones through continuation. Keeping the identity turn through continuation's
+caller would make its later reclamation refuse an attempted exclusive turn.
+
+The real concurrency journey also exposed a placement/read lock cycle on this
+merge: `pool::place` took an exclusive identity turn before waiting for the pool
+placement lock, while an earlier placer retained that placement lock through its
+record save and needed a shared identity turn to read its managed clone. On Linux,
+`/proc/locks` showed PID 1747939 holding placement inode 7126004 and waiting for
+identity inode 7362139, while PID 1747948 held that identity inode and waited for
+7126004. Their open file descriptors identified the placement lock under
+`state/locks/15c2c3e79dc05601b0abfc6e4a2192c6164f7d4f898495b4823dc52a03597574.lock`
+and the identity's `onevcs-reads.lock` in the same scratch repository.
+
+`pool::placement_turn` now yields checkout turns while waiting for placement and
+reacquires them before surveying slots. Placement, prune, maintenance and retirement
+all use this helper, so a waiter cannot keep the current placer from finishing its
+checkout reads. This changes private synchronization only; it adds no serialized
+field, public interface, CI exception or enforcement change. The manager explicitly
+confirmed this integration fix belongs to this dispatch (planner reply 185).
+
+The initial traced run on merge `363ecd3` used:
+
+```sh
+strace -f -qq -s 180 \
+  -e trace=execve,openat,rename,renameat,renameat2,unlink,unlinkat,write,pwrite64 \
+  -o /tmp/onevcs-merge-session.strace \
+  just test-one concurrent_sessions > /tmp/onevcs-merge-session.log 2>&1
+```
+
+It exited 100: 7 passed, 4 failed. Three journeys exposed the overlong read turn;
+the reused-slot journey exposed the placement cycle and timed out. After shortening
+the read turn, `just test-one concurrent_sessions` exited 100 with 10 passed and
+only the reused-slot journey failing in 240.859s, with the lock cycle above.
+These are observed integration failures, in addition to the original-tree failures
+recorded earlier; the regression was not weakened to pass them.

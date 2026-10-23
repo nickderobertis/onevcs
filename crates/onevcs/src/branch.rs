@@ -760,6 +760,7 @@ pub(crate) fn refuse_unfinished_merges(
     branch: &str,
     then: &str,
 ) -> Result<()> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let search = crate::workspace::checkouts_held(registry, resolution)?;
     for checkout in &search.checkouts {
         if !git::is_repo(checkout) {
@@ -799,6 +800,7 @@ pub(crate) fn locate(
     base: &str,
     next: &str,
 ) -> Result<Located> {
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let search = crate::workspace::checkouts_held(registry, resolution)?;
     let searched = &search.checkouts;
     let current = crate::vcs::base_commit(&resolution.publication, base);

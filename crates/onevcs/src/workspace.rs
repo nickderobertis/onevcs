@@ -1094,7 +1094,7 @@ pub fn checkouts_of(registry: &Registry, resolution: &Resolution) -> Result<Vec<
 /// A pool slot is not held: nothing that reclaims a run root removes a slot, and a
 /// shared lease on one would keep the placement that may want it off it.
 pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Result<Searched> {
-    let reads = crate::checkout_reads::identity(&resolution.key)?;
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
     let sessions = all()?;
     let mut held = Vec::new();
     for record in &sessions {
@@ -1111,7 +1111,6 @@ pub(crate) fn checkouts_held(registry: &Registry, resolution: &Resolution) -> Re
     Ok(Searched {
         checkouts: checkouts_among(registry, resolution, &sessions),
         _held: held,
-        _reads: reads,
     })
 }
 
@@ -1122,7 +1121,6 @@ pub(crate) struct Searched {
     /// Kept for as long as any of `checkouts` is read: once they go, a sibling's open may
     /// reclaim a clone the caller is still comparing.
     _held: Vec<lock::Guard>,
-    _reads: crate::checkout_reads::Turn,
 }
 
 /// The same search order over records a caller already validated and read.
