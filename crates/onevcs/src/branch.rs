@@ -725,6 +725,8 @@ pub(crate) struct Located {
     pub checkout: PathBuf,
     /// Keeps every run clone the search read from being reclaimed until it is dropped.
     _search: crate::workspace::Searched,
+    /// Keeps a close from excluding the chosen checkout before its caller reads it.
+    _checkout: crate::checkout_reads::Pinned,
 }
 
 /// The registered checkout a publication of a branch read out of `source` borrows its
@@ -837,6 +839,7 @@ pub(crate) fn locate(
         announce(branch, only, &held);
         return Ok(Located {
             checkout: only.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&only.checkout)?,
             _search: search,
         });
     };
@@ -844,6 +847,7 @@ pub(crate) fn locate(
         announce(branch, first, &held);
         return Ok(Located {
             checkout: first.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&first.checkout)?,
             _search: search,
         });
     }
@@ -854,6 +858,7 @@ pub(crate) fn locate(
         announce(branch, copy, &held);
         return Ok(Located {
             checkout: copy.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&copy.checkout)?,
             _search: search,
         });
     }
@@ -889,6 +894,7 @@ pub(crate) fn locate(
         announce(branch, copy, &held);
         return Ok(Located {
             checkout: copy.checkout.clone(),
+            _checkout: crate::checkout_reads::pin(&copy.checkout)?,
             _search: search,
         });
     }

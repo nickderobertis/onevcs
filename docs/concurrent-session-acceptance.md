@@ -356,3 +356,22 @@ imports distinguish explicit sources from searched copies that own `Located`.
 This private type refactoring preserves the guarded read span and changes no
 public interface or serialized document. The concurrency and import journeys
 exercise it through the real CLI.
+
+The full-suite continuation on `492490e` exposed a second integration race:
+`publish_branch::a_branch_read_out_of_a_reused_pool_slot_is_published_while_siblings_read_the_slot`
+failed with `no session ... is open; its checkout is being torn down`.
+The command was `CARGO_TARGET_DIR=/tmp/onevcs-continuation-target just test-quick`,
+with output retained at `/tmp/onevcs-guarded-test-quick.log`. The e2e tier ran
+915 tests before fail-fast: 914 passed and this journey failed in 2.255s.
+The clone's occupancy guard prevented reclamation, but the search's checkout
+admission ended before its caller fetched the chosen branch. A sibling close
+could acquire that checkout's closing lease in the gap.
+
+`Located` now retains a `checkout_reads::Pinned` lease for the selected checkout.
+It shares the traversal's existing per-checkout admission without retaining the
+identity turn. Thus a close queues before its identity teardown until the selected
+copy has been read, while reclamation still skips occupied copies; neither queues
+behind an identity turn retained by the caller. The regression above exercises
+this through the real publication and sibling session opens/closes. This changes
+only lease ownership, not Git writes or the file inventory above. Final results
+and commands for this fix are recorded in the dispatch response.

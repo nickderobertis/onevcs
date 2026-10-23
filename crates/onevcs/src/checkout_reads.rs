@@ -35,7 +35,7 @@ use crate::{error::Result, home, lock, workspace};
 pub(crate) struct Lease {
     guard: RefCell<Option<Hold>>,
     mode: Mode,
-    checkouts: RefCell<HashMap<PathBuf, lock::Guard>>,
+    checkouts: RefCell<HashMap<PathBuf, Rc<lock::Guard>>>,
 }
 
 impl Lease {
@@ -346,6 +346,35 @@ pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
     Ok(turn)
 }
 
+/// Keep the selected checkout admitted after its traversal releases the identity turn.
+/// Closing waits on this checkout alone, without blocking unrelated identity work.
+pub(crate) struct Pinned {
+    _guard: Option<Rc<lock::Guard>>,
+}
+
+pub(crate) fn pin(path: &Path) -> Result<Pinned> {
+    let turn = checkout(path)?;
+    let Some(path) = closing_path(path)? else {
+        return Ok(Pinned { _guard: None });
+    };
+    let guard = CLOSING
+        .with(|held| held.borrow().get(&path).and_then(Weak::upgrade))
+        .or_else(|| {
+            turn.as_ref()
+                .and_then(|turn| turn.checkouts.borrow().get(&path).cloned())
+        });
+    let guard = match guard {
+        Some(guard) => guard,
+        None => Rc::new(
+            lock::try_shared_at(&path)?
+                .ok_or_else(|| crate::error::invalid("the selected checkout is being torn down"))?,
+        ),
+    };
+    Ok(Pinned {
+        _guard: Some(guard),
+    })
+}
+
 fn root_of(path: &Path) -> Result<Option<PathBuf>> {
     let workspaces = home::workspaces_dir()?;
     let Some(relative) = relative_checkout(path, &workspaces) else {
@@ -441,7 +470,7 @@ pub(crate) fn available(path: &Path) -> Result<bool> {
         return Ok(false);
     };
     if let Some(turn) = turn.filter(|turn| turn.mode == Mode::Shared) {
-        turn.checkouts.borrow_mut().insert(path, guard);
+        turn.checkouts.borrow_mut().insert(path, Rc::new(guard));
     }
     Ok(true)
 }
