@@ -2178,3 +2178,73 @@ fn pool_query_ordering(capacity: bool, read_first: bool) {
     }
     assert!(worktree.is_dir());
 }
+
+/// Two opens on one pooled identity, held where the read lease and the placement
+/// serial would cross: the slot open inside a write in its slot, holding the serial
+/// and no read turn, and the overflow open at the serial's lock file. Both proceed
+/// from there and must both open, within the fixture's lock bound.
+#[test]
+fn a_slot_open_and_an_overflow_open_on_one_pooled_identity_both_complete() {
+    use sha2::{Digest, Sha256};
+
+    let fixture = crate::pool::pooled(&crate::pool::sized(1, "unlimited"));
+    let (warmed, slot_worktree) = fixture.open(&["--branch", "feature/warm-up"]);
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &warmed])
+        .assert()
+        .success();
+    let slot = slot_worktree.parent().unwrap();
+    let pool = slot.parent().unwrap();
+    let serial = fixture.world.home().join("locks").join(format!(
+        "{:x}.lock",
+        Sha256::digest(format!("pool:{}", pool.display()).as_bytes())
+    ));
+    assert!(serial.is_file(), "the placement serial is {}", serial.display());
+
+    let shim = HeldGit::installed(&fixture);
+    let mut slotted = shim.command(&fixture, &slot.join("clone"));
+    slotted
+        .env("HOLD_READER", "1")
+        .env("HOLD_ARGS", "fetch --no-tags")
+        .args(["session", "open", "project", "--branch", "feature/slotted"]);
+    let slotted = notifying(slotted, Vec::new());
+    shim.entered();
+
+    let ready = fixture.world.path("overflow-ready");
+    let release = fixture.world.path("overflow-release");
+    fifo(&ready);
+    fifo(&release);
+    let ready_pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&ready)
+        .unwrap();
+    let mut overflowed = fixture.world.onevcs_std();
+    overflowed
+        .env("LD_PRELOAD", observer())
+        .env("READ_PAUSE_BEFORE", "1")
+        .env("READ_PAUSE_FILE", &serial)
+        .env("READ_READY", &ready)
+        .env("READ_RELEASE", &release)
+        .args(["session", "open", "project", "--branch", "feature/overflowed"]);
+    let overflowed = notifying(overflowed, Vec::new());
+    let mut paused = String::new();
+    BufReader::new(&ready_pipe).read_line(&mut paused).unwrap();
+    assert_eq!(paused, "inside\n");
+    File::create(&release)
+        .unwrap()
+        .write_all(b"continue\n")
+        .unwrap();
+    shim.release();
+
+    let slotted = slotted.join().unwrap();
+    let overflowed = overflowed.join().unwrap();
+    success(slotted.clone());
+    success(overflowed.clone());
+    let slotted = crate::world::worktree_of(&slotted.stdout);
+    let overflowed = crate::world::worktree_of(&overflowed.stdout);
+    assert_eq!(crate::pool::slot_of(&slotted), Some(1));
+    assert_eq!(crate::pool::slot_of(&overflowed), None, "{overflowed:?}");
+}
