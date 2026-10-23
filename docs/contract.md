@@ -2724,7 +2724,11 @@ an upgrade waits for other processes' readers the process holds the identity's
 upgrade intent lock instead, taken before the shared hold is given up; a teardown
 in another process that is granted the read lease while that intent is held hands
 the lease back and waits for the upgrade, so it never enters while the upgrading
-process's readers are inside. A process running onevcs 0.56.6 does not honour the
+process's readers are inside. The intent covers only readers that the shared hold
+covered when the intent was taken: if the upgrading process's last reader leaves
+before then, its shared hold goes with that reader, and a reader of that process
+arriving afterwards waits for the upgrade to settle rather than entering under
+neither lock. A process running onevcs 0.56.6 does not honour the
 intent lock, and its teardown can enter during another process's upgrade wait. A teardown in one thread therefore does not wait for a sibling
 thread's read; what keeps it out of a checkout that read has admitted is the
 per-checkout lease, which close waits for and every other remover passes over,
