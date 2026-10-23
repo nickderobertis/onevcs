@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.9](https://github.com/nickderobertis/onevcs/compare/v0.56.8...v0.56.9) - 2026-10-23
+
+### Fixed
+
+- *(session)* answer an open session's read while another caller only probes its checkout ([#529](https://github.com/nickderobertis/onevcs/pull/529))
+
 ## [0.56.8](https://github.com/nickderobertis/onevcs/compare/v0.56.7...v0.56.8) - 2026-10-23
 
 ### Fixed
