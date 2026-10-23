@@ -4160,6 +4160,72 @@ mod probe_reads {
                 checkout_reads::Holder::Teardown
             ]
         );
+        crate::Git.close_session(&third.token).unwrap();
+
+        // A clone that is not a repository: the whole slot is removed and cut fresh.
+        std::fs::remove_dir_all(&clone).unwrap();
+        std::fs::create_dir(&clone).unwrap();
+        forget_taken();
+        let fourth = open_on(None, 1);
+        assert_eq!(super::load(&fourth.token.0).unwrap().run_root, slot);
+        assert!(
+            crate::git::is_repo(&clone),
+            "the premise: the clone was cut again"
+        );
+        assert_eq!(
+            taken_on(&clone),
+            [
+                checkout_reads::Holder::Probe,
+                checkout_reads::Holder::Teardown
+            ]
+        );
+    }
+
+    /// Run roots holding work no origin has are probed and kept up to the retention
+    /// bound; the one past it is torn down to be removed, and only that one.
+    #[test]
+    fn reclamation_tears_down_only_the_run_root_retention_removes() {
+        let _host = host();
+        bounded();
+        let mut left = Vec::new();
+        for n in 0..=super::RETAINED_DEAD_RUNS {
+            let session = open_on(None, 0);
+            let file = format!("work-{n}.txt");
+            std::fs::write(session.worktree.join(&file), "work\n").unwrap();
+            super::reclaim_race::git(&session.worktree, &["add", &file]);
+            super::reclaim_race::git(&session.worktree, &["commit", "-q", "-m", "feat: work"]);
+            let record = super::load(&session.token.0).unwrap();
+            crate::Git.close_session(&session.token).unwrap();
+            left.push(record);
+            // Ordered by when each run root was last written.
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        forget_taken();
+        let _next = open_on(None, 0);
+        let removed: Vec<_> = left
+            .iter()
+            .filter(|record| !record.run_root.exists())
+            .collect();
+        assert_eq!(removed.len(), 1, "the premise: one run root past the bound");
+        assert_eq!(
+            removed[0].token, left[0].token,
+            "the oldest is the one removed"
+        );
+        for record in &left {
+            let expected: &[checkout_reads::Holder] = match record.run_root.exists() {
+                true => &[checkout_reads::Holder::Probe],
+                false => &[
+                    checkout_reads::Holder::Probe,
+                    checkout_reads::Holder::Teardown,
+                ],
+            };
+            assert_eq!(
+                taken_on(&record.clone),
+                expected,
+                "{}",
+                record.run_root.display()
+            );
+        }
     }
 
     /// A probe holds the checkout while a reader and a real close both queue behind
