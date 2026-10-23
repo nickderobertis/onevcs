@@ -153,6 +153,13 @@ impl Process {
     /// still stands, and kept until the exclusive one is granted or the shared one is
     /// back, so no other process's teardown can enter while this one's readers are
     /// inside.
+    // llmlint: ignore[changed_behavior_has_e2e] each branch past the first grant is an
+    // interleaving with a process stopped mid-upgrade — its intent awaited, its readers
+    // leaving, or its exclusive take refused by the lock bound — and no verb holds a turn
+    // across a wait, so no journey can stop one there. The upgrade's ordinary path is the
+    // public journey `library::threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one`;
+    // the module's tests below arrange each other branch through the lease API, re-running
+    // their own binary as the other process, as `crates/onevcs/AGENTS.md` records.
     fn upgrade<'a>(
         &'a self,
         mut holders: MutexGuard<'a, Holders>,
@@ -225,6 +232,11 @@ impl Files {
     /// flight: that process gave up its shared hold under the intent lock with its
     /// readers still inside. The lease is let go before the intent is waited on, so
     /// the two locks are never awaited in a cycle.
+    // llmlint: ignore[changed_behavior_has_e2e] the intent is found held only while another
+    // process is stopped between giving up its shared hold and being granted the
+    // exclusive one, which no verb can be held at; the module's tests arrange it with a
+    // second process running the lease API (`a_teardown_granted_during_another_process_upgrade_hands_the_lease_back`,
+    // `an_exclusive_take_that_cannot_clear_the_intent_lets_the_lease_go`).
     fn exclusive(&self) -> Result<lock::Guard> {
         loop {
             let guard = lock::exclusive_at(&self.lease)?;

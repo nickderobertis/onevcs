@@ -8681,15 +8681,23 @@ fn several_landings_read_together_cost_the_same_however_many_there_are() {
 
 /// A host factory that, asked for a host, waits for sibling threads of this process to
 /// take the same identity's read turns through the public pool operations — the shape
-/// an engine dispatching several nodes of one repository from several threads has.
+/// an engine dispatching several nodes of one repository from several threads has —
+/// and then has other processes, the real binary, read and tear down that identity
+/// while this thread still holds its turn.
 struct WaitingOnSiblings {
     inner: MemoryHost,
     repo: &'static str,
+    /// `onevcs pool status`, and `onevcs pool prune`, against the same identity.
+    reader: std::sync::Mutex<std::process::Command>,
+    teardown: std::sync::Mutex<std::process::Command>,
     met: std::sync::Mutex<Option<Result<(), String>>>,
+    /// The other process's teardown, still waiting when the host was handed back.
+    waiting: std::sync::Mutex<Option<std::process::Child>>,
 }
 
-impl Hosting for WaitingOnSiblings {
-    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+impl WaitingOnSiblings {
+    fn meet(&self) -> Result<(), String> {
+        let bound = std::time::Duration::from_secs(20);
         let (done, finished) = std::sync::mpsc::channel();
         let repo = self.repo;
         let pruning = done.clone();
@@ -8708,15 +8716,63 @@ impl Hosting for WaitingOnSiblings {
                     .map_err(|e| e.to_string()),
             );
         });
-        let bound = std::time::Duration::from_secs(20);
-        let met = (0..2).try_for_each(|_| match finished.recv_timeout(bound) {
-            Ok(answer) => answer,
-            Err(_) => Err(format!(
-                "a sibling thread's read turn on {repo} did not finish within {bound:?} \
-                 while this thread held one"
-            )),
-        });
-        *self.met.lock().expect("the record") = Some(met);
+        for _ in 0..2 {
+            finished.recv_timeout(bound).map_err(|_| {
+                format!(
+                    "a sibling thread's read turn on {repo} did not finish within {bound:?} \
+                     while this thread held one"
+                )
+            })??;
+        }
+        // The sibling's teardown is over, and this thread still reads: another process
+        // reads beside it, and another process's teardown waits for it.
+        let mut reader = self
+            .reader
+            .lock()
+            .expect("the reader")
+            .spawn()
+            .expect("spawn");
+        let read = wait_within(&mut reader, bound)
+            .ok_or("another process's reader waited on this one's read turn")?;
+        if !read.success() {
+            return Err(format!("another process's reader failed: {read}"));
+        }
+        let mut teardown = self
+            .teardown
+            .lock()
+            .expect("the teardown")
+            .spawn()
+            .expect("spawn");
+        if let Some(ended) = wait_within(&mut teardown, std::time::Duration::from_secs(1)) {
+            return Err(format!(
+                "another process's teardown ran while this thread read: {ended}"
+            ));
+        }
+        *self.waiting.lock().expect("the child") = Some(teardown);
+        Ok(())
+    }
+}
+
+/// How a child ended, if it ended within `bound`.
+fn wait_within(
+    child: &mut std::process::Child,
+    bound: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if let Some(status) = child.try_wait().expect("the child's state") {
+            return Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+impl Hosting for WaitingOnSiblings {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        *self.met.lock().expect("the record") = Some(self.meet());
         self.inner.for_repo(slug)
     }
 }
@@ -8728,15 +8784,29 @@ fn threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one
     // tearing the identity's pool down, one reading it. Each of those is a lease on the
     // same identity taken by another thread of this process, so a lease that conflicted
     // across threads as it does across processes would hold them behind this one, which
-    // is waiting on them: the deadlock an embedding engine met in 0.56.6.
+    // is waiting on them: the deadlock an embedding engine met in 0.56.6. Once they are
+    // done, the process's hold is shared again — another process reads beside it — and
+    // still excludes another process's teardown until this thread's read ends.
     let world = World::new();
     inhabit(&world);
     hosted(&world, OPEN);
     let session = worked(&world, "feature/threaded");
+    let mut reader = world.onevcs_std();
+    reader.args(["pool", "status", "hosted"]);
+    let mut teardown = world.onevcs_std();
+    teardown.args(["pool", "prune", "hosted"]);
+    for command in [&mut reader, &mut teardown] {
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
     let host = WaitingOnSiblings {
         inner: MemoryHost::default(),
         repo: "hosted",
+        reader: std::sync::Mutex::new(reader),
+        teardown: std::sync::Mutex::new(teardown),
         met: std::sync::Mutex::new(None),
+        waiting: std::sync::Mutex::new(None),
     };
     let providers = Providers {
         vcs: &Git,
@@ -8750,6 +8820,18 @@ fn threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one
     assert_eq!(
         met,
         Some(Ok(())),
-        "both siblings took and released their turns while this thread held its own"
+        "both siblings took and released their turns while this thread held its own, \
+         and other processes read beside it and waited to tear down"
+    );
+    let mut waiting = host
+        .waiting
+        .lock()
+        .expect("the child")
+        .take()
+        .expect("waiting");
+    let ended = wait_within(&mut waiting, std::time::Duration::from_secs(20));
+    assert!(
+        ended.is_some_and(|status| status.success()),
+        "the other process's teardown ran once this thread's read ended: {ended:?}"
     );
 }
