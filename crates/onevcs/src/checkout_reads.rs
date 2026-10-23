@@ -103,7 +103,6 @@ impl Process {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Settle the file and wake every thread waiting for it to settle.
     fn settle(&self, holders: &mut Holders, file: File) {
         holders.file = file;
         self.settled.notify_all();
@@ -733,6 +732,14 @@ mod tests {
             writer.recv_timeout(quiet).is_err(),
             "the teardown waits on the other reader"
         );
+        // With the intent held and the shared hold given up, a sibling reader still
+        // enters at once: other processes' teardowns are kept out by the intent.
+        let (late, release_late, late_thread) = held_in_thread(|| identity(NAME));
+        late.recv_timeout(quiet)
+            .expect("a reader enters while the upgrade waits on other processes")
+            .unwrap();
+        release_late.send(()).unwrap();
+        late_thread.join().unwrap();
         release_first.send(()).unwrap();
         release_second.send(()).unwrap();
         let (left, leaving) = std::sync::mpsc::channel();
@@ -942,6 +949,52 @@ mod tests {
         release_writer.send(()).unwrap();
         writer_thread.join().unwrap();
         assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+    }
+
+    /// Every reader leaving while an upgrade still waits on the intent lock leaves
+    /// nothing held for them, whether the upgrade is then refused or completes.
+    #[test]
+    fn an_upgrade_whose_readers_leave_while_it_awaits_the_intent_holds_nothing_for_them() {
+        use fs4::fs_std::FileExt;
+        use std::time::Duration;
+        const NAME: &str = "github.com/owner/readers-left";
+        let (_home, file) = scratch_identity(NAME);
+        let intent = file.with_file_name("onevcs-reads-upgrade.lock");
+        std::env::set_var(lock::TIMEOUT_ENV, "2");
+        let other_upgrade = another_process(&intent);
+
+        for completes in [false, true] {
+            let reader = identity(NAME).unwrap();
+            other_upgrade.lock_exclusive().unwrap();
+            let (writer, release_writer, writer_thread) = held_in_thread(|| teardown(NAME));
+            std::thread::sleep(Duration::from_millis(300));
+            drop(reader);
+            assert!(
+                lock::try_exclusive_at(&file).unwrap().is_some(),
+                "the shared hold went with the last reader"
+            );
+            if completes {
+                FileExt::unlock(&other_upgrade).unwrap();
+                writer
+                    .recv_timeout(Duration::from_secs(20))
+                    .unwrap()
+                    .unwrap();
+                assert!(lock::try_shared_at(&file).unwrap().is_none());
+                release_writer.send(()).unwrap();
+            } else {
+                let refused = writer
+                    .recv_timeout(Duration::from_secs(20))
+                    .unwrap()
+                    .expect_err("the intent lock stays held");
+                assert!(refused.contains("timed out"), "{refused}");
+                FileExt::unlock(&other_upgrade).unwrap();
+            }
+            writer_thread.join().unwrap();
+            assert!(lock::try_exclusive_at(&file).unwrap().is_some());
+            let next = identity(NAME).unwrap();
+            assert!(lock::try_exclusive_at(&file).unwrap().is_none());
+            drop(next);
+        }
     }
 
     const PROCESS_ROLE: &str = "ONEVCS_TEST_LEASE_ROLE";
