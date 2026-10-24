@@ -676,6 +676,12 @@ fn the_public_landing_query_and_close_take_turns() {
             std::env::set_var(key, value);
         }
     }
+    // A supported Git environment forces the executable fallback, so this journey
+    // orders a real child even where the landing read ordinarily answers in process —
+    // as the recovery scan's journey does.
+    std::env::set_var("GIT_CONFIG_COUNT", "1");
+    std::env::set_var("GIT_CONFIG_KEY_0", "advice.detachedHead");
+    std::env::set_var("GIT_CONFIG_VALUE_0", "false");
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let expected = onevcs::landing_status("main", Some(&repo)).unwrap();
     std::env::set_var("HOLD_READER", "1");
@@ -709,6 +715,114 @@ fn the_public_landing_query_and_close_take_turns() {
     );
     success(closing.join().unwrap());
     assert!(!worktree.exists());
+}
+
+/// The landing read as a library caller makes it, answered in process — no git
+/// override, unlike the fallback journey above: run as its own process so the journey
+/// can hold it at a git command it starts in the publication checkout, after the
+/// session's clone has been read and every git it ran there has ended.
+#[test]
+fn an_in_process_landing_read_keeps_the_clone_it_read_until_it_completes() {
+    if let Ok(repo) = std::env::var("READ_LANDING_REPO") {
+        let answers =
+            onevcs::landing_statuses(&["feature/reader", "feature/elsewhere"], &repo).unwrap();
+        for answer in answers {
+            assert_eq!(answer.unwrap(), onevcs::Landed::No);
+        }
+        println!("landing read completed");
+        return;
+    }
+    let fixture = Fixture::local(&local_direct());
+    let (token, worktree) = fixture.open(&["--branch", "feature/reader"]);
+    fixture
+        .world
+        .commit_file(&worktree, "work.txt", "work\n", "feat: session work");
+    // Work the publication checkout alone holds, decided after the session's branch.
+    let checkout = &fixture.checkout;
+    fixture
+        .world
+        .git(checkout, &["checkout", "-q", "-b", "feature/elsewhere"]);
+    fixture
+        .world
+        .commit_file(checkout, "elsewhere.txt", "e\n", "feat: other work");
+    fixture.world.git(checkout, &["checkout", "-q", "main"]);
+    let root = run_root_of(&fixture.world, &token);
+    let clone = root.join("clone");
+    let shim = HeldGit::installed(&fixture);
+    // Held in the publication checkout: no git the read is running is in the clone, so
+    // what keeps the clone is the lease the read took on it and holds to its end.
+    let prepared = shim.command(&fixture, checkout);
+    let mut read = Command::new(std::env::current_exe().unwrap());
+    read.env_clear()
+        .envs(
+            prepared
+                .get_envs()
+                .filter_map(|(key, value)| value.map(|value| (key, value))),
+        )
+        .current_dir(fixture.world.path(""))
+        .args([
+            "--exact",
+            "checkout_reads::an_in_process_landing_read_keeps_the_clone_it_read_until_it_completes",
+            "--nocapture",
+        ])
+        .env("READ_LANDING_REPO", checkout)
+        .env("HOLD_READER", "1")
+        .env("HOLD_ARGS", "diff --shortstat");
+    let reading = notifying(read, vec![shim.ready.clone()]);
+    let mut entered = String::new();
+    BufReader::new(&shim.ready_pipe)
+        .read_line(&mut entered)
+        .unwrap();
+    if entered != "inside\n" {
+        let output = reading.join().unwrap();
+        panic!("the in-process read must reach its held git: {output:?}");
+    }
+    // The read makes its git calls one after another, so every one before the held one
+    // has ended: the clone's comparison among them, which is what makes its branch's
+    // answer the read already has.
+    let log = std::fs::read_to_string(fixture.world.path("reader.log")).unwrap();
+    let started: Vec<&str> = log.lines().collect();
+    let checkout_line = format!("{}|diff --shortstat", checkout.display());
+    assert!(
+        started
+            .last()
+            .is_some_and(|line| line.starts_with(&checkout_line))
+            && started[..started.len() - 1]
+                .iter()
+                .any(|line| line.contains(&*clone.to_string_lossy())),
+        "the held git is the checkout's, started after the clone was read: {log}"
+    );
+    let mut notices = Entries::watching(&fixture.world.path(""));
+    let mut close = shim.command(&fixture, &clone);
+    close
+        .args(["session", "close", &token])
+        .env("LD_PRELOAD", observer())
+        .env("READ_TURN_LOCK", closing_lock(&root))
+        .env("READ_TURN_NOTICE", fixture.world.path("turn-notices"))
+        .env("READ_TURN_PROBE", "1");
+    let closing = notifying(close, vec![fixture.world.path("turn-notices")]);
+    let mut state = String::new();
+    BufReader::new(&mut notices.0)
+        .read_line(&mut state)
+        .unwrap();
+    let present_while_read = worktree.exists();
+    shim.release();
+    let read = reading.join().unwrap();
+    let closed = closing.join().unwrap();
+    assert_eq!(
+        state, "blocked\n",
+        "close meets the lease the in-process read keeps on the clone it read"
+    );
+    assert!(
+        present_while_read,
+        "the clone stands while the read is held"
+    );
+    success(read);
+    success(closed);
+    assert!(
+        !worktree.exists(),
+        "close goes ahead once the read completes"
+    );
 }
 
 #[test]

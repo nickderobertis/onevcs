@@ -636,8 +636,23 @@ pub(crate) fn release_status_with(
 /// It takes no [`Providers`] for the reason [`release_targets`] does not: a landing is
 /// decided from the history of the repositories under this host's own state root, and
 /// there is nothing here for an implementation of either interface to answer.
+///
+/// Asking it again of a repository nothing has moved in usually starts no git process:
+/// its ref and repository reads are made in process afresh on every call, and a read
+/// about a branch is asked by the commit the branch is at, so a later call whose refs
+/// have not moved reuses its answer — and one whose refs have moved asks about the
+/// commits they now name. What still asks git on every call: the default branch of a
+/// checkout with no `<remote>/HEAD`, unless the remote is a bare repository at a plain
+/// local path with nothing configured to reroute it — a remote over the network, a URL
+/// with a transport or helper, or one an upload-pack, protocol or transfer setting
+/// governs is asked with `ls-remote` each time — and every read where a `GIT_*`
+/// environment override or a repository shape this crate does not read in process
+/// sends it to git.
 pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
-    Ok(status::landing_of_within(&store::load()?, reference, repo, None)?.landed)
+    let registry = store::load()?;
+    crate::recovery_cache::scope(|| {
+        git::memoized(|| Ok(status::landing_of_within(&registry, reference, repo, None)?.landed))
+    })
 }
 
 /// [`landing_status`] for several pieces of work of one repository, read together.
@@ -661,7 +676,10 @@ pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
 /// answer would have been the same refusal: a registry that cannot be read, a
 /// repository nobody registered, or a state root with no location.
 pub fn landing_statuses(references: &[&str], repo: &str) -> Result<Vec<Result<Landed>>> {
-    status::landings_within(&store::load()?, references, repo)
+    let registry = store::load()?;
+    crate::recovery_cache::scope(|| {
+        git::memoized(|| status::landings_within(&registry, references, repo))
+    })
 }
 
 /// Record the release somebody says carries a landing.

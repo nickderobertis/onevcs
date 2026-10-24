@@ -253,6 +253,12 @@ mod registry;
 // Unix only: a required context the host declares and has not started, published
 // through the same substituted `gh` as `host.rs` over real git and a real bare origin.
 // Its own header carries the reason in full.
+// Linux only, like `cost::Counting::inhabit`, which puts the counting `git` on this
+// process's own `PATH`: the reads are the library's, so the count is this process's.
+// The one program substituted is `git`, with itself; its own header says so in full.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod repeated_reads;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod required_contexts;

@@ -220,6 +220,16 @@ fn run_unless(
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
 ) -> Result<Output> {
+    // Before the memo and the proofs, so both are keyed by commits rather than names.
+    let pinned = crate::native_refs::pinned(args, cwd, env);
+    let spelled: Vec<&str>;
+    let args = match &pinned {
+        Some(pinned) => {
+            spelled = pinned.iter().map(String::as_str).collect();
+            spelled.as_slice()
+        }
+        None => args,
+    };
     let reading = reads::remembered(args)
         || matches!(
             args,
@@ -2585,6 +2595,9 @@ fn tracked_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
 /// unreachable remote falls through too: local knowledge is worse than the
 /// remote's own answer but better than failing where a guess would have done.
 fn advertised_head(cwd: &Path, remote: &str) -> Result<Option<String>> {
+    if let Some(branch) = crate::native_refs::advertised_head(cwd, remote) {
+        return Ok(Some(branch));
+    }
     let listing = run(&["ls-remote", "--symref", remote, "HEAD"], Some(cwd))?;
     if !listing.ok() {
         return Ok(None);
@@ -3449,6 +3462,14 @@ pub(crate) fn already_integrates<'a>(
     commit: &str,
 ) -> Result<bool> {
     let cwd = cwd.into();
+    // Merged by the commits the names are at, where this read resolves them, so the
+    // merge is a proof a later read of unmoved refs reuses. Only a clean merge's tree
+    // is compared and a conflict answers no, so a conflict's labels, which are the
+    // only part of a merge that spells what was merged, decide nothing here.
+    let base_tip = crate::native_refs::tip_with_objects(cwd.at, base, cwd.borrowing).flatten();
+    let commit_tip = crate::native_refs::tip_with_objects(cwd.at, commit, cwd.borrowing).flatten();
+    let base = base_tip.as_deref().unwrap_or(base);
+    let commit = commit_tip.as_deref().unwrap_or(commit);
     let reusable = crate::recovery_cache::query(
         &["merge-tree", "--write-tree", base, commit],
         Some(cwd.path()),

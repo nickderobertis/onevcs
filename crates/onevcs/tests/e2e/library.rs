@@ -8342,10 +8342,11 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
     counting.inhabit();
     let home = fixture.world.home();
 
-    // The work a read does once per repository, whatever it is asked about — and two
-    // reads the decision also makes per reference (the session records, listed again
-    // to find which session holds a branch, and the object store, resolved again while
-    // judging), so those two are reported whole and compared by what readings differ by.
+    // The work a read does once per repository, whatever it is asked about — and one
+    // read the decision also makes per reference (the session records, listed again to
+    // find which session holds a branch), so that one is reported whole and compared by
+    // what readings differ by. The repository's base and object store are resolved in
+    // process on every read, so what is held of them is that none starts git.
     let measure = |read: &dyn Fn()| {
         use crate::listings::Listings;
         let registry = Listings::opens_of(&home.join("registry.json"));
@@ -8356,21 +8357,23 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
         read();
         let calls = counting.calls();
         let asked = |args: &str| calls.iter().filter(|call| call.args == args).count();
+        let resolutions = asked("symbolic-ref --short refs/remotes/origin/HEAD")
+            + asked("ls-remote --symref origin HEAD")
+            + asked("rev-parse --git-path objects");
+        assert_eq!(
+            resolutions, 0,
+            "the base and the store are resolved without git"
+        );
         (
-            [
-                registry.taken(),
-                rules.taken(),
-                streams.taken(),
-                asked("symbolic-ref --short refs/remotes/origin/HEAD"),
-            ],
-            [sessions.taken(), asked("rev-parse --git-path objects")],
+            [registry.taken(), rules.taken(), streams.taken()],
+            sessions.taken(),
         )
     };
 
     let (one, _) = measure(&|| {
         onevcs::landing_status(references[0], Some(&repo)).expect("the landing is decided");
     });
-    assert_eq!(one, [1; 4], "one read loads, lists and resolves once each");
+    assert_eq!(one, [1; 3], "one read loads and lists once each");
     let (apart, partly_apart) = measure(&|| {
         for reference in &references {
             onevcs::landing_status(reference, Some(&repo)).expect("the landing is decided");
@@ -8378,7 +8381,7 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
     });
     let n = references.len();
     assert_eq!(
-        apart, [n; 4],
+        apart, [n; 3],
         "read one at a time, the work grows with the {n} references"
     );
     let (together, partly_together) = measure(&|| {
@@ -8391,24 +8394,11 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
         together, one,
         "read together, {n} references cost what one does"
     );
-    for (what, apart, together) in [
-        (
-            "the session records are listed",
-            partly_apart[0],
-            partly_together[0],
-        ),
-        (
-            "the object store every copy borrows is resolved",
-            partly_apart[1],
-            partly_together[1],
-        ),
-    ] {
-        assert_eq!(
-            apart - together,
-            n - 1,
-            "{what} once for the whole read, not once per reference"
-        );
-    }
+    assert_eq!(
+        partly_apart - partly_together,
+        n - 1,
+        "the session records are listed once for the whole read, not once per reference"
+    );
 }
 
 /// Each branch worked in a session of its own and closed, published first where it
