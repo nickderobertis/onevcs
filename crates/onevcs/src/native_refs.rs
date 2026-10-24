@@ -191,11 +191,12 @@ pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
 /// sets none — read without a process and outside any read, or `None` where the file
 /// could answer differently than `git config --local --get` does.
 ///
-/// Every session operation asks a lender this, and every clone it cuts, so each asking
-/// was a process. It reads the one file that command reads and declines everything
-/// that could make the two disagree: a file that does not parse, an include (which
-/// that command does not follow), a worktree's own configuration, a key set twice, and
-/// a key with no value.
+/// Every session operation asks a lender this, so each asking was a process. It reads
+/// the one file that command reads and declines what could make the two disagree: a
+/// file that does not parse, an include (which that command does not follow), a key
+/// set twice, and a key with no value. `key` is a section
+/// and a variable with no subsection, as the retention keys are, so it is matched
+/// without regard to case as git matches both.
 pub(crate) fn local_value(repo: &Path, key: &str) -> Option<Option<String>> {
     let repository = git2::Repository::open(repo).ok()?;
     let file = git2::Config::open(&repository.commondir().join("config")).ok()?;
@@ -204,35 +205,19 @@ pub(crate) fn local_value(repo: &Path, key: &str) -> Option<Option<String>> {
     while let Some(entry) = entries.next() {
         let entry = entry.ok()?;
         let name = entry.name().ok()?;
-        if name.starts_with("include.")
-            || name.starts_with("includeif.")
-            || name.eq_ignore_ascii_case("extensions.worktreeConfig")
-        {
+        // Opened alone, the file's includes are still read, and `--local` reads none.
+        if name.starts_with("include.") || name.starts_with("includeif.") {
             return None;
         }
-        if same_key(name, key) {
-            if value.is_some() {
+        if name.eq_ignore_ascii_case(key) {
+            // Asked first: git2 panics reading the value of a key that has none.
+            if value.is_some() || !entry.has_value() {
                 return None;
             }
             value = Some(entry.value().ok()?.trim().to_owned());
         }
     }
     Some(value)
-}
-/// Whether two configuration keys name one setting: the section and the variable are
-/// matched without regard to case, as git matches them, and a subsection exactly.
-fn same_key(one: &str, other: &str) -> bool {
-    fn parts(key: &str) -> Option<(&str, &str, &str)> {
-        let (section, rest) = key.split_once('.')?;
-        let (subsection, variable) = rest.rsplit_once('.').unwrap_or(("", rest));
-        Some((section, subsection, variable))
-    }
-    match (parts(one), parts(other)) {
-        (Some((a, b, c)), Some((x, y, z))) => {
-            a.eq_ignore_ascii_case(x) && b == y && c.eq_ignore_ascii_case(z)
-        }
-        _ => false,
-    }
 }
 pub(crate) fn symbolic(repo: &Path, name: &str) -> Option<Option<String>> {
     read(repo, |snapshot| Some(snapshot.symbolic.get(name).cloned()))

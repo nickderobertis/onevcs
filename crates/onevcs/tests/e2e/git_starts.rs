@@ -31,15 +31,14 @@ use crate::lifecycle::{local_direct, run_root_of, Fixture};
 /// Branches worked on side by side, as the drafts of one stack are.
 const BRANCHES: usize = 5;
 
-/// How many times each branch is opened, worked on and closed.
 const ROUNDS: usize = 3;
 
 /// The most `git` processes the work below may start: what 0.56.6, the release before
 /// the lease fix, started for it.
 ///
-/// Counted on Linux, four runs each: 0.56.6 started 1,554 every time, this build 1,508
-/// every time, and 0.56.9 2,375 to 2,395 — its opens reclaiming nothing, and every
-/// search reading every clone left standing.
+/// Counted on Linux: 0.56.6 started 1,554 on every run, this build 1,524, and 0.56.9
+/// 2,375 to 2,395 — its opens reclaiming nothing, and every search reading every clone
+/// left standing.
 const GIT_STARTS: usize = 1_554;
 
 /// Open `branch` by name, continuing it where anything carries it.
@@ -92,7 +91,6 @@ fn landed(counting: &Counting, fixture: &Fixture, branch: &str) -> String {
         .to_owned()
 }
 
-/// The run roots that are still on disk.
 fn standing(run_roots: &[PathBuf]) -> Vec<&PathBuf> {
     run_roots.iter().filter(|root| root.is_dir()).collect()
 }

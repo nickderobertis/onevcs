@@ -1897,13 +1897,7 @@ fn cut_sharing(
     )?;
     // A lender with no origin of its own is lent as itself, which is the URL the
     // clone was just given: asked again, git would rewrite the file to say the same.
-    // The value is read out of the new clone's own file rather than by a process, as
-    // the one `set-url` would replace: nothing else has the clone yet.
-    let given = match crate::native_refs::local_value(dest, "remote.origin.url") {
-        Some(Some(given)) => given,
-        _ => run(&["remote", "get-url", "origin"], Some(dest))?.trimmed(),
-    };
-    if given != origin_arg.as_ref() {
+    if run(&["remote", "get-url", "origin"], Some(dest))?.trimmed() != origin_arg.as_ref() {
         checked(
             &["remote", "set-url", "origin", origin_arg.as_ref()],
             Some(dest),

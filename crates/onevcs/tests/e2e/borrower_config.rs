@@ -80,3 +80,103 @@ fn concurrent_publications_configure_the_shared_borrower_lender_without_refusals
         assert!(checkout.join(format!("work-{index}.txt")).exists());
     }
 }
+
+/// A lender whose own configuration carries `shape`, registered and then lent to one
+/// session that opens and closes, and the configuration file it is left with.
+///
+/// The retention keys are asked of that file at every step — in process wherever the
+/// file can only answer as `git config --local --get` does — so what the file ends up
+/// holding is what git's own reading of it decided at each.
+fn lent_with(
+    shape: impl Fn(&std::path::Path) -> String,
+    beside: &[(&str, &str)],
+) -> (World, std::path::PathBuf, String) {
+    let world = World::new();
+    let origin = world.bare_origin("lender");
+    let checkout = world.clone_of(&origin, "lender");
+    let config = checkout.join(".git/config");
+    let mut held = std::fs::read_to_string(&config).expect("git's own configuration");
+    held.push_str(&shape(&checkout.join(".git")));
+    std::fs::write(&config, &held).expect("the shape under test");
+    for (name, body) in beside {
+        std::fs::write(checkout.join(".git").join(name), body).expect("a file beside it");
+    }
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    configure_rules(
+        &world,
+        "version: 3\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    );
+    let opened = world
+        .onevcs()
+        .args(["session", "open", "lender"])
+        .assert()
+        .success();
+    let token = crate::world::token_of(&opened.get_output().stdout);
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    let left = std::fs::read_to_string(&config).expect("the configuration after the session");
+    (world, checkout, left)
+}
+
+#[test]
+fn retention_keys_only_an_included_file_sets_are_added_to_the_lenders_own_file() {
+    let (world, checkout, _) = lent_with(
+        |git_dir| {
+            format!(
+                "[include]\n\tpath = {}\n",
+                git_dir.join("retention.inc").display()
+            )
+        },
+        &[("retention.inc", "[gc]\n\tauto = 0\n\tpruneExpire = never\n")],
+    );
+    // `git config --local` does not follow the include, so the lender's own file is
+    // what has to carry them.
+    for (key, value) in [("gc.auto", "0"), ("gc.pruneExpire", "never")] {
+        assert_eq!(
+            world.git(
+                &checkout,
+                &["config", "--local", "--no-includes", "--get", key]
+            ),
+            value,
+            "{key} is in the lender's own file"
+        );
+    }
+}
+
+#[test]
+fn retention_keys_a_lender_already_sets_add_nothing_to_its_file_whatever_their_spelling() {
+    for shape in [
+        // Set twice: git reads the last.
+        "[gc]\n\tauto = 5\n[gc]\n\tauto = 0\n\tpruneExpire = never\n",
+        // Section and variable in another case, which git reads as the same keys.
+        "[GC]\n\tAUTO = 0\n\tPRUNEEXPIRE = never\n",
+    ] {
+        let (_, _, left) = lent_with(|_| shape.to_owned(), &[]);
+        assert!(
+            left.ends_with(shape),
+            "{shape:?}: nothing is added to a file that already retains"
+        );
+    }
+}
+
+#[test]
+fn a_retention_key_set_with_no_value_is_completed_in_the_lenders_own_file() {
+    let (world, checkout, left) =
+        lent_with(|_| "[gc]\n\tauto\n\tpruneExpire = never\n".to_owned(), &[]);
+    assert!(
+        left.contains("[gc]\n\tauto\n"),
+        "the operator's line is kept"
+    );
+    assert_eq!(
+        world.git(&checkout, &["config", "--local", "--get", "gc.auto"]),
+        "0",
+        "a key with no value is read as empty, which is not the retention value"
+    );
+}
