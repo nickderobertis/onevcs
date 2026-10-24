@@ -1306,6 +1306,21 @@ pub(crate) fn open_with(
         )?,
         (None, None) => named(format!("{}onevcs/{token}", prefix.value))?,
     };
+
+    // Before the continuation's search, never while it is held: the search keeps a
+    // shared lease on every closed run root it read, and a reclamation passes over any
+    // run root whose exclusive lease it cannot take — this open's own leases included,
+    // since `flock` refuses a second open of one file in one process as it would
+    // another process's. Reclaiming after it reclaimed nothing a pin's open could
+    // ever reach, so closed run roots outlived their branches reaching origin and every
+    // later search of the identity read each of them again. Reclaimed first, nothing
+    // this open's search chooses can be removed under it by this open, and what a
+    // sibling's search holds is still passed over.
+    let identity_root = identity_dir(&resolution.key)?;
+    let runs = identity_root.join("runs");
+    home::ensure_dir(&runs)?;
+    reclaim(&resolution.key, &runs)?;
+
     // Only for a pin: a generated name is this token's own and can stand for nothing
     // that already exists, and asking the question anyway would put a search of every
     // checkout and run clone of the identity in front of every session anybody opens.
@@ -1315,11 +1330,6 @@ pub(crate) fn open_with(
         true => continuation(registry, &resolution, &execution, &branch, &base)?,
         false => None,
     };
-
-    let identity_root = identity_dir(&resolution.key)?;
-    let runs = identity_root.join("runs");
-    home::ensure_dir(&runs)?;
-    reclaim(&resolution.key, &runs)?;
 
     // Where this session goes: a warm slot of the identity's pool, a slot cut for it,
     // a disposable run root under `runs/`, or nowhere. A host that configures no pool

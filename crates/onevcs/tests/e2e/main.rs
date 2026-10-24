@@ -94,6 +94,11 @@ mod concurrent_sessions;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod cost;
+// Unix only, like `cost`, whose counting `git` it installs: the shim is a POSIX shell
+// script.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] the counting `git` execs the real one; see the module's header.
+mod git_starts;
 // Linux only: coverage is measured on Linux alone, so `cargo llvm-cov` is installed
 // there and nowhere else; it drives `scripts/coverage.sh` over a scratch crate.
 #[cfg(target_os = "linux")]

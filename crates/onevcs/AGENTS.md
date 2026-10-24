@@ -1473,7 +1473,10 @@ without a newline. A session's first repository check needs the same lender
 protection as its later reads. Only registered checkouts lend objects: an idle slot
 can have a worker whose occupancy no lender lease covers. Keep searched clones
 protected against reclamation, and run sibling Git reads outside session trees so
-close does not mistake them for workers. Yield identity turns while waiting for
+close does not mistake them for workers. An open reclaims before its own continuation
+search, never while holding it: `flock` refuses its own process's search leases to its
+reclamation too, which then reclaimed nothing and left every later search reading
+every clone (`tests/e2e/git_starts.rs` counts that cost). Yield identity turns while waiting for
 placement: its holder may need a checkout read before releasing placement.
 
 **A close is held to the same standard, and refuses rather than skipping.**

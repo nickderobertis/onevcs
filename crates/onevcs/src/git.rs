@@ -1897,7 +1897,13 @@ fn cut_sharing(
     )?;
     // A lender with no origin of its own is lent as itself, which is the URL the
     // clone was just given: asked again, git would rewrite the file to say the same.
-    if run(&["remote", "get-url", "origin"], Some(dest))?.trimmed() != origin_arg.as_ref() {
+    // The value is read out of the new clone's own file rather than by a process, as
+    // the one `set-url` would replace: nothing else has the clone yet.
+    let given = match crate::native_refs::local_value(dest, "remote.origin.url") {
+        Some(Some(given)) => given,
+        _ => run(&["remote", "get-url", "origin"], Some(dest))?.trimmed(),
+    };
+    if given != origin_arg.as_ref() {
         checked(
             &["remote", "set-url", "origin", origin_arg.as_ref()],
             Some(dest),
@@ -2117,7 +2123,14 @@ pub fn retain_objects_for_borrowers(cwd: &Path) -> Result<()> {
 /// configuration it could not read; only the first is an absent setting; the second is
 /// refused, so a file git cannot read is never taken for one that lacks the keys and
 /// written to.
+///
+/// Read in process where the file can only answer as git would
+/// ([`native_refs::local_value`](crate::native_refs::local_value)), which declines a
+/// file it cannot parse, so such a file still reaches git and its refusal.
 fn local_setting(cwd: &Path, key: &str) -> Result<Option<String>> {
+    if let Some(answer) = crate::native_refs::local_value(cwd, key) {
+        return Ok(answer);
+    }
     let held = run(&["config", "--local", "--get", key], Some(cwd))?;
     match held.status {
         0 => Ok(Some(held.trimmed())),
