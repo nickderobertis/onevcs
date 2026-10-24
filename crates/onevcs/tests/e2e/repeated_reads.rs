@@ -396,16 +396,6 @@ fn a_protocol_the_checkout_configures_leaves_the_remotes_head_to_git() {
 }
 
 #[test]
-fn a_proxy_the_checkout_configures_leaves_the_remotes_head_to_git() {
-    left_to_git(|fixture| configured(fixture, &fixture.checkout, "core.gitProxy", "none"));
-}
-
-#[test]
-fn a_transfer_policy_the_checkout_configures_leaves_the_remotes_head_to_git() {
-    left_to_git(|fixture| configured(fixture, &fixture.checkout, "transfer.hideRefs", "refs/tags"));
-}
-
-#[test]
 fn an_upload_pack_the_checkout_names_for_its_remote_leaves_its_head_to_git() {
     left_to_git(|fixture| {
         configured(
@@ -494,6 +484,23 @@ fn a_remote_head_naming_a_symbolic_branch_is_left_to_git() {
         fixture.world.git(
             &fixture.origin,
             &["symbolic-ref", "HEAD", "refs/heads/alias"],
+        );
+    });
+}
+
+#[test]
+fn a_helper_the_checkout_names_for_its_remote_leaves_its_head_to_git() {
+    left_to_git(|fixture| configured(fixture, &fixture.checkout, "remote.origin.vcs", "nohelper"));
+}
+
+#[test]
+fn a_remote_path_holding_no_repository_leaves_its_head_to_git() {
+    left_to_git(|fixture| {
+        let nothing = fixture.world.path("no-repository-here");
+        std::fs::create_dir_all(&nothing).expect("an empty directory");
+        fixture.world.git(
+            &fixture.checkout,
+            &["remote", "set-url", "origin", &nothing.to_string_lossy()],
         );
     });
 }

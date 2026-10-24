@@ -279,18 +279,18 @@ pub(crate) fn tip_with_objects(
 }
 
 /// The branch `git ls-remote --symref <remote> HEAD` reports the remote's HEAD
-/// names, read from the remote's own files where the remote is a bare repository on
+/// names, read from the remote's own refs where the remote is a bare repository on
 /// this filesystem — or `None`, for git to answer.
 ///
 /// A checkout with no `<remote>/HEAD` asks its remote on every read of its default
 /// branch, and for a remote on this host that is two processes (`ls-remote` and the
 /// `upload-pack` it starts) to read one file. The remote's HEAD is read afresh on
 /// every asking, so a HEAD moved there is what the next read reports. Only the plain
-/// case is answered: a URL that is a path (no transport, helper or rewrite, and no
-/// configuration that reroutes the remote or hides what it advertises), naming a bare
-/// repository with no `.git` beside it, whose HEAD is a file naming a branch that
-/// exists and is not itself symbolic. Anything else — a dangling HEAD among it, which
-/// git versions advertise differently — is git's.
+/// case is answered: a URL that is a path, with no protocol policy, upload-pack or
+/// helper this checkout names for it; a bare repository there with no `.git` beside
+/// it, whose configuration (and this user's) sets nothing about what it advertises;
+/// and a HEAD naming a branch that exists and is not itself symbolic. Anything else —
+/// a dangling HEAD among it, which git versions advertise differently — is git's.
 pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
     let rerouted = frozen_after_read(repo, |configuration| {
         let mut entries = configuration.entries(None).ok()?;
@@ -298,44 +298,29 @@ pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
         while let Some(entry) = entries.next() {
             let name = entry.ok()?.name().ok()?.to_ascii_lowercase();
             if name.starts_with("protocol.")
-                || name == "core.gitproxy"
-                || name.starts_with("uploadpack.")
-                || name.starts_with("transfer.")
-                || (name.starts_with(&own)
-                    && ["uploadpack", "vcs", "proxy", "mirror"]
-                        .iter()
-                        .any(|key| name == format!("{own}{key}")))
+                || name == format!("{own}uploadpack")
+                || name == format!("{own}vcs")
             {
                 return Some(true);
             }
         }
         Some(false)
     })?;
-    if rerouted {
-        return None;
-    }
     let url = remote_url(repo, remote)?;
     let path = Path::new(&url);
-    if url.contains("://") || url.contains("::") || (!path.is_absolute() && url.contains(':')) {
-        return None;
-    }
-    let directory = repo.join(path);
-    let meta = std::fs::symlink_metadata(directory.join("HEAD")).ok()?;
-    if !meta.is_file()
-        || std::fs::symlink_metadata(directory.join(".git")).is_ok()
-        || !directory.join("objects").is_dir()
-        || !directory.join("refs").is_dir()
+    if rerouted
+        || url.contains("://")
+        || url.contains("::")
+        || (!path.is_absolute() && url.contains(':'))
     {
         return None;
     }
-    let head = std::fs::read_to_string(directory.join("HEAD")).ok()?;
-    let target = head.strip_prefix("ref: ")?.strip_suffix('\n')?;
-    let branch = target.strip_prefix("refs/heads/")?;
-    if !crate::git::plainly_a_ref_name(branch) {
+    // git reads `<path>/.git` before `<path>` itself.
+    let directory = repo.join(path);
+    if std::fs::symlink_metadata(directory.join(".git")).is_ok() {
         return None;
     }
     let remote = git2::Repository::open_bare(&directory).ok()?;
-    // What the remote's side reads too: its own configuration, and this user's.
     let configuration = remote.config().ok()?.snapshot().ok()?;
     let mut entries = configuration.entries(None).ok()?;
     while let Some(entry) = entries.next() {
@@ -344,9 +329,11 @@ pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
             return None;
         }
     }
+    let head = remote.find_reference("HEAD").ok()?;
+    let target = head.symbolic_target().ok().flatten()?;
+    let branch = target.strip_prefix("refs/heads/")?;
     let reference = remote.find_reference(target).ok()?;
-    (reference.kind() == Some(git2::ReferenceType::Direct) && reference.target().is_some())
-        .then(|| branch.to_owned())
+    (reference.kind() == Some(git2::ReferenceType::Direct)).then(|| branch.to_owned())
 }
 
 /// [`frozen`], for a repository whose snapshot this read has taken.
