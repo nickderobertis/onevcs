@@ -39,6 +39,14 @@ const ROUNDS: usize = 3;
 /// of the remote.
 fn without_tracked_head() -> Fixture {
     let fixture = Fixture::local(&local_direct());
+    // git 2.49 and later put a missing `origin/HEAD` back during a plain fetch,
+    // which would pin the base to the branch it named then and hide the remote's
+    // HEAD moving. Holding git to the older behaviour keeps the absence through
+    // every fetch a journey here makes, on every version of git.
+    fixture.world.git(
+        &fixture.checkout,
+        &["config", "remote.origin.followRemoteHEAD", "never"],
+    );
     fixture
         .world
         .git(&fixture.checkout, &["remote", "set-head", "origin", "-d"]);
