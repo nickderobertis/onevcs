@@ -8345,9 +8345,8 @@ fn several_landings_read_together_load_the_store_and_resolve_the_repository_once
     // The work a read does once per repository, whatever it is asked about — and one
     // read the decision also makes per reference (the session records, listed again to
     // find which session holds a branch), so that one is reported whole and compared by
-    // what readings differ by. The repository's base and object store were counted here
-    // too, by the git each resolution started; those are now answered in process on
-    // every read, so what is held of them is that none starts git at all.
+    // what readings differ by. The repository's base and object store are resolved in
+    // process on every read, so what is held of them is that none starts git.
     let measure = |read: &dyn Fn()| {
         use crate::listings::Listings;
         let registry = Listings::opens_of(&home.join("registry.json"));

@@ -1119,6 +1119,140 @@ mod tests {
         assert!(!raw.status.success());
     }
 
+    #[test]
+    fn a_read_naming_a_ref_is_spelled_by_its_commit_only_where_git_answers_the_same() {
+        if isolate("a_read_naming_a_ref_is_spelled_by_its_commit_only_where_git_answers_the_same") {
+            return;
+        }
+        let root = fixture("sha1");
+        let repo = root.path();
+        let identity = [
+            "-c",
+            "user.name=Reader",
+            "-c",
+            "user.email=reader@example.invalid",
+        ];
+        git(repo, &["checkout", "-q", "-b", "feature/x"]);
+        git(
+            repo,
+            &[&identity[..], &["commit", "--allow-empty", "-m", "work"]].concat(),
+        );
+        git(repo, &["checkout", "-q", "main"]);
+        git(
+            repo,
+            &[
+                &identity[..],
+                &["tag", "-a", "-m", "annotated", "v1", "feature/x"],
+            ]
+            .concat(),
+        );
+        // A branch named like an option's value, and one named like a pathspec.
+        git(repo, &["branch", "1", "feature/x"]);
+        let work = git(repo, &["rev-parse", "feature/x"]);
+        let base = git(repo, &["rev-parse", "main"]);
+        // What is spelled again, and how: the answer git gives must not move with it.
+        let pinned: [(&[&str], &[&str]); 5] = [
+            (
+                &["cat-file", "-e", "feature/x^{commit}"],
+                &["cat-file", "-e", &format!("{work}^{{commit}}")],
+            ),
+            (
+                &["rev-parse", "--verify", "v1^{commit}"],
+                &["rev-parse", "--verify", &format!("{work}^{{commit}}")],
+            ),
+            (
+                &["merge-base", "--is-ancestor", "main", "feature/x"],
+                &["merge-base", "--is-ancestor", &base, &work],
+            ),
+            (
+                &[
+                    "log",
+                    "-n",
+                    "1",
+                    "--format=%H",
+                    "main..feature/x",
+                    "--",
+                    "1",
+                ],
+                &[
+                    "log",
+                    "-n",
+                    "1",
+                    "--format=%H",
+                    &format!("{base}..{work}"),
+                    "--",
+                    "1",
+                ],
+            ),
+            (
+                &["diff", "--name-only", "main", "v1"],
+                &["diff", "--name-only", &base, &work],
+            ),
+        ];
+        // What is left as asked: a bare tag names the tag object, a symmetric range and
+        // a reflog walk read more than two commits, and a format printing names, a
+        // fork point and every other command read by the name itself.
+        let unpinned: [&[&str]; 7] = [
+            &["cat-file", "-e", "v1"],
+            &["rev-parse", "--verify", "v1"],
+            &["log", "--format=%H", "main...feature/x"],
+            &["log", "-g", "--format=%H", "feature/x"],
+            &["log", "-1", "--format=%H %d", "feature/x"],
+            &["merge-base", "--fork-point", "main", "feature/x"],
+            &["for-each-ref", "refs/heads/feature/x"],
+        ];
+        let real = |args: &[&str]| {
+            let output = std::process::Command::new(crate::git::git_program())
+                .current_dir(repo)
+                .args(args)
+                .output()
+                .expect("real Git");
+            (
+                output.status.code(),
+                String::from_utf8(output.stdout).expect("Git output"),
+            )
+        };
+        crate::recovery_cache::scope(|| {
+            for (asked, spelled) in pinned {
+                assert_eq!(
+                    pinned_args(asked, repo).as_deref(),
+                    Some(
+                        spelled
+                            .iter()
+                            .map(|arg| (*arg).to_owned())
+                            .collect::<Vec<_>>()
+                            .as_slice()
+                    ),
+                    "{asked:?} is asked by its commits"
+                );
+            }
+            for asked in unpinned {
+                assert_eq!(
+                    pinned_args(asked, repo),
+                    None,
+                    "{asked:?} is asked as it was"
+                );
+            }
+            for asked in pinned.iter().map(|(asked, _)| *asked).chain(unpinned) {
+                let answered = crate::git::run(asked, Some(repo)).expect("git runs");
+                assert_eq!(
+                    (Some(answered.status), answered.stdout),
+                    real(asked),
+                    "{asked:?} answers what git answers"
+                );
+            }
+        });
+        assert_eq!(
+            pinned_args(pinned[0].0, repo),
+            None,
+            "outside a read, nothing is spelled again"
+        );
+    }
+
+    fn pinned_args(args: &[&str], repo: &Path) -> Option<Vec<String>> {
+        pinned(args, Some(repo), &[])
+    }
+
     fn fixture(format: &str) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         git(

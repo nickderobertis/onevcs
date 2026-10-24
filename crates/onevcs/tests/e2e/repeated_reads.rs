@@ -336,3 +336,73 @@ fn move_dir(from: &Path, to: &Path) {
         panic!("{} moves to {}: {failure}", from.display(), to.display())
     });
 }
+
+/// Whether reading a landing asks git for the remote's HEAD, once the remote is set
+/// up by `setup` — holding the answer to the remote's `main` either way.
+///
+/// One setup per test: the counting `git` is resolved once per process.
+fn remote_head_asked_of_git(setup: impl FnOnce(&Fixture)) -> bool {
+    let fixture = without_tracked_head();
+    let world = &fixture.world;
+    let repo = repo_of(&fixture);
+    branch_with_work(&fixture, "feature/asked", "asked.txt");
+    setup(&fixture);
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let asked = started(&counting, || {
+        assert_eq!(
+            state(&landing("feature/asked", &repo)),
+            "no",
+            "judged against the remote's `main`"
+        );
+    });
+    asked
+        .keys()
+        .any(|command| command.ends_with("ls-remote --symref origin HEAD"))
+}
+
+#[test]
+fn a_plain_bare_remotes_head_is_read_from_its_files() {
+    assert!(!remote_head_asked_of_git(|_| {}));
+}
+
+#[test]
+fn a_protocol_the_checkout_configures_leaves_the_remotes_head_to_git() {
+    assert!(remote_head_asked_of_git(|fixture| {
+        fixture
+            .world
+            .git(&fixture.checkout, &["config", "protocol.version", "2"]);
+    }));
+}
+
+#[test]
+fn an_upload_pack_the_remote_configures_leaves_its_head_to_git() {
+    assert!(remote_head_asked_of_git(|fixture| {
+        fixture.world.git(
+            &fixture.origin,
+            &["config", "uploadpack.allowFilter", "true"],
+        );
+    }));
+}
+
+#[test]
+fn a_remote_url_with_a_transport_leaves_its_head_to_git() {
+    assert!(remote_head_asked_of_git(|fixture| {
+        let url = format!("file://{}", fixture.origin.display());
+        fixture
+            .world
+            .git(&fixture.checkout, &["remote", "set-url", "origin", &url]);
+    }));
+}
+
+#[test]
+fn a_remote_with_a_work_tree_leaves_its_head_to_git() {
+    assert!(remote_head_asked_of_git(|fixture| {
+        let worked = fixture.world.clone_of(&fixture.origin, "worked-origin");
+        fixture.world.git(
+            &fixture.checkout,
+            &["remote", "set-url", "origin", &worked.to_string_lossy()],
+        );
+    }));
+}
