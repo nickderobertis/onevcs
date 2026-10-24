@@ -637,11 +637,17 @@ pub(crate) fn release_status_with(
 /// decided from the history of the repositories under this host's own state root, and
 /// there is nothing here for an implementation of either interface to answer.
 ///
-/// Asking it again of a repository nothing has moved in costs no git process: its ref,
-/// repository and default-branch reads are made in process afresh on every call, and
-/// a read about a branch is asked by the commit the branch is at, so a later call
-/// whose refs have not moved reuses its answer — and one whose refs have moved asks
-/// about the commits they now name.
+/// Asking it again of a repository nothing has moved in usually starts no git process:
+/// its ref and repository reads are made in process afresh on every call, and a read
+/// about a branch is asked by the commit the branch is at, so a later call whose refs
+/// have not moved reuses its answer — and one whose refs have moved asks about the
+/// commits they now name. What still asks git on every call: the default branch of a
+/// checkout with no `<remote>/HEAD`, unless the remote is a bare repository at a plain
+/// local path with nothing configured to reroute it — a remote over the network, a URL
+/// with a transport or helper, or one an upload-pack, protocol or transfer setting
+/// governs is asked with `ls-remote` each time — and every read where a `GIT_*`
+/// environment override or a repository shape this crate does not read in process
+/// sends it to git.
 pub fn landing_status(reference: &str, repo: Option<&str>) -> Result<Landed> {
     let registry = store::load()?;
     crate::recovery_cache::scope(|| {

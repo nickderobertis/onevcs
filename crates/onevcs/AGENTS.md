@@ -819,7 +819,8 @@ Five things are easy to undo.
   warm or cold read may spawn nothing, which proves nothing about which tier a branch
   reached.
 
-**A repeated public read of an unmoved repository starts no git.** `landing_status`,
+**A repeated public read of an unmoved repository starts no git where it can be read in
+process.** `landing_status`,
 `landing_statuses` and `Git::session` read inside `recovery_cache::scope` and
 `git::memoized`, so their ref, repository and default-branch reads come from the call's
 own snapshot, and a local-path remote's HEAD is read from its files
@@ -828,8 +829,10 @@ snapshot resolves it to (`native_refs::pinned`, and `already_integrates`'s merge
 makes it a proof the next call reuses while the ref stays put and a fresh read once it
 moves. Nothing ref-valued outlives a call, and a shape git could answer differently by
 name — a bare tag, a reflog, a symmetric range, a format printing names, a remote that is
-not a plain bare path — is left to git. `tests/e2e/repeated_reads.rs` counts the starts
-and moves each input between two reads.
+not a plain bare path — is left to git, so a network remote's HEAD is still an
+`ls-remote` per call. `tests/e2e/repeated_reads.rs` counts the starts and moves each input
+between two reads; `checkout_reads::an_in_process_landing_read_keeps_the_clone_it_read_until_it_completes`
+races the in-process read against a close.
 
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
