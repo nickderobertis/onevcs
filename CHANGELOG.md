@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.10](https://github.com/nickderobertis/onevcs/compare/v0.56.9...v0.56.10) - 2026-10-24
+
+### Performance
+
+- *(git)* start no more git processes for the same work than before the pool fix ([#531](https://github.com/nickderobertis/onevcs/pull/531))
+
 ## [0.56.9](https://github.com/nickderobertis/onevcs/compare/v0.56.8...v0.56.9) - 2026-10-23
 
 ### Fixed
