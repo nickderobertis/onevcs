@@ -145,27 +145,8 @@ pub trait Vcs {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Git;
 
-impl Vcs for Git {
-    fn resolve_identity(&self, origin_or_path: &str) -> Result<Identity> {
-        let registry = store::load()?;
-        Ok(store::resolve(&registry, origin_or_path)?.identity)
-    }
-
-    fn open_session(&self, req: SessionRequest) -> Result<Session> {
-        let registry = store::load()?;
-        let (record, _stream, conflict) = workspace::open(&registry, &req)?;
-        Ok(Session {
-            conflict,
-            ..record.session()
-        })
-    }
-
-    fn adopt_session(&self, token: SessionToken) -> Result<Session> {
-        let (record, _stream, _preserved) = workspace::adopt(&token.0)?;
-        Ok(record.session())
-    }
-
-    fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
+impl Git {
+    fn session_read(&self, token: &SessionToken) -> Result<SessionRecord> {
         let (_reads, record) = crate::checkout_reads::session(&token.0)?;
         let trailers = provenance::configured()?;
         // Where the branch is now. A session's clone holds it for the session's
@@ -206,6 +187,34 @@ impl Vcs for Git {
                 .as_ref()
                 .map(|token| SessionToken(token.to_string())),
         })
+    }
+}
+
+impl Vcs for Git {
+    fn resolve_identity(&self, origin_or_path: &str) -> Result<Identity> {
+        let registry = store::load()?;
+        Ok(store::resolve(&registry, origin_or_path)?.identity)
+    }
+
+    fn open_session(&self, req: SessionRequest) -> Result<Session> {
+        let registry = store::load()?;
+        let (record, _stream, conflict) = workspace::open(&registry, &req)?;
+        Ok(Session {
+            conflict,
+            ..record.session()
+        })
+    }
+
+    fn adopt_session(&self, token: SessionToken) -> Result<Session> {
+        let (record, _stream, _preserved) = workspace::adopt(&token.0)?;
+        Ok(record.session())
+    }
+
+    fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
+        // Read the way a landing is: every repeated question answered once, and every
+        // ref and object read a repeated asking of an unmoved session can answer
+        // without a process answered so (see `landing_status`).
+        crate::recovery_cache::scope(|| git::memoized(|| self.session_read(token)))
     }
 
     fn close_session(&self, token: &SessionToken) -> Result<Session> {

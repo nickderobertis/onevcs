@@ -819,6 +819,17 @@ Five things are easy to undo.
   warm or cold read may spawn nothing, which proves nothing about which tier a branch
   reached.
 
+**A repeated public read of an unmoved repository starts no git.** `landing_status`,
+`landing_statuses` and `Git::session` read inside `recovery_cache::scope` and
+`git::memoized`, so their ref, repository and default-branch reads come from the call's
+own snapshot, and a local-path remote's HEAD is read from its files
+(`native_refs::advertised_head`). A read naming a branch is respelled by the commit the
+snapshot resolves it to (`native_refs::pinned`, and `already_integrates`'s merge), which
+makes it a proof the next call reuses while the ref stays put and a fresh read once it
+moves. Nothing ref-valued outlives a call. `tests/e2e/repeated_reads.rs` counts the
+starts and moves each input between two reads. 0.56.9's extra starts over 0.56.5 came
+in with #513 and #531 removed them; these reads cost as much in 0.56.5.
+
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
 `branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the

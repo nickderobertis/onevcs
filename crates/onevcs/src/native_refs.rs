@@ -278,6 +278,178 @@ pub(crate) fn tip_with_objects(
     }))
 }
 
+/// The branch `git ls-remote --symref <remote> HEAD` reports the remote's HEAD
+/// names, read from the remote's own files where the remote is a bare repository on
+/// this filesystem — or `None`, for git to answer.
+///
+/// A checkout with no `<remote>/HEAD` asks its remote on every read of its default
+/// branch, and for a remote on this host that is two processes (`ls-remote` and the
+/// `upload-pack` it starts) to read one file. The remote's HEAD is read afresh on
+/// every asking, so a HEAD moved there is what the next read reports. Only the plain
+/// case is answered: a URL that is a path (no transport, helper or rewrite, and no
+/// configuration that reroutes the remote or hides what it advertises), naming a bare
+/// repository with no `.git` beside it, whose HEAD is a file naming a branch that
+/// exists and is not itself symbolic. Anything else — a dangling HEAD among it, which
+/// git versions advertise differently — is git's.
+pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
+    let rerouted = frozen_after_read(repo, |configuration| {
+        let mut entries = configuration.entries(None).ok()?;
+        let own = format!("remote.{}.", remote.to_ascii_lowercase());
+        while let Some(entry) = entries.next() {
+            let name = entry.ok()?.name().ok()?.to_ascii_lowercase();
+            if name.starts_with("protocol.")
+                || name == "core.gitproxy"
+                || name.starts_with("uploadpack.")
+                || name.starts_with("transfer.")
+                || (name.starts_with(&own)
+                    && ["uploadpack", "vcs", "proxy", "mirror"]
+                        .iter()
+                        .any(|key| name == format!("{own}{key}")))
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
+    })?;
+    if rerouted {
+        return None;
+    }
+    let url = remote_url(repo, remote)?;
+    let path = Path::new(&url);
+    if url.contains("://") || url.contains("::") || (!path.is_absolute() && url.contains(':')) {
+        return None;
+    }
+    let directory = repo.join(path);
+    let meta = std::fs::symlink_metadata(directory.join("HEAD")).ok()?;
+    if !meta.is_file()
+        || std::fs::symlink_metadata(directory.join(".git")).is_ok()
+        || !directory.join("objects").is_dir()
+        || !directory.join("refs").is_dir()
+    {
+        return None;
+    }
+    let head = std::fs::read_to_string(directory.join("HEAD")).ok()?;
+    let target = head.strip_prefix("ref: ")?.strip_suffix('\n')?;
+    let branch = target.strip_prefix("refs/heads/")?;
+    if !crate::git::plainly_a_ref_name(branch) {
+        return None;
+    }
+    let remote = git2::Repository::open_bare(&directory).ok()?;
+    // What the remote's side reads too: its own configuration, and this user's.
+    let configuration = remote.config().ok()?.snapshot().ok()?;
+    let mut entries = configuration.entries(None).ok()?;
+    while let Some(entry) = entries.next() {
+        let name = entry.ok()?.name().ok()?.to_ascii_lowercase();
+        if name.starts_with("uploadpack.") || name.starts_with("transfer.") {
+            return None;
+        }
+    }
+    let reference = remote.find_reference(target).ok()?;
+    (reference.kind() == Some(git2::ReferenceType::Direct) && reference.target().is_some())
+        .then(|| branch.to_owned())
+}
+
+/// [`frozen`], for a repository whose snapshot this read has taken.
+fn frozen_after_read<T>(repo: &Path, ask: impl FnOnce(&git2::Config) -> Option<T>) -> Option<T> {
+    read(repo, |_| Some(()))?;
+    frozen(repo, ask)
+}
+
+/// `args` with every revision a ref names spelled as the commit this read's snapshot
+/// resolves it to, where any is, for the reads whose answer is the same either way.
+///
+/// A read naming a branch is keyed by nothing that says where the branch stands, so
+/// neither a proof nor an in-process answer can be made of it, and every caller that
+/// asks it again starts git again. Spelled by the commit, the read is one about
+/// objects alone: a later read whose refs have not moved spells it the same and is
+/// answered without a process, and one whose refs have moved spells a different
+/// commit. Only reads that peel what they name to a commit (or its tree) and print no
+/// name are spelled again — a log, a count, an ancestry, a merge base, a diff of two
+/// revisions, and an existence or `--verify` of a peeled commit; a pathspec, an option
+/// and its value, a name this snapshot does not resolve, and every other command are
+/// left as they were asked.
+pub(crate) fn pinned(
+    args: &[&str],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+) -> Option<Vec<String>> {
+    if !crate::recovery_cache::enabled() {
+        return None;
+    }
+    let cwd = cwd?;
+    let borrowing = lent(env)?;
+    let (command, rest) = args.split_first()?;
+    // The suffixes a revision may carry, and whether it must carry one: an existence
+    // or a `--verify` of a bare name answers about the object the ref holds, which for
+    // an annotated tag is not the commit it peels to.
+    let (suffixes, peeled): (&[&str], bool) = match (*command, rest.first().copied()) {
+        ("cat-file", Some("-e")) => (&["^{commit}"], true),
+        ("rev-parse", Some("--verify")) => (&["^{commit}", "^{tree}"], true),
+        ("merge-base" | "diff" | "log" | "rev-list", _) => (&[], false),
+        _ => return None,
+    };
+    // What reads a ref's history or prints a ref's name answers by the name itself.
+    if rest.iter().any(|arg| {
+        matches!(
+            *arg,
+            "-g" | "--walk-reflogs" | "--fork-point" | "--source" | "--all" | "--branches"
+        ) || arg.starts_with("--decorate")
+            || ((arg.starts_with("--format") || arg.starts_with("--pretty"))
+                && ["%d", "%D", "%S", "%g"]
+                    .iter()
+                    .any(|code| arg.contains(code)))
+    }) {
+        return None;
+    }
+    let pin = |name: &str| -> Option<String> {
+        if name.is_empty() || crate::git::ObjectId::parse(name).is_some() {
+            return None;
+        }
+        tip_with_objects(cwd, name, borrowing).flatten()
+    };
+    let revision = |arg: &str| -> Option<String> {
+        if let Some((from, to)) = arg.split_once("..") {
+            if from.is_empty() || to.is_empty() || to.starts_with('.') {
+                return None;
+            }
+            let (pinned_from, pinned_to) = (pin(from), pin(to));
+            if pinned_from.is_none() && pinned_to.is_none() {
+                return None;
+            }
+            return Some(format!(
+                "{}..{}",
+                pinned_from.as_deref().unwrap_or(from),
+                pinned_to.as_deref().unwrap_or(to)
+            ));
+        }
+        let (name, suffix) = suffixes
+            .iter()
+            .find_map(|suffix| Some((arg.strip_suffix(suffix)?, *suffix)))
+            .or((!peeled).then_some((arg, "")))?;
+        Some(format!("{}{suffix}", pin(name)?))
+    };
+    let mut spelled = vec![(*command).to_owned()];
+    let mut changed = false;
+    let mut value = false;
+    let mut paths = false;
+    for arg in rest {
+        if paths || value || arg.starts_with('-') || arg.starts_with(':') {
+            paths |= *arg == "--";
+            value = *arg == "-n";
+            spelled.push((*arg).to_owned());
+            continue;
+        }
+        match revision(arg) {
+            Some(pinned) => {
+                changed = true;
+                spelled.push(pinned);
+            }
+            None => spelled.push((*arg).to_owned()),
+        }
+    }
+    changed.then_some(spelled)
+}
+
 pub(crate) fn raw_tip(repo: &Path, name: &str) -> Option<Option<String>> {
     read(repo, |snapshot| {
         Some(snapshot.tips.get(name).map(git2::Oid::to_string))

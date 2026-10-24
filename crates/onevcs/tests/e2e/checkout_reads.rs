@@ -676,6 +676,12 @@ fn the_public_landing_query_and_close_take_turns() {
             std::env::set_var(key, value);
         }
     }
+    // A supported Git environment forces the executable fallback, so this journey
+    // orders a real child even where the landing read ordinarily answers in process —
+    // as the recovery scan's journey does.
+    std::env::set_var("GIT_CONFIG_COUNT", "1");
+    std::env::set_var("GIT_CONFIG_KEY_0", "advice.detachedHead");
+    std::env::set_var("GIT_CONFIG_VALUE_0", "false");
     let repo = fixture.checkout.to_string_lossy().into_owned();
     let expected = onevcs::landing_status("main", Some(&repo)).unwrap();
     std::env::set_var("HOLD_READER", "1");
