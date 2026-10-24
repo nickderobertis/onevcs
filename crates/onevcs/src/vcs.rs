@@ -211,9 +211,6 @@ impl Vcs for Git {
     }
 
     fn session(&self, token: &SessionToken) -> Result<SessionRecord> {
-        // Read the way a landing is: every repeated question answered once, and every
-        // ref and object read a repeated asking of an unmoved session can answer
-        // without a process answered so (see `landing_status`).
         crate::recovery_cache::scope(|| git::memoized(|| self.session_read(token)))
     }
 

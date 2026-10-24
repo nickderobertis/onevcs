@@ -301,7 +301,6 @@ fn a_branch_deleted_between_two_reads_is_read_as_gone() {
         "a branch nothing holds any more resolves to nothing: {gone:?}"
     );
 
-    // And cut again, it is read again.
     branch_with_work(&fixture, "feature/deleted", "again.txt");
     assert_eq!(state(&landing("feature/deleted", &repo)), "no");
 }
@@ -337,11 +336,12 @@ fn move_dir(from: &Path, to: &Path) {
     });
 }
 
-/// Whether reading a landing asks git for the remote's HEAD, once the remote is set
-/// up by `setup` — holding the answer to the remote's `main` either way.
+/// What reading a landing answers once the remote is set up by `setup`, and whether
+/// it asked git for the remote's HEAD — beside what the same read answers when git is
+/// asked everything, which is the answer the in-process read must not differ from.
 ///
 /// One setup per test: the counting `git` is resolved once per process.
-fn remote_head_asked_of_git(setup: impl FnOnce(&Fixture)) -> bool {
+fn remote_head_read(setup: impl FnOnce(&Fixture)) -> (bool, String, String) {
     let fixture = without_tracked_head();
     let world = &fixture.world;
     let repo = repo_of(&fixture);
@@ -350,59 +350,150 @@ fn remote_head_asked_of_git(setup: impl FnOnce(&Fixture)) -> bool {
     let counting = Counting::installed(world);
     inhabit(world);
     counting.inhabit();
-    let asked = started(&counting, || {
-        assert_eq!(
-            state(&landing("feature/asked", &repo)),
-            "no",
-            "judged against the remote's `main`"
-        );
-    });
-    asked
+    let read = || match onevcs::landing_status("feature/asked", Some(&repo)) {
+        Ok(landed) => state(&landed),
+        Err(refused) => format!("refused: {refused}"),
+    };
+    let mut answer = String::new();
+    let asked = started(&counting, || answer = read());
+    // A supported Git environment forces the executable fallback for every read.
+    std::env::set_var("GIT_CONFIG_COUNT", "1");
+    std::env::set_var("GIT_CONFIG_KEY_0", "advice.detachedHead");
+    std::env::set_var("GIT_CONFIG_VALUE_0", "false");
+    let from_git = read();
+    for name in ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] {
+        std::env::remove_var(name);
+    }
+    let remote_was_asked = asked
         .keys()
-        .any(|command| command.ends_with("ls-remote --symref origin HEAD"))
+        .any(|command| command.ends_with("ls-remote --symref origin HEAD"));
+    (remote_was_asked, answer, from_git)
+}
+
+/// The remote's HEAD, once `setup` makes it one the in-process read declines: git is
+/// asked for it, and the landing is what git alone answers.
+fn left_to_git(setup: impl FnOnce(&Fixture)) {
+    let (asked, answer, from_git) = remote_head_read(setup);
+    assert!(asked, "git was asked for the remote's HEAD");
+    assert_eq!(answer, from_git, "the landing is git's answer");
+}
+
+fn configured(fixture: &Fixture, at: &Path, key: &str, value: &str) {
+    fixture.world.git(at, &["config", key, value]);
 }
 
 #[test]
 fn a_plain_bare_remotes_head_is_read_from_its_files() {
-    assert!(!remote_head_asked_of_git(|_| {}));
+    let (asked, answer, from_git) = remote_head_read(|_| {});
+    assert!(!asked, "no git was asked for the remote's HEAD");
+    assert_eq!(answer, "no", "judged against the remote's `main`");
+    assert_eq!(answer, from_git, "as git alone judges it");
 }
 
 #[test]
 fn a_protocol_the_checkout_configures_leaves_the_remotes_head_to_git() {
-    assert!(remote_head_asked_of_git(|fixture| {
-        fixture
-            .world
-            .git(&fixture.checkout, &["config", "protocol.version", "2"]);
-    }));
+    left_to_git(|fixture| configured(fixture, &fixture.checkout, "protocol.version", "2"));
+}
+
+#[test]
+fn a_proxy_the_checkout_configures_leaves_the_remotes_head_to_git() {
+    left_to_git(|fixture| configured(fixture, &fixture.checkout, "core.gitProxy", "none"));
+}
+
+#[test]
+fn a_transfer_policy_the_checkout_configures_leaves_the_remotes_head_to_git() {
+    left_to_git(|fixture| configured(fixture, &fixture.checkout, "transfer.hideRefs", "refs/tags"));
+}
+
+#[test]
+fn an_upload_pack_the_checkout_names_for_its_remote_leaves_its_head_to_git() {
+    left_to_git(|fixture| {
+        configured(
+            fixture,
+            &fixture.checkout,
+            "remote.origin.uploadpack",
+            "git-upload-pack",
+        );
+    });
 }
 
 #[test]
 fn an_upload_pack_the_remote_configures_leaves_its_head_to_git() {
-    assert!(remote_head_asked_of_git(|fixture| {
-        fixture.world.git(
-            &fixture.origin,
-            &["config", "uploadpack.allowFilter", "true"],
-        );
-    }));
+    left_to_git(|fixture| configured(fixture, &fixture.origin, "uploadpack.allowFilter", "true"));
+}
+
+#[test]
+fn a_transfer_policy_the_remote_configures_leaves_its_head_to_git() {
+    left_to_git(|fixture| configured(fixture, &fixture.origin, "transfer.hideRefs", "refs/tags"));
 }
 
 #[test]
 fn a_remote_url_with_a_transport_leaves_its_head_to_git() {
-    assert!(remote_head_asked_of_git(|fixture| {
+    left_to_git(|fixture| {
         let url = format!("file://{}", fixture.origin.display());
         fixture
             .world
             .git(&fixture.checkout, &["remote", "set-url", "origin", &url]);
-    }));
+    });
+}
+
+#[test]
+fn a_remote_url_naming_a_helper_leaves_its_head_to_git() {
+    left_to_git(|fixture| {
+        let url = format!("nohelper::{}", fixture.origin.display());
+        fixture
+            .world
+            .git(&fixture.checkout, &["remote", "set-url", "origin", &url]);
+    });
+}
+
+#[test]
+fn an_scp_style_remote_url_leaves_its_head_to_git() {
+    left_to_git(|fixture| {
+        // Refused at once rather than dialled: nothing here may reach a network.
+        configured(fixture, &fixture.checkout, "core.sshCommand", "false");
+        fixture.world.git(
+            &fixture.checkout,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "nobody@nowhere.invalid:project.git",
+            ],
+        );
+    });
 }
 
 #[test]
 fn a_remote_with_a_work_tree_leaves_its_head_to_git() {
-    assert!(remote_head_asked_of_git(|fixture| {
+    left_to_git(|fixture| {
         let worked = fixture.world.clone_of(&fixture.origin, "worked-origin");
         fixture.world.git(
             &fixture.checkout,
             &["remote", "set-url", "origin", &worked.to_string_lossy()],
         );
-    }));
+    });
+}
+
+#[test]
+fn a_detached_remote_head_is_left_to_git() {
+    left_to_git(|fixture| {
+        let tip = fixture.world.git(&fixture.origin, &["rev-parse", "main"]);
+        std::fs::write(fixture.origin.join("HEAD"), format!("{}\n", tip.trim()))
+            .expect("the remote's HEAD detaches");
+    });
+}
+
+#[test]
+fn a_remote_head_naming_a_symbolic_branch_is_left_to_git() {
+    left_to_git(|fixture| {
+        fixture.world.git(
+            &fixture.origin,
+            &["symbolic-ref", "refs/heads/alias", "refs/heads/main"],
+        );
+        fixture.world.git(
+            &fixture.origin,
+            &["symbolic-ref", "HEAD", "refs/heads/alias"],
+        );
+    });
 }

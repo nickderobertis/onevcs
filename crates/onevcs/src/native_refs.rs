@@ -368,6 +368,13 @@ fn frozen_after_read<T>(repo: &Path, ask: impl FnOnce(&git2::Config) -> Option<T
 /// revisions, and an existence or `--verify` of a peeled commit; a pathspec, an option
 /// and its value, a name this snapshot does not resolve, and every other command are
 /// left as they were asked.
+// llmlint: ignore[changed_behavior_has_e2e] the public reads reach this with branch
+// names, which `tests/e2e/repeated_reads.rs` drives. What it leaves alone — a bare tag
+// or name under `--verify`, a reflog walk, a symmetric range, a name-printing format, a
+// fork point, an option's value, a pathspec — reaches git exactly as asked, and most of
+// those shapes are ones no public read sends, so no journey reaches them;
+// `tests::a_read_naming_a_ref_is_spelled_by_its_commit_only_where_git_answers_the_same`
+// holds each to real git's own answer instead.
 pub(crate) fn pinned(
     args: &[&str],
     cwd: Option<&Path>,

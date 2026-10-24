@@ -220,10 +220,7 @@ fn run_unless(
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
 ) -> Result<Output> {
-    // A read naming a branch, inside a read that resolves its refs in process, is
-    // asked by the commit the branch is at — which is what lets the in-process
-    // answers and the proofs below take it, and a later read of unmoved refs take it
-    // without a process (see `native_refs::pinned`).
+    // Before the memo and the proofs, so both are keyed by commits rather than names.
     let pinned = crate::native_refs::pinned(args, cwd, env);
     let spelled: Vec<&str>;
     let args = match &pinned {
