@@ -27,6 +27,25 @@
 //! could continue with, and not followed by one a repository name could continue
 //! with. `.git` after it is still that repository, so `hiddenco/docs.git` matches
 //! `hiddenco/docs` while `hiddenco/docs.site` and `hiddenco/docsite` do not.
+//!
+//! # Host public phrases
+//!
+//! A matcher may also be given the host's public phrases (`public-phrases.yml`), text
+//! the host declares public even though a term occurs inside it. A phrase is
+//! normalized and folded as a term that is not case-sensitive is, and found without
+//! case in the text a term hit was found in — on the case-sensitive path too, with its
+//! spans located in that same normalized text.
+//!
+//! A phrase occurrence counts only where it **stands on its own**: the character before
+//! it is not a word character, not `-`, and not a `.` that itself follows a word
+//! character; the character after it is not a word character, not `-`, and not a `.`
+//! followed by a word character. A term hit `[s, e)` is **exempt** only where a standing
+//! phrase occurrence `[ps, pe)` has `ps <= s` and `e <= pe`, and a rule is found where at
+//! least one of its accepted hits is not exempt — whatever its [`TermMode`]. So with the
+//! phrase `box-ab` the term `ab` is exempt in `ran on box-ab`, `(box-ab)` and `BOX-AB`,
+//! and still found in `box-ab-2`, `mybox-ab`, `box-ab.lan`, `box-ab-ab` and
+//! `box-ab and ab`. A form joined to the phrase by a word character, `box-ab_x`, is never
+//! exempted — and under a whole-word term carries no hit to begin with.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -45,6 +64,8 @@ pub struct Matcher {
     folded: Option<Automaton>,
     /// The automaton over every case-sensitive rule, matched against normalized text.
     exact: Option<Automaton>,
+    /// The automaton over every host public phrase, matched against folded text.
+    phrases: Option<AhoCorasick>,
 }
 
 /// One automaton and, for each of its patterns, the rules that spell it.
@@ -59,8 +80,33 @@ struct Automaton {
 pub struct Unbuildable(pub String);
 
 impl Matcher {
-    /// Compile `rules`. An empty rule is dropped rather than matched everywhere.
-    pub fn new(rules: Vec<TermRule>) -> Result<Matcher, Unbuildable> {
+    /// Compile `rules`, exempting what the host's public `phrases` cover. An empty rule
+    /// is dropped rather than matched everywhere. A phrase that is empty once
+    /// normalized is refused, naming no phrase: it would cover nothing, and a list
+    /// carrying one is not the list its author meant.
+    pub fn with_phrases(rules: Vec<TermRule>, phrases: &[String]) -> Result<Matcher, Unbuildable> {
+        let mut spellings: Vec<String> = Vec::new();
+        for phrase in phrases {
+            let key = term_key(phrase);
+            if key.is_empty() {
+                return Err(Unbuildable(
+                    "a public phrase is empty once normalized".to_owned(),
+                ));
+            }
+            if !spellings.contains(&key) {
+                spellings.push(key);
+            }
+        }
+        let phrases = if spellings.is_empty() {
+            None
+        } else {
+            Some(
+                AhoCorasickBuilder::new()
+                    .match_kind(MatchKind::Standard)
+                    .build(&spellings)
+                    .map_err(|error| Unbuildable(error.to_string()))?,
+            )
+        };
         let mut folded = Vec::new();
         let mut exact = Vec::new();
         for (index, rule) in rules.iter().enumerate() {
@@ -78,6 +124,7 @@ impl Matcher {
             folded: Automaton::build(folded)?,
             exact: Automaton::build(exact)?,
             rules,
+            phrases,
         })
     }
 
@@ -87,23 +134,75 @@ impl Matcher {
     }
 
     /// Every rule whose term `text` carries, by its index in [`rules`](Self::rules),
-    /// once each and in ascending order.
+    /// once each and in ascending order. A hit a public phrase exempts is not counted.
     pub fn find(&self, text: &str) -> Vec<usize> {
+        self.scan(text, false).0
+    }
+
+    /// How many accepted term hits in `text` a public phrase exempted: one for each
+    /// rule at each place it was exempted.
+    pub fn exempted(&self, text: &str) -> usize {
+        if self.phrases.is_none() {
+            return 0;
+        }
+        self.scan(text, true).1
+    }
+
+    /// The rules found in `text`, and — where `count` asks — how many hits were exempt.
+    fn scan(&self, text: &str, count: bool) -> (Vec<usize>, usize) {
         let mut found = Vec::new();
+        let mut exempted = 0;
         if self.folded.is_none() && self.exact.is_none() {
-            return found;
+            return (found, exempted);
         }
         let normalized = normalize(text);
+        let lowered = (self.folded.is_some() || self.phrases.is_some()).then(|| fold(&normalized));
+        let standing = match &lowered {
+            Some(lowered) => self.standing(lowered),
+            None => Vec::new(),
+        };
+        let mut hits = Hits {
+            rules: &self.rules,
+            count,
+            found: &mut found,
+            exempted: &mut exempted,
+        };
         if let Some(exact) = &self.exact {
-            exact.collect(&normalized, &self.rules, &mut found);
+            let spans = if standing.is_empty() {
+                Vec::new()
+            } else {
+                in_normalized(&normalized, &standing)
+            };
+            exact.collect(&normalized, &spans, &mut hits);
         }
-        if let Some(folded) = &self.folded {
-            folded.collect(&fold(&normalized), &self.rules, &mut found);
+        if let (Some(folded), Some(lowered)) = (&self.folded, &lowered) {
+            folded.collect(lowered, &standing, &mut hits);
         }
         found.sort_unstable();
         found.dedup();
-        found
+        (found, exempted)
     }
+
+    /// Every standing occurrence of a public phrase in folded `text`, as byte spans.
+    fn standing(&self, text: &str) -> Vec<(usize, usize)> {
+        let Some(phrases) = &self.phrases else {
+            return Vec::new();
+        };
+        phrases
+            .find_overlapping_iter(text)
+            .filter(|hit| stands_alone(text, hit.start(), hit.end()))
+            .map(|hit| (hit.start(), hit.end()))
+            .collect()
+    }
+}
+
+/// What one scan has found so far.
+struct Hits<'a> {
+    rules: &'a [TermRule],
+    /// Whether exempt hits are counted, which means every hit is visited.
+    count: bool,
+    found: &'a mut Vec<usize>,
+    exempted: &'a mut usize,
 }
 
 impl Automaton {
@@ -131,18 +230,71 @@ impl Automaton {
         Ok(Some(Automaton { automaton, rules }))
     }
 
-    fn collect(&self, text: &str, rules: &[TermRule], found: &mut Vec<usize>) {
+    /// Every rule this automaton finds in `text`, where `phrases` are the standing
+    /// public phrase occurrences located in that same text.
+    fn collect(&self, text: &str, phrases: &[(usize, usize)], hits: &mut Hits<'_>) {
         for hit in self.automaton.find_overlapping_iter(text) {
             for &index in &self.rules[hit.pattern().as_usize()] {
-                if found.contains(&index) {
+                if !hits.count && hits.found.contains(&index) {
                     continue;
                 }
-                if accepts(rules[index].mode, text, hit.start(), hit.end()) {
-                    found.push(index);
+                if !accepts(hits.rules[index].mode, text, hit.start(), hit.end()) {
+                    continue;
+                }
+                let (start, end) = (hit.start(), hit.end());
+                if phrases.iter().any(|&(ps, pe)| ps <= start && end <= pe) {
+                    *hits.exempted += 1;
+                } else if !hits.found.contains(&index) {
+                    hits.found.push(index);
                 }
             }
         }
     }
+}
+
+/// Whether a phrase occurrence at `start..end` of `text` stands on its own.
+fn stands_alone(text: &str, start: usize, end: usize) -> bool {
+    let mut before = text[..start].chars().rev();
+    let clear_before = match before.next() {
+        None => true,
+        Some('.') => !before.next().is_some_and(is_word),
+        Some(c) => !(is_word(c) || c == '-'),
+    };
+    let mut after = text[end..].chars();
+    let clear_after = match after.next() {
+        None => true,
+        Some('.') => !after.next().is_some_and(is_word),
+        Some(c) => !(is_word(c) || c == '-'),
+    };
+    clear_before && clear_after
+}
+
+/// Spans of `fold(normalized)` as spans of `normalized` itself.
+///
+/// Folding maps each character on its own, so the two texts walk in step a character
+/// at a time. Where a character folds to several, a span edge falling inside its folded
+/// form is moved inward — the span loses that character rather than gaining it — so an
+/// exemption is never wider than the phrase that was found.
+fn in_normalized(normalized: &str, spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    if normalized.is_ascii() {
+        return spans.to_vec();
+    }
+    // Each character's start and end, in the folded text and in `normalized`.
+    let mut steps: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut at = 0;
+    for (start, c) in normalized.char_indices() {
+        let width: usize = c.to_lowercase().map(char::len_utf8).sum();
+        steps.push((at, at + width, start, start + c.len_utf8()));
+        at += width;
+    }
+    spans
+        .iter()
+        .filter_map(|&(ps, pe)| {
+            let start = steps.iter().find(|s| s.0 >= ps)?.2;
+            let end = steps.iter().rev().find(|s| s.1 <= pe)?.3;
+            (start < end).then_some((start, end))
+        })
+        .collect()
 }
 
 /// Whether a hit at `start..end` of `text` is one `mode` accepts.

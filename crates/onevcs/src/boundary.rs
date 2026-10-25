@@ -39,6 +39,18 @@
 //! `[workspace].members`, `package.json`'s `name` and `workspaces`, and
 //! `pyproject.toml`'s `[project]` and `[tool.poetry]` names; a member glob may use `*`
 //! within a path segment.
+//!
+//! # Host public phrases
+//!
+//! A host may list, in [`PUBLIC_PHRASES_FILE`] under its onevcs home, exact phrases it
+//! declares public even though a private term occurs inside them — a machine name that
+//! happens to carry a private package's name after a hyphen. An occurrence of a term
+//! lying wholly inside a standing occurrence of such a phrase is not a hit; every other
+//! occurrence is matched as before. The exemption is the one matcher's (see
+//! [`TermMatcher::with_phrases`]), so every check honours it alike, and only a check with
+//! at least one term rule reads the file. A file that cannot be read exactly makes that
+//! check [`Unavailability::PublicPhrases`] — never a smaller list — and a missing one is
+//! no phrases.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -54,6 +66,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod evidence;
 mod manifests;
 mod matcher;
+mod phrases;
 pub(crate) mod scope;
 pub(crate) mod screen;
 pub(crate) mod visibility;
@@ -68,7 +81,27 @@ pub const PRIVATE_TERMS_VERSION: u32 = 1;
 
 /// The version of the JSON shapes `onevcs boundary inspect` and `onevcs boundary
 /// check` exchange, which [`boundary_schema`] carries.
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;
+
+/// The host file, under the onevcs home, that lists the host's public phrases.
+pub const PUBLIC_PHRASES_FILE: &str = "public-phrases.yml";
+
+/// The `version` a [`PUBLIC_PHRASES_FILE`] declares, and the only one this build reads.
+pub const PUBLIC_PHRASES_VERSION: u32 = 1;
+
+/// The host's public phrases, as [`public_phrases`] reads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PublicPhrases {
+    /// The phrases as written, in file order, each kept once by its normalized and folded spelling.
+    pub phrases: Vec<String>,
+}
+
+/// This host's public phrases: [`PublicPhrases::default`] where it has no
+/// [`PUBLIC_PHRASES_FILE`], and [`Error::Invalid`] — naming the file and the problem,
+/// never a phrase — for one this build refuses or cannot read.
+pub fn public_phrases() -> Result<PublicPhrases> {
+    phrases::load()
+}
 
 /// Whether a repository is public.
 ///
@@ -286,6 +319,8 @@ pub enum Unavailability {
     /// limited, failing, or out of reach — so nothing it last said was replaced and
     /// the write waits for it to answer.
     HostVisibility,
+    /// The host's public phrase file could not be read, or is one this build refuses.
+    PublicPhrases,
 }
 
 impl Unavailability {
@@ -303,6 +338,7 @@ impl Unavailability {
             Unavailability::HostVisibility => {
                 "the host did not answer whether the destination is public"
             }
+            Unavailability::PublicPhrases => "public-phrases",
         }
     }
 }
@@ -489,13 +525,26 @@ pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<
 pub struct TermMatcher(matcher::Matcher);
 
 impl TermMatcher {
-    /// Compile `rules`, refusing a set too large for one automaton.
+    /// Compile `rules`, with no public phrases, refusing a set too large for one
+    /// automaton.
     pub fn new(rules: Vec<TermRule>) -> Result<TermMatcher> {
-        matcher::Matcher::new(rules)
+        TermMatcher::with_phrases(rules, &PublicPhrases::default())
+    }
+
+    /// Compile `rules`, exempting every hit a standing occurrence of one of `phrases`
+    /// covers. Refused — naming no phrase — for a phrase empty once normalized, or a set
+    /// too large for one automaton.
+    pub fn with_phrases(rules: Vec<TermRule>, phrases: &PublicPhrases) -> Result<TermMatcher> {
+        matcher::Matcher::with_phrases(rules, &phrases.phrases)
             .map(TermMatcher)
             .map_err(|unbuildable| Error::Invalid {
                 reason: format!("the terms could not be compiled: {}", unbuildable.0),
             })
+    }
+
+    /// How many term hits in `text` a public phrase exempted.
+    pub fn exempted(&self, text: &str) -> usize {
+        self.0.exempted(text)
     }
 
     /// The rules it was compiled over.

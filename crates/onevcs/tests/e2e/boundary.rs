@@ -930,14 +930,14 @@ fn the_schema_command_prints_the_checked_in_versioned_schemas() {
         .expect("the binary runs");
     assert!(output.status.success());
     let printed: Value = serde_json::from_slice(&output.stdout).expect("JSON schemas");
-    let golden: Value = serde_json::from_str(include_str!("../golden/boundary-schema-v2.json"))
+    let golden: Value = serde_json::from_str(include_str!("../golden/boundary-schema-v3.json"))
         .expect("the golden is JSON");
     assert_eq!(
         printed, golden,
-        "re-make crates/onevcs/tests/golden/boundary-schema-v2.json — and move \
+        "re-make crates/onevcs/tests/golden/boundary-schema-v3.json — and move \
          BOUNDARY_SCHEMA_VERSION if the shape moved"
     );
-    assert_eq!(printed["schema_version"], 2);
+    assert_eq!(printed["schema_version"], 3);
     for path in [
         "/inspect/input",
         "/inspect/output",
