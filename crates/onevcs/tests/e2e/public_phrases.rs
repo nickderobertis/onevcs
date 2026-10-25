@@ -247,6 +247,9 @@ fn a_case_sensitive_term_is_exempted_in_its_declared_casing_and_any_other_casing
         // Text whose folding changes its length before the phrase: the phrase's span
         // is located in the text the case-sensitive hit was found in, not a copy.
         "İstanbul rig-Zorv",
+        // Five characters that each fold one byte longer: a span read off the folded
+        // copy would sit five bytes late and no longer cover the term.
+        "İİİİİ rig-Zorv",
     ];
     let still_found = [
         "rig-Zorv-2",
