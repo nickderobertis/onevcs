@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0](https://github.com/nickderobertis/onevcs/compare/v0.56.11...v0.57.0) - 2026-10-25
+
+### Added
+
+- [**breaking**] let a host allow exact public phrases past the private-term check ([#556](https://github.com/nickderobertis/onevcs/pull/556))
+
 ## [0.56.11](https://github.com/nickderobertis/onevcs/compare/v0.56.10...v0.56.11) - 2026-10-24
 
 ### Performance
