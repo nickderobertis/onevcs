@@ -217,6 +217,12 @@ fn a_standing_phrase_exempts_the_term_inside_it_and_the_term_is_refused_everywhe
         (joined.code, joined.stdout.as_str()),
         "no phrase exempts {JOINED:?}"
     );
+    // A letter before the phrase keeps it from standing, even one that folds to a
+    // letter and a combining mark: the text the term was found in has a letter there.
+    assert!(
+        host.text("İrig-zorv", None).refused(),
+        "İrig-zorv is still found"
+    );
 
     // The character before the phrase decides as the one after it does: a `.` after a
     // word continues a name, and a `.` after anything else does not.
@@ -286,6 +292,10 @@ fn a_case_sensitive_term_is_exempted_in_its_declared_casing_and_any_other_casing
         "rig-Zorv and Zorv",
         "İstanbul rig-Zorv-2",
         "İİİ Zorv rig-Zorv",
+        // A letter before the phrase keeps it from standing, judged in the text the
+        // hit was found in: `İ` folds to `i` and a combining dot, so a folded copy
+        // shows a mark rather than a letter there.
+        "İrig-Zorv",
     ];
     let other_casing = ["rig-zorv", "RIG-ZORV", "zorv", "ZORV", "rig-zorv-2"];
 
@@ -295,7 +305,10 @@ fn a_case_sensitive_term_is_exempted_in_its_declared_casing_and_any_other_casing
     for text in other_casing {
         assert!(host.text(text, None).passed(), "{text:?} carries no term");
     }
-    let joined = host.text("rig-Zorv_x", None);
+    // Joined to the phrase by a word character, so under a whole-word term they carry
+    // no hit, and they answer alike with phrases and without.
+    let joined_forms = ["rig-Zorv_x", "rig-Zorvİ"];
+    let joined: Vec<_> = joined_forms.map(|text| host.text(text, None)).into();
 
     host.phrases(Some(PHRASES));
     for text in declared {
@@ -313,11 +326,25 @@ fn a_case_sensitive_term_is_exempted_in_its_declared_casing_and_any_other_casing
     for text in other_casing {
         assert!(host.text(text, None).passed(), "{text:?} carries no term");
     }
-    let checked = host.text("rig-Zorv_x", None);
-    assert_eq!(
-        (checked.code, checked.stdout.as_str()),
-        (joined.code, joined.stdout.as_str()),
-        "no phrase exempts a joined form"
+    for (text, without) in joined_forms.iter().zip(&joined) {
+        let checked = host.text(text, None);
+        assert_eq!(
+            (checked.code, checked.stdout.as_str()),
+            (without.code, without.stdout.as_str()),
+            "no phrase exempts the joined form {text:?}"
+        );
+    }
+
+    // The mirror at the phrase's end: the term opens the phrase, and a letter after it
+    // keeps the phrase from standing.
+    host.phrases(Some("version: 1\nphrases:\n  - \"zorv-rig\"\n"));
+    assert!(
+        host.text("ran on Zorv-rig", None).passed(),
+        "Zorv-rig is exempt"
+    );
+    assert!(
+        host.text("Zorv-rigİ", None).refused(),
+        "Zorv-rigİ is still found"
     );
 }
 

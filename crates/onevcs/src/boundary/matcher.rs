@@ -39,7 +39,10 @@
 //! A phrase occurrence counts only where it **stands on its own**: the character before
 //! it is not a word character, not `-`, and not a `.` that itself follows a word
 //! character; the character after it is not a word character, not `-`, and not a `.`
-//! followed by a word character. A term hit `[s, e)` is **exempt** only where a standing
+//! followed by a word character. Both are read in the text the hit was found in, so a
+//! letter there keeps the phrase from standing even where folding turns it into a letter
+//! and a mark (`İ` into `i` and U+0307): `İrig-Zorv` carries the case-sensitive `Zorv`
+//! past the phrase `rig-zorv`. A term hit `[s, e)` is **exempt** only where a standing
 //! phrase occurrence `[ps, pe)` has `ps <= s` and `e <= pe`, and a rule is found where at
 //! least one of its accepted hits is not exempt — whatever its [`TermMode`]. So with the
 //! phrase `box-ab` the term `ab` is exempt in `ran on box-ab`, `(box-ab)` and `BOX-AB`,
@@ -157,9 +160,9 @@ impl Matcher {
         }
         let normalized = normalize(text);
         let lowered = (self.folded.is_some() || self.phrases.is_some()).then(|| fold(&normalized));
-        let standing = match &lowered {
-            Some(lowered) => self.standing(lowered),
-            None => Vec::new(),
+        let (in_folded, in_text) = match &lowered {
+            Some(lowered) => self.standing(&normalized, lowered),
+            None => (Vec::new(), Vec::new()),
         };
         let mut hits = Hits {
             rules: &self.rules,
@@ -168,33 +171,50 @@ impl Matcher {
             exempted: &mut exempted,
         };
         if let Some(exact) = &self.exact {
-            let spans = if standing.is_empty() {
-                Vec::new()
-            } else {
-                in_normalized(&normalized, &standing)
-            };
-            exact.collect(&normalized, &spans, &mut hits);
+            exact.collect(&normalized, &in_text, &mut hits);
         }
         if let (Some(folded), Some(lowered)) = (&self.folded, &lowered) {
-            folded.collect(lowered, &standing, &mut hits);
+            folded.collect(lowered, &in_folded, &mut hits);
         }
         found.sort_unstable();
         found.dedup();
         (found, exempted)
     }
 
-    /// Every standing occurrence of a public phrase in folded `text`, as byte spans.
-    fn standing(&self, text: &str) -> Vec<(usize, usize)> {
+    /// Every standing occurrence of a public phrase, as byte spans of `lowered` (the
+    /// folded text) and of `normalized` (the text a case-sensitive hit is found in).
+    ///
+    /// An occurrence stands only where it stands in both texts, because folding can
+    /// turn a letter into a letter and a mark (`İ` into `i` and U+0307): a boundary
+    /// read off one text alone is not the boundary in the other. One whose edge falls
+    /// inside a single character's folded form begins or ends mid-character, so it
+    /// does not stand at all.
+    fn standing(&self, normalized: &str, lowered: &str) -> (Spans, Spans) {
         let Some(phrases) = &self.phrases else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
-        phrases
-            .find_overlapping_iter(text)
-            .filter(|hit| stands_alone(text, hit.start(), hit.end()))
+        let mut found: Spans = phrases
+            .find_overlapping_iter(lowered)
+            .filter(|hit| stands_alone(lowered, hit.start(), hit.end()))
             .map(|hit| (hit.start(), hit.end()))
-            .collect()
+            .collect();
+        if normalized.is_ascii() {
+            return (found.clone(), found);
+        }
+        let mut in_text = Vec::new();
+        found.retain(|&span| match in_normalized(normalized, span) {
+            Some((start, end)) if stands_alone(normalized, start, end) => {
+                in_text.push((start, end));
+                true
+            }
+            _ => false,
+        });
+        (found, in_text)
     }
 }
+
+/// Byte spans of one text.
+type Spans = Vec<(usize, usize)>;
 
 /// What one scan has found so far.
 struct Hits<'a> {
@@ -269,32 +289,27 @@ fn stands_alone(text: &str, start: usize, end: usize) -> bool {
     clear_before && clear_after
 }
 
-/// Spans of `fold(normalized)` as spans of `normalized` itself.
+/// A span of `fold(normalized)` as the span of `normalized` it was folded from, or
+/// `None` where either edge falls inside one character's folded form.
 ///
 /// Folding maps each character on its own, so the two texts walk in step a character
-/// at a time. Where a character folds to several, a span edge falling inside its folded
-/// form is moved inward — the span loses that character rather than gaining it — so an
-/// exemption is never wider than the phrase that was found.
-fn in_normalized(normalized: &str, spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
-    if normalized.is_ascii() {
-        return spans.to_vec();
-    }
-    // Each character's start and end, in the folded text and in `normalized`.
-    let mut steps: Vec<(usize, usize, usize, usize)> = Vec::new();
+/// at a time.
+fn in_normalized(normalized: &str, (ps, pe): (usize, usize)) -> Option<(usize, usize)> {
+    let mut start = None;
     let mut at = 0;
-    for (start, c) in normalized.char_indices() {
-        let width: usize = c.to_lowercase().map(char::len_utf8).sum();
-        steps.push((at, at + width, start, start + c.len_utf8()));
-        at += width;
+    for (from, c) in normalized.char_indices() {
+        if at == ps {
+            start = Some(from);
+        }
+        at += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if at == pe {
+            return start.map(|start| (start, from + c.len_utf8()));
+        }
+        if at > pe {
+            return None;
+        }
     }
-    spans
-        .iter()
-        .filter_map(|&(ps, pe)| {
-            let start = steps.iter().find(|s| s.0 >= ps)?.2;
-            let end = steps.iter().rev().find(|s| s.1 <= pe)?.3;
-            (start < end).then_some((start, end))
-        })
-        .collect()
+    None
 }
 
 /// Whether a hit at `start..end` of `text` is one `mode` accepts.

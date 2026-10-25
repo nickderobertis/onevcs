@@ -5410,7 +5410,11 @@ case in the same text the term hit was found in — on the case-sensitive path t
 spans located in that text. A phrase occurrence counts only where it **stands on its
 own**: the character before it is none of a word character, `-`, or a `.` whose own
 preceding character is a word character; the character after it is none of a word
-character, `-`, or a `.` followed by a word character. A term hit `[s, e)` is exempt only
+character, `-`, or a `.` followed by a word character. Both are read in the text the term
+hit was found in, so a letter there keeps the phrase from standing even where folding
+makes it longer or leaves a non-word remainder (`İ` folds to `i` and a combining dot):
+with the phrase `rig-zorv` and a case-sensitive term `Zorv`, `İrig-Zorv` is still found,
+and with the phrase `zorv-rig`, so is `Zorv-rigİ`. A term hit `[s, e)` is exempt only
 where a standing phrase occurrence `[ps, pe)` has `ps <= s` and `e <= pe`, and a rule is
 found in a text where at least one of its accepted hits is not exempt — under every
 `TermMode` alike. With the phrase `box-ab` and a whole-word term `ab`, the term is exempt
