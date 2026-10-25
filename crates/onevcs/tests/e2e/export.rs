@@ -894,3 +894,52 @@ fn the_private_history_below_the_branch_is_neither_screened_nor_copied() {
     assert_neutral(&everything);
     assert!(!everything.contains("INTERNALS"), "{everything}");
 }
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] one export journey beside
+// the others in this module, on the onevcs-e2e edge they all share; what reruns that tier
+// is its `e2eInputs` in `nx.json`, which no test in it declares or can narrow.
+#[test]
+fn an_export_carrying_a_host_public_phrase_is_written_and_one_carrying_the_bare_term_is_not() {
+    let host = Boundary::new(LOCAL);
+    // The private source declares a short package name that a host's machine name
+    // carries after a hyphen.
+    let source = host.source(&[("Cargo.toml", "[package]\nname = \"zorv\"\n")]);
+    source.branch(
+        &host.world,
+        "machine-notes",
+        &[("examples/hosts.txt", Some("verified on rig-zorv\n"))],
+        "docs: add host notes",
+    );
+    let before = host.origin_refs();
+
+    // With no phrase file, the machine name carries the term.
+    let output = host.export("machine-notes", "examples", "fixtures", "host-notes", &[]);
+    refused(&host, &output, "host-notes", &before, "no phrase file");
+
+    std::fs::write(
+        host.world.home().join("public-phrases.yml"),
+        "version: 1\nphrases:\n  - \"rig-zorv\"\n",
+    )
+    .expect("the phrase file");
+    let output = host.export("machine-notes", "examples", "fixtures", "host-notes", &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(host.has_branch("host-notes"));
+    let written = host
+        .world
+        .git(&host.public, &["show", "host-notes:fixtures/hosts.txt"]);
+    assert_eq!(written.trim_end(), "verified on rig-zorv");
+
+    // The phrase exempts nothing else: the bare term is refused, leaving no branch.
+    source.branch(
+        &host.world,
+        "term-notes",
+        &[("examples/hosts.txt", Some("built for zorv\n"))],
+        "docs: add host notes",
+    );
+    let output = host.export("term-notes", "examples", "fixtures", "term-notes", &[]);
+    refused(&host, &output, "term-notes", &before, "the bare term");
+}

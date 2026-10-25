@@ -2358,3 +2358,237 @@ fn a_git_host_that_refuses_a_clone_is_a_stated_gap_by_kind() {
         "each run states the private clone it could not make"
     );
 }
+
+/// The host's public phrase file, where the audit reads it: the onevcs home.
+fn phrase_file(sandbox: &Sandbox) -> PathBuf {
+    sandbox.path("home/.onevcs/public-phrases.yml")
+}
+
+#[test]
+fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_never_found() {
+    let sandbox = Sandbox::new();
+    let (mut world, _) = world(&sandbox);
+    // A machine whose name carries the private repository's bare name after a hyphen,
+    // named once on every surface the audit reads — a file, a commit message, an
+    // author, a path two commits touch and its directory, a branch, a tag's message
+    // an issue and a board —
+    // beside one occurrence no phrase covers.
+    let work = sandbox.path("work").join(OWNER).join("foxtrot");
+    sandbox.write(&work, "hosts/rig-quietharbor/notes.md", "notes\n");
+    sandbox.git(&work, &["add", "-A"]);
+    sandbox.git(
+        &work,
+        &[
+            "commit",
+            "-q",
+            "--author",
+            "rig-quietharbor <ops@example.test>",
+            "-m",
+            "Add host notes",
+        ],
+    );
+    let authored = sandbox.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    sandbox.write(&work, "hosts/rig-quietharbor/notes.md", "more notes\n");
+    sandbox.write(
+        &work,
+        "hosts.md",
+        "verified on rig-quietharbor\nand on rig-quietharbor-2\n",
+    );
+    sandbox.git(&work, &["add", "-A"]);
+    sandbox.git(
+        &work,
+        &["commit", "-q", "-m", "Verified on rig-quietharbor"],
+    );
+    sandbox.git(&work, &["branch", "rig-quietharbor"]);
+    sandbox.git(
+        &work,
+        &["tag", "-a", "v1", "-m", "Tagged on rig-quietharbor"],
+    );
+    let bare = sandbox.path("remotes").join(OWNER).join("foxtrot.git");
+    sandbox.git(
+        &work,
+        &[
+            "push",
+            "-q",
+            &bare.display().to_string(),
+            "main",
+            "rig-quietharbor",
+            "v1",
+        ],
+    );
+    let noted = sandbox.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    let tag = sandbox.git(&work, &["rev-parse", "v1"]).trim().to_owned();
+    let foxtrot = world
+        .repos
+        .iter_mut()
+        .find(|r| r.name == "foxtrot")
+        .expect("foxtrot");
+    foxtrot.forbid_issues = false;
+    foxtrot.issues = vec![Item {
+        number: 9,
+        title: "Host".into(),
+        body: Text::new("seen on rig-quietharbor"),
+        ..Item::default()
+    }];
+    // A board the host names by number alone, and a draft on it the host names not at
+    // all.
+    let board = world
+        .boards
+        .iter_mut()
+        .find(|b| b.number == 3)
+        .expect("the follow-ups board");
+    board.title = "Follow-ups from rig-quietharbor".into();
+    board.items[0].content = Content::Draft("Tidy".into(), "tidy rig-quietharbor".into());
+    std::fs::write(
+        phrase_file(&sandbox),
+        "version: 1\nphrases:\n  - \"rig-quietharbor\"\n",
+    )
+    .expect("the phrase file");
+
+    let host = Host::start(world);
+    let out = sandbox.run(
+        &host,
+        &[
+            "--allow",
+            "sample-owner/foxtrot",
+            "--board",
+            "sample-owner/3",
+            "--projects-token-env",
+            "BOARD_TOKEN",
+            "--manifest-out",
+            "coverage.md",
+        ],
+        &[("GH_TOKEN", TOKEN), ("BOARD_TOKEN", PROJECTS_TOKEN)],
+    );
+    assert!(out.status.success(), "{}", text(&out));
+    assert_no_private("stdout and stderr", &text(&out));
+
+    // The public manifest says how many, and nothing about where or which phrase.
+    let manifest = read_manifest(&sandbox, "coverage.md");
+    assert!(
+        manifest.contains("Occurrences exempted by host public phrases: 10\n"),
+        "{manifest}"
+    );
+    assert_eq!(
+        manifest
+            .lines()
+            .filter(|line| line.contains("public phrases"))
+            .count(),
+        1,
+        "exactly one line: {manifest}"
+    );
+    let run = sandbox.run_dir();
+    let measurements = std::fs::read_to_string(run.join("measurements.json")).expect("measured");
+    assert_no_private("measurements.json", &measurements);
+
+    // An exempted occurrence is no finding; the one beside it, outside the phrase, is.
+    let files = rows(&run, "findings-current-files.jsonl");
+    let on_hosts: Vec<&Value> = files.iter().filter(|r| r["path"] == "hosts.md").collect();
+    assert_eq!(on_hosts.len(), 1, "{on_hosts:?}");
+    assert_eq!(on_hosts[0]["term"], "quietharbor");
+    assert_eq!(
+        on_hosts[0]["line"], 2,
+        "the exempt first line is not the hit"
+    );
+    let history = rows(&run, "findings-history.jsonl");
+    assert!(
+        !history
+            .iter()
+            .any(|r| r["commit"] == noted.as_str() && r["location"] == "message"),
+        "an exempted commit message is no finding"
+    );
+
+    // The vault's report says where each exempted occurrence is.
+    let report = std::fs::read_to_string(run.join("report.md")).expect("the report");
+    let exempted = report
+        .split("## Exempted by host public phrases")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("the exempted section");
+    assert!(
+        exempted.contains(&format!(
+            "| sample-owner/foxtrot | message | `{noted}` | 1 |"
+        )),
+        "{exempted}"
+    );
+    let blob = sandbox.git(&work, &["rev-parse", "HEAD:hosts.md"]);
+    let at =
+        |location: &str, at: &str| format!("| sample-owner/foxtrot | {location} | `{at}` | 1 |");
+    for row in [
+        at("blob", blob.trim()),
+        at("identity", &authored),
+        // Two commits touch the path, and it is one exempted occurrence; the directory
+        // holding it is a path of its own.
+        at("path", "hosts/rig-quietharbor/notes.md"),
+        at("path", "hosts/rig-quietharbor"),
+        at("ref", "refs/heads/rig-quietharbor"),
+        at("tag", &tag),
+    ] {
+        assert!(exempted.contains(&row), "{row}: {exempted}");
+    }
+    let items: Vec<&str> = exempted
+        .lines()
+        .filter(|line| line.starts_with("| sample-owner/foxtrot | issue current | `"))
+        .collect();
+    assert_eq!(items.len(), 1, "{exempted}");
+    assert!(items[0].ends_with(" | 1 |"), "{exempted}");
+    for row in [
+        "| board:sample-owner/3 | board current | `#3` | 1 |",
+        "| board:sample-owner/3 | draft-item current | — | 1 |",
+    ] {
+        assert!(exempted.contains(row), "{row}: {exempted}");
+    }
+    assert_eq!(
+        exempted
+            .lines()
+            .filter(|line| line.starts_with("| sample-owner/") || line.starts_with("| board:"))
+            .count(),
+        10,
+        "{exempted}"
+    );
+}
+
+#[test]
+fn a_host_public_phrase_file_the_audit_cannot_read_exactly_stops_the_run_before_any_read() {
+    for (why, contents) in [
+        (
+            "a later version",
+            "version: 2\nphrases:\n  - \"rig-quietharbor\"\n",
+        ),
+        (
+            "an unknown key",
+            "version: 1\nphrases: [\"rig-quietharbor\"]\nhosts: 1\n",
+        ),
+        ("an empty phrase", "version: 1\nphrases: [\"\"]\n"),
+        (
+            "YAML that does not parse",
+            "version: 1\nphrases: [\"rig-quietharbor\"\n",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        let (world, _) = world(&sandbox);
+        std::fs::write(phrase_file(&sandbox), contents).expect("the phrase file");
+        let host = Host::start(world);
+        let out = sandbox.run(
+            &host,
+            &["--manifest-out", "coverage.md"],
+            &[("GH_TOKEN", TOKEN)],
+        );
+        assert_refused(&out, 2, "public-phrases.yml is refused");
+        assert!(!text(&out).contains("rig-"), "{why}: {}", text(&out));
+        assert!(host.requests().is_empty(), "{why}: nothing was read");
+        assert!(!sandbox.vault_root().exists(), "{why}: no vault was opened");
+        assert!(
+            !sandbox.path("checkout/coverage.md").exists(),
+            "{why}: no manifest was written"
+        );
+    }
+    // A directory where the file belongs is refused too.
+    let sandbox = Sandbox::new();
+    let (world, _) = world(&sandbox);
+    std::fs::create_dir(phrase_file(&sandbox)).expect("a directory at the path");
+    let host = Host::start(world);
+    let out = sandbox.run(&host, &[], &[("GH_TOKEN", TOKEN)]);
+    assert_refused(&out, 2, "it is not a regular file");
+    assert!(host.requests().is_empty(), "nothing was read");
+}

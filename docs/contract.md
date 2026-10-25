@@ -5381,6 +5381,60 @@ every default-ignorable code point removed, compared in lower case unless a rule
 case-sensitive, and a word character is a Unicode letter or digit or `_`. The publication
 check, `boundary check`, export and the exposure audit all match through it.
 
+**Host public phrases** (amended). A host may list exact phrases it declares public even
+though a private repository's term occurs inside them, in `$ONEVCS_HOME/public-phrases.yml`
+— under the same onevcs home as `rules.yml`, `releases.yml` and `branches.yml`. No onevcs
+command writes it; it is host state a person edits:
+
+```yaml
+version: 1
+phrases:
+  - "box-ab"
+```
+
+`version` is required and only `1` is read; `phrases` is a required list of strings. An
+unknown key, a phrase empty once normalized, YAML that does not parse, a file that cannot
+be read, and a path that is not a regular file are **refused**; phrases that are one once
+normalized and folded are kept once, the first as written. A **missing** file means no
+phrases, and every check behaves exactly as it did before the file existed. The file is
+read only by a check that has at least one term rule to match — an empty term scope reads
+nothing, the phrase file included — and a refused or unreadable file makes that check
+**unavailable** with the reason `public-phrases`: `boundary check` exits 2 with
+`{"verdict":"unavailable","reason":"public-phrases"}`, and a publication says `the public
+boundary check is unavailable: public-phrases` and makes no remote mutation. Its private
+evidence's `detail` says what was wrong with the file, never a phrase's text.
+
+The exemption is the one matcher's, so every check honours it alike. A phrase is
+normalized and folded exactly as a term that is not case-sensitive, and found without
+case in the same text the term hit was found in — on the case-sensitive path too, its
+spans located in that text. A phrase occurrence counts only where it **stands on its
+own**: the character before it is none of a word character, `-`, or a `.` whose own
+preceding character is a word character; the character after it is none of a word
+character, `-`, or a `.` followed by a word character. Both are read in the text the term
+hit was found in, so a letter there keeps the phrase from standing even where folding
+makes it longer or leaves a non-word remainder (`İ` folds to `i` and a combining dot):
+with the phrase `rig-zorv` and a case-sensitive term `Zorv`, `İrig-Zorv` is still found,
+and with the phrase `zorv-rig`, so is `Zorv-rigİ`. A term hit `[s, e)` is exempt only
+where a standing phrase occurrence `[ps, pe)` has `ps <= s` and `e <= pe`, and a rule is
+found in a text where at least one of its accepted hits is not exempt — under every
+`TermMode` alike. With the phrase `box-ab` and a whole-word term `ab`, the term is exempt
+in `ran on box-ab`, `box-ab.`, `(box-ab)`, `BOX-AB`, and `box-ab` written with a
+zero-width space inside it; and still found in `box-ab-2`, `mybox-ab`, `box-ab.lan`,
+`ab`, `other-ab`, `box-ab-ab` (the second `ab` lies outside the phrase) and
+`box-ab and ab`. A form joined to the phrase by a word character, such as `box-ab_x`, is
+never exempted; under a whole-word term it carries no hit at all, so it gets the same
+result with the phrase file as without it. The private-term derivation, `private-terms.toml`, the generic-word list,
+term scopes, the rules file and the registry are unchanged by it.
+
+On the library surface, `public_phrases()` answers `PublicPhrases::default()` for a
+missing file and `Error::Invalid` — naming the file and the problem, never a phrase — for
+a refused or unreadable one; `PublicPhrases::phrases` is the phrases as written, in file
+order, deduplicated. `TermMatcher::with_phrases` compiles a matcher with them,
+`TermMatcher::new` keeps meaning no phrases, and `TermMatcher::exempted` counts the term
+hits in a text a phrase exempted. `check_public_output`,
+`check_public_output_with_evidence`, `repository_boundary` and every command's flags keep
+their signatures. A consumer keying a cache of boundary passes reads `public_phrases()`.
+
 **Term scope.** By the user's ruling, which private identities a check derives terms from
 is caller-supplied scope, and no check lists an account's repositories. `registry` (the
 default) derives from every registered identity whose effective visibility is private —
@@ -5482,9 +5536,11 @@ refreshed, recorded, and nothing else: no term, no echo of the identity, no prov
 from `--destination`, and must agree where both are given), prints its verdict, says the
 neutral reason on stderr, and exits 0 to pass, 1 to refuse and 2 when unavailable.
 **`boundary schema --json`** prints the versioned JSON schemas of both, generated from the
-Rust definitions, with `schema_version` 2; `tests/golden/boundary-schema-v2.json` is the
-checked-in copy. Version 2 adds the `host-visibility` reason to the unavailable verdict's
-`Unavailability`, and nothing else; a reader pinned to version 1 must re-pin to read it.
+Rust definitions, with `schema_version` 3; `tests/golden/boundary-schema-v3.json` is the
+checked-in copy. Version 2 added the `host-visibility` reason to the unavailable verdict's
+`Unavailability`, and version 3 adds the `public-phrases` reason to it, and nothing else; a
+reader pinned to an earlier version reads the new reason as no verdict, which stays closed,
+and must re-pin to read it.
 
 ```
 onevcs boundary inspect --input - [--json]
@@ -5524,7 +5580,7 @@ pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: 
 pub enum TermScope { Registry, Identities(Vec<String>) }    // Default: Registry; wire: absent | [identity]
 pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }
 pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }
-pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility }   // serde: kebab-case
+pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases }   // serde: kebab-case
 pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }   // tag: verdict
 pub enum Evidence { Term { surface: Surface, at: String, rule: TermRule, identity: String }, Unavailable { reason: Unavailability, identity: Option<String>, detail: String } }
 pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }
@@ -5536,11 +5592,16 @@ impl TermSource { pub fn from_committed(checkout: &Path, identity: &str) -> Resu
 pub struct PublicNames { pub repositories: BTreeSet<String>, pub owners: BTreeSet<String> }
 pub struct TermMatcher;
 impl TermMatcher { pub fn new(rules: Vec<TermRule>) -> Result<TermMatcher>; pub fn rules(&self) -> &[TermRule]; pub fn find(&self, text: &str) -> Vec<usize>; }
+impl TermMatcher { pub fn with_phrases(rules: Vec<TermRule>, phrases: &PublicPhrases) -> Result<TermMatcher>; pub fn exempted(&self, text: &str) -> usize; }
+pub struct PublicPhrases { pub phrases: Vec<String> }       // Default; serde
+pub const PUBLIC_PHRASES_FILE: &str = "public-phrases.yml";
+pub const PUBLIC_PHRASES_VERSION: u32 = 1;
+pub fn public_phrases() -> Result<PublicPhrases>;
 pub struct InspectRequest { pub repository: String }
 pub struct InspectAnswer { pub visibility: Visibility }
 pub const PRIVATE_TERMS_FILE: &str = "private-terms.toml";
 pub const PRIVATE_TERMS_VERSION: u32 = 1;
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;
 pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;
 pub fn boundary_schema() -> serde_json::Value;
 pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;
@@ -5571,7 +5632,13 @@ a read-only command that surveys what public repositories and boards already car
 set of private identities, matching through `TermMatcher` and deriving through
 `derive_terms` with no term-matching code of its own, and writing its findings only into a
 mode-0700 directory outside every checkout. Nothing it commits names a real private
-repository.
+repository. It builds its matcher with `TermMatcher::with_phrases` over `public_phrases()`;
+a refused or unreadable phrase file stops the run before any surface is scanned, in its
+`exposure-audit:` / `ACTION:` form, naming the file and nothing private. An exempted
+occurrence is not a finding: the coverage manifest gains exactly one line,
+`Occurrences exempted by host public phrases: <n>`, and the vault's full-findings report a
+section, `## Exempted by host public phrases`, listing where each exempted occurrence is.
+No public output carries a phrase.
 
 **Residual limits, stated plainly.** Paraphrase and abbreviation are invisible to any term
 list. A scoped check is blind to every private identity outside its scope, so a worker that

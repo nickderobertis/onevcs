@@ -10,7 +10,9 @@
 
 use std::collections::BTreeMap;
 
-use onevcs::boundary::{derive_terms, PublicNames, TermMatcher, TermMode, TermRule, TermSource};
+use onevcs::boundary::{
+    derive_terms, PublicNames, PublicPhrases, TermMatcher, TermMode, TermRule, TermSource,
+};
 use serde::Serialize;
 
 /// What kind of term a rule is, from the source it was derived from.
@@ -95,11 +97,13 @@ pub struct Hit {
 const SNIPPET: usize = 120;
 
 impl Terms {
-    /// Every source's rules, each derived on its own, or why the matcher could not
-    /// be compiled. A refused declaration is dropped and listed, never fatal.
+    /// Every source's rules, each derived on its own and compiled with the host's
+    /// public `phrases`, or why the matcher could not be compiled. A refused
+    /// declaration is dropped and listed, never fatal.
     pub fn build(
         sources: &[TermSource],
         public: &PublicNames,
+        phrases: &PublicPhrases,
     ) -> (Result<Terms, String>, Vec<Refused>) {
         let mut by_rule: BTreeMap<TermRule, (Class, Vec<String>)> = BTreeMap::new();
         let mut refused = Vec::new();
@@ -128,7 +132,7 @@ impl Terms {
         }
         let (rules, origins): (Vec<TermRule>, Vec<(Class, Vec<String>)>) =
             by_rule.into_iter().unzip();
-        let built = TermMatcher::new(rules)
+        let built = TermMatcher::with_phrases(rules, phrases)
             .map(|matcher| Terms { matcher, origins })
             .map_err(|error| error.to_string());
         (built, refused)
@@ -171,6 +175,12 @@ impl Terms {
                 identities: &self.origins[index].1,
             })
             .collect()
+    }
+
+    /// How many occurrences of a term in `text` a host public phrase exempted: none of
+    /// them is a [`Hit`], and the matcher alone decides which they are.
+    pub fn exempted(&self, text: &str) -> u64 {
+        self.matcher.exempted(text) as u64
     }
 
     /// Every rule `text` carries, each with the first line it is on and a snippet
@@ -288,6 +298,7 @@ mod tests {
                 source("sample-owner", "openwidget", &[]),
             ],
             &public(),
+            &PublicPhrases::default(),
         );
         let terms = terms.expect("a small set compiles");
         assert!(refused.is_empty());
@@ -326,7 +337,7 @@ mod tests {
                 action: ExceptionAction::Drop,
             }],
         });
-        let (terms, refused) = Terms::build(&[quiet], &public());
+        let (terms, refused) = Terms::build(&[quiet], &public(), &PublicPhrases::default());
         let terms = terms.expect("compiles");
         assert_eq!(refused.len(), 1);
         assert_eq!(refused[0].identity, "github.com/hiddenco/quietharbor");
@@ -335,7 +346,11 @@ mod tests {
 
     #[test]
     fn a_hit_is_located_on_its_line_and_windowed_on_a_long_one() {
-        let (terms, _) = Terms::build(&[source("hiddenco", "quietharbor", &[])], &public());
+        let (terms, _) = Terms::build(
+            &[source("hiddenco", "quietharbor", &[])],
+            &public(),
+            &PublicPhrases::default(),
+        );
         let terms = terms.expect("compiles");
         let long = format!("{} quietharbor {}\n", "x ".repeat(200), "y ".repeat(200));
         let text = format!("first\nsecond\n{long}");

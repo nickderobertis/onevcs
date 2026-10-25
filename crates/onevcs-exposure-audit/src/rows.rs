@@ -168,10 +168,102 @@ pub struct ItemRow<'a> {
 
 /// How often each term class hits, and how often a hit stands alone — no
 /// `owner/name` hit in the same text — which is what a false positive looks like
-/// from outside.
+/// from outside; and where a host public phrase exempted an occurrence instead.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Survey {
     pub by_class: BTreeMap<&'static str, ClassTally>,
+    /// Every text a host public phrase exempted an occurrence in. Private: it is
+    /// where a phrase is, and a phrase carries a term.
+    pub exempted: Vec<Exempted>,
+}
+
+/// Where host public phrases exempted occurrences of a term, and how many.
+#[derive(Clone, Debug, Serialize)]
+pub struct Exempted {
+    // llmlint: ignore[invalid_states_unrepresentable] the container is the label every
+    // row of this crate carries (`ItemRow::container`, `HistoryRow::repository`), formed
+    // once per repository or board by the run loop from its `RepoId` or `BoardId` and
+    // handed to every scan site as text; a second, typed spelling here would be the one
+    // row that could disagree with the findings beside it.
+    /// `owner/name`, or `board:OWNER/NUMBER`.
+    pub container: String,
+    /// Which text it was, with the identifier that names it.
+    pub location: ExemptLocation,
+    pub occurrences: u64,
+}
+
+/// The text an exempted occurrence was in, each kind carrying the identifier the
+/// findings rows name that kind of text by.
+// llmlint: ignore[invalid_states_unrepresentable] each identifier is what git or the host
+// printed for that text — an object id off `git log` or `cat-file`, a ref or path git
+// listed, an item URL from the host's own answer — copied through to the vault exactly as
+// `HistoryRow::commit`, `FileRow::path` and `ItemRow::url` carry the same values beside
+// it; a newtype would re-validate text git and the host wrote, for a report nothing parses.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExemptLocation {
+    /// A blob's content, by the blob's id.
+    Blob(String),
+    /// A path some tree held.
+    Path(String),
+    /// A commit's message, by the commit's id.
+    Message(String),
+    /// A commit's author or committer identity, by the commit's id.
+    Identity(String),
+    /// A ref's name.
+    Ref(String),
+    /// An annotated tag's message, by the tag's id.
+    Tag(String),
+    /// An issue, change request, comment, review or board item, as it reads now or
+    /// as a revision the host still shows, by its URL or number where the host gave one.
+    Item {
+        kind: ItemKind,
+        persistence: Persistence,
+        url: Option<String>,
+        number: Option<u64>,
+    },
+}
+
+impl ExemptLocation {
+    /// A commit's text at `location`, which is its message or one of its identities.
+    pub fn of_commit(location: HistoryLocation, commit: &str) -> ExemptLocation {
+        match location {
+            HistoryLocation::Message => ExemptLocation::Message(commit.to_owned()),
+            _ => ExemptLocation::Identity(commit.to_owned()),
+        }
+    }
+
+    /// How the private report names it: what kind of text, and which — `None` for an
+    /// item the host gave neither a URL nor a number, such as a board's field value or
+    /// a draft.
+    pub fn label(&self) -> (String, Option<String>) {
+        let history = |location: HistoryLocation, at: &str| (word(&location), Some(at.to_owned()));
+        match self {
+            ExemptLocation::Blob(at) => history(HistoryLocation::Blob, at),
+            ExemptLocation::Path(at) => history(HistoryLocation::Path, at),
+            ExemptLocation::Message(at) => history(HistoryLocation::Message, at),
+            ExemptLocation::Identity(at) => history(HistoryLocation::Identity, at),
+            ExemptLocation::Ref(at) => history(HistoryLocation::Ref, at),
+            ExemptLocation::Tag(at) => history(HistoryLocation::Tag, at),
+            ExemptLocation::Item {
+                kind,
+                persistence,
+                url,
+                number,
+            } => (
+                format!("{} {}", word(kind), word(persistence)),
+                url.clone().or_else(|| number.map(|n| format!("#{n}"))),
+            ),
+        }
+    }
+}
+
+/// A row field's wire word, as the findings files spell it.
+fn word(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -215,6 +307,31 @@ impl Survey {
         }
     }
 
+    /// Record what a host public phrase exempted in `text`, found in `container` at
+    /// what `location` names. The matcher decides; this only keeps where, and names
+    /// it only where something was exempted.
+    pub fn exempt(
+        &mut self,
+        terms: &Terms,
+        text: &str,
+        container: &str,
+        location: impl FnOnce() -> ExemptLocation,
+    ) {
+        let occurrences = terms.exempted(text);
+        if occurrences > 0 {
+            self.exempted.push(Exempted {
+                container: container.to_owned(),
+                location: location(),
+                occurrences,
+            });
+        }
+    }
+
+    /// Every occurrence a host public phrase exempted.
+    pub fn exempted_total(&self) -> u64 {
+        self.exempted.iter().map(|e| e.occurrences).sum()
+    }
+
     /// What the public measurements may say: a whole percent per class where
     /// [`ClassTally::public_percent`] allows one, and nothing else.
     pub fn public(&self) -> serde_json::Value {
@@ -248,7 +365,11 @@ mod tests {
             packages: BTreeSet::new(),
             declaration: None,
         };
-        let (terms, _) = Terms::build(&[source], &PublicNames::default());
+        let (terms, _) = Terms::build(
+            &[source],
+            &PublicNames::default(),
+            &onevcs::boundary::PublicPhrases::default(),
+        );
         let terms = terms.expect("a small set compiles");
         let mut survey = Survey::default();
         for text in ["quietharbor alone", "hiddenco/quietharbor"] {

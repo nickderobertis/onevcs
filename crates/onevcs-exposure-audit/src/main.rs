@@ -37,7 +37,7 @@ pub mod exit {
 /// What each exit status means, shown by `--help`.
 const EXIT_STATUS: &str = "Exit status:
   0  completed; a surface that could not be read is a coverage status in the output, not a failure
-  2  an input was refused: a flag, the registry document, or a vault root inside a git checkout (symlinks followed) or one that cannot be resolved
+  2  an input was refused: a flag, the registry document, the host's public phrase file, or a vault root inside a git checkout (symlinks followed) or one that cannot be resolved
   3  the run could not proceed: no credential, an unreadable owner listing, terms that could not be compiled, or a vault that refused its files";
 
 #[derive(Parser)]

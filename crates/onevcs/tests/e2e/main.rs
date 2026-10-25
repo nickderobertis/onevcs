@@ -71,6 +71,14 @@ mod export;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod publication_boundary;
+// Unix only: the host's public phrases, through `boundary check` and publications over
+// the substituted `gh` and real bare origins. Its own header carries the reason in full.
+// These journeys join the existing onevcs-e2e edge beside `boundary`, `export` and
+// `publication_boundary`, whose subject they share; what reruns that tier is its
+// `e2eInputs` in `nx.json`, which no module in it declares or can narrow.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
+mod public_phrases;
 // The producer's own release declaration. It drives the binary and, for the half of
 // the promise a binary cannot show, the library beside it — see its own header.
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.

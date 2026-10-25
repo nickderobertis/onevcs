@@ -9401,8 +9401,9 @@ fn boundary_declarations() -> String {
 fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly_it() {
     use onevcs::boundary::{
         BoundaryInput, BoundaryVerdict, Evidence, ExceptionAction, InspectAnswer, InspectRequest,
-        Observation, PrivateTerms, PublicNames, RepositoryBoundary, Surface, TermException,
-        TermMatcher, TermMode, TermRule, TermScope, TermSource, Unavailability, Visibility,
+        Observation, PrivateTerms, PublicNames, PublicPhrases, RepositoryBoundary, Surface,
+        TermException, TermMatcher, TermMode, TermRule, TermScope, TermSource, Unavailability,
+        Visibility,
     };
     use onevcs::rules::DeclaredVisibility;
     use onevcs::{ExportRequest, Exported, RulesApplied, RulesApplyRequest};
@@ -9417,7 +9418,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub enum TermScope { Registry, Identities(Vec<String>) }",
         "pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }",
         "pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }",
-        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility }",
+        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases }",
         "pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }",
         "pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }",
         "pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }",
@@ -9432,6 +9433,11 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub struct Exported { pub branch: String, pub head: String }",
         "pub const EXPORT_SUBJECT: &str = \"Add generic example fixtures\";",
         "fn visibility(&self) -> Result<Visibility>",
+        "impl TermMatcher { pub fn with_phrases(rules: Vec<TermRule>, phrases: &PublicPhrases) -> Result<TermMatcher>; pub fn exempted(&self, text: &str) -> usize; }",
+        "pub struct PublicPhrases { pub phrases: Vec<String> }",
+        "pub const PUBLIC_PHRASES_FILE: &str = \"public-phrases.yml\";",
+        "pub const PUBLIC_PHRASES_VERSION: u32 = 1;",
+        "pub fn public_phrases() -> Result<PublicPhrases>;",
     ] {
         assert!(declared.contains(line), "the boundary amendment no longer declares: {line}");
     }
@@ -9558,8 +9564,102 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         .expect("serializes"),
         json!({"verdict": "unavailable", "reason": "host-visibility"})
     );
-    assert_eq!(onevcs::boundary::BOUNDARY_SCHEMA_VERSION, 2);
-    assert!(declared.contains("pub const BOUNDARY_SCHEMA_VERSION: u32 = 2;"));
+    assert_eq!(
+        serde_json::to_value(BoundaryVerdict::Unavailable {
+            reason: Unavailability::PublicPhrases
+        })
+        .expect("serializes"),
+        json!({"verdict": "unavailable", "reason": "public-phrases"})
+    );
+    assert_eq!(
+        BoundaryVerdict::Unavailable {
+            reason: Unavailability::PublicPhrases
+        }
+        .reason()
+        .as_deref(),
+        Some("the public boundary check is unavailable: public-phrases")
+    );
+    assert_eq!(onevcs::boundary::BOUNDARY_SCHEMA_VERSION, 3);
+    assert!(declared.contains("pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;"));
+
+    // The host's public phrases: the file, its version, its shape, and the matcher
+    // that honours them, at the declared signatures and re-exported beside
+    // `check_public_output`.
+    assert_eq!(onevcs::PUBLIC_PHRASES_FILE, "public-phrases.yml");
+    assert_eq!(onevcs::PUBLIC_PHRASES_VERSION, 1);
+    assert!(declared.contains(&format!(
+        "pub const PUBLIC_PHRASES_FILE: &str = \"{}\";",
+        onevcs::boundary::PUBLIC_PHRASES_FILE
+    )));
+    let _: fn() -> onevcs::Result<PublicPhrases> = onevcs::public_phrases;
+    let _: fn(Vec<TermRule>, &PublicPhrases) -> onevcs::Result<TermMatcher> =
+        onevcs::TermMatcher::with_phrases;
+    let _: fn(&TermMatcher, &str) -> usize = TermMatcher::exempted;
+    let phrases = PublicPhrases {
+        phrases: vec!["box-ab".to_owned()],
+    };
+    assert_eq!(PublicPhrases::default().phrases, Vec::<String>::new());
+    assert_eq!(
+        serde_json::to_value(&phrases).expect("serializes"),
+        json!({"phrases": ["box-ab"]})
+    );
+    let whole_word = TermRule {
+        term: "ab".to_owned(),
+        mode: TermMode::WholeWord,
+        case_sensitive: false,
+    };
+    let exempting =
+        TermMatcher::with_phrases(vec![whole_word.clone()], &phrases).expect("compiles");
+    let plain = TermMatcher::new(vec![whole_word]).expect("compiles");
+    // The amendment's own example list, both halves of it.
+    for exempt in [
+        "ran on box-ab",
+        "box-ab.",
+        "(box-ab)",
+        "BOX-AB",
+        "box-\u{200b}ab",
+    ] {
+        assert!(exempting.find(exempt).is_empty(), "{exempt:?} is exempt");
+        assert_eq!(exempting.exempted(exempt), 1, "{exempt:?}");
+        assert_eq!(plain.find(exempt), vec![0], "{exempt:?} carries the term");
+        assert_eq!(plain.exempted(exempt), 0);
+    }
+    for found in [
+        "box-ab-2",
+        "mybox-ab",
+        "box-ab.lan",
+        "ab",
+        "other-ab",
+        "box-ab-ab",
+        "box-ab and ab",
+    ] {
+        assert_eq!(exempting.find(found), vec![0], "{found:?} is still found");
+    }
+    assert_eq!(exempting.exempted("box-ab and ab"), 1);
+    // Joined by a word character, it is never exempted, and carries no whole-word hit.
+    assert!(exempting.find("box-ab_x").is_empty());
+    assert_eq!(exempting.exempted("box-ab_x"), 0);
+    // A phrase empty once normalized is refused, naming no phrase.
+    let empty = PublicPhrases {
+        phrases: vec!["\u{200b}".to_owned()],
+    };
+    assert!(TermMatcher::with_phrases(Vec::new(), &empty).is_err());
+    let amendment = regions().0;
+    for spelled in [
+        "`$ONEVCS_HOME/public-phrases.yml`",
+        "`{\"verdict\":\"unavailable\",\"reason\":\"public-phrases\"}`",
+        "`Occurrences exempted by host public phrases: <n>`",
+        "`## Exempted by host public phrases`",
+        "`tests/golden/boundary-schema-v3.json`",
+    ] {
+        assert!(
+            amendment.contains(spelled),
+            "the amendment no longer states {spelled}"
+        );
+    }
+    let fixture: serde_json::Value =
+        yaml(&amendment_yaml_spelling("phrases:")).expect("the phrase file fixture reads");
+    assert_eq!(fixture, json!({"version": 1, "phrases": ["box-ab"]}));
     // The amendment's own input and verdict fixtures are ones this build reads.
     let fixture: BoundaryInput = serde_json::from_str(&amendment_block_declaring(
         "json",

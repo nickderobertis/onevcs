@@ -8825,3 +8825,189 @@ fn threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one
         "the other process's teardown ran once this thread's read ended: {ended:?}"
     );
 }
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] the library's boundary
+// journeys live in this module beside `the_boundary_operations_answer_...`, on the
+// onevcs-e2e edge they share; what reruns that tier is its `e2eInputs` in `nx.json`, which
+// no test in it declares or can narrow.
+#[test]
+fn the_hosts_public_phrases_are_read_by_the_library_and_exempt_through_the_one_matcher() {
+    use onevcs::boundary::{PublicNames, TermMatcher, TermSource};
+    use onevcs::{BoundaryInput, BoundaryVerdict, PublicPhrases, TermScope, Visibility};
+
+    let host = crate::boundary::Boundary::new(LOCAL);
+    let checkout = host.private(
+        "hiddenco/quietharbor",
+        &[("Cargo.toml", "[package]\nname = \"zorv\"\n")],
+    );
+    inhabit(&host.world);
+    let file = host.world.home().join(onevcs::PUBLIC_PHRASES_FILE);
+    let input = || BoundaryInput {
+        destination: Visibility::Public,
+        text: vec!["verified on rig-zorv".to_owned()],
+        paths: Vec::new(),
+        metadata: Vec::new(),
+        scope: TermScope::Registry,
+    };
+
+    // A missing file is no phrases, and the check is what it always was.
+    assert_eq!(
+        onevcs::public_phrases().expect("no file is no phrases"),
+        PublicPhrases::default()
+    );
+    assert!(matches!(
+        onevcs::check_public_output(input()).expect("checked"),
+        BoundaryVerdict::Refuse { .. }
+    ));
+
+    // The phrases as written, in file order, each kept once.
+    std::fs::write(
+        &file,
+        "version: 1\nphrases:\n  - \"rig-zorv\"\n  - \"bench-zorv\"\n  - \"RIG-ZORV\"\n",
+    )
+    .expect("the phrase file");
+    let phrases = onevcs::public_phrases().expect("the file reads");
+    assert_eq!(phrases.phrases, ["rig-zorv", "bench-zorv"]);
+    assert_eq!(
+        onevcs::check_public_output(input()).expect("checked"),
+        BoundaryVerdict::Pass
+    );
+
+    // The audit's route: a matcher compiled with the phrases, which counts what it
+    // exempted, beside one compiled without them.
+    let source = TermSource::from_committed(&checkout, "github.com/hiddenco/quietharbor")
+        .expect("the committed tree reads");
+    let rules =
+        onevcs::boundary::derive_terms(&[source], &PublicNames::default()).expect("derived");
+    let exempting = TermMatcher::with_phrases(rules.clone(), &phrases).expect("compiled");
+    let plain = TermMatcher::new(rules).expect("compiled");
+    let text = "rig-zorv, bench-zorv and zorv";
+    assert_eq!(exempting.exempted(text), 2);
+    assert_eq!(exempting.find(text), plain.find(text));
+    assert!(exempting.find("rig-zorv and bench-zorv").is_empty());
+    assert!(!plain.find("rig-zorv and bench-zorv").is_empty());
+    assert_eq!(plain.exempted(text), 0);
+
+    // A refused file is an error naming the file and the problem, never a phrase.
+    for (contents, problem) in [
+        (
+            "version: 1\nphrases: [\"rig-zorv\"]\nextra: 1\n",
+            "a key other than",
+        ),
+        ("version: 2\nphrases: [\"rig-zorv\"]\n", "version 2"),
+        (
+            "version: 1\nphrases: [\"rig-zorv\", \"\"]\n",
+            "phrase 2 is empty",
+        ),
+        ("version: 1\nphrases: [\"rig-zorv\"\n", "does not parse"),
+        ("phrases: [\"rig-zorv\"]\n", "no `version`"),
+        ("version: 1\n", "no `phrases`"),
+        ("- rig-zorv\n", "not a mapping"),
+        ("", "not a mapping"),
+        (
+            "version: one\nphrases: [\"rig-zorv\"]\n",
+            "not a whole number",
+        ),
+        ("version: 1\nphrases: rig-zorv\n", "`phrases` is not a list"),
+        (
+            "version: 1\nphrases: [\"rig-zorv\", 7]\n",
+            "phrase 2 is not a string",
+        ),
+        (
+            "version: 1\nphrases: [{rig-zorv: 1}]\n",
+            "phrase 1 is not a string",
+        ),
+    ] {
+        std::fs::write(&file, contents).expect("the phrase file");
+        let error = onevcs::public_phrases().expect_err(contents).to_string();
+        assert!(error.contains("public-phrases.yml"), "{error}");
+        assert!(error.contains(problem), "{problem}: {error}");
+        assert!(!error.contains("zorv"), "{error}");
+        assert_eq!(
+            onevcs::check_public_output(input()).expect("checked"),
+            BoundaryVerdict::Unavailable {
+                reason: onevcs::boundary::Unavailability::PublicPhrases
+            }
+        );
+    }
+    std::fs::remove_file(&file).expect("removed");
+    std::fs::create_dir(&file).expect("a directory at the path");
+    let error = onevcs::public_phrases()
+        .expect_err("a directory")
+        .to_string();
+    assert!(error.contains("not a regular file"), "{error}");
+}
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] in-process and git-free,
+// a matcher and nothing else, on the same onevcs-e2e edge; see the directive above.
+#[test]
+fn a_public_phrase_exempts_under_every_term_mode_and_never_beyond_what_it_spells() {
+    use onevcs::{PublicPhrases, TermMatcher, TermMode, TermRule};
+
+    let phrases = |listed: &[&str]| PublicPhrases {
+        phrases: listed.iter().map(|p| (*p).to_owned()).collect(),
+    };
+    let rule = |term: &str, mode: TermMode, case_sensitive: bool| TermRule {
+        term: term.to_owned(),
+        mode,
+        case_sensitive,
+    };
+
+    // A substring term is found inside a longer word, and a standing phrase covering
+    // it still exempts it there; outside the phrase it is found as ever.
+    let substring = TermMatcher::with_phrases(
+        vec![rule("zorv", TermMode::Substring, false)],
+        &phrases(&["rigzorvx"]),
+    )
+    .expect("compiled");
+    assert!(substring.find("ran on rigzorvx").is_empty());
+    assert_eq!(substring.exempted("ran on rigzorvx"), 1);
+    for found in [
+        "ran on rigzorvx2",
+        "myrigzorvx",
+        "zorvish",
+        "rigzorvx and zorvish",
+    ] {
+        assert_eq!(substring.find(found), vec![0], "{found:?}");
+    }
+
+    // An owner-name-only term is the qualified name standing alone; a phrase that
+    // spells it with its own surroundings exempts exactly that spelling.
+    let qualified = TermMatcher::with_phrases(
+        vec![rule("hiddenco/zorv", TermMode::OwnerNameOnly, false)],
+        &phrases(&["mirror:hiddenco/zorv"]),
+    )
+    .expect("compiled");
+    assert!(qualified
+        .find("pulled from mirror:hiddenco/zorv")
+        .is_empty());
+    assert_eq!(qualified.exempted("pulled from mirror:hiddenco/zorv"), 1);
+    for found in [
+        "see hiddenco/zorv",
+        // `.git` keeps the qualified name a hit and stops the phrase standing.
+        "mirror:hiddenco/zorv.git",
+        "xmirror:hiddenco/zorv",
+        "mirror:hiddenco/zorv and hiddenco/zorv.git",
+    ] {
+        assert_eq!(qualified.find(found), vec![0], "{found:?}");
+    }
+
+    // A phrase occurrence whose edge falls inside a character that folds to two is no
+    // occurrence at all, so it exempts nothing: `İ` folds to `i` and a combining dot,
+    // and the phrase `zi` ends between the two.
+    let expanded = TermMatcher::with_phrases(
+        vec![rule("Zİ", TermMode::WholeWord, true)],
+        &phrases(&["zi"]),
+    )
+    .expect("compiled");
+    assert_eq!(expanded.find("on Zİ"), vec![0]);
+    assert_eq!(expanded.exempted("on Zİ"), 0);
+    // …while a phrase spelling the whole character exempts it.
+    let whole = TermMatcher::with_phrases(
+        vec![rule("Zİ", TermMode::WholeWord, true)],
+        &phrases(&["zİ"]),
+    )
+    .expect("compiled");
+    assert!(whole.find("on Zİ").is_empty());
+    assert_eq!(whole.exempted("on Zİ"), 1);
+}

@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::matcher::Matcher;
 use super::{
-    derive, manifests, visibility, BoundaryVerdict, Evidence, PublicNames, Surface, TermRule,
-    TermScope, Unavailability, Visibility,
+    derive, manifests, phrases, visibility, BoundaryVerdict, Evidence, PublicNames, PublicPhrases,
+    Surface, TermRule, TermScope, Unavailability, Visibility,
 };
 use crate::{policy, store};
 
@@ -70,9 +70,16 @@ impl Derived {
         }
     }
 
-    /// The one matcher over these rules.
+    /// The one matcher over these rules, with the host's public phrases — which are
+    /// read only where there is a rule for them to exempt a hit of.
     pub fn matcher(&self) -> Result<Matcher, Failed> {
-        Matcher::new(self.rules.clone())
+        let phrases = if self.rules.is_empty() {
+            PublicPhrases::default()
+        } else {
+            phrases::load()
+                .map_err(|e| Failed::new(Unavailability::PublicPhrases, None, e.to_string()))?
+        };
+        Matcher::with_phrases(self.rules.clone(), &phrases.phrases)
             .map_err(|unbuildable| Failed::new(Unavailability::Matcher, None, unbuildable.0))
     }
 
