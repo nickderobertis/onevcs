@@ -1605,7 +1605,7 @@ every time a pass met a session's leftover worker.
 ## The public boundary is one check, and nothing is exempt from it
 
 `boundary.rs` holds the shapes the contract's public-boundary amendment fixes;
-`boundary/` holds the check. Eight things are easy to undo.
+`boundary/` holds the check. Nine things are easy to undo.
 
 - **One matcher.** Normalization (NFKC, default-ignorables removed, case folding), word
   boundaries and what each `TermMode` accepts live in `boundary/matcher.rs` and nowhere
@@ -1643,6 +1643,13 @@ every time a pass met a session's leftover worker.
   names through git's object store; reading a worktree file there is reading what a
   dirty tree happens to say. Anything it cannot read is `Unavailable`, which a write
   treats as a refusal.
+- **The host's public phrases narrow the check, so they are read strictly and only
+  where they could matter.** `$ONEVCS_HOME/public-phrases.yml` is the one host file
+  read with no leniency (`boundary/phrases.rs`): anything this build cannot read exactly
+  is `Unavailability::PublicPhrases`, never a shorter list, and only a missing file is
+  none. `scope::Derived::matcher` reads it only when there is a rule, so an empty scope
+  still reads nothing; and the exemption is judged inside `matcher.rs` on the very text
+  each hit was found in. A refusal and its evidence name the file, never a phrase.
 - **Registry version 7 is stamped by a write, never a read.** A version 6 document is
   read as this shape and left byte for byte as it is (`store::SHAPE_SINCE`) until
   something writes, so a read never rewrites shared host state for a version that moved
