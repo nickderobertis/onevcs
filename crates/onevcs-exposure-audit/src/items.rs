@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::github::{next_page, Api};
 use crate::ids::{BoardId, RepoId, Token};
-use crate::rows::{word, ItemKind, ItemRow, ItemState, Persistence, Survey};
+use crate::rows::{ExemptLocation, ItemKind, ItemRow, ItemState, Persistence, Survey};
 use crate::status::Status;
 use crate::terms::Terms;
 use crate::vault::Findings;
@@ -128,7 +128,7 @@ impl<'a> Walker<'a> {
             self.terms,
             text,
             &self.container,
-            &format!("{} {}", word(&place.kind), word(&persistence)),
+            ExemptLocation::Item(place.kind, persistence),
             &at,
         );
         let hits = self.terms.find(text);

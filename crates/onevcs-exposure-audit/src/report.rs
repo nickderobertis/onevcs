@@ -201,7 +201,7 @@ pub fn render(
             out,
             "| {} | {} | `{}` | {} |",
             exempt.container,
-            exempt.location,
+            exempt.location.label(),
             exempt.at.replace('|', "\\|"),
             exempt.occurrences
         );

@@ -182,15 +182,39 @@ pub struct Survey {
 pub struct Exempted {
     /// `owner/name`, or `board:OWNER/NUMBER`.
     pub container: String,
-    /// What kind of text it is: a history location, or an item's kind.
-    pub location: String,
+    /// What kind of text it is.
+    pub location: ExemptLocation,
     /// Which one: a commit, a blob, a path, a ref, or an item's URL or number.
     pub at: String,
     pub occurrences: u64,
 }
 
+/// The kind of text an exempted occurrence was in, in the findings rows' own words.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExemptLocation {
+    /// Somewhere in reachable history.
+    History(HistoryLocation),
+    /// An issue, change request, comment, review or board item, as it reads now or
+    /// as a revision the host still shows.
+    Item(ItemKind, Persistence),
+}
+
+impl ExemptLocation {
+    /// How the private report names it: the history location, or the item's kind and
+    /// persistence.
+    pub fn label(self) -> String {
+        match self {
+            ExemptLocation::History(location) => word(&location),
+            ExemptLocation::Item(kind, persistence) => {
+                format!("{} {}", word(&kind), word(&persistence))
+            }
+        }
+    }
+}
+
 /// A row field's wire word, as the findings files spell it.
-pub fn word(value: &impl Serialize) -> String {
+fn word(value: &impl Serialize) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -240,12 +264,19 @@ impl Survey {
 
     /// Record what a host public phrase exempted in `text`, found at `at` of
     /// `location` in `container`. The matcher decides; this only keeps where.
-    pub fn exempt(&mut self, terms: &Terms, text: &str, container: &str, location: &str, at: &str) {
+    pub fn exempt(
+        &mut self,
+        terms: &Terms,
+        text: &str,
+        container: &str,
+        location: ExemptLocation,
+        at: &str,
+    ) {
         let occurrences = terms.exempted(text);
         if occurrences > 0 {
             self.exempted.push(Exempted {
                 container: container.to_owned(),
-                location: location.to_owned(),
+                location,
                 at: at.to_owned(),
                 occurrences,
             });

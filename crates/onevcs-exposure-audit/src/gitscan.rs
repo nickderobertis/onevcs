@@ -27,7 +27,8 @@ use serde::Serialize;
 
 use crate::ids::Token;
 use crate::rows::{
-    word, FileLocation, FileRow, HistoryGap, HistoryGapRow, HistoryLocation, HistoryRow, Survey,
+    ExemptLocation, FileLocation, FileRow, HistoryGap, HistoryGapRow, HistoryLocation, HistoryRow,
+    Survey,
 };
 use crate::status::Status;
 use crate::terms::Terms;
@@ -308,9 +309,13 @@ impl Scan<'_, '_> {
             } else {
                 counts.other += 1;
             }
-            self.sinks
-                .survey
-                .exempt(self.terms, name, self.repository, "ref", name);
+            self.sinks.survey.exempt(
+                self.terms,
+                name,
+                self.repository,
+                ExemptLocation::History(HistoryLocation::Ref),
+                name,
+            );
             let hits = self.terms.find(name);
             self.sinks.survey.tally(self.terms, &hits, self.repository);
             for hit in hits {
@@ -405,7 +410,7 @@ impl Scan<'_, '_> {
                     self.terms,
                     body,
                     self.repository,
-                    &word(&location),
+                    ExemptLocation::History(location),
                     fields[0],
                 );
                 let hits = self.terms.find(body);
@@ -439,9 +444,13 @@ impl Scan<'_, '_> {
             if fields.len() < 3 || fields[1] != "tag" {
                 continue;
             }
-            self.sinks
-                .survey
-                .exempt(self.terms, fields[2], self.repository, "tag", fields[0]);
+            self.sinks.survey.exempt(
+                self.terms,
+                fields[2],
+                self.repository,
+                ExemptLocation::History(HistoryLocation::Tag),
+                fields[0],
+            );
             let hits = self.terms.find(fields[2]);
             self.sinks.survey.tally(self.terms, &hits, self.repository);
             for hit in hits {
@@ -538,9 +547,13 @@ impl Scan<'_, '_> {
             // The matcher reads text: bytes that are not UTF-8 are read as U+FFFD,
             // which no term spells, so a term between them is still found.
             let text = String::from_utf8_lossy(&content);
-            self.sinks
-                .survey
-                .exempt(self.terms, &text, self.repository, "blob", fields[0]);
+            self.sinks.survey.exempt(
+                self.terms,
+                &text,
+                self.repository,
+                ExemptLocation::History(HistoryLocation::Blob),
+                fields[0],
+            );
             let hits = self.terms.find(&text);
             if hits.is_empty() {
                 continue;
@@ -825,7 +838,13 @@ impl<'a> Paths<'a> {
     /// The hit at `path`, or `None` where it matches nothing.
     fn get(&mut self, path: &str, survey: &mut Survey) -> Option<&mut Pending> {
         if !self.seen.contains_key(path) {
-            survey.exempt(self.terms, path, self.repository, "path", path);
+            survey.exempt(
+                self.terms,
+                path,
+                self.repository,
+                ExemptLocation::History(HistoryLocation::Path),
+                path,
+            );
             let hits = self.terms.find(path);
             let pending = (!hits.is_empty()).then(|| {
                 survey.tally(self.terms, &hits, self.repository);

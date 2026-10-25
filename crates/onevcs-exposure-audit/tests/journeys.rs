@@ -2367,10 +2367,28 @@ fn phrase_file(sandbox: &Sandbox) -> PathBuf {
 #[test]
 fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_never_found() {
     let sandbox = Sandbox::new();
-    let (world, _) = world(&sandbox);
+    let (mut world, _) = world(&sandbox);
     // A machine whose name carries the private repository's bare name after a hyphen,
-    // named in a file and in a commit message, beside one occurrence no phrase covers.
+    // named once on every surface the audit reads — a file, a commit message, an
+    // author, a path two commits touch and its directory, a branch, a tag's message
+    // and an issue —
+    // beside one occurrence no phrase covers.
     let work = sandbox.path("work").join(OWNER).join("foxtrot");
+    sandbox.write(&work, "hosts/rig-quietharbor/notes.md", "notes\n");
+    sandbox.git(&work, &["add", "-A"]);
+    sandbox.git(
+        &work,
+        &[
+            "commit",
+            "-q",
+            "--author",
+            "rig-quietharbor <ops@example.test>",
+            "-m",
+            "Add host notes",
+        ],
+    );
+    let authored = sandbox.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    sandbox.write(&work, "hosts/rig-quietharbor/notes.md", "more notes\n");
     sandbox.write(
         &work,
         "hosts.md",
@@ -2381,9 +2399,37 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
         &work,
         &["commit", "-q", "-m", "Verified on rig-quietharbor"],
     );
+    sandbox.git(&work, &["branch", "rig-quietharbor"]);
+    sandbox.git(
+        &work,
+        &["tag", "-a", "v1", "-m", "Tagged on rig-quietharbor"],
+    );
     let bare = sandbox.path("remotes").join(OWNER).join("foxtrot.git");
-    sandbox.git(&work, &["push", "-q", &bare.display().to_string(), "main"]);
+    sandbox.git(
+        &work,
+        &[
+            "push",
+            "-q",
+            &bare.display().to_string(),
+            "main",
+            "rig-quietharbor",
+            "v1",
+        ],
+    );
     let noted = sandbox.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    let tag = sandbox.git(&work, &["rev-parse", "v1"]).trim().to_owned();
+    let foxtrot = world
+        .repos
+        .iter_mut()
+        .find(|r| r.name == "foxtrot")
+        .expect("foxtrot");
+    foxtrot.forbid_issues = false;
+    foxtrot.issues = vec![Item {
+        number: 9,
+        title: "Host".into(),
+        body: Text::new("seen on rig-quietharbor"),
+        ..Item::default()
+    }];
     std::fs::write(
         phrase_file(&sandbox),
         "version: 1\nphrases:\n  - \"rig-quietharbor\"\n",
@@ -2407,7 +2453,7 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
     // The public manifest says how many, and nothing about where or which phrase.
     let manifest = read_manifest(&sandbox, "coverage.md");
     assert!(
-        manifest.contains("Occurrences exempted by host public phrases: 2\n"),
+        manifest.contains("Occurrences exempted by host public phrases: 8\n"),
         "{manifest}"
     );
     assert_eq!(
@@ -2453,11 +2499,32 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
         "{exempted}"
     );
     let blob = sandbox.git(&work, &["rev-parse", "HEAD:hosts.md"]);
-    assert!(
-        exempted.contains(&format!(
-            "| sample-owner/foxtrot | blob | `{}` | 1 |",
-            blob.trim()
-        )),
+    let at =
+        |location: &str, at: &str| format!("| sample-owner/foxtrot | {location} | `{at}` | 1 |");
+    for row in [
+        at("blob", blob.trim()),
+        at("identity", &authored),
+        // Two commits touch the path, and it is one exempted occurrence; the directory
+        // holding it is a path of its own.
+        at("path", "hosts/rig-quietharbor/notes.md"),
+        at("path", "hosts/rig-quietharbor"),
+        at("ref", "refs/heads/rig-quietharbor"),
+        at("tag", &tag),
+    ] {
+        assert!(exempted.contains(&row), "{row}: {exempted}");
+    }
+    let items: Vec<&str> = exempted
+        .lines()
+        .filter(|line| line.starts_with("| sample-owner/foxtrot | issue current | `"))
+        .collect();
+    assert_eq!(items.len(), 1, "{exempted}");
+    assert!(items[0].ends_with(" | 1 |"), "{exempted}");
+    assert_eq!(
+        exempted
+            .lines()
+            .filter(|line| line.starts_with("| sample-owner/"))
+            .count(),
+        8,
         "{exempted}"
     );
 }

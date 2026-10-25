@@ -8898,6 +8898,21 @@ fn the_hosts_public_phrases_are_read_by_the_library_and_exempt_through_the_one_m
         ("version: 1\nphrases: [\"rig-zorv\"\n", "does not parse"),
         ("phrases: [\"rig-zorv\"]\n", "no `version`"),
         ("version: 1\n", "no `phrases`"),
+        ("- rig-zorv\n", "not a mapping"),
+        ("", "not a mapping"),
+        (
+            "version: one\nphrases: [\"rig-zorv\"]\n",
+            "not a whole number",
+        ),
+        ("version: 1\nphrases: rig-zorv\n", "`phrases` is not a list"),
+        (
+            "version: 1\nphrases: [\"rig-zorv\", 7]\n",
+            "phrase 2 is not a string",
+        ),
+        (
+            "version: 1\nphrases: [{rig-zorv: 1}]\n",
+            "phrase 1 is not a string",
+        ),
     ] {
         std::fs::write(&file, contents).expect("the phrase file");
         let error = onevcs::public_phrases().expect_err(contents).to_string();
@@ -8917,4 +8932,76 @@ fn the_hosts_public_phrases_are_read_by_the_library_and_exempt_through_the_one_m
         .expect_err("a directory")
         .to_string();
     assert!(error.contains("not a regular file"), "{error}");
+}
+
+#[test]
+fn a_public_phrase_exempts_under_every_term_mode_and_never_beyond_what_it_spells() {
+    use onevcs::{PublicPhrases, TermMatcher, TermMode, TermRule};
+
+    let phrases = |listed: &[&str]| PublicPhrases {
+        phrases: listed.iter().map(|p| (*p).to_owned()).collect(),
+    };
+    let rule = |term: &str, mode: TermMode, case_sensitive: bool| TermRule {
+        term: term.to_owned(),
+        mode,
+        case_sensitive,
+    };
+
+    // A substring term is found inside a longer word, and a standing phrase covering
+    // it still exempts it there; outside the phrase it is found as ever.
+    let substring = TermMatcher::with_phrases(
+        vec![rule("zorv", TermMode::Substring, false)],
+        &phrases(&["rigzorvx"]),
+    )
+    .expect("compiled");
+    assert!(substring.find("ran on rigzorvx").is_empty());
+    assert_eq!(substring.exempted("ran on rigzorvx"), 1);
+    for found in [
+        "ran on rigzorvx2",
+        "myrigzorvx",
+        "zorvish",
+        "rigzorvx and zorvish",
+    ] {
+        assert_eq!(substring.find(found), vec![0], "{found:?}");
+    }
+
+    // An owner-name-only term is the qualified name standing alone; a phrase that
+    // spells it with its own surroundings exempts exactly that spelling.
+    let qualified = TermMatcher::with_phrases(
+        vec![rule("hiddenco/zorv", TermMode::OwnerNameOnly, false)],
+        &phrases(&["mirror:hiddenco/zorv"]),
+    )
+    .expect("compiled");
+    assert!(qualified
+        .find("pulled from mirror:hiddenco/zorv")
+        .is_empty());
+    assert_eq!(qualified.exempted("pulled from mirror:hiddenco/zorv"), 1);
+    for found in [
+        "see hiddenco/zorv",
+        // `.git` keeps the qualified name a hit and stops the phrase standing.
+        "mirror:hiddenco/zorv.git",
+        "xmirror:hiddenco/zorv",
+        "mirror:hiddenco/zorv and hiddenco/zorv.git",
+    ] {
+        assert_eq!(qualified.find(found), vec![0], "{found:?}");
+    }
+
+    // A phrase whose edge falls inside a character that folds to two is narrowed to
+    // the characters it wholly spells, so it never covers the one it only began: `İ`
+    // folds to `i` and a combining dot, and the phrase `zi` covers `Z` alone.
+    let expanded = TermMatcher::with_phrases(
+        vec![rule("Zİ", TermMode::WholeWord, true)],
+        &phrases(&["zi"]),
+    )
+    .expect("compiled");
+    assert_eq!(expanded.find("on Zİ"), vec![0]);
+    assert_eq!(expanded.exempted("on Zİ"), 0);
+    // …while a phrase spelling the whole character exempts it.
+    let whole = TermMatcher::with_phrases(
+        vec![rule("Zİ", TermMode::WholeWord, true)],
+        &phrases(&["zİ"]),
+    )
+    .expect("compiled");
+    assert!(whole.find("on Zİ").is_empty());
+    assert_eq!(whole.exempted("on Zİ"), 1);
 }
