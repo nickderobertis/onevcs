@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::github::{next_page, Api};
 use crate::ids::{BoardId, RepoId, Token};
-use crate::rows::{ItemKind, ItemRow, ItemState, Persistence, Survey};
+use crate::rows::{word, ItemKind, ItemRow, ItemState, Persistence, Survey};
 use crate::status::Status;
 use crate::terms::Terms;
 use crate::vault::Findings;
@@ -119,6 +119,18 @@ impl<'a> Walker<'a> {
 
     fn scan(&mut self, text: &str, place: &Place, persistence: Persistence) {
         self.stats.text_bytes += text.len() as u64;
+        let at = place
+            .url
+            .clone()
+            .or_else(|| place.number.map(|n| format!("#{n}")))
+            .unwrap_or_default();
+        self.survey.exempt(
+            self.terms,
+            text,
+            &self.container,
+            &format!("{} {}", word(&place.kind), word(&persistence)),
+            &at,
+        );
         let hits = self.terms.find(text);
         if hits.is_empty() {
             return;

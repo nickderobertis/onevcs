@@ -13,6 +13,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::rows::Exempted;
+
 /// A findings stream did not read back as the rows the run wrote to it: the file
 /// was missing or unreadable, a line was not a JSON row, or the count differed.
 #[derive(Debug)]
@@ -44,6 +46,7 @@ fn field<'a>(row: &'a Value, name: &str) -> &'a str {
 pub fn render(
     dir: &Path,
     manifest: &str,
+    exempted: &[Exempted],
     (files, history, items, gaps): (u64, u64, u64, u64),
 ) -> Result<String, Unreadable> {
     let mut out = String::new();
@@ -188,6 +191,21 @@ pub fn render(
             count("commits")
         );
     }
+    let _ = writeln!(out, "\n## Exempted by host public phrases\n\nOccurrences of a term lying wholly inside a host public phrase standing on its own, which the publication check lets through and so are not findings above. Each is where it is, so a phrase that should not be public can be found and taken off the host's list.\n");
+    let _ = writeln!(
+        out,
+        "| Container | Location | At | Occurrences |\n|---|---|---|---|"
+    );
+    for exempt in exempted {
+        let _ = writeln!(
+            out,
+            "| {} | {} | `{}` | {} |",
+            exempt.container,
+            exempt.location,
+            exempt.at.replace('|', "\\|"),
+            exempt.occurrences
+        );
+    }
     let _ = writeln!(
         out,
         "\n## Coverage\n\nA surface not `scanned` is a gap: nothing above is claimed for it.\n"
@@ -218,7 +236,7 @@ mod tests {
     #[test]
     fn the_report_renders_every_row_the_run_wrote() {
         let dir = vault(&format!("{ROW}\n"));
-        let report = render(dir.path(), "", (0, 0, 1, 0)).expect("rendered");
+        let report = render(dir.path(), "", &[], (0, 0, 1, 0)).expect("rendered");
         assert!(report.contains("| CLOSED | `quietharbor` | deleted-edit-history |"));
     }
 
@@ -232,10 +250,13 @@ mod tests {
             (format!("{ROW}\n"), 2),
         ] {
             let dir = vault(&items);
-            assert!(render(dir.path(), "", (0, 0, count, 0)).is_err(), "{items}");
+            assert!(
+                render(dir.path(), "", &[], (0, 0, count, 0)).is_err(),
+                "{items}"
+            );
         }
         let dir = vault("");
         std::fs::remove_file(dir.path().join("findings-history.jsonl")).expect("removed");
-        assert!(render(dir.path(), "", (0, 0, 0, 0)).is_err());
+        assert!(render(dir.path(), "", &[], (0, 0, 0, 0)).is_err());
     }
 }

@@ -168,10 +168,33 @@ pub struct ItemRow<'a> {
 
 /// How often each term class hits, and how often a hit stands alone — no
 /// `owner/name` hit in the same text — which is what a false positive looks like
-/// from outside.
+/// from outside; and where a host public phrase exempted an occurrence instead.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Survey {
     pub by_class: BTreeMap<&'static str, ClassTally>,
+    /// Every text a host public phrase exempted an occurrence in. Private: it is
+    /// where a phrase is, and a phrase carries a term.
+    pub exempted: Vec<Exempted>,
+}
+
+/// Where host public phrases exempted occurrences of a term, and how many.
+#[derive(Clone, Debug, Serialize)]
+pub struct Exempted {
+    /// `owner/name`, or `board:OWNER/NUMBER`.
+    pub container: String,
+    /// What kind of text it is: a history location, or an item's kind.
+    pub location: String,
+    /// Which one: a commit, a blob, a path, a ref, or an item's URL or number.
+    pub at: String,
+    pub occurrences: u64,
+}
+
+/// A row field's wire word, as the findings files spell it.
+pub fn word(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -215,6 +238,25 @@ impl Survey {
         }
     }
 
+    /// Record what a host public phrase exempted in `text`, found at `at` of
+    /// `location` in `container`. The matcher decides; this only keeps where.
+    pub fn exempt(&mut self, terms: &Terms, text: &str, container: &str, location: &str, at: &str) {
+        let occurrences = terms.exempted(text);
+        if occurrences > 0 {
+            self.exempted.push(Exempted {
+                container: container.to_owned(),
+                location: location.to_owned(),
+                at: at.to_owned(),
+                occurrences,
+            });
+        }
+    }
+
+    /// Every occurrence a host public phrase exempted.
+    pub fn exempted_total(&self) -> u64 {
+        self.exempted.iter().map(|e| e.occurrences).sum()
+    }
+
     /// What the public measurements may say: a whole percent per class where
     /// [`ClassTally::public_percent`] allows one, and nothing else.
     pub fn public(&self) -> serde_json::Value {
@@ -248,7 +290,11 @@ mod tests {
             packages: BTreeSet::new(),
             declaration: None,
         };
-        let (terms, _) = Terms::build(&[source], &PublicNames::default());
+        let (terms, _) = Terms::build(
+            &[source],
+            &PublicNames::default(),
+            &onevcs::boundary::PublicPhrases::default(),
+        );
         let terms = terms.expect("a small set compiles");
         let mut survey = Survey::default();
         for text in ["quietharbor alone", "hiddenco/quietharbor"] {

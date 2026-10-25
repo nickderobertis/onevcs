@@ -3,7 +3,9 @@
 //! It names only repositories the run confirmed public, and the boards it was asked
 //! about, and says of each surface one word from the fixed vocabulary. It carries no
 //! finding, no term, no count of either, and no error text; scope figures are
-//! numbers only, so an excluded repository is never named by being counted.
+//! numbers only, so an excluded repository is never named by being counted. The one
+//! count it does carry is how many occurrences the host's public phrases exempted,
+//! which names neither a phrase nor where one is.
 
 use std::fmt::Write;
 
@@ -73,6 +75,8 @@ pub struct Scope {
     pub registered_public_in_listing: u64,
     pub expected: Option<u64>,
     pub audited: u64,
+    /// Occurrences of a term the host's public phrases exempted.
+    pub exempted: u64,
     pub generated_at: String,
 }
 
@@ -136,7 +140,12 @@ pub fn render(scope: &Scope, repos: &[Row], boards: &[Row]) -> String {
         scope.registered_public,
         scope.registered_public_in_listing
     );
-    let _ = writeln!(out, "- Repositories audited: {}.\n", scope.audited);
+    let _ = writeln!(out, "- Repositories audited: {}.", scope.audited);
+    let _ = writeln!(
+        out,
+        "- Occurrences exempted by host public phrases: {}\n",
+        scope.exempted
+    );
     let _ = writeln!(out, "{}", vocabulary());
     let header = "| {} | Current files | Git history | Refs read | Issues | Change requests | Board items | Edit history |\n|---|---|---|---|---|---|---|---|";
     for (title, rows, first) in [

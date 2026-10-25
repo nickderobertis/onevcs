@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use onevcs::boundary::{PublicNames, TermSource};
+use onevcs::boundary::{public_phrases, PublicNames, PublicPhrases, TermSource};
 use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
@@ -561,7 +561,13 @@ fn term_source(
     read
 }
 
-fn derive(api: &Api, options: &Options, set: &AuditSet, clones: &Path) -> Result<Derived, String> {
+fn derive(
+    api: &Api,
+    options: &Options,
+    set: &AuditSet,
+    clones: &Path,
+    phrases: &PublicPhrases,
+) -> Result<Derived, String> {
     let (private, account_listing) = private_identities(api, options, set);
     let mut sources = Vec::new();
     let mut gaps = Vec::new();
@@ -584,7 +590,7 @@ fn derive(api: &Api, options: &Options, set: &AuditSet, clones: &Path) -> Result
         public.repositories.insert(lower(repo.name()));
         public.owners.insert(lower(repo.owner().as_str()));
     }
-    let (terms, refused) = Terms::build(&sources, &public);
+    let (terms, refused) = Terms::build(&sources, &public, phrases);
     gaps.extend(refused.into_iter().map(|r| SourceGap {
         identity: r.identity,
         stage: GapStage::Declaration,
@@ -601,6 +607,19 @@ fn derive(api: &Api, options: &Options, set: &AuditSet, clones: &Path) -> Result
 /// Run the audit. Returns the process exit code.
 pub fn run(options: Options) -> u8 {
     let started = Instant::now();
+    // The host's public phrases decide what is a finding, so a file this build cannot
+    // read exactly stops the run before anything is read. The refusal names the file
+    // and what is wrong with it, never a phrase.
+    let phrases = match public_phrases() {
+        Ok(phrases) => phrases,
+        Err(error) => {
+            return refuse(
+                &error.to_string(),
+                "fix or remove the host's public phrase file, then re-run; nothing was audited",
+                exit::REFUSED,
+            )
+        }
+    };
     let vault = match Vault::create(&options.vault_root) {
         Ok(vault) => vault,
         Err(VaultRefusal::InsideCheckout) => return refuse(
@@ -664,7 +683,7 @@ pub fn run(options: Options) -> u8 {
             exit::STOPPED,
         );
     };
-    let derived = derive(&api, &options, &set, &private_clones);
+    let derived = derive(&api, &options, &set, &private_clones, &phrases);
     if options.clones == Clones::Delete {
         let _ = std::fs::remove_dir(&private_clones);
     }
@@ -869,6 +888,7 @@ pub fn run(options: Options) -> u8 {
         registered_public_in_listing: set.registered_in_listing,
         expected: options.expected_count,
         audited: repo_rows.len() as u64,
+        exempted: survey.exempted_total(),
         generated_at: now_rfc3339(),
     };
     let manifest_text = manifest::render(&scope, &repo_rows, &board_rows);
@@ -907,6 +927,7 @@ pub fn run(options: Options) -> u8 {
     let Ok(report) = report::render(
         vault.dir(),
         &manifest_text,
+        &survey.exempted,
         (file_rows, history_rows, item_rows, gap_rows),
     ) else {
         return refuse(
