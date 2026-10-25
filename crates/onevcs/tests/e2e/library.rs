@@ -8992,9 +8992,9 @@ fn a_public_phrase_exempts_under_every_term_mode_and_never_beyond_what_it_spells
         assert_eq!(qualified.find(found), vec![0], "{found:?}");
     }
 
-    // A phrase whose edge falls inside a character that folds to two is narrowed to
-    // the characters it wholly spells, so it never covers the one it only began: `İ`
-    // folds to `i` and a combining dot, and the phrase `zi` covers `Z` alone.
+    // A phrase occurrence whose edge falls inside a character that folds to two is no
+    // occurrence at all, so it exempts nothing: `İ` folds to `i` and a combining dot,
+    // and the phrase `zi` ends between the two.
     let expanded = TermMatcher::with_phrases(
         vec![rule("Zİ", TermMode::WholeWord, true)],
         &phrases(&["zi"]),
