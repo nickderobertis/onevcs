@@ -180,35 +180,75 @@ pub struct Survey {
 /// Where host public phrases exempted occurrences of a term, and how many.
 #[derive(Clone, Debug, Serialize)]
 pub struct Exempted {
+    // llmlint: ignore[invalid_states_unrepresentable] the container is the label every
+    // row of this crate carries (`ItemRow::container`, `HistoryRow::repository`), formed
+    // once per repository or board by the run loop from its `RepoId` or `BoardId` and
+    // handed to every scan site as text; a second, typed spelling here would be the one
+    // row that could disagree with the findings beside it.
     /// `owner/name`, or `board:OWNER/NUMBER`.
     pub container: String,
-    /// What kind of text it is.
+    /// Which text it was, with the identifier that names it.
     pub location: ExemptLocation,
-    /// Which one: a commit, a blob, a path, a ref, or an item's URL or number.
-    pub at: String,
     pub occurrences: u64,
 }
 
-/// The kind of text an exempted occurrence was in, in the findings rows' own words.
-#[derive(Clone, Copy, Debug, Serialize)]
+/// The text an exempted occurrence was in, each kind carrying the identifier the
+/// findings rows name that kind of text by.
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExemptLocation {
-    /// Somewhere in reachable history.
-    History(HistoryLocation),
+    /// A blob's content, by the blob's id.
+    Blob(String),
+    /// A path some tree held.
+    Path(String),
+    /// A commit's message, by the commit's id.
+    Message(String),
+    /// A commit's author or committer identity, by the commit's id.
+    Identity(String),
+    /// A ref's name.
+    Ref(String),
+    /// An annotated tag's message, by the tag's id.
+    Tag(String),
     /// An issue, change request, comment, review or board item, as it reads now or
-    /// as a revision the host still shows.
-    Item(ItemKind, Persistence),
+    /// as a revision the host still shows, by its URL or number where the host gave one.
+    Item {
+        kind: ItemKind,
+        persistence: Persistence,
+        url: Option<String>,
+        number: Option<u64>,
+    },
 }
 
 impl ExemptLocation {
-    /// How the private report names it: the history location, or the item's kind and
-    /// persistence.
-    pub fn label(self) -> String {
+    /// A commit's text at `location`, which is its message or one of its identities.
+    pub fn of_commit(location: HistoryLocation, commit: &str) -> ExemptLocation {
+        match location {
+            HistoryLocation::Message => ExemptLocation::Message(commit.to_owned()),
+            _ => ExemptLocation::Identity(commit.to_owned()),
+        }
+    }
+
+    /// How the private report names it: what kind of text, and which.
+    pub fn label(&self) -> (String, String) {
+        let history = |location: HistoryLocation, at: &str| (word(&location), at.to_owned());
         match self {
-            ExemptLocation::History(location) => word(&location),
-            ExemptLocation::Item(kind, persistence) => {
-                format!("{} {}", word(&kind), word(&persistence))
-            }
+            ExemptLocation::Blob(at) => history(HistoryLocation::Blob, at),
+            ExemptLocation::Path(at) => history(HistoryLocation::Path, at),
+            ExemptLocation::Message(at) => history(HistoryLocation::Message, at),
+            ExemptLocation::Identity(at) => history(HistoryLocation::Identity, at),
+            ExemptLocation::Ref(at) => history(HistoryLocation::Ref, at),
+            ExemptLocation::Tag(at) => history(HistoryLocation::Tag, at),
+            ExemptLocation::Item {
+                kind,
+                persistence,
+                url,
+                number,
+            } => (
+                format!("{} {}", word(kind), word(persistence)),
+                url.clone()
+                    .or_else(|| number.map(|n| format!("#{n}")))
+                    .unwrap_or_default(),
+            ),
         }
     }
 }
@@ -262,22 +302,21 @@ impl Survey {
         }
     }
 
-    /// Record what a host public phrase exempted in `text`, found at `at` of
-    /// `location` in `container`. The matcher decides; this only keeps where.
+    /// Record what a host public phrase exempted in `text`, found in `container` at
+    /// what `location` names. The matcher decides; this only keeps where, and names
+    /// it only where something was exempted.
     pub fn exempt(
         &mut self,
         terms: &Terms,
         text: &str,
         container: &str,
-        location: ExemptLocation,
-        at: &str,
+        location: impl FnOnce() -> ExemptLocation,
     ) {
         let occurrences = terms.exempted(text);
         if occurrences > 0 {
             self.exempted.push(Exempted {
                 container: container.to_owned(),
-                location,
-                at: at.to_owned(),
+                location: location(),
                 occurrences,
             });
         }

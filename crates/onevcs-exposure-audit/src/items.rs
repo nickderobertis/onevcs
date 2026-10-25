@@ -119,18 +119,13 @@ impl<'a> Walker<'a> {
 
     fn scan(&mut self, text: &str, place: &Place, persistence: Persistence) {
         self.stats.text_bytes += text.len() as u64;
-        let at = place
-            .url
-            .clone()
-            .or_else(|| place.number.map(|n| format!("#{n}")))
-            .unwrap_or_default();
-        self.survey.exempt(
-            self.terms,
-            text,
-            &self.container,
-            ExemptLocation::Item(place.kind, persistence),
-            &at,
-        );
+        self.survey
+            .exempt(self.terms, text, &self.container, || ExemptLocation::Item {
+                kind: place.kind,
+                persistence,
+                url: place.url.clone(),
+                number: place.number,
+            });
         let hits = self.terms.find(text);
         if hits.is_empty() {
             return;

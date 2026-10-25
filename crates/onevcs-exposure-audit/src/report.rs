@@ -197,12 +197,12 @@ pub fn render(
         "| Container | Location | At | Occurrences |\n|---|---|---|---|"
     );
     for exempt in exempted {
+        let (location, at) = exempt.location.label();
         let _ = writeln!(
             out,
-            "| {} | {} | `{}` | {} |",
+            "| {} | {location} | `{}` | {} |",
             exempt.container,
-            exempt.location.label(),
-            exempt.at.replace('|', "\\|"),
+            at.replace('|', "\\|"),
             exempt.occurrences
         );
     }
