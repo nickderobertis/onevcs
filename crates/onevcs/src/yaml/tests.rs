@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{branches, policy, release, workspaces, EventFilter};
+use crate::{boundary, branches, policy, release, workspaces, EventFilter};
 
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -55,6 +55,10 @@ fn read(path: &Path, document: &str) -> String {
         )
     } else if top("repositories") {
         format!("{:#?}", release::parse(path, document))
+    } else if top("phrases") {
+        // The host's public phrases arrived with serde-saphyr already under them, so
+        // their golden is the strict reader's own answer rather than an older build's.
+        format!("{:#?}", boundary::phrases::parse(document))
     } else if top("prefix") {
         format!("{:#?}", branches::parse(path, document))
     } else if document.contains("pool:") || document.contains("overflow:") {

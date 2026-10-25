@@ -66,7 +66,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod evidence;
 mod manifests;
 mod matcher;
-mod phrases;
+pub(crate) mod phrases;
 pub(crate) mod scope;
 pub(crate) mod screen;
 pub(crate) mod visibility;

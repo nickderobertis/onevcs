@@ -50,7 +50,7 @@ fn display(path: &Path) -> String {
 }
 
 /// One document's phrases, or what is wrong with it in words that quote none of it.
-fn parse(raw: &str) -> std::result::Result<PublicPhrases, String> {
+pub(crate) fn parse(raw: &str) -> std::result::Result<PublicPhrases, String> {
     // What the YAML reader says about a document it could not parse can quote the
     // document, so it is not repeated.
     let document: Value =
