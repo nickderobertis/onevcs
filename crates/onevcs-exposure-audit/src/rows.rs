@@ -194,6 +194,11 @@ pub struct Exempted {
 
 /// The text an exempted occurrence was in, each kind carrying the identifier the
 /// findings rows name that kind of text by.
+// llmlint: ignore[invalid_states_unrepresentable] each identifier is what git or the host
+// printed for that text — an object id off `git log` or `cat-file`, a ref or path git
+// listed, an item URL from the host's own answer — copied through to the vault exactly as
+// `HistoryRow::commit`, `FileRow::path` and `ItemRow::url` carry the same values beside
+// it; a newtype would re-validate text git and the host wrote, for a report nothing parses.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExemptLocation {
