@@ -8,11 +8,14 @@
 //! everywhere else, and a phrase file this build cannot read exactly stops the check
 //! rather than narrowing it.
 
-// llmlint: ignore-file[e2e_not_mocked] the remote host's answer about each repository's
-// visibility, and which change requests exist, is the one boundary an offline gate cannot
-// drive, and `world.rs`'s program answers it as `gh`. Every repository is real git, every
-// publication a real push whose effect is read off a real bare origin, and every verdict
-// is the compiled binary's.
+// llmlint: ignore-file[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] the
+// remote host's answer about each repository's visibility, and which change requests
+// exist, is the one boundary an offline gate cannot drive, and `world.rs`'s program
+// answers it as `gh`. Every repository is real git, every publication a real push whose
+// effect is read off a real bare origin, and every verdict is the compiled binary's.
+// These journeys run in a few seconds each against local git and sit on the existing
+// onevcs-e2e edge beside the boundary modules they extend; that tier's inputs are its
+// `e2eInputs` in `nx.json`, which no module in it declares or can narrow.
 
 #![cfg(unix)]
 

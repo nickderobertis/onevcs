@@ -8826,6 +8826,10 @@ fn threads_of_one_process_take_an_identitys_read_turns_while_a_sibling_holds_one
     );
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] the library's boundary
+// journeys live in this module beside `the_boundary_operations_answer_...`, on the
+// onevcs-e2e edge they share; what reruns that tier is its `e2eInputs` in `nx.json`, which
+// no test in it declares or can narrow.
 #[test]
 fn the_hosts_public_phrases_are_read_by_the_library_and_exempt_through_the_one_matcher() {
     use onevcs::boundary::{PublicNames, TermMatcher, TermSource};
@@ -8934,6 +8938,8 @@ fn the_hosts_public_phrases_are_read_by_the_library_and_exempt_through_the_one_m
     assert!(error.contains("not a regular file"), "{error}");
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] in-process and git-free,
+// a matcher and nothing else, on the same onevcs-e2e edge; see the directive above.
 #[test]
 fn a_public_phrase_exempts_under_every_term_mode_and_never_beyond_what_it_spells() {
     use onevcs::{PublicPhrases, TermMatcher, TermMode, TermRule};
