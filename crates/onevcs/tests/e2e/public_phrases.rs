@@ -125,6 +125,14 @@ impl Boundary {
             self.phrases(Some(contents));
             ask(why);
         }
+        // Bytes that are not text cannot be read as a phrase file, whoever reads it.
+        self.phrases(None);
+        std::fs::write(
+            self.phrase_file(),
+            b"version: 1\nphrases:\n  - \"rig-\xff\"\n",
+        )
+        .expect("the phrase file");
+        ask("a file that is not UTF-8");
         self.phrases(Some(PHRASES));
         std::fs::set_permissions(self.phrase_file(), std::fs::Permissions::from_mode(0o000))
             .expect("the file is made unreadable");
@@ -206,6 +214,20 @@ fn a_standing_phrase_exempts_the_term_inside_it_and_the_term_is_refused_everywhe
         (joined.code, joined.stdout.as_str()),
         "no phrase exempts {JOINED:?}"
     );
+
+    // The character before the phrase decides as the one after it does: a `.` after a
+    // word continues a name, and a `.` after anything else does not.
+    for (text, exempt) in [
+        ("see .rig-zorv", true),
+        ("dir/.rig-zorv", true),
+        ("host.rig-zorv", false),
+        ("10.rig-zorv", false),
+        ("-rig-zorv", false),
+    ] {
+        let checked = host.text(text, None);
+        assert_eq!(checked.passed(), exempt, "{text:?}: {}", checked.stdout);
+        assert_eq!(checked.refused(), !exempt, "{text:?}: {}", checked.stdout);
+    }
 
     // A phrase exempts only the term it covers: the repository's other terms beside it
     // are refused as ever, on every surface.
