@@ -198,12 +198,14 @@ pub fn render(
     );
     for exempt in exempted {
         let (location, at) = exempt.location.label();
+        let at = at.map_or_else(
+            || "—".to_owned(),
+            |at| format!("`{}`", at.replace('|', "\\|")),
+        );
         let _ = writeln!(
             out,
-            "| {} | {location} | `{}` | {} |",
-            exempt.container,
-            at.replace('|', "\\|"),
-            exempt.occurrences
+            "| {} | {location} | {at} | {} |",
+            exempt.container, exempt.occurrences
         );
     }
     let _ = writeln!(

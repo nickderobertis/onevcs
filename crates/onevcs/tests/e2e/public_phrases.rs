@@ -118,8 +118,8 @@ impl Boundary {
         }
     }
 
-    /// Every way the phrase file can be refused, each arranged in turn by `arrange`
-    /// and asked of by `ask`, with the file put back to none afterwards.
+    /// Every way the phrase file can be refused, each arranged in turn and then put to
+    /// `ask` with why, and the file put back to none afterwards.
     fn each_refused_file(&self, mut ask: impl FnMut(&str)) {
         for (why, contents) in refused_files() {
             self.phrases(Some(contents));

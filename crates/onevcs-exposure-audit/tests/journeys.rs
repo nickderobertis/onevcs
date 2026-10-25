@@ -2371,7 +2371,7 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
     // A machine whose name carries the private repository's bare name after a hyphen,
     // named once on every surface the audit reads — a file, a commit message, an
     // author, a path two commits touch and its directory, a branch, a tag's message
-    // and an issue —
+    // an issue and a board —
     // beside one occurrence no phrase covers.
     let work = sandbox.path("work").join(OWNER).join("foxtrot");
     sandbox.write(&work, "hosts/rig-quietharbor/notes.md", "notes\n");
@@ -2430,6 +2430,15 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
         body: Text::new("seen on rig-quietharbor"),
         ..Item::default()
     }];
+    // A board the host names by number alone, and a draft on it the host names not at
+    // all.
+    let board = world
+        .boards
+        .iter_mut()
+        .find(|b| b.number == 3)
+        .expect("the follow-ups board");
+    board.title = "Follow-ups from rig-quietharbor".into();
+    board.items[0].content = Content::Draft("Tidy".into(), "tidy rig-quietharbor".into());
     std::fs::write(
         phrase_file(&sandbox),
         "version: 1\nphrases:\n  - \"rig-quietharbor\"\n",
@@ -2442,10 +2451,14 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
         &[
             "--allow",
             "sample-owner/foxtrot",
+            "--board",
+            "sample-owner/3",
+            "--projects-token-env",
+            "BOARD_TOKEN",
             "--manifest-out",
             "coverage.md",
         ],
-        &[("GH_TOKEN", TOKEN)],
+        &[("GH_TOKEN", TOKEN), ("BOARD_TOKEN", PROJECTS_TOKEN)],
     );
     assert!(out.status.success(), "{}", text(&out));
     assert_no_private("stdout and stderr", &text(&out));
@@ -2453,7 +2466,7 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
     // The public manifest says how many, and nothing about where or which phrase.
     let manifest = read_manifest(&sandbox, "coverage.md");
     assert!(
-        manifest.contains("Occurrences exempted by host public phrases: 8\n"),
+        manifest.contains("Occurrences exempted by host public phrases: 10\n"),
         "{manifest}"
     );
     assert_eq!(
@@ -2519,12 +2532,18 @@ fn an_occurrence_a_host_public_phrase_exempts_is_counted_and_listed_privately_ne
         .collect();
     assert_eq!(items.len(), 1, "{exempted}");
     assert!(items[0].ends_with(" | 1 |"), "{exempted}");
+    for row in [
+        "| board:sample-owner/3 | board current | `#3` | 1 |",
+        "| board:sample-owner/3 | draft-item current | — | 1 |",
+    ] {
+        assert!(exempted.contains(row), "{row}: {exempted}");
+    }
     assert_eq!(
         exempted
             .lines()
-            .filter(|line| line.starts_with("| sample-owner/"))
+            .filter(|line| line.starts_with("| sample-owner/") || line.starts_with("| board:"))
             .count(),
-        8,
+        10,
         "{exempted}"
     );
 }

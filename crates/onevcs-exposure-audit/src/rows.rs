@@ -228,9 +228,11 @@ impl ExemptLocation {
         }
     }
 
-    /// How the private report names it: what kind of text, and which.
-    pub fn label(&self) -> (String, String) {
-        let history = |location: HistoryLocation, at: &str| (word(&location), at.to_owned());
+    /// How the private report names it: what kind of text, and which — `None` for an
+    /// item the host gave neither a URL nor a number, such as a board's field value or
+    /// a draft.
+    pub fn label(&self) -> (String, Option<String>) {
+        let history = |location: HistoryLocation, at: &str| (word(&location), Some(at.to_owned()));
         match self {
             ExemptLocation::Blob(at) => history(HistoryLocation::Blob, at),
             ExemptLocation::Path(at) => history(HistoryLocation::Path, at),
@@ -245,9 +247,7 @@ impl ExemptLocation {
                 number,
             } => (
                 format!("{} {}", word(kind), word(persistence)),
-                url.clone()
-                    .or_else(|| number.map(|n| format!("#{n}")))
-                    .unwrap_or_default(),
+                url.clone().or_else(|| number.map(|n| format!("#{n}"))),
             ),
         }
     }
