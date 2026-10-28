@@ -658,3 +658,73 @@ fn a_recoverable_read_after_its_store_loses_a_commit_answers_from_the_store_as_i
     );
     assert_ne!(later, Ok(first), "the loss is in the answer");
 }
+
+/// The row a launcher read answers for `branch`.
+fn row_for<'a>(rows: &'a serde_json::Value, branch: &str) -> &'a serde_json::Value {
+    rows.as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .unwrap_or_else(|| panic!("a row for {branch}: {rows:#}"))
+}
+
+#[test]
+fn a_recoverable_read_counts_a_process_inside_a_run_root_only_while_it_is_there() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let label = format!("launcher={LAUNCHER}");
+    // Two sessions left open by processes that have exited, each with work in its tree:
+    // what holds either one now is only whatever is working inside its run root.
+    let (_, occupied) = fixture.open(&["--branch", "feature/occupied", "--label", &label]);
+    world.commit_file(&occupied, "a.txt", "a\n", "feat: work somebody is in");
+    let (_, vacant) = fixture.open(&["--branch", "feature/vacant", "--label", &label]);
+    world.commit_file(&vacant, "b.txt", "b\n", "feat: work nobody is in");
+    inhabit(world);
+
+    // A process this journey starts works inside one of the two trees.
+    let mut inside = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&occupied)
+        .spawn()
+        .expect("a process starts inside the run root");
+    let reason = |rows: &serde_json::Value, branch: &str| {
+        row_for(rows, branch)["retirement"]["reason"].clone()
+    };
+    let read = launcher_rows();
+    let afresh = launcher_rows_afresh(world);
+    // Stopped before anything is asserted, so a failure leaves nothing running.
+    inside
+        .kill()
+        .expect("the process this journey started stops");
+    inside.wait().expect("and is reaped");
+    let during = read.expect("the read with the process inside answers");
+    assert_eq!(
+        Ok(during.clone()),
+        afresh,
+        "one read, as a fresh process reads it"
+    );
+    assert_eq!(
+        reason(&during, "feature/occupied"),
+        "held-by-live-session",
+        "the run root a process works in is held: {during:#}"
+    );
+    assert_ne!(
+        reason(&during, "feature/vacant"),
+        "held-by-live-session",
+        "and the one no process works in is not, in the same read: {during:#}"
+    );
+
+    // The process has gone; the next read in this same process looks again.
+    let after = launcher_rows();
+    assert_eq!(
+        after,
+        launcher_rows_afresh(world),
+        "the read after it left answers what a fresh process answers"
+    );
+    let after = after.expect("the later read answers");
+    assert_ne!(
+        reason(&after, "feature/occupied"),
+        "held-by-live-session",
+        "a run root nobody works in any more is not held: {after:#}"
+    );
+}
