@@ -803,15 +803,16 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         return None;
     }
     let mut names = BTreeSet::new();
-    canonical_loose(&common.join("refs"), &common, &mut names)?;
+    let mut loose = BTreeMap::new();
+    canonical_loose(&common.join("refs"), &common, &mut names, &mut loose)?;
     if common != directory {
-        canonical_loose(&directory.join("refs"), &directory, &mut names)?;
+        canonical_loose(&directory.join("refs"), &directory, &mut names, &mut loose)?;
     }
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
+    let mut packed_tips = BTreeMap::new();
     if common.join("packed-refs").exists() {
         let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
         let mut previous = false;
-        let mut packed_names = BTreeSet::new();
         for line in packed.lines() {
             if line.starts_with('#') {
                 continue;
@@ -826,7 +827,10 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
                 if !canonical_oid(oid) || !crate::git::plainly_a_ref_name(name) {
                     return None;
                 }
-                if !packed_names.insert(name.to_owned()) {
+                if packed_tips
+                    .insert(name.to_owned(), oid.to_owned())
+                    .is_some()
+                {
                     return None;
                 }
                 names.insert(name.to_owned());
@@ -849,28 +853,13 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
             _ => return None,
         }
     }
-    let mut tips = BTreeMap::new();
-    let mut symbolic = BTreeMap::new();
-    for reference in repo.references().ok()? {
-        let reference = reference.ok()?;
-        let name = reference.name().ok()?.to_owned();
-        if !crate::git::plainly_a_ref_name(&name) {
-            return None;
-        }
-        if let Some(target) = reference.symbolic_target().ok()? {
-            symbolic.insert(name.clone(), target.to_owned());
-        }
-        // A direct reference names its commit already; only a symbolic one is
-        // followed to the reference it names.
-        let oid = match reference.target() {
-            Some(oid) => oid,
-            None => reference.resolve().ok()?.target()?,
-        };
-        tips.insert(name, oid);
-    }
-    if tips.keys().cloned().collect::<BTreeSet<_>>() != names {
-        return None;
-    }
+    let (mut tips, mut symbolic) = match (common == directory)
+        .then(|| read_tips(&names, &loose, &packed_tips))
+        .flatten()
+    {
+        Some(read) => read,
+        None => iterated_tips(&repo, &names)?,
+    };
     let head = repo.find_reference("HEAD").ok()?;
     if let Some(target) = head.symbolic_target().ok()? {
         symbolic.insert("HEAD".into(), target.to_owned());
@@ -942,7 +931,74 @@ fn canonical_value(raw: &[u8]) -> Option<()> {
         None
     }
 }
-fn canonical_loose(path: &Path, directory: &Path, names: &mut BTreeSet<String>) -> Option<()> {
+/// Every ref and the commit it names, and the symbolic ones with what they name, as
+/// libgit2 lists them — the answer [`read_tips`] gives where it can give one.
+type Tips = (BTreeMap<String, git2::Oid>, BTreeMap<String, String>);
+
+/// The refs `names` holds, from the files that were just read and found canonical:
+/// each loose ref's own value, or else its packed one — which is how a lookup finds
+/// it — and a symbolic one followed to the commit the ref it names holds.
+///
+/// Answered only where one reading of those files answers it: a symbolic ref naming
+/// a ref outside them, or naming another symbolic one, is left to libgit2, which
+/// reads the files again and follows the chain however it goes on.
+fn read_tips(
+    names: &BTreeSet<String>,
+    loose: &BTreeMap<String, String>,
+    packed: &BTreeMap<String, String>,
+) -> Option<Tips> {
+    let value = |name: &str| loose.get(name).or_else(|| packed.get(name));
+    let mut tips = BTreeMap::new();
+    let mut symbolic = BTreeMap::new();
+    for name in names {
+        let held = value(name)?;
+        let named = match held.strip_prefix("ref: ") {
+            Some(target) => {
+                symbolic.insert(name.clone(), target.to_owned());
+                value(target).filter(|named| !named.starts_with("ref: "))?
+            }
+            None => held,
+        };
+        tips.insert(name.clone(), git2::Oid::from_str(named).ok()?);
+    }
+    Some((tips, symbolic))
+}
+
+/// The refs as libgit2 lists them, where they are the ones `names` holds.
+fn iterated_tips(repo: &git2::Repository, names: &BTreeSet<String>) -> Option<Tips> {
+    let mut tips = BTreeMap::new();
+    let mut symbolic = BTreeMap::new();
+    for reference in repo.references().ok()? {
+        let reference = reference.ok()?;
+        let name = reference.name().ok()?.to_owned();
+        if !crate::git::plainly_a_ref_name(&name) {
+            return None;
+        }
+        if let Some(target) = reference.symbolic_target().ok()? {
+            symbolic.insert(name.clone(), target.to_owned());
+        }
+        // A direct reference names its commit already; only a symbolic one is
+        // followed to the reference it names.
+        let oid = match reference.target() {
+            Some(oid) => oid,
+            None => reference.resolve().ok()?.target()?,
+        };
+        tips.insert(name, oid);
+    }
+    if tips.keys().cloned().collect::<BTreeSet<_>>() != *names {
+        return None;
+    }
+    Some((tips, symbolic))
+}
+
+/// Every loose ref under `path`, each held to a canonical value, with that value
+/// kept by name — the spelling it was read in, less its newline.
+fn canonical_loose(
+    path: &Path,
+    directory: &Path,
+    names: &mut BTreeSet<String>,
+    values: &mut BTreeMap<String, String>,
+) -> Option<()> {
     if !path.exists() {
         return Some(());
     }
@@ -950,7 +1006,7 @@ fn canonical_loose(path: &Path, directory: &Path, names: &mut BTreeSet<String>) 
         let entry = entry.ok()?;
         let metadata = entry.file_type().ok()?;
         if metadata.is_dir() {
-            canonical_loose(&entry.path(), directory, names)?;
+            canonical_loose(&entry.path(), directory, names, values)?;
         } else if metadata.is_file() {
             let path = entry.path();
             let name = path.strip_prefix(directory).ok()?.to_str()?;
@@ -958,7 +1014,10 @@ fn canonical_loose(path: &Path, directory: &Path, names: &mut BTreeSet<String>) 
                 return None;
             }
             names.insert(name.to_owned());
-            canonical_value(&std::fs::read(path).ok()?)?;
+            let raw = std::fs::read(&path).ok()?;
+            canonical_value(&raw)?;
+            let value = std::str::from_utf8(&raw).ok()?.strip_suffix('\n')?;
+            values.insert(name.to_owned(), value.to_owned());
         } else {
             return None;
         }
