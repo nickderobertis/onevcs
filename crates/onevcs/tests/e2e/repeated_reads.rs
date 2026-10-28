@@ -25,11 +25,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use onevcs::{Landed, Providers, SessionToken};
+use onevcs::{Detail, Git, Landed, Providers, Scope, Selection, SessionToken, Vcs};
 
 use crate::cost::Counting;
 use crate::honesty::inhabit;
 use crate::lifecycle::{local_direct, Fixture};
+use crate::world::World;
 
 /// Rounds of the same reads, as a view re-rendering an unchanged round makes them.
 const ROUNDS: usize = 3;
@@ -511,4 +512,216 @@ fn a_remote_path_holding_no_repository_leaves_its_head_to_git() {
             &["remote", "set-url", "origin", &nothing.to_string_lossy()],
         );
     });
+}
+
+const LAUNCHER: &str = "repeated-reads";
+
+/// One launcher's Decision rows, read in this process through the library the way a
+/// long-lived caller — a manager's Stop hook — reads them call after call.
+fn launcher_rows() -> Result<serde_json::Value, String> {
+    let selection = Selection {
+        detail: Detail::Decision,
+        labels: BTreeMap::from([("launcher".to_owned(), LAUNCHER.to_owned())]),
+        ..Selection::default()
+    };
+    Git.recoverable_matching(Scope::All, &selection)
+        .map(|rows| serde_json::to_value(rows).expect("rows serialize"))
+        .map_err(|failure| failure.to_string())
+}
+
+/// The same rows from a process that has read nothing before: `onevcs recoverable`,
+/// or the refusal it exits with.
+fn launcher_rows_afresh(world: &World) -> Result<serde_json::Value, String> {
+    let output = world
+        .onevcs()
+        .args(["recoverable", "--json", "--detail", "decision", "--label"])
+        .arg(format!("launcher={LAUNCHER}"))
+        .output()
+        .expect("the binary runs");
+    if output.status.success() {
+        Ok(serde_json::from_slice(&output.stdout).expect("one JSON array"))
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
+/// A session labelled with [`LAUNCHER`] that committed work on `branch` and closed
+/// without publishing it, which hands the branch back to the registered checkout.
+fn preserved_unpublished(fixture: &Fixture, branch: &str) {
+    let label = format!("launcher={LAUNCHER}");
+    let (token, worktree) = fixture.open(&["--branch", branch, "--label", &label]);
+    fixture.world.commit_file(
+        &worktree,
+        "work.txt",
+        "work\n",
+        "feat: work nobody published",
+    );
+    fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+}
+
+/// A commit on `branch` in the registered checkout, which is left on `main`: its id.
+fn more_work(fixture: &Fixture, branch: &str) -> String {
+    let world = &fixture.world;
+    world.git(&fixture.checkout, &["checkout", "-q", branch]);
+    world.commit_file(&fixture.checkout, "more.txt", "more\n", "feat: more work");
+    let tip = world.git(&fixture.checkout, &["rev-parse", "HEAD"]);
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    tip.trim().to_owned()
+}
+
+#[test]
+fn a_recoverable_read_after_a_branch_moves_answers_where_it_now_stands() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    preserved_unpublished(&fixture, "feature/recovered");
+    inhabit(world);
+
+    // The first read parses the branch's history; the second asks the same, unmoved.
+    let first = launcher_rows().expect("the first read answers");
+    assert_eq!(
+        launcher_rows(),
+        Ok(first.clone()),
+        "an unmoved host reads the same"
+    );
+    assert!(
+        !first.as_array().expect("rows").is_empty(),
+        "the preserved branch is reported: {first:#}"
+    );
+
+    // The branch goes on, in the same process's lifetime: a commit no earlier read
+    // could have parsed, under a ref every earlier read named.
+    let moved = more_work(&fixture, "feature/recovered");
+    let later = launcher_rows();
+    assert_eq!(
+        later,
+        launcher_rows_afresh(world),
+        "the read after the move answers what a fresh process answers"
+    );
+    let later = later.expect("the later read answers");
+    assert_ne!(later, first, "the move is in the answer");
+    assert!(
+        later
+            .as_array()
+            .expect("rows")
+            .iter()
+            .any(|row| row["tip"] == moved.as_str()),
+        "a row stands at the commit the branch moved to: {later:#}"
+    );
+}
+
+#[test]
+fn a_recoverable_read_after_its_store_loses_a_commit_answers_from_the_store_as_it_is() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    preserved_unpublished(&fixture, "feature/pruned");
+    let tip = more_work(&fixture, "feature/pruned");
+    inhabit(world);
+
+    // Two reads of the branch at a commit its checkout holds as a loose object: what
+    // each parses of it is the same, and it is what a later read could reuse.
+    let first = launcher_rows().expect("the first read answers");
+    assert_eq!(
+        launcher_rows(),
+        Ok(first.clone()),
+        "an unmoved host reads the same"
+    );
+    assert!(
+        first
+            .as_array()
+            .expect("rows")
+            .iter()
+            .any(|row| row["tip"] == tip.as_str()),
+        "a row stands at the branch's tip: {first:#}"
+    );
+
+    // The store loses that commit while its ref still names it — what a prune or a
+    // damaged disk leaves. Nothing this process parsed of it earlier may stand in for
+    // the object the store no longer has.
+    let loose = fixture
+        .checkout
+        .join(".git/objects")
+        .join(&tip[..2])
+        .join(&tip[2..]);
+    std::fs::remove_file(&loose)
+        .unwrap_or_else(|failure| panic!("{} is removed: {failure}", loose.display()));
+    let later = launcher_rows();
+    assert_eq!(
+        later,
+        launcher_rows_afresh(world),
+        "the read after the loss answers what a fresh process answers"
+    );
+    assert_ne!(later, Ok(first), "the loss is in the answer");
+}
+
+fn row_for<'a>(rows: &'a serde_json::Value, branch: &str) -> &'a serde_json::Value {
+    rows.as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .unwrap_or_else(|| panic!("a row for {branch}: {rows:#}"))
+}
+
+#[test]
+fn a_recoverable_read_counts_a_process_inside_a_run_root_only_while_it_is_there() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let label = format!("launcher={LAUNCHER}");
+    // Two sessions left open by processes that have exited, each with work in its tree:
+    // what holds either one now is only whatever is working inside its run root.
+    let (_, occupied) = fixture.open(&["--branch", "feature/occupied", "--label", &label]);
+    world.commit_file(&occupied, "a.txt", "a\n", "feat: work somebody is in");
+    let (_, vacant) = fixture.open(&["--branch", "feature/vacant", "--label", &label]);
+    world.commit_file(&vacant, "b.txt", "b\n", "feat: work nobody is in");
+    inhabit(world);
+
+    let mut inside = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&occupied)
+        .spawn()
+        .expect("a process starts inside the run root");
+    let reason = |rows: &serde_json::Value, branch: &str| {
+        row_for(rows, branch)["retirement"]["reason"].clone()
+    };
+    let read = launcher_rows();
+    let afresh = launcher_rows_afresh(world);
+    // Stopped before anything is asserted, so a failure leaves nothing running.
+    inside
+        .kill()
+        .expect("the process this journey started stops");
+    inside.wait().expect("and is reaped");
+    let during = read.expect("the read with the process inside answers");
+    assert_eq!(
+        Ok(during.clone()),
+        afresh,
+        "one read, as a fresh process reads it"
+    );
+    assert_eq!(
+        reason(&during, "feature/occupied"),
+        "held-by-live-session",
+        "the run root a process works in is held: {during:#}"
+    );
+    assert_ne!(
+        reason(&during, "feature/vacant"),
+        "held-by-live-session",
+        "and the one no process works in is not, in the same read: {during:#}"
+    );
+
+    // The process has gone; the next read in this same process looks again.
+    let after = launcher_rows();
+    assert_eq!(
+        after,
+        launcher_rows_afresh(world),
+        "the read after it left answers what a fresh process answers"
+    );
+    let after = after.expect("the later read answers");
+    assert_ne!(
+        reason(&after, "feature/occupied"),
+        "held-by-live-session",
+        "a run root nobody works in any more is not held: {after:#}"
+    );
 }

@@ -1110,9 +1110,21 @@ pub(crate) struct Census<'a> {
     sessions: &'a [Record],
     streams: &'a [status::Recorded],
     trailers: &'a Trailers,
+    /// The read's one look at where processes work, where the read takes one; without
+    /// it, each run root is asked of the host afresh.
+    look: Option<&'a processes::Look>,
 }
 
 impl<'a> Census<'a> {
+    /// This census, asking whether anything works inside a run root of `look` rather
+    /// than of the host afresh each time.
+    pub(crate) fn looking_once(self, look: &'a processes::Look) -> Self {
+        Self {
+            look: Some(look),
+            ..self
+        }
+    }
+
     /// Read one identity: its base, and every place a copy of one of its branches can
     /// be — its registered checkouts, the clone of every pool slot on disk, and every
     /// run clone, whether or not a session record still names it.
@@ -1258,6 +1270,7 @@ impl<'a> Census<'a> {
             sessions,
             streams,
             trailers,
+            look: None,
         })
     }
 
@@ -1432,10 +1445,11 @@ impl<'a> Census<'a> {
                     UnknownCause::new("live-holder", record.run_root.display(), failure)
                 })
             };
-            if record.owner_is_running()
-                || occupied()?
-                || !processes::holding(&record.run_root).is_empty()
-            {
+            let worked_in = || match self.look {
+                Some(look) => look.anybody_in(&record.run_root),
+                None => !processes::holding(&record.run_root).is_empty(),
+            };
+            if record.owner_is_running() || occupied()? || worked_in() {
                 return Ok(Some(record.token.to_string()));
             }
         }

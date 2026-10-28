@@ -31,6 +31,10 @@ const OBJECT_LIMIT: usize = 512;
 
 thread_local! {
     static UNSPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    /// What each object a repository handle of this read was asked about is, by the
+    /// handle — which lives until the read ends, when this is forgotten with it.
+    static KINDS: std::cell::RefCell<std::collections::HashMap<(usize, git2::Oid), git2::ObjectType>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Count one object read for the answer being made, or decline once its allowance is
@@ -85,9 +89,10 @@ pub(crate) fn is_ancestor(
     graph::View::of(repo, borrowing).is_ancestor(ancestor, descendant)
 }
 
-/// Forget every commit read within the read that is ending.
+/// Forget every commit and header read within the read that is ending.
 pub(crate) fn clear() {
     graph::clear();
+    KINDS.with(|kinds| kinds.borrow_mut().clear());
 }
 
 /// One argument shape, with its object ids already parsed.
@@ -422,10 +427,66 @@ mod graph {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
+    #[derive(Clone)]
     pub(super) struct Parsed {
         pub(super) parents: Vec<git2::Oid>,
         pub(super) tree: git2::Oid,
         pub(super) time: i64,
+    }
+
+    /// The most commits [`PARSED`] keeps: some megabytes, and more than the
+    /// histories a host's warm reads walk between them.
+    const PARSED_REMEMBERED: usize = 1 << 16;
+
+    /// What every read of this process has parsed of a commit, by its id.
+    ///
+    /// An id names a commit's content, and its parents, tree and committer time are
+    /// that content, so they are the same in every store that holds it and in every
+    /// read that asks. So a later read parses none of them again — and what it still
+    /// asks of the store it reads through is whether that store holds the commit now,
+    /// as every read did before it, so a store that has lost one answers as it did.
+    /// Nothing else about a store or a ref is kept here: refs are read afresh and the
+    /// stores listed and held to their proofs on every read, as before. Emptied once it
+    /// holds [`PARSED_REMEMBERED`], so it stays bounded in a long-lived process.
+    static PARSED: std::sync::Mutex<Option<HashMap<git2::Oid, Parsed>>> =
+        std::sync::Mutex::new(None);
+
+    fn parsed(id: git2::Oid) -> Option<Parsed> {
+        PARSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()?
+            .get(&id)
+            .cloned()
+    }
+
+    fn keep_parsed(id: git2::Oid, commit: &Parsed) {
+        let mut kept = PARSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kept = kept.get_or_insert_with(HashMap::new);
+        if kept.len() >= PARSED_REMEMBERED {
+            kept.clear();
+        }
+        kept.insert(id, commit.clone());
+    }
+
+    /// The commit `id` names as `repository` holds it: what an earlier read parsed of
+    /// it where the repository holds it now, and otherwise read and parsed here.
+    fn parse_in(repository: &git2::Repository, id: git2::Oid, held: bool) -> Option<Parsed> {
+        if held {
+            if let Some(known) = parsed(id) {
+                return Some(known);
+            }
+        }
+        let commit = super::commit_only(repository, id)?;
+        let read = Parsed {
+            parents: commit.parent_ids().collect(),
+            tree: commit.tree_id(),
+            time: commit.committer().when().seconds(),
+        };
+        keep_parsed(id, &read);
+        Some(read)
     }
 
     /// Where a remembered commit was read: a store any borrower of it may use, or
@@ -441,14 +502,25 @@ mod graph {
     /// The longest history listed whole to exclude it from a walk.
     const ANCESTRY: usize = 4096;
 
+    /// What this read remembers of the commits one source was read through.
+    #[derive(Default)]
+    struct Remembered {
+        commits: RefCell<HashMap<git2::Oid, Rc<Parsed>>>,
+        ancestors: RefCell<HashMap<git2::Oid, Option<Ancestors>>>,
+    }
+
     thread_local! {
-        static COMMITS: RefCell<HashMap<(Source, git2::Oid), Rc<Parsed>>> = RefCell::new(HashMap::new());
-        static ANCESTORS: RefCell<HashMap<(Source, git2::Oid), Option<Ancestors>>> = RefCell::new(HashMap::new());
+        /// Each source's memory, which a [`View`] takes hold of once when it is made,
+        /// so that a walk asking for one commit after another asks by its id alone.
+        static SOURCES: RefCell<HashMap<Source, Rc<Remembered>>> = RefCell::new(HashMap::new());
     }
 
     pub(super) fn clear() {
-        COMMITS.with(|commits| commits.borrow_mut().clear());
-        ANCESTORS.with(|ancestors| ancestors.borrow_mut().clear());
+        SOURCES.with(|sources| sources.borrow_mut().clear());
+    }
+
+    fn remembered(source: Source) -> Rc<Remembered> {
+        SOURCES.with(|sources| sources.borrow_mut().entry(source).or_default().clone())
     }
 
     const PARENT1: u8 = 1;
@@ -461,20 +533,29 @@ mod graph {
         at: PathBuf,
         borrowing: Option<PathBuf>,
         shared: Vec<PathBuf>,
+        /// What is remembered of each store in `shared`, in the same order.
+        shared_remembered: Vec<Rc<Remembered>>,
+        /// What is remembered of this repository's whole view.
+        own: Rc<Remembered>,
     }
 
     impl View {
         pub(super) fn of(at: &Path, borrowing: Option<&Path>) -> Self {
             let borrowing = crate::native_refs::beyond_alternates(at, borrowing);
+            let shared = crate::native_refs::borrowed(at, borrowing);
             Self {
                 at: at.to_owned(),
                 borrowing: borrowing.map(Path::to_owned),
-                shared: crate::native_refs::borrowed(at, borrowing),
+                shared_remembered: shared
+                    .iter()
+                    .map(|store| remembered(Source::Store(store.clone())))
+                    .collect(),
+                own: remembered(Source::Repository(
+                    at.to_owned(),
+                    borrowing.map(Path::to_owned),
+                )),
+                shared,
             }
-        }
-
-        fn own(&self) -> Source {
-            Source::Repository(self.at.clone(), self.borrowing.clone())
         }
 
         /// `read` asked of the commit through the store holding it, where one this
@@ -506,51 +587,38 @@ mod graph {
 
         /// The commit's parents, tree and committer time.
         pub(super) fn commit(&self, id: git2::Oid) -> Option<Rc<Parsed>> {
-            let remembered = COMMITS.with(|commits| {
-                let commits = commits.borrow();
-                self.shared
-                    .iter()
-                    .find_map(|store| commits.get(&(Source::Store(store.clone()), id)))
-                    .or_else(|| commits.get(&(self.own(), id)))
-                    .cloned()
-            });
+            let remembered = self
+                .shared_remembered
+                .iter()
+                .chain([&self.own])
+                .find_map(|source| source.commits.borrow().get(&id).cloned());
             if remembered.is_some() {
                 return remembered;
             }
             super::spend()?;
-            let parse = |commit: &git2::Commit<'_>| Parsed {
-                parents: commit.parent_ids().collect(),
-                tree: commit.tree_id(),
-                time: commit.committer().when().seconds(),
-            };
-            for store in &self.shared {
+            for (store, remembered) in self.shared.iter().zip(&self.shared_remembered) {
                 let read = crate::native_refs::with_store(store, |repository| {
                     repository
                         .odb()
                         .ok()?
                         .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH)
-                        .then(|| super::commit_only(repository, id).map(|commit| parse(&commit)))
+                        .then(|| parse_in(repository, id, true))
                 });
                 if let Some(read) = read {
                     let parsed = Rc::new(read?);
-                    COMMITS.with(|commits| {
-                        commits
-                            .borrow_mut()
-                            .insert((Source::Store(store.clone()), id), parsed.clone())
-                    });
+                    remembered.commits.borrow_mut().insert(id, parsed.clone());
                     return Some(parsed);
                 }
             }
             let parsed = Rc::new(crate::native_refs::with_objects(
                 &self.at,
                 self.borrowing.as_deref(),
-                |repository| Some(parse(&super::commit_only(repository, id)?)),
+                |repository| {
+                    let held = repository.odb().ok()?.exists(id);
+                    parse_in(repository, id, held)
+                },
             )?);
-            COMMITS.with(|commits| {
-                commits
-                    .borrow_mut()
-                    .insert((self.own(), id), parsed.clone())
-            });
+            self.own.commits.borrow_mut().insert(id, parsed.clone());
             Some(parsed)
         }
 
@@ -688,8 +756,7 @@ mod graph {
         /// one is what an exclusion takes — and a longer one is left to libgit2's own
         /// walk, which stops where the exclusions meet; which it is is remembered.
         fn ancestors(&self, id: git2::Oid) -> Option<Ancestors> {
-            let key = (self.own(), id);
-            if let Some(known) = ANCESTORS.with(|ancestors| ancestors.borrow().get(&key).cloned()) {
+            if let Some(known) = self.own.ancestors.borrow().get(&id).cloned() {
                 return known;
             }
             let mut seen = HashSet::from([id]);
@@ -710,7 +777,7 @@ mod graph {
                     break None;
                 }
             };
-            ANCESTORS.with(|ancestors| ancestors.borrow_mut().insert(key, listed.clone()));
+            self.own.ancestors.borrow_mut().insert(id, listed.clone());
             listed
         }
 
@@ -910,8 +977,24 @@ fn differ(
 }
 
 /// What an object is, read from its header alone.
+///
+/// Read once per handle within a read: an object's header is part of the content its
+/// id names, so it says the same every time it is asked — and libgit2, which keeps
+/// every object it parsed, keeps no header it read, so a commit asked about by every
+/// tier of every branch was its file opened and inflated again each time.
 fn kind(repository: &git2::Repository, id: git2::Oid) -> Option<git2::ObjectType> {
-    Some(repository.odb().ok()?.read_header(id).ok()?.1)
+    let remembering = crate::recovery_cache::enabled();
+    let handle = (git2::Binding::raw(repository) as usize, id);
+    if remembering {
+        if let Some(known) = KINDS.with(|kinds| kinds.borrow().get(&handle).copied()) {
+            return Some(known);
+        }
+    }
+    let read = repository.odb().ok()?.read_header(id).ok()?.1;
+    if remembering {
+        KINDS.with(|kinds| kinds.borrow_mut().insert(handle, read));
+    }
+    Some(read)
 }
 
 /// The commit `id` names where it is one, asked of its header before it is read

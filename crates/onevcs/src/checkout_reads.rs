@@ -353,10 +353,12 @@ pub(crate) fn identity(identity: &str) -> Result<Turn> {
 
 /// Protect a managed checkout even when its session record is no longer open.
 pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
-    let turn = root_of(path)?
-        .map(|root| at(root, Mode::Shared))
+    let managed = managed(path)?;
+    let turn = managed
+        .as_ref()
+        .map(|managed| at(managed.root.clone(), Mode::Shared))
         .transpose()?;
-    if admit(path, true)? == Admission::Refused {
+    if admit_as(managed, true)? == Admission::Refused {
         return Err(unavailable(path)?);
     }
     Ok(turn)
@@ -391,15 +393,60 @@ pub(crate) fn pin(path: &Path) -> Result<Pinned> {
     })
 }
 
-fn root_of(path: &Path) -> Result<Option<PathBuf>> {
+/// Where a managed checkout's turns are taken: its identity's directory, and the
+/// closing lease beside it.
+#[derive(Clone)]
+struct Managed {
+    root: PathBuf,
+    lease: PathBuf,
+}
+
+/// The paths each checkout this thread asked about resolved to, under the state root
+/// they were resolved against. Every repository read asks this of its checkout — a
+/// warm recovery read some tens of thousands of times over a few hundred checkouts —
+/// and the answer is a function of the two paths alone, so it is worked out once per
+/// path rather than once per read; a different state root starts the record again.
+/// Bounded, so a long-lived caller asking about ever more paths keeps no more than
+/// this many.
+const MANAGED_REMEMBERED: usize = 4096;
+
+thread_local! {
+    static MANAGED: RefCell<(PathBuf, HashMap<PathBuf, Option<Managed>>)> =
+        RefCell::new((PathBuf::new(), HashMap::new()));
+}
+
+/// A managed checkout's identity directory and [`closing_path`], from what this
+/// thread already resolved the path to under the same state root, where it has.
+fn managed(path: &Path) -> Result<Option<Managed>> {
     let workspaces = home::workspaces_dir()?;
-    let Some(relative) = relative_checkout(path, &workspaces) else {
-        return Ok(None);
-    };
+    let remembered = MANAGED.with(|managed| {
+        let managed = managed.borrow();
+        (managed.0 == workspaces)
+            .then(|| managed.1.get(path).cloned())
+            .flatten()
+    });
+    if let Some(known) = remembered {
+        return Ok(known);
+    }
+    let resolved = root_within(path, &workspaces).map(|root| Managed {
+        lease: lease_within(path, &root),
+        root,
+    });
+    MANAGED.with(|managed| {
+        let mut managed = managed.borrow_mut();
+        if managed.0 != workspaces || managed.1.len() >= MANAGED_REMEMBERED {
+            managed.1.clear();
+            managed.0 = workspaces;
+        }
+        managed.1.insert(path.to_owned(), resolved.clone());
+    });
+    Ok(resolved)
+}
+
+fn root_within(path: &Path, workspaces: &Path) -> Option<PathBuf> {
+    let relative = relative_checkout(path, workspaces)?;
     let mut components = relative.components();
-    let Some(identity) = components.next() else {
-        return Ok(None);
-    };
+    let identity = components.next()?;
     // Publication and recovery scratch trees also live under workspaces/. Only
     // an identity's runs/TOKEN and pool/NUMBER contain session checkouts.
     if !components.next().is_some_and(|part| {
@@ -408,9 +455,9 @@ fn root_of(path: &Path) -> Result<Option<PathBuf>> {
         })
     }) || components.next().is_none()
     {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(workspaces.join(identity)))
+    Some(workspaces.join(identity))
 }
 
 /// A close retains this per-checkout lease while yielding its identity turn to
@@ -562,10 +609,14 @@ enum Admission {
 
 /// [`available`], waiting out a probe where `wait` says so.
 fn admit(path: &Path, wait: bool) -> Result<Admission> {
-    let Some(root) = root_of(path)? else {
+    admit_as(managed(path)?, wait)
+}
+
+/// [`admit`], for a checkout already resolved.
+fn admit_as(managed: Option<Managed>, wait: bool) -> Result<Admission> {
+    let Some(Managed { root, lease: path }) = managed else {
         return Ok(Admission::Now);
     };
-    let path = closing_path(path)?.expect("a managed checkout has a lease path");
     if CLOSING.with(|held| held.borrow().get(&path).and_then(Weak::upgrade).is_some()) {
         return Ok(Admission::Now);
     }
@@ -630,18 +681,20 @@ fn read_lease(lease: &Path) -> Result<Option<lock::Guard>> {
 }
 
 pub(crate) fn closing_path(path: &Path) -> Result<Option<PathBuf>> {
-    let Some(root) = root_of(path)? else {
-        return Ok(None);
-    };
-    let relative = relative_checkout(path, &root).expect("a managed path is below its identity");
+    Ok(managed(path)?.map(|managed| managed.lease))
+}
+
+/// The closing lease of a managed checkout below `root`.
+fn lease_within(path: &Path, root: &Path) -> PathBuf {
+    let relative = relative_checkout(path, root).expect("a managed path is below its identity");
     let mut parts = relative.components();
     let family = parts.next().expect("a managed checkout has a family");
     let name = parts.next().expect("a managed checkout has a run or slot");
-    Ok(Some(root.join(format!(
+    root.join(format!(
         "onevcs-closing-{}-{}.lock",
         family.as_os_str().to_string_lossy(),
         name.as_os_str().to_string_lossy()
-    ))))
+    ))
 }
 
 fn unavailable(path: &Path) -> Result<crate::error::Error> {

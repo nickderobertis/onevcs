@@ -218,13 +218,22 @@ fn latency_program() -> std::path::PathBuf {
 }
 /// `calls` in-process launcher Decision reads, and the last one's rows.
 fn in_process(fixture: &Fixture, mode: &str, calls: usize) -> (Vec<telemetry::Call>, Value) {
-    let program = latency_program();
+    in_process_by(&latency_program(), fixture, mode, calls)
+}
+/// [`in_process`], timed by `program` — this build's timing program, or another
+/// build's.
+fn in_process_by(
+    program: &Path,
+    fixture: &Fixture,
+    mode: &str,
+    calls: usize,
+) -> (Vec<telemetry::Call>, Value) {
     assert!(
         program.is_file(),
         "the in-process timing program {} is missing: `just recoverable-journeys` builds it",
         program.display()
     );
-    let mut command = std::process::Command::new(&program);
+    let mut command = std::process::Command::new(program);
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -251,6 +260,28 @@ fn in_process(fixture: &Fixture, mode: &str, calls: usize) -> (Vec<telemetry::Ca
         serde_json::from_value(report["samples"].clone()).expect("timed calls");
     assert_eq!(timed.len(), calls, "every requested {mode} call was timed");
     (timed, report["rows"].clone())
+}
+/// The rows one warm in-process read (after its priming call) and one cold one (every
+/// proof and index cache removed first) answer, each by count and the SHA-256 of the
+/// rows with the disposable fixture root spelled out of them — through `program`.
+fn matching_answers(program: &Path, fixture: &Fixture) -> Value {
+    let mut answers = serde_json::Map::new();
+    for mode in ["warm", "cold"] {
+        let (_, rows) = in_process_by(program, fixture, mode, 1);
+        let rows = normalized(rows.as_array().expect("in-process rows"), fixture);
+        let count = rows.as_array().map_or(0, Vec::len);
+        let rows = serde_json::to_vec(&rows).expect("rows");
+        answers.insert(
+            mode.to_owned(),
+            json!({"rows": count, "sha256": digest(&rows)}),
+        );
+    }
+    Value::Object(answers)
+}
+/// The timing program of the build before the 10x warm read's cost was cut, where a
+/// caller supplies one to compare against live and to record the oracle below from.
+fn matching_baseline() -> Option<std::path::PathBuf> {
+    std::env::var_os("ONEVCS_MATCHING_BASELINE_LATENCY").map(std::path::PathBuf::from)
 }
 fn ten(calls: Vec<telemetry::Call>) -> [telemetry::Call; 10] {
     calls.try_into().expect("ten in-process calls")
@@ -534,6 +565,39 @@ fn full_workload_recovery() {
             assert_eq!(
                 call.verdict_sha256, uncached_verdict,
                 "every timed in-process call answers the uncached rows"
+            );
+        }
+        // What `recoverable_matching` answered warm and cold before its 10x warm cost
+        // was cut, recorded once from that build's timing program and compared live
+        // wherever a caller supplies it: making the read cheaper changes no answer.
+        let matched = matching_answers(&latency_program(), &fixture);
+        let matching_oracle = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "tests/recovery-workload/oracle-matching-{}.json",
+            scale.number()
+        ));
+        if let Some(before) = matching_baseline() {
+            let theirs = matching_answers(&before, &fixture);
+            assert_eq!(theirs, matched, "the earlier build's warm and cold rows");
+            if let Some(output) = std::env::var_os("ONEVCS_BASELINE_ORACLE_DIR") {
+                std::fs::write(
+                    Path::new(&output).join(format!("oracle-matching-{}.json", scale.number())),
+                    serde_json::to_vec_pretty(&json!({"build": "6ec1518", "answers": theirs}))
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+        } else {
+            let oracle: Value =
+                serde_json::from_slice(&std::fs::read(&matching_oracle).unwrap_or_else(|_| {
+                    panic!(
+                        "recorded matching oracle {} is required",
+                        matching_oracle.display()
+                    )
+                }))
+                .expect("matching oracle JSON");
+            assert_eq!(
+                oracle["answers"], matched,
+                "the recorded earlier build's warm and cold rows"
             );
         }
         // 0.43.1's launcher-filtered Decision rows, whole: recorded once from the
