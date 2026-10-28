@@ -427,10 +427,68 @@ mod graph {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
+    #[derive(Clone)]
     pub(super) struct Parsed {
         pub(super) parents: Vec<git2::Oid>,
         pub(super) tree: git2::Oid,
         pub(super) time: i64,
+    }
+
+    /// The most commits [`PARSED`] keeps: some megabytes, and more than the
+    /// histories a host's warm reads walk between them.
+    const PARSED_REMEMBERED: usize = 1 << 16;
+
+    /// What every read of this process has parsed of a commit, by its id.
+    ///
+    /// An id names a commit's content, and its parents, tree and committer time are
+    /// that content, so they are the same in every store that holds it and in every
+    /// read that asks. So a later read parses none of them again — and what it still
+    /// asks of the store it reads through is whether that store holds the commit now,
+    /// as every read did before it, so a store that has lost one answers as it did.
+    /// Nothing else about a store or a ref is kept here: refs are read afresh and the
+    /// stores listed and held to their proofs on every read, as before. Emptied once it
+    /// holds [`PARSED_REMEMBERED`], so it stays bounded in a long-lived process.
+    static PARSED: std::sync::Mutex<Option<HashMap<git2::Oid, Parsed>>> =
+        std::sync::Mutex::new(None);
+
+    /// What an earlier read parsed of `id`, where one did.
+    fn parsed(id: git2::Oid) -> Option<Parsed> {
+        PARSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()?
+            .get(&id)
+            .cloned()
+    }
+
+    /// Keep what this read parsed of `id` for the reads after it.
+    fn keep_parsed(id: git2::Oid, commit: &Parsed) {
+        let mut kept = PARSED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kept = kept.get_or_insert_with(HashMap::new);
+        if kept.len() >= PARSED_REMEMBERED {
+            kept.clear();
+        }
+        kept.insert(id, commit.clone());
+    }
+
+    /// The commit `id` names as `repository` holds it: what an earlier read parsed of
+    /// it where the repository holds it now, and otherwise read and parsed here.
+    fn parse_in(repository: &git2::Repository, id: git2::Oid, held: bool) -> Option<Parsed> {
+        if held {
+            if let Some(known) = parsed(id) {
+                return Some(known);
+            }
+        }
+        let commit = super::commit_only(repository, id)?;
+        let read = Parsed {
+            parents: commit.parent_ids().collect(),
+            tree: commit.tree_id(),
+            time: commit.committer().when().seconds(),
+        };
+        keep_parsed(id, &read);
+        Some(read)
     }
 
     /// Where a remembered commit was read: a store any borrower of it may use, or
@@ -541,18 +599,13 @@ mod graph {
                 return remembered;
             }
             super::spend()?;
-            let parse = |commit: &git2::Commit<'_>| Parsed {
-                parents: commit.parent_ids().collect(),
-                tree: commit.tree_id(),
-                time: commit.committer().when().seconds(),
-            };
             for (store, remembered) in self.shared.iter().zip(&self.shared_remembered) {
                 let read = crate::native_refs::with_store(store, |repository| {
                     repository
                         .odb()
                         .ok()?
                         .exists_ext(id, git2::OdbLookupFlags::NO_REFRESH)
-                        .then(|| super::commit_only(repository, id).map(|commit| parse(&commit)))
+                        .then(|| parse_in(repository, id, true))
                 });
                 if let Some(read) = read {
                     let parsed = Rc::new(read?);
@@ -563,7 +616,10 @@ mod graph {
             let parsed = Rc::new(crate::native_refs::with_objects(
                 &self.at,
                 self.borrowing.as_deref(),
-                |repository| Some(parse(&super::commit_only(repository, id)?)),
+                |repository| {
+                    let held = repository.odb().ok()?.exists(id);
+                    parse_in(repository, id, held)
+                },
             )?);
             self.own.commits.borrow_mut().insert(id, parsed.clone());
             Some(parsed)
