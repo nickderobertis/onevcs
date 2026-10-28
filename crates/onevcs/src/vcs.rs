@@ -619,7 +619,11 @@ fn collected(
         }
         true
     });
+    // Where processes work is looked at once for the whole read, the first time a
+    // branch's holder is asked about, rather than once per open session asked.
+    let look = crate::processes::Look::default();
     let scan = Scan {
+        look: &look,
         registry: &registry,
         streams: &streams,
         sessions: &sessions,
@@ -673,6 +677,7 @@ fn collected(
 /// identity's.
 struct Scan<'a> {
     detail: crate::Detail,
+    look: &'a crate::processes::Look,
     registry: &'a crate::registry::Registry,
     streams: &'a [crate::status::Recorded],
     sessions: &'a [workspace::Record],
@@ -737,7 +742,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         trailers,
         crate::retire::Reach::Offline,
         narrowed.as_ref().map(|only| &only.checkouts),
-    )?;
+    )?
+    .looking_once(scan.look);
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for repo in workspace::checkouts_among(registry, &resolution, sessions) {

@@ -249,6 +249,33 @@ const GRACE: Duration = Duration::from_secs(2);
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// One look at where every process this host can show is working, taken the first
+/// time a read asks and answered from for the rest of that read.
+///
+/// For a read that asks [`holding`]'s question of many run roots, each of which used
+/// to list every process on the host and read where each one works: the answer it
+/// gives about each run root is the one [`holding`] would give, as of that one look.
+#[derive(Default)]
+pub(crate) struct Look(std::sync::OnceLock<Vec<PathBuf>>);
+
+impl Look {
+    /// Whether [`holding`] would name anybody inside `run_root`, as of this look.
+    pub(crate) fn anybody_in(&self, run_root: &Path) -> bool {
+        self.0
+            .get_or_init(|| {
+                let ours = ancestry();
+                live_pids()
+                    .into_iter()
+                    .filter(|pid| !ours.contains(pid))
+                    .filter_map(Pid::new)
+                    .filter_map(working_dir)
+                    .collect()
+            })
+            .iter()
+            .any(|cwd| cwd.starts_with(run_root))
+    }
+}
+
 /// Every process this host can show is working inside `run_root`.
 ///
 /// The answer is what it can *show*: a process this user may not ask about is not
