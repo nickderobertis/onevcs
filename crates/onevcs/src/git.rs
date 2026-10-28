@@ -462,12 +462,12 @@ mod reads {
     }
 
     /// One of the two questions no write can move, as this process answers it.
-    #[derive(PartialEq, Eq, Hash)]
+    #[derive(Clone, PartialEq, Eq, Hash)]
     pub(super) enum Fact {
         /// Whether the repository holds this commit.
-        Holds(String),
+        Holds(ObjectId),
         /// Whether the second commit reaches the first.
-        Reaches(String, String),
+        Reaches(ObjectId, ObjectId),
     }
 
     type FactKey = (PathBuf, Vec<(String, String)>, Fact);
@@ -1369,12 +1369,19 @@ fn recalled_fact(at: &Path, env: &[(String, String)], fact: reads::Fact) -> Opti
 pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
     let cwd = cwd.into();
     let env = cwd.env();
-    let fact = || reads::Fact::Holds(sha.0.clone());
-    if let Some(answer) = recalled_fact(cwd.path(), &env, fact()) {
+    // Only a whole object id names an immutable commit; anything else is never
+    // answered in process, so it is never remembered either.
+    let fact = ObjectId::parse(&sha.0).map(reads::Fact::Holds);
+    if let Some(answer) = fact
+        .clone()
+        .and_then(|fact| recalled_fact(cwd.path(), &env, fact))
+    {
         return answer;
     }
     if let Some(answer) = crate::native_refs::has_commit(cwd.path(), &env, &sha.0) {
-        reads::learn(cwd.path(), &env, fact(), answer);
+        if let Some(fact) = fact {
+            reads::learn(cwd.path(), &env, fact, answer);
+        }
         return answer;
     }
     run_in(cwd, &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)])
@@ -3335,12 +3342,20 @@ pub fn is_ancestor<'a>(
 ) -> Result<bool> {
     let cwd = cwd.into();
     let env = cwd.env();
-    let fact = || reads::Fact::Reaches(ancestor.to_owned(), descendant.to_owned());
-    if let Some(answer) = recalled_fact(cwd.path(), &env, fact()) {
+    // As in `has_commit`: only whole object ids are answered in process.
+    let fact = ObjectId::parse(ancestor)
+        .zip(ObjectId::parse(descendant))
+        .map(|(ancestor, descendant)| reads::Fact::Reaches(ancestor, descendant));
+    if let Some(answer) = fact
+        .clone()
+        .and_then(|fact| recalled_fact(cwd.path(), &env, fact))
+    {
         return Ok(answer);
     }
     if let Some(answer) = crate::native_refs::is_ancestor(cwd.path(), &env, ancestor, descendant) {
-        reads::learn(cwd.path(), &env, fact(), answer);
+        if let Some(fact) = fact {
+            reads::learn(cwd.path(), &env, fact, answer);
+        }
         return Ok(answer);
     }
     let output = run_in(cwd, &["merge-base", "--is-ancestor", ancestor, descendant])?;
@@ -4514,7 +4529,7 @@ fn refused_refs(porcelain: &str) -> Vec<String> {
 /// hexadecimal object id and nothing else: what a remote advertises is external
 /// input, and a line of it that is not an id must not go on to be compared against
 /// a lease as though it were one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObjectId(String);
 
 impl ObjectId {
