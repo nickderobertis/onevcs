@@ -31,6 +31,10 @@ const OBJECT_LIMIT: usize = 512;
 
 thread_local! {
     static UNSPENT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    /// What each object a repository handle of this read was asked about is, by the
+    /// handle — which lives until the read ends, when this is forgotten with it.
+    static KINDS: std::cell::RefCell<std::collections::HashMap<(usize, git2::Oid), git2::ObjectType>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Count one object read for the answer being made, or decline once its allowance is
@@ -85,9 +89,10 @@ pub(crate) fn is_ancestor(
     graph::View::of(repo, borrowing).is_ancestor(ancestor, descendant)
 }
 
-/// Forget every commit read within the read that is ending.
+/// Forget every commit and header read within the read that is ending.
 pub(crate) fn clear() {
     graph::clear();
+    KINDS.with(|kinds| kinds.borrow_mut().clear());
 }
 
 /// One argument shape, with its object ids already parsed.
@@ -910,8 +915,24 @@ fn differ(
 }
 
 /// What an object is, read from its header alone.
+///
+/// Read once per handle within a read: an object's header is part of the content its
+/// id names, so it says the same every time it is asked — and libgit2, which keeps
+/// every object it parsed, keeps no header it read, so a commit asked about by every
+/// tier of every branch was its file opened and inflated again each time.
 fn kind(repository: &git2::Repository, id: git2::Oid) -> Option<git2::ObjectType> {
-    Some(repository.odb().ok()?.read_header(id).ok()?.1)
+    let remembering = crate::recovery_cache::enabled();
+    let handle = (git2::Binding::raw(repository) as usize, id);
+    if remembering {
+        if let Some(known) = KINDS.with(|kinds| kinds.borrow().get(&handle).copied()) {
+            return Some(known);
+        }
+    }
+    let read = repository.odb().ok()?.read_header(id).ok()?.1;
+    if remembering {
+        KINDS.with(|kinds| kinds.borrow_mut().insert(handle, read));
+    }
+    Some(read)
 }
 
 /// The commit `id` names where it is one, asked of its header before it is read
