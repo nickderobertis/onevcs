@@ -446,14 +446,26 @@ mod graph {
     /// The longest history listed whole to exclude it from a walk.
     const ANCESTRY: usize = 4096;
 
+    /// What this read remembers of the commits one source was read through.
+    #[derive(Default)]
+    struct Remembered {
+        commits: RefCell<HashMap<git2::Oid, Rc<Parsed>>>,
+        ancestors: RefCell<HashMap<git2::Oid, Option<Ancestors>>>,
+    }
+
     thread_local! {
-        static COMMITS: RefCell<HashMap<(Source, git2::Oid), Rc<Parsed>>> = RefCell::new(HashMap::new());
-        static ANCESTORS: RefCell<HashMap<(Source, git2::Oid), Option<Ancestors>>> = RefCell::new(HashMap::new());
+        /// Each source's memory, which a [`View`] takes hold of once when it is made,
+        /// so that a walk asking for one commit after another asks by its id alone.
+        static SOURCES: RefCell<HashMap<Source, Rc<Remembered>>> = RefCell::new(HashMap::new());
     }
 
     pub(super) fn clear() {
-        COMMITS.with(|commits| commits.borrow_mut().clear());
-        ANCESTORS.with(|ancestors| ancestors.borrow_mut().clear());
+        SOURCES.with(|sources| sources.borrow_mut().clear());
+    }
+
+    /// The memory this read keeps of `source`.
+    fn remembered(source: Source) -> Rc<Remembered> {
+        SOURCES.with(|sources| sources.borrow_mut().entry(source).or_default().clone())
     }
 
     const PARENT1: u8 = 1;
@@ -466,20 +478,29 @@ mod graph {
         at: PathBuf,
         borrowing: Option<PathBuf>,
         shared: Vec<PathBuf>,
+        /// What is remembered of each store in `shared`, in the same order.
+        shared_remembered: Vec<Rc<Remembered>>,
+        /// What is remembered of this repository's whole view.
+        own: Rc<Remembered>,
     }
 
     impl View {
         pub(super) fn of(at: &Path, borrowing: Option<&Path>) -> Self {
             let borrowing = crate::native_refs::beyond_alternates(at, borrowing);
+            let shared = crate::native_refs::borrowed(at, borrowing);
             Self {
                 at: at.to_owned(),
                 borrowing: borrowing.map(Path::to_owned),
-                shared: crate::native_refs::borrowed(at, borrowing),
+                shared_remembered: shared
+                    .iter()
+                    .map(|store| remembered(Source::Store(store.clone())))
+                    .collect(),
+                own: remembered(Source::Repository(
+                    at.to_owned(),
+                    borrowing.map(Path::to_owned),
+                )),
+                shared,
             }
-        }
-
-        fn own(&self) -> Source {
-            Source::Repository(self.at.clone(), self.borrowing.clone())
         }
 
         /// `read` asked of the commit through the store holding it, where one this
@@ -511,14 +532,11 @@ mod graph {
 
         /// The commit's parents, tree and committer time.
         pub(super) fn commit(&self, id: git2::Oid) -> Option<Rc<Parsed>> {
-            let remembered = COMMITS.with(|commits| {
-                let commits = commits.borrow();
-                self.shared
-                    .iter()
-                    .find_map(|store| commits.get(&(Source::Store(store.clone()), id)))
-                    .or_else(|| commits.get(&(self.own(), id)))
-                    .cloned()
-            });
+            let remembered = self
+                .shared_remembered
+                .iter()
+                .chain([&self.own])
+                .find_map(|source| source.commits.borrow().get(&id).cloned());
             if remembered.is_some() {
                 return remembered;
             }
@@ -528,7 +546,7 @@ mod graph {
                 tree: commit.tree_id(),
                 time: commit.committer().when().seconds(),
             };
-            for store in &self.shared {
+            for (store, remembered) in self.shared.iter().zip(&self.shared_remembered) {
                 let read = crate::native_refs::with_store(store, |repository| {
                     repository
                         .odb()
@@ -538,11 +556,7 @@ mod graph {
                 });
                 if let Some(read) = read {
                     let parsed = Rc::new(read?);
-                    COMMITS.with(|commits| {
-                        commits
-                            .borrow_mut()
-                            .insert((Source::Store(store.clone()), id), parsed.clone())
-                    });
+                    remembered.commits.borrow_mut().insert(id, parsed.clone());
                     return Some(parsed);
                 }
             }
@@ -551,11 +565,7 @@ mod graph {
                 self.borrowing.as_deref(),
                 |repository| Some(parse(&super::commit_only(repository, id)?)),
             )?);
-            COMMITS.with(|commits| {
-                commits
-                    .borrow_mut()
-                    .insert((self.own(), id), parsed.clone())
-            });
+            self.own.commits.borrow_mut().insert(id, parsed.clone());
             Some(parsed)
         }
 
@@ -693,8 +703,7 @@ mod graph {
         /// one is what an exclusion takes — and a longer one is left to libgit2's own
         /// walk, which stops where the exclusions meet; which it is is remembered.
         fn ancestors(&self, id: git2::Oid) -> Option<Ancestors> {
-            let key = (self.own(), id);
-            if let Some(known) = ANCESTORS.with(|ancestors| ancestors.borrow().get(&key).cloned()) {
+            if let Some(known) = self.own.ancestors.borrow().get(&id).cloned() {
                 return known;
             }
             let mut seen = HashSet::from([id]);
@@ -715,7 +724,7 @@ mod graph {
                     break None;
                 }
             };
-            ANCESTORS.with(|ancestors| ancestors.borrow_mut().insert(key, listed.clone()));
+            self.own.ancestors.borrow_mut().insert(id, listed.clone());
             listed
         }
 
