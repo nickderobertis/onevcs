@@ -454,7 +454,56 @@ mod reads {
         static MEMO: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
         /// The answers no write inside the scope can move, kept past every write.
         static SETTLED: RefCell<HashMap<Key, Output>> = RefCell::new(HashMap::new());
+        /// The same two questions answered in process rather than by git, under the
+        /// same rule: a commit held and either answer about ancestry are kept past
+        /// every write, and a commit not held is asked again after one.
+        static FACTS: RefCell<HashMap<FactKey, bool>> = RefCell::new(HashMap::new());
         static BYPASSED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// One of the two questions no write can move, as this process answers it.
+    #[derive(PartialEq, Eq, Hash)]
+    pub(super) enum Fact {
+        /// Whether the repository holds this commit.
+        Holds(String),
+        /// Whether the second commit reaches the first.
+        Reaches(String, String),
+    }
+
+    type FactKey = (PathBuf, Vec<(String, String)>, Fact);
+
+    /// What this read already answered in process about `fact` in `cwd`, read with
+    /// `env`.
+    pub(super) fn fact(cwd: &Path, env: &[(String, String)], fact: Fact) -> Option<bool> {
+        if !active() {
+            return None;
+        }
+        FACTS.with(|facts| {
+            facts
+                .borrow()
+                .get(&(cwd.to_path_buf(), env.to_vec(), fact))
+                .copied()
+        })
+    }
+
+    /// Remember an in-process answer for the rest of this read.
+    pub(super) fn learn(cwd: &Path, env: &[(String, String)], fact: Fact, answer: bool) {
+        if active() {
+            FACTS.with(|facts| {
+                facts
+                    .borrow_mut()
+                    .insert((cwd.to_path_buf(), env.to_vec(), fact), answer);
+            });
+        }
+    }
+
+    /// Forget what a write can move: a commit a repository did not hold.
+    fn forget_absences() {
+        FACTS.with(|facts| {
+            facts
+                .borrow_mut()
+                .retain(|(_, _, fact), answer| *answer || !matches!(fact, Fact::Holds(_)));
+        });
     }
 
     pub(super) fn enter() {
@@ -468,6 +517,7 @@ mod reads {
                 MEMO.with(|memo| memo.borrow_mut().clear());
                 crate::native_refs::clear();
                 SETTLED.with(|settled| settled.borrow_mut().clear());
+                FACTS.with(|facts| facts.borrow_mut().clear());
             }
         });
     }
@@ -549,6 +599,7 @@ mod reads {
         }
         if !harmless(args) {
             MEMO.with(|memo| memo.borrow_mut().clear());
+            forget_absences();
             if args.first() != Some(&"status") {
                 crate::recovery_cache::clear();
             }
@@ -1299,6 +1350,16 @@ pub fn check_bounds() -> Result<()> {
     Ok(())
 }
 
+/// What this read already answered in process about `fact`, where the checkout is
+/// still admitted to: an answer is only ever given from inside the checkout's turn,
+/// as answering it again would be, so one that could not be admitted now is asked
+/// again — and refused there as it would have been.
+fn recalled_fact(at: &Path, env: &[(String, String)], fact: reads::Fact) -> Option<bool> {
+    let known = reads::fact(at, env, fact)?;
+    crate::checkout_reads::checkout(at).ok()?;
+    Some(known)
+}
+
 /// Whether a repository can reach one commit, through its own object store or the
 /// one a `--shared` clone borrows.
 ///
@@ -1307,7 +1368,13 @@ pub fn check_bounds() -> Result<()> {
 /// keeps fetching, and the objects come with the alternates.
 pub fn has_commit<'a>(cwd: impl Into<Asked<'a>>, sha: &Sha) -> bool {
     let cwd = cwd.into();
-    if let Some(answer) = crate::native_refs::has_commit(cwd.path(), &cwd.env(), &sha.0) {
+    let env = cwd.env();
+    let fact = || reads::Fact::Holds(sha.0.clone());
+    if let Some(answer) = recalled_fact(cwd.path(), &env, fact()) {
+        return answer;
+    }
+    if let Some(answer) = crate::native_refs::has_commit(cwd.path(), &env, &sha.0) {
+        reads::learn(cwd.path(), &env, fact(), answer);
         return answer;
     }
     run_in(cwd, &["cat-file", "-e", &format!("{}^{{commit}}", sha.0)])
@@ -3267,9 +3334,13 @@ pub fn is_ancestor<'a>(
     descendant: &str,
 ) -> Result<bool> {
     let cwd = cwd.into();
-    if let Some(answer) =
-        crate::native_refs::is_ancestor(cwd.path(), &cwd.env(), ancestor, descendant)
-    {
+    let env = cwd.env();
+    let fact = || reads::Fact::Reaches(ancestor.to_owned(), descendant.to_owned());
+    if let Some(answer) = recalled_fact(cwd.path(), &env, fact()) {
+        return Ok(answer);
+    }
+    if let Some(answer) = crate::native_refs::is_ancestor(cwd.path(), &env, ancestor, descendant) {
+        reads::learn(cwd.path(), &env, fact(), answer);
         return Ok(answer);
     }
     let output = run_in(cwd, &["merge-base", "--is-ancestor", ancestor, descendant])?;
