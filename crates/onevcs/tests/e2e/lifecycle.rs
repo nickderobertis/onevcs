@@ -6468,6 +6468,106 @@ fn two_publications_of_one_identity_queue_rather_than_race() {
     );
 }
 
+#[test]
+fn a_publication_checks_readiness_only_after_the_previous_fast_forward() {
+    let fixture = Fixture::local(&local_direct());
+    let mut sessions = Vec::new();
+    for index in 0..2 {
+        let (token, worktree) = fixture.open(&["--branch", &format!("feature/readiness-{index}")]);
+        fixture.world.commit_file(
+            &worktree,
+            &format!("{index}.txt"),
+            "value\n",
+            &format!("feat: readiness {index}"),
+        );
+        sessions.push(token);
+    }
+    let entered = fixture.world.path("fast-forward-entered");
+    let release = fixture.world.path("release-fast-forward");
+    // Git calls this hook after writing the fast-forward's index, before moving
+    // HEAD. Hold that real transition open while the next publication arrives.
+    fixture.world.install_hook(
+        &fixture.checkout,
+        "post-index-change",
+        &format!(
+            "[ \"$1\" = 1 ] || exit 0\n\
+             [ \"$PWD\" = '{}' ] || exit 0\n\
+             if ! git diff --cached --quiet; then\n\
+             touch '{}'\n\
+             for _ in $(seq 1 3000); do\n\
+             if [ -e '{}' ]; then exit 0; fi\n\
+             sleep 0.02\n\
+             done\n\
+             echo 'fast-forward was never released' >&2\n\
+             exit 1\n\
+             fi",
+            fixture.checkout.display(),
+            entered.display(),
+            release.display()
+        ),
+    );
+    let mut first = fixture.world.onevcs();
+    first.args(["publish", &sessions[0]]);
+    let first = std::thread::spawn(move || first.output().expect("first publication runs"));
+    World::until("the first fast-forward has written its index", || {
+        entered.exists()
+    });
+
+    let mut second = fixture.world.onevcs();
+    second.args(["publish", &sessions[1]]);
+    let second = std::thread::spawn(move || second.output().expect("second publication runs"));
+    World::until(
+        "the second publication queues or is prematurely refused",
+        || {
+            // llmlint: ignore[tests_mirror_real_usage] waiting tickets have no user-facing surface
+            fixture.world.queued_tickets() == 2 || second.is_finished()
+        },
+    );
+    std::fs::write(&release, "go\n").expect("release the real fast-forward");
+    for handle in [first, second] {
+        let output = handle.join().expect("publication thread");
+        assert!(
+            output.status.success(),
+            "both publications must land: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let subjects = fixture.origin_log();
+    assert!(
+        subjects.contains(&"feat: readiness 0".to_owned()),
+        "{subjects:?}"
+    );
+    assert!(
+        subjects.contains(&"feat: readiness 1".to_owned()),
+        "{subjects:?}"
+    );
+    assert_eq!(
+        fixture
+            .world
+            .git(&fixture.checkout, &["status", "--porcelain"]),
+        ""
+    );
+
+    let (token, worktree) = fixture.open(&["--branch", "feature/really-dirty"]);
+    fixture
+        .world
+        .commit_file(&worktree, "third.txt", "third\n", "feat: third");
+    std::fs::write(fixture.checkout.join("left-dirty.txt"), "user work\n")
+        .expect("dirty the publication checkout");
+    fixture
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is dirty; it is never worked in"));
+    assert_eq!(
+        fixture.origin_log(),
+        subjects,
+        "dirty checkout refuses publication"
+    );
+}
+
 /// One session and one base that disagree about `files` files, which is a real
 /// conflict driven end to end rather than one asserted about.
 fn conflicting_over(fixture: &Fixture, branch: &str, files: usize) -> String {
