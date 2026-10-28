@@ -514,7 +514,6 @@ fn a_remote_path_holding_no_repository_leaves_its_head_to_git() {
     });
 }
 
-/// The launcher this file's recovery journeys label their sessions with.
 const LAUNCHER: &str = "repeated-reads";
 
 /// One launcher's Decision rows, read in this process through the library the way a
@@ -659,7 +658,6 @@ fn a_recoverable_read_after_its_store_loses_a_commit_answers_from_the_store_as_i
     assert_ne!(later, Ok(first), "the loss is in the answer");
 }
 
-/// The row a launcher read answers for `branch`.
 fn row_for<'a>(rows: &'a serde_json::Value, branch: &str) -> &'a serde_json::Value {
     rows.as_array()
         .expect("rows")
@@ -681,7 +679,6 @@ fn a_recoverable_read_counts_a_process_inside_a_run_root_only_while_it_is_there(
     world.commit_file(&vacant, "b.txt", "b\n", "feat: work nobody is in");
     inhabit(world);
 
-    // A process this journey starts works inside one of the two trees.
     let mut inside = std::process::Command::new("sleep")
         .arg("300")
         .current_dir(&occupied)

@@ -451,7 +451,6 @@ mod graph {
     static PARSED: std::sync::Mutex<Option<HashMap<git2::Oid, Parsed>>> =
         std::sync::Mutex::new(None);
 
-    /// What an earlier read parsed of `id`, where one did.
     fn parsed(id: git2::Oid) -> Option<Parsed> {
         PARSED
             .lock()
@@ -461,7 +460,6 @@ mod graph {
             .cloned()
     }
 
-    /// Keep what this read parsed of `id` for the reads after it.
     fn keep_parsed(id: git2::Oid, commit: &Parsed) {
         let mut kept = PARSED
             .lock()
@@ -521,7 +519,6 @@ mod graph {
         SOURCES.with(|sources| sources.borrow_mut().clear());
     }
 
-    /// The memory this read keeps of `source`.
     fn remembered(source: Source) -> Rc<Remembered> {
         SOURCES.with(|sources| sources.borrow_mut().entry(source).or_default().clone())
     }
