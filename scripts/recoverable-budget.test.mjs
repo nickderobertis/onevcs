@@ -109,8 +109,6 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
   } finally { rmSync(f.root, {recursive:true,force:true}); }
 });
 
-// The latency reader reports the median of the ten recorded wall times, in seconds, and
-// refuses a mode the record does not hold rather than reporting nothing.
 test("latency reader reports median wall time despite minority outliers and refuses unrecorded modes", () => {
   const f = fixture();
   try {
@@ -136,7 +134,10 @@ test("latency reader reports median wall time despite minority outliers and refu
       rmSync(join(f.root, "result.json"), { force: true });
       const accepted = run(...args);
       assert.equal(accepted.status, 0, accepted.stderr);
-      assert.ok(readFileSync(join(f.root, "result.json"), "utf8").includes(String(value)), `${args.join(" ")} reports ${value}`);
+      const result = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+      assert.equal(result.value, value, args.join(" "));
+      const maximum = args[1] === "10" ? "5000.0" : "12.5";
+      assert.equal(result.detail, `invocation ${f.record.build.run_id}: ${args[2].slice(2)} in-process launcher Decision, scale ${args[1]}: median of 10 calls ${(value * 1000).toFixed(1)}ms (maximum ${maximum}ms), load1 1-1`);
     }
     // A systematic slowdown still reaches the checker as an over-budget value.
     for (const call of f.record.workloads[1].in_process_warm) call.wall_ms += 400;
