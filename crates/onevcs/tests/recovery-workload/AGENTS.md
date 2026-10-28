@@ -21,7 +21,11 @@ recovery recipes and named by `ONEVCS_RECOVERY_LATENCY`, makes ten
 `recoverable_matching` calls per mode (`warm` after one priming call, `cold` with
 every cache under `cache/recoverable/v1` removed before each) and the journey holds
 every call's rows to an `uncached` read (a `GIT_*` override refuses proofs and
-in-process reads). `scripts/recoverable-latency-budget.mjs` reports the slowest.
+in-process reads). `scripts/recoverable-latency-budget.mjs` reports the median wall time
+(the mean of sorted calls five and six), retaining the maximum in its diagnostic.
+Up to four scheduling outliers therefore cannot decide the verdict; persistent
+decision slowdowns, including waits, still affect the middle calls. Keep all ten
+calls and the unchanged thresholds: never filter samples by the host's load1.
 
 `oracle-decision-{1,10}.json` hold onevcs 0.43.1's launcher-filtered Decision rows
 — by count and the SHA-256 of the normalized rows, so the documents stay small — and
