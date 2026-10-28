@@ -1,0 +1,13 @@
+{
+  "build": "6ec1518",
+  "answers": {
+    "warm": {
+      "rows": 144,
+      "sha256": "daf03a59e77b534b3ebb01e3c553130b152964ff55e205b1d9173646f41bf2b5"
+    },
+    "cold": {
+      "rows": 144,
+      "sha256": "daf03a59e77b534b3ebb01e3c553130b152964ff55e205b1d9173646f41bf2b5"
+    }
+  }
+}
