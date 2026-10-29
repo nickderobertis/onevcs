@@ -109,9 +109,7 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
   } finally { rmSync(f.root, {recursive:true,force:true}); }
 });
 
-// The latency reader reports the slowest of the ten recorded calls, in seconds, and
-// refuses a mode the record does not hold rather than reporting nothing.
-test("latency reader reports the slowest in-process call and refuses unrecorded modes", () => {
+test("latency reader reports median wall time despite minority outliers and refuses unrecorded modes", () => {
   const f = fixture();
   try {
     mkdirSync(join(f.root, "scripts"));
@@ -121,7 +119,10 @@ test("latency reader reports the slowest in-process call and refuses unrecorded 
       mkdirSync(join(f.root, path, ".."), {recursive:true});
       copyFileSync(join(repositoryRoot,path),join(f.root,path));
     }
-    f.record.workloads[1].in_process_warm[4].wall_ms = 270.25;
+    // Unsorted samples: four load-inflated calls must not decide the verdict,
+    // and the two distinct middle values prove the even-count median calculation.
+    const timings = [5000, 12.5, 270, 5000, 12.5, 270.5, 5000, 12.5, 5000, 12.5];
+    f.record.workloads[1].in_process_warm.forEach((call, i) => { call.wall_ms = timings[i]; });
     f.save();
     for (const name of ["onevcs", "recoverable.json", "recoverable-invocation.json"]) {
       copyFileSync(join(f.root, name), join(f.root, "target", "budget-records", name));
@@ -133,8 +134,17 @@ test("latency reader reports the slowest in-process call and refuses unrecorded 
       rmSync(join(f.root, "result.json"), { force: true });
       const accepted = run(...args);
       assert.equal(accepted.status, 0, accepted.stderr);
-      assert.ok(readFileSync(join(f.root, "result.json"), "utf8").includes(String(value)), `${args.join(" ")} reports ${value}`);
+      const result = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+      assert.equal(result.value, value, args.join(" "));
+      const maximum = args[1] === "10" ? "5000.0" : "12.5";
+      assert.equal(result.detail, `invocation ${f.record.build.run_id}: ${args[2].slice(2)} in-process launcher Decision, scale ${args[1]}: median of 10 calls ${(value * 1000).toFixed(1)}ms (maximum ${maximum}ms), load1 1-1`);
     }
+    // A systematic slowdown still reaches the checker as an over-budget value.
+    for (const call of f.record.workloads[1].in_process_warm) call.wall_ms += 400;
+    writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
+    const slower = run("--scale", "10", "--warm");
+    assert.equal(slower.status, 0, slower.stderr);
+    assert.ok(readFileSync(join(f.root, "result.json"), "utf8").includes("0.67025"));
     const unrecorded = run("--scale", "10", "--cold");
     assert.equal(unrecorded.status, 2);
     assert.match(unrecorded.stderr, /in-process cold calls are recorded at --scale 1 only/);

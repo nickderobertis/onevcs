@@ -21,10 +21,15 @@ try {
   const workload = record.workloads.find(row => row.scale === Number(args[1]));
   const calls = workload[`in_process_${mode}`];
   if (!calls) throw new Error(`no in-process ${mode} calls were recorded at scale ${workload.scale}`);
-  const slowest = Math.max(...calls.map(call => call.wall_ms));
+  // Ten independent calls retain the wall-clock cost (including deliberate waits),
+  // while up to four scheduler outliers cannot decide the budget. A persistent
+  // regression affects the middle calls too; never discard calls based on load1.
+  const timings = calls.map(call => call.wall_ms).sort((a, b) => a - b);
+  const median = (timings[4] + timings[5]) / 2;
+  const slowest = timings.at(-1);
   const loads = calls.map(call => call.load1);
-  const description = `${mode} in-process launcher Decision, scale ${workload.scale}: slowest of ${calls.length} calls ${slowest.toFixed(1)}ms, load1 ${Math.min(...loads)}-${Math.max(...loads)}`;
-  if (!report(slowest / 1000, `invocation ${record.build.run_id}: ${description}`)) {
+  const description = `${mode} in-process launcher Decision, scale ${workload.scale}: median of ${calls.length} calls ${median.toFixed(1)}ms (maximum ${slowest.toFixed(1)}ms), load1 ${Math.min(...loads)}-${Math.max(...loads)}`;
+  if (!report(median / 1000, `invocation ${record.build.run_id}: ${description}`)) {
     throw new Unwired("ONEBUDGETSPEC_RESULT is missing, so there is nowhere to report to");
   }
 } catch (error) {
