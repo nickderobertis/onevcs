@@ -615,6 +615,96 @@ fn a_recoverable_read_after_a_branch_moves_answers_where_it_now_stands() {
 }
 
 #[test]
+fn a_warm_recoverable_read_observes_a_tree_loss_and_repair() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let branch = "feature/missing-tree";
+    preserved_unpublished(&fixture, branch);
+    let tip = more_work(&fixture, branch);
+    let tree = world.git(
+        &fixture.checkout,
+        &["rev-parse", &format!("{tip}^{{tree}}")],
+    );
+    let base = world.git(&fixture.checkout, &["rev-parse", "origin/main"]);
+    let raw = world.path("missing.tree");
+    let bytes = world.git_raw(&fixture.checkout, &["cat-file", "tree", &tree]);
+    assert!(bytes.status.success());
+    std::fs::write(&raw, bytes.stdout).unwrap();
+    inhabit(world);
+    let read = launcher_rows;
+    let first = read().expect("the complete history is readable");
+    assert!(first
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["tip"] == tip && row["landed"]["state"] == "no"));
+    assert_eq!(read().unwrap(), first, "prime the same process's answers");
+
+    // Remove every loose copy, including the run clone's. The tip and base
+    // commits remain readable; the fresh object-store guards must still observe
+    // the tree needed to compare their content disappearing.
+    let suffix = Path::new("objects").join(&tree[..2]).join(&tree[2..]);
+    let mut pending = vec![world.path("")];
+    let mut copies = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path);
+            } else if path.ends_with(&suffix) {
+                copies.push(path);
+            }
+        }
+    }
+    assert!(!copies.is_empty(), "the tree is loose");
+    for copy in &copies {
+        std::fs::remove_file(copy).unwrap();
+    }
+    let oracle = world.git_raw(&fixture.checkout, &["diff", "--quiet", &base, &tip]);
+    assert!(
+        !matches!(oracle.status.code(), Some(0 | 1)),
+        "real Git refuses the missing tree"
+    );
+    assert!(
+        read().is_err(),
+        "a cached diff must not conceal the missing tree"
+    );
+    assert!(
+        launcher_rows_afresh(world).is_err(),
+        "a fresh CLI refuses the same damaged store"
+    );
+
+    for copy in &copies {
+        let store = copy.ancestors().nth(3).unwrap();
+        assert_eq!(
+            world.git(
+                store,
+                &["hash-object", "-t", "tree", "-w", raw.to_str().unwrap()]
+            ),
+            tree
+        );
+    }
+    assert_eq!(
+        world
+            .git_raw(&fixture.checkout, &["diff", "--quiet", &base, &tip])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert_eq!(
+        read().unwrap(),
+        first,
+        "repair restores the original answer"
+    );
+    assert_eq!(
+        read().unwrap(),
+        first,
+        "the repaired store can be read warm"
+    );
+}
+
+#[test]
 fn a_recoverable_read_after_its_store_loses_a_commit_answers_from_the_store_as_it_is() {
     let fixture = Fixture::local(&local_direct());
     let world = &fixture.world;

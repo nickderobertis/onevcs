@@ -292,13 +292,9 @@ impl Query {
     /// object must ask git again rather than reuse it.
     fn names_present(&self) -> Option<()> {
         crate::native_refs::with_objects(&self.repo, self.borrowing.as_deref(), |repo| {
-            let odb = repo.odb().ok()?;
             for name in &self.objects {
                 let oid = git2::Oid::from_str(name.as_str()).ok()?;
-                let object = odb.read(oid).ok()?;
-                if git2::Oid::hash_object(object.kind(), object.data()).ok()? != oid {
-                    return None;
-                }
+                crate::native_objects::verify(repo, oid)?;
             }
             Some(())
         })
@@ -391,8 +387,8 @@ fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
 /// Only commands expressed wholly in immutable object ids can be reused. A ref,
 /// pathspec, option we do not understand, or unsupported context delegates to Git.
 /// The answer git would give, made in process from the objects it names, where
-/// this is a shape [`crate::native_objects`] reads — fresh rather than reused, and
-/// only inside a context that admits reuse.
+/// this is a shape [`crate::native_objects`] reads. Unchanged guarded inputs may
+/// reuse its bytes in memory; no native answer is written to disk.
 ///
 /// Only over stores whose every loose object is proved safe to read: libgit2 reads
 /// whatever object a walk reaches, and its inflate never returns from a loose object
@@ -412,7 +408,211 @@ pub(crate) fn native(
         return None;
     }
     let (cwd, borrowing) = admitted(cwd?, env)?;
-    crate::native_objects::answer(args, cwd, borrowing)
+    let proof = query(args, Some(cwd), env);
+    if let Some(proof) = &proof {
+        if let Some(output) = native_answers::read(proof) {
+            return Some(output);
+        }
+    }
+    let output = crate::native_objects::answer(args, cwd, borrowing)?;
+    if let Some(proof) = &proof {
+        native_answers::write(proof, &output);
+    }
+    Some(output)
+}
+
+/// Derived immutable bytes, without retaining a repository handle or a read turn.
+/// Every hit uses a freshly guarded context and the same named-object content
+/// checks as a disk proof. Mutable refs, sessions and policy never enter it.
+mod native_answers {
+    use super::Query;
+    use crate::git;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    const ENTRIES: usize = 8192;
+    const BYTES: usize = 16 << 20;
+
+    #[derive(Default)]
+    struct Answers {
+        bytes: usize,
+        entries: HashMap<String, (Vec<String>, git::Output)>,
+    }
+
+    static ANSWERS: Mutex<Option<Answers>> = Mutex::new(None);
+
+    pub(super) fn read(proof: &Query) -> Option<git::Output> {
+        let output = {
+            let held = ANSWERS.lock().ok()?;
+            let (generations, output) = held.as_ref()?.entries.get(&proof.key)?;
+            if !generations
+                .iter()
+                .eq(proof.stores.iter().map(|(_, store)| &store.generation))
+            {
+                return None;
+            }
+            output.clone()
+        };
+        proof.names_present()?;
+        Some(output)
+    }
+
+    pub(super) fn write(proof: &Query, output: &git::Output) {
+        let bytes = output.stdout.len() + output.stderr.len();
+        if bytes > BYTES || proof.names_present().is_none() {
+            return;
+        }
+        let Ok(mut held) = ANSWERS.lock() else {
+            return;
+        };
+        let held = held.get_or_insert_with(Answers::default);
+        if held.entries.len() >= ENTRIES || held.bytes + bytes > BYTES {
+            *held = Answers::default();
+        }
+        let generations = proof
+            .stores
+            .iter()
+            .map(|(_, store)| store.generation.clone())
+            .collect();
+        if let Some((_, previous)) = held
+            .entries
+            .insert(proof.key.clone(), (generations, output.clone()))
+        {
+            held.bytes -= previous.stdout.len() + previous.stderr.len();
+        }
+        held.bytes += bytes;
+    }
+
+    // The limits are private implementation bounds, so their eviction cannot be
+    // observed through a CLI row. Exercise the actual native/Git boundary and
+    // inspect retention only to prove that the bound was reached; every answer
+    // below is also checked against real Git, including reads after eviction.
+    #[cfg(all(test, unix))]
+    mod tests {
+        use std::path::Path;
+
+        fn external(repo: &Path, args: &[&str]) -> std::process::Output {
+            std::process::Command::new(crate::git::git_program())
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap()
+        }
+
+        fn git(repo: &Path, args: &[&str]) -> String {
+            let output = external(repo, args);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        }
+
+        fn commit(repo: &Path, step: usize, message_bytes: usize) -> String {
+            std::fs::write(repo.join("work.txt"), step.to_string()).unwrap();
+            let message = repo.parent().unwrap().join("message.txt");
+            std::fs::write(
+                &message,
+                format!("feat: step {step}\n\n{}", "x".repeat(message_bytes)),
+            )
+            .unwrap();
+            git(repo, &["add", "work.txt"]);
+            git(repo, &["commit", "-q", "-F", message.to_str().unwrap()]);
+            git(repo, &["rev-parse", "HEAD"])
+        }
+
+        #[test]
+        fn native_answer_limits_preserve_git_answers_after_eviction_and_oversize_reads() {
+            for (name, _) in std::env::vars_os() {
+                if name.to_string_lossy().starts_with("GIT_") {
+                    std::env::remove_var(name);
+                }
+            }
+            let root = tempfile::tempdir().unwrap();
+            std::env::set_var("HOME", root.path());
+            std::env::set_var("XDG_CONFIG_HOME", root.path());
+            std::env::set_var("ONEVCS_HOME", root.path().join("onevcs"));
+            let repo = root.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            git(&repo, &["init", "-q", "-b", "main"]);
+            git(&repo, &["config", "user.name", "Cache"]);
+            git(&repo, &["config", "user.email", "cache@example.invalid"]);
+            let base = commit(&repo, 0, 0);
+            let tip = commit(&repo, 1, 0);
+            super::super::scope(|| {
+                let first_args = [
+                    "diff",
+                    "--quiet",
+                    &base,
+                    &tip,
+                    "--",
+                    ":(literal)probe-0",
+                    ":(literal)work.txt",
+                ];
+                let first = super::super::query(&first_args, Some(&repo), &[]).unwrap();
+                for index in 0..=super::ENTRIES {
+                    let probe = format!(":(literal)probe-{index}");
+                    let path = if index % 2 == 0 {
+                        ":(literal)work.txt"
+                    } else {
+                        ":(literal)absent.txt"
+                    };
+                    let args = ["diff", "--quiet", &base, &tip, "--", &probe, path];
+                    let answer = super::super::native(&args, Some(&repo), &[])
+                        .expect("real native read populates the cache");
+                    assert_eq!(answer.status, i32::from(index % 2 == 0));
+                }
+                assert!(
+                    super::read(&first).is_none(),
+                    "the entry limit evicted the first read"
+                );
+                let oracle = external(&repo, &first_args);
+                let again = super::super::native(&first_args, Some(&repo), &[]).unwrap();
+                assert_eq!(Some(again.status), oracle.status.code());
+                assert_eq!(again.stdout.as_bytes(), oracle.stdout);
+                assert!(
+                    super::read(&first).is_some(),
+                    "an evicted read is usable again"
+                );
+            });
+
+            let large = commit(&repo, 2, super::BYTES / 2);
+            let another = commit(&repo, 3, super::BYTES / 2);
+            let oversized = commit(&repo, 4, super::BYTES + 1);
+            super::super::scope(|| {
+                let args = |id| ["log", "-1", "--format=%B", id, "--"];
+                let first = super::super::query(&args(&large), Some(&repo), &[]).unwrap();
+                let second = super::super::query(&args(&another), Some(&repo), &[]).unwrap();
+                for id in [&large, &another] {
+                    let oracle = external(&repo, &args(id));
+                    assert!(oracle.status.success());
+                    let answer = super::super::native(&args(id), Some(&repo), &[]).unwrap();
+                    assert_eq!(answer.stdout.as_bytes(), oracle.stdout);
+                }
+                assert!(
+                    super::read(&first).is_none(),
+                    "the byte limit evicted the first message"
+                );
+                assert!(
+                    super::read(&second).is_some(),
+                    "the newest message remains reusable"
+                );
+                let proof = super::super::query(&args(&oversized), Some(&repo), &[]).unwrap();
+                let oracle = external(&repo, &args(&oversized));
+                assert!(oracle.status.success());
+                for _ in 0..2 {
+                    let answer = super::super::native(&args(&oversized), Some(&repo), &[]).unwrap();
+                    assert_eq!(answer.stdout.as_bytes(), oracle.stdout);
+                    assert!(
+                        super::read(&proof).is_none(),
+                        "oversized answers are never retained"
+                    );
+                }
+                let answer = super::super::native(&args(&large), Some(&repo), &[]).unwrap();
+                assert_eq!(
+                    answer.stdout.as_bytes(),
+                    external(&repo, &args(&large)).stdout
+                );
+            });
+        }
+    }
 }
 
 /// The repository and the store it is lent, where this process may read their
