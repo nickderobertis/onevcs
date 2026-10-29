@@ -1727,7 +1727,6 @@ fn publish_locally(
     environment: &[(String, String)],
 ) -> Result<PublishOutcome> {
     let publication = &context.resolution.publication;
-    require_publication_checkout_ready(publication, context.target.base())?;
     let synced = git::tip(&context.repo, compared);
 
     let identity = lock::git_identity(&git::common_dir(publication)?);
@@ -1750,6 +1749,9 @@ fn publish_locally(
     );
 
     let outcome = (|| -> Result<PublishOutcome> {
+        // The previous turn may still be fast-forwarding this checkout when we
+        // arrive. Inspect it only while holding the turn, once that update is done.
+        require_publication_checkout_ready(publication, context.target.base())?;
         // The base can have advanced while this turn was queued — the writer ahead
         // of it in the queue is the usual reason. The tree that lands is therefore
         // re-synced here rather than silently reconciled: what was brought level with
