@@ -507,7 +507,7 @@ pub(crate) fn remote_tips(repo: &Path, remote: &str) -> Option<BTreeSet<String>>
     })
 }
 /// Open each object context once within a read, keeping borrowed stores separate.
-/// Every cached proof still hashes its directly named objects on every hit.
+/// Every cached proof still hashes its directly named objects within each read.
 pub(crate) fn with_objects<T>(
     at: &Path,
     borrowing: Option<&Path>,

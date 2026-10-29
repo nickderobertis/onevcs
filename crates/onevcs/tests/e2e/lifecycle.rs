@@ -3131,6 +3131,77 @@ fn recovery_hands_a_complete_branch_over_to_the_verb_that_publishes_one() {
 }
 
 #[test]
+fn labelled_warm_decisions_keep_landed_complete_and_incomplete_answers() {
+    let fixture = Fixture::local(&local_direct());
+    for (branch, incomplete) in [
+        ("feature/landed", false),
+        ("feature/complete", false),
+        ("feature/incomplete", true),
+    ] {
+        let (token, worktree) =
+            fixture.open(&["--branch", branch, "--label", "launcher=warm-decisions"]);
+        fixture.world.commit_file(
+            &worktree,
+            &format!("{}.txt", branch.strip_prefix("feature/").unwrap()),
+            "complete work\n",
+            "feat: preserved work",
+        );
+        if incomplete {
+            std::fs::write(worktree.join("unfinished.txt"), "interrupted step\n").unwrap();
+        }
+        fixture
+            .world
+            .onevcs()
+            .args(["session", "close", &token])
+            .assert()
+            .success();
+        if branch == "feature/landed" {
+            fixture
+                .world
+                .onevcs()
+                .args(["publish-branch", branch, "--repo"])
+                .arg(&fixture.checkout)
+                .assert()
+                .success();
+        }
+    }
+    // Prime the persistent proofs, then ask the same labelled Decision twice more.
+    // --all keeps the landed row visible so its absence of a landing command is
+    // checked alongside the two different commands for unpublished work.
+    for _ in 0..3 {
+        let output = fixture
+            .world
+            .onevcs()
+            .args([
+                "recoverable",
+                "--all",
+                "--json",
+                "--detail",
+                "decision",
+                "--label",
+                "launcher=warm-decisions",
+            ])
+            .assert()
+            .success();
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&output.get_output().stdout).unwrap();
+        assert_eq!(rows.len(), 3, "{rows:#?}");
+        let landed = row(&rows, "feature/landed");
+        assert_eq!(landed["landed"]["state"], "yes");
+        assert_eq!(landed["recover_command"], serde_json::json!([]));
+        for (branch, provenance, verb) in [
+            ("feature/complete", "complete", "publish-branch"),
+            ("feature/incomplete", "incomplete-step", "recover"),
+        ] {
+            let found = row(&rows, branch);
+            assert_eq!(found["landed"]["state"], "no", "{found}");
+            assert_eq!(found["branch"]["provenance"], provenance, "{found}");
+            assert_eq!(found["recover_command"][1], verb, "{found}");
+        }
+    }
+}
+
+#[test]
 fn recoverable_offers_each_preserved_branch_the_verb_its_provenance_earns() {
     let fixture = Fixture::local(&local_direct());
 

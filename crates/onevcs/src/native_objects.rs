@@ -35,6 +35,28 @@ thread_local! {
     /// handle — which lives until the read ends, when this is forgotten with it.
     static KINDS: std::cell::RefCell<std::collections::HashMap<(usize, git2::Oid), git2::ObjectType>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Named objects whose complete bytes this read has already held to their id.
+    static VERIFIED: std::cell::RefCell<std::collections::HashSet<(usize, git2::Oid)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Verify a named object's content once per handle in this read, as headers are
+/// read once in KINDS. No result outlives the handle or the read that owns it.
+pub(crate) fn verify(repository: &git2::Repository, id: git2::Oid) -> Option<()> {
+    let remembering = crate::recovery_cache::enabled();
+    let handle = (git2::Binding::raw(repository) as usize, id);
+    if remembering && VERIFIED.with(|verified| verified.borrow().contains(&handle)) {
+        return Some(());
+    }
+    let odb = repository.odb().ok()?;
+    let object = odb.read(id).ok()?;
+    if git2::Oid::hash_object(object.kind(), object.data()).ok()? != id {
+        return None;
+    }
+    if remembering {
+        VERIFIED.with(|verified| verified.borrow_mut().insert(handle));
+    }
+    Some(())
 }
 
 /// Count one object read for the answer being made, or decline once its allowance is
@@ -93,6 +115,7 @@ pub(crate) fn is_ancestor(
 pub(crate) fn clear() {
     graph::clear();
     KINDS.with(|kinds| kinds.borrow_mut().clear());
+    VERIFIED.with(|verified| verified.borrow_mut().clear());
 }
 
 /// One argument shape, with its object ids already parsed.

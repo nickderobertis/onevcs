@@ -255,11 +255,10 @@ fn run_unless(
     if let Some(recalled) = reads::recall(args, cwd, env) {
         return Ok(recalled);
     }
-    // A read the admitted context lets this process answer from the objects
-    // themselves costs no process and is never stored as a proof, since it is as
-    // cheap to make again as one would be to check — which is why one that would read
-    // much is not made there at all, and comes to the proofs below. Like any read, it
-    // is remembered for the rest of this read.
+    // Native answers need no process or disk proof. Their immutable bytes may be
+    // retained in memory after checking this call's context and named objects;
+    // answers that would read too much still go to the proofs below. Like any
+    // read, the result is remembered for the rest of this read.
     if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
         reads::remember(args, cwd, env, &output);
         return Ok(output);
