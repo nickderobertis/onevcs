@@ -257,7 +257,7 @@ write, naming only *where* it was found. A term is a private repository's
 committed manifests declare (whole words — a common word, or a public repository's
 name, narrows to `owner/name`), and its owner where that owner has no public
 repository; a repository may commit a `private-terms.toml` adding terms and narrowing
-or dropping derived ones. A cleanup may remove what its destination already carries
+or dropping derived ones. A removal never refuses; every addition remains checked,
 and nothing is exempt from the rest. Which repositories are public is GitHub's answer,
 recorded in the registry and refreshed at every write, or a rule's `visibility:` —
 unknown is private, and a hosted destination whose visibility cannot be confirmed is
