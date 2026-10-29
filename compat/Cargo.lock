@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.57.1"
+version = "0.57.2"
 dependencies = [
  "aho-corasick",
  "clap",
@@ -1073,7 +1073,7 @@ dependencies = [
  "onevcs 0.13.0",
  "onevcs 0.32.2",
  "onevcs 0.40.1",
- "onevcs 0.57.1",
+ "onevcs 0.57.2",
  "serde_json",
  "serde_yaml_ng",
 ]
