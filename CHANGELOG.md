@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.4](https://github.com/nickderobertis/onevcs/compare/v0.57.3...v0.57.4) - 2026-10-29
+
+### Fixed
+
+- *(boundary)* never refuse a removal at the public boundary check ([#579](https://github.com/nickderobertis/onevcs/pull/579))
+
 ## [0.57.3](https://github.com/nickderobertis/onevcs/compare/v0.57.2...v0.57.3) - 2026-10-29
 
 ### Performance
