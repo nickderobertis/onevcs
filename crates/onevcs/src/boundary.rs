@@ -266,8 +266,10 @@ pub enum Surface {
     Metadata,
     /// A line a publication adds, or a file an export writes.
     Content,
-    /// A line or a path a publication removes that its destination does not already
-    /// carry there.
+    /// Retained for boundary schema version 3 readers; no check produces this surface.
+    #[schemars(
+        description = "A line or a path a publication removes that its destination does not already\ncarry there."
+    )]
     Removal,
     /// An outgoing commit's message.
     CommitMessage,

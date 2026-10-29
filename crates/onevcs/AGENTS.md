@@ -1636,9 +1636,8 @@ every time a pass met a session's leftover worker.
   work for carrying its own destination's name (onevcs#432). The reason is built from
   the status and headers alone, because what `gh` writes can name the repository; that
   goes to the evidence file.
-- **A removal is allowed against the resolved destination base and nothing else.** Not
-  earlier base history, and not another parent of a merge: every parent diff is held to
-  the whole policy.
+- **A removal never refuses.** Every parent diff is held to the addition rule; text
+  added and later removed is refused for its addition, including across a merge.
 - **Terms come from committed trees.** `boundary/manifests.rs` reads the commit `HEAD`
   names through git's object store; reading a worktree file there is reading what a
   dirty tree happens to say. Anything it cannot read is `Unavailable`, which a write

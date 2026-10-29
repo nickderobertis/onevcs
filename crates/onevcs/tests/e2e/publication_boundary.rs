@@ -8,7 +8,7 @@
 //! it — so the guard cannot satisfy any journey by refusing everything.
 //!
 //! The remediation policy is the subject of most of them: a cleanup may remove text
-//! the destination already carries, and may add nothing private, move nothing, and
+//! wherever it was, and may add nothing private, move nothing, and
 //! reintroduce nothing — under every entry point alike.
 
 // llmlint: ignore-file[e2e_not_mocked] the remote host's own decisioning — a
@@ -266,7 +266,7 @@ fn commit_identities_are_not_read_so_a_private_name_there_publishes() {
 }
 
 #[test]
-fn a_cleanup_may_remove_what_the_base_already_carries_and_nothing_else_is_exempt() {
+fn removals_pass_while_additions_moves_and_reintroductions_still_refuse() {
     let host = Boundary::with_private(&SEEDED);
     let before = host.origin_refs();
 
@@ -394,20 +394,30 @@ fn a_cleanup_may_remove_what_the_base_already_carries_and_nothing_else_is_exempt
     let (token, worktree) = host.session("cleanup-neutral");
     cleanup(&worktree, &host.world);
     commit(&host.world, &worktree, "docs: tidy the notes");
-    let output = host.publish(&token, &["--title", "docs: tidy the notes"]);
+    let diagnostics = host.world.path("cleanup-diagnostics.ndjson");
+    let output = host
+        .world
+        .onevcs()
+        .args(["publish", &token, "--title", "docs: tidy the notes"])
+        .env("ONEVCS_BOUNDARY_DIAGNOSTICS", &diagnostics)
+        .output()
+        .expect("the binary runs");
     host.published(&output, &before, "the cleanup");
     let tree = host
         .world
         .git(&host.origin, &["ls-tree", "-r", "--name-only", "main"]);
     assert!(!tree.contains("quietharbor"), "{tree}");
+    let diagnostics = std::fs::read_to_string(diagnostics).expect("diagnostics");
+    let line: serde_json::Value =
+        serde_json::from_str(diagnostics.lines().next().expect("a line")).expect("JSON");
+    assert_eq!(line["check"], "publication");
+    // Only the neutral renamed file is added; the deleted paths and line add no bytes.
+    assert_eq!(line["bytes"], "plain words\n".len());
 }
 
 #[test]
-fn a_removal_of_text_only_the_bases_history_carried_refuses() {
-    // The base had the line when the branch left it and has since removed it itself.
-    // The branch's own removal of it is checked against the base it now lands on, which
-    // no longer carries the line — earlier history of that base is not the destination
-    // — so the removal refuses, and nothing reaches the origin.
+fn a_removal_of_text_only_the_bases_history_carried_lands() {
+    // The destination's history already exposed the removed text.
     let host = Boundary::with_private(&SEEDED);
     let (token, worktree) = host.session("cleanup-after");
     write(&worktree, "docs/notes.md", "# Notes\na generic line\n");
@@ -418,11 +428,157 @@ fn a_removal_of_text_only_the_bases_history_carried_refuses() {
         "docs: tidy the notes upstream",
     );
     let before = host.origin_refs();
-    host.refused(
+    host.published(
         &host.publish(&token, &[]),
-        "a removal its public destination does not already carry",
         &before,
         "a removal only the base's history carried",
+    );
+}
+
+#[test]
+fn merging_a_base_that_scrubbed_a_term_publishes_through_every_entry_point() {
+    for entry in [
+        "publish",
+        "publish-branch",
+        "recover",
+        "preserve",
+        "integrate",
+    ] {
+        let host = Boundary::new(
+            if matches!(entry, "publish" | "publish-branch" | "recover") {
+                "{publication: change-open, approvals: required}"
+            } else {
+                LOCAL
+            },
+        );
+        host.private("hiddenco/quietharbor", &[]);
+        host.land_on_base(&SEEDED, "docs: what the base already carries");
+        host.world.install_pre_push(&host.public, "true");
+        let branch = "scrubbed-base";
+        let (token, worktree) = host.session(branch);
+        write(&worktree, "examples/demo.md", "a generic example\n");
+        commit(&host.world, &worktree, "docs: add an example");
+        host.land_on_base(
+            &[("docs/notes.md", "# Notes\na generic line\n")],
+            "docs: tidy upstream notes",
+        );
+        host.world.git(&worktree, &["fetch", "-q", "origin"]);
+        host.world
+            .git(&worktree, &["merge", "--no-edit", "origin/main"]);
+        let merged = host.world.git(&worktree, &["rev-parse", "HEAD"]);
+        if entry == "recover" {
+            // Closing dirty work records the incomplete provenance recover takes.
+            write(
+                &worktree,
+                "examples/interrupted.md",
+                "a generic unfinished example\n",
+            );
+        }
+        if entry != "publish" {
+            host.world
+                .onevcs()
+                .args(["session", "close", &token])
+                .assert()
+                .success();
+        }
+        let checkout = if entry == "publish" {
+            &worktree
+        } else {
+            &host.public
+        };
+        let tip = host.world.git(checkout, &["rev-parse", branch]);
+        let tree = host
+            .world
+            .git(checkout, &["rev-parse", &format!("{branch}^{{tree}}")]);
+        let before = host.origin_refs();
+        let repo = host.public.to_string_lossy().into_owned();
+        let output = if entry == "publish" {
+            host.publish(&token, &["--draft"])
+        } else {
+            match entry {
+                "publish-branch" => host.run(&[entry, branch, "--repo", &repo], None),
+                "recover" => host.run(
+                    &[
+                        entry,
+                        branch,
+                        "--repo",
+                        &repo,
+                        "--title",
+                        "docs: add an example",
+                    ],
+                    None,
+                ),
+                "preserve" => host.run(&[entry, branch, "--repo", "openwidget"], None),
+                "integrate" => {
+                    host.world.git(&host.public, &["fetch", "-q", "origin"]);
+                    host.world.git(&host.public, &["checkout", "-q", "main"]);
+                    host.world
+                        .git(&host.public, &["reset", "--hard", "origin/main"]);
+                    host.run(&[entry, branch, "--push"], Some(&host.public))
+                }
+                _ => unreachable!(),
+            }
+        };
+        host.published(&output, &before, entry);
+        let remote = if entry == "integrate" { "main" } else { branch };
+        if entry != "integrate" {
+            host.world.git(
+                &host.origin,
+                &["merge-base", "--is-ancestor", merged.trim(), remote],
+            );
+        }
+        assert_eq!(
+            host.world
+                .git(&host.origin, &["show", &format!("{remote}:docs/notes.md")]),
+            "# Notes\na generic line"
+        );
+        let suffix = if matches!(entry, "integrate" | "recover") {
+            "^{tree}"
+        } else {
+            ""
+        };
+        assert_eq!(
+            host.world
+                .git(&host.origin, &["rev-parse", &format!("{remote}{suffix}")])
+                .trim(),
+            if matches!(entry, "integrate" | "recover") {
+                tree.trim()
+            } else {
+                tip.trim()
+            },
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn a_branchs_own_addition_still_refuses_when_a_merge_removes_it() {
+    let host = Boundary::with_private(&[]);
+    let (token, worktree) = host.session("own-merge");
+    write(&worktree, "docs/kept.md", "a generic example\n");
+    write(&worktree, "docs/scratch.md", "draft for quietharbor\n");
+    commit(&host.world, &worktree, "docs: draft");
+    host.land_on_base(
+        &[("docs/upstream.md", "a generic entry\n")],
+        "docs: upstream entry",
+    );
+    host.world.git(&worktree, &["fetch", "-q", "origin"]);
+    host.world.git(
+        &worktree,
+        &["merge", "--no-commit", "--no-ff", "origin/main"],
+    );
+    std::fs::remove_file(worktree.join("docs/scratch.md")).expect("a deletion");
+    commit(
+        &host.world,
+        &worktree,
+        "docs: merge upstream and drop draft",
+    );
+    let before = host.origin_refs();
+    host.refused(
+        &host.publish(&token, &[]),
+        "an added line",
+        &before,
+        "an addition removed in a merge",
     );
 }
 

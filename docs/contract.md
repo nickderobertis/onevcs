@@ -5450,7 +5450,7 @@ exclusive.
 
 `onevcs publish` takes a term scope as `--term-scope` (repeatable) or `--term-scope-empty`, beside the options the earlier amendments gave it.
 
-**The publication check** runs on `publish`, `publish-branch`, `recover`, `preserve`,
+**The publication check (amended)** runs on `publish`, `publish-branch`, `recover`, `preserve`,
 `integrate --push` (direct integration), `change describe` (title and body, which is how
 a drafter's final output is rechecked) and a resumed verified publication, after
 everything the publication will write is known and before any remote mutation — the push,
@@ -5459,11 +5459,12 @@ every publication; no branch, node, label or flag exempts anything:
 
 - **(a)** every added line, every new path, every outgoing commit's message, the branch
   name, and the change request's title and body are checked in full;
-- **(b)** a removed line, or a deleted path, that carries a term passes only where that
-  exact text is already at that path in the destination base the publication lands on,
-  as resolved for that write — and nowhere else, earlier history of that base included;
-- **(c)** text a branch adds and later removes was never public at the base, so the commit
-  that added it is refused for the addition;
+- **(b)** a removal never refuses: a removed line, a deleted path, and the removal side
+  of any outgoing commit's diff against any of its parents — a merge's against either
+  parent included — pass whatever they carry, wherever the removed text was.
+- **(c)** text a branch adds and later removes — by a later commit or in a merge — was
+  never public at the base, so the commit that added it is refused for the addition;
+  no removal is read to decide it.
 - **(d)** a term-bearing line moved or copied elsewhere, or reintroduced by a later commit,
   is an addition and refuses. Rename detection is not asked: a renamed file is a deleted
   path and an added one, so renaming away a term-bearing path passes while its new path
@@ -5471,12 +5472,26 @@ every publication; no branch, node, label or flag exempts anything:
 
 Each outgoing commit — everything the published revision reaches that the destination
 base does not — is diffed against **every one of its parents**, and every one of those
-diffs is held to (a) and (b): no line is excused because another parent carries it, so
+diffs is held to (a): no line is excused because another parent carries it, so
 content a merge writes — its resolution, or what it brings in from either side — is
 checked as the merge's own. **Commit author and committer
 identities are not read**, by the user's ruling. **A binary file's contents are not
 term-checked** — its path is — so a binary blob carrying a private term is outside what
 this check can see.
+
+The check walks every commit the published revision reaches that the destination base
+does not, so every parent of an outgoing commit is either outgoing or reached by the
+base. Text any diff removes was therefore written either by an outgoing commit, whose
+addition (a) checks, or by a commit of the destination's own history, which the check
+already treats as public for additions alike. A change request's rendered diff shows
+removed lines against the merge base of the branch and its destination, which that
+base reaches. Exempting removals therefore exposes nothing the check does not already
+treat as public.
+
+No check produces `Surface::Removal` any longer. The variant and its wire word `removal`
+are kept so that a reader of `boundary schema` version 3 reads unchanged;
+`BOUNDARY_SCHEMA_VERSION` stays 3. `change describe`, `boundary check`, export and the
+exposure audit have no removal rule and are unchanged.
 
 **A refusal** is `Error::GateFailed` (exit 1, `FailureKind::Gate`) and **an unavailable
 check** is `Error::Invalid` (exit 2); neither adds a failure kind. Both say only *where*
@@ -5496,7 +5511,8 @@ hands the same detail to `check_public_output_with_evidence`'s caller.
 JSON line: `check` (`publication`, `fields` or `export`), `verdict`, `total_us`,
 `derivation_us`, `diff_us`, `matcher_build_us`, `matching_us`, `terms`, `identities`,
 `commits`, `paths` and `bytes`. It carries no term, identity, path or text; it is how the
-release-binary tier times the check from inside the binary.
+release-binary tier times the check from inside the binary. `bytes` counts the added
+text the check matched.
 
 **Export** copies one directory of a private branch into a public repository as one new
 neutral commit. The source branch's complete net diff to the commit it left its identity's
