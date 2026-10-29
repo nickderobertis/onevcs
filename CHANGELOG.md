@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.3](https://github.com/nickderobertis/onevcs/compare/v0.57.2...v0.57.3) - 2026-10-29
+
+### Performance
+
+- *(recoverable)* bring the warm recoverable-decision latency back under 0.3 s ([#576](https://github.com/nickderobertis/onevcs/pull/576))
+
 ## [0.57.2](https://github.com/nickderobertis/onevcs/compare/v0.57.1...v0.57.2) - 2026-10-29
 
 ### Fixed
