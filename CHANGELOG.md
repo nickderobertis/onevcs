@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.1](https://github.com/nickderobertis/onevcs/compare/v0.57.0...v0.57.1) - 2026-10-29
+
+### Performance
+
+- *(recoverable)* bring the warm 10x recoverable decision back under 0.3 s ([#566](https://github.com/nickderobertis/onevcs/pull/566))
+
 ## [0.57.0](https://github.com/nickderobertis/onevcs/compare/v0.56.11...v0.57.0) - 2026-10-25
 
 ### Added
