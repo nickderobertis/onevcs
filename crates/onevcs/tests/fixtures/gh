@@ -95,6 +95,17 @@ case "$called_repo" in
 esac
 
 ORIGIN="$(cat "$STATE/origin")"
+# Something that happens on the host at one reading of a rollup, which is how a journey
+# states the moment a branch or a base moves while a publication is between two reads:
+# `on-reading/<n>` is a script run once, with `ORIGIN` naming the bare origin, by the
+# n-th call asking for a rollup — this call counted — before that call answers.
+if [ -d "$STATE/on-reading" ] && printf '%s ' "$@" | grep -q statusCheckRollup; then
+  at="$STATE/on-reading/$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)"
+  if [ -f "$at" ]; then
+    ORIGIN="$ORIGIN" bash "$at" >/dev/null 2>&1
+    mv "$at" "$at.done"
+  fi
+fi
 # Whether a protection source requires a branch to be up to date with its base before
 # it merges — GitHub's `strict`. `up-to-date` names the one source that says so,
 # `rulesets` or `classic`; a world that says nothing requires it of no branch. Any
@@ -739,7 +750,7 @@ rollup() {
 }
 
 verdict() {
-  local name status conclusion required total settled red context
+  local name status conclusion required total settled red context rows="${1:-$CHECKS}"
   total=0; settled=0; red=0
   while IFS='|' read -r name status conclusion required kind; do
     [ -n "$name" ] || continue
@@ -751,7 +762,7 @@ verdict() {
       success|skipped|neutral) ;;
       *) red=1 ;;
     esac
-  done <"$CHECKS" 2>/dev/null || true
+  done <"$rows" 2>/dev/null || true
   if [ "$red" = "1" ]; then printf 'red'; return; fi
   # A context classic branch protection requires holds the merge until a run of it
   # has passed, whether or not anything has reported one — GitHub merges nothing past
@@ -759,7 +770,7 @@ verdict() {
   if [ -f "$STATE/classic-protection" ]; then
     while IFS= read -r context; do
       [ -n "$context" ] || continue
-      grep -q "^$context|completed|\(success\|skipped\|neutral\)|" "$CHECKS" 2>/dev/null \
+      grep -q "^$context|completed|\(success\|skipped\|neutral\)|" "$rows" 2>/dev/null \
         || { printf 'pending'; return; }
     done <"$STATE/classic-protection"
   fi
@@ -845,6 +856,23 @@ land_pr() {
   rm -rf "$work"
 }
 
+# Whether change request `$1` may merge as far as being up to date goes: a world whose
+# protection requires an up-to-date branch merges only a head that carries its base's
+# tip, as GitHub's `strict` does, and every other world merges any head.
+up_to_date() {
+  [ -n "$UP_TO_DATE" ] || return 0
+  local base_tip head_tip
+  base_tip="$( . "$STATE/pr-$1.env"; git --git-dir "$ORIGIN" rev-parse "refs/heads/$PR_BASE" )"
+  head_tip="$( . "$STATE/pr-$1.env"; git --git-dir "$ORIGIN" rev-parse "refs/heads/$PR_HEAD" )"
+  git --git-dir "$ORIGIN" merge-base --is-ancestor "$base_tip" "$head_tip"
+}
+
+# The rows the verdict on change request `$1` is reached from: its head's own, where a
+# journey seeded them, as its rollup is rendered.
+rows_of_change() {
+  rows_for "$( . "$STATE/pr-$1.env"; head_seen "$PR_HEAD_SHA" "$PR_HEAD" )"
+}
+
 # GitHub's native auto-merge, on GitHub's own clock: a change this host was asked to
 # hold lands the moment its required checks go green, whether or not anybody asks it
 # to again. Every call is such a moment, which is what lets a publication that is
@@ -857,7 +885,8 @@ settle_auto_merges() {
     [ -f "$STATE/pr-$pr.env" ] || continue
     [ ! -f "$STATE/closed-$pr" ] || continue
     [ ! -f "$STATE/refuse-merge" ] || continue
-    [ "$(verdict)" = "green" ] || continue
+    [ "$(verdict "$(rows_of_change "$pr")")" = "green" ] || continue
+    up_to_date "$pr" || continue
     # GitHub lands only a change it can merge: one that conflicts with its base, or
     # whose mergeability it has not computed yet, stays held however green it is.
     [ "$(mergeability_now | cut -d' ' -f1)" = "MERGEABLE" ] || continue
@@ -1195,13 +1224,18 @@ case "$subcommand" in
       printf 'Auto-merge is not enabled for this repository\n' >&2
       exit 1
     fi
-    if [ "$auto" = "1" ] && { [ "$(verdict)" != "green" ] \
+    if [ "$auto" = "1" ] && { [ "$(verdict "$(rows_of_change "$PR_NUMBER")")" != "green" ] \
+      || ! up_to_date "$PR_NUMBER" \
       || [ "$(mergeability_now | cut -d' ' -f1)" != "MERGEABLE" ]; }; then
       # Native auto-merge: the host holds the change and lands it when its own
       # required checks pass. Nothing merges now, and the hold is recorded so a
       # later call can land it the way GitHub would.
       : >"$STATE/auto-$PR_NUMBER"
       exit 0
+    fi
+    if ! up_to_date "$PR_NUMBER"; then
+      printf 'GraphQL: Head branch is out of date. Review and try the merge again. (mergePullRequest)\n' >&2
+      exit 1
     fi
     if [ -f "$STATE/refuse-merge" ]; then
       # Accepted, and then nothing happens — the shape a caller cannot tell from a

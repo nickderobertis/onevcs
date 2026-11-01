@@ -71,8 +71,8 @@ fn seqs(events: &[Value], kind: &str) -> Vec<u64> {
 #[test]
 fn an_auto_merge_watch_waits_on_a_declared_gate_with_no_run_and_says_so_at_its_bound() {
     // `lint` passed and `gate` — which branch protection requires — has not started.
-    // The host takes the merge and holds it, as GitHub holds a merge whose required
-    // context has not reported. The watch must neither journal the checks as passed
+    // The merge armed when the bound elapses is one the host takes and holds, as GitHub
+    // holds a merge whose required context has not reported. The watch must neither journal the checks as passed
     // nor, at its bound, say that every required check settled.
     let hosted = Hosted::new(AUTOMATED_READY);
     hosted.world.install_pre_push(&hosted.checkout, "exit 0");
@@ -89,8 +89,10 @@ fn an_auto_merge_watch_waits_on_a_declared_gate_with_no_run_and_says_so_at_its_b
         .assert()
         .code(1)
         .stderr(predicate::str::contains("checks unsettled"))
+        // The checks settle before any merge is asked for, so the bound says it was
+        // still waiting on them.
         .stderr(predicate::str::contains(
-            "had not merged https://github.com/acme-corp/hosted/pull/1",
+            "had not settled its required checks on https://github.com/acme-corp/hosted/pull/1",
         ))
         .stderr(predicate::str::contains(
             "still unsettled: \"gate\" (no run yet)",

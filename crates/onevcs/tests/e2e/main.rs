@@ -241,6 +241,13 @@ mod stack_base;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod publish_branch;
+// Unix only: concurrent publications of one identity, which settle their checks
+// outside the merge turn and take it only for the merge, through the same substituted
+// `gh` as `host.rs` over real git and a real bare origin. Its own header carries the
+// reason in full; one journey reads its typed outcome through the library in process.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod merge_turn;
 // Unix only: a publication's watch ending on a conflict the host confirms and on its
 // caller's cancellation, through the same substituted `gh` as `host.rs` and real git.
 // In-process, because a cancellation is handed over only by a caller embedding the

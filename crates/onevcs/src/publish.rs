@@ -2131,6 +2131,57 @@ fn publish_as_change(
             context.branch
         )));
     }
+    push_the_branch(context, stream, environment, replacing)?;
+
+    // Everything past here reads the *host*, and the push above has already reached
+    // the remote: from this point a failure is a merge path this build could not
+    // read rather than a publication that never landed. The commit is taken from the
+    // tree that was pushed rather than asked of the remote, because asking the remote
+    // is one more read that can fail for the very reason being reported.
+    let pushed_at = git::tip(&context.worktree, &context.branch);
+    // A push the caller's cancellation stopped before the branch reached origin ended
+    // the publication above. One that reached it — whether it returned on its own or
+    // was stopped after the update landed — is answered here, saying so, before
+    // anything on the host is opened or watched.
+    if context.cancellation.is_cancelled() {
+        return Err(cancelled_while(&format!(
+            "its publishing push ran; {:?} is on origin{}",
+            context.branch,
+            pushed_at
+                .as_deref()
+                .map_or_else(String::new, |sha| format!(" at {sha}")),
+        )));
+    }
+    // The commit is what the watch below decides *which* of the host's checks are
+    // about this publication, so a tree that will not say what it just pushed is a
+    // merge path this build cannot read rather than one it reads about some other
+    // commit. It reaches the operator as exactly that, through `unverified`.
+    if let Some(adopt) = &context.adopt {
+        return Ok(land_deferred(context, stream, adopt));
+    }
+    match pushed_at.as_deref() {
+        Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned())),
+        None => Err(crate::error::invalid(format!(
+            "{:?} was pushed and this worktree will not say which commit it is at, so which of \
+             the host's checks are about what was just pushed cannot be decided",
+            context.branch
+        ))),
+    }
+    .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+}
+
+/// Run the publishing push of the branch, the `pre-push` hook included, and record it —
+/// refusing a push the merge path did not accept, and naming a declined lease as the
+/// branch having moved on the host.
+///
+/// What a publication's first push and a re-sync's push after a moved base both run, so
+/// the two cannot come to record or refuse a push differently.
+fn push_the_branch(
+    context: &Context<'_>,
+    stream: &mut Stream,
+    environment: &[(String, String)],
+    replacing: Option<&str>,
+) -> Result<()> {
     let hooked = gate_run::runs_pre_push(&context.worktree);
     let started = Moment::now();
     let pushed = publishing_push(
@@ -2204,42 +2255,7 @@ fn publish_as_change(
             },
         });
     }
-
-    // Everything past here reads the *host*, and the push above has already reached
-    // the remote: from this point a failure is a merge path this build could not
-    // read rather than a publication that never landed. The commit is taken from the
-    // tree that was pushed rather than asked of the remote, because asking the remote
-    // is one more read that can fail for the very reason being reported.
-    let pushed_at = git::tip(&context.worktree, &context.branch);
-    // A push the caller's cancellation stopped before the branch reached origin ended
-    // the publication above. One that reached it — whether it returned on its own or
-    // was stopped after the update landed — is answered here, saying so, before
-    // anything on the host is opened or watched.
-    if context.cancellation.is_cancelled() {
-        return Err(cancelled_while(&format!(
-            "its publishing push ran; {:?} is on origin{}",
-            context.branch,
-            pushed_at
-                .as_deref()
-                .map_or_else(String::new, |sha| format!(" at {sha}")),
-        )));
-    }
-    // The commit is what the watch below decides *which* of the host's checks are
-    // about this publication, so a tree that will not say what it just pushed is a
-    // merge path this build cannot read rather than one it reads about some other
-    // commit. It reaches the operator as exactly that, through `unverified`.
-    if let Some(adopt) = &context.adopt {
-        return Ok(land_deferred(context, stream, adopt));
-    }
-    match pushed_at.as_deref() {
-        Some(sha) => land_as_change(context, stream, subject, &Sha(sha.to_owned())),
-        None => Err(crate::error::invalid(format!(
-            "{:?} was pushed and this worktree will not say which commit it is at, so which of \
-             the host's checks are about what was just pushed cannot be decided",
-            context.branch
-        ))),
-    }
-    .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
+    Ok(())
 }
 
 /// End a deferred publication once its push is accepted: the change request it adopts
@@ -2588,8 +2604,8 @@ fn land_opened_change(
         context.cancellation,
         context.checks_wait.effective()?.value.get(),
     )?;
-    let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
     if context.effective == MergePolicy::ChangeOpen {
+        let green = policy::GreenDraft::of(context.effective, context.policy.approvals);
         // No merge is asked for, so the identity's merge queue is not taken: what
         // this waits for is the verdict a person reviews against, not a turn.
         if settle(&mut watcher, stream, drafted)? {
@@ -2610,80 +2626,397 @@ fn land_opened_change(
     }
 
     // Everything automated is serialized against the identity, so two sessions of
-    // one repository cannot ask the host to land two changes at once.
+    // one repository cannot ask the host to land two changes at once — and only that
+    // is: the turn is taken once the change's checks have settled, outside it, so a
+    // publication whose checks are still running never holds up one whose are green.
     let identity = lock::git_identity(&git::common_dir(&context.resolution.publication)?);
-    let turn = queue::turn(&identity, context.cancellation)?;
-    stream.emit(
-        EventKind::LockWait,
-        object(json!({
-            "identity": identity,
-            "elapsed": turn.waited.as_secs_f64(),
-            "queue_position": turn.position,
-        })),
-    );
-    stream.emit(
-        EventKind::LockAcquired,
-        object(json!({"identity": identity})),
-    );
+    let landing = Landing {
+        context,
+        host,
+        change,
+        identity: &identity,
+        queues_on_elapse: context.effective == MergePolicy::ChangeAuto && !drafted,
+    };
+    // One bound covers every round, so a head re-synced again and again still ends.
+    let since = watcher.started;
+    let mut round = landing.round(watcher, stream, drafted)?;
+    loop {
+        let (pushed, armed) = match round {
+            Round::Ended(outcome) => return Ok(outcome),
+            Round::Again { pushed, armed } => (pushed, armed),
+        };
+        let mut watcher = Watcher::new(
+            host,
+            change,
+            &pushed,
+            context.drafts.warn_on_early_lift,
+            context.cancellation,
+            context.checks_wait.effective()?.value.get(),
+        )?
+        .since(since);
+        watcher.armed = armed;
+        // Whatever this change was, it is not a draft any more: a round ends in a
+        // re-settlement only after the first one's settlement lifted it.
+        round = landing.round(watcher, stream, false)?;
+    }
+}
 
-    let outcome = (|| -> Result<PublishOutcome> {
-        let watched = (|| -> Result<WatchEnded> {
-            // What is watched, and until when, follows the **merge policy** and nothing
-            // else — least of all anything a repository *calls* its verification. A
-            // change-direct publication asks for the merge itself, so it waits for the
-            // checks the host says block one first; a draft waits for its checks under
-            // either policy, because it is lifted on their verdict and a host will
-            // neither merge a draft nor arm its own merge on one.
-            if (drafted || context.effective == MergePolicy::ChangeDirect)
-                && settle(&mut watcher, stream, drafted)?
-            {
+/// One automated publication's landing, across the rounds it takes: what it lands, and
+/// the identity whose merge turn serialises the merge.
+struct Landing<'l, 'c> {
+    context: &'l Context<'c>,
+    host: &'l dyn RemoteHost,
+    change: &'l ChangeRequest,
+    identity: &'l str,
+    /// Whether arming the merge on an elapsed wait records `merge-queued`: a ready
+    /// `change-auto` change's, as it always has, because that policy hands the merge
+    /// to the host's own clock and `status` reconciles a landing it asked for by it. A
+    /// draft's and `change-direct`'s elapsed arming never recorded one, and still do not.
+    queues_on_elapse: bool,
+}
+
+/// Where one round of an automated landing ended.
+enum Round {
+    Ended(PublishOutcome),
+    /// What was settled no longer held under the merge turn, which was released without
+    /// a merge: the change's checks settle again — outside the turn — on `pushed`.
+    Again {
+        /// The head the checks settle on next.
+        pushed: Sha,
+        /// Whether the host's merge is already armed on that head, by this
+        /// publication's own wait for it.
+        armed: bool,
+    },
+}
+
+/// Why what a round settled no longer holds under the merge turn.
+enum Moved {
+    /// The host's branch is at another commit than the one whose checks settled.
+    Head(git::ObjectId),
+    /// The required checks on the settled head stopped letting it through: one is
+    /// pending again, or red, or the host reports none about it any more.
+    Checks,
+    /// The base moved past what the change carries, and the host requires a change to
+    /// be up to date with its base before it merges.
+    Base(git::ObjectId),
+}
+
+impl Landing<'_, '_> {
+    /// Settle the change's checks outside the merge turn, then take the turn,
+    /// re-verify what settled, and merge — or release the turn without a merge where
+    /// what settled no longer holds, answering the head to settle again.
+    fn round(&self, mut watcher: Watcher<'_>, stream: &mut Stream, drafted: bool) -> Result<Round> {
+        let Self { host, change, .. } = *self;
+        let pushed = watcher.pushed.clone();
+        // What is watched, and until when, follows the **merge policy** and nothing
+        // else — least of all anything a repository *calls* its verification. Every
+        // automated policy asks for a merge, so it waits for the checks the host says
+        // block one first; a draft waits for its checks under either policy, because it
+        // is lifted on their verdict and a host will neither merge a draft nor arm its
+        // own merge on one.
+        let settled = settle(&mut watcher, stream, drafted).and_then(|green_on_the_draft| {
+            if green_on_the_draft {
                 lift_draft(host, change, stream)?;
             }
-            stream.emit(
-                EventKind::MergeQueued,
-                object(json!({
-                    "identity": identity,
-                    "queue_position": turn.position,
-                    "url": change.url.to_string(),
-                })),
-            );
-            Ok(if context.effective == MergePolicy::ChangeAuto {
-                // Arming happens inside the watch, and after its first reading of the
-                // checks: a host that will not say what its checks are is refused with
-                // nothing armed against it, and one loop rather than a read followed by
-                // a watch reports each transition exactly once.
-                WatchEnded::Landed(watch_the_merge(&mut watcher, stream)?)
-            } else {
-                match merge_or_find_merged(host, change, context.effective)? {
-                    MergeOutcome::Merged(sha) => WatchEnded::Landed(sha),
-                    MergeOutcome::Queued => {
-                        WatchEnded::Ended(PublishOutcome::Queued(change.url.clone()))
-                    }
-                    MergeOutcome::Open => {
-                        WatchEnded::Ended(PublishOutcome::ChangeOpen(change.url.clone()))
-                    }
-                }
-            })
-        })();
-        let sha = match watched {
-            Ok(WatchEnded::Landed(sha)) => sha,
-            Ok(WatchEnded::Ended(outcome)) => return Ok(outcome),
+            Ok(())
+        });
+        match settled {
+            Ok(()) => {}
             // The wait elapsed with no required check red: the change is left armed to
             // merge itself where the host allows it, rather than stranded as a draft
-            // nothing will lift.
+            // nothing will lift. Arming asks for a merge, so it is done under the turn.
             Err(Error::ChecksUnsettled { reason }) if watcher.elapsed => {
-                let elapsed = Elapsed {
-                    reason,
-                    already_armed: watcher.armed,
-                    skipped: &watcher.skipped_at_elapse,
-                };
-                match arm_on_elapse(host, change, pushed, stream, elapsed)? {
-                    WatchEnded::Landed(sha) => sha,
-                    WatchEnded::Ended(outcome) => return Ok(outcome),
-                }
+                let turn = self.turn(stream)?;
+                return self.on_elapse(&watcher, stream, reason, turn);
             }
             Err(other) => return Err(other),
+        }
+
+        let turn = self.turn(stream)?;
+        if let Some(moved) = self.reverify(&mut watcher, stream)? {
+            // Never settled again while the turn is held: another publication whose
+            // checks are green lands meanwhile.
+            drop(turn);
+            // The merge stays armed where the head it was armed on is the one settled next.
+            let armed = watcher.armed && matches!(moved, Moved::Checks);
+            return self
+                .resync(stream, &pushed, moved)
+                .map(|pushed| Round::Again { pushed, armed });
+        }
+        stream.emit(EventKind::MergeQueued, self.queued(&turn));
+        let watched = if self.context.effective == MergePolicy::ChangeAuto {
+            await_the_merge(&mut watcher, stream)
+        } else {
+            merge_or_find_merged(host, change, self.context.effective).map(|merged| match merged {
+                MergeOutcome::Merged(sha) => WatchEnded::Landed(sha),
+                MergeOutcome::Queued => {
+                    WatchEnded::Ended(PublishOutcome::Queued(change.url.clone()))
+                }
+                MergeOutcome::Open => {
+                    WatchEnded::Ended(PublishOutcome::ChangeOpen(change.url.clone()))
+                }
+            })
         };
+        match watched {
+            Ok(WatchEnded::Landed(sha)) => self.landed(stream, &sha, turn).map(Round::Ended),
+            Ok(WatchEnded::Ended(outcome)) => Ok(Round::Ended(outcome)),
+            // The checks stopped letting it through while the host held the merge it was
+            // armed for — on the head that settled, or because the host's branch moved
+            // and its checks are now about another commit: either way they settle again
+            // outside the turn, on the head the branch is at.
+            Ok(WatchEnded::Resettle) => {
+                drop(turn);
+                let moved = match self.head_moved(&pushed)? {
+                    Some(tip) => Moved::Head(tip),
+                    None => Moved::Checks,
+                };
+                let armed = watcher.armed && matches!(moved, Moved::Checks);
+                self.resync(stream, &pushed, moved)
+                    .map(|pushed| Round::Again { pushed, armed })
+            }
+            Err(Error::ChecksUnsettled { reason }) if watcher.elapsed => {
+                self.on_elapse(&watcher, stream, reason, turn)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Take the identity's merge turn, recording the wait.
+    fn turn(&self, stream: &mut Stream) -> Result<queue::Turn> {
+        let turn = queue::turn(self.identity, self.context.cancellation)?;
+        stream.emit(
+            EventKind::LockWait,
+            object(json!({
+                "identity": self.identity,
+                "elapsed": turn.waited.as_secs_f64(),
+                "queue_position": turn.position,
+            })),
+        );
+        stream.emit(
+            EventKind::LockAcquired,
+            object(json!({"identity": self.identity})),
+        );
+        Ok(turn)
+    }
+
+    /// The `merge-queued` payload: the change, asked to land under `turn`.
+    fn queued(&self, turn: &queue::Turn) -> serde_json::Map<String, serde_json::Value> {
+        object(json!({
+            "identity": self.identity,
+            "queue_position": turn.position,
+            "url": self.change.url.to_string(),
+        }))
+    }
+
+    /// End a round whose wait elapsed as [`arm_on_elapse`] decides, under the turn.
+    fn on_elapse(
+        &self,
+        watcher: &Watcher<'_>,
+        stream: &mut Stream,
+        reason: String,
+        turn: queue::Turn,
+    ) -> Result<Round> {
+        let elapsed = Elapsed {
+            reason,
+            already_armed: watcher.armed,
+            skipped: &watcher.skipped_at_elapse,
+            queued: self.queues_on_elapse.then(|| self.queued(&turn)),
+        };
+        match arm_on_elapse(self.host, self.change, watcher.pushed, stream, elapsed)? {
+            WatchEnded::Landed(sha) => self.landed(stream, &sha, turn).map(Round::Ended),
+            WatchEnded::Ended(outcome) => Ok(Round::Ended(outcome)),
+            WatchEnded::Resettle => Ok(Round::Again {
+                pushed: watcher.pushed.clone(),
+                armed: watcher.armed,
+            }),
+        }
+    }
+
+    /// Re-verify, under the turn, what the round settled: the host's branch is still at
+    /// the head whose checks settled, those checks still let it through, and — where the
+    /// base moved past what the change carries — the host does not require a change to
+    /// be up to date before it merges. `None` is all of that holding.
+    ///
+    /// The checks are read first and the branch after, so a push that lands between the
+    /// two is seen as the moved head it is rather than as checks the host stopped
+    /// reporting about the settled one.
+    fn reverify(&self, watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Option<Moved>> {
+        let context = self.context;
+        let reading = watcher.read(stream)?;
+        let declared = watcher.declared().given(&reading);
+        let through = match &reading.reported {
+            Reported::About(checks) => {
+                let about: Vec<&Check> = checks.iter().collect();
+                lets_through(&standings(&about, &declared), &declared)
+            }
+            Reported::NotYet => false,
+        };
+        let pushed = &watcher.pushed.0;
+        if let Some(tip) = self.head_moved(watcher.pushed)? {
+            return Ok(Some(Moved::Head(tip)));
+        }
+        if !through {
+            return Ok(Some(Moved::Checks));
+        }
+        let base = context.target.base();
+        let base_tip = match git::remote_tip(&context.worktree, "origin", base, &[])? {
+            git::RemoteTip::At(tip) => tip,
+            git::RemoteTip::Absent | git::RemoteTip::Unknown => {
+                return Err(crate::error::invalid(format!(
+                    "where origin has {base:?} could not be read before {url} was merged, so \
+                     whether it still carries its base is not known",
+                    url = self.change.url,
+                )))
+            }
+        };
+        // A base commit the head carries is one this repository holds, so a tip it
+        // cannot see is one the head does not carry.
+        if git::known_to_reach(&context.repo, base_tip.as_str(), pushed)? {
+            return Ok(None);
+        }
+        // A host that will not say is read as requiring it, which is what a sync of a
+        // moved base reads it as too: merging the base is never the unsafe answer.
+        if self.host.requires_up_to_date(base).unwrap_or(true) {
+            return Ok(Some(Moved::Base(base_tip)));
+        }
+        Ok(None)
+    }
+
+    /// Where origin has the branch now, where that is not `pushed` — the head whose checks
+    /// settled. A branch origin no longer has, or will not say where it has, is refused:
+    /// nothing can show it is still what settled.
+    fn head_moved(&self, pushed: &Sha) -> Result<Option<git::ObjectId>> {
+        let context = self.context;
+        match git::remote_tip(&context.worktree, "origin", &context.branch, &[])? {
+            git::RemoteTip::At(tip) if tip.as_str() == pushed.0 => Ok(None),
+            git::RemoteTip::At(tip) => Ok(Some(tip)),
+            git::RemoteTip::Absent | git::RemoteTip::Unknown => {
+                Err(crate::error::invalid(format!(
+                    "where origin has {branch:?} could not be read before {url} was merged, so \
+                 whether it is still at {pushed}, whose checks settled, is not known",
+                    branch = context.branch,
+                    url = self.change.url,
+                    pushed = pushed.0,
+                )))
+            }
+        }
+    }
+
+    /// Bring the branch to where it has to be for its checks to settle again, outside
+    /// the turn, and answer the head they settle on.
+    ///
+    /// Checks that moved on the same head need nothing of the branch. A head the host's
+    /// branch moved to is taken up where it carries the settled one — the branch is
+    /// fast-forwarded to it — and a base that moved is merged in through the
+    /// publication's own sync and pushed through its own push, the `pre-push` hook
+    /// included. A resumed publication has no workspace of its own to sync in, so it
+    /// ends there and says how to publish the branch again.
+    fn resync(&self, stream: &mut Stream, pushed: &Sha, moved: Moved) -> Result<Sha> {
+        let context = self.context;
+        let url = &self.change.url;
+        let because = match &moved {
+            Moved::Checks => return Ok(pushed.clone()),
+            Moved::Head(tip) => format!(
+                "{branch:?} moved on the host from {from} to {tip} after its checks settled",
+                branch = context.branch,
+                from = pushed.0,
+                tip = tip.as_str(),
+            ),
+            Moved::Base(tip) => format!(
+                "{base:?} moved to {tip}, which {branch:?} at {from} does not carry, while its \
+                 checks settled, and the host requires a change to be up to date with its base",
+                base = context.target.base(),
+                branch = context.branch,
+                from = pushed.0,
+                tip = tip.as_str(),
+            ),
+        };
+        eprintln!("onevcs: {url} was not merged: {because}; its checks settle again first");
+        if context.built == Built::Resumed {
+            return Err(Error::SyncConflict {
+                reason: format!(
+                    "{because}, so {url} was not merged. This publication resumed a verified \
+                     branch and has no workspace to sync it in — publish it again with `{}`",
+                    guidance::command([
+                        "onevcs",
+                        "publish-branch",
+                        &context.branch,
+                        "--repo",
+                        &context.resolution.publication.to_string_lossy(),
+                    ]),
+                ),
+            });
+        }
+        if git::has_remote(&context.repo, "origin") {
+            git::fetch(&context.repo, "origin")?;
+            stream.emit(
+                EventKind::Fetch,
+                object(json!({"remote": "origin", "checkout": context.repo.display().to_string()})),
+            );
+        }
+        if let Moved::Head(tip) = &moved {
+            if !git::known_to_reach(&context.repo, &pushed.0, tip.as_str())? {
+                return Err(Error::SyncConflict {
+                    reason: format!(
+                        "{because}, and {tip} does not carry {from}, so {url} was not merged and \
+                         the branch is retained. Reconcile the two — fetch {branch}, and merge \
+                         what the host has into it — and then land it with `{command}`",
+                        from = pushed.0,
+                        tip = tip.as_str(),
+                        branch = context.branch,
+                        command = guidance::command([
+                            "onevcs",
+                            "publish-branch",
+                            &context.branch,
+                            "--repo",
+                            &context.resolution.publication.to_string_lossy(),
+                        ]),
+                    ),
+                });
+            }
+            git::merge_ff_only(&context.worktree, tip.as_str())?;
+        }
+        let compared = vcs::base_ref(&context.repo, context.target.base());
+        sync(context, stream, &compared, None)?;
+        // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a worktree that will
+        // not name the tip of the branch it has checked out, read the moment after `sync`
+        // committed to it there. Nothing a journey can do between the two calls makes git
+        // forget the branch; the refusal exists so a merge is never asked for at no head.
+        let tip = git::tip(&context.worktree, &format!("refs/heads/{}", context.branch))
+            .ok_or_else(|| {
+                crate::error::invalid(format!(
+                    "{:?} was synced and this worktree will not say which commit it is at",
+                    context.branch
+                ))
+            })?;
+        // llmlint: ignore-end[changed_behavior_has_e2e]
+        let on_origin = git::remote_tip(&context.worktree, "origin", &context.branch, &[])?;
+        if !matches!(&on_origin, git::RemoteTip::At(at) if at.as_str() == tip) {
+            // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a refusal here. What
+            // a re-sync adds to the branch is a merge of base commits the destination already
+            // carries and a merge commit naming the branch the first screen passed, so no
+            // journey can make this screen refuse what that one did not; it is asked because
+            // every write to a remote is, and its refusals are held by `publication_boundary`.
+            hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+            // llmlint: ignore-end[changed_behavior_has_e2e]
+            let environment = merge_path::comparison_env("origin", context.target.base());
+            push_the_branch(context, stream, &environment, None)?;
+        }
+        let pushed = Sha(tip);
+        record_boundary(context, self.change, &pushed);
+        Ok(pushed)
+    }
+
+    /// Everything a landing records once the host merged the change at `sha`, and the
+    /// base synchronisation, still under `turn`, which is released once it is done.
+    fn landed(&self, stream: &mut Stream, sha: &Sha, turn: queue::Turn) -> Result<PublishOutcome> {
+        let Self {
+            context,
+            host,
+            change,
+            identity,
+            ..
+        } = *self;
         // When the base received it: the host's own merge time, and nothing where the
         // host cannot say. Never the moment this watch saw the merge, which is only
         // when somebody happened to ask, and never a time read from anywhere else.
@@ -2701,13 +3034,14 @@ fn land_opened_change(
         crate::closing::report(&mut completed, closes);
         stream.emit(EventKind::MergeCompleted, completed);
         crate::verified::forget(&context.resolution.key, &context.branch);
-        record_landing(context, &sha);
+        record_landing(context, sha);
         record_baselines(context, &sha.0, stream);
-        fast_forward_publication(&context.resolution.publication, context.target.base())?;
-        Ok(PublishOutcome::Merged(sha))
-    })();
-    drop(turn);
-    outcome
+        let synchronised =
+            fast_forward_publication(&context.resolution.publication, context.target.base());
+        drop(turn);
+        synchronised?;
+        Ok(PublishOutcome::Merged(sha.clone()))
+    }
 }
 
 /// Ask the host to merge the change, and where it refuses, whether it already has.
@@ -2739,6 +3073,9 @@ struct Elapsed<'w> {
     already_armed: bool,
     /// The required checks that had concluded skipped when the bound elapsed.
     skipped: &'w [String],
+    /// The `merge-queued` payload recorded where this arms the merge — only where the
+    /// publication records one for asking the host to land the change on its clock.
+    queued: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Where a `change-auto` or `change-direct` watch ended: the host merged the change at
@@ -2748,6 +3085,9 @@ enum WatchEnded {
     Landed(Sha),
     /// The publication ends with this outcome, and nothing landed.
     Ended(PublishOutcome),
+    /// The required checks stopped letting the change through while the merge was
+    /// awaited, and nothing landed: they settle again, outside the merge turn.
+    Resettle,
 }
 
 /// What a `change-auto` or `change-direct` publication does when its wait for the
@@ -2783,6 +3123,7 @@ fn arm_on_elapse(
         reason,
         already_armed,
         skipped,
+        queued,
     } = elapsed;
     if !skipped.is_empty() {
         return Err(Error::ChecksUnsettled {
@@ -2825,6 +3166,9 @@ fn arm_on_elapse(
             }
         }
         lift_any_draft(host, change, stream)?;
+        if let Some(queued) = queued {
+            stream.emit(EventKind::MergeQueued, queued);
+        }
         if let MergeOutcome::Merged(sha) = host.merge(change, MergePolicy::ChangeAuto)? {
             return Ok(WatchEnded::Landed(sha));
         }
@@ -3555,6 +3899,13 @@ impl<'a> Watcher<'a> {
         })
     }
 
+    /// This watch, bounded by a bound that began at `started` — a later round of one
+    /// publication's landing, which one bound covers whole.
+    fn since(mut self, started: std::time::Instant) -> Self {
+        self.started = started;
+        self
+    }
+
     /// Whether anything on the pushed head is still running — the one test both of a
     /// draft's "nothing is coming" decisions are held to: the early lift, and the
     /// after-lift "did not re-run" ending. Its caller asks only once the grace window
@@ -4166,11 +4517,15 @@ fn settle_after_early_lift(
     }
 }
 
-/// Arm the host's own merge and watch until it performs it.
+/// Arm the host's own merge on a change whose required checks settled green and were
+/// re-verified under the merge turn, and watch until the host performs it.
 ///
-/// Arming happens after the first reading of the checks: a host that will not say
-/// what its checks are is refused with nothing armed against it. Only required checks
-/// may end it: a non-blocking check never holds or fails a merge.
+/// What this waits for under the turn is the merge itself: the checks let the change
+/// through when it is armed, so the host merges promptly. Only required checks may end
+/// it, and a check that stops letting the change through ends it as
+/// [`WatchEnded::Resettle`] — the turn is released and the checks settle again outside
+/// it, the merge left armed for the host to perform once they pass — or, red, as
+/// [`Error::ChecksFailed`].
 ///
 /// A change request the host confirms **conflicts** with its base ends it too, as
 /// [`Error::SyncConflict`], at the first reading that says so: the base moved under the
@@ -4178,29 +4533,19 @@ fn settle_after_early_lift(
 /// report later what is known now. Its branch and its change request are left as they
 /// are for the session to resolve. A mergeability the host has not computed yet is
 /// never read as a conflict.
-fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha> {
+fn await_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<WatchEnded> {
     let declared = watcher.declared();
     loop {
-        let reading = watcher.read(stream)?;
-        let declared = declared.given(&reading);
-        if let Reported::About(checks) = &reading.reported {
-            let about: Vec<&Check> = checks.iter().collect();
-            let standing = standings(&about, &declared);
-            if let Some(failed) = red(&standing) {
-                return Err(watcher.failed(stream, &standing, failed));
-            }
-            if lets_through(&standing, &declared) {
-                watcher.record_settled(stream, &standing, declared.unread());
-            }
-        }
         if !watcher.armed {
-            watcher
-                .host
-                .merge(watcher.change, MergePolicy::ChangeAuto)?;
+            let armed =
+                merge_or_find_merged(watcher.host, watcher.change, MergePolicy::ChangeAuto)?;
             watcher.armed = true;
+            if let MergeOutcome::Merged(sha) = armed {
+                return Ok(WatchEnded::Landed(sha));
+            }
         }
         if let Some(sha) = watcher.host.merged_at(watcher.change)? {
-            return Ok(sha);
+            return Ok(WatchEnded::Landed(sha));
         }
         // Asked after the merge, so a change the host landed is never reported as a
         // conflict it had before it landed. A host that has not computed it yet is
@@ -4214,16 +4559,23 @@ fn watch_the_merge(watcher: &mut Watcher<'_>, stream: &mut Stream) -> Result<Sha
             Ok(_) | Err(Error::NotImplemented { .. }) => {}
             Err(unreadable) => return Err(unreadable),
         }
-        if watcher.out_of_time() {
-            return Err(watcher.unsettled(
-                stream,
-                &reading,
-                &reading.standing(&declared),
-                &declared,
-                "merged",
-            ));
-        }
         watcher.pause()?;
+        let reading = watcher.read(stream)?;
+        let declared = declared.given(&reading);
+        let Reported::About(checks) = &reading.reported else {
+            return Ok(WatchEnded::Resettle);
+        };
+        let about: Vec<&Check> = checks.iter().collect();
+        let standing = standings(&about, &declared);
+        if let Some(failed) = red(&standing) {
+            return Err(watcher.failed(stream, &standing, failed));
+        }
+        if !lets_through(&standing, &declared) {
+            return Ok(WatchEnded::Resettle);
+        }
+        if watcher.out_of_time() {
+            return Err(watcher.unsettled(stream, &reading, &standing, &declared, "merged"));
+        }
     }
 }
 

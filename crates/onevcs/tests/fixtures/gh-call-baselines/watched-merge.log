@@ -8,6 +8,7 @@ api repos/acme-corp/direct/rules/branches/main
 api repos/acme-corp/direct/branches/main/protection/required_status_checks 
 pr view 1 --repo acme-corp/direct --json headRefOid,statusCheckRollup 
 pr ready 1 --repo acme-corp/direct 
+pr view 1 --repo acme-corp/direct --json headRefOid,statusCheckRollup 
 pr merge 1 --repo acme-corp/direct --squash 
 pr view 1 --repo acme-corp/direct --json state,mergeCommit 
 pr view 1 --repo acme-corp/direct --json mergedAt 

@@ -254,9 +254,13 @@ fn assert_cancelled_and_kept(
         Lifecycle::Open,
         "the session is left to publish again"
     );
-    // A watch a cancellation ended completed no gate run, so it records none.
+    // A watch a cancellation ended completed no gate run, so it records none. A
+    // publication cancelled after its checks settled — waiting for its merge turn, or
+    // for the merge it armed under it — recorded that settlement, and nothing since.
     assert!(
-        required_checks_runs(world, session).is_empty(),
+        required_checks_runs(world, session)
+            .iter()
+            .all(|(_, verdict)| verdict == "passed"),
         "a cancelled watch is no gate run: {:?}",
         world.events_of(&session.token.0, "gate-run")
     );
@@ -323,9 +327,13 @@ fn continues(world: &World, origin: &Path, session: &Session, change: u32) {
     )
     .expect("the session publishes again");
     // The continuation's watch is its own attempt: the next number after whatever the
-    // cancelled publication's gates recorded, which for a cancelled watch is nothing.
+    // cancelled publication's gates recorded — nothing for a cancelled watch, and the
+    // settled one for a publication cancelled once its checks had settled.
     assert_eq!(
-        required_checks_runs(world, session),
+        required_checks_runs(world, session)
+            .into_iter()
+            .filter(|(attempt, _)| *attempt > attempted)
+            .collect::<Vec<_>>(),
         vec![(attempted + 1, "passed".to_owned())]
     );
     assert!(
@@ -365,7 +373,8 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
     std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "15");
     world.host_checks(&[pending()]);
     // At the third reading of the rollup the checks are green and the base has moved:
-    // the host holds the armed merge, because it cannot perform it.
+    // the checks settle there, outside the merge turn, and the merge armed under it is
+    // one the host holds, because it cannot perform it.
     world.host_checks_after(2, &[green()]);
     world.host_mergeability_after(2, "CONFLICTING", "DIRTY");
 
@@ -423,8 +432,9 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
             .iter()
             .filter(|call| call.contains("statusCheckRollup"))
             .count()
-            == 1,
-        "and no further reading of the checks was made: {calls:?}"
+            == 2,
+        "and no reading of the checks was made after the settlement's and the one that \
+         re-verified them under the merge turn: {calls:?}"
     );
 
     // Everything is left for the worker that owns the branch to resolve.
@@ -510,7 +520,10 @@ fn a_mergeability_the_host_will_not_state_is_a_merge_path_that_could_not_be_read
             "feature/unstated-mergeability",
             None,
         );
-        world.host_checks(&[pending()]);
+        // Green, so the merge is armed under the merge turn and its wait reads the
+        // mergeability; the host takes the arming and performs nothing.
+        world.host_checks(&[green()]);
+        world.accept_merges_without_performing_them();
         if shape == "no-mergeable" {
             world.answer_malformed(shape);
         } else {
@@ -635,7 +648,10 @@ fn a_cancellation_ends_the_watch_of_an_armed_merge_within_a_second() {
     let (origin, session) = publishing(&world, AUTOMATED_READY, "feature/cancel-armed", None);
     std::env::set_var("ONEVCS_CHECKS_POLL_SECONDS", "30");
     std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "120");
-    world.host_checks(&[pending()]);
+    // Green, so the merge is armed under the merge turn; the host holds it while it has
+    // not computed whether the change merges.
+    world.host_checks(&[green()]);
+    world.host_mergeability("UNKNOWN", "UNKNOWN");
 
     let (published, took) = cancel_once(
         &session,
@@ -647,16 +663,22 @@ fn a_cancellation_ends_the_watch_of_an_armed_merge_within_a_second() {
     // The host still holds the merge it was asked to arm: a cancellation undoes
     // nothing, and the continuation below is the publication that watches it land.
     assert!(world.path("gh-state/auto-1").exists());
+    // The host works out that it merges, and the checks of what the continuation pushes
+    // run before they pass.
+    world.host_mergeability("MERGEABLE", "CLEAN");
+    world.host_checks(&[pending()]);
     continues(&world, &origin, &session, 1);
 }
 
 #[test]
 fn a_cancellation_ends_the_wait_for_the_merge_queue_within_a_second() {
     // One publication of the identity holds the merge queue — the real binary, its
-    // armed merge waiting on a check — and a second waits behind it for its turn.
+    // checks green and its armed merge waiting on a host that has not computed whether
+    // it merges — and a second, whose checks are green too, waits behind it for its turn.
     let world = World::new();
     let (origin, holder) = publishing(&world, AUTOMATED_READY, "feature/holds-the-queue", None);
-    world.host_checks(&[pending()]);
+    world.host_checks(&[green()]);
+    world.host_mergeability("UNKNOWN", "UNKNOWN");
     let waiter = open(&Git, "feature/waits-its-turn");
     world.commit_file(
         &waiter.worktree,
@@ -698,8 +720,8 @@ fn a_cancellation_ends_the_wait_for_the_merge_queue_within_a_second() {
         "nothing was armed for the cancelled waiter"
     );
 
-    // The holder's checks go green, the host lands it, and it ends on its own.
-    world.host_checks(&[green()]);
+    // The host works out that the holder merges, lands it, and it ends on its own.
+    world.host_mergeability("MERGEABLE", "CLEAN");
     let ended = holding.wait().expect("the holder ends");
     let mut said = String::new();
     std::io::Read::read_to_string(holding.stderr.as_mut().expect("its stderr"), &mut said)

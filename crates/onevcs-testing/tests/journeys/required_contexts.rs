@@ -160,17 +160,27 @@ fn a_declared_gate_with_no_run_holds_a_ready_change_and_is_named_as_having_none(
 
 #[test]
 fn change_auto_never_records_passed_while_a_declared_gate_has_no_run() {
-    // With the lifecycle off, `change-auto` arms the host's own merge after one reading
-    // and reports the host's hold. That reading records nothing as passed while the
-    // gate has no run, and the host — like GitHub — does not land a change whose
-    // declared context has not reported.
+    // With the lifecycle off, `change-auto` watches its checks, and the reading that
+    // stands for the bound arms the host's own merge and reports it armed. That reading
+    // records nothing as passed while the gate has no run, and the host — like GitHub —
+    // does not land a change whose declared context has not reported.
     let home = Home::new();
     let vcs = ready(MergePolicy::ChangeAuto);
     let gated = host(vec![green_check("lint")], declared(&["gate", "lint"]));
 
     let (outcome, settled) = published(&vcs, &gated, &home);
 
-    assert!(matches!(outcome, PublishOutcome::Queued(_)), "{outcome:?}");
+    assert!(
+        matches!(
+            &outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                armed: Some(_),
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
     assert!(settled.is_empty(), "nothing passed: {settled:?}");
     assert_eq!(
         gated.state().merges.get(&first()),

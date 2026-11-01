@@ -18,3 +18,16 @@ They were made by running those journeys on `90e1833`'s `src/` with a one-off co
 world's `gh-state/gh-calls.log` at the point each journey now checks it; that copy is not
 part of the tree. Re-record one only deliberately, on behaviour that has not moved, the
 same way — never to absorb a request a change added.
+
+`late-merge-status.log` carries two lines `90e1833` did not ask: `repo view … --json
+autoMergeAllowed` and `pr view 1 … --json isDraft`. They are the publication's, not the
+closures read's: a `change-auto` publication stopped arming the host's merge while its
+checks were still pending, so this journey's elapsed wait now arms it the way every
+other elapsed wait always did — asking whether the repository allows auto-merge, and
+lifting any draft, first. Added deliberately with that change, and nothing else moved.
+
+`watched-merge.log` carries one line `90e1833` did not ask: a second `pr view 1 … --json
+headRefOid,statusCheckRollup`, after `pr ready`. It is the publication's, not the
+closures read's: the checks now settle outside the identity's merge turn, so the
+publication re-reads them under the turn to confirm they are still green on the head
+that settled before it asks for the merge. Added deliberately with that change.

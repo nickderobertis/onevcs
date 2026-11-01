@@ -7,6 +7,8 @@ api repos/acme-corp/hosted/rules/branches/main
 api repos/acme-corp/hosted/branches/main/protection/required_status_checks 
 pr view 1 --repo acme-corp/hosted --json headRefOid,statusCheckRollup 
 pr checks 1 --repo acme-corp/hosted --required --json name 
+repo view acme-corp/hosted --json autoMergeAllowed 
+pr view 1 --repo acme-corp/hosted --json isDraft 
 pr merge 1 --repo acme-corp/hosted --squash --auto 
 pr view 1 --repo acme-corp/hosted --json state,mergeCommit 
 pr view 1 --repo acme-corp/hosted --json state,mergeCommit 

@@ -887,6 +887,71 @@ fn a_change_whose_head_moved_on_the_host_takes_the_whole_path() {
 }
 
 #[test]
+fn a_resumed_publication_whose_head_moved_after_its_checks_settled_is_not_merged() {
+    // The resumption is taken, its checks settle green, and then — before the merge the
+    // turn would ask for — somebody pushes onto the branch on the host. Re-verified under
+    // the turn, the head is not the one that settled; a resumed publication has no
+    // workspace of its own to sync it in, so it ends naming how to publish it again.
+    let hosted = verified_and_red_under(DIRECT);
+    hosted.world.host_checks(&[required("success")]);
+    let read = hosted
+        .world
+        .host_calls()
+        .iter()
+        .filter(|call| call.contains("statusCheckRollup"))
+        .count();
+    let elsewhere = hosted.world.path("elsewhere");
+    // The resumption's settlement is the next reading; its re-verification the one after.
+    hosted.world.host_acts_at_reading(
+        read + 2,
+        &format!(
+            "set -e\ngit clone -q \"$ORIGIN\" '{dir}'\n\
+             git -C '{dir}' checkout -q {BRANCH}\n\
+             printf 'pushed\\n' > '{dir}/pushed.txt'\n\
+             git -C '{dir}' add pushed.txt\n\
+             git -C '{dir}' commit -q -m 'feat: pushed on the host'\n\
+             git -C '{dir}' push -q origin {BRANCH}\n",
+            dir = elsewhere.display(),
+        ),
+    );
+    let verified = hosted
+        .branch_on_origin(BRANCH)
+        .expect("the verified branch");
+    let base = hosted.origin_log();
+
+    let output = hosted
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            BRANCH,
+            "--repo",
+            &hosted.checkout.to_string_lossy(),
+        ])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(stderr.contains("resuming the verified"), "{stderr}");
+    assert_eq!(output.status.code(), Some(3), "a sync conflict: {stderr}");
+    assert!(
+        stderr.contains("resumed a verified branch")
+            && stderr.contains(&verified)
+            && stderr.contains("onevcs publish-branch"),
+        "{stderr}"
+    );
+    assert_eq!(hosted.origin_log(), base, "nothing reached the base");
+    assert_ne!(
+        hosted.branch_on_origin(BRANCH).as_deref(),
+        Some(verified.as_str()),
+        "the branch moved on the host"
+    );
+    assert!(
+        !kinds(&hosted).iter().any(|kind| kind == "change-merged"),
+        "nothing merged"
+    );
+}
+
+#[test]
 fn an_identity_whose_rules_now_publish_local_direct_takes_the_whole_path() {
     // The rules file is the operator's to change, and a change request is no longer
     // what this identity lands through: there is nothing to resume, and the whole path
