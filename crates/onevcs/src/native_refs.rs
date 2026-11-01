@@ -132,6 +132,9 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
         Some((snapshot.directory.clone(), snapshot.common.clone()))
     })
 }
+// The configuration readers below share one rule: an entry's value is read only once
+// `has_value()` says it has one. A bare `key` line is valid git, and git2 panics
+// reading the value of an entry that has none.
 #[cfg(unix)]
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
@@ -145,11 +148,18 @@ pub(crate) fn configuration(repo: &Path) -> Option<String> {
                 if name.starts_with("include.") || name.starts_with("includeif.") {
                     return None;
                 }
-                output.push_str(&format!(
-                    "native:{:?}\0{name}\n{}\0",
-                    entry.level(),
-                    entry.value().ok()?
-                ));
+                // A valueless entry is rendered as `git config --null --list` renders
+                // one: its name alone, with no newline, so the two renderings agree and
+                // the entry still moves the fingerprint.
+                if entry.has_value() {
+                    output.push_str(&format!(
+                        "native:{:?}\0{name}\n{}\0",
+                        entry.level(),
+                        entry.value().ok()?
+                    ));
+                } else {
+                    output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
+                }
             }
             Some(())
         })?;
@@ -180,7 +190,14 @@ pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
                     if url.is_some() {
                         return None;
                     }
-                    url = Some(entry.value().ok()?.trim().to_owned());
+                    // A valueless URL is answered as the empty one it is, which
+                    // `git::remote_url` refuses as unusable and `git::has_remote` still
+                    // reads as a remote that is configured.
+                    url = Some(if entry.has_value() {
+                        entry.value().ok()?.trim().to_owned()
+                    } else {
+                        String::new()
+                    });
                 }
             }
             url
@@ -1451,6 +1468,43 @@ mod tests {
         differential(&linked, &names);
         std::fs::remove_file(repo.join(".git/shallow")).unwrap();
         differential(&linked, &names);
+    }
+
+    /// A remote whose `url` line has no value: git lists the key, and refuses to use
+    /// the remote. Inside a read the native reader answers it, so the remote is
+    /// present and its URL is refused as unusable, naming the remote, rather than
+    /// git2 panicking on the absent value. A valued remote beside it reads as before.
+    #[test]
+    fn a_valueless_remote_url_is_a_present_remote_whose_url_is_refused() {
+        if isolate("a_valueless_remote_url_is_a_present_remote_whose_url_is_refused") {
+            return;
+        }
+        let root = fixture("sha1");
+        let repo = root.path();
+        git(repo, &["remote", "add", "valued", "/srv/valued.git"]);
+        let mut config = std::fs::read_to_string(repo.join(".git/config")).unwrap();
+        config.push_str("\n[remote \"bare\"]\n\turl\n");
+        std::fs::write(repo.join(".git/config"), config).unwrap();
+        crate::recovery_cache::scope(|| {
+            assert!(
+                is_repo(repo).is_some(),
+                "the premise: the read is answered in process"
+            );
+            assert!(crate::git::has_remote(repo, "bare"), "git lists the remote");
+            match crate::git::remote_url(repo, "bare") {
+                Err(crate::Error::Invalid { reason }) => assert_eq!(
+                    reason, "git remote \"bare\" returned an unusable URL",
+                    "the refusal names the remote"
+                ),
+                other => panic!("a valueless URL is refused as unusable: {other:?}"),
+            }
+            assert_eq!(
+                crate::git::remote_url(repo, "valued").unwrap(),
+                "/srv/valued.git"
+            );
+            assert!(crate::git::has_remote(repo, "valued"));
+            assert!(!crate::git::has_remote(repo, "absent"));
+        });
     }
 
     #[test]

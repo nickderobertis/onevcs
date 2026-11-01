@@ -354,6 +354,10 @@ mod support;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod sweep;
+// Unix only: real sessions over `world.rs`'s POSIX fixture and real git, with a
+// valueless entry written into a real configuration file.
+#[cfg(unix)]
+mod valueless_config;
 // Unix only: it installs `cost.rs`'s counting `git` and `world.rs`'s `gh`, both POSIX
 // shell, over real origins and real sessions. Its own header carries the reason in full.
 #[cfg(unix)]
