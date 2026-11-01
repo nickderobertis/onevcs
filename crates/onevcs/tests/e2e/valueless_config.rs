@@ -34,7 +34,6 @@ fn closed_session() -> (Fixture, String) {
     (fixture, token)
 }
 
-/// Append `text` to the configuration file at `path`.
 fn append(path: &Path, text: &str) {
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -44,7 +43,6 @@ fn append(path: &Path, text: &str) {
         .expect("the configuration is appended to");
 }
 
-/// What a command printed to stderr, held to carrying no panic.
 fn no_panic(output: &std::process::Output, what: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -87,7 +85,6 @@ fn recovery_answers(fixture: &Fixture, token: &str) -> Vec<Value> {
     cached
 }
 
-/// `status BRANCH --json`, held to succeeding with the branch's own report.
 fn status_answers(fixture: &Fixture) -> Value {
     let output = fixture
         .world
