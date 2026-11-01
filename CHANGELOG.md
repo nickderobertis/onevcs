@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.5](https://github.com/nickderobertis/onevcs/compare/v0.57.4...v0.57.5) - 2026-11-01
+
+### Fixed
+
+- *(config)* read valueless git config entries without panicking ([#590](https://github.com/nickderobertis/onevcs/pull/590))
+
 ## [0.57.4](https://github.com/nickderobertis/onevcs/compare/v0.57.3...v0.57.4) - 2026-10-29
 
 ### Fixed
