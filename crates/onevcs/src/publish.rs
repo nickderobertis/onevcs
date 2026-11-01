@@ -2993,12 +2993,13 @@ impl Landing<'_, '_> {
         // llmlint: ignore-end[changed_behavior_has_e2e]
         let on_origin = git::remote_tip(&context.worktree, "origin", &context.branch, &[])?;
         if !matches!(&on_origin, git::RemoteTip::At(at) if at.as_str() == tip) {
-            // llmlint: ignore[changed_behavior_has_e2e] uncovered: a refusal here. What a
-            // re-sync adds to the branch is a merge of base commits the destination already
+            // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a refusal here. What
+            // a re-sync adds to the branch is a merge of base commits the destination already
             // carries and a merge commit naming the branch the first screen passed, so no
             // journey can make this screen refuse what that one did not; it is asked because
             // every write to a remote is, and its refusals are held by `publication_boundary`.
             hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+            // llmlint: ignore-end[changed_behavior_has_e2e]
             let environment = merge_path::comparison_env("origin", context.target.base());
             push_the_branch(context, stream, &environment, None)?;
         }
