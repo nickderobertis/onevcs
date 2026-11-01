@@ -2762,8 +2762,6 @@ impl Landing<'_, '_> {
             Ok(WatchEnded::Landed(sha)) => self.landed(stream, &sha, turn).map(Round::Ended),
             Ok(WatchEnded::Ended(outcome)) => Ok(Round::Ended(outcome)),
             // The checks stopped letting it through while the host held the merge it was
-            // armed for: settled again outside the turn, like any other moved check.
-            // The checks stopped letting it through while the host held the merge it was
             // armed for — on the head that settled, or because the host's branch moved
             // and its checks are now about another commit: either way they settle again
             // outside the turn, on the head the branch is at.
