@@ -40,14 +40,10 @@ use crate::honesty::inhabit;
 use crate::library::{hosted, open, origin_tip, worked};
 use crate::world::{Check, World};
 
-/// `change-auto`, with the change request opened ready.
 const AUTO_READY: &str = "{publication: change-auto, approvals: none, drafts: {disabled: true}}";
-/// `change-direct`, with the change request opened ready.
 const DIRECT_READY: &str =
     "{publication: change-direct, approvals: none, drafts: {disabled: true}}";
-/// `change-auto` with the draft lifecycle on: a draft lifted once its checks are green.
 const AUTO_DRAFT: &str = "{publication: change-auto, approvals: none}";
-/// `change-direct` with the draft lifecycle on.
 const DIRECT_DRAFT: &str = "{publication: change-direct, approvals: none}";
 
 /// The merge turn's bound, in seconds, for every publication here: below how long the
@@ -182,7 +178,6 @@ fn settled_heads(world: &World, session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// The kinds a session's stream recorded, in order.
 fn kinds(world: &World, session: &Session) -> Vec<String> {
     world
         .events(&session.token.0)
@@ -729,4 +724,71 @@ fn a_moved_base_whose_synced_head_the_merge_path_rejects_ends_as_a_rejected_push
     let pushes = world.events_of(&first.token.0, "push");
     assert_eq!(pushes.len(), 2, "{pushes:?}");
     assert_eq!(pushes[1]["payload"]["accepted"], false, "{pushes:?}");
+}
+
+#[test]
+fn a_check_that_went_red_while_the_armed_merge_was_awaited_ends_it_as_checks_failed() {
+    // Green when it settles and when it is re-verified, so the merge is armed under the
+    // turn — and the host holds it, not yet having computed whether it merges. The check
+    // is then red on the same head: the host will never perform that merge.
+    let world = World::new();
+    let origin = repository(&world, AUTO_READY);
+    world.host_checks(&[green()]);
+    world.host_checks_after(2, &[red()]);
+    world.host_mergeability("UNKNOWN", "UNKNOWN");
+    let first = worked(&world, "feature/slow");
+    let pushed = head(&world, &first);
+    let base = origin_tip(&world, &origin, "main");
+
+    let (code, said) = ended_with(start(&world, &first));
+    assert_eq!(code, Some(1), "{said}");
+    assert!(
+        said.contains("required check failed") && said.contains("\"gate\""),
+        "{said}"
+    );
+    assert!(
+        world.path("gh-state/auto-1").exists(),
+        "the merge was armed before the check went red"
+    );
+    nothing_merged(&world, &origin, base.as_deref(), Some(pushed.as_str()));
+}
+
+#[test]
+fn a_head_that_moved_while_the_armed_merge_was_awaited_is_settled_again_and_lands() {
+    // The merge is armed under the turn and held; then somebody pushes onto the branch,
+    // and the host reports its checks about that commit rather than the one that
+    // settled. The turn is released, the branch takes up the pushed commit, and its
+    // checks settle before the merge is armed again — once the host can merge it.
+    let world = World::new();
+    let origin = repository(&world, AUTO_READY);
+    world.host_notices_the_push_after(0);
+    world.host_checks(&[green()]);
+    world.host_mergeability("UNKNOWN", "UNKNOWN");
+    world.host_mergeability_after(4, "MERGEABLE", "CLEAN");
+    let first = worked(&world, "feature/slow");
+    let pushed = head(&world, &first);
+    world.host_acts_at_reading(
+        3,
+        &pushes_onto(
+            &world.path("pusher"),
+            "feature/slow",
+            "feature/slow",
+            "more.txt",
+            false,
+        ),
+    );
+
+    let (landed, said) = publish(&world, &first);
+    assert!(landed, "{said}");
+    let moved = origin_tip(&world, &origin, "feature/slow").expect("the branch");
+    assert_ne!(moved, pushed);
+    assert_eq!(
+        settled_heads(&world, &first),
+        vec![pushed, moved],
+        "the moved head settled before the merge was armed again"
+    );
+    assert_eq!(change_state(&world, 1), "MERGED");
+    assert!(world
+        .git(&origin, &["show", "main:more.txt"])
+        .contains("theirs"));
 }

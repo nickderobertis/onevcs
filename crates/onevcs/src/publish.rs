@@ -2763,12 +2763,19 @@ impl Landing<'_, '_> {
             Ok(WatchEnded::Ended(outcome)) => Ok(Round::Ended(outcome)),
             // The checks stopped letting it through while the host held the merge it was
             // armed for: settled again outside the turn, like any other moved check.
+            // The checks stopped letting it through while the host held the merge it was
+            // armed for — on the head that settled, or because the host's branch moved
+            // and its checks are now about another commit: either way they settle again
+            // outside the turn, on the head the branch is at.
             Ok(WatchEnded::Resettle) => {
                 drop(turn);
-                Ok(Round::Again {
-                    pushed,
-                    armed: watcher.armed,
-                })
+                let moved = match self.head_moved(&pushed)? {
+                    Some(tip) => Moved::Head(tip),
+                    None => Moved::Checks,
+                };
+                let armed = watcher.armed && matches!(moved, Moved::Checks);
+                self.resync(stream, &pushed, moved)
+                    .map(|pushed| Round::Again { pushed, armed })
             }
             Err(Error::ChecksUnsettled { reason }) if watcher.elapsed => {
                 self.on_elapse(&watcher, stream, reason, turn)
@@ -2848,17 +2855,8 @@ impl Landing<'_, '_> {
             Reported::NotYet => false,
         };
         let pushed = &watcher.pushed.0;
-        match git::remote_tip(&context.worktree, "origin", &context.branch, &[])? {
-            git::RemoteTip::At(tip) if tip.as_str() == pushed => {}
-            git::RemoteTip::At(tip) => return Ok(Some(Moved::Head(tip))),
-            git::RemoteTip::Absent | git::RemoteTip::Unknown => {
-                return Err(crate::error::invalid(format!(
-                    "where origin has {branch:?} could not be read before {url} was merged, so \
-                     whether it is still at {pushed}, whose checks settled, is not known",
-                    branch = context.branch,
-                    url = self.change.url,
-                )))
-            }
+        if let Some(tip) = self.head_moved(watcher.pushed)? {
+            return Ok(Some(Moved::Head(tip)));
         }
         if !through {
             return Ok(Some(Moved::Checks));
@@ -2885,6 +2883,26 @@ impl Landing<'_, '_> {
             return Ok(Some(Moved::Base(base_tip)));
         }
         Ok(None)
+    }
+
+    /// Where origin has the branch now, where that is not `pushed` — the head whose checks
+    /// settled. A branch origin no longer has, or will not say where it has, is refused:
+    /// nothing can show it is still what settled.
+    fn head_moved(&self, pushed: &Sha) -> Result<Option<git::ObjectId>> {
+        let context = self.context;
+        match git::remote_tip(&context.worktree, "origin", &context.branch, &[])? {
+            git::RemoteTip::At(tip) if tip.as_str() == pushed.0 => Ok(None),
+            git::RemoteTip::At(tip) => Ok(Some(tip)),
+            git::RemoteTip::Absent | git::RemoteTip::Unknown => {
+                Err(crate::error::invalid(format!(
+                    "where origin has {branch:?} could not be read before {url} was merged, so \
+                 whether it is still at {pushed}, whose checks settled, is not known",
+                    branch = context.branch,
+                    url = self.change.url,
+                    pushed = pushed.0,
+                )))
+            }
+        }
     }
 
     /// Bring the branch to where it has to be for its checks to settle again, outside
