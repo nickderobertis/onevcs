@@ -143,3 +143,128 @@ fn a_valueless_entry_in_the_global_configuration_is_read_rather_than_crashed_on(
     let after = (recovery_answers(&fixture, &token), status_answers(&fixture));
     assert_eq!(after, before, "an inert key moves neither answer");
 }
+
+#[test]
+fn a_valueless_remote_url_leaves_recovery_and_status_answering() {
+    let (fixture, token) = closed_session();
+    let config = fixture.checkout.join(".git/config");
+    let text = std::fs::read_to_string(&config).expect("the checkout's configuration");
+    let url = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("url = "))
+        .expect("the clone names its origin")
+        .to_owned();
+    std::fs::write(&config, text.replace(&url, "\turl")).expect("a valueless origin URL");
+    let listed = fixture.world.git(&fixture.checkout, &["config", "--list"]);
+    assert!(
+        listed.lines().any(|line| line == "remote.origin.url"),
+        "the premise: git lists the origin's URL key with no value: {listed}"
+    );
+    recovery_answers(&fixture, &token);
+    status_answers(&fixture);
+}
+
+/// The proofs the recovery read has stored, by name: each is keyed by the context it
+/// was derived under, the repository's configuration among it.
+fn proof_names(fixture: &Fixture) -> std::collections::BTreeSet<std::ffi::OsString> {
+    std::fs::read_dir(fixture.world.home().join("cache/recoverable/v1/git"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.expect("a proof entry").file_name())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One recovery read under the counting `git`: its rows, and how many times it ran git.
+fn counted(
+    fixture: &Fixture,
+    counting: &crate::cost::Counting,
+    token: &str,
+) -> (Vec<Value>, usize) {
+    counting.clear();
+    let output = counting
+        .onevcs(&fixture.world)
+        .args(["recoverable", "--json", "--session", token, "--all"])
+        .output()
+        .expect("recoverable runs");
+    no_panic(&output, "recoverable");
+    assert!(output.status.success(), "recoverable answers");
+    let rows = serde_json::from_slice(&output.stdout).expect("a JSON array");
+    (rows, counting.calls().len())
+}
+
+/// Whether `change` to the configuration file `config` retires the answer the
+/// recovery read stored under `start`: with `start` in place a warm read reuses its
+/// proofs, and the first read after `change` derives them again under a new key,
+/// answering as git does.
+fn retires_the_stored_answer(
+    fixture: &Fixture,
+    token: &str,
+    counting: &crate::cost::Counting,
+    config: &Path,
+    (start, change): (&str, &str),
+    what: &str,
+) {
+    let _ = std::fs::remove_dir_all(fixture.world.home().join("cache/recoverable"));
+    std::fs::write(config, start).expect("the starting configuration");
+    let (cold_rows, cold) = counted(fixture, counting, token);
+    let (warm_rows, warm) = counted(fixture, counting, token);
+    let stored = proof_names(fixture);
+    assert_eq!(warm_rows, cold_rows);
+    assert!(
+        !stored.is_empty() && warm < cold,
+        "the premise ({what}): a warm read reuses stored proofs: cold {cold}, warm {warm}"
+    );
+    let (_, again) = counted(fixture, counting, token);
+    assert_eq!(
+        (proof_names(fixture), again),
+        (stored.clone(), warm),
+        "the premise ({what}): an unchanged configuration keeps its key"
+    );
+    std::fs::write(config, change).expect("the changed configuration");
+    let (rows, after) = counted(fixture, counting, token);
+    assert_eq!(
+        rows,
+        recovery_answers(fixture, token),
+        "{what}: git's answer"
+    );
+    assert!(
+        after > warm,
+        "{what}: the stored answer is not reused: warm {warm}, after {after}"
+    );
+    assert!(
+        !proof_names(fixture).is_subset(&stored),
+        "{what}: proofs are derived again under a new key"
+    );
+}
+
+#[test]
+fn adding_or_removing_a_valueless_entry_retires_stored_recovery_proofs_as_a_valued_one_does() {
+    let (fixture, token) = closed_session();
+    let counting = crate::cost::Counting::installed(&fixture.world);
+    // The repository's own file is what an operator edits; the global one is where
+    // the configuration's rendering alone carries the change, since a rewrite of a
+    // file inside the git directory moves the key whatever it says.
+    for config in [
+        fixture.checkout.join(".git/config"),
+        fixture.world.path(".gitconfig"),
+    ] {
+        let plain = std::fs::read_to_string(&config).expect("a configuration file");
+        // A key the recovery read admits proofs under, so the valued control keeps
+        // storing them; a valueless entry in any section is admitted, as git's own
+        // listing of one carries no value to judge.
+        let valued = format!("{plain}\n[user]\n\tfixture = on\n");
+        let valueless = format!("{plain}\n[fixture]\n\tflag\n");
+        for (states, what) in [
+            ((&plain, &valued), "adding a valued entry"),
+            ((&valued, &plain), "removing a valued entry"),
+            ((&plain, &valueless), "adding a valueless entry"),
+            ((&valueless, &plain), "removing a valueless entry"),
+        ] {
+            let what = format!("{what} in {}", config.display());
+            let states = (states.0.as_str(), states.1.as_str());
+            retires_the_stored_answer(&fixture, &token, &counting, &config, states, &what);
+        }
+    }
+}

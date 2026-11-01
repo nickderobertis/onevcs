@@ -1470,6 +1470,43 @@ mod tests {
         differential(&linked, &names);
     }
 
+    /// A remote whose `url` line has no value: git lists the key, and refuses to use
+    /// the remote. Inside a read the native reader answers it, so the remote is
+    /// present and its URL is refused as unusable, naming the remote, rather than
+    /// git2 panicking on the absent value. A valued remote beside it reads as before.
+    #[test]
+    fn a_valueless_remote_url_is_a_present_remote_whose_url_is_refused() {
+        if isolate("a_valueless_remote_url_is_a_present_remote_whose_url_is_refused") {
+            return;
+        }
+        let root = fixture("sha1");
+        let repo = root.path();
+        git(repo, &["remote", "add", "valued", "/srv/valued.git"]);
+        let mut config = std::fs::read_to_string(repo.join(".git/config")).unwrap();
+        config.push_str("\n[remote \"bare\"]\n\turl\n");
+        std::fs::write(repo.join(".git/config"), config).unwrap();
+        crate::recovery_cache::scope(|| {
+            assert!(
+                is_repo(repo).is_some(),
+                "the premise: the read is answered in process"
+            );
+            assert!(crate::git::has_remote(repo, "bare"), "git lists the remote");
+            match crate::git::remote_url(repo, "bare") {
+                Err(crate::Error::Invalid { reason }) => assert_eq!(
+                    reason, "git remote \"bare\" returned an unusable URL",
+                    "the refusal names the remote"
+                ),
+                other => panic!("a valueless URL is refused as unusable: {other:?}"),
+            }
+            assert_eq!(
+                crate::git::remote_url(repo, "valued").unwrap(),
+                "/srv/valued.git"
+            );
+            assert!(crate::git::has_remote(repo, "valued"));
+            assert!(!crate::git::has_remote(repo, "absent"));
+        });
+    }
+
     #[test]
     fn complete_ref_values_and_names_match_git_including_fallbacks() {
         if isolate("complete_ref_values_and_names_match_git_including_fallbacks") {
