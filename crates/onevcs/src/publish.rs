@@ -2693,13 +2693,13 @@ enum Round {
 /// Why what a round settled no longer holds under the merge turn.
 enum Moved {
     /// The host's branch is at another commit than the one whose checks settled.
-    Head(String),
+    Head(git::ObjectId),
     /// The required checks on the settled head stopped letting it through: one is
     /// pending again, or red, or the host reports none about it any more.
     Checks,
     /// The base moved past what the change carries, and the host requires a change to
     /// be up to date with its base before it merges.
-    Base(String),
+    Base(git::ObjectId),
 }
 
 impl Landing<'_, '_> {
@@ -2850,10 +2850,11 @@ impl Landing<'_, '_> {
         let pushed = &watcher.pushed.0;
         match git::remote_tip(&context.worktree, "origin", &context.branch, &[])? {
             git::RemoteTip::At(tip) if tip.as_str() == pushed => {}
-            git::RemoteTip::At(tip) => return Ok(Some(Moved::Head(tip.as_str().to_owned()))),
+            git::RemoteTip::At(tip) => return Ok(Some(Moved::Head(tip))),
             git::RemoteTip::Absent | git::RemoteTip::Unknown => {
                 return Err(crate::error::invalid(format!(
-                    "where origin has {branch:?} could not be read before {url} was merged, so                      whether it is still at {pushed}, whose checks settled, is not known",
+                    "where origin has {branch:?} could not be read before {url} was merged, so \
+                     whether it is still at {pushed}, whose checks settled, is not known",
                     branch = context.branch,
                     url = self.change.url,
                 )))
@@ -2864,17 +2865,18 @@ impl Landing<'_, '_> {
         }
         let base = context.target.base();
         let base_tip = match git::remote_tip(&context.worktree, "origin", base, &[])? {
-            git::RemoteTip::At(tip) => tip.as_str().to_owned(),
+            git::RemoteTip::At(tip) => tip,
             git::RemoteTip::Absent | git::RemoteTip::Unknown => {
                 return Err(crate::error::invalid(format!(
-                    "where origin has {base:?} could not be read before {url} was merged, so                      whether it still carries its base is not known",
+                    "where origin has {base:?} could not be read before {url} was merged, so \
+                     whether it still carries its base is not known",
                     url = self.change.url,
                 )))
             }
         };
         // A base commit the head carries is one this repository holds, so a tip it
         // cannot see is one the head does not carry.
-        if git::known_to_reach(&context.repo, &base_tip, pushed)? {
+        if git::known_to_reach(&context.repo, base_tip.as_str(), pushed)? {
             return Ok(None);
         }
         // A host that will not say is read as requiring it, which is what a sync of a
@@ -2903,19 +2905,23 @@ impl Landing<'_, '_> {
                 "{branch:?} moved on the host from {from} to {tip} after its checks settled",
                 branch = context.branch,
                 from = pushed.0,
+                tip = tip.as_str(),
             ),
             Moved::Base(tip) => format!(
-                "{base:?} moved to {tip}, which {branch:?} at {from} does not carry, while its                  checks settled, and the host requires a change to be up to date with its base",
+                "{base:?} moved to {tip}, which {branch:?} at {from} does not carry, while its \
+                 checks settled, and the host requires a change to be up to date with its base",
                 base = context.target.base(),
                 branch = context.branch,
                 from = pushed.0,
+                tip = tip.as_str(),
             ),
         };
         eprintln!("onevcs: {url} was not merged: {because}; its checks settle again first");
         if context.built == Built::Resumed {
             return Err(Error::SyncConflict {
                 reason: format!(
-                    "{because}, so {url} was not merged. This publication resumed a verified                      branch and has no workspace to sync it in — publish it again with `{}`",
+                    "{because}, so {url} was not merged. This publication resumed a verified \
+                     branch and has no workspace to sync it in — publish it again with `{}`",
                     guidance::command([
                         "onevcs",
                         "publish-branch",
@@ -2934,11 +2940,14 @@ impl Landing<'_, '_> {
             );
         }
         if let Moved::Head(tip) = &moved {
-            if !git::known_to_reach(&context.repo, &pushed.0, tip)? {
+            if !git::known_to_reach(&context.repo, &pushed.0, tip.as_str())? {
                 return Err(Error::SyncConflict {
                     reason: format!(
-                        "{because}, and {tip} does not carry {from}, so {url} was not merged and                          the branch is retained. Reconcile the two — fetch {branch}, and merge                          what the host has into it — and then land it with `{command}`",
+                        "{because}, and {tip} does not carry {from}, so {url} was not merged and \
+                         the branch is retained. Reconcile the two — fetch {branch}, and merge \
+                         what the host has into it — and then land it with `{command}`",
                         from = pushed.0,
+                        tip = tip.as_str(),
                         branch = context.branch,
                         command = guidance::command([
                             "onevcs",
@@ -2950,10 +2959,14 @@ impl Landing<'_, '_> {
                     ),
                 });
             }
-            git::merge_ff_only(&context.worktree, tip)?;
+            git::merge_ff_only(&context.worktree, tip.as_str())?;
         }
         let compared = vcs::base_ref(&context.repo, context.target.base());
         sync(context, stream, &compared, None)?;
+        // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a worktree that will
+        // not name the tip of the branch it has checked out, read the moment after `sync`
+        // committed to it there. Nothing a journey can do between the two calls makes git
+        // forget the branch; the refusal exists so a merge is never asked for at no head.
         let tip = git::tip(&context.worktree, &format!("refs/heads/{}", context.branch))
             .ok_or_else(|| {
                 crate::error::invalid(format!(
@@ -2961,8 +2974,14 @@ impl Landing<'_, '_> {
                     context.branch
                 ))
             })?;
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         let on_origin = git::remote_tip(&context.worktree, "origin", &context.branch, &[])?;
         if !matches!(&on_origin, git::RemoteTip::At(at) if at.as_str() == tip) {
+            // llmlint: ignore[changed_behavior_has_e2e] uncovered: a refusal here. What a
+            // re-sync adds to the branch is a merge of base commits the destination already
+            // carries and a merge commit naming the branch the first screen passed, so no
+            // journey can make this screen refuse what that one did not; it is asked because
+            // every write to a remote is, and its refusals are held by `publication_boundary`.
             hold_to_the_boundary(context, &compared, context.title.as_deref())?;
             let environment = merge_path::comparison_env("origin", context.target.base());
             push_the_branch(context, stream, &environment, None)?;

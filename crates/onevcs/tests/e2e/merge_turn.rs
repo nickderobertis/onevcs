@@ -104,11 +104,16 @@ fn head(world: &World, session: &Session) -> String {
 
 /// `onevcs publish TOKEN`, the real binary, started and left running.
 fn start(world: &World, session: &Session) -> Child {
+    start_bounded(world, session, "90")
+}
+
+/// [`start`], with the wait for the checks bounded at `checks_seconds`.
+fn start_bounded(world: &World, session: &Session, checks_seconds: &str) -> Child {
     world
         .onevcs_std()
         .args(["publish", &session.token.0])
         .env("ONEVCS_LOCK_TIMEOUT_SECONDS", TURN_BOUND)
-        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "90")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", checks_seconds)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -116,12 +121,18 @@ fn start(world: &World, session: &Session) -> Child {
 }
 
 /// Wait for a started publication to end, and what it wrote on stderr.
-fn ended(mut child: Child) -> (bool, String) {
+fn ended(child: Child) -> (bool, String) {
+    let (code, said) = ended_with(child);
+    (code == Some(0), said)
+}
+
+/// Wait for a started publication to end: its exit code, and what it wrote on stderr.
+fn ended_with(mut child: Child) -> (Option<i32>, String) {
     let status = child.wait().expect("the publication ends");
     let mut said = String::new();
     std::io::Read::read_to_string(child.stderr.as_mut().expect("its stderr"), &mut said)
         .expect("its stderr reads");
-    (status.success(), said)
+    (status.code(), said)
 }
 
 /// `onevcs publish TOKEN`, the real binary, run to its end.
@@ -247,6 +258,12 @@ fn the_second_lands_while_the_first_waits(rules: &str) {
     );
     assert!(!said.contains("timed out"), "{rules}: {said}");
     assert_eq!(change_state(&world, 1), "MERGED", "{rules}");
+    assert_eq!(
+        settled_heads(&world, &first),
+        vec![first_head],
+        "{rules}: the base the second landing moved is not one this host requires a change \
+         to carry, so the first merged the head that settled, without a re-sync"
+    );
 
     let landed = landings(&world, &origin);
     assert!(
@@ -289,9 +306,24 @@ fn a_base_that_moved_while_the_checks_settled_is_synced_and_settled_again_before
     // The host requires an up-to-date branch, and the base moves while the change's
     // checks run. Merging the head whose checks settled would merge one its checks never
     // saw against the base it lands on, and the host refuses it as out of date.
+    a_moved_base_is_synced_and_settled_again(|world| world.host_requires_up_to_date("rulesets"));
+}
+
+#[test]
+fn a_moved_base_under_a_requirement_the_host_will_not_state_is_synced_as_a_required_one() {
+    // Classic branch protection is refused to this credential, so whether the base
+    // requires an up-to-date branch cannot be read; a moved base is then merged in, as a
+    // sync of a moved base reads the same refusal — merging the base is never the unsafe
+    // answer.
+    a_moved_base_is_synced_and_settled_again(|world| {
+        world.answer_malformed("classic-protection-refused");
+    });
+}
+
+fn a_moved_base_is_synced_and_settled_again(requirement: impl Fn(&World)) {
     let world = World::new();
     let origin = repository(&world, DIRECT_READY);
-    world.host_requires_up_to_date("rulesets");
+    requirement(&world);
     world.host_notices_the_push_after(0);
     // Every head but the first is green: the head a re-sync pushes passes.
     world.host_checks(&[green()]);
@@ -481,4 +513,220 @@ fn a_check_that_went_red_on_the_settled_head_ends_the_publication_as_checks_fail
     assert!(reason.contains("gate"), "{reason}");
     assert_eq!(change_state(&world, 1), "OPEN");
     assert_eq!(origin_tip(&world, &origin, "main"), base_before);
+}
+
+/// A script for [`World::host_acts_at_reading`] that commits `file` onto `branch` in a
+/// clone of the origin at `dir`, on top of `onto`, and pushes it — forced where `force`.
+fn pushes_onto(dir: &Path, branch: &str, onto: &str, file: &str, force: bool) -> String {
+    format!(
+        "set -e\ngit clone -q \"$ORIGIN\" '{dir}'\n\
+         git -C '{dir}' checkout -q -B {branch} origin/{onto}\n\
+         printf 'theirs\\n' > '{dir}/{file}'\n\
+         git -C '{dir}' add {file}\n\
+         git -C '{dir}' commit -q -m 'feat: pushed by somebody else'\n\
+         git -C '{dir}' push -q {force} origin {branch}\n",
+        dir = dir.display(),
+        force = if force { "--force" } else { "" },
+    )
+}
+
+/// What a publication that ended without a merge must leave: its change request open,
+/// the base where it was, and the branch on origin at `left_at`.
+fn nothing_merged(world: &World, origin: &Path, base_at: Option<&str>, left_at: Option<&str>) {
+    assert_eq!(
+        change_state(world, 1),
+        "OPEN",
+        "the change request stays open"
+    );
+    assert_eq!(
+        origin_tip(world, origin, "main").as_deref(),
+        base_at,
+        "nothing reached the base"
+    );
+    assert_eq!(
+        origin_tip(world, origin, "feature/slow").as_deref(),
+        left_at,
+        "the branch is on origin where it was left"
+    );
+}
+
+#[test]
+fn every_round_of_one_publication_shares_one_bound_on_its_checks() {
+    // The checks settle green only after the bound has passed — a settlement is read
+    // before the bound is asked — and then go pending on the same head under the turn.
+    // The round that settles them again starts with the bound already spent, so it ends
+    // at its first reading; a round that restarted the bound would read for a second.
+    let world = World::new();
+    let origin = repository(&world, DIRECT_READY);
+    world.host_checks(&[green()]);
+    world.host_checks_after(1, &[pending()]);
+    world.host_acts_at_reading(1, "sleep 1.5\n");
+    let first = worked(&world, "feature/slow");
+    let pushed = head(&world, &first);
+    let base = origin_tip(&world, &origin, "main");
+
+    let (code, said) = ended_with(start_bounded(&world, &first, "1"));
+    assert_eq!(code, Some(1), "{said}");
+    assert!(said.contains("checks unsettled"), "{said}");
+    assert_eq!(
+        readings_of(&world, 1),
+        3,
+        "the settlement, the re-verification under the turn, and one reading of the round \
+         that settles again before the shared bound ends it"
+    );
+    nothing_merged(&world, &origin, base.as_deref(), Some(pushed.as_str()));
+}
+
+#[test]
+fn a_branch_or_base_origin_no_longer_has_after_the_checks_settled_is_not_merged() {
+    // Where origin has the branch, or the base, is what the re-verification under the
+    // turn reads; one origin no longer has cannot be shown to be what settled.
+    for (deleted, said) in [("feature/slow", "\"feature/slow\""), ("main", "\"main\"")] {
+        let world = World::new();
+        let origin = repository(&world, DIRECT_READY);
+        world.host_checks(&[green()]);
+        world.host_acts_at_reading(
+            2,
+            &format!("git --git-dir \"$ORIGIN\" update-ref -d refs/heads/{deleted}\n"),
+        );
+        let first = worked(&world, "feature/slow");
+        let pushed = head(&world, &first);
+        let base = origin_tip(&world, &origin, "main");
+
+        let (code, stderr) = ended_with(start(&world, &first));
+        assert_eq!(code, Some(1), "{deleted}: {stderr}");
+        assert!(
+            stderr.contains("merge path unverified")
+                && stderr.contains("could not be read before")
+                && stderr.contains(said),
+            "{deleted}: {stderr}"
+        );
+        let (base_left, branch_left) = if deleted == "main" {
+            (None, Some(pushed.as_str()))
+        } else {
+            (base.as_deref(), None)
+        };
+        nothing_merged(&world, &origin, base_left, branch_left);
+    }
+}
+
+#[test]
+fn a_head_that_moved_to_history_not_carrying_the_settled_one_is_refused_and_retained() {
+    let world = World::new();
+    let origin = repository(&world, DIRECT_READY);
+    world.host_checks(&[green()]);
+    world.host_acts_at_reading(
+        2,
+        &pushes_onto(
+            &world.path("rewriter"),
+            "feature/slow",
+            "main",
+            "rewritten.txt",
+            true,
+        ),
+    );
+    let first = worked(&world, "feature/slow");
+    let pushed = head(&world, &first);
+    let base = origin_tip(&world, &origin, "main");
+
+    let (code, said) = ended_with(start(&world, &first));
+    assert_eq!(code, Some(3), "a sync conflict: {said}");
+    assert!(
+        said.contains("does not carry")
+            && said.contains(&pushed)
+            && said.contains("publish-branch"),
+        "{said}"
+    );
+    let rewritten = origin_tip(&world, &origin, "feature/slow").expect("the branch");
+    assert_ne!(rewritten, pushed);
+    nothing_merged(&world, &origin, base.as_deref(), Some(rewritten.as_str()));
+    assert_eq!(
+        settled_heads(&world, &first),
+        vec![pushed.clone()],
+        "the rewritten head was never settled"
+    );
+    assert_eq!(
+        head(&world, &first),
+        pushed,
+        "the session's own branch is retained as it was"
+    );
+}
+
+/// A publication whose base, which the host requires a change to carry, moves under it
+/// with `theirs` while its checks are pending, with `before_green` done before they pass.
+fn the_base_moves_with(
+    world: &World,
+    origin: &Path,
+    file: &str,
+    before_green: impl FnOnce(),
+) -> (Session, String, String, Option<i32>, String) {
+    world.host_requires_up_to_date("rulesets");
+    world.host_notices_the_push_after(0);
+    world.host_checks(&[green()]);
+    let first = worked(world, "feature/slow");
+    let first_head = head(world, &first);
+    world.host_checks_on(&first_head, &[pending()]);
+
+    let mut slow = start(world, &first);
+    until_running(&mut slow, "the publication read its pending checks", || {
+        readings_of(world, 1) >= 1
+    });
+    let person = world.clone_of(origin, "person");
+    world.commit_file(&person, file, "theirs\n", "feat: landed meanwhile");
+    world.git(&person, &["push", "-q", "origin", "main"]);
+    let moved_to = origin_tip(world, origin, "main").expect("the base");
+    before_green();
+    world.host_checks_on(&first_head, &[green()]);
+    let (code, said) = ended_with(slow);
+    (first, first_head, moved_to, code, said)
+}
+
+#[test]
+fn a_moved_base_that_conflicts_with_the_branch_ends_as_a_sync_conflict_without_a_merge() {
+    let world = World::new();
+    let origin = repository(&world, DIRECT_READY);
+    let (first, first_head, moved_to, code, said) =
+        the_base_moves_with(&world, &origin, "one.txt", || {});
+    assert_eq!(code, Some(3), "a sync conflict: {said}");
+    assert!(
+        said.contains("conflicts with") && said.contains("one.txt"),
+        "{said}"
+    );
+    nothing_merged(
+        &world,
+        &origin,
+        Some(moved_to.as_str()),
+        Some(first_head.as_str()),
+    );
+    assert_eq!(settled_heads(&world, &first), vec![first_head]);
+}
+
+#[test]
+fn a_moved_base_whose_synced_head_the_merge_path_rejects_ends_as_a_rejected_push() {
+    let world = World::new();
+    let origin = repository(&world, DIRECT_READY);
+    let refuse = world.path("refuse-the-next-push");
+    world.install_pre_push(
+        &world.path("hosted"),
+        &format!(
+            "if [ -f '{}' ]; then echo 'the gate refused the synced head' >&2; exit 1; fi\n",
+            refuse.display()
+        ),
+    );
+    let (first, first_head, moved_to, code, said) =
+        the_base_moves_with(&world, &origin, "theirs.txt", || {
+            std::fs::write(&refuse, "").expect("the refusal is armed");
+        });
+    assert_eq!(code, Some(1), "{said}");
+    assert!(said.contains("push rejected"), "{said}");
+    nothing_merged(
+        &world,
+        &origin,
+        Some(moved_to.as_str()),
+        Some(first_head.as_str()),
+    );
+    assert_eq!(settled_heads(&world, &first), vec![first_head]);
+    let pushes = world.events_of(&first.token.0, "push");
+    assert_eq!(pushes.len(), 2, "{pushes:?}");
+    assert_eq!(pushes[1]["payload"]["accepted"], false, "{pushes:?}");
 }
