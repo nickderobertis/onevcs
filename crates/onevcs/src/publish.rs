@@ -2677,7 +2677,6 @@ struct Landing<'l, 'c> {
 
 /// Where one round of an automated landing ended.
 enum Round {
-    /// The publication ends with this outcome.
     Ended(PublishOutcome),
     /// What was settled no longer held under the merge turn, which was released without
     /// a merge: the change's checks settle again — outside the turn — on `pushed`.

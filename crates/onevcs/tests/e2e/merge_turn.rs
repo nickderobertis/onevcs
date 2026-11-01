@@ -116,13 +116,11 @@ fn start_bounded(world: &World, session: &Session, checks_seconds: &str) -> Chil
         .expect("the publication starts")
 }
 
-/// Wait for a started publication to end, and what it wrote on stderr.
 fn ended(child: Child) -> (bool, String) {
     let (code, said) = ended_with(child);
     (code == Some(0), said)
 }
 
-/// Wait for a started publication to end: its exit code, and what it wrote on stderr.
 fn ended_with(mut child: Child) -> (Option<i32>, String) {
     let status = child.wait().expect("the publication ends");
     let mut said = String::new();
@@ -131,7 +129,6 @@ fn ended_with(mut child: Child) -> (Option<i32>, String) {
     (status.code(), said)
 }
 
-/// `onevcs publish TOKEN`, the real binary, run to its end.
 fn publish(world: &World, session: &Session) -> (bool, String) {
     ended(start(world, session))
 }
