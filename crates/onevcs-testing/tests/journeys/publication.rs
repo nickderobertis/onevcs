@@ -160,8 +160,9 @@ fn an_automated_publication_asks_the_host_to_land_it_and_reports_what_it_did() {
     }
 
     // A host that holds the change instead of landing it says so, and the outcome
-    // is the queue rather than a merge nobody performed. A ready change — the
-    // lifecycle off — is armed without waiting, which is where the host's hold shows.
+    // is the merge armed rather than a merge nobody performed. A ready change — the
+    // lifecycle off — whose checks never settled is armed when its wait elapses, which
+    // is where the host's hold shows.
     let ready = MemoryVcs::seeded(VcsState {
         policy: Some(MergePolicy::ChangeAuto),
         drafts: Some(Drafts {
@@ -175,8 +176,15 @@ fn an_automated_publication_asks_the_host_to_land_it_and_reports_what_it_did() {
         .publish(&second.token, &PublishRequest::default(), &host)
         .expect("the publication runs");
     assert!(
-        matches!(queued.outcome, PublishOutcome::Queued { .. }),
-        "a change with no green required checks is queued: {queued:?}"
+        matches!(
+            &queued.outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                armed: Some(_),
+                ..
+            }
+        ),
+        "a change with no green required checks is left armed: {queued:?}"
     );
 }
 

@@ -933,55 +933,28 @@ fn publish_as_change(
         false
     };
 
-    // Every change policy watches — except that `change-auto` on a change nobody
-    // drafted arms the host's own merge and leaves the checks to it, as next door.
-    // Next door's merge watch still refuses a required check that already concluded
-    // red rather than arm a merge over it, so this reading does too, and records the
-    // checks settled only where every check the host declares required let it
-    // through; one still running, or declared and not started, arms it, and the
-    // host's hold is what the outcome reports.
-    let still_draft = if drafted || policy != MergePolicy::ChangeAuto {
-        match watch(host.as_ref(), publishing, &change, drafted, emissions)? {
-            Watched::Draft => true,
-            Watched::Ready => false,
-            // A merge is armed in place of the elapsed wait's refusal where the policy
-            // asks for one and the host allows it, as next door.
-            Watched::Elapsed { error, skipped } => {
-                return match policy {
-                    MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => arm_on_elapse(
-                        host.as_ref(),
-                        publishing,
-                        &change,
-                        emissions,
-                        error,
-                        &skipped,
-                    ),
-                    MergePolicy::ChangeOpen | MergePolicy::LocalDirect => Err(error),
-                };
-            }
+    // Every change policy watches its checks before anything is merged or armed, as
+    // next door, where an automated policy settles them before it takes the merge turn
+    // and asks for the merge only under it: `change-auto` arms the host's own merge
+    // once its checks let it through, never while they are still running.
+    let still_draft = match watch(host.as_ref(), publishing, &change, drafted, emissions)? {
+        Watched::Draft => true,
+        Watched::Ready => false,
+        // A merge is armed in place of the elapsed wait's refusal where the policy
+        // asks for one and the host allows it, as next door.
+        Watched::Elapsed { error, skipped } => {
+            return match policy {
+                MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => arm_on_elapse(
+                    host.as_ref(),
+                    publishing,
+                    &change,
+                    emissions,
+                    error,
+                    &skipped,
+                ),
+                MergePolicy::ChangeOpen | MergePolicy::LocalDirect => Err(error),
+            };
         }
-    } else {
-        let answered = host.change_checks(&change)?;
-        let checks: Vec<&Check> = answered.checks.iter().collect();
-        let declared = given(
-            declared_required(host.as_ref(), &change),
-            answered.complete(),
-            &checks,
-        );
-        let standing = standings(&checks, &declared);
-        if let Some(failed) = red(&checks, &standing) {
-            return Err(failed);
-        }
-        if through(&standing, &declared) {
-            record_settled(
-                publishing,
-                &change,
-                emissions,
-                skipped(&standing),
-                declared.unread(),
-            );
-        }
-        false
     };
     if still_draft {
         if policy == MergePolicy::ChangeOpen && publishing.approvals == Approvals::Required {

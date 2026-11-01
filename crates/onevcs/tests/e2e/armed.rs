@@ -522,13 +522,19 @@ fn publish_branch_and_recover_end_an_elapsed_wait_armed_as_a_session_publication
 
 #[test]
 fn a_ready_change_auto_merge_armed_by_its_watch_ends_marked_armed_when_the_wait_elapses() {
-    // With the draft lifecycle off the change opens ready and `change-auto`'s watch arms
-    // the host's merge on its first reading; when the wait then elapses, that merge is
-    // the armed one — it is not asked for again, nothing is lifted, and the ending says
-    // so.
+    // With the draft lifecycle off the change opens ready, its checks settle green and
+    // `change-auto` arms the host's merge under the merge turn — which the host holds,
+    // its mergeability not yet computed. The check then runs again on the same head, so
+    // the turn is released and the checks settle again outside it; when that wait
+    // elapses, the merge the watch armed is the armed one — it is not asked for again,
+    // nothing is lifted, and the ending says so.
     let hosted =
         Hosted::new("{publication: change-auto, approvals: none, drafts: {disabled: true}}");
-    hosted.world.host_checks(&[running()]);
+    hosted.world.host_checks(&[passed()]);
+    hosted.world.host_mergeability("UNKNOWN", "UNKNOWN");
+    // Green at the settlement and at the re-verification under the turn; running from
+    // the reading the armed merge's wait makes.
+    hosted.world.host_checks_after(2, &[running()]);
     let token = hosted.change("feature/ready-armed", "feat: the ready thing");
 
     publish(&hosted, &token)
@@ -561,21 +567,21 @@ fn a_ready_change_auto_merge_armed_by_its_watch_ends_marked_armed_when_the_wait_
 
 #[test]
 fn a_merge_armed_by_the_watch_ends_unmarked_when_a_required_check_was_skipped() {
-    // The ready `change-auto` watch armed the host's merge on its first reading, before
-    // anything elapsed; a required check skipped when the wait elapses means the ending
-    // claims no armed merge of its own, asks the host for nothing further, and says
-    // that the merge its watch armed stands.
+    // The ready `change-auto` watch armed the host's merge once its checks let it
+    // through, before anything elapsed; the check then ran again, and a required check
+    // skipped when that wait elapses means the ending claims no armed merge of its own,
+    // asks the host for nothing further, and says that the merge its watch armed stands.
     let hosted =
         Hosted::new("{publication: change-auto, approvals: none, drafts: {disabled: true}}");
-    hosted.world.host_checks(&[
-        running(),
-        Check {
-            name: "lint",
-            status: "completed",
-            conclusion: Some("skipped"),
-            required: true,
-        },
-    ]);
+    let skipped = || Check {
+        name: "lint",
+        status: "completed",
+        conclusion: Some("skipped"),
+        required: true,
+    };
+    hosted.world.host_checks(&[passed(), skipped()]);
+    hosted.world.host_mergeability("UNKNOWN", "UNKNOWN");
+    hosted.world.host_checks_after(2, &[running(), skipped()]);
     let token = hosted.change("feature/armed-skipped", "feat: the armed skipped thing");
 
     publish(&hosted, &token)

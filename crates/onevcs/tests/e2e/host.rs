@@ -2480,9 +2480,12 @@ fn a_required_check_that_never_settles_is_bounded_rather_than_waited_on_forever(
         .args(["publish", &token])
         .assert()
         .code(1)
-        // The bound is not a silent stop: it says the host never merged, and which
-        // check it was still holding the change for.
-        .stderr(predicate::str::contains("had not merged"))
+        // The bound is not a silent stop: it says what it was waiting for — the checks,
+        // which settle before any merge is asked for — and which check it was still
+        // waiting on.
+        .stderr(predicate::str::contains(
+            "had not settled its required checks",
+        ))
         .stderr(predicate::str::contains("still unsettled: \"gate\""));
     assert_eq!(hosted.origin_log().len(), 1);
 }

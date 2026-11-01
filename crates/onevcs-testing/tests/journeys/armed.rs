@@ -327,8 +327,9 @@ fn the_host_answers_whether_it_requires_an_up_to_date_branch_and_allows_auto_mer
 
 #[test]
 fn a_ready_change_auto_publication_holds_its_merge_armed_and_lands_once_the_checks_pass() {
-    // With the lifecycle off, `change-auto` opens ready and arms the host's own merge
-    // without watching first, as next door: the host holds it armed, and the next
+    // With the lifecycle off, `change-auto` opens ready and watches its checks before
+    // it arms anything, as next door; a check still running when the reading that
+    // stands for the bound is made leaves the host's own merge armed, and the next
     // publication of the session lands it once its required checks are green.
     let home = Home::new();
     let host = host(&home, vec![gate(None)], HostState::default());
@@ -344,7 +345,17 @@ fn a_ready_change_auto_publication_holds_its_merge_armed_and_lands_once_the_chec
     let token = session(&vcs);
 
     let outcome = publish(&vcs, &token, &host);
-    assert!(matches!(outcome, PublishOutcome::Queued(_)), "{outcome:?}");
+    assert!(
+        matches!(
+            &outcome,
+            PublishOutcome::Failed {
+                kind: FailureKind::ChecksUnsettled,
+                armed: Some(_),
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
     let state = host.state().expect("readable");
     assert!(
         state.armed.contains(&first()),

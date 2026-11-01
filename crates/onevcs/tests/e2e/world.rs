@@ -793,6 +793,18 @@ impl World {
             .expect("a reading count the host notices the push after");
     }
 
+    /// Something that happens on the substituted host at the `reading`-th request for
+    /// a rollup, before that request is answered: `script` runs once, under `bash`, with
+    /// `ORIGIN` naming the bare origin. Counted in readings for the reason
+    /// [`World::host_checks_after`] is — a journey states the moment a branch or a base
+    /// moves between two reads instead of racing for it.
+    pub fn host_acts_at_reading(&self, reading: usize, script: &str) {
+        std::fs::create_dir_all(self.path("gh-state/on-reading"))
+            .expect("a directory of scripted host actions");
+        std::fs::write(self.path(format!("gh-state/on-reading/{reading}")), script)
+            .expect("a scripted host action");
+    }
+
     fn write_rows(&self, at: &str, checks: &[Check]) {
         let rows: String = checks
             .iter()
