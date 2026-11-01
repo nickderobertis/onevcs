@@ -132,6 +132,9 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
         Some((snapshot.directory.clone(), snapshot.common.clone()))
     })
 }
+// The configuration readers below share one rule: an entry's value is read only once
+// `has_value()` says it has one. A bare `key` line is valid git, and git2 panics
+// reading the value of an entry that has none.
 #[cfg(unix)]
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
@@ -145,11 +148,18 @@ pub(crate) fn configuration(repo: &Path) -> Option<String> {
                 if name.starts_with("include.") || name.starts_with("includeif.") {
                     return None;
                 }
-                output.push_str(&format!(
-                    "native:{:?}\0{name}\n{}\0",
-                    entry.level(),
-                    entry.value().ok()?
-                ));
+                // A valueless entry is rendered as `git config --null --list` renders
+                // one: its name alone, with no newline, so the two renderings agree and
+                // the entry still moves the fingerprint.
+                if entry.has_value() {
+                    output.push_str(&format!(
+                        "native:{:?}\0{name}\n{}\0",
+                        entry.level(),
+                        entry.value().ok()?
+                    ));
+                } else {
+                    output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
+                }
             }
             Some(())
         })?;
@@ -180,7 +190,14 @@ pub(crate) fn remote_url(repo: &Path, remote: &str) -> Option<String> {
                     if url.is_some() {
                         return None;
                     }
-                    url = Some(entry.value().ok()?.trim().to_owned());
+                    // A valueless URL is answered as the empty one it is, which
+                    // `git::remote_url` refuses as unusable and `git::has_remote` still
+                    // reads as a remote that is configured.
+                    url = Some(if entry.has_value() {
+                        entry.value().ok()?.trim().to_owned()
+                    } else {
+                        String::new()
+                    });
                 }
             }
             url
