@@ -1,0 +1,8 @@
+api
+graphql
+-f
+query=query($owner: String!, $name: String!) { rateLimit { cost } repository(owner: $owner, name: $name) { defaultBranchRef { name } pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) { pageInfo { hasNextPage } nodes { number state baseRefName headRefName } } } }
+-f
+owner=nickderobertis
+-f
+name=printobserver

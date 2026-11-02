@@ -162,6 +162,11 @@ mod honesty;
 mod hook_environment;
 #[cfg(unix)]
 mod host;
+// Unix only: the program that replays GitHub's recorded GraphQL responses as `gh` is
+// POSIX shell. Its own header carries the reason GitHub is the boundary doubled.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod graphql_replay;
 // Unix only: the program that replays GitHub's recorded responses as `gh` is POSIX
 // shell. Its own header carries the reason it is the one boundary doubled.
 #[cfg(unix)]
@@ -318,6 +323,11 @@ mod own_change;
 // reason in full.
 #[cfg(unix)]
 mod releases;
+// The shape GitHub's recorded GraphQL answers carry, which every answer `review_host.rs`
+// serves to the standings and open-listing queries is held to. Unix only, beside the
+// substituted host that is its one reader; it reads fixtures and spawns nothing.
+#[cfg(unix)]
+mod recorded_shape;
 // Unix only: its journeys read and answer review feedback through the same substituted
 // `gh` as `host.rs`, whose review routes `review_host.rs` serves from the journey's own
 // process. Each module's own header carries the reason in full.

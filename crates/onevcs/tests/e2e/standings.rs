@@ -1083,6 +1083,8 @@ fn a_ruleset_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none
 fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_dropped() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     let page = |nodes: Value| json!({"pageInfo": {"hasNextPage": false}, "nodes": nodes});
@@ -1246,6 +1248,8 @@ fn a_status_context_reads_by_its_state_as_a_check_run_reads_by_its_conclusion() 
 fn a_change_request_the_host_describes_incompletely_is_refused_and_records_nothing() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     let run = |without: &str| {
@@ -1963,6 +1967,8 @@ fn an_origin_that_will_not_list_its_branches_stops_a_retarget_before_it_writes()
 fn a_standings_answer_without_its_data_or_its_charge_is_refused() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     for (answer, says) in [
@@ -2946,19 +2952,17 @@ fn holdup_output(world: &World, json: bool) -> Output {
 
 /// One context of a check rollup as GitHub answers it, for a change request's own answer.
 fn context(name: &str, conclusion: &str, address: Option<&str>) -> Value {
-    let mut node = json!({
+    json!({
         "__typename": "CheckRun",
         "name": name,
         "status": "COMPLETED",
         "conclusion": conclusion,
         "startedAt": "2026-09-30T12:00:00Z",
         "completedAt": "2026-09-30T12:00:30Z",
+        // GitHub answers `null` for a check run that reports no address.
+        "detailsUrl": address,
         "isRequired": false,
-    });
-    if let Some(address) = address {
-        node["detailsUrl"] = json!(address);
-    }
-    node
+    })
 }
 
 #[test]
@@ -3313,6 +3317,8 @@ fn a_release_change_request_that_moved_between_the_two_reads_is_not_reported_as_
 fn a_follow_read_refuses_a_change_request_the_host_answers_without_a_usable_url_or_head() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     let tip = stack.branch("feature/followed", "main", "followed.txt");
     world.host_checks_on(&tip, &[check("ci", "success", true)]);
     let number = stack.open("feature/followed", "main", true);
@@ -3339,6 +3345,8 @@ fn a_follow_read_refuses_a_change_request_the_host_answers_without_a_usable_url_
 fn a_release_holdup_refuses_an_answer_it_cannot_read_rather_than_report_part_of_it() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("release-plz-a", "main", "a.txt");
     let number = stack.open("release-plz-a", "main", false);
     release_rule(

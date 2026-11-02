@@ -319,7 +319,7 @@ impl Model {
         // A journey's own answer for the whole query — how an answer GitHub's schema
         // would not give is served.
         if let Ok(text) = std::fs::read_to_string(self.state.join("standings-answer.json")) {
-            return (text, String::new(), 0);
+            return self.as_github_answers(text, !reviews);
         }
         let mut repository = serde_json::Map::new();
         // The repository's declarations, where the query asks for them — which the first
@@ -368,7 +368,25 @@ impl Model {
         }
         let answer = json!({"data": {"rateLimit": {"cost": cost}, "repository": repository}});
         let _ = call;
-        (format!("{answer}\n"), String::new(), 0)
+        self.as_github_answers(format!("{answer}\n"), !reviews)
+    }
+
+    /// Serve `answer` — held, where `recorded` says GitHub's recordings cover the query,
+    /// to the shape GitHub answered it in (`recorded_shape.rs`), unless the journey has
+    /// said it serves an answer GitHub would not give.
+    fn as_github_answers(&self, answer: String, recorded: bool) -> (String, String, i32) {
+        if recorded && !self.flag("departs-from-github") {
+            let parsed: Value = match serde_json::from_str(&answer) {
+                Ok(parsed) => parsed,
+                Err(e) => return refused(&format!("fake gh: an answer that is not JSON: {e}")),
+            };
+            if let Err(why) = crate::recorded_shape::conforms(&parsed) {
+                return refused(&format!(
+                    "fake gh: this answer departs from GitHub's recorded shape — {why}"
+                ));
+            }
+        }
+        (answer, String::new(), 0)
     }
 
     /// The listing of the repository's open change requests, oldest first — what the
@@ -393,7 +411,7 @@ impl Model {
         // A journey's own answer for the whole listing — how an answer GitHub's schema
         // would not give is served.
         if let Ok(text) = std::fs::read_to_string(self.state.join("open-listing-answer.json")) {
-            return (text, String::new(), 0);
+            return self.as_github_answers(text, true);
         }
         let numbers: Vec<u64> = (1..)
             .take_while(|number| self.state.join(format!("pr-{number}.env")).exists())
@@ -427,7 +445,7 @@ impl Model {
                 },
             },
         }});
-        (format!("{answer}\n"), String::new(), 0)
+        self.as_github_answers(format!("{answer}\n"), true)
     }
 
     /// The repository's declarations as the first query of a call reads them: one
