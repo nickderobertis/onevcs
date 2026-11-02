@@ -6464,15 +6464,8 @@ conclude after a given number of readings — and is charged 1 GraphQL point per
 change requests, as GitHub charges the query.
 
 **4. `release_holdup`: what is holding the next release.** A rule of the host's
-release-targets file (`$ONEVCS_HOME/releases.yml`) may carry an optional key:
-
-```yaml
-repositories:
-  - match: {host: github.com, owner: acme-corp, name: widgets}
-    release_change: {head: "release-plz-*"}
-```
-
-`head` is a glob (`*` matches any run of characters, `?` one) over the head branch
+release-targets file (`$ONEVCS_HOME/releases.yml`) may carry an optional key beside its
+`match:`, for example `release_change: {head: "release-plz-*"}`. `head` is a glob (`*` matches any run of characters, `?` one) over the head branch
 names of the change requests the repository's release tool opens; it names no
 particular tool. The file's `VERSION` and existing keys are unchanged, and an older
 `onevcs` ignores the key, since nothing in that reader denies unknown fields. An empty
