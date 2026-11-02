@@ -349,6 +349,25 @@ pub fn follow_checks(
             repository.key
         )));
     }
+    for followed in &read.changes {
+        let unsettled = followed.checks.iter().any(|check| !check.settled());
+        if (followed.superseded && !followed.checks.is_empty()) || followed.outstanding != unsettled
+        {
+            return Err(invalid(format!(
+                "the host answered {} at {} as {}, which the checks it reports contradict, so \
+                 what is still running there cannot be read",
+                followed.change,
+                followed.head.0,
+                if followed.superseded {
+                    "superseded"
+                } else if followed.outstanding {
+                    "still running"
+                } else {
+                    "settled"
+                }
+            )));
+        }
+    }
     for followed in &mut read.changes {
         followed.recorded = record_followed(&repository.key, followed);
     }

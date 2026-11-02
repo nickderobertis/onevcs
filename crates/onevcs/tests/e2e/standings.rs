@@ -3266,3 +3266,45 @@ fn a_follow_read_whose_declarations_cannot_be_read_takes_requiredness_from_the_h
         "the host's own marking decides where the declaration cannot be read"
     );
 }
+
+#[test]
+fn a_release_change_request_that_moved_between_the_two_reads_is_not_reported_as_holding_it() {
+    // The listing names four open matching change requests; by the time their rollups
+    // are read, one has closed, one has been moved onto another base and one onto another
+    // branch. Only the fourth, which stayed as it was, holds the release.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let numbers: Vec<usize> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|suffix| {
+            let branch = format!("release-plz-{suffix}");
+            stack.branch(&branch, "main", &format!("{suffix}.txt"));
+            stack.open(&branch, "main", false)
+        })
+        .collect();
+    for (number, moved) in numbers.iter().zip([
+        json!({"state": "CLOSED"}),
+        json!({"baseRefName": "release"}),
+        json!({"headRefName": "feature/renamed"}),
+    ]) {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            moved.to_string(),
+        )
+        .expect("what the second read answers");
+    }
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+
+    let holdup = succeeded(&holdup_output(world, true));
+
+    let named: Vec<&Value> = holdup["changes"]
+        .as_array()
+        .expect("the release changes")
+        .iter()
+        .map(|change| &change["url"])
+        .collect();
+    assert_eq!(named, [&json!(url(numbers[3]))], "{holdup:#}");
+}

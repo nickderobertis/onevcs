@@ -3636,6 +3636,10 @@ enum Garble {
     Foreign,
     /// About another head than the one asked about.
     WrongHead,
+    /// Superseded, and reporting checks anyway.
+    SupersededWithChecks,
+    /// Settled, while a check it reports is still running.
+    SettledWhileRunning,
 }
 
 /// The testing host behind a seam whose follow read answers wrongly, as `Garble` says.
@@ -3684,6 +3688,14 @@ impl RemoteHost for GarblingHost {
                         .expect("a URL");
             }
             Garble::WrongHead => answer.changes[0].head = onevcs::Sha("b".repeat(40)),
+            Garble::SupersededWithChecks => {
+                let checks = answer.changes[0].checks.clone();
+                answer.changes[1].checks = checks;
+            }
+            Garble::SettledWhileRunning => {
+                answer.changes[0].checks[1].status = "in_progress".to_owned();
+                answer.changes[0].checks[1].conclusion = None;
+            }
         }
         Ok(answer)
     }
@@ -3712,6 +3724,8 @@ fn a_follow_answer_the_host_garbled_is_refused_and_no_stream_is_touched() {
         Garble::Reordered,
         Garble::Foreign,
         Garble::WrongHead,
+        Garble::SupersededWithChecks,
+        Garble::SettledWhileRunning,
     ] {
         let refused = onevcs::follow_checks(
             &Providers {
@@ -3734,12 +3748,13 @@ fn a_follow_answer_the_host_garbled_is_refused_and_no_stream_is_touched() {
             },
         )
         .expect_err("a garbled answer is refused");
-        assert!(
-            refused
-                .to_string()
-                .contains("which checks are whose cannot be read"),
-            "{garble:?}: {refused}"
-        );
+        let says = match garble {
+            Garble::SupersededWithChecks | Garble::SettledWhileRunning => {
+                "which the checks it reports contradict"
+            }
+            _ => "which checks are whose cannot be read",
+        };
+        assert!(refused.to_string().contains(says), "{garble:?}: {refused}");
         assert_eq!(
             std::fs::read_to_string(&path).expect("the stream"),
             before,

@@ -123,7 +123,7 @@ fn read(slug: &str, glob: &HeadGlob) -> Result<(Vec<ReleaseChange>, ReadCost)> {
         graphql_points: charged(data, slug)?,
         rest_requests: 0,
     };
-    let matching = matching(data, slug, glob)?;
+    let (base, matching) = matching(data, slug, glob)?;
     if matching.is_empty() {
         return Ok((Vec::new(), cost));
     }
@@ -143,20 +143,25 @@ fn read(slug: &str, glob: &HeadGlob) -> Result<(Vec<ReleaseChange>, ReadCost)> {
     let mut changes = Vec::with_capacity(numbers.len());
     for (at, number) in numbers.iter().enumerate() {
         let pull = standings_github::pull_of(&data, at, *number, slug)?;
+        let text = |field: &str| {
+            pull.get(field).and_then(Value::as_str).ok_or_else(|| {
+                invalid(format!(
+                    "GitHub answered about pull request {number} without its {field}"
+                ))
+            })
+        };
+        let head_branch = text("headRefName")?.to_owned();
+        // Asked again of the second answer: a change request closed, retargeted or moved
+        // to another branch between the two queries is no longer one holding a release.
+        if text("state")? != "OPEN" || text("baseRefName")? != base || !glob.matches(&head_branch) {
+            continue;
+        }
         let head = standings_github::pull_head(pull, *number)?;
         let (checks, declared) =
             standings_github::declared_checks(pull, *number, &head, &mut required)?;
         changes.push(ReleaseChange {
             url: standings_github::pull_url(pull, *number)?,
-            head_branch: pull
-                .get("headRefName")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "GitHub answered about pull request {number} without its headRefName"
-                    ))
-                })?,
+            head_branch,
             draft: pull
                 .get("isDraft")
                 .and_then(Value::as_bool)
@@ -188,11 +193,11 @@ fn charged(data: &Value, slug: &str) -> Result<u32> {
     Ok(u32::try_from(cost).unwrap_or(u32::MAX))
 }
 
-/// The numbers of the open change requests the listing names that target the default
-/// branch and carry a head branch matching `glob`, oldest first. Each condition is held
+/// The default branch, and the numbers of the open change requests the listing names
+/// that target it and carry a head branch matching `glob`, oldest first. Each condition is held
 /// here as well as asked of the host, so an answer that strays past what was asked is not
 /// read as a release change request.
-fn matching(data: &Value, slug: &str, glob: &HeadGlob) -> Result<Vec<u64>> {
+fn matching(data: &Value, slug: &str, glob: &HeadGlob) -> Result<(String, Vec<u64>)> {
     let repository = data.get("repository").ok_or_else(|| {
         invalid(format!(
             "GitHub answered the listing of {slug}'s open change requests without its repository"
@@ -254,5 +259,5 @@ fn matching(data: &Value, slug: &str, glob: &HeadGlob) -> Result<Vec<u64>> {
     }
     // Oldest first, as asked — and held, so the order is the answer's and not the host's.
     matching.sort_unstable();
-    Ok(matching)
+    Ok((base.to_owned(), matching))
 }
