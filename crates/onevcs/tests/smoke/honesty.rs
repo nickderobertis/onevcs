@@ -17,11 +17,14 @@
 // not a shortcut around it. The other run substitutes nothing at all: real git, a real
 // GitHub remote, a real pull request, and a real merge.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use clap::Parser;
 use serde_json::Value;
 
 use onevcs::cli::Cli;
-use onevcs::{Git, Providers, SessionRequest, Vcs};
+use onevcs::{ChangeId, Check, Git, Providers, SessionRequest, Vcs};
 use onevcs_testing::{FileHost, HostState};
 
 use crate::comparison::{compared, evidence, normalize};
@@ -103,6 +106,7 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
         0,
         "the provided backend's checkout registers under the same identity"
     );
+    let answered = AnsweredChecks::of(&real_events, &real.home());
     let provided_host = FileHost::seeded(
         provided.path("host.json"),
         HostState {
@@ -110,6 +114,13 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
             // seeded with the one the real host reported rather than a name this
             // journey made up.
             authenticated_user: who.clone(),
+            // So are the checks: the scratch repository's own workflow runs on every
+            // pull request, and whether GitHub has queued it, started it or finished it
+            // when the watch and the re-verify read is a race this journey does not
+            // control. Each reading answers what the real one did.
+            check_readings: answered.readings(answered.watched.clone()),
+            check_readings_after_lift: answered.readings(answered.after_lift()),
+            check_logs: answered.logs(),
             ..HostState::default()
         },
     )
@@ -247,4 +258,89 @@ fn anonymous_changes(events: Vec<Value>) -> Vec<Value> {
             event
         })
         .collect()
+}
+
+/// The change request a fresh provided host opens first, which the compared journey's is.
+fn first_change() -> ChangeId {
+    ChangeId("1".to_owned())
+}
+
+/// What the real host answered each check reading of the compared publication with,
+/// read back off the `change-check` records its stream holds.
+///
+/// Under `change-direct` with nothing required, the watch settles on its first reading
+/// and the merge re-verifies with one reading after the draft is lifted, so a record
+/// before `draft-lifted` is the watch's reading and one after it the re-verify's. A
+/// stream with two records of one check on one side of the lift is a publication this
+/// shape cannot replay, and is refused rather than replayed as something else.
+struct AnsweredChecks {
+    /// Each check the watch's reading reported, by name.
+    watched: BTreeMap<String, Check>,
+    /// Each check the re-verify's reading reported differently from the watch's.
+    moved: BTreeMap<String, Check>,
+    /// The log text each settled check's record carries, by name.
+    logs: BTreeMap<String, String>,
+}
+
+impl AnsweredChecks {
+    fn of(events: &[Value], home: &Path) -> Self {
+        let mut answered = Self {
+            watched: BTreeMap::new(),
+            moved: BTreeMap::new(),
+            logs: BTreeMap::new(),
+        };
+        let mut lifted = false;
+        for event in events {
+            if event["kind"] == "draft-lifted" {
+                lifted = true;
+            }
+            if event["kind"] != "change-check" {
+                continue;
+            }
+            let check: Check = serde_json::from_value(event["payload"].clone())
+                .unwrap_or_else(|e| panic!("a change-check records the check it read: {e}"));
+            for artifact in event["artifacts"].as_array().into_iter().flatten() {
+                let id = artifact["id"].as_str().expect("an artifact carries an id");
+                let path = home.join("artifacts").join(id);
+                let log = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("the log at {} is readable: {e}", path.display()));
+                answered.logs.insert(check.name.clone(), log);
+            }
+            let side = if lifted {
+                &mut answered.moved
+            } else {
+                &mut answered.watched
+            };
+            let name = check.name.clone();
+            assert!(
+                side.insert(name.clone(), check).is_none(),
+                "the real publication recorded check {name:?} twice on one side of its lift, \
+                 which one scripted reading cannot replay: {events:#?}"
+            );
+        }
+        answered
+    }
+
+    /// Every check the re-verify's reading reported: the watch's, as each moved since.
+    fn after_lift(&self) -> BTreeMap<String, Check> {
+        let mut checks = self.watched.clone();
+        checks.extend(self.moved.clone());
+        checks
+    }
+
+    /// One scripted reading of the compared change request, or none where the real host
+    /// reported nothing at all and the provider's default answer already is that.
+    fn readings(&self, checks: BTreeMap<String, Check>) -> BTreeMap<ChangeId, Vec<Vec<Check>>> {
+        if self.watched.is_empty() && self.moved.is_empty() {
+            return BTreeMap::new();
+        }
+        BTreeMap::from([(first_change(), vec![checks.into_values().collect()])])
+    }
+
+    fn logs(&self) -> BTreeMap<ChangeId, BTreeMap<String, String>> {
+        if self.logs.is_empty() {
+            return BTreeMap::new();
+        }
+        BTreeMap::from([(first_change(), self.logs.clone())])
+    }
 }
