@@ -6498,8 +6498,9 @@ branch name with the repository's default branch (the identity's base), and, onl
 one matches, one aliased read of the matches' check rollups with the base's
 declarations — the standings read's own shape. Like `release_status`, it takes no
 `Providers` and reads the host through the `gh` seam, so `ONEVCS_GH` replays it. It
-records no event. A listing of more than one page, or more than 50 matches, is refused
-rather than read in part.
+records no event. Oldest first is ascending number, the order the host numbers change
+requests in as they open. A listing of more than one page, or more than 50 matches, is
+refused rather than read in part.
 
 ```
 onevcs release holdup <REPO> [--json]

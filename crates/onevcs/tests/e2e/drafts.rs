@@ -3310,9 +3310,21 @@ fn a_check_still_running_when_the_watch_ended_is_followed_and_recorded_once_on_t
     let (world, _origin, session) = scene(DIRECT_OFF, "60", "20");
     let gate = check("gate", Some("success"), true, 1);
     let running = vec![gate.clone(), check("late", None, false, 2)];
-    let failed = vec![gate, check("late", Some("failure"), false, 2)];
+    let failed = vec![gate.clone(), check("late", Some("failure"), false, 2)];
+    // Then each field a transition is told by, moving on its own: the conclusion, then
+    // only the completion time (which is no transition), then only the run's start.
+    let passed = vec![gate.clone(), check("late", Some("success"), false, 2)];
+    let mut completed_later = check("late", Some("success"), false, 2);
+    completed_later.completed_at = Some("2026-09-30T12:09:00Z".to_owned());
+    let rerun = vec![gate.clone(), check("late", Some("success"), false, 3)];
     let mut readings = polls(WATCH_READINGS + 1, &running);
-    readings.push(failed);
+    readings.extend([
+        failed.clone(),
+        failed,
+        passed,
+        vec![gate, completed_later],
+        rerun,
+    ]);
     let host = scripted(None, readings, None, vec![]);
 
     let published = publish(&host, &session, &PublishRequest::default());
@@ -3403,6 +3415,35 @@ fn a_check_still_running_when_the_watch_ended_is_followed_and_recorded_once_on_t
     );
     assert_eq!(check_records(&session).len(), records.len());
 
+    // The conclusion alone moved: recorded, and a pass asks for nobody.
+    let conclusion_only = follow(&host, &head);
+    assert_eq!(
+        conclusion_only.changes[0].recorded, 1,
+        "{conclusion_only:?}"
+    );
+    let records = check_records(&session);
+    let (_, stamp, payload) = records.last().expect("the conclusion's record");
+    assert_eq!(
+        (stamp.as_str(), &payload["state"]),
+        ("progress", &serde_json::json!("passed"))
+    );
+    assert_eq!(payload["from_status"], "completed");
+    // Only the completion time moved: the same reading, recorded nothing.
+    let completion_only = follow(&host, &head);
+    assert_eq!(
+        completion_only.changes[0].recorded, 0,
+        "{completion_only:?}"
+    );
+    assert_eq!(check_records(&session).len(), records.len());
+    // Only the run's start moved: a new run, recorded.
+    let start_only = follow(&host, &head);
+    assert_eq!(start_only.changes[0].recorded, 1, "{start_only:?}");
+    let records = check_records(&session);
+    assert_eq!(
+        records.last().expect("the re-run").2["started_at"],
+        started(3)
+    );
+
     // A head the change request no longer carries is superseded: nothing read, nothing
     // recorded.
     let moved = follow(&host, &onevcs::Sha("0".repeat(40)));
@@ -3453,4 +3494,59 @@ fn a_change_request_no_session_here_opened_is_answered_and_records_nothing() {
         streams_before,
         "no stream was written"
     );
+}
+
+#[test]
+fn a_change_request_two_sessions_published_is_followed_onto_the_newest_one() {
+    // The first session opens the change request and closes; a second continues the
+    // branch and publishes into the same change request. A check read afterwards is
+    // recorded on the second session's stream, which is the newer opening, and only
+    // there.
+    let (world, _origin, first_session) = scene(OPEN_OFF, "60", "20");
+    let gate = check("gate", Some("success"), true, 1);
+    let host = MemoryHost::seeded(host_with(
+        vec![gate.clone(), check("late", None, false, 2)],
+        None,
+    ));
+    let opened = publish(&host, &first_session, &PublishRequest::default());
+    assert!(
+        matches!(opened.outcome, PublishOutcome::ChangeOpen(_)),
+        "{opened:?}"
+    );
+    onevcs::close_session(&Providers::real(), &first_session.token).expect("it closes");
+    let second_session = crate::library::open(&Git, "feature/drafted");
+    world.commit_file(
+        &second_session.worktree,
+        "two.txt",
+        "two\n",
+        "feat: more work on feature/drafted",
+    );
+    let continued = publish(&host, &second_session, &PublishRequest::default());
+    assert!(
+        matches!(continued.outcome, PublishOutcome::ChangeOpen(_)),
+        "{continued:?}"
+    );
+    assert_eq!(host.state().changes.len(), 1, "one change request, adopted");
+    assert_eq!(
+        world
+            .events_of(&second_session.token.0, "change-opened")
+            .len(),
+        1,
+        "the second session records opening it too"
+    );
+    let first_before = check_records(&first_session).len();
+    let second_before = check_records(&second_session).len();
+    let head = host.state().changes[0].head_sha.clone();
+    // `late` ends on the host after both watches did.
+    host.set_head_checks(&head, vec![gate, check("late", Some("failure"), false, 2)])
+        .expect("the host concludes it");
+
+    let read = follow(&host, &head);
+
+    assert_eq!(read.changes[0].recorded, 1, "{read:?}");
+    assert_eq!(check_records(&first_session).len(), first_before);
+    let second = check_records(&second_session);
+    assert_eq!(second.len(), second_before + 1);
+    let (name, stamp, _) = second.last().expect("the followed record");
+    assert_eq!((name.as_str(), stamp.as_str()), ("late", "attention"));
 }

@@ -380,7 +380,7 @@ impl Model {
             "defaultBranchRef { name }",
             "orderBy: {field: CREATED_AT, direction: ASC}",
             "pageInfo { hasNextPage }",
-            "number state baseRefName headRefName createdAt",
+            "number state baseRefName headRefName",
         ] {
             if !query.contains(wanted) {
                 return refused(&format!(
@@ -406,7 +406,6 @@ impl Model {
                         "state": "OPEN",
                         "baseRefName": field("PR_BASE"),
                         "headRefName": field("PR_HEAD"),
-                        "createdAt": format!("2026-10-01T00:{:02}:{:02}Z", number / 60, number % 60),
                     })
                 })
             })
@@ -415,7 +414,12 @@ impl Model {
             "rateLimit": {"cost": cost},
             "repository": {
                 "defaultBranchRef": {"name": "main"},
-                "pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+                // `open-listing-has-more`: a repository with more open change requests than
+                // one page holds, which is the answer a reader must not take for the whole.
+                "pullRequests": {
+                    "pageInfo": {"hasNextPage": self.flag("open-listing-has-more")},
+                    "nodes": nodes,
+                },
             },
         }});
         (format!("{answer}\n"), String::new(), 0)

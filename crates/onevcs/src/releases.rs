@@ -80,11 +80,69 @@ pub(crate) struct ReleaseChangeRule {
     pub(crate) release_change: Option<ReleaseChangeKey>,
 }
 
-/// `release_change: {head: "<glob>"}`: a glob — `*` any run of characters, `?` one —
-/// over the head branch names of the change requests the release tool opens.
+/// `release_change: {head: "<glob>"}`: the head branch names of the change requests the
+/// release tool opens.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ReleaseChangeKey {
-    pub(crate) head: String,
+    pub(crate) head: HeadGlob,
+}
+
+/// A glob over branch names — `*` any run of characters, `?` exactly one, every other
+/// character itself — refused where it is read when it could match no branch name: empty,
+/// or carrying whitespace, which no branch name does.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) struct HeadGlob(String);
+
+impl TryFrom<String> for HeadGlob {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "a release_change head of {value:?} matches no branch name: name a glob such \
+                 as \"release-*\""
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl HeadGlob {
+    /// The glob as it was written.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether `name` matches this glob.
+    pub(crate) fn matches(&self, name: &str) -> bool {
+        let glob: Vec<char> = self.0.chars().collect();
+        let name: Vec<char> = name.chars().collect();
+        let (mut at, mut from) = (0, 0);
+        // Where the last `*` was, and how much of the name it has taken so far.
+        let mut star: Option<(usize, usize)> = None;
+        while from < name.len() {
+            match glob.get(at) {
+                Some('*') => {
+                    star = Some((at, from));
+                    at += 1;
+                }
+                Some(&wanted) if wanted == '?' || wanted == name[from] => {
+                    at += 1;
+                    from += 1;
+                }
+                _ => match star {
+                    Some((star_at, star_from)) => {
+                        at = star_at + 1;
+                        from = star_from + 1;
+                        star = Some((star_at, star_from + 1));
+                    }
+                    None => return false,
+                },
+            }
+        }
+        glob[at..].iter().all(|rest| *rest == '*')
+    }
 }
 
 /// The global rung of the adoption chain.

@@ -249,15 +249,23 @@ pub(crate) fn pull_url(pull: &Value, number: u64) -> Result<Url> {
     })
 }
 
-/// The commit a pull request's head is at, read out of its alias.
+/// The commit a pull request's head is at, read out of its alias and held to an object
+/// id — what a follow read compares the head it was asked about against.
 pub(crate) fn pull_head(pull: &Value, number: u64) -> Result<Sha> {
-    pull.get("headRefOid")
+    let reported = pull
+        .get("headRefOid")
         .and_then(Value::as_str)
-        .filter(|oid| !oid.is_empty())
-        .map(|oid| Sha(oid.to_owned()))
         .ok_or_else(|| {
             invalid(format!(
                 "GitHub answered about pull request {number} without the commit its head is at"
+            ))
+        })?;
+    crate::git::ObjectId::parse(reported)
+        .map(|oid| Sha(oid.as_str().to_owned()))
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub answered pull request {number}'s head as {reported:?}, which is not a \
+                 commit id"
             ))
         })
 }

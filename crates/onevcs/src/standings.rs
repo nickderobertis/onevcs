@@ -326,8 +326,11 @@ pub fn follow_checks(
         .iter()
         .map(|followed| {
             (
+                // Held to the repository asked about as well as the number, because the
+                // URL is what selects the stream a record is appended to.
                 review::ChangeUrl::parse(followed.change.as_str())
                     .ok()
+                    .filter(|url| url.identity == repository.key)
                     .map(|url| url.number),
                 &followed.head,
             )
@@ -339,10 +342,11 @@ pub fn follow_checks(
         .collect();
     if answered != expected {
         return Err(invalid(format!(
-            "the host answered about {} change request head(s) where {} were asked about, or \
-             not in the order asked, so which checks are whose cannot be read",
+            "the host answered about {} change request head(s) where {} were asked about, not \
+             all of {}, or not in the order asked, so which checks are whose cannot be read",
             read.changes.len(),
-            asked.len()
+            asked.len(),
+            repository.key
         )));
     }
     for followed in &mut read.changes {

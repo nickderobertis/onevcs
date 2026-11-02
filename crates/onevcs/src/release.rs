@@ -391,7 +391,7 @@ fn first_match<'a>(
 pub(crate) fn release_change_head(
     registry: &Registry,
     repo: &str,
-) -> Result<(String, Option<String>)> {
+) -> Result<(String, Option<crate::releases::HeadGlob>)> {
     let (key, publication) = locate(registry, repo)?;
     let file = load()?;
     let normalized = store::normalize(&key);
@@ -422,16 +422,6 @@ pub(crate) fn release_change_head(
         .nth(index)
         .and_then(|rule| rule.release_change)
         .map(|change| change.head);
-    if let Some(head) = &head {
-        if head.trim().is_empty() || head.chars().any(char::is_whitespace) {
-            return Err(error::invalid(format!(
-                "the release-targets file at {} gives repository rule {} a release_change head \
-                 of {head:?}, which matches no branch name: name a glob such as \"release-*\"",
-                path.display(),
-                index + 1
-            )));
-        }
-    }
     Ok((key, head))
 }
 

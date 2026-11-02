@@ -23,6 +23,7 @@ use url::Url;
 use crate::error::{invalid, Result};
 use crate::host::{Check, Sha};
 use crate::publish::checks_verdict;
+use crate::releases::HeadGlob;
 use crate::review::ReadCost;
 use crate::standings::github::{self as standings_github, Required};
 use crate::standings::{ChecksVerdict, STANDINGS_BATCH};
@@ -90,21 +91,16 @@ pub fn release_holdup(repo: &str) -> Result<ReleaseHoldup> {
 }
 
 /// The listing query: the repository's default branch, and its open change requests by
-/// head branch name, oldest first.
+/// head branch name, oldest first — which is ascending number, the order GitHub numbers
+/// them in as they are opened.
 const LISTING: &str = "query($owner: String!, $name: String!) { rateLimit { cost } \
 repository(owner: $owner, name: $name) { defaultBranchRef { name } pullRequests(states: OPEN, \
 first: 100, orderBy: {field: CREATED_AT, direction: ASC}) { pageInfo { hasNextPage } nodes { \
-number state baseRefName headRefName createdAt } } } }";
-
-/// One open change request the listing names: its number, and when it was opened.
-struct Listed {
-    number: u64,
-    created: String,
-}
+number state baseRefName headRefName } } } }";
 
 /// List the open change requests of `slug` into its base whose head branch matches
 /// `glob`, and read every check on each.
-fn read(slug: &str, glob: &str) -> Result<(Vec<ReleaseChange>, ReadCost)> {
+fn read(slug: &str, glob: &HeadGlob) -> Result<(Vec<ReleaseChange>, ReadCost)> {
     let (owner, name) = slug
         .split_once('/')
         .ok_or_else(|| invalid(format!("{slug:?} does not name one repository")))?;
@@ -135,10 +131,11 @@ fn read(slug: &str, glob: &str) -> Result<(Vec<ReleaseChange>, ReadCost)> {
         return Err(invalid(format!(
             "{} open change requests of {slug} carry a head branch matching {glob:?}, more \
              than the {STANDINGS_BATCH} one read answers; narrow the release_change glob",
-            matching.len()
+            matching.len(),
+            glob = glob.as_str()
         )));
     }
-    let numbers: Vec<u64> = matching.iter().map(|listed| listed.number).collect();
+    let numbers = matching;
     let (data, points, _) = standings_github::ask(slug, &numbers, false, true)?;
     cost.graphql_points = cost.graphql_points.saturating_add(points);
     let mut required = Required::default();
@@ -191,11 +188,11 @@ fn charged(data: &Value, slug: &str) -> Result<u32> {
     Ok(u32::try_from(cost).unwrap_or(u32::MAX))
 }
 
-/// The open change requests the listing names that target the default branch and carry a
-/// head branch matching `glob`, oldest first. Each condition is held here as well as
-/// asked of the host, so an answer that strays past what was asked is not read as a
-/// release change request.
-fn matching(data: &Value, slug: &str, glob: &str) -> Result<Vec<Listed>> {
+/// The numbers of the open change requests the listing names that target the default
+/// branch and carry a head branch matching `glob`, oldest first. Each condition is held
+/// here as well as asked of the host, so an answer that strays past what was asked is not
+/// read as a release change request.
+fn matching(data: &Value, slug: &str, glob: &HeadGlob) -> Result<Vec<u64>> {
     let repository = data.get("repository").ok_or_else(|| {
         invalid(format!(
             "GitHub answered the listing of {slug}'s open change requests without its repository"
@@ -250,71 +247,12 @@ fn matching(data: &Value, slug: &str, glob: &str) -> Result<Vec<Listed>> {
         if text("state")? != "OPEN" || text("baseRefName")? != base {
             continue;
         }
-        if !glob_matches(glob, text("headRefName")?) {
+        if !glob.matches(text("headRefName")?) {
             continue;
         }
-        matching.push(Listed {
-            number,
-            created: text("createdAt")?.to_owned(),
-        });
+        matching.push(number);
     }
     // Oldest first, as asked — and held, so the order is the answer's and not the host's.
-    matching.sort_by(|left, right| {
-        (left.created.as_str(), left.number).cmp(&(right.created.as_str(), right.number))
-    });
+    matching.sort_unstable();
     Ok(matching)
-}
-
-/// Whether `name` matches `glob`: `*` any run of characters, `?` exactly one, and every
-/// other character itself.
-fn glob_matches(glob: &str, name: &str) -> bool {
-    let glob: Vec<char> = glob.chars().collect();
-    let name: Vec<char> = name.chars().collect();
-    let (mut at, mut from) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while from < name.len() {
-        match glob.get(at) {
-            Some('*') => {
-                star = Some((at, from));
-                at += 1;
-            }
-            Some(&wanted) if wanted == '?' || wanted == name[from] => {
-                at += 1;
-                from += 1;
-            }
-            _ => match star {
-                Some((star_at, star_from)) => {
-                    at = star_at + 1;
-                    from = star_from + 1;
-                    star = Some((star_at, star_from + 1));
-                }
-                None => return false,
-            },
-        }
-    }
-    glob[at..].iter().all(|rest| *rest == '*')
-}
-
-#[cfg(test)]
-mod tests {
-    use super::glob_matches;
-
-    #[test]
-    fn a_glob_matches_a_run_with_star_and_one_character_with_a_question_mark() {
-        for (glob, name, matches) in [
-            ("release-plz-*", "release-plz-2026-11-02T10-00-00Z", true),
-            ("release-plz-*", "release-plz-", true),
-            ("release-plz-*", "feature/release-plz-x", false),
-            ("release-?", "release-1", true),
-            ("release-?", "release-10", false),
-            ("*-release", "cut-release", true),
-            ("a*b*c", "aXXbYYc", true),
-            ("a*b*c", "aXXbYY", false),
-            ("exact", "exact", true),
-            ("exact", "exactly", false),
-            ("*", "anything/at-all", true),
-        ] {
-            assert_eq!(glob_matches(glob, name), matches, "{glob} against {name}");
-        }
-    }
 }

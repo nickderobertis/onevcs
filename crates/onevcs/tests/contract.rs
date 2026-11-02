@@ -10678,10 +10678,13 @@ fn check_visibility_amendment_states_the_surface_the_crate_exports() {
         &onevcs::FollowChecksRequest,
     ) -> onevcs::Result<onevcs::FollowedChecks> = onevcs::follow_checks;
     let _: fn(&str) -> onevcs::Result<onevcs::ReleaseHoldup> = onevcs::release_holdup;
-    let _: fn(
-        &dyn onevcs::RemoteHost,
-        &[(onevcs::ChangeId, onevcs::Sha)],
-    ) -> onevcs::Result<onevcs::FollowedChecks> = |host, changes| host.follow_checks(changes);
+    fn seam(
+        host: &dyn onevcs::RemoteHost,
+        changes: &[(onevcs::ChangeId, onevcs::Sha)],
+    ) -> onevcs::Result<onevcs::FollowedChecks> {
+        host.follow_checks(changes)
+    }
+    let _ = seam;
     assert_eq!(
         serde_json::to_value(onevcs::Significance::Attention).expect("a wire word"),
         json!("attention")

@@ -2922,24 +2922,37 @@ fn holdup_output(world: &World, json: bool) -> Output {
     command.output().expect("the binary runs")
 }
 
+/// One context of a check rollup as GitHub answers it, for a change request's own answer.
+fn context(name: &str, conclusion: &str, address: Option<&str>) -> Value {
+    let mut node = json!({
+        "__typename": "CheckRun",
+        "name": name,
+        "status": "COMPLETED",
+        "conclusion": conclusion,
+        "startedAt": "2026-09-30T12:00:00Z",
+        "completedAt": "2026-09-30T12:00:30Z",
+        "isRequired": false,
+    });
+    if let Some(address) = address {
+        node["detailsUrl"] = json!(address);
+    }
+    node
+}
+
 #[test]
 fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_every_check() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
     world.git(&stack.checkout, &["push", "-q", "origin", "main:release"]);
+    // The glob takes `plz` with its `*` and one digit with its `?`, so a name matches
+    // only once the matcher backtracks past the first `-`.
     let older = stack.branch("release-plz-2026-10-01", "main", "older.txt");
-    let elsewhere = stack.branch("release-plz-on-release", "release", "elsewhere.txt");
-    let closed = stack.branch("release-plz-closed", "main", "closed.txt");
     let newer = stack.branch("release-plz-2026-10-02", "main", "newer.txt");
+    stack.branch("release-plz-2026-10-03", "main", "closed.txt");
+    stack.branch("release-plz-2026-10-04", "release", "elsewhere.txt");
+    stack.branch("release-plz-2026-10-10", "main", "two-digits.txt");
     stack.branch("feature/not-a-release", "main", "feature.txt");
     world.host_requires_on("main", &["ci"]);
-    world.host_checks_on(
-        &older,
-        &[
-            check("ci", "failure", true),
-            check("lint", "failure", false),
-        ],
-    );
     world.host_checks_on(
         &newer,
         &[
@@ -2947,17 +2960,30 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
             check("lint", "success", false),
         ],
     );
-    world.host_checks_on(&elsewhere, &[check("ci", "failure", true)]);
-    world.host_checks_on(&closed, &[check("ci", "failure", true)]);
     let first = stack.open("release-plz-2026-10-01", "main", false);
-    stack.open("release-plz-on-release", "release", false);
-    let gone = stack.open("release-plz-closed", "main", false);
+    // Into another base, closed, a second digit, and no release at all: none is held.
+    stack.open("release-plz-2026-10-04", "release", false);
+    let gone = stack.open("release-plz-2026-10-03", "main", false);
     world.close_change_request(gone);
     let second = stack.open("release-plz-2026-10-02", "main", true);
+    stack.open("release-plz-2026-10-10", "main", false);
     stack.open("feature/not-a-release", "main", false);
+    // The older one's rollup as GitHub answers it: a required check that failed, one
+    // nothing requires that failed and reports no address, and one that was cancelled.
+    let address = "https://github.com/acme-corp/stacked/actions/runs/7";
+    std::fs::write(
+        world.path(format!("gh-state/pull-{first}.json")),
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [
+            context("ci", "FAILURE", Some(address)),
+            context("lint", "FAILURE", None),
+            context("stale", "CANCELLED", Some(address)),
+        ]}}}}})
+        .to_string(),
+    )
+    .expect("the older change request's rollup");
     release_rule(
         world,
-        "    release_change:\n      head: \"release-plz-*\"\n",
+        "    release_change:\n      head: \"release-*-2026-10-0?\"\n",
     );
 
     let before = world.ledger().len();
@@ -2984,7 +3010,6 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
         [&json!(url(first)), &json!(url(second))],
         "the two open matching change requests into the base, oldest first: {holdup:#}"
     );
-    let address = "https://github.com/acme-corp/stacked/actions/runs/1";
     let older_change = &changes[0];
     assert_eq!(older_change["head_branch"], "release-plz-2026-10-01");
     assert_eq!(older_change["head"], older);
@@ -2993,7 +3018,7 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
         older_change["verdict"],
         json!({"verdict": "failed", "failed": ["ci"]})
     );
-    let checks: Vec<(&str, bool, &str)> = older_change["checks"]
+    let checks: Vec<(&str, bool, &str, Option<&str>)> = older_change["checks"]
         .as_array()
         .expect("its checks")
         .iter()
@@ -3001,11 +3026,20 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
             (
                 check["name"].as_str().expect("a name"),
                 check["required"].as_bool().expect("required"),
-                check["url"].as_str().expect("an address"),
+                check["conclusion"].as_str().expect("a conclusion"),
+                check["url"].as_str(),
             )
         })
         .collect();
-    assert_eq!(checks, [("ci", true, address), ("lint", false, address)]);
+    assert_eq!(
+        checks,
+        [
+            ("ci", true, "failure", Some(address)),
+            ("lint", false, "failure", None),
+            ("stale", false, "cancelled", Some(address)),
+        ],
+        "required as the base declares it, whatever the rollup marked"
+    );
     assert_eq!(changes[1]["draft"], true);
     assert_eq!(changes[1]["head"], newer);
     assert_eq!(changes[1]["verdict"], json!({"verdict": "passed"}));
@@ -3016,7 +3050,8 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
     for line in [
         format!("{} (release-plz-2026-10-01, at {older})", url(first)),
         format!("  ci (required — blocks the merge) failed: {address}"),
-        format!("  lint (not required — does not block) failed: {address}"),
+        "  lint (not required — does not block) failed: no address reported".to_owned(),
+        format!("  stale (not required — does not block) no-verdict: {address}"),
         format!(
             "{} (release-plz-2026-10-02, draft, at {newer})",
             url(second)
@@ -3025,11 +3060,17 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
     ] {
         assert!(stdout.contains(&line), "{line:?} in:\n{stdout}");
     }
-    assert!(!stdout.contains("release-plz-on-release"), "{stdout}");
-    assert!(!stdout.contains("release-plz-closed"), "{stdout}");
-    assert!(!stdout.contains("feature/not-a-release"), "{stdout}");
-    assert!(
-        world.ledger().len() == before + 4,
+    for absent in [
+        "release-plz-2026-10-03",
+        "release-plz-2026-10-04",
+        "release-plz-2026-10-10",
+        "feature/not-a-release",
+    ] {
+        assert!(!stdout.contains(absent), "{absent} in:\n{stdout}");
+    }
+    assert_eq!(
+        world.ledger().len(),
+        before + 4,
         "the human form makes the same two reads"
     );
 }
@@ -3039,7 +3080,7 @@ fn a_release_holdup_with_no_match_reads_once_and_one_with_no_release_change_asks
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
     stack.branch("feature/not-a-release", "main", "feature.txt");
-    stack.open("feature/not-a-release", "main", false);
+    let feature = stack.open("feature/not-a-release", "main", false);
 
     release_rule(
         world,
@@ -3054,6 +3095,19 @@ fn a_release_holdup_with_no_match_reads_once_and_one_with_no_release_change_asks
     let human = holdup_output(world, false);
     assert!(String::from_utf8_lossy(&human.stdout)
         .contains("no open change request of its release tool is holding a release"));
+
+    // A glob with no wildcard is the one name exactly.
+    release_rule(
+        world,
+        "    release_change:\n      head: \"feature/not-a-release\"\n",
+    );
+    let exact = succeeded(&holdup_output(world, true));
+    assert_eq!(exact["changes"][0]["url"], url(feature));
+    release_rule(
+        world,
+        "    release_change:\n      head: \"feature/not-a\"\n",
+    );
+    assert_eq!(succeeded(&holdup_output(world, true))["changes"], json!([]));
 
     // A rule with no `release_change` declares nothing, and `gh` is never started.
     release_rule(world, "");
@@ -3079,7 +3133,48 @@ fn a_release_holdup_with_no_match_reads_once_and_one_with_no_release_change_asks
         "gh was never invoked"
     );
 
-    // A glob that could match no branch name is refused, naming the file.
-    release_rule(world, "    release_change:\n      head: \"\"\n");
-    refused(&holdup_output(world, true), 2, "release_change head");
+    // A glob that could match no branch name is refused, naming the file and the problem.
+    for unusable in ["\"\"", "\"release *\""] {
+        release_rule(
+            world,
+            &format!("    release_change:\n      head: {unusable}\n"),
+        );
+        refused(&holdup_output(world, true), 2, "matches no branch name");
+    }
+}
+
+#[test]
+fn a_release_holdup_that_cannot_read_the_whole_answer_refuses_rather_than_answer_part() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("release-plz-many", "main", "many.txt");
+    for _ in 0..51 {
+        stack.open("release-plz-many", "main", false);
+    }
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+
+    // More matches than one read answers: refused after the listing, before any rollup.
+    let before = world.ledger().len();
+    refused(
+        &holdup_output(world, true),
+        2,
+        "more than the 50 one read answers",
+    );
+    let methods: Vec<Value> = since(world, before)
+        .iter()
+        .map(|call| call["method"].clone())
+        .collect();
+    assert_eq!(methods, [json!("graphql open-changes")]);
+
+    // A listing with a further page is not the whole of what is open.
+    std::fs::write(world.path("gh-state/open-listing-has-more"), "")
+        .expect("a host with more than one page of open change requests");
+    refused(
+        &holdup_output(world, true),
+        2,
+        "more open change requests than one page of the listing",
+    );
 }
