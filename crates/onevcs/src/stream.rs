@@ -242,6 +242,19 @@ impl Stream {
         self.append_stamped(kind, phase_of(kind), payload, artifacts, result);
     }
 
+    /// [`emit_result`](Stream::emit_result), answering whether the record reached this
+    /// stream's file — for a caller that reports how many records it appended. A write
+    /// that fails is still said on stderr, and still fails nothing.
+    pub(crate) fn emit_result_confirmed(
+        &mut self,
+        kind: EventKind,
+        payload: Map<String, Value>,
+        artifacts: Vec<ArtifactRef>,
+        result: crate::event::EmissionResult,
+    ) -> bool {
+        self.append_stamped(kind, phase_of(kind), payload, artifacts, result)
+    }
+
     pub(crate) fn push_result(
         &mut self,
         phase: Phase,
@@ -257,6 +270,7 @@ impl Stream {
         self.append_stamped(EventKind::Push, phase, payload, artifacts, result);
     }
 
+    /// Append one stamped event, answering whether it reached this stream's own file.
     fn append_stamped(
         &mut self,
         kind: EventKind,
@@ -264,7 +278,7 @@ impl Stream {
         payload: Map<String, Value>,
         artifacts: Vec<ArtifactRef>,
         result: crate::event::EmissionResult,
-    ) {
+    ) -> bool {
         let significance = crate::event::significance(kind, result);
         let stamp = serde_json::to_value(significance).expect("significance is a wire word");
         self.labels
@@ -291,7 +305,7 @@ impl Stream {
             self.emitter
                 .try_emit_stamped(kind, Dimensions::at(phase), payload, artifacts)
         else {
-            return;
+            return true;
         };
         // Said in this crate's words rather than the bus's, because this is the line
         // an operator running `onevcs` reads.
@@ -307,6 +321,7 @@ impl Stream {
                 eprintln!("onevcs: warning: cannot record a {kind:?} event in {path}: {source}");
             }
         }
+        false
     }
 }
 

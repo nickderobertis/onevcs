@@ -394,7 +394,7 @@ fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
         if previous == Some(&now) {
             continue;
         }
-        stream.emit_result(
+        if stream.emit_result_confirmed(
             EventKind::ChangeCheck,
             publish::change_check_payload(check, previous.and_then(|was| was.status.clone())),
             Vec::new(),
@@ -402,8 +402,9 @@ fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
                 required: check.required,
                 state: check.state(),
             },
-        );
-        recorded += 1;
+        ) {
+            recorded += 1;
+        }
     }
     recorded
 }

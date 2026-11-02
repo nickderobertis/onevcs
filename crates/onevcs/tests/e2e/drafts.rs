@@ -3551,10 +3551,11 @@ fn a_change_request_two_sessions_published_is_followed_onto_the_newest_one() {
 }
 
 #[test]
-fn a_session_stream_that_cannot_be_read_records_nothing_and_the_next_read_recovers() {
-    // A record the follow read cannot read is history it cannot decide against: it
-    // answers what the host reports and appends nothing, and once the stream reads
-    // again the transition is recorded.
+fn a_session_stream_that_cannot_be_read_or_written_records_nothing_and_the_next_read_recovers() {
+    // History the follow read cannot read — a torn line, or a record that does not say
+    // what it recorded — is history it cannot decide against, and a stream it cannot
+    // append to takes no record: each answers what the host reports and counts nothing
+    // appended, and once the stream is whole again the transition is recorded.
     let (world, _origin, session) = scene(DIRECT_OFF, "60", "20");
     let gate = check("gate", Some("success"), true, 1);
     let host = MemoryHost::seeded(host_with(
@@ -3573,27 +3574,166 @@ fn a_session_stream_that_cannot_be_read_records_nothing_and_the_next_read_recove
         .home()
         .join(format!("streams/{}.ndjson", session.token.0));
     let intact = std::fs::read_to_string(&path).expect("the session's stream");
+    assert!(intact.contains("\"name\":\"late\""), "{intact}");
+    let answers_and_appends_nothing = |what: &str| {
+        let before = std::fs::read_to_string(&path).expect("the stream");
+        let read = follow(&host, &head);
+        assert_eq!(read.changes[0].recorded, 0, "{what}: {read:?}");
+        assert!(
+            read.changes[0]
+                .checks
+                .iter()
+                .any(|check| check.name == "late" && check.state() == CheckState::Failed),
+            "{what}: the read still answers what the host reports: {read:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the stream"),
+            before,
+            "{what}: nothing was appended"
+        );
+    };
+
     std::fs::write(&path, format!("{intact}{{not a record\n")).expect("a torn stream");
-
-    let torn = follow(&host, &head);
-
-    assert_eq!(torn.changes[0].recorded, 0, "{torn:?}");
-    assert!(
-        torn.changes[0]
-            .checks
-            .iter()
-            .any(|check| check.name == "late" && check.state() == CheckState::Failed),
-        "the read still answers what the host reports: {torn:?}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("the stream"),
-        format!("{intact}{{not a record\n"),
-        "nothing was appended"
-    );
-
+    answers_and_appends_nothing("a torn line");
+    std::fs::write(&path, intact.replace("\"name\":\"late\"", "\"name\":7"))
+        .expect("a record naming no check");
+    answers_and_appends_nothing("a change-check naming no check");
     std::fs::write(&path, &intact).expect("the stream restored");
+    let mut read_only = std::fs::metadata(&path).expect("the stream").permissions();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&path, read_only.clone()).expect("a stream nothing can append to");
+    answers_and_appends_nothing("a stream nothing can append to");
+
+    // Giving back the write this journey took from a file it made, which is the whole
+    // of what is wanted; the lint guards against widening a file nobody narrowed.
+    #[allow(clippy::permissions_set_readonly_false)]
+    read_only.set_readonly(false);
+    std::fs::set_permissions(&path, read_only).expect("the stream writable again");
     let recovered = follow(&host, &head);
     assert_eq!(recovered.changes[0].recorded, 1, "{recovered:?}");
     let (name, stamp, _) = check_records(&session).pop().expect("the recovered record");
     assert_eq!((name.as_str(), stamp.as_str()), ("late", "attention"));
+}
+
+/// How a host answers a follow read wrongly.
+#[derive(Clone, Copy, Debug)]
+enum Garble {
+    /// About fewer change requests than were asked about.
+    Missing,
+    /// In another order than asked.
+    Reordered,
+    /// About a change request of another repository with the same number.
+    Foreign,
+    /// About another head than the one asked about.
+    WrongHead,
+}
+
+/// The testing host behind a seam whose follow read answers wrongly, as `Garble` says.
+struct Garbling<'a>(&'a MemoryHost, Garble);
+
+struct GarblingHost(Box<dyn RemoteHost>, Garble);
+
+impl Hosting for Garbling<'_> {
+    fn for_repo(&self, slug: &str) -> onevcs::Result<Box<dyn RemoteHost>> {
+        Ok(Box::new(GarblingHost(self.0.for_repo(slug)?, self.1)))
+    }
+}
+
+impl RemoteHost for GarblingHost {
+    fn authenticated_user(&self) -> onevcs::Result<String> {
+        self.0.authenticated_user()
+    }
+    fn open_change(&self, req: ChangeSpec) -> onevcs::Result<ChangeRequest> {
+        self.0.open_change(req)
+    }
+    fn find_changes(&self, head: &str, base: &str) -> onevcs::Result<Vec<ChangeRequest>> {
+        self.0.find_changes(head, base)
+    }
+    fn change_checks(&self, cr: &ChangeRequest) -> onevcs::Result<ChangeChecks> {
+        self.0.change_checks(cr)
+    }
+    fn check_log(&self, cr: &ChangeRequest, check: &Check) -> onevcs::Result<onevcs::ArtifactId> {
+        self.0.check_log(cr, check)
+    }
+    fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> onevcs::Result<MergeOutcome> {
+        self.0.merge(cr, policy)
+    }
+    fn follow_checks(
+        &self,
+        changes: &[(ChangeId, onevcs::Sha)],
+    ) -> onevcs::Result<onevcs::FollowedChecks> {
+        let mut answer = self.0.follow_checks(changes)?;
+        match self.1 {
+            Garble::Missing => {
+                answer.changes.pop();
+            }
+            Garble::Reordered => answer.changes.reverse(),
+            Garble::Foreign => {
+                answer.changes[0].change =
+                    onevcs::Url::parse("https://github.com/acme-corp/elsewhere/pull/1")
+                        .expect("a URL");
+            }
+            Garble::WrongHead => answer.changes[0].head = onevcs::Sha("b".repeat(40)),
+        }
+        Ok(answer)
+    }
+}
+
+#[test]
+fn a_follow_answer_the_host_garbled_is_refused_and_no_stream_is_touched() {
+    let (world, _origin, session) = scene(DIRECT_OFF, "60", "20");
+    let gate = check("gate", Some("success"), true, 1);
+    let host = MemoryHost::seeded(host_with(
+        vec![gate.clone(), check("late", None, false, 2)],
+        None,
+    ));
+    publish(&host, &session, &PublishRequest::default());
+    let head = host.state().changes[0].head_sha.clone();
+    host.set_head_checks(&head, vec![gate, check("late", Some("failure"), false, 2)])
+        .expect("the host concludes it");
+    let path = world
+        .home()
+        .join(format!("streams/{}.ndjson", session.token.0));
+    let before = std::fs::read_to_string(&path).expect("the session's stream");
+    let change = onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1").expect("a URL");
+
+    for garble in [
+        Garble::Missing,
+        Garble::Reordered,
+        Garble::Foreign,
+        Garble::WrongHead,
+    ] {
+        let refused = onevcs::follow_checks(
+            &Providers {
+                vcs: &Git,
+                hosting: &Garbling(&host, garble),
+            },
+            &onevcs::FollowChecksRequest {
+                repo: "github.com/acme-corp/hosted".to_owned(),
+                root: "main".to_owned(),
+                changes: vec![
+                    onevcs::FollowedHead {
+                        change: change.clone(),
+                        head: head.clone(),
+                    },
+                    onevcs::FollowedHead {
+                        change: change.clone(),
+                        head: onevcs::Sha("0".repeat(40)),
+                    },
+                ],
+            },
+        )
+        .expect_err("a garbled answer is refused");
+        assert!(
+            refused
+                .to_string()
+                .contains("which checks are whose cannot be read"),
+            "{garble:?}: {refused}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the stream"),
+            before,
+            "{garble:?}: no stream was touched"
+        );
+    }
 }
