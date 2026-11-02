@@ -3647,7 +3647,7 @@ impl Declared {
         }
     }
 
-    fn requires(&self, check: &Check) -> bool {
+    pub(crate) fn requires(&self, check: &Check) -> bool {
         match self {
             Declared::Names(names) => names.contains(&check.name),
             Declared::Nothing => false,
@@ -3664,6 +3664,26 @@ impl Declared {
             Declared::Nothing | Declared::Names(_) => None,
         }
     }
+}
+
+/// The payload of one `change-check` record: what the check reports now, the status
+/// the stream last recorded for it, and its address on the host — the one shape a
+/// publication's watch and [`follow_checks`](crate::follow_checks) both write.
+pub(crate) fn change_check_payload(
+    check: &Check,
+    from_status: Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    object(json!({
+        "name": check.name,
+        "required": check.required,
+        "status": check.status,
+        "from_status": from_status,
+        "conclusion": check.conclusion,
+        "state": check.state(),
+        "started_at": check.started_at,
+        "completed_at": check.completed_at,
+        "url": check.url.as_ref().map(Url::as_str),
+    }))
 }
 
 /// The verdict one reading's standing gives, by the rules every phase of the watch
@@ -4006,16 +4026,7 @@ impl<'a> Watcher<'a> {
             }
             stream.emit_result(
                 EventKind::ChangeCheck,
-                object(json!({
-                    "name": check.name,
-                    "required": check.required,
-                    "status": check.status,
-                    "from_status": previous.map(|(status, _, _)| status),
-                    "conclusion": check.conclusion,
-                    "state": check.state(),
-                    "started_at": check.started_at,
-                    "completed_at": check.completed_at,
-                })),
+                change_check_payload(check, previous.map(|(status, _, _)| status)),
                 artifacts,
                 crate::event::EmissionResult::Check {
                     required: self

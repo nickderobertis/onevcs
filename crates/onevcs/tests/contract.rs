@@ -10356,12 +10356,12 @@ mod significance_contract_tests {
             CheckState::NoVerdict,
         ] {
             for required in [true, false] {
-                let expected =
-                    if required && matches!(state, CheckState::Failed | CheckState::NoVerdict) {
-                        Significance::Blocker
-                    } else {
-                        Significance::Progress
-                    };
+                let unusable = matches!(state, CheckState::Failed | CheckState::NoVerdict);
+                let expected = match (required, unusable) {
+                    (true, true) => Significance::Blocker,
+                    (false, true) => Significance::Attention,
+                    _ => Significance::Progress,
+                };
                 assert_eq!(
                     significance(
                         EventKind::ChangeCheck,
@@ -10371,6 +10371,10 @@ mod significance_contract_tests {
                 );
             }
         }
+        assert!(
+            table.contains("attention for a failed or no-verdict check that is not required"),
+            "the change-check row documents the attention class"
+        );
         for conclusion in [
             "failure",
             "timed_out",
@@ -10398,6 +10402,17 @@ mod significance_contract_tests {
                 ),
                 Significance::Blocker,
                 "required {conclusion} is an immediate blocker"
+            );
+            assert_eq!(
+                significance(
+                    EventKind::ChangeCheck,
+                    EmissionResult::Check {
+                        required: false,
+                        state: check.state()
+                    }
+                ),
+                Significance::Attention,
+                "a {conclusion} check nothing requires asks for a person and blocks nothing"
             );
         }
         for ruling in [

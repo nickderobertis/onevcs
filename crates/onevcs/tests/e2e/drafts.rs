@@ -3102,3 +3102,170 @@ fn change_check_records_host_times_without_completion_only_duplicates() {
         "the emitted completed check and fixture agree with the contract"
     );
 }
+
+/// Each `change-check` a session's stream holds, read back through `EventStream` the way
+/// a consumer reads it: the check's name, its producer stamp, and its payload.
+fn check_records(session: &Session) -> Vec<(String, String, Value)> {
+    let mut stream = onevcs::EventStream::open(&session.token).expect("the session's stream");
+    stream
+        .read()
+        .expect("its records")
+        .into_iter()
+        .filter(|event| event.kind.as_str() == "change-check")
+        .map(|event| {
+            let payload = Value::Object(event.payload.clone());
+            (
+                payload["name"].as_str().expect("a named check").to_owned(),
+                event.labels.extra["significance"]
+                    .as_str()
+                    .expect("a producer stamp")
+                    .to_owned(),
+                payload,
+            )
+        })
+        .collect()
+}
+
+/// What a publication decided, with nothing in it that differs from one run of the same
+/// journey to the next: its outcome's kind, its `checks-settled` payloads less the head
+/// commit, its
+/// required-checks gate runs less their clock, whether the draft was lifted, and what the
+/// host merged.
+fn decisions(world: &World, session: &Session, host: &MemoryHost, published: &Publication) -> Value {
+    let outcome = serde_json::to_value(&published.outcome).expect("an outcome");
+    let outcome_kind = match &outcome {
+        Value::Object(fields) => fields.keys().cloned().collect::<Vec<_>>().join(","),
+        other => other.to_string(),
+    };
+    let settled: Vec<Value> = world
+        .events_of(&session.token.0, "checks-settled")
+        .into_iter()
+        .map(|event| {
+            // The head is the commit this run's own repository made, so it is one run's
+            // and never the decision's.
+            let mut payload = event["payload"].clone();
+            payload
+                .as_object_mut()
+                .expect("an object payload")
+                .remove("head");
+            payload
+        })
+        .collect();
+    let runs: Vec<Value> = world
+        .events_of(&session.token.0, "gate-run")
+        .into_iter()
+        .filter(|run| run["payload"]["gate"] == "required-checks")
+        .map(|run| {
+            let payload = &run["payload"];
+            serde_json::json!({
+                "verdict": payload["verdict"],
+                "attempt": payload["attempt"],
+                "checks": payload["checks"],
+            })
+        })
+        .collect();
+    let state = host.state();
+    serde_json::json!({
+        "outcome": outcome_kind,
+        "checks_settled": settled,
+        "required_checks_runs": runs,
+        "lifted": state.made_ready.len(),
+        "merged": state.merges.len(),
+        "lifts_recorded": world.events_of(&session.token.0, "draft-lifted").len(),
+    })
+}
+
+#[test]
+fn a_failed_check_nothing_requires_is_stamped_attention_and_decides_nothing() {
+    // `gate` is required and passes; `advisory` is not required. Whatever `advisory`
+    // concludes, the publication must decide exactly what it decides when `advisory`
+    // passes — and its record must say a person should look when it failed or ended
+    // with no verdict.
+    for rules in [DIRECT, AUTO_OFF] {
+        let run = |advisory: &str| {
+            let (world, _origin, session) = scene(rules, "60", "20");
+            let host = MemoryHost::seeded(host_with(
+                vec![
+                    check("gate", Some("success"), true, 1),
+                    check("advisory", Some(advisory), false, 2),
+                ],
+                None,
+            ));
+            let published = publish(&host, &session, &PublishRequest::default());
+            let decided = decisions(&world, &session, &host, &published);
+            (check_records(&session), decided, published)
+        };
+        let (passing, expected, published) = run("success");
+        assert!(
+            matches!(published.outcome, PublishOutcome::Merged(_)),
+            "{rules}: {published:?}"
+        );
+        assert!(
+            passing.iter().all(|(_, stamp, _)| stamp == "progress"),
+            "{rules}: nothing failed, so nothing asks for a person: {passing:?}"
+        );
+        for (advisory, state) in [("failure", "failed"), ("cancelled", "no-verdict")] {
+            let (records, decided, _) = run(advisory);
+            assert_eq!(
+                decided, expected,
+                "{rules}: an advisory {advisory} changes no outcome, verdict, gate run or lift"
+            );
+            let advisory_record: Vec<&(String, String, Value)> = records
+                .iter()
+                .filter(|(name, _, _)| name == "advisory")
+                .collect();
+            assert_eq!(advisory_record.len(), 1, "{rules}: {records:?}");
+            let (_, stamp, payload) = advisory_record[0];
+            assert_eq!(stamp, "attention", "{rules}: {advisory}: {payload}");
+            assert_eq!(payload["state"], state, "{rules}: {payload}");
+            assert_eq!(payload["required"], false, "{rules}: {payload}");
+            assert_eq!(
+                payload["url"], "https://github.com/acme-corp/hosted/actions/runs/2/job/2",
+                "{rules}: the record says where to look: {payload}"
+            );
+            let gate: Vec<&String> = records
+                .iter()
+                .filter(|(name, _, _)| name == "gate")
+                .map(|(_, stamp, _)| stamp)
+                .collect();
+            assert_eq!(gate, ["progress"], "{rules}: {records:?}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_asks_for_attention(
+) {
+    let (world, _origin, session) = scene(DIRECT, "60", "20");
+    let host = MemoryHost::seeded(host_with(
+        vec![
+            check("gate", Some("failure"), true, 1),
+            check("advisory", Some("failure"), false, 2),
+        ],
+        None,
+    ));
+
+    let published = publish(&host, &session, &PublishRequest::default());
+
+    assert!(
+        matches!(
+            &published.outcome,
+            PublishOutcome::Failed { kind: FailureKind::ChecksFailed, reason, .. }
+                if reason.contains("\"gate\"") && !reason.contains("advisory")
+        ),
+        "the required check alone fails it: {published:?}"
+    );
+    let stamps: BTreeMap<String, String> = check_records(&session)
+        .into_iter()
+        .map(|(name, stamp, _)| (name, stamp))
+        .collect();
+    assert_eq!(
+        stamps,
+        BTreeMap::from([
+            ("advisory".to_owned(), "attention".to_owned()),
+            ("gate".to_owned(), "blocker".to_owned()),
+        ])
+    );
+    assert!(is_draft(&host), "still a draft");
+    assert!(world.events_of(&session.token.0, "draft-lifted").is_empty());
+}

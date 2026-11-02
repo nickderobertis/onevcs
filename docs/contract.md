@@ -4049,7 +4049,8 @@ The watch journey holds its completed payload and current fixture to this exampl
 ```json
 {"name":"gate","required":true,"status":"completed","from_status":"in_progress",
  "conclusion":"success","state":"passed","started_at":"2026-09-30T12:01:00Z",
- "completed_at":"2026-09-30T12:02:00Z"}
+ "completed_at":"2026-09-30T12:02:00Z",
+ "url":"https://github.com/acme-corp/hosted/actions/runs/1/job/1"}
 ```
 
 It surfaces in three places. The `change-check` event's payload carries `state` beside the
@@ -6355,7 +6356,7 @@ The producer classification table is exhaustive over current kinds:
 | change-opened, change-drafted, change-merged, base-arrived | milestone | One actual base arrival, not each train member or merge step |
 | checks-settled | blocker | milestone for passed or passed-with-skipped |
 | sync-conflict, draft-kept-for-review | blocker | A conflict or a required person |
-| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale) |
+| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale); attention for a failed or no-verdict check that is not required |
 | gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
 | stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
 | base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |

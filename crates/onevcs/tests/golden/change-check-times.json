@@ -7,7 +7,8 @@
     "conclusion": null,
     "state": "pending",
     "started_at": null,
-    "completed_at": null
+    "completed_at": null,
+    "url": "https://github.com/acme-corp/hosted/actions/runs/1/job/1"
   },
   {
     "name": "external",
@@ -17,7 +18,8 @@
     "conclusion": null,
     "state": "pending",
     "started_at": null,
-    "completed_at": null
+    "completed_at": null,
+    "url": "https://github.com/acme-corp/hosted/actions/runs/1/job/1"
   },
   {
     "name": "gate",
@@ -27,7 +29,8 @@
     "conclusion": null,
     "state": "pending",
     "started_at": "2026-09-30T12:01:00Z",
-    "completed_at": null
+    "completed_at": null,
+    "url": "https://github.com/acme-corp/hosted/actions/runs/1/job/1"
   },
   {
     "name": "gate",
@@ -37,7 +40,8 @@
     "conclusion": "success",
     "state": "passed",
     "started_at": "2026-09-30T12:01:00Z",
-    "completed_at": "2026-09-30T12:02:00Z"
+    "completed_at": "2026-09-30T12:02:00Z",
+    "url": "https://github.com/acme-corp/hosted/actions/runs/1/job/1"
   },
   {
     "name": "external",
@@ -47,6 +51,7 @@
     "conclusion": "success",
     "state": "passed",
     "started_at": null,
-    "completed_at": "2026-09-30T12:03:00Z"
+    "completed_at": "2026-09-30T12:03:00Z",
+    "url": "https://github.com/acme-corp/hosted/actions/runs/2/job/2"
   }
 ]

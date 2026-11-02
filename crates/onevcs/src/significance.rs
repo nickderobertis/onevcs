@@ -26,6 +26,18 @@ pub enum EmissionResult {
 
 /// The single classification table for every kind this producer writes.
 pub fn significance(kind: EventKind, result: EmissionResult) -> Significance {
+    // A check nothing waits on that failed, or ended with no verdict, is worth a
+    // person's eyes and blocks nothing; which checks block stays the required set's.
+    if let (
+        EventKind::ChangeCheck,
+        EmissionResult::Check {
+            required: false,
+            state: CheckState::Failed | CheckState::NoVerdict,
+        },
+    ) = (kind, result)
+    {
+        return Significance::Attention;
+    }
     let blocked = match result {
         EmissionResult::Failed => true,
         EmissionResult::Check { required, state } => {
