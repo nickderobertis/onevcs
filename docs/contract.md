@@ -6451,7 +6451,12 @@ the latest `change-check` that stream already holds for that check name: the sam
 payload (with `url`), the same `review` phase, the same significance table. A check the
 watch already recorded in that state is not recorded again, so repeated calls record
 each transition once. A change request with no session on this host is answered and
-records nothing; a superseded head records nothing.
+records nothing; a superseded head records nothing. The query asks each rollup's
+`contexts(first: 100)` for its `pageInfo { hasNextPage }` beside its nodes, which
+`change_standings` selects and does not read. Because this read answers every check on
+`head`, a head carrying more checks than that one page, or a rollup answered without its
+contexts or without saying whether it holds them all, is refused (exit 2) rather than
+read as fewer checks.
 
 ```
 onevcs change follow-checks <REPO> --root <R> --change <URL>=<SHA> [--change <URL>=<SHA>]... [--json]
@@ -6500,7 +6505,8 @@ declarations — the standings read's own shape. Like `release_status`, it takes
 `Providers` and reads the host through the `gh` seam, so `ONEVCS_GH` replays it. It
 records no event. Oldest first is ascending number, the order the host numbers change
 requests in as they open. A listing of more than one page, or more than 50 matches, is
-refused rather than read in part.
+refused rather than read in part, and so is a match whose rollup is not every check on
+its head, as `follow_checks` refuses one.
 
 ```
 onevcs release holdup <REPO> [--json]

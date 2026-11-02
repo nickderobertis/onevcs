@@ -1203,7 +1203,7 @@ fn a_declaration_read_in_part_leaves_a_base_pending_and_one_that_requires_nothin
 
 /// A rollup holding the one context `context` describes.
 fn rollup_of(context: Value) -> Value {
-    json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [context]}}}}})
+    json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [context]}}}}})
 }
 
 #[test]
@@ -2999,7 +2999,7 @@ fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_ev
     let address = "https://github.com/acme-corp/stacked/actions/runs/7";
     std::fs::write(
         world.path(format!("gh-state/pull-{first}.json")),
-        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
             context("ci", "FAILURE", Some(address)),
             context("lint", "FAILURE", None),
             context("stale", "CANCELLED", Some(address)),
@@ -3228,7 +3228,7 @@ fn a_follow_read_whose_declarations_cannot_be_read_takes_requiredness_from_the_h
     };
     std::fs::write(
         world.path(format!("gh-state/pull-{number}.json")),
-        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
             marked("ci", false),
             marked("lint", true),
         ]}}}}})
@@ -3331,6 +3331,29 @@ fn a_follow_read_refuses_a_change_request_the_host_answers_without_a_usable_url_
             "without the commit its head is at",
         ),
         (json!({"headRefOid": "zz"}), "which is not a commit id"),
+        // The rollup, answered without what says it is every check on the head.
+        (json!({"headRef": {}}), "check rollup without its target"),
+        (
+            json!({"headRef": {"target": {}}}),
+            "check rollup without its statusCheckRollup",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+                "nodes": {},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": []}}}}}),
+            "without saying whether it holds every check",
+        ),
     ] {
         std::fs::write(
             world.path(format!("gh-state/pull-{number}.json")),
@@ -3431,6 +3454,12 @@ fn a_release_holdup_refuses_an_answer_it_cannot_read_rather_than_report_part_of_
         ),
         (json!({"headRefOid": "zz"}), "which is not a commit id"),
         (json!({"url": "not a url"}), "which is not one"),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
     ] {
         std::fs::write(
             world.path(format!("gh-state/pull-{number}.json")),
@@ -3439,4 +3468,59 @@ fn a_release_holdup_refuses_an_answer_it_cannot_read_rather_than_report_part_of_
         .expect("the rollup read's answer for the change request");
         refused(&holdup_output(world, true), 2, says);
     }
+}
+
+/// `count` passing checks nothing requires, named `check-000` onwards.
+fn many_checks(count: usize) -> Vec<Check> {
+    (0..count)
+        .map(|at| {
+            check(
+                Box::leak(format!("check-{at:03}").into_boxed_str()),
+                "success",
+                false,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_head_carrying_more_checks_than_one_read_returns_is_refused_rather_than_read_as_fewer() {
+    // GitHub answers a rollup 100 contexts at a time. A follow read and a holdup read
+    // each promise every check on the head, so a head with more is refused by both —
+    // the check past the page is the one nobody would be told is running or failed —
+    // while a head with exactly a page of them reads whole.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let tip = stack.branch("release-plz-a", "main", "a.txt");
+    let number = stack.open("release-plz-a", "main", false);
+    let change = [format!("{}={tip}", url(number))];
+
+    world.host_checks_on(&tip, &many_checks(100));
+    let followed = follow_output(&stack, &change, true);
+    assert!(followed.status.success(), "{followed:?}");
+    let read: Value = serde_json::from_slice(&followed.stdout).expect("the follow read's JSON");
+    assert_eq!(
+        read["changes"][0]["checks"].as_array().map(Vec::len),
+        Some(100),
+        "{read:#}"
+    );
+    let held = holdup_output(world, true);
+    assert!(held.status.success(), "{held:?}");
+    let holdup: Value = serde_json::from_slice(&held.stdout).expect("the holdup's JSON");
+    assert_eq!(
+        holdup["changes"][0]["checks"].as_array().map(Vec::len),
+        Some(100),
+        "{holdup:#}"
+    );
+
+    let mut over = many_checks(100);
+    over.push(check("late-failure", "failure", false));
+    world.host_checks_on(&tip, &over);
+    let says = &format!("pull request {number}'s head carries more checks than the 100");
+    refused(&follow_output(&stack, &change, true), 2, says);
+    refused(&holdup_output(world, true), 2, says);
 }

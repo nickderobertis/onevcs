@@ -88,7 +88,7 @@ databaseId author { login } body url createdAt updatedAt lastEditedAt replyTo { 
 fn rollup_fields(number: u64) -> String {
     format!(
         "headRef {{ target {{ ... on Commit {{ statusCheckRollup {{ contexts(first: 100) {{ \
-         nodes {{ __typename ... on CheckRun {{ name status conclusion startedAt completedAt \
+         pageInfo {{ hasNextPage }} nodes {{ __typename ... on CheckRun {{ name status conclusion startedAt completedAt \
          detailsUrl isRequired(pullRequestNumber: {number}) }} ... on StatusContext {{ context \
          state targetUrl createdAt isRequired(pullRequestNumber: {number}) }} }} }} }} }} }} }}"
     )
@@ -228,6 +228,7 @@ pub(crate) fn declared_checks(
             "{base:?} is gone from the origin, so what a merge into it requires cannot be read"
         )),
     };
+    whole_rollup(pull, number)?;
     let mut checks = rollup(pull, number, head)?;
     for check in &mut checks {
         check.required = declared.requires(check);
@@ -813,6 +814,50 @@ fn nodes<'a>(connection: &'a Value, what: &str) -> Result<&'a Vec<Value>> {
                 "GitHub answered the repository's {what} without its nodes"
             ))
         })
+}
+
+/// Refuse a rollup that is not every check on the head: one with more contexts than a
+/// read returns, or one the host answered without the contexts it was asked for. A read
+/// that promises every check reads neither as fewer checks, because a check missing
+/// from it is one nobody is told is running or failed. A head branch that is gone, or a
+/// head with nothing reported on it, is answered `null` and is no check at all.
+fn whole_rollup(pull: &Value, number: u64) -> Result<()> {
+    let mut at = pull;
+    for field in ["headRef", "target", "statusCheckRollup"] {
+        match at.get(field) {
+            None => {
+                return Err(invalid(format!(
+                    "GitHub answered pull request {number}'s check rollup without its {field}"
+                )));
+            }
+            Some(Value::Null) => return Ok(()),
+            Some(found) => at = found,
+        }
+    }
+    let contexts = at.get("contexts");
+    if contexts
+        .and_then(|found| found.get("nodes"))
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        return Err(invalid(format!(
+            "GitHub answered pull request {number}'s check rollup without its contexts"
+        )));
+    }
+    match contexts
+        .and_then(|found| found.pointer("/pageInfo/hasNextPage"))
+        .and_then(Value::as_bool)
+    {
+        Some(false) => Ok(()),
+        Some(true) => Err(invalid(format!(
+            "pull request {number}'s head carries more checks than the 100 one read returns, \
+             so which of them are running or failed cannot be read whole"
+        ))),
+        None => Err(invalid(format!(
+            "GitHub answered pull request {number}'s check rollup without saying whether it \
+             holds every check"
+        ))),
+    }
 }
 
 /// Every check the head commit's rollup reports, attached to that commit. A head

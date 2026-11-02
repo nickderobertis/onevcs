@@ -303,7 +303,7 @@ impl Model {
             } else {
                 CLOSES
             },
-            "statusCheckRollup { contexts(first: 100)",
+            "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes",
             "isRequired(pullRequestNumber: ",
         ] {
             if !query.contains(wanted) {
@@ -599,7 +599,14 @@ impl Model {
                     })
                 })
                 .collect();
-            json!({"target": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}})
+            // One page of contexts, as GitHub answers `first: 100`, saying whether more
+            // are on the head than the page holds.
+            let more = contexts.len() > 100;
+            let contexts: Vec<Value> = contexts.into_iter().take(100).collect();
+            json!({"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": more},
+                "nodes": contexts,
+            }}}})
         } else {
             Value::Null
         };

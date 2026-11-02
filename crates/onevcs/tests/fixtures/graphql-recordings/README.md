@@ -31,6 +31,11 @@ On 2026-11-02, with the user's own credential, read-only:
   (`__type(name:)` with every field's type), one request a type, keyed by type name. It
   is what says which fields GitHub's schema lets be `null`.
 
+Later the same day, when the standings query began asking each rollup's `contexts`
+for `pageInfo { hasNextPage }`, every recording of that query was asked again from
+its own `.args` with only that selection added, through the real `gh`; the listing,
+which does not read a rollup, was left as it was.
+
 `onevcs boundary check --destination public` passes every file here.
 
 ## Who reads them
