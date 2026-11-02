@@ -239,6 +239,9 @@ pub enum Significance {
     Blocker,
     /// Ordinary running or successful detail.
     Progress,
+    /// A person should look at it, and it blocks nothing: a check that is not required
+    /// failed or ended with no verdict.
+    Attention,
 }
 
 pub(crate) use crate::significance::{significance, EmissionResult};

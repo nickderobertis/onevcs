@@ -13,9 +13,9 @@ use url::Url;
 
 use onevcs::{
     ArtifactId, ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, ChangeStandings, Check,
-    CheckSource, CheckState, CommentId, Description, Error, HeadActivity, Hosting, MergeOutcome,
-    MergePolicy, Mergeability, MergedChange, PostedReply, ReadCost, ReadMarker, RemoteHost,
-    RequiredChecks, Result, ReviewRead, ReviewStandings, Sha, Visibility,
+    CheckSource, CheckState, CommentId, Description, Error, FollowedChecks, HeadActivity, Hosting,
+    MergeOutcome, MergePolicy, Mergeability, MergedChange, PostedReply, ReadCost, ReadMarker,
+    RemoteHost, RequiredChecks, Result, ReviewRead, ReviewStandings, Sha, Visibility,
 };
 
 use crate::landings::{self, HeadAfter, PersonMerge};
@@ -637,6 +637,24 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         })
     }
 
+    /// Every check on each change request's named head — see `landings`. Charged as the
+    /// real host's standings query, one point per 50, which is the query it sends. Each
+    /// call is a reading of the change request's scripted checks, as a `change_checks`
+    /// call is, so a check can conclude after a given number of readings.
+    fn follow_checks(&self, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks> {
+        let cost = landings::standings_charge(changes.len());
+        let named: Vec<&ChangeId> = changes.iter().map(|(id, _)| id).collect();
+        self.called("follow_checks", &named, cost)?;
+        let state = self.store.snapshot()?;
+        Ok(FollowedChecks {
+            changes: changes
+                .iter()
+                .map(|(id, head)| landings::followed(&state, id, head))
+                .collect::<Result<_>>()?,
+            cost,
+        })
+    }
+
     /// Each change request's standing and its review feedback since its marker, in one
     /// read charged as the real host's one aliased query per 150.
     fn review_standings(
@@ -866,7 +884,7 @@ pub(crate) fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
     if let (Some(lifted), Some(readings)) = (lifted, state.check_readings_after_lift.get(id)) {
         let read = state.ledger[lifted..]
             .iter()
-            .filter(|call| call.method == "change_checks" && call.changes.contains(id))
+            .filter(|call| reads_checks(&call.method) && call.changes.contains(id))
             .count();
         if let Some(reading) = readings
             .get(read.saturating_sub(1))
@@ -876,7 +894,11 @@ pub(crate) fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
         }
     }
     if let Some(readings) = state.check_readings.get(id) {
-        let read = asked(state, "change_checks", id);
+        let read = state
+            .ledger
+            .iter()
+            .filter(|call| reads_checks(&call.method) && call.changes.contains(id))
+            .count();
         if let Some(reading) = readings
             .get(read.saturating_sub(1))
             .or_else(|| readings.last())
@@ -890,6 +912,13 @@ pub(crate) fn current_checks(state: &HostState, id: &ChangeId) -> Vec<Check> {
         }
     }
     state.checks.get(id).cloned().unwrap_or_default()
+}
+
+/// Whether a call to `method` is a reading of a change request's checks — a watch's
+/// `change_checks`, or a `follow_checks` after the watch ended — which is what moves a
+/// scripted change request on to its next reading.
+fn reads_checks(method: &str) -> bool {
+    matches!(method, "change_checks" | "follow_checks")
 }
 
 /// How many `method` calls about `id` this host has answered, the one in hand

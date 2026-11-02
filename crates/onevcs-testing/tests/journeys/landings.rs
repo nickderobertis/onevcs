@@ -499,6 +499,7 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     );
     let _ = remote.change_standings("main", std::slice::from_ref(&change.id));
     let _ = remote.review_standings("main", &[(change.id.clone(), None)]);
+    let _ = remote.follow_checks(&[(change.id.clone(), change.head_sha.clone())]);
     let _ = remote.retarget_change(&change.id, "release", Some("Moved."));
     let _ = remote.merge(&change, MergePolicy::ChangeDirect);
     let _ = remote.merged_at(&change);
@@ -553,6 +554,14 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
             rest_requests: 2
         },
         "the workflow runs and the check suites on the head"
+    );
+    assert_eq!(
+        charge("follow_checks")[0].charge,
+        ReadCost {
+            graphql_points: 1,
+            rest_requests: 0
+        },
+        "the standings query the real host sends, one point for up to 50"
     );
     // A person's moves are nobody's call.
     assert!(charge("close_unmerged").is_empty());
@@ -815,4 +824,54 @@ fn ledger_methods() -> BTreeSet<String> {
         .filter_map(|rest| rest.strip_suffix("\","))
         .map(str::to_owned)
         .collect()
+}
+
+#[test]
+fn a_follow_read_is_a_reading_of_the_scripted_checks_on_both_sides_of_a_lift() {
+    // A consumer scripts a check that concludes after a given number of readings, and a
+    // follow read after the watch is one of them — before the lift from
+    // `check_readings`, after it from `check_readings_after_lift`, counted from the lift.
+    let id = ChangeId("1".to_owned());
+    let running = vec![check("late", "in_progress", None, false)];
+    let failed = vec![check("late", "completed", Some("failure"), false)];
+    let passed = vec![check("late", "completed", Some("success"), false)];
+    let host = MemoryHost::seeded(HostState {
+        check_readings: BTreeMap::from([(id.clone(), vec![running.clone(), failed])]),
+        check_readings_after_lift: BTreeMap::from([(id.clone(), vec![running, passed])]),
+        ..HostState::default()
+    });
+    let remote = host.for_repo("acme-corp/widgets").expect("a host");
+    let change = open(remote.as_ref(), "feature/followed", "main");
+    let at_head = [(change.id.clone(), change.head_sha.clone())];
+    let read = |remote: &dyn RemoteHost| {
+        let answer = remote.follow_checks(&at_head).expect("it answers");
+        let followed = answer.changes.into_iter().next().expect("one answer");
+        (followed.outstanding, followed.checks[0].conclusion.clone())
+    };
+
+    assert_eq!(read(remote.as_ref()), (true, None), "the first reading");
+    assert_eq!(
+        read(remote.as_ref()),
+        (false, Some("failure".to_owned())),
+        "the second reading concludes it"
+    );
+    remote.ready_for_review(&change).expect("lifted");
+    assert_eq!(
+        read(remote.as_ref()),
+        (true, None),
+        "the first reading after the lift is the after-lift script's first"
+    );
+    assert_eq!(read(remote.as_ref()), (false, Some("success".to_owned())));
+    assert_eq!(
+        read(remote.as_ref()),
+        (false, Some("success".to_owned())),
+        "the last entry answers every reading after it"
+    );
+    let follows = host
+        .ledger()
+        .expect("the ledger")
+        .into_iter()
+        .filter(|call| call.method == "follow_checks")
+        .count();
+    assert_eq!(follows, 5);
 }

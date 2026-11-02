@@ -37,11 +37,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::Parser;
+use serde_json::json;
 
 use onevcs::cli::Cli;
 use onevcs::{ChangeId, Check, Git, Hosting, Provenance, Providers, Scope, SessionRequest, Vcs};
 use onevcs_testing::{FileHost, HostState, MemoryVcs, VcsState};
 
+use crate::answered::AnsweredChecks;
 use crate::comparison::{compared, evidence, normalize};
 use crate::registry::configure_rules;
 use crate::world::World;
@@ -86,7 +88,10 @@ fn green_gate() -> Check {
         conclusion: Some("success".to_owned()),
         required: true,
         head: None,
-        url: None,
+        // Where the check is, which the substituted `gh` reports for every check and a
+        // `change-check` record carries: that the host gave an address is compared, and
+        // the address itself is scrubbed.
+        url: onevcs::Url::parse("https://github.com/acme-corp/hosted/actions/runs/1").ok(),
         // The run's times, which the substituted `gh` reports for every completed
         // check: what a host said is compared, and when is a clock.
         started_at: Some("2026-09-30T12:00:00Z".to_owned()),
@@ -466,4 +471,164 @@ fn preserved_journey(
     vcs.preserve(&session, provenance)
         .expect("the work is preserved");
     session.token.0
+}
+
+/// The policy the smoke tier's honesty journey publishes under: open a change request
+/// and merge it, with nothing required.
+const DIRECT: &str =
+    "version: 3\nrules: []\ndefault:\n  publication: change-direct\n  approvals: none\n";
+
+/// The `kind` of every event in `events`, in order.
+fn kinds_in(events: &[serde_json::Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|event| event["kind"].as_str().expect("every event names a kind"))
+        .collect()
+}
+
+/// The one `change-check` in `events`, and the kinds either side of it.
+fn the_check_between(events: &[serde_json::Value]) -> (&str, &serde_json::Value, &str) {
+    let kinds = kinds_in(events);
+    let at: Vec<usize> = (0..kinds.len())
+        .filter(|&i| kinds[i] == "change-check")
+        .collect();
+    assert_eq!(at.len(), 1, "one change-check: {kinds:?}");
+    let at = at[0];
+    (kinds[at - 1], &events[at]["payload"], kinds[at + 1])
+}
+
+#[test]
+fn a_check_the_host_queues_only_after_the_draft_lifts_is_replayed_where_the_real_stream_read_it() {
+    // What the smoke tier's honesty journey lost a race to: nothing on the head while
+    // the watch reads it, then the scratch repository's own workflow queued — a check
+    // nothing requires — by the time the merge re-verifies under its turn. The real
+    // GitHub implementation, over the substituted `gh`, reads it there.
+    let real = World::new();
+    inhabit(&real);
+    let (origin, real_token) = ready_to_publish(&real, &Git);
+    configure_rules(&real, DIRECT);
+    real.install_fake_host(&origin);
+    real.host_checks(&[]);
+    real.host_checks_after_ready(&[crate::world::Check {
+        name: "check",
+        status: "queued",
+        conclusion: None,
+        required: false,
+    }]);
+    assert_eq!(
+        run(&["onevcs", "publish", &real_token], Providers::real()),
+        0,
+        "the real backend publishes"
+    );
+    let real_events = real.events(&real_token);
+    let (before, payload, after) = the_check_between(&real_events);
+    assert_eq!(
+        (before, after),
+        ("lock-acquired", "merge-queued"),
+        "{:?}",
+        kinds_in(&real_events)
+    );
+    assert_eq!(
+        (
+            &payload["name"],
+            &payload["required"],
+            &payload["status"],
+            &payload["state"]
+        ),
+        (
+            &json!("check"),
+            &json!(false),
+            &json!("queued"),
+            &json!("pending")
+        ),
+        "{payload}"
+    );
+
+    // The providers, seeded with what the real stream says each reading answered.
+    let answered = AnsweredChecks::of(&real_events, &real.home()).expect("a replayable stream");
+    let provided = World::new();
+    inhabit(&provided);
+    let (_origin, provided_token) = ready_to_publish(&provided, &Git);
+    configure_rules(&provided, DIRECT);
+    let host = FileHost::seeded(
+        provided.path("host.json"),
+        answered.seed(HostState {
+            authenticated_user: AUTHOR.to_owned(),
+            ..HostState::default()
+        }),
+    )
+    .expect("a file-backed host");
+    assert_eq!(
+        run(
+            &["onevcs", "publish", &provided_token],
+            Providers {
+                vcs: &Git,
+                hosting: &host,
+            },
+        ),
+        0,
+        "the provided backend publishes"
+    );
+    let provided_events = provided.events(&provided_token);
+    let (before, replayed, after) = the_check_between(&provided_events);
+    assert_eq!(
+        (before, after),
+        ("lock-acquired", "merge-queued"),
+        "{:?}",
+        kinds_in(&provided_events)
+    );
+    assert_eq!(
+        replayed, payload,
+        "the providers record the check as the real host reported it"
+    );
+    assert_eq!(
+        normalize(&real_events, real.path("").as_path(), &real_token),
+        normalize(
+            &provided_events,
+            provided.path("").as_path(),
+            &provided_token
+        ),
+        "the providers must emit the stream the real implementations emit"
+    );
+}
+
+#[test]
+fn a_real_stream_reading_one_check_twice_on_one_side_of_its_lift_is_refused_rather_than_replayed() {
+    let home = World::new();
+    let read = |status: &str| {
+        json!({"kind": "change-check", "artifacts": [], "payload": {
+            "name": "check", "required": false, "status": status, "from_status": null,
+            "conclusion": null, "state": "pending", "started_at": null, "completed_at": null,
+            "url": null,
+        }})
+    };
+    let lifted = json!({"kind": "draft-lifted", "payload": {}});
+    for events in [
+        vec![read("queued"), read("in_progress")],
+        vec![lifted.clone(), read("queued"), read("in_progress")],
+    ] {
+        let refusal = AnsweredChecks::of(&events, &home.home())
+            .err()
+            .expect("two readings of one check on one side are refused");
+        assert!(
+            refusal.contains("\"check\" twice on one side of its lift"),
+            "{refusal}"
+        );
+    }
+    // Once each side is one reading, and it replays.
+    let state = AnsweredChecks::of(&[read("queued"), lifted, read("in_progress")], &home.home())
+        .expect("one reading each side")
+        .seed(HostState::default());
+    let change = ChangeId("1".to_owned());
+    let statuses = |readings: &BTreeMap<ChangeId, Vec<Vec<Check>>>| -> Vec<Vec<String>> {
+        readings[&change]
+            .iter()
+            .map(|reading| reading.iter().map(|check| check.status.clone()).collect())
+            .collect()
+    };
+    assert_eq!(statuses(&state.check_readings), [["queued"]]);
+    assert_eq!(
+        statuses(&state.check_readings_after_lift),
+        [["in_progress"]]
+    );
 }

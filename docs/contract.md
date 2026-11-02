@@ -4049,7 +4049,8 @@ The watch journey holds its completed payload and current fixture to this exampl
 ```json
 {"name":"gate","required":true,"status":"completed","from_status":"in_progress",
  "conclusion":"success","state":"passed","started_at":"2026-09-30T12:01:00Z",
- "completed_at":"2026-09-30T12:02:00Z"}
+ "completed_at":"2026-09-30T12:02:00Z",
+ "url":"https://github.com/acme-corp/hosted/actions/runs/1/job/1"}
 ```
 
 It surfaces in three places. The `change-check` event's payload carries `state` beside the
@@ -6355,7 +6356,7 @@ The producer classification table is exhaustive over current kinds:
 | change-opened, change-drafted, change-merged, base-arrived | milestone | One actual base arrival, not each train member or merge step |
 | checks-settled | blocker | milestone for passed or passed-with-skipped |
 | sync-conflict, draft-kept-for-review | blocker | A conflict or a required person |
-| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale) |
+| change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale); attention for a failed or no-verdict check that is not required |
 | gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
 | stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
 | base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
@@ -6376,6 +6377,144 @@ path is proven by the real-git operation journey.
 Lock waits requiring no person remain progress. Retired recognized kinds
 remain readable and inert. Errors with no onevcs event become the engine's
 landing-refused blocker; no per-check evidence is fabricated.
+
+## Check visibility: attention, late checks, and what holds a release
+
+Four additions, each additive inside `v: 1` and the current surface, so consumers adopt
+them with a plain minor release. The Rust types below are re-exported from the crate
+root and are the one source this section and every consumer are held to.
+
+**1. A fourth significance class, `attention`.**
+
+```rust
+#[non_exhaustive]
+pub enum Significance { Milestone, Blocker, Progress, Attention }
+```
+
+`attention`, serialized `"attention"`, means a person should look and it blocks
+nothing. The `change-check` row of the producer classification table above is:
+`blocker` for a required check whose state is `failed` or `no-verdict` (unchanged);
+`attention` for a check that is not required whose state is `failed` or `no-verdict`;
+`progress` otherwise. Requiredness is decided exactly as before — the watch's cached
+declaration, falling back to the host's per-check marking. No other kind's
+classification changes, and `attention` feeds no decision: the watch's verdict,
+`checks-settled`, the gate run, the draft lift, arming a merge and every refusal read
+only required checks, exactly as before. `MatchFields.significance` admits
+`attention`. **A reader built before this release refuses an `attention` stamp**
+("Invalid stamps report an error"), so the engine and the browser view adopt it
+together.
+
+**2. `url` on every `change-check` payload.** The payload gains `url`: the check's
+address on the host (`Check.url`) as a string, or `null` where the host reported none
+(see the `change-check-payload` example). Every other payload field is unchanged.
+
+**3. `follow_checks`: checks read after the watch ended.** The publication watch stops
+reading once the required checks stop blocking, so a check still running then was never
+recorded.
+
+```rust
+pub struct FollowChecksRequest {
+    /// The identity (normalized origin) or a registered checkout path.
+    pub repo: String,
+    /// The root base, as `ChangeStandingsRequest::root`.
+    pub root: String,
+    /// Each change request to read, with the head commit whose checks are followed.
+    pub changes: Vec<FollowedHead>,
+}
+pub struct FollowedHead { pub change: Url, pub head: Sha }
+pub struct FollowedChecks { pub changes: Vec<FollowedChange>, pub cost: ReadCost }
+pub struct FollowedChange {
+    pub change: Url,
+    pub head: Sha,
+    /// Every check the host reports on `head`, `required` as the base's declaration decides.
+    pub checks: Vec<Check>,
+    /// True while any check on `head` has not settled.
+    pub outstanding: bool,
+    /// True when the change request's head on the host is no longer `head`; then `checks` is empty.
+    pub superseded: bool,
+    /// How many `change-check` records this call appended.
+    pub recorded: u32,
+}
+pub fn follow_checks(providers: &Providers, request: &FollowChecksRequest) -> Result<FollowedChecks>;
+// RemoteHost, defaulted to Error::NotImplemented as earlier additions are:
+fn follow_checks(&self, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks>;
+```
+
+It reads every named change request through the same batched GraphQL query
+`change_standings` sends — one query per 50 change requests, each base's required set
+read at most once per call, no REST request, `cost` from each response's own
+`rateLimit.cost` — and fetches no check log. For each change request whose session this
+host recorded (the stream holding its `change-opened`), it appends a `change-check` to
+that session's own stream, as the standings read appends `change-merged` after a session
+closed, for every check on `head` whose `(status, conclusion, started_at)` differs from
+the latest `change-check` that stream already holds for that check name: the same
+payload (with `url`), the same `review` phase, the same significance table. A check the
+watch already recorded in that state is not recorded again, so repeated calls record
+each transition once. A change request with no session on this host is answered and
+records nothing; a superseded head records nothing. The query asks each rollup's
+`contexts(first: 100)` for its `pageInfo { hasNextPage }` beside its nodes, which
+`change_standings` selects and does not read. Because this read answers every check on
+`head`, a head carrying more checks than that one page, or a rollup answered without its
+contexts or without saying whether it holds them all, is refused (exit 2) rather than
+read as fewer checks.
+
+```
+onevcs change follow-checks <REPO> --root <R> --change <URL>=<SHA> [--change <URL>=<SHA>]... [--json]
+```
+
+prints the operation's value as `change standings` does. `RemoteHost::follow_checks` is
+implemented for GitHub and for `onevcs-testing`'s host, whose follow read is a reading of
+its scripted checks (`HostState::check_readings`, state version 25) — so a check can
+conclude after a given number of readings — and is charged 1 GraphQL point per 50
+change requests, as GitHub charges the query.
+
+**4. `release_holdup`: what is holding the next release.** A rule of the host's
+release-targets file (`$ONEVCS_HOME/releases.yml`) may carry an optional key beside its
+`match:`, for example `release_change: {head: "release-plz-*"}`. `head` is a glob (`*` matches any run of characters, `?` one) over the head branch
+names of the change requests the repository's release tool opens; it names no
+particular tool. The file's `VERSION` and existing keys are unchanged, and an older
+`onevcs` ignores the key, since nothing in that reader denies unknown fields. An empty
+or whitespace-bearing `head` is refused, naming the file and the rule.
+
+```rust
+pub struct ReleaseHoldup {
+    pub identity: String,
+    /// False when no rule gives this identity a `release_change`; then nothing is read and `changes` is empty.
+    pub declared: bool,
+    /// Each open change request into the identity's base whose head branch matches the glob, oldest first.
+    pub changes: Vec<ReleaseChange>,
+    pub cost: ReadCost,
+}
+pub struct ReleaseChange {
+    pub url: Url,
+    pub head_branch: String,
+    pub head: Sha,
+    pub draft: bool,
+    /// Every check on `head`, `required` as the base's declaration decides, with `url`.
+    pub checks: Vec<Check>,
+    /// The required checks' verdict, by the one classifier the watch and the standings read use.
+    pub verdict: ChecksVerdict,
+}
+pub fn release_holdup(repo: &str) -> Result<ReleaseHoldup>;
+```
+
+It costs at most two GraphQL queries: one listing the open change requests by head
+branch name with the repository's default branch (the identity's base), and, only when
+one matches, one aliased read of the matches' check rollups with the base's
+declarations — the standings read's own shape. Like `release_status`, it takes no
+`Providers` and reads the host through the `gh` seam, so `ONEVCS_GH` replays it. It
+records no event. Oldest first is ascending number, the order the host numbers change
+requests in as they open. A listing of more than one page, or more than 50 matches, is
+refused rather than read in part, and so is a match whose rollup is not every check on
+its head, as `follow_checks` refuses one.
+
+```
+onevcs release holdup <REPO> [--json]
+```
+
+The human form names each change request, then each failing or no-verdict check as
+`<name> (required — blocks the merge)` or `<name> (not required — does not block)`,
+with its address.
 
 ## Repository-declared pool maintenance
 

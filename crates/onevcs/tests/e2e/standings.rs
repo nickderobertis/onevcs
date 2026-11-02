@@ -1083,6 +1083,8 @@ fn a_ruleset_pattern_this_build_cannot_evaluate_leaves_a_base_pending_never_none
 fn a_declaration_whose_required_checks_or_patterns_are_not_names_is_refused_not_dropped() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     let page = |nodes: Value| json!({"pageInfo": {"hasNextPage": false}, "nodes": nodes});
@@ -1201,7 +1203,7 @@ fn a_declaration_read_in_part_leaves_a_base_pending_and_one_that_requires_nothin
 
 /// A rollup holding the one context `context` describes.
 fn rollup_of(context: Value) -> Value {
-    json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [context]}}}}})
+    json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [context]}}}}})
 }
 
 #[test]
@@ -1246,6 +1248,8 @@ fn a_status_context_reads_by_its_state_as_a_check_run_reads_by_its_conclusion() 
 fn a_change_request_the_host_describes_incompletely_is_refused_and_records_nothing() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     let run = |without: &str| {
@@ -1963,6 +1967,8 @@ fn an_origin_that_will_not_list_its_branches_stops_a_retarget_before_it_writes()
 fn a_standings_answer_without_its_data_or_its_charge_is_refused() {
     let stack = Stack::new(HELD_FOR_REVIEW);
     let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
     stack.branch("feature/a", "main", "a.txt");
     let draft = stack.open("feature/a", "main", true);
     for (answer, says) in [
@@ -2725,4 +2731,796 @@ fn a_change_request_a_person_merged_that_nothing_here_opened_is_a_landing_throug
         report["publication"]["landed"]["evidence"]["commit"], landed,
         "{report}"
     );
+}
+
+/// `onevcs change follow-checks` over `changes`, each `<URL>=<SHA>`.
+fn follow_output(stack: &Stack, changes: &[String], json: bool) -> Output {
+    let mut command = stack.world.onevcs();
+    command.args(["change", "follow-checks", IDENTITY, "--root", "main"]);
+    for change in changes {
+        command.args(["--change", change]);
+    }
+    if json {
+        command.arg("--json");
+    }
+    command.output().expect("the binary runs")
+}
+
+#[test]
+fn following_51_change_requests_sends_two_standings_queries_and_no_rest_request() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &tip,
+        &[
+            check("ci", "success", true),
+            check("lint", "failure", false),
+            Check {
+                name: "late",
+                status: "in_progress",
+                conclusion: None,
+                required: false,
+            },
+        ],
+    );
+    let numbers: Vec<usize> = (0..51)
+        .map(|_| stack.open("feature/followed", "main", true))
+        .collect();
+    let changes: Vec<String> = numbers
+        .iter()
+        .map(|number| format!("{}={tip}", url(*number)))
+        .collect();
+
+    let calls_before = world.host_calls().len();
+    let before = world.ledger().len();
+    let read = succeeded(&follow_output(&stack, &changes, true));
+    let ledger = since(world, before);
+    let methods: Vec<&str> = ledger
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(methods, ["graphql standings"; 2], "{ledger:#?}");
+    assert_eq!(
+        read["cost"],
+        charged(&ledger),
+        "the cost is the responses' own"
+    );
+    assert_eq!(
+        read["cost"],
+        json!({"graphql_points": 2, "rest_requests": 0})
+    );
+    let calls: Vec<String> = world.host_calls().into_iter().skip(calls_before).collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "two GraphQL requests and nothing else: {calls:#?}"
+    );
+    assert!(calls.iter().all(|call| call.starts_with("api graphql")));
+    assert!(
+        calls.iter().all(|call| !call.contains("/logs")),
+        "no check log is fetched"
+    );
+
+    let followed = read["changes"]
+        .as_array()
+        .expect("one answer per change request");
+    assert_eq!(followed.len(), 51);
+    let human = follow_output(&stack, &changes[..1], false);
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains(&format!(
+            "{} at {tip}: checks still running; 0 record(s) appended",
+            url(numbers[0])
+        )),
+        "{human:?}"
+    );
+    for (answer, number) in followed.iter().zip(&numbers) {
+        assert_eq!(answer["change"], url(*number));
+        assert_eq!(answer["head"], tip);
+        assert_eq!(answer["superseded"], false);
+        assert_eq!(answer["outstanding"], true, "`late` is still running");
+        assert_eq!(answer["recorded"], 0, "no session here opened it");
+        let checks: Vec<(&str, bool, &str)> = answer["checks"]
+            .as_array()
+            .expect("its checks")
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().expect("a name"),
+                    check["required"].as_bool().expect("required"),
+                    check["url"].as_str().expect("an address"),
+                )
+            })
+            .collect();
+        let address = "https://github.com/acme-corp/stacked/actions/runs/1";
+        assert_eq!(
+            checks,
+            [
+                ("ci", true, address),
+                ("lint", false, address),
+                ("late", false, address)
+            ],
+            "required as the base declares it"
+        );
+    }
+}
+
+#[test]
+fn a_followed_head_the_change_request_moved_off_is_superseded_and_the_human_form_says_so() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &tip,
+        &[
+            check("ci", "success", true),
+            check("lint", "failure", false),
+        ],
+    );
+    let current = stack.open("feature/followed", "main", true);
+    let moved = stack.open("feature/followed", "main", true);
+    let earlier = world.git(&stack.checkout, &["rev-parse", "main"]);
+
+    let read = succeeded(&follow_output(
+        &stack,
+        &[
+            format!("{}={tip}", url(current)),
+            format!("{}={earlier}", url(moved)),
+        ],
+        true,
+    ));
+    assert_eq!(read["changes"][0]["superseded"], false);
+    assert_eq!(read["changes"][0]["outstanding"], false);
+    assert_eq!(read["changes"][1]["superseded"], true);
+    assert_eq!(read["changes"][1]["checks"], json!([]));
+    assert_eq!(read["changes"][1]["head"], earlier);
+
+    let human = follow_output(
+        &stack,
+        &[
+            format!("{}={tip}", url(current)),
+            format!("{}={earlier}", url(moved)),
+        ],
+        false,
+    );
+    assert!(human.status.success(), "{human:?}");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "{} at {tip}: every check settled; 0 record(s) appended",
+            url(current)
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "{} at {earlier}: superseded: its head has moved on; 0 record(s) appended",
+            url(moved)
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  ci (required): passed"), "{stdout}");
+    assert!(stdout.contains("  lint (not required): failed"), "{stdout}");
+    assert!(
+        stdout.contains("cost: 1 graphql point(s), 0 REST request(s)"),
+        "{stdout}"
+    );
+
+    // A head that is not a commit id, and a change request named with no head, are
+    // refused before the host is asked anything.
+    let before = world.ledger().len();
+    refused(
+        &follow_output(&stack, &[format!("{}=main", url(current))], true),
+        2,
+        "is not a commit id",
+    );
+    refused(
+        &follow_output(&stack, &[url(current)], true),
+        2,
+        "names no head commit",
+    );
+    assert_eq!(
+        world.ledger().len(),
+        before,
+        "nothing was asked of the host"
+    );
+}
+
+/// Write this host's release-targets file, giving the stacked repository's rule
+/// `extra` — a `release_change` key, or nothing.
+fn release_rule(world: &World, extra: &str) {
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: stacked}}\n    adoption: published\n{extra}"
+        ),
+    )
+    .expect("a release-targets file");
+}
+
+fn holdup_output(world: &World, json: bool) -> Output {
+    let mut command = world.onevcs();
+    command.args(["release", "holdup", IDENTITY]);
+    if json {
+        command.arg("--json");
+    }
+    command.output().expect("the binary runs")
+}
+
+/// One context of a check rollup as GitHub answers it, for a change request's own answer.
+fn context(name: &str, conclusion: &str, address: Option<&str>) -> Value {
+    json!({
+        "__typename": "CheckRun",
+        "name": name,
+        "status": "COMPLETED",
+        "conclusion": conclusion,
+        "startedAt": "2026-09-30T12:00:00Z",
+        "completedAt": "2026-09-30T12:00:30Z",
+        // GitHub answers `null` for a check run that reports no address.
+        "detailsUrl": address,
+        "isRequired": false,
+    })
+}
+
+#[test]
+fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_every_check() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:release"]);
+    // The glob takes `plz` with its `*` and one digit with its `?`, so a name matches
+    // only once the matcher backtracks past the first `-`.
+    let older = stack.branch("release-plz-2026-10-01", "main", "older.txt");
+    let newer = stack.branch("release-plz-2026-10-02", "main", "newer.txt");
+    stack.branch("release-plz-2026-10-03", "main", "closed.txt");
+    stack.branch("release-plz-2026-10-04", "release", "elsewhere.txt");
+    stack.branch("release-plz-2026-10-10", "main", "two-digits.txt");
+    stack.branch("feature/not-a-release", "main", "feature.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &newer,
+        &[
+            check("ci", "success", true),
+            check("lint", "success", false),
+        ],
+    );
+    let first = stack.open("release-plz-2026-10-01", "main", false);
+    // Into another base, closed, a second digit, and no release at all: none is held.
+    stack.open("release-plz-2026-10-04", "release", false);
+    let gone = stack.open("release-plz-2026-10-03", "main", false);
+    world.close_change_request(gone);
+    let second = stack.open("release-plz-2026-10-02", "main", true);
+    stack.open("release-plz-2026-10-10", "main", false);
+    stack.open("feature/not-a-release", "main", false);
+    // The older one's rollup as GitHub answers it: a required check that failed, one
+    // nothing requires that failed and reports no address, and one that was cancelled.
+    let address = "https://github.com/acme-corp/stacked/actions/runs/7";
+    std::fs::write(
+        world.path(format!("gh-state/pull-{first}.json")),
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
+            context("ci", "FAILURE", Some(address)),
+            context("lint", "FAILURE", None),
+            context("stale", "CANCELLED", Some(address)),
+        ]}}}}})
+        .to_string(),
+    )
+    .expect("the older change request's rollup");
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-*-2026-10-0?\"\n",
+    );
+
+    let before = world.ledger().len();
+    let calls_before = world.host_calls().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    let ledger = since(world, before);
+    let methods: Vec<&str> = ledger
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(
+        methods,
+        ["graphql open-changes", "graphql standings"],
+        "{ledger:#?}"
+    );
+    assert_eq!(world.host_calls().len() - calls_before, 2);
+    assert_eq!(holdup["cost"], charged(&ledger));
+    assert_eq!(holdup["identity"], IDENTITY);
+    assert_eq!(holdup["declared"], true);
+    let changes = holdup["changes"].as_array().expect("the release changes");
+    let named: Vec<&Value> = changes.iter().map(|change| &change["url"]).collect();
+    assert_eq!(
+        named,
+        [&json!(url(first)), &json!(url(second))],
+        "the two open matching change requests into the base, oldest first: {holdup:#}"
+    );
+    let older_change = &changes[0];
+    assert_eq!(older_change["head_branch"], "release-plz-2026-10-01");
+    assert_eq!(older_change["head"], older);
+    assert_eq!(older_change["draft"], false);
+    assert_eq!(
+        older_change["verdict"],
+        json!({"verdict": "failed", "failed": ["ci"]})
+    );
+    let checks: Vec<(&str, bool, &str, Option<&str>)> = older_change["checks"]
+        .as_array()
+        .expect("its checks")
+        .iter()
+        .map(|check| {
+            (
+                check["name"].as_str().expect("a name"),
+                check["required"].as_bool().expect("required"),
+                check["conclusion"].as_str().expect("a conclusion"),
+                check["url"].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            ("ci", true, "failure", Some(address)),
+            ("lint", false, "failure", None),
+            ("stale", false, "cancelled", Some(address)),
+        ],
+        "required as the base declares it, whatever the rollup marked"
+    );
+    assert_eq!(changes[1]["draft"], true);
+    assert_eq!(changes[1]["head"], newer);
+    assert_eq!(changes[1]["verdict"], json!({"verdict": "passed"}));
+
+    let human = holdup_output(world, false);
+    assert!(human.status.success(), "{human:?}");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for line in [
+        format!("{} (release-plz-2026-10-01, at {older})", url(first)),
+        format!("  ci (required — blocks the merge) failed: {address}"),
+        "  lint (not required — does not block) failed: no address reported".to_owned(),
+        format!("  stale (not required — does not block) no-verdict: {address}"),
+        format!(
+            "{} (release-plz-2026-10-02, draft, at {newer})",
+            url(second)
+        ),
+        "  no check failed".to_owned(),
+    ] {
+        assert!(stdout.contains(&line), "{line:?} in:\n{stdout}");
+    }
+    for absent in [
+        "release-plz-2026-10-03",
+        "release-plz-2026-10-04",
+        "release-plz-2026-10-10",
+        "feature/not-a-release",
+    ] {
+        assert!(!stdout.contains(absent), "{absent} in:\n{stdout}");
+    }
+    assert_eq!(
+        world.ledger().len(),
+        before + 4,
+        "the human form makes the same two reads"
+    );
+}
+
+#[test]
+fn a_release_holdup_with_no_match_reads_once_and_one_with_no_release_change_asks_nothing() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/not-a-release", "main", "feature.txt");
+    let feature = stack.open("feature/not-a-release", "main", false);
+
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let before = world.ledger().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    let ledger = since(world, before);
+    assert_eq!(ledger.len(), 1, "the listing alone: {ledger:#?}");
+    assert_eq!(holdup["declared"], true);
+    assert_eq!(holdup["changes"], json!([]));
+    let human = holdup_output(world, false);
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains("no open change request of its release tool is holding a release"));
+
+    // A glob with no wildcard is the one name exactly.
+    release_rule(
+        world,
+        "    release_change:\n      head: \"feature/not-a-release\"\n",
+    );
+    let exact = succeeded(&holdup_output(world, true));
+    assert_eq!(exact["changes"][0]["url"], url(feature));
+    release_rule(
+        world,
+        "    release_change:\n      head: \"feature/not-a\"\n",
+    );
+    assert_eq!(succeeded(&holdup_output(world, true))["changes"], json!([]));
+
+    // A rule with no `release_change` declares nothing, and `gh` is never started.
+    release_rule(world, "");
+    let calls_before = world.host_calls().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    assert_eq!(
+        holdup,
+        json!({
+            "identity": IDENTITY,
+            "declared": false,
+            "changes": [],
+            "cost": {"graphql_points": 0, "rest_requests": 0},
+        })
+    );
+    let human = holdup_output(world, false);
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains("no release_change is declared"),
+        "{human:?}"
+    );
+    assert_eq!(
+        world.host_calls().len(),
+        calls_before,
+        "gh was never invoked"
+    );
+
+    // A glob that could match no branch name is refused, naming the file and the problem.
+    for unusable in ["\"\"", "\"release *\""] {
+        release_rule(
+            world,
+            &format!("    release_change:\n      head: {unusable}\n"),
+        );
+        refused(&holdup_output(world, true), 2, "matches no branch name");
+    }
+}
+
+#[test]
+fn a_release_holdup_that_cannot_read_the_whole_answer_refuses_rather_than_answer_part() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("release-plz-many", "main", "many.txt");
+    for _ in 0..51 {
+        stack.open("release-plz-many", "main", false);
+    }
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+
+    // More matches than one read answers: refused after the listing, before any rollup.
+    let before = world.ledger().len();
+    refused(
+        &holdup_output(world, true),
+        2,
+        "more than the 50 one read answers",
+    );
+    let methods: Vec<Value> = since(world, before)
+        .iter()
+        .map(|call| call["method"].clone())
+        .collect();
+    assert_eq!(methods, [json!("graphql open-changes")]);
+
+    // A listing with a further page is not the whole of what is open.
+    std::fs::write(world.path("gh-state/open-listing-has-more"), "")
+        .expect("a host with more than one page of open change requests");
+    refused(
+        &holdup_output(world, true),
+        2,
+        "more open change requests than one page of the listing",
+    );
+}
+
+#[test]
+fn a_follow_read_whose_declarations_cannot_be_read_takes_requiredness_from_the_hosts_marking() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    let number = stack.open("feature/followed", "main", true);
+    // The rollup marks the opposite of what the base declares, so which of the two
+    // decided is visible in the answer.
+    let marked = |name: &str, required: bool| {
+        json!({
+            "__typename": "CheckRun",
+            "name": name,
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-09-30T12:00:00Z",
+            "completedAt": "2026-09-30T12:00:30Z",
+            "detailsUrl": "https://github.com/acme-corp/stacked/actions/runs/1",
+            "isRequired": required,
+        })
+    };
+    std::fs::write(
+        world.path(format!("gh-state/pull-{number}.json")),
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
+            marked("ci", false),
+            marked("lint", true),
+        ]}}}}})
+        .to_string(),
+    )
+    .expect("the change request's rollup");
+    let change = [format!("{}={tip}", url(number))];
+    let required = |read: &Value| -> Vec<(String, bool)> {
+        read["changes"][0]["checks"]
+            .as_array()
+            .expect("its checks")
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().expect("a name").to_owned(),
+                    check["required"].as_bool().expect("required"),
+                )
+            })
+            .collect()
+    };
+
+    let declared = succeeded(&follow_output(&stack, &change, true));
+    assert_eq!(
+        required(&declared),
+        [("ci".to_owned(), true), ("lint".to_owned(), false)],
+        "the base's declaration decides where it can be read"
+    );
+
+    // Rulesets past one page: what a merge into the base requires cannot be read whole.
+    std::fs::write(
+        world.path("gh-state/declarations.json"),
+        json!({"rulesets": {"pageInfo": {"hasNextPage": true}, "nodes": []}}).to_string(),
+    )
+    .expect("a declaration read past one page");
+    let unreadable = succeeded(&follow_output(&stack, &change, true));
+    assert_eq!(
+        required(&unreadable),
+        [("ci".to_owned(), false), ("lint".to_owned(), true)],
+        "the host's own marking decides where the declaration cannot be read"
+    );
+}
+
+#[test]
+fn a_release_change_request_that_moved_between_the_two_reads_is_not_reported_as_holding_it() {
+    // The listing names four open matching change requests; by the time their rollups
+    // are read, one has closed, one has been moved onto another base and one onto another
+    // branch. Only the fourth, which stayed as it was, holds the release.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let numbers: Vec<usize> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|suffix| {
+            let branch = format!("release-plz-{suffix}");
+            stack.branch(&branch, "main", &format!("{suffix}.txt"));
+            stack.open(&branch, "main", false)
+        })
+        .collect();
+    for (number, moved) in numbers.iter().zip([
+        json!({"state": "CLOSED"}),
+        json!({"baseRefName": "release"}),
+        json!({"headRefName": "feature/renamed"}),
+    ]) {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            moved.to_string(),
+        )
+        .expect("what the second read answers");
+    }
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+
+    let holdup = succeeded(&holdup_output(world, true));
+
+    let named: Vec<&Value> = holdup["changes"]
+        .as_array()
+        .expect("the release changes")
+        .iter()
+        .map(|change| &change["url"])
+        .collect();
+    assert_eq!(named, [&json!(url(numbers[3]))], "{holdup:#}");
+}
+
+#[test]
+fn a_follow_read_refuses_a_change_request_the_host_answers_without_a_usable_url_or_head() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_checks_on(&tip, &[check("ci", "success", true)]);
+    let number = stack.open("feature/followed", "main", true);
+    let change = [format!("{}={tip}", url(number))];
+    for (answer, says) in [
+        (json!({"url": null}), "without its url"),
+        (json!({"url": "not a url"}), "which is not one"),
+        (
+            json!({"headRefOid": null}),
+            "without the commit its head is at",
+        ),
+        (json!({"headRefOid": "zz"}), "which is not a commit id"),
+        // The rollup, answered without what says it is every check on the head.
+        (json!({"headRef": {}}), "check rollup without its target"),
+        (
+            json!({"headRef": {"target": {}}}),
+            "check rollup without its statusCheckRollup",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+                "nodes": {},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": []}}}}}),
+            "without saying whether it holds every check",
+        ),
+    ] {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            answer.to_string(),
+        )
+        .expect("the host's answer for the change request");
+        refused(&follow_output(&stack, &change, true), 2, says);
+    }
+}
+
+#[test]
+fn a_release_holdup_refuses_an_answer_it_cannot_read_rather_than_report_part_of_it() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    // Each answer below is one GitHub's schema would not give, on purpose.
+    host_misbehaves(world, "departs-from-github");
+    stack.branch("release-plz-a", "main", "a.txt");
+    let number = stack.open("release-plz-a", "main", false);
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let node = json!({
+        "number": number,
+        "state": "OPEN",
+        "baseRefName": "main",
+        "headRefName": "release-plz-a",
+    });
+    let listing =
+        |repository: Value| json!({"data": {"rateLimit": {"cost": 1}, "repository": repository}});
+    let whole = |nodes: Value| {
+        listing(json!({
+            "defaultBranchRef": {"name": "main"},
+            "pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+        }))
+    };
+    let without = |field: &str| {
+        let mut stripped = node.clone();
+        stripped.as_object_mut().expect("a node").remove(field);
+        whole(json!([stripped]))
+    };
+    // The listing, malformed each way it can be.
+    for (answer, says) in [
+        (json!({"errors": []}), "with no data"),
+        (
+            json!({"data": {"repository": {}}}),
+            "without what it charged for it",
+        ),
+        (
+            json!({"data": {"rateLimit": {"cost": 1}}}),
+            "without its repository",
+        ),
+        (
+            listing(json!({"pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": []}})),
+            "which branch is",
+        ),
+        (
+            listing(json!({"defaultBranchRef": {"name": "main"}})),
+            "listing of acme-corp/stacked's open change requests without them",
+        ),
+        (
+            listing(json!({
+                "defaultBranchRef": {"name": "main"},
+                "pullRequests": {"nodes": []},
+            })),
+            "more open change requests than one page",
+        ),
+        (
+            listing(json!({
+                "defaultBranchRef": {"name": "main"},
+                "pullRequests": {"pageInfo": {"hasNextPage": false}},
+            })),
+            "without its nodes",
+        ),
+        (without("number"), "without its number"),
+        (without("state"), "without its state"),
+        (without("baseRefName"), "without its baseRefName"),
+        (without("headRefName"), "without its headRefName"),
+    ] {
+        std::fs::write(
+            world.path("gh-state/open-listing-answer.json"),
+            answer.to_string(),
+        )
+        .expect("the listing's answer");
+        refused(&holdup_output(world, true), 2, says);
+    }
+    std::fs::remove_file(world.path("gh-state/open-listing-answer.json"))
+        .expect("the listing answers as the host holds it again");
+
+    // The rollup read, malformed each way the holdup reads it.
+    for (answer, says) in [
+        (json!({"state": null}), "without its state"),
+        (json!({"baseRefName": null}), "without its baseRefName"),
+        (json!({"headRefName": null}), "without its headRefName"),
+        (
+            json!({"isDraft": "no"}),
+            "without saying whether it is a draft",
+        ),
+        (json!({"headRefOid": "zz"}), "which is not a commit id"),
+        (json!({"url": "not a url"}), "which is not one"),
+        (
+            json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": false},
+            }}}}}),
+            "check rollup without its contexts",
+        ),
+    ] {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            answer.to_string(),
+        )
+        .expect("the rollup read's answer for the change request");
+        refused(&holdup_output(world, true), 2, says);
+    }
+}
+
+/// `count` passing checks nothing requires, named `check-000` onwards.
+fn many_checks(count: usize) -> Vec<Check> {
+    (0..count)
+        .map(|at| {
+            check(
+                Box::leak(format!("check-{at:03}").into_boxed_str()),
+                "success",
+                false,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_head_carrying_more_checks_than_one_read_returns_is_refused_rather_than_read_as_fewer() {
+    // GitHub answers a rollup 100 contexts at a time. A follow read and a holdup read
+    // each promise every check on the head, so a head with more is refused by both —
+    // the check past the page is the one nobody would be told is running or failed —
+    // while a head with exactly a page of them reads whole.
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let tip = stack.branch("release-plz-a", "main", "a.txt");
+    let number = stack.open("release-plz-a", "main", false);
+    let change = [format!("{}={tip}", url(number))];
+
+    world.host_checks_on(&tip, &many_checks(100));
+    let followed = follow_output(&stack, &change, true);
+    assert!(followed.status.success(), "{followed:?}");
+    let read: Value = serde_json::from_slice(&followed.stdout).expect("the follow read's JSON");
+    assert_eq!(
+        read["changes"][0]["checks"].as_array().map(Vec::len),
+        Some(100),
+        "{read:#}"
+    );
+    let held = holdup_output(world, true);
+    assert!(held.status.success(), "{held:?}");
+    let holdup: Value = serde_json::from_slice(&held.stdout).expect("the holdup's JSON");
+    assert_eq!(
+        holdup["changes"][0]["checks"].as_array().map(Vec::len),
+        Some(100),
+        "{holdup:#}"
+    );
+
+    let mut over = many_checks(100);
+    over.push(check("late-failure", "failure", false));
+    world.host_checks_on(&tip, &over);
+    let says = &format!("pull request {number}'s head carries more checks than the 100");
+    refused(&follow_output(&stack, &change, true), 2, says);
+    refused(&holdup_output(world, true), 2, says);
 }

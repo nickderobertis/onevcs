@@ -1,0 +1,6602 @@
+{
+ "BranchProtectionRule": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "allowsDeletions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "allowsForcePushes",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "blocksCreations",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "branchProtectionRuleConflicts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BranchProtectionRuleConflictConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bypassForcePushAllowances",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BypassForcePushAllowanceConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bypassPullRequestAllowances",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BypassPullRequestAllowanceConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "creator",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "dismissesStaleReviews",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isAdminEnforced",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "lockAllowsFetchAndMerge",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "lockBranch",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "matchingRefs",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RefConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pattern",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pushAllowances",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PushAllowanceConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "requireLastPushApproval",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiredApprovingReviewCount",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "requiredDeploymentEnvironments",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiredStatusCheckContexts",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiredStatusChecks",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "RequiredStatusCheckDescription",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "requiresApprovingReviews",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresCodeOwnerReviews",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresCommitSignatures",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresConversationResolution",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresDeployments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresLinearHistory",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresStatusChecks",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiresStrictStatusChecks",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "restrictsPushes",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "restrictsReviewDismissals",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "reviewDismissalAllowances",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ReviewDismissalAllowanceConnection",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "BranchProtectionRule",
+    "possibleTypes": null
+   }
+  }
+ },
+ "BranchProtectionRuleConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BranchProtectionRuleEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BranchProtectionRule",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "BranchProtectionRuleConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "CheckRun": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "annotations",
+      "type": {
+       "kind": "OBJECT",
+       "name": "CheckAnnotationConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "checkSuite",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CheckSuite",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "completedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "conclusion",
+      "type": {
+       "kind": "ENUM",
+       "name": "CheckConclusionState",
+       "ofType": null
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "deployment",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Deployment",
+       "ofType": null
+      }
+     },
+     {
+      "name": "detailsUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "externalId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isRequired",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "name",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pendingDeploymentRequest",
+      "type": {
+       "kind": "OBJECT",
+       "name": "DeploymentRequest",
+       "ofType": null
+      }
+     },
+     {
+      "name": "permalink",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "startedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "status",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "CheckStatusState",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "steps",
+      "type": {
+       "kind": "OBJECT",
+       "name": "CheckStepConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "summary",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "text",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "title",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "CheckRun",
+    "possibleTypes": null
+   }
+  }
+ },
+ "Commit": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "abbreviatedOid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "additions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "associatedPullRequests",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "author",
+      "type": {
+       "kind": "OBJECT",
+       "name": "GitActor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "authoredByCommitter",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "authoredDate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "authors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitActorConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "blame",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Blame",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "changedFiles",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "changedFilesIfAvailable",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "checkSuites",
+      "type": {
+       "kind": "OBJECT",
+       "name": "CheckSuiteConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "comments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CommitCommentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "commitResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "commitUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "committedDate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "committedViaWeb",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "committer",
+      "type": {
+       "kind": "OBJECT",
+       "name": "GitActor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "deletions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "deployments",
+      "type": {
+       "kind": "OBJECT",
+       "name": "DeploymentConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "file",
+      "type": {
+       "kind": "OBJECT",
+       "name": "TreeEntry",
+       "ofType": null
+      }
+     },
+     {
+      "name": "history",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CommitHistoryConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "message",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "messageBody",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "messageBodyHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "messageHeadline",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "messageHeadlineHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "oid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "GitObjectID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "onBehalfOf",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Organization",
+       "ofType": null
+      }
+     },
+     {
+      "name": "parents",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CommitConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pushedDate",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "signature",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "GitSignature",
+       "ofType": null
+      }
+     },
+     {
+      "name": "status",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Status",
+       "ofType": null
+      }
+     },
+     {
+      "name": "statusCheckRollup",
+      "type": {
+       "kind": "OBJECT",
+       "name": "StatusCheckRollup",
+       "ofType": null
+      }
+     },
+     {
+      "name": "submodules",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SubmoduleConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "tarballUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "tree",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Tree",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "treeResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "treeUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSubscribe",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerSubscription",
+      "type": {
+       "kind": "ENUM",
+       "name": "SubscriptionState",
+       "ofType": null
+      }
+     },
+     {
+      "name": "zipballUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "Commit",
+    "possibleTypes": null
+   }
+  }
+ },
+ "GitObject": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "abbreviatedOid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "commitResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "commitUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "oid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "GitObjectID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "INTERFACE",
+    "name": "GitObject",
+    "possibleTypes": [
+     {
+      "name": "Blob"
+     },
+     {
+      "name": "Commit"
+     },
+     {
+      "name": "Tag"
+     },
+     {
+      "name": "Tree"
+     }
+    ]
+   }
+  }
+ },
+ "Issue": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "activeLockReason",
+      "type": {
+       "kind": "ENUM",
+       "name": "LockReason",
+       "ofType": null
+      }
+     },
+     {
+      "name": "assignedActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssigneeConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "assignees",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "author",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "authorAssociation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "CommentAuthorAssociation",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "blockedBy",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "blocking",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "body",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyText",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "closed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "closedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "closedByPullRequestsReferences",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "comments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueCommentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdViaEmail",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "duplicateOf",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Issue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "editor",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "fullDatabaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "BigInt",
+       "ofType": null
+      }
+     },
+     {
+      "name": "hovercard",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Hovercard",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "includesCreatedEdit",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isPinned",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "isReadByViewer",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueDependenciesSummary",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueDependenciesSummary",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "issueFieldValues",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueFieldValueConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueType",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueType",
+       "ofType": null
+      }
+     },
+     {
+      "name": "labels",
+      "type": {
+       "kind": "OBJECT",
+       "name": "LabelConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "lastEditedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "linkedBranches",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "LinkedBranchConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "locked",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "milestone",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Milestone",
+       "ofType": null
+      }
+     },
+     {
+      "name": "number",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "parent",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Issue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "participants",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pendingSuggestions",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "UNION",
+         "name": "PendingIssueSuggestion",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "pinnedIssueComment",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PinnedIssueComment",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectCards",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectCardConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "projectItems",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ProjectV2ItemConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectV2",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ProjectV2",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectsV2",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectV2Connection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "publishedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "reactionGroups",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ReactionGroup",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "reactions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ReactionConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "relatesTo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "state",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "IssueState",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "stateReason",
+      "type": {
+       "kind": "ENUM",
+       "name": "IssueStateReason",
+       "ofType": null
+      }
+     },
+     {
+      "name": "subIssues",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "subIssuesSummary",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SubIssuesSummary",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "suggestedActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssigneeConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "timeline",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueTimelineConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "timelineItems",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueTimelineItemsConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "title",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "titleHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "trackedInIssues",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "trackedIssues",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "trackedIssuesCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "updatedAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "userContentEdits",
+      "type": {
+       "kind": "OBJECT",
+       "name": "UserContentEditConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerCanAssign",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanClose",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanDelete",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanLabel",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanReact",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanReopen",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSetFields",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerCanSetMilestone",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSubscribe",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanType",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerCanUpdate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanUpdateMetadata",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerCannotUpdateReasons",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "CommentCannotUpdateReason"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "viewerDidAuthor",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerSubscription",
+      "type": {
+       "kind": "ENUM",
+       "name": "SubscriptionState",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerThreadSubscriptionFormAction",
+      "type": {
+       "kind": "ENUM",
+       "name": "ThreadSubscriptionFormAction",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerThreadSubscriptionStatus",
+      "type": {
+       "kind": "ENUM",
+       "name": "ThreadSubscriptionState",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "Issue",
+    "possibleTypes": null
+   }
+  }
+ },
+ "IssueConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Issue",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "IssueConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "PageInfo": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "endCursor",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "hasNextPage",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasPreviousPage",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "startCursor",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "PageInfo",
+    "possibleTypes": null
+   }
+  }
+ },
+ "PullRequest": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "activeLockReason",
+      "type": {
+       "kind": "ENUM",
+       "name": "LockReason",
+       "ofType": null
+      }
+     },
+     {
+      "name": "additions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "assignedActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssigneeConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "assignees",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "author",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "authorAssociation",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "CommentAuthorAssociation",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "autoMergeRequest",
+      "type": {
+       "kind": "OBJECT",
+       "name": "AutoMergeRequest",
+       "ofType": null
+      }
+     },
+     {
+      "name": "baseRef",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Ref",
+       "ofType": null
+      }
+     },
+     {
+      "name": "baseRefName",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "baseRefOid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "GitObjectID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "baseRepository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "body",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "bodyText",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "canBeRebased",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "changedFiles",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "checksResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "checksUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "closed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "closedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "closingIssuesReferences",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "comments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueCommentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "commits",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestCommitConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdViaEmail",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "deletions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "editor",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "files",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestChangedFileConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "fullDatabaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "BigInt",
+       "ofType": null
+      }
+     },
+     {
+      "name": "headRef",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Ref",
+       "ofType": null
+      }
+     },
+     {
+      "name": "headRefName",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "headRefOid",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "GitObjectID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "headRepository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "headRepositoryOwner",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "RepositoryOwner",
+       "ofType": null
+      }
+     },
+     {
+      "name": "hovercard",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Hovercard",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "includesCreatedEdit",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isCrossRepository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isDraft",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isInMergeQueue",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isMergeQueueEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isReadByViewer",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "labels",
+      "type": {
+       "kind": "OBJECT",
+       "name": "LabelConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "lastEditedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "latestOpinionatedReviews",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestReviewConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "latestReviews",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestReviewConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "locked",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "maintainerCanModify",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeCommit",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Commit",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mergeQueue",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MergeQueue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mergeQueueEntry",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MergeQueueEntry",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mergeStateStatus",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "MergeStateStatus",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeable",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "MergeableState",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "merged",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mergedBy",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "milestone",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Milestone",
+       "ofType": null
+      }
+     },
+     {
+      "name": "number",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "participants",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "permalink",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "potentialMergeCommit",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Commit",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectCards",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectCardConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "projectItems",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ProjectV2ItemConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectV2",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ProjectV2",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectsV2",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectV2Connection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "publishedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "reactionGroups",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "ReactionGroup",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "reactions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ReactionConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "revertResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "revertUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "reviewDecision",
+      "type": {
+       "kind": "ENUM",
+       "name": "PullRequestReviewDecision",
+       "ofType": null
+      }
+     },
+     {
+      "name": "reviewRequests",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ReviewRequestConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "reviewThreads",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestReviewThreadConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "reviews",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestReviewConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "stack",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestStack",
+       "ofType": null
+      }
+     },
+     {
+      "name": "stackEntry",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestStackEntry",
+       "ofType": null
+      }
+     },
+     {
+      "name": "state",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "PullRequestState",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "statusCheckRollup",
+      "type": {
+       "kind": "OBJECT",
+       "name": "StatusCheckRollup",
+       "ofType": null
+      }
+     },
+     {
+      "name": "suggestedActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "AssigneeConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "suggestedReviewerActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SuggestedReviewerActorConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "suggestedReviewers",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "SuggestedReviewer",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "timeline",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestTimelineConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "timelineItems",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestTimelineItemsConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "title",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "titleHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCommentsCount",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "updatedAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "userContentEdits",
+      "type": {
+       "kind": "OBJECT",
+       "name": "UserContentEditConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerCanApplySuggestion",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanAssign",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanClose",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanDeleteHeadRef",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanDisableAutoMerge",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanEditFiles",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanEnableAutoMerge",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanLabel",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanMergeAsAdmin",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanReact",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanReopen",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSubscribe",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanUpdate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanUpdateBranch",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCannotUpdateReasons",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "ENUM",
+          "name": "CommentCannotUpdateReason"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "viewerDidAuthor",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerLatestReview",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestReview",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerLatestReviewRequest",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ReviewRequest",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerMergeBodyText",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerMergeHeadlineText",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerSubscription",
+      "type": {
+       "kind": "ENUM",
+       "name": "SubscriptionState",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "PullRequest",
+    "possibleTypes": null
+   }
+  }
+ },
+ "PullRequestConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequest",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "PullRequestConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "Query": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "_entities",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "UNION",
+         "name": "_Entity",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "codeOfConduct",
+      "type": {
+       "kind": "OBJECT",
+       "name": "CodeOfConduct",
+       "ofType": null
+      }
+     },
+     {
+      "name": "codesOfConduct",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CodeOfConduct",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "enterprise",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Enterprise",
+       "ofType": null
+      }
+     },
+     {
+      "name": "enterpriseAdministratorInvitation",
+      "type": {
+       "kind": "OBJECT",
+       "name": "EnterpriseAdministratorInvitation",
+       "ofType": null
+      }
+     },
+     {
+      "name": "enterpriseAdministratorInvitationByToken",
+      "type": {
+       "kind": "OBJECT",
+       "name": "EnterpriseAdministratorInvitation",
+       "ofType": null
+      }
+     },
+     {
+      "name": "enterpriseMemberInvitation",
+      "type": {
+       "kind": "OBJECT",
+       "name": "EnterpriseMemberInvitation",
+       "ofType": null
+      }
+     },
+     {
+      "name": "enterpriseMemberInvitationByToken",
+      "type": {
+       "kind": "OBJECT",
+       "name": "EnterpriseMemberInvitation",
+       "ofType": null
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "license",
+      "type": {
+       "kind": "OBJECT",
+       "name": "License",
+       "ofType": null
+      }
+     },
+     {
+      "name": "licenses",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "License",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "marketplaceCategories",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "OBJECT",
+          "name": "MarketplaceCategory"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "marketplaceCategory",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MarketplaceCategory",
+       "ofType": null
+      }
+     },
+     {
+      "name": "marketplaceListing",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MarketplaceListing",
+       "ofType": null
+      }
+     },
+     {
+      "name": "marketplaceListings",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "MarketplaceListingConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "meta",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "GitHubMetadata",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "node",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Node",
+       "ofType": null
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "INTERFACE",
+         "name": "Node",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "organization",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Organization",
+       "ofType": null
+      }
+     },
+     {
+      "name": "rateLimit",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RateLimit",
+       "ofType": null
+      }
+     },
+     {
+      "name": "relay",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Query",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryOwner",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "RepositoryOwner",
+       "ofType": null
+      }
+     },
+     {
+      "name": "resource",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "UniformResourceLocatable",
+       "ofType": null
+      }
+     },
+     {
+      "name": "search",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SearchResultItemConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "securityAdvisories",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SecurityAdvisoryConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "securityAdvisory",
+      "type": {
+       "kind": "OBJECT",
+       "name": "SecurityAdvisory",
+       "ofType": null
+      }
+     },
+     {
+      "name": "securityVulnerabilities",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SecurityVulnerabilityConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "sponsorables",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SponsorableItemConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "topic",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Topic",
+       "ofType": null
+      }
+     },
+     {
+      "name": "user",
+      "type": {
+       "kind": "OBJECT",
+       "name": "User",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewer",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "User",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "Query",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RateLimit": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "cost",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "limit",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodeCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "remaining",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resetAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "used",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RateLimit",
+    "possibleTypes": null
+   }
+  }
+ },
+ "Ref": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "associatedPullRequests",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "branchProtectionRule",
+      "type": {
+       "kind": "OBJECT",
+       "name": "BranchProtectionRule",
+       "ofType": null
+      }
+     },
+     {
+      "name": "compare",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Comparison",
+       "ofType": null
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "name",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "prefix",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "refUpdateRule",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RefUpdateRule",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Repository",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "rules",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRuleConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "target",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "GitObject",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "Ref",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RefNameConditionTarget": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "exclude",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "include",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RefNameConditionTarget",
+    "possibleTypes": null
+   }
+  }
+ },
+ "Repository": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "allowUpdateBranch",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "archivedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "assignableUsers",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "autoMergeAllowed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "branchProtectionRules",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "BranchProtectionRuleConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "codeOfConduct",
+      "type": {
+       "kind": "OBJECT",
+       "name": "CodeOfConduct",
+       "ofType": null
+      }
+     },
+     {
+      "name": "codeowners",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryCodeowners",
+       "ofType": null
+      }
+     },
+     {
+      "name": "collaborators",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryCollaboratorConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "commitComments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "CommitCommentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "contactLinks",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "RepositoryContactLink",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "contributingGuidelines",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ContributingGuidelines",
+       "ofType": null
+      }
+     },
+     {
+      "name": "createdAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "defaultBranchRef",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Ref",
+       "ofType": null
+      }
+     },
+     {
+      "name": "deleteBranchOnMerge",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "dependencyGraphManifests",
+      "type": {
+       "kind": "OBJECT",
+       "name": "DependencyGraphManifestConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "deployKeys",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeployKeyConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "deployments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DeploymentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "description",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "descriptionHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "discussion",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Discussion",
+       "ofType": null
+      }
+     },
+     {
+      "name": "discussionCategories",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DiscussionCategoryConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "discussionCategory",
+      "type": {
+       "kind": "OBJECT",
+       "name": "DiscussionCategory",
+       "ofType": null
+      }
+     },
+     {
+      "name": "discussions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "DiscussionConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "diskUsage",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "environment",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Environment",
+       "ofType": null
+      }
+     },
+     {
+      "name": "environments",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "EnvironmentConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "forkCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "forkingAllowed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "forks",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "fullDatabaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "BigInt",
+       "ofType": null
+      }
+     },
+     {
+      "name": "fundingLinks",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "OBJECT",
+          "name": "FundingLink"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "hasDiscussionsEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasIssuesEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasProjectsEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasPullRequestsEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasSponsorshipsEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasVulnerabilityAlertsEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "hasWikiEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "homepageUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "interactionAbility",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryInteractionAbility",
+       "ofType": null
+      }
+     },
+     {
+      "name": "isArchived",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isBlankIssuesEnabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isDisabled",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isEmpty",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isFork",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isInOrganization",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isLocked",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isMirror",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isPrivate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isSecurityPolicyEnabled",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Boolean",
+       "ofType": null
+      }
+     },
+     {
+      "name": "isTemplate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isUserConfigurationRepository",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "issue",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Issue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueCreationPolicy",
+      "type": {
+       "kind": "ENUM",
+       "name": "IssueCreationPolicy",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueFields",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueFieldsConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueOrPullRequest",
+      "type": {
+       "kind": "UNION",
+       "name": "IssueOrPullRequest",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueTemplates",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "IssueTemplate",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "issueType",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueType",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issueTypes",
+      "type": {
+       "kind": "OBJECT",
+       "name": "IssueTypeConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "issues",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "IssueConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "label",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Label",
+       "ofType": null
+      }
+     },
+     {
+      "name": "labels",
+      "type": {
+       "kind": "OBJECT",
+       "name": "LabelConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "languages",
+      "type": {
+       "kind": "OBJECT",
+       "name": "LanguageConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "latestRelease",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Release",
+       "ofType": null
+      }
+     },
+     {
+      "name": "licenseInfo",
+      "type": {
+       "kind": "OBJECT",
+       "name": "License",
+       "ofType": null
+      }
+     },
+     {
+      "name": "lockReason",
+      "type": {
+       "kind": "ENUM",
+       "name": "RepositoryLockReason",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mentionableUsers",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeCommitAllowed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeCommitMessage",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "MergeCommitMessage",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeCommitTitle",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "MergeCommitTitle",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "mergeQueue",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MergeQueue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "milestone",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Milestone",
+       "ofType": null
+      }
+     },
+     {
+      "name": "milestones",
+      "type": {
+       "kind": "OBJECT",
+       "name": "MilestoneConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "mirrorUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "name",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nameWithOwner",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "object",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "GitObject",
+       "ofType": null
+      }
+     },
+     {
+      "name": "openGraphImageUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "owner",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "INTERFACE",
+        "name": "RepositoryOwner",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "packages",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PackageConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "parent",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "pinnedDiscussions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PinnedDiscussionConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pinnedEnvironments",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PinnedEnvironmentConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "pinnedIssues",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PinnedIssueConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "planFeatures",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryPlanFeatures",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "primaryLanguage",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Language",
+       "ofType": null
+      }
+     },
+     {
+      "name": "project",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Project",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projectV2",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ProjectV2",
+       "ofType": null
+      }
+     },
+     {
+      "name": "projects",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "projectsResourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "projectsUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "projectsV2",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectV2Connection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pullRequest",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequest",
+       "ofType": null
+      }
+     },
+     {
+      "name": "pullRequestCreationCapConfig",
+      "type": {
+       "kind": "OBJECT",
+       "name": "PullRequestCreationCapConfig",
+       "ofType": null
+      }
+     },
+     {
+      "name": "pullRequestCreationPolicy",
+      "type": {
+       "kind": "ENUM",
+       "name": "PullRequestCreationPolicy",
+       "ofType": null
+      }
+     },
+     {
+      "name": "pullRequestTemplates",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "PullRequestTemplate",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "pullRequests",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PullRequestConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pushedAt",
+      "type": {
+       "kind": "SCALAR",
+       "name": "DateTime",
+       "ofType": null
+      }
+     },
+     {
+      "name": "rebaseMergeAllowed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "recentProjects",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ProjectV2Connection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "ref",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Ref",
+       "ofType": null
+      }
+     },
+     {
+      "name": "refs",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RefConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "release",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Release",
+       "ofType": null
+      }
+     },
+     {
+      "name": "releases",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ReleaseConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repositoryCustomPropertyValue",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryCustomPropertyValue",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryCustomPropertyValues",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryCustomPropertyValueConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryTopics",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryTopicConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "ruleset",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRuleset",
+       "ofType": null
+      }
+     },
+     {
+      "name": "rulesets",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRulesetConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "securityPolicyUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "shortDescriptionHTML",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "HTML",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "squashMergeAllowed",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "squashMergeCommitMessage",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "SquashMergeCommitMessage",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "squashMergeCommitTitle",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "SquashMergeCommitTitle",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "squashPrTitleUsedAsDefault",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "sshUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "GitSSHRemote",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "stargazerCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "stargazers",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "StargazerConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "submodules",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "SubmoduleConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "suggestedActors",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "ActorConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "tempCloneToken",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "templateRepository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "updatedAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "usesCustomOpenGraphImage",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanAdminister",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanCreateIssues",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanCreateProjects",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSeeIssueFields",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanSubscribe",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerCanUpdateTopics",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerContentWarning",
+      "type": {
+       "kind": "OBJECT",
+       "name": "ContentWarning",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerDefaultCommitEmail",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerDefaultMergeMethod",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "PullRequestMergeMethod",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerHasStarred",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "viewerPermission",
+      "type": {
+       "kind": "ENUM",
+       "name": "RepositoryPermission",
+       "ofType": null
+      }
+     },
+     {
+      "name": "viewerPossibleCommitEmails",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "viewerSubscription",
+      "type": {
+       "kind": "ENUM",
+       "name": "SubscriptionState",
+       "ofType": null
+      }
+     },
+     {
+      "name": "visibility",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "RepositoryVisibility",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "vulnerabilityAlert",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryVulnerabilityAlert",
+       "ofType": null
+      }
+     },
+     {
+      "name": "vulnerabilityAlerts",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryVulnerabilityAlertConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "watchers",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "UserConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "webCommitSignoffRequired",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "Repository",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RepositoryOwner": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "avatarUrl",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "login",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repositories",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "repository",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Repository",
+       "ofType": null
+      }
+     },
+     {
+      "name": "resourcePath",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "url",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "URI",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "INTERFACE",
+    "name": "RepositoryOwner",
+    "possibleTypes": [
+     {
+      "name": "Organization"
+     },
+     {
+      "name": "User"
+     }
+    ]
+   }
+  }
+ },
+ "RepositoryRule": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "parameters",
+      "type": {
+       "kind": "UNION",
+       "name": "RuleParameters",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryRuleset",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRuleset",
+       "ofType": null
+      }
+     },
+     {
+      "name": "type",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "RepositoryRuleType",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RepositoryRule",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RepositoryRuleConditions": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "organizationProperty",
+      "type": {
+       "kind": "OBJECT",
+       "name": "OrganizationPropertyConditionTarget",
+       "ofType": null
+      }
+     },
+     {
+      "name": "refName",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RefNameConditionTarget",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryId",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryIdConditionTarget",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryName",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryNameConditionTarget",
+       "ofType": null
+      }
+     },
+     {
+      "name": "repositoryProperty",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryPropertyConditionTarget",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RepositoryRuleConditions",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RepositoryRuleConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryRuleEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryRule",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RepositoryRuleConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RepositoryRuleset": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "bypassActors",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRulesetBypassActorConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "conditions",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryRuleConditions",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "databaseId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     },
+     {
+      "name": "enforcement",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "RuleEnforcement",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "name",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "rules",
+      "type": {
+       "kind": "OBJECT",
+       "name": "RepositoryRuleConnection",
+       "ofType": null
+      }
+     },
+     {
+      "name": "source",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "UNION",
+        "name": "RuleSource",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "target",
+      "type": {
+       "kind": "ENUM",
+       "name": "RepositoryRulesetTarget",
+       "ofType": null
+      }
+     },
+     {
+      "name": "updatedAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RepositoryRuleset",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RepositoryRulesetConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryRulesetEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "RepositoryRuleset",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RepositoryRulesetConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RequiredStatusChecksParameters": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "doNotEnforceOnCreate",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "requiredStatusChecks",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "OBJECT",
+          "name": "StatusCheckConfiguration"
+         }
+        }
+       }
+      }
+     },
+     {
+      "name": "strictRequiredStatusChecksPolicy",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "RequiredStatusChecksParameters",
+    "possibleTypes": null
+   }
+  }
+ },
+ "RuleParameters": {
+  "data": {
+   "__type": {
+    "fields": null,
+    "kind": "UNION",
+    "name": "RuleParameters",
+    "possibleTypes": [
+     {
+      "name": "BranchNamePatternParameters"
+     },
+     {
+      "name": "CodeCoverageParameters"
+     },
+     {
+      "name": "CodeQualityParameters"
+     },
+     {
+      "name": "CodeScanningParameters"
+     },
+     {
+      "name": "CommitAuthorEmailPatternParameters"
+     },
+     {
+      "name": "CommitMessagePatternParameters"
+     },
+     {
+      "name": "CommitterEmailPatternParameters"
+     },
+     {
+      "name": "CopilotCodeReviewParameters"
+     },
+     {
+      "name": "FileExtensionRestrictionParameters"
+     },
+     {
+      "name": "FilePathRestrictionParameters"
+     },
+     {
+      "name": "MaxFilePathLengthParameters"
+     },
+     {
+      "name": "MaxFileSizeParameters"
+     },
+     {
+      "name": "MergeQueueParameters"
+     },
+     {
+      "name": "PullRequestParameters"
+     },
+     {
+      "name": "RequiredDeploymentsParameters"
+     },
+     {
+      "name": "RequiredStatusChecksParameters"
+     },
+     {
+      "name": "TagNamePatternParameters"
+     },
+     {
+      "name": "UpdateParameters"
+     },
+     {
+      "name": "WorkflowsParameters"
+     }
+    ]
+   }
+  }
+ },
+ "StatusCheckConfiguration": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "context",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "integrationId",
+      "type": {
+       "kind": "SCALAR",
+       "name": "Int",
+       "ofType": null
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "StatusCheckConfiguration",
+    "possibleTypes": null
+   }
+  }
+ },
+ "StatusCheckRollup": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "commit",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Commit",
+       "ofType": null
+      }
+     },
+     {
+      "name": "contexts",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "StatusCheckRollupContextConnection",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "state",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "StatusState",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "StatusCheckRollup",
+    "possibleTypes": null
+   }
+  }
+ },
+ "StatusCheckRollupContext": {
+  "data": {
+   "__type": {
+    "fields": null,
+    "kind": "UNION",
+    "name": "StatusCheckRollupContext",
+    "possibleTypes": [
+     {
+      "name": "CheckRun"
+     },
+     {
+      "name": "StatusContext"
+     }
+    ]
+   }
+  }
+ },
+ "StatusCheckRollupContextConnection": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "checkRunCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "checkRunCountsByState",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "CheckRunStateCount",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "edges",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "StatusCheckRollupContextEdge",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "nodes",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "UNION",
+        "name": "StatusCheckRollupContext",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "pageInfo",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "PageInfo",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "statusContextCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "statusContextCountsByState",
+      "type": {
+       "kind": "LIST",
+       "name": null,
+       "ofType": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "OBJECT",
+         "name": "StatusContextStateCount",
+         "ofType": null
+        }
+       }
+      }
+     },
+     {
+      "name": "totalCount",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "StatusCheckRollupContextConnection",
+    "possibleTypes": null
+   }
+  }
+ },
+ "StatusContext": {
+  "data": {
+   "__type": {
+    "fields": [
+     {
+      "name": "avatarUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "commit",
+      "type": {
+       "kind": "OBJECT",
+       "name": "Commit",
+       "ofType": null
+      }
+     },
+     {
+      "name": "context",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "createdAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "creator",
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Actor",
+       "ofType": null
+      }
+     },
+     {
+      "name": "description",
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      }
+     },
+     {
+      "name": "id",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "isRequired",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Boolean",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "state",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "ENUM",
+        "name": "StatusState",
+        "ofType": null
+       }
+      }
+     },
+     {
+      "name": "targetUrl",
+      "type": {
+       "kind": "SCALAR",
+       "name": "URI",
+       "ofType": null
+      }
+     },
+     {
+      "name": "updatedAt",
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "DateTime",
+        "ofType": null
+       }
+      }
+     }
+    ],
+    "kind": "OBJECT",
+    "name": "StatusContext",
+    "possibleTypes": null
+   }
+  }
+ }
+}

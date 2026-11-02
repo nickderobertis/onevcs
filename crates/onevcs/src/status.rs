@@ -2457,7 +2457,7 @@ fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<StandingD
 
 /// How a check's state is spelled in the report's human rendering: the same word its
 /// JSON carries.
-fn spell_check_state(state: CheckState) -> &'static str {
+pub(crate) fn spell_check_state(state: CheckState) -> &'static str {
     match state {
         CheckState::Passed => "passed",
         CheckState::Failed => "failed",
@@ -3715,6 +3715,27 @@ pub(crate) fn opened_heads(url: &str) -> Result<Vec<(String, String)>> {
             Some((String::from(opened.at.clone()), record.branch.clone()?))
         })
         .collect())
+}
+
+/// The stream whose `change-opened` record names the change request at `url` — the
+/// newest, where more than one does — or `None` where no stream on this host opened it.
+///
+/// Where a check read after a publication's watch ended is recorded: the session that
+/// opened the change request, beside the checks its own watch recorded.
+pub(crate) fn opened_stream(url: &str) -> Result<Option<String>> {
+    let mut notes = Vec::new();
+    Ok(recorded_streams(&mut notes)?
+        .into_iter()
+        .filter_map(|record| {
+            let opened = record
+                .proofs
+                .values()
+                .filter_map(|proofs| proofs.opened.as_ref())
+                .find(|opened| opened.value.url == url)?;
+            Some((String::from(opened.at.clone()), record.token))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, token)| token))
 }
 
 /// The streams that recorded this work: the session's own, and the deterministic

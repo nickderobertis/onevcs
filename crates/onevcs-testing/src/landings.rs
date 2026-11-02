@@ -28,8 +28,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use onevcs::{
-    ChangeId, ChangeStanding, ChangeState, Check, CheckState, ChecksVerdict, Error, MergeOutcome,
-    ReadCost, Result, Sha,
+    ChangeId, ChangeStanding, ChangeState, Check, CheckState, ChecksVerdict, Error, FollowedChange,
+    MergeOutcome, ReadCost, Result, Sha,
 };
 
 use crate::state::HostState;
@@ -279,6 +279,51 @@ pub(crate) fn standing(state: &HostState, root: &str, id: &ChangeId) -> Result<C
         url: change.url,
         base,
         state: state_now,
+    })
+}
+
+/// Every check on change request `id`'s head as the host reports it now, each `required`
+/// as what the host declares a merge into its base requires decides — the check's own
+/// marking where nothing can be read — or superseded where its head is no longer `head`.
+pub(crate) fn followed(state: &HostState, id: &ChangeId, head: &Sha) -> Result<FollowedChange> {
+    let change = state
+        .changes
+        .iter()
+        .find(|change| change.id == *id)
+        .cloned()
+        .ok_or_else(|| Error::Invalid {
+            reason: format!(
+                "no change request {:?} was opened on this host, so it has no checks to follow",
+                id.0
+            ),
+        })?;
+    if change.head_sha != *head {
+        return Ok(FollowedChange {
+            change: change.url,
+            head: head.clone(),
+            checks: Vec::new(),
+            outstanding: false,
+            superseded: true,
+            recorded: 0,
+        });
+    }
+    let declared = declared(state, &change.base);
+    let checks: Vec<Check> = checks_on_head(state, id)
+        .into_iter()
+        .map(|mut check| {
+            if let Some(names) = &declared {
+                check.required = names.contains(&check.name);
+            }
+            check
+        })
+        .collect();
+    Ok(FollowedChange {
+        change: change.url,
+        head: head.clone(),
+        outstanding: checks.iter().any(|check| !check.settled()),
+        checks,
+        superseded: false,
+        recorded: 0,
     })
 }
 

@@ -24,6 +24,7 @@ use onevcs::cli::Cli;
 use onevcs::{Git, Providers, SessionRequest, Vcs};
 use onevcs_testing::{FileHost, HostState};
 
+use crate::answered::AnsweredChecks;
 use crate::comparison::{compared, evidence, normalize};
 use crate::scratch::{authenticated_user, inhabit, real_host, scratch_repo, World};
 
@@ -103,15 +104,21 @@ fn publication_events_match_between_the_real_backends_and_the_providers() {
         0,
         "the provided backend's checkout registers under the same identity"
     );
+    // So are the checks: the scratch repository's own workflow runs on every pull
+    // request, and whether GitHub has queued it, started it or finished it when the
+    // watch and the re-verify read is a race this journey does not control. Each
+    // reading answers what the real one did.
+    let answered = AnsweredChecks::of(&real_events, &real.home())
+        .unwrap_or_else(|refusal| panic!("{refusal}"));
     let provided_host = FileHost::seeded(
         provided.path("host.json"),
-        HostState {
+        answered.seed(HostState {
             // An authenticated user is a fact about the host, so the provider is
             // seeded with the one the real host reported rather than a name this
             // journey made up.
             authenticated_user: who.clone(),
             ..HostState::default()
-        },
+        }),
     )
     .expect("a file-backed host");
     let provided_token =

@@ -1,0 +1,8 @@
+api
+graphql
+-f
+query=query($owner: String!, $name: String!) { rateLimit { cost } repository(owner: $owner, name: $name) { defaultBranchRef { name } rulesets(first: 25, includeParents: true) { pageInfo { hasNextPage } nodes { target enforcement conditions { refName { include exclude } } rules(first: 25) { pageInfo { hasNextPage } nodes { type parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } } } branchProtectionRules(first: 100) { pageInfo { hasNextPage } nodes { databaseId pattern requiredStatusCheckContexts } } c0: pullRequest(number: 298) { url number state isDraft body baseRefName headRefName headRefOid mergedAt mergeCommit { oid } baseRef { name } closingIssuesReferences(first: 100) { nodes { number repository { name owner { login } } } } headRef { target { ... on Commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: 298) } ... on StatusContext { context state targetUrl createdAt isRequired(pullRequestNumber: 298) } } } } } } } } } }
+-f
+owner=nickderobertis
+-f
+name=printobserver

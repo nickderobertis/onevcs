@@ -3769,6 +3769,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("change comments", operation!(onevcs::review_comments)),
         ("change reply", operation!(onevcs::reply_to_comment)),
         ("change standings", operation!(onevcs::change_standings)),
+        ("change follow-checks", operation!(onevcs::follow_checks)),
         ("change retarget", operation!(onevcs::retarget_change)),
         ("change reopen", operation!(onevcs::reopen_change)),
         ("change ready", operation!(onevcs::ready_change)),
@@ -3796,6 +3797,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
             "release declaration",
             operation!(onevcs::read_release_declaration),
         ),
+        ("release holdup", operation!(onevcs::release_holdup)),
         (
             "pool declaration",
             operation!(onevcs::repository_config::read_repository_maintenance),
@@ -10356,12 +10358,12 @@ mod significance_contract_tests {
             CheckState::NoVerdict,
         ] {
             for required in [true, false] {
-                let expected =
-                    if required && matches!(state, CheckState::Failed | CheckState::NoVerdict) {
-                        Significance::Blocker
-                    } else {
-                        Significance::Progress
-                    };
+                let unusable = matches!(state, CheckState::Failed | CheckState::NoVerdict);
+                let expected = match (required, unusable) {
+                    (true, true) => Significance::Blocker,
+                    (false, true) => Significance::Attention,
+                    _ => Significance::Progress,
+                };
                 assert_eq!(
                     significance(
                         EventKind::ChangeCheck,
@@ -10371,6 +10373,10 @@ mod significance_contract_tests {
                 );
             }
         }
+        assert!(
+            table.contains("attention for a failed or no-verdict check that is not required"),
+            "the change-check row documents the attention class"
+        );
         for conclusion in [
             "failure",
             "timed_out",
@@ -10398,6 +10404,17 @@ mod significance_contract_tests {
                 ),
                 Significance::Blocker,
                 "required {conclusion} is an immediate blocker"
+            );
+            assert_eq!(
+                significance(
+                    EventKind::ChangeCheck,
+                    EmissionResult::Check {
+                        required: false,
+                        state: check.state()
+                    }
+                ),
+                Significance::Attention,
+                "a {conclusion} check nothing requires asks for a person and blocks nothing"
             );
         }
         for ruling in [
@@ -10619,4 +10636,223 @@ fn release_sweep_runs_disjoint_workloads_after_its_quality_gate() {
         .position(|run| *run == "just workload")
         .expect("release sweep runs workloads");
     assert!(workload > gate);
+}
+
+#[test]
+fn check_visibility_amendment_states_the_surface_the_crate_exports() {
+    let section = regions()
+        .0
+        .split("## Check visibility: attention, late checks, and what holds a release")
+        .nth(1)
+        .expect("the check visibility amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    let declarations = amendment_declaring("pub struct FollowChecksRequest");
+    for declaration in [
+        "pub struct FollowedHead { pub change: Url, pub head: Sha }",
+        "pub struct FollowedChecks { pub changes: Vec<FollowedChange>, pub cost: ReadCost }",
+        "pub fn follow_checks(providers: &Providers, request: &FollowChecksRequest) -> Result<FollowedChecks>;",
+        "fn follow_checks(&self, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks>;",
+    ] {
+        assert!(declarations.contains(declaration), "{declaration}");
+    }
+    let holdup = amendment_declaring("pub struct ReleaseHoldup");
+    assert!(holdup.contains("pub fn release_holdup(repo: &str) -> Result<ReleaseHoldup>;"));
+    assert!(section.contains("pub enum Significance { Milestone, Blocker, Progress, Attention }"));
+    for phrase in [
+        "onevcs change follow-checks <REPO> --root <R> --change <URL>=<SHA> [--change <URL>=<SHA>]... [--json]",
+        "onevcs release holdup <REPO> [--json]",
+        "release_change: {head: \"release-plz-*\"}",
+        "A reader built before this release refuses an `attention` stamp",
+        "`<name> (required — blocks the merge)`",
+        "`<name> (not required — does not block)`",
+    ] {
+        assert!(section.contains(phrase), "{phrase}");
+    }
+
+    // The code is what the text says: every declared signature, and the wire spellings.
+    let _: fn(
+        &Providers<'_>,
+        &onevcs::FollowChecksRequest,
+    ) -> onevcs::Result<onevcs::FollowedChecks> = onevcs::follow_checks;
+    let _: fn(&str) -> onevcs::Result<onevcs::ReleaseHoldup> = onevcs::release_holdup;
+    fn seam(
+        host: &dyn onevcs::RemoteHost,
+        changes: &[(onevcs::ChangeId, onevcs::Sha)],
+    ) -> onevcs::Result<onevcs::FollowedChecks> {
+        host.follow_checks(changes)
+    }
+    let _ = seam;
+    assert_eq!(
+        serde_json::to_value(onevcs::Significance::Attention).expect("a wire word"),
+        json!("attention")
+    );
+    let matcher = onevcs::MatchFields {
+        significance: Some(onevcs::Significance::Attention),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&matcher).expect("matcher wire schema"),
+        json!({"significance": "attention"})
+    );
+    assert!(EventFilter::parse("include: [{significance: attention}]").is_ok());
+    let followed = onevcs::FollowedChange {
+        change: onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
+        head: onevcs::Sha("a".repeat(40)),
+        checks: Vec::new(),
+        outstanding: false,
+        superseded: true,
+        recorded: 0,
+    };
+    let fields: Vec<String> = serde_json::to_value(&followed)
+        .expect("serializes")
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "change",
+            "head",
+            "checks",
+            "outstanding",
+            "superseded",
+            "recorded"
+        ]
+    );
+    let holdup = onevcs::ReleaseHoldup {
+        identity: "github.com/acme-corp/widgets".to_owned(),
+        declared: false,
+        changes: Vec::new(),
+        cost: onevcs::ReadCost::default(),
+    };
+    assert_eq!(
+        serde_json::to_value(&holdup).expect("serializes"),
+        json!({
+            "identity": "github.com/acme-corp/widgets",
+            "declared": false,
+            "changes": [],
+            "cost": {"graphql_points": 0, "rest_requests": 0},
+        })
+    );
+}
+
+/// The fields a `pub struct` the amendment section declares, in order, each as
+/// `name: Type` — read off both spellings it uses, the one-line `{ pub a: A, pub b: B }`
+/// and one field a line.
+fn documented_fields(section: &str, name: &str) -> Vec<String> {
+    let opening = format!("pub struct {name} {{");
+    let body = section
+        .split(&opening)
+        .nth(1)
+        .unwrap_or_else(|| panic!("the amendment declares {name}"))
+        .split('}')
+        .next()
+        .expect("its body");
+    body.split([',', '\n'])
+        .map(str::trim)
+        .filter(|field| field.starts_with("pub "))
+        .map(|field| field.trim_start_matches("pub ").replace(' ', ""))
+        .collect()
+}
+
+#[test]
+fn check_visibility_amendment_declares_each_struct_with_the_fields_the_crate_has() {
+    let section = regions()
+        .0
+        .split("## Check visibility: attention, late checks, and what holds a release")
+        .nth(1)
+        .expect("the check visibility amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    // Each literal below is exhaustive and typed, so a field the crate adds, drops,
+    // renames or retypes fails to compile here, and the list beside it is what the
+    // amendment must say — so neither side can move without this test.
+    let url = onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL");
+    let head = onevcs::Sha("a".repeat(40));
+    let followed_head = onevcs::FollowedHead {
+        change: url.clone(),
+        head: head.clone(),
+    };
+    let _ = onevcs::FollowChecksRequest {
+        repo: String::new(),
+        root: String::new(),
+        changes: vec![followed_head],
+    };
+    let followed = onevcs::FollowedChange {
+        change: url.clone(),
+        head: head.clone(),
+        checks: Vec::<Check>::new(),
+        outstanding: false,
+        superseded: false,
+        recorded: 0_u32,
+    };
+    let _ = onevcs::FollowedChecks {
+        changes: vec![followed],
+        cost: onevcs::ReadCost::default(),
+    };
+    let change = onevcs::ReleaseChange {
+        url,
+        head_branch: String::new(),
+        head,
+        draft: false,
+        checks: Vec::<Check>::new(),
+        verdict: onevcs::ChecksVerdict::Passed,
+    };
+    let _ = onevcs::ReleaseHoldup {
+        identity: String::new(),
+        declared: true,
+        changes: vec![change],
+        cost: onevcs::ReadCost::default(),
+    };
+    for (name, fields) in [
+        (
+            "FollowChecksRequest",
+            &["repo:String", "root:String", "changes:Vec<FollowedHead>"][..],
+        ),
+        ("FollowedHead", &["change:Url", "head:Sha"][..]),
+        (
+            "FollowedChecks",
+            &["changes:Vec<FollowedChange>", "cost:ReadCost"][..],
+        ),
+        (
+            "FollowedChange",
+            &[
+                "change:Url",
+                "head:Sha",
+                "checks:Vec<Check>",
+                "outstanding:bool",
+                "superseded:bool",
+                "recorded:u32",
+            ][..],
+        ),
+        (
+            "ReleaseHoldup",
+            &[
+                "identity:String",
+                "declared:bool",
+                "changes:Vec<ReleaseChange>",
+                "cost:ReadCost",
+            ][..],
+        ),
+        (
+            "ReleaseChange",
+            &[
+                "url:Url",
+                "head_branch:String",
+                "head:Sha",
+                "draft:bool",
+                "checks:Vec<Check>",
+                "verdict:ChecksVerdict",
+            ][..],
+        ),
+    ] {
+        assert_eq!(documented_fields(&section, name), fields, "{name}");
+    }
 }

@@ -42,6 +42,10 @@
 // `tests/e2e/honesty.rs` so that neither can accept a difference the other rejects.
 #[path = "../e2e/comparison.rs"]
 mod comparison;
+// What the real host answered each check reading with, replayed to the providers; the
+// offline leg in `tests/e2e/honesty.rs` holds it to the race it exists for.
+#[path = "../e2e/answered.rs"]
+mod answered;
 
 mod checks;
 mod guard;

@@ -13,16 +13,17 @@ use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
-    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReopenArgs,
-    ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs, Command, EventsArgs,
-    ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs, HostReleaseChangesArgs,
-    HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs,
-    PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs,
-    RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand,
-    ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs,
-    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
-    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeFollowChecksArgs, ChangeReadyArgs,
+    ChangeReopenArgs, ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs,
+    Command, EventsArgs, ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs,
+    HostReleaseChangesArgs, HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs,
+    PoolCommand, PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs,
+    PublishBranchArgs, ReclaimArgs, RecoverArgs, RecoverableArgs, RegisterArgs,
+    ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
+    ReleaseHoldupArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
+    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
+    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StackBaseArgs,
+    StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -99,6 +100,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Comments(args) => change_comments(args, providers),
             ChangeCommand::Reply(args) => change_reply(args, providers),
             ChangeCommand::Standings(args) => change_standings(args, providers),
+            ChangeCommand::FollowChecks(args) => change_follow_checks(args, providers),
             ChangeCommand::Retarget(args) => change_retarget(args, providers),
             ChangeCommand::Reopen(args) => change_reopen(args, providers),
         },
@@ -126,6 +128,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Status(args) => release_status(args, providers),
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args, providers),
             ReleaseCommand::Declaration(args) => release_declaration(args),
+            ReleaseCommand::Holdup(args) => release_holdup(args),
         },
         Command::Pool { command } => match command {
             PoolCommand::Status(args) => pool_status(args),
@@ -1404,6 +1407,66 @@ fn change_standings(args: &ChangeStandingsArgs, providers: &Providers<'_>) -> Re
     Ok(0)
 }
 
+/// Read every check on each named head, the way `onevcs change follow-checks` reports
+/// it: one line per change request, then one per check, then what the read cost.
+fn change_follow_checks(args: &ChangeFollowChecksArgs, providers: &Providers<'_>) -> Result<u8> {
+    let mut changes = Vec::with_capacity(args.changes.len());
+    for named in &args.changes {
+        let (url, head) = named.split_once('=').ok_or_else(|| {
+            error::invalid(format!(
+                "--change {named:?} names no head commit: pass <URL>=<SHA>, the change request \
+                 and the commit whose checks are followed"
+            ))
+        })?;
+        changes.push(crate::FollowedHead {
+            change: change_url(url)?,
+            head: crate::Sha(head.to_owned()),
+        });
+    }
+    let read = crate::follow_checks(
+        providers,
+        &crate::FollowChecksRequest {
+            repo: args.repo.clone(),
+            root: args.root.clone(),
+            changes,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string(&read).map_err(serialization)?);
+        return Ok(0);
+    }
+    for followed in &read.changes {
+        let standing = if followed.superseded {
+            "superseded: its head has moved on".to_owned()
+        } else if followed.outstanding {
+            "checks still running".to_owned()
+        } else {
+            "every check settled".to_owned()
+        };
+        println!(
+            "{} at {}: {standing}; {} record(s) appended",
+            followed.change, followed.head.0, followed.recorded
+        );
+        for check in &followed.checks {
+            println!(
+                "  {} ({}): {}",
+                check.name,
+                if check.required {
+                    "required"
+                } else {
+                    "not required"
+                },
+                crate::status::spell_check_state(check.state())
+            );
+        }
+    }
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        read.cost.graphql_points, read.cost.rest_requests
+    );
+    Ok(0)
+}
+
 /// Move a change request onto another base, the way `onevcs change retarget` reports it.
 fn change_retarget(args: &ChangeRetargetArgs, providers: &Providers<'_>) -> Result<u8> {
     let change = change_url(&args.change)?;
@@ -2580,6 +2643,74 @@ fn describe(target: &ReleaseTarget) -> String {
         } => format!("shell {shell}"),
         ReleaseMethod::HumanStep { action } => format!("action: {action}"),
     }
+}
+
+/// Report what is holding a repository's next release, the way `onevcs release holdup`
+/// renders it: each change request, then each failing or no-verdict check on it with
+/// whether it blocks the merge, and its address.
+fn release_holdup(args: &ReleaseHoldupArgs) -> Result<u8> {
+    let holdup = crate::release_holdup(&args.repo)?;
+    if args.json {
+        println!("{}", serde_json::to_string(&holdup).map_err(serialization)?);
+        return Ok(0);
+    }
+    if !holdup.declared {
+        println!(
+            "{}: no release_change is declared for it in the release-targets file, so nothing \
+             was read",
+            holdup.identity
+        );
+        return Ok(0);
+    }
+    if holdup.changes.is_empty() {
+        println!(
+            "{}: no open change request of its release tool is holding a release",
+            holdup.identity
+        );
+    }
+    for change in &holdup.changes {
+        println!(
+            "{} ({}{}, at {})",
+            change.url,
+            change.head_branch,
+            if change.draft { ", draft" } else { "" },
+            change.head.0
+        );
+        let mut unusable = change
+            .checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.state(),
+                    crate::CheckState::Failed | crate::CheckState::NoVerdict
+                )
+            })
+            .peekable();
+        if unusable.peek().is_none() {
+            println!("  no check failed");
+        }
+        for check in unusable {
+            println!(
+                "  {} ({}) {}: {}",
+                check.name,
+                if check.required {
+                    "required — blocks the merge"
+                } else {
+                    "not required — does not block"
+                },
+                crate::status::spell_check_state(check.state()),
+                check
+                    .url
+                    .as_ref()
+                    .map_or("no address reported", |url| url.as_str())
+            );
+        }
+    }
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        holdup.cost.graphql_points, holdup.cost.rest_requests
+    );
+    Ok(0)
 }
 
 /// Render what a repository's own declaration says it publishes.

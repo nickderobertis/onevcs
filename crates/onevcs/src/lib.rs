@@ -67,6 +67,7 @@ mod gate_run;
 mod gh;
 mod git;
 mod guidance;
+mod holdup;
 mod home;
 mod host;
 pub mod host_query;
@@ -141,6 +142,7 @@ pub use event::{
 pub use export::{
     export, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL, EXPORT_AUTHOR_NAME, EXPORT_SUBJECT,
 };
+pub use holdup::{release_holdup, ReleaseChange, ReleaseHoldup};
 pub use host::{
     ChangeChecks, ChangeId, ChangeRequest, ChangeSpec, Check, CheckSource, CheckState, Description,
     GitHub, HeadActivity, Hosting, MergeOutcome, Mergeability, MergedChange, ProtectionSource,
@@ -197,8 +199,9 @@ pub use session::{
 };
 pub use stack_base::{StackBase, StackBaseOutcome, StackBaseRequest, StackParent};
 pub use standings::{
-    change_standings, reopen_change, retarget_change, review_standings, ChangeStanding,
-    ChangeStandings, ChangeStandingsRequest, ChangeState, ChecksVerdict, ReopenRequest, Reopened,
+    change_standings, follow_checks, reopen_change, retarget_change, review_standings,
+    ChangeStanding, ChangeStandings, ChangeStandingsRequest, ChangeState, ChecksVerdict,
+    FollowChecksRequest, FollowedChange, FollowedChecks, FollowedHead, ReopenRequest, Reopened,
     RetargetOutcome, RetargetRequest, Retargeted, ReviewStandings, ReviewStandingsRequest,
     ReviewTarget,
 };

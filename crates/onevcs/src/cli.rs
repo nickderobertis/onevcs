@@ -718,6 +718,9 @@ pub enum ChangeCommand {
     /// branch, or closed — with each one's base, head, draft state and required-check
     /// verdict, recording a merge into the root as a landing.
     Standings(ChangeStandingsArgs),
+    /// Read every check on each change request's named head after its publication's
+    /// watch ended, recording each check that moved on the session that opened it.
+    FollowChecks(ChangeFollowChecksArgs),
     /// Move a change request onto another base, writing its description with it.
     Retarget(ChangeRetargetArgs),
     /// Restore a closed change request's deleted base and reopen it as the draft it was.
@@ -742,6 +745,26 @@ pub struct ChangeStandingsArgs {
     /// Read each change request's review feedback with its standing, in the same query.
     #[arg(long)]
     pub review: bool,
+    /// Report the read as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `onevcs change follow-checks`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ChangeFollowChecksArgs {
+    /// The repository: its identity, or a registered checkout's path.
+    pub repo: String,
+    /// The root base, as `change standings` takes it.
+    #[arg(long, value_name = "R")]
+    pub root: String,
+    /// A change request and the head commit whose checks are followed, as
+    /// `<URL>=<SHA>`; repeat for each.
+    // llmlint: ignore[invalid_states_unrepresentable] typed text, split and parsed into
+    // the request's `Url` and `Sha` in `app::change_follow_checks`, where a refusal names
+    // the argument the operator typed rather than clap's usage text.
+    #[arg(long = "change", value_name = "URL=SHA", required = true)]
+    pub changes: Vec<String>,
     /// Report the read as JSON.
     #[arg(long)]
     pub json: bool,
@@ -1253,6 +1276,19 @@ pub enum ReleaseCommand {
     Acknowledge(ReleaseAcknowledgeArgs),
     /// Report what a repository's own `release-targets.toml` declares it publishes.
     Declaration(ReleaseDeclarationArgs),
+    /// Report what is holding a repository's next release: each open change request its
+    /// release tool opened, with every check on it, required or not.
+    Holdup(ReleaseHoldupArgs),
+}
+
+/// Arguments for `onevcs release holdup`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseHoldupArgs {
+    /// The repository: its identity, or a registered checkout's path.
+    pub repo: String,
+    /// Report the read as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs release declaration`.

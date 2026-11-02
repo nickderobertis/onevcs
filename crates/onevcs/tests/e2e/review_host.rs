@@ -400,6 +400,9 @@ impl Model {
         if query.contains("statusCheckRollup") {
             return self.standings(call, &query);
         }
+        if query.contains("pullRequests(states: OPEN") {
+            return self.open_listing(&query);
+        }
         for wanted in [
             "rateLimit { cost }",
             "reviewThreads(first: 50, after: $threadsAfter)",

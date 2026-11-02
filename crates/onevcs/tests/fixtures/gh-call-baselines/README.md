@@ -31,3 +31,9 @@ headRefOid,statusCheckRollup`, after `pr ready`. It is the publication's, not th
 closures read's: the checks now settle outside the identity's merge turn, so the
 publication re-reads them under the turn to confirm they are still green on the head
 that settled before it asks for the merge. Added deliberately with that change.
+
+`late-merge-standings.log`'s one GraphQL query selects the check rollup's `pageInfo {
+hasNextPage }`, which `90e1833` did not ask. It is the same request, not another: the
+standings query gained that field so a follow or holdup read can refuse a head carrying
+more checks than one read returns, and the journey still sends that one query once.
+Edited deliberately with that change, and nothing else moved.

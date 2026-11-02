@@ -1,0 +1,1 @@
+{"data":{"rateLimit":{"cost":1},"repository":{"defaultBranchRef":{"name":"main"},"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":298,"state":"OPEN","baseRefName":"main","headRefName":"release-plz-2026-10-29T09-07-15Z"}]}}}}

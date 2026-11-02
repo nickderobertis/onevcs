@@ -303,7 +303,7 @@ impl Model {
             } else {
                 CLOSES
             },
-            "statusCheckRollup { contexts(first: 100)",
+            "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes",
             "isRequired(pullRequestNumber: ",
         ] {
             if !query.contains(wanted) {
@@ -319,7 +319,7 @@ impl Model {
         // A journey's own answer for the whole query — how an answer GitHub's schema
         // would not give is served.
         if let Ok(text) = std::fs::read_to_string(self.state.join("standings-answer.json")) {
-            return (text, String::new(), 0);
+            return self.as_github_answers(text, !reviews);
         }
         let mut repository = serde_json::Map::new();
         // The repository's declarations, where the query asks for them — which the first
@@ -368,7 +368,84 @@ impl Model {
         }
         let answer = json!({"data": {"rateLimit": {"cost": cost}, "repository": repository}});
         let _ = call;
-        (format!("{answer}\n"), String::new(), 0)
+        self.as_github_answers(format!("{answer}\n"), !reviews)
+    }
+
+    /// Serve `answer` — held, where `recorded` says GitHub's recordings cover the query,
+    /// to the shape GitHub answered it in (`recorded_shape.rs`), unless the journey has
+    /// said it serves an answer GitHub would not give.
+    fn as_github_answers(&self, answer: String, recorded: bool) -> (String, String, i32) {
+        if recorded && !self.flag("departs-from-github") {
+            let parsed: Value = match serde_json::from_str(&answer) {
+                Ok(parsed) => parsed,
+                Err(e) => return refused(&format!("fake gh: an answer that is not JSON: {e}")),
+            };
+            if let Err(why) = crate::recorded_shape::conforms(&parsed) {
+                return refused(&format!(
+                    "fake gh: this answer departs from GitHub's recorded shape — {why}"
+                ));
+            }
+        }
+        (answer, String::new(), 0)
+    }
+
+    /// The listing of the repository's open change requests, oldest first — what the
+    /// release holdup read asks before it reads any check — answered from the same
+    /// `pr-<n>.env` records every other call reads, the default branch beside it.
+    pub(super) fn open_listing(&mut self, query: &str) -> (String, String, i32) {
+        for wanted in [
+            "rateLimit { cost }",
+            "defaultBranchRef { name }",
+            "orderBy: {field: CREATED_AT, direction: ASC}",
+            "pageInfo { hasNextPage }",
+            "number state baseRefName headRefName",
+        ] {
+            if !query.contains(wanted) {
+                return refused(&format!(
+                    "fake gh: the open change request listing does not ask for {wanted:?}"
+                ));
+            }
+        }
+        let cost = cost_of(query);
+        self.charged = Some(cost);
+        // A journey's own answer for the whole listing — how an answer GitHub's schema
+        // would not give is served.
+        if let Ok(text) = std::fs::read_to_string(self.state.join("open-listing-answer.json")) {
+            return self.as_github_answers(text, true);
+        }
+        let numbers: Vec<u64> = (1..)
+            .take_while(|number| self.state.join(format!("pr-{number}.env")).exists())
+            .collect();
+        let nodes: Vec<Value> = numbers
+            .into_iter()
+            .filter_map(|number| {
+                let record = self.record(number)?;
+                let field = |key: &str| record.get(key).cloned().unwrap_or_default();
+                let open = field("PR_STATE") != "MERGED" && !self.flag(&format!("closed-{number}"));
+                // `states: OPEN` is GitHub's filter, applied here as GitHub applies it.
+                open.then(|| {
+                    json!({
+                        "number": number,
+                        "state": "OPEN",
+                        "baseRefName": field("PR_BASE"),
+                        "headRefName": field("PR_HEAD"),
+                    })
+                })
+            })
+            .collect();
+        let answer = json!({"data": {
+            "rateLimit": {"cost": cost},
+            "repository": {
+                "defaultBranchRef": {"name": "main"},
+                // `open-listing-has-more`: a repository with more open change requests than
+                // one page holds, which is the answer a reader must not take for the whole.
+                "pullRequests": {
+                    "pageInfo": {"hasNextPage": self.flag("open-listing-has-more")},
+                    "nodes": nodes,
+                },
+            },
+        }});
+        self.as_github_answers(format!("{answer}\n"), true)
     }
 
     /// The repository's declarations as the first query of a call reads them: one
@@ -522,7 +599,14 @@ impl Model {
                     })
                 })
                 .collect();
-            json!({"target": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}})
+            // One page of contexts, as GitHub answers `first: 100`, saying whether more
+            // are on the head than the page holds.
+            let more = contexts.len() > 100;
+            let contexts: Vec<Value> = contexts.into_iter().take(100).collect();
+            json!({"target": {"statusCheckRollup": {"contexts": {
+                "pageInfo": {"hasNextPage": more},
+                "nodes": contexts,
+            }}}})
         } else {
             Value::Null
         };
@@ -713,6 +797,8 @@ impl Model {
                 };
                 let changes: Vec<String> = aliased_numbers(&query).into_iter().map(page).collect();
                 (kind.to_owned(), changes, points, 0)
+            } else if query.contains("pullRequests(states: OPEN") {
+                ("graphql open-changes".to_owned(), Vec::new(), points, 0)
             } else {
                 let changes: Vec<String> = call
                     .fields

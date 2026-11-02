@@ -105,8 +105,11 @@ use crate::store::Checked;
 /// checks each reading of a change request reports in turn on each side of its lift,
 /// and [`HostState::head_activity`], what the host answers in turn about the work
 /// still running on its head. `24` is a ledger that may name `merged_head`, the
-/// question a retirement asks a host before it calls a branch merged.
-pub const STATE_VERSION: u32 = 24;
+/// question a retirement asks a host before it calls a branch merged. `25` is a ledger
+/// that may name `follow_checks`, the read of a change request's checks after its
+/// publication's watch ended — which, like `change_checks`, is a reading of
+/// [`HostState::check_readings`].
+pub const STATE_VERSION: u32 = 25;
 
 /// The oldest document version this build reads.
 ///
@@ -538,9 +541,9 @@ pub struct HostState {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub armed: BTreeSet<ChangeId>,
     /// The checks each reading of a change request reports, in turn: the first
-    /// `change_checks` call about it answers the first entry, the second the second,
-    /// and the last entry answers every call after it — so a journey scripts each poll
-    /// of a watch rather than racing a clock. Seeded, it stands in for that change
+    /// `change_checks` or `follow_checks` call about it answers the first entry, the
+    /// second the second, and the last entry answers every call after it — so a journey
+    /// scripts each poll of a watch, and each read after it, rather than racing a clock. Seeded, it stands in for that change
     /// request's [`checks`](HostState::checks), and for its
     /// [`checks_after_lift`](HostState::checks_after_lift) unless
     /// [`check_readings_after_lift`](HostState::check_readings_after_lift) scripts the
@@ -612,6 +615,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "check_log",
     "describe_change",
     "find_changes",
+    "follow_checks",
     "head_activity",
     "is_draft",
     "merge",
