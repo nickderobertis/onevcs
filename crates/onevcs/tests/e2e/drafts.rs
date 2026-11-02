@@ -3773,3 +3773,38 @@ fn a_follow_read_naming_no_change_request_asks_the_host_nothing() {
         "no host call"
     );
 }
+
+#[test]
+fn a_check_that_first_appears_after_the_watch_ended_is_recorded_once() {
+    // The watch saw only `gate`; `audit` registers on the head once it has ended. Its
+    // first record has no status to come from, and a second read records nothing.
+    let (_world, _origin, session) = scene(DIRECT_OFF, "60", "20");
+    let gate = check("gate", Some("success"), true, 1);
+    let host = MemoryHost::seeded(host_with(vec![gate.clone()], None));
+    let published = publish(&host, &session, &PublishRequest::default());
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let watched = check_records(&session);
+    assert!(
+        watched.iter().all(|(name, _, _)| name == "gate"),
+        "{watched:?}"
+    );
+    let head = host.state().changes[0].head_sha.clone();
+    host.set_head_checks(&head, vec![gate, check("audit", Some("failure"), false, 3)])
+        .expect("a check registers after the watch");
+
+    let first = follow(&host, &head);
+    assert_eq!(first.changes[0].recorded, 1, "{first:?}");
+    let records = check_records(&session);
+    assert_eq!(records.len(), watched.len() + 1);
+    let (name, stamp, payload) = records.last().expect("the appeared check");
+    assert_eq!((name.as_str(), stamp.as_str()), ("audit", "attention"));
+    assert_eq!(payload["from_status"], Value::Null, "{payload}");
+    assert_eq!(payload["state"], "failed");
+
+    let again = follow(&host, &head);
+    assert_eq!(again.changes[0].recorded, 0, "{again:?}");
+    assert_eq!(check_records(&session).len(), records.len());
+}

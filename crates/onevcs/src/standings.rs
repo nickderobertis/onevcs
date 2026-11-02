@@ -386,7 +386,7 @@ fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
     let mut recorded = 0;
     for check in &followed.checks {
         let now = CheckReading {
-            status: Some(check.status.clone()),
+            status: check.status.clone(),
             conclusion: check.conclusion.clone(),
             started_at: check.started_at.clone(),
         };
@@ -396,7 +396,7 @@ fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
         }
         if stream.emit_result_confirmed(
             EventKind::ChangeCheck,
-            publish::change_check_payload(check, previous.and_then(|was| was.status.clone())),
+            publish::change_check_payload(check, previous.map(|was| was.status.clone())),
             Vec::new(),
             crate::event::EmissionResult::Check {
                 required: check.required,
@@ -413,7 +413,7 @@ fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
 /// reading of it from the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckReading {
-    status: Option<String>,
+    status: String,
     conclusion: Option<String>,
     started_at: Option<String>,
 }
@@ -428,14 +428,25 @@ fn latest_checks(token: &str) -> Result<BTreeMap<String, CheckReading>> {
     }
     let mut reader = crate::stream::Reader::open(token)?;
     for record in reader.records()? {
-        let envelope = record.read.map_err(|failure| {
-            invalid(format!(
-                "a record of the stream {token} could not be read, so which check transitions \
-                 it already holds cannot be told: {failure}"
-            ))
-        })?;
-        if envelope.kind.as_str() != "change-check" {
+        // Through the one reader every stream's values go through: a line that is not an
+        // envelope, or one naming another stream, is refused rather than skipped.
+        let line = crate::stream::attributed_record(record, token)?;
+        let crate::event::Line::Known(known) = line else {
             continue;
+        };
+        if known.kind != EventKind::ChangeCheck {
+            continue;
+        }
+        let envelope = &known.envelope;
+        if let Some(stamp) = envelope.labels.extra.get("significance") {
+            serde_json::from_value::<crate::event::Significance>(stamp.clone()).map_err(
+                |failure| {
+                    invalid(format!(
+                        "a change-check on the stream {token} carries an invalid significance \
+                         stamp: {failure}"
+                    ))
+                },
+            )?;
         }
         let text = |name: &str| -> Result<Option<String>> {
             match envelope.payload.get(name) {
@@ -447,15 +458,17 @@ fn latest_checks(token: &str) -> Result<BTreeMap<String, CheckReading>> {
                 ))),
             }
         };
-        let name = text("name")?.ok_or_else(|| {
-            invalid(format!(
-                "a change-check on the stream {token} names no check"
-            ))
-        })?;
+        let required = |name: &str| -> Result<String> {
+            text(name)?.ok_or_else(|| {
+                invalid(format!(
+                    "a change-check on the stream {token} records no {name}"
+                ))
+            })
+        };
         latest.insert(
-            name,
+            required("name")?,
             CheckReading {
-                status: text("status")?,
+                status: required("status")?,
                 conclusion: text("conclusion")?,
                 started_at: text("started_at")?,
             },
