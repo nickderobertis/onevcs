@@ -2726,3 +2726,176 @@ fn a_change_request_a_person_merged_that_nothing_here_opened_is_a_landing_throug
         "{report}"
     );
 }
+
+/// `onevcs change follow-checks` over `changes`, each `<URL>=<SHA>`.
+fn follow_output(stack: &Stack, changes: &[String], json: bool) -> Output {
+    let mut command = stack.world.onevcs();
+    command.args(["change", "follow-checks", IDENTITY, "--root", "main"]);
+    for change in changes {
+        command.args(["--change", change]);
+    }
+    if json {
+        command.arg("--json");
+    }
+    command.output().expect("the binary runs")
+}
+
+#[test]
+fn following_51_change_requests_sends_two_standings_queries_and_no_rest_request() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &tip,
+        &[
+            check("ci", "success", true),
+            check("lint", "failure", false),
+            Check {
+                name: "late",
+                status: "in_progress",
+                conclusion: None,
+                required: false,
+            },
+        ],
+    );
+    let numbers: Vec<usize> = (0..51)
+        .map(|_| stack.open("feature/followed", "main", true))
+        .collect();
+    let changes: Vec<String> = numbers
+        .iter()
+        .map(|number| format!("{}={tip}", url(*number)))
+        .collect();
+
+    let calls_before = world.host_calls().len();
+    let before = world.ledger().len();
+    let read = succeeded(&follow_output(&stack, &changes, true));
+    let ledger = since(world, before);
+    let methods: Vec<&str> = ledger
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(methods, ["graphql standings"; 2], "{ledger:#?}");
+    assert_eq!(
+        read["cost"],
+        charged(&ledger),
+        "the cost is the responses' own"
+    );
+    assert_eq!(
+        read["cost"],
+        json!({"graphql_points": 2, "rest_requests": 0})
+    );
+    let calls: Vec<String> = world.host_calls().into_iter().skip(calls_before).collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "two GraphQL requests and nothing else: {calls:#?}"
+    );
+    assert!(calls.iter().all(|call| call.starts_with("api graphql")));
+    assert!(
+        calls.iter().all(|call| !call.contains("/logs")),
+        "no check log is fetched"
+    );
+
+    let followed = read["changes"]
+        .as_array()
+        .expect("one answer per change request");
+    assert_eq!(followed.len(), 51);
+    for (answer, number) in followed.iter().zip(&numbers) {
+        assert_eq!(answer["change"], url(*number));
+        assert_eq!(answer["head"], tip);
+        assert_eq!(answer["superseded"], false);
+        assert_eq!(answer["outstanding"], true, "`late` is still running");
+        assert_eq!(answer["recorded"], 0, "no session here opened it");
+        let checks: Vec<(&str, bool, &str)> = answer["checks"]
+            .as_array()
+            .expect("its checks")
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().expect("a name"),
+                    check["required"].as_bool().expect("required"),
+                    check["url"].as_str().expect("an address"),
+                )
+            })
+            .collect();
+        let address = "https://github.com/acme-corp/stacked/actions/runs/1";
+        assert_eq!(
+            checks,
+            [
+                ("ci", true, address),
+                ("lint", false, address),
+                ("late", false, address)
+            ],
+            "required as the base declares it"
+        );
+    }
+}
+
+#[test]
+fn a_followed_head_the_change_request_moved_off_is_superseded_and_the_human_form_says_so() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &tip,
+        &[
+            check("ci", "success", true),
+            check("lint", "failure", false),
+        ],
+    );
+    let current = stack.open("feature/followed", "main", true);
+    let moved = stack.open("feature/followed", "main", true);
+    let earlier = world.git(&stack.checkout, &["rev-parse", "main"]);
+
+    let read = succeeded(&follow_output(
+        &stack,
+        &[
+            format!("{}={tip}", url(current)),
+            format!("{}={earlier}", url(moved)),
+        ],
+        true,
+    ));
+    assert_eq!(read["changes"][0]["superseded"], false);
+    assert_eq!(read["changes"][0]["outstanding"], false);
+    assert_eq!(read["changes"][1]["superseded"], true);
+    assert_eq!(read["changes"][1]["checks"], json!([]));
+    assert_eq!(read["changes"][1]["head"], earlier);
+
+    let human = follow_output(&stack, &[format!("{}={tip}", url(current))], false);
+    assert!(human.status.success(), "{human:?}");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "{} at {tip}: every check settled; 0 record(s) appended",
+            url(current)
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  ci (required): passed"), "{stdout}");
+    assert!(stdout.contains("  lint (not required): failed"), "{stdout}");
+    assert!(
+        stdout.contains("cost: 1 graphql point(s), 0 REST request(s)"),
+        "{stdout}"
+    );
+
+    // A head that is not a commit id, and a change request named with no head, are
+    // refused before the host is asked anything.
+    let before = world.ledger().len();
+    refused(
+        &follow_output(&stack, &[format!("{}=main", url(current))], true),
+        2,
+        "is not a commit id",
+    );
+    refused(
+        &follow_output(&stack, &[url(current)], true),
+        2,
+        "names no head commit",
+    );
+    assert_eq!(
+        world.ledger().len(),
+        before,
+        "nothing was asked of the host"
+    );
+}
