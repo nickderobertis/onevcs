@@ -93,6 +93,10 @@ mod discovery;
 // real-backend tier in `tests/smoke`, so one leg cannot accept a difference the
 // other rejects.
 mod comparison;
+// What a real host answered each check reading with, replayed to the providers' host —
+// shared with the real-backend tier's honesty journey, and held here to the race it
+// exists for.
+mod answered;
 // Every platform: concurrent sessions of one repository over real git, with a fixture
 // of its own because `world.rs` is Unix-only. Its own header carries the reason.
 mod concurrent_sessions;
