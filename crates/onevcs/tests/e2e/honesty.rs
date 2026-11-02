@@ -86,7 +86,10 @@ fn green_gate() -> Check {
         conclusion: Some("success".to_owned()),
         required: true,
         head: None,
-        url: None,
+        // Where the check is, which the substituted `gh` reports for every check and a
+        // `change-check` record carries: that the host gave an address is compared, and
+        // the address itself is scrubbed.
+        url: onevcs::Url::parse("https://github.com/acme-corp/hosted/actions/runs/1").ok(),
         // The run's times, which the substituted `gh` reports for every completed
         // check: what a host said is compared, and when is a clock.
         started_at: Some("2026-09-30T12:00:00Z".to_owned()),
