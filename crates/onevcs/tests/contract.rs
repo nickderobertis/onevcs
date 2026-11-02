@@ -10740,3 +10740,119 @@ fn check_visibility_amendment_states_the_surface_the_crate_exports() {
         })
     );
 }
+
+/// The fields a `pub struct` the amendment section declares, in order, each as
+/// `name: Type` — read off both spellings it uses, the one-line `{ pub a: A, pub b: B }`
+/// and one field a line.
+fn documented_fields(section: &str, name: &str) -> Vec<String> {
+    let opening = format!("pub struct {name} {{");
+    let body = section
+        .split(&opening)
+        .nth(1)
+        .unwrap_or_else(|| panic!("the amendment declares {name}"))
+        .split('}')
+        .next()
+        .expect("its body");
+    body.split([',', '\n'])
+        .map(str::trim)
+        .filter(|field| field.starts_with("pub "))
+        .map(|field| field.trim_start_matches("pub ").replace(' ', ""))
+        .collect()
+}
+
+#[test]
+fn check_visibility_amendment_declares_each_struct_with_the_fields_the_crate_has() {
+    let section = regions()
+        .0
+        .split("## Check visibility: attention, late checks, and what holds a release")
+        .nth(1)
+        .expect("the check visibility amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    // Each literal below is exhaustive and typed, so a field the crate adds, drops,
+    // renames or retypes fails to compile here, and the list beside it is what the
+    // amendment must say — so neither side can move without this test.
+    let url = onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL");
+    let head = onevcs::Sha("a".repeat(40));
+    let followed_head = onevcs::FollowedHead {
+        change: url.clone(),
+        head: head.clone(),
+    };
+    let _ = onevcs::FollowChecksRequest {
+        repo: String::new(),
+        root: String::new(),
+        changes: vec![followed_head],
+    };
+    let followed = onevcs::FollowedChange {
+        change: url.clone(),
+        head: head.clone(),
+        checks: Vec::<Check>::new(),
+        outstanding: false,
+        superseded: false,
+        recorded: 0_u32,
+    };
+    let _ = onevcs::FollowedChecks {
+        changes: vec![followed],
+        cost: onevcs::ReadCost::default(),
+    };
+    let change = onevcs::ReleaseChange {
+        url,
+        head_branch: String::new(),
+        head,
+        draft: false,
+        checks: Vec::<Check>::new(),
+        verdict: onevcs::ChecksVerdict::Passed,
+    };
+    let _ = onevcs::ReleaseHoldup {
+        identity: String::new(),
+        declared: true,
+        changes: vec![change],
+        cost: onevcs::ReadCost::default(),
+    };
+    for (name, fields) in [
+        (
+            "FollowChecksRequest",
+            &["repo:String", "root:String", "changes:Vec<FollowedHead>"][..],
+        ),
+        ("FollowedHead", &["change:Url", "head:Sha"][..]),
+        (
+            "FollowedChecks",
+            &["changes:Vec<FollowedChange>", "cost:ReadCost"][..],
+        ),
+        (
+            "FollowedChange",
+            &[
+                "change:Url",
+                "head:Sha",
+                "checks:Vec<Check>",
+                "outstanding:bool",
+                "superseded:bool",
+                "recorded:u32",
+            ][..],
+        ),
+        (
+            "ReleaseHoldup",
+            &[
+                "identity:String",
+                "declared:bool",
+                "changes:Vec<ReleaseChange>",
+                "cost:ReadCost",
+            ][..],
+        ),
+        (
+            "ReleaseChange",
+            &[
+                "url:Url",
+                "head_branch:String",
+                "head:Sha",
+                "draft:bool",
+                "checks:Vec<Check>",
+                "verdict:ChecksVerdict",
+            ][..],
+        ),
+    ] {
+        assert_eq!(documented_fields(&section, name), fields, "{name}");
+    }
+}

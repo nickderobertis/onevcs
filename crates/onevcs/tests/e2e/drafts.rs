@@ -3242,11 +3242,11 @@ fn a_failed_check_nothing_requires_is_stamped_attention_and_decides_nothing() {
 fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_asks_for_attention()
 {
     let (world, _origin, session) = scene(DIRECT, "60", "20");
+    // `advisory` reports no address, which its record says as an explicit null.
+    let mut advisory = check("advisory", Some("failure"), false, 2);
+    advisory.url = None;
     let host = MemoryHost::seeded(host_with(
-        vec![
-            check("gate", Some("failure"), true, 1),
-            check("advisory", Some("failure"), false, 2),
-        ],
+        vec![check("gate", Some("failure"), true, 1), advisory],
         None,
     ));
 
@@ -3260,7 +3260,17 @@ fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_
         ),
         "the required check alone fails it: {published:?}"
     );
-    let stamps: BTreeMap<String, String> = check_records(&session)
+    let records = check_records(&session);
+    for (name, _, payload) in &records {
+        let expected = match name.as_str() {
+            "gate" => {
+                Value::String("https://github.com/acme-corp/hosted/actions/runs/1/job/1".to_owned())
+            }
+            _ => Value::Null,
+        };
+        assert_eq!(payload.get("url"), Some(&expected), "{name}: {payload}");
+    }
+    let stamps: BTreeMap<String, String> = records
         .into_iter()
         .map(|(name, stamp, _)| (name, stamp))
         .collect();
@@ -3736,4 +3746,30 @@ fn a_follow_answer_the_host_garbled_is_refused_and_no_stream_is_touched() {
             "{garble:?}: no stream was touched"
         );
     }
+}
+
+#[test]
+fn a_follow_read_naming_no_change_request_asks_the_host_nothing() {
+    let (_world, _origin, _session) = scene(DIRECT_OFF, "60", "20");
+    let host = MemoryHost::new();
+
+    let read = onevcs::follow_checks(
+        &Providers {
+            vcs: &Git,
+            hosting: &host,
+        },
+        &onevcs::FollowChecksRequest {
+            repo: "github.com/acme-corp/hosted".to_owned(),
+            root: "main".to_owned(),
+            changes: Vec::new(),
+        },
+    )
+    .expect("an empty read answers");
+
+    assert!(read.changes.is_empty());
+    assert_eq!(read.cost, onevcs::ReadCost::default());
+    assert!(
+        host.ledger().expect("the ledger").is_empty(),
+        "no host call"
+    );
 }
