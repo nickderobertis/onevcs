@@ -371,6 +371,56 @@ impl Model {
         (format!("{answer}\n"), String::new(), 0)
     }
 
+    /// The listing of the repository's open change requests, oldest first — what the
+    /// release holdup read asks before it reads any check — answered from the same
+    /// `pr-<n>.env` records every other call reads, the default branch beside it.
+    pub(super) fn open_listing(&mut self, query: &str) -> (String, String, i32) {
+        for wanted in [
+            "rateLimit { cost }",
+            "defaultBranchRef { name }",
+            "orderBy: {field: CREATED_AT, direction: ASC}",
+            "pageInfo { hasNextPage }",
+            "number state baseRefName headRefName createdAt",
+        ] {
+            if !query.contains(wanted) {
+                return refused(&format!(
+                    "fake gh: the open change request listing does not ask for {wanted:?}"
+                ));
+            }
+        }
+        let cost = cost_of(query);
+        self.charged = Some(cost);
+        let numbers: Vec<u64> = (1..)
+            .take_while(|number| self.state.join(format!("pr-{number}.env")).exists())
+            .collect();
+        let nodes: Vec<Value> = numbers
+            .into_iter()
+            .filter_map(|number| {
+                let record = self.record(number)?;
+                let field = |key: &str| record.get(key).cloned().unwrap_or_default();
+                let open = field("PR_STATE") != "MERGED" && !self.flag(&format!("closed-{number}"));
+                // `states: OPEN` is GitHub's filter, applied here as GitHub applies it.
+                open.then(|| {
+                    json!({
+                        "number": number,
+                        "state": "OPEN",
+                        "baseRefName": field("PR_BASE"),
+                        "headRefName": field("PR_HEAD"),
+                        "createdAt": format!("2026-10-01T00:{:02}:{:02}Z", number / 60, number % 60),
+                    })
+                })
+            })
+            .collect();
+        let answer = json!({"data": {
+            "rateLimit": {"cost": cost},
+            "repository": {
+                "defaultBranchRef": {"name": "main"},
+                "pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+            },
+        }});
+        (format!("{answer}\n"), String::new(), 0)
+    }
+
     /// The repository's declarations as the first query of a call reads them: one
     /// ruleset per base a journey stated a requirement for, one applying to every other
     /// branch with what the repository's rows mark required, and classic protection
@@ -713,6 +763,8 @@ impl Model {
                 };
                 let changes: Vec<String> = aliased_numbers(&query).into_iter().map(page).collect();
                 (kind.to_owned(), changes, points, 0)
+            } else if query.contains("pullRequests(states: OPEN") {
+                ("graphql open-changes".to_owned(), Vec::new(), points, 0)
             } else {
                 let changes: Vec<String> = call
                     .fields

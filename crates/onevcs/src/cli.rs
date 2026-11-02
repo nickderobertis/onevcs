@@ -1276,6 +1276,19 @@ pub enum ReleaseCommand {
     Acknowledge(ReleaseAcknowledgeArgs),
     /// Report what a repository's own `release-targets.toml` declares it publishes.
     Declaration(ReleaseDeclarationArgs),
+    /// Report what is holding a repository's next release: each open change request its
+    /// release tool opened, with every check on it, required or not.
+    Holdup(ReleaseHoldupArgs),
+}
+
+/// Arguments for `onevcs release holdup`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseHoldupArgs {
+    /// The repository: its identity, or a registered checkout's path.
+    pub repo: String,
+    /// Report the read as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs release declaration`.

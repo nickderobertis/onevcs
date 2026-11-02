@@ -59,6 +59,34 @@ pub struct ReleasesFile {
     pub default: ReleaseDefault,
 }
 
+/// The release-targets file read for one optional key alone: each rule's
+/// `release_change`, which names the change requests a repository's release tool opens.
+///
+/// Read beside [`ReleasesFile`] rather than as a field of [`ReleaseRule`], whose fields a
+/// consumer may construct exhaustively: the key is additive, and an older build that
+/// ignores it — as every reader here ignores a key it has no opinion on — is the reason
+/// it can be one. The rule a key belongs to is the one at the same position, matched the
+/// way every rule is.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReleaseChangeRules {
+    #[serde(default)]
+    pub(crate) repositories: Vec<ReleaseChangeRule>,
+}
+
+/// One rule's `release_change`, where it carries one.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReleaseChangeRule {
+    #[serde(default)]
+    pub(crate) release_change: Option<ReleaseChangeKey>,
+}
+
+/// `release_change: {head: "<glob>"}`: a glob — `*` any run of characters, `?` one —
+/// over the head branch names of the change requests the release tool opens.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReleaseChangeKey {
+    pub(crate) head: String,
+}
+
 /// The global rung of the adoption chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseDefault {

@@ -2899,3 +2899,187 @@ fn a_followed_head_the_change_request_moved_off_is_superseded_and_the_human_form
         "nothing was asked of the host"
     );
 }
+
+/// Write this host's release-targets file, giving the stacked repository's rule
+/// `extra` — a `release_change` key, or nothing.
+fn release_rule(world: &World, extra: &str) {
+    std::fs::write(
+        world.home().join("releases.yml"),
+        format!(
+            "version: 1\ndefault:\n  adoption: fast\nrepositories:\n  - match: {{host: \
+             github.com, owner: acme-corp, name: stacked}}\n    adoption: published\n{extra}"
+        ),
+    )
+    .expect("a release-targets file");
+}
+
+fn holdup_output(world: &World, json: bool) -> Output {
+    let mut command = world.onevcs();
+    command.args(["release", "holdup", IDENTITY]);
+    if json {
+        command.arg("--json");
+    }
+    command.output().expect("the binary runs")
+}
+
+#[test]
+fn a_release_holdup_names_the_open_release_change_requests_into_the_base_with_every_check() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    world.git(&stack.checkout, &["push", "-q", "origin", "main:release"]);
+    let older = stack.branch("release-plz-2026-10-01", "main", "older.txt");
+    let elsewhere = stack.branch("release-plz-on-release", "release", "elsewhere.txt");
+    let closed = stack.branch("release-plz-closed", "main", "closed.txt");
+    let newer = stack.branch("release-plz-2026-10-02", "main", "newer.txt");
+    stack.branch("feature/not-a-release", "main", "feature.txt");
+    world.host_requires_on("main", &["ci"]);
+    world.host_checks_on(
+        &older,
+        &[
+            check("ci", "failure", true),
+            check("lint", "failure", false),
+        ],
+    );
+    world.host_checks_on(
+        &newer,
+        &[
+            check("ci", "success", true),
+            check("lint", "success", false),
+        ],
+    );
+    world.host_checks_on(&elsewhere, &[check("ci", "failure", true)]);
+    world.host_checks_on(&closed, &[check("ci", "failure", true)]);
+    let first = stack.open("release-plz-2026-10-01", "main", false);
+    stack.open("release-plz-on-release", "release", false);
+    let gone = stack.open("release-plz-closed", "main", false);
+    world.close_change_request(gone);
+    let second = stack.open("release-plz-2026-10-02", "main", true);
+    stack.open("feature/not-a-release", "main", false);
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+
+    let before = world.ledger().len();
+    let calls_before = world.host_calls().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    let ledger = since(world, before);
+    let methods: Vec<&str> = ledger
+        .iter()
+        .filter_map(|call| call["method"].as_str())
+        .collect();
+    assert_eq!(
+        methods,
+        ["graphql open-changes", "graphql standings"],
+        "{ledger:#?}"
+    );
+    assert_eq!(world.host_calls().len() - calls_before, 2);
+    assert_eq!(holdup["cost"], charged(&ledger));
+    assert_eq!(holdup["identity"], IDENTITY);
+    assert_eq!(holdup["declared"], true);
+    let changes = holdup["changes"].as_array().expect("the release changes");
+    let named: Vec<&Value> = changes.iter().map(|change| &change["url"]).collect();
+    assert_eq!(
+        named,
+        [&json!(url(first)), &json!(url(second))],
+        "the two open matching change requests into the base, oldest first: {holdup:#}"
+    );
+    let address = "https://github.com/acme-corp/stacked/actions/runs/1";
+    let older_change = &changes[0];
+    assert_eq!(older_change["head_branch"], "release-plz-2026-10-01");
+    assert_eq!(older_change["head"], older);
+    assert_eq!(older_change["draft"], false);
+    assert_eq!(
+        older_change["verdict"],
+        json!({"verdict": "failed", "failed": ["ci"]})
+    );
+    let checks: Vec<(&str, bool, &str)> = older_change["checks"]
+        .as_array()
+        .expect("its checks")
+        .iter()
+        .map(|check| {
+            (
+                check["name"].as_str().expect("a name"),
+                check["required"].as_bool().expect("required"),
+                check["url"].as_str().expect("an address"),
+            )
+        })
+        .collect();
+    assert_eq!(checks, [("ci", true, address), ("lint", false, address)]);
+    assert_eq!(changes[1]["draft"], true);
+    assert_eq!(changes[1]["head"], newer);
+    assert_eq!(changes[1]["verdict"], json!({"verdict": "passed"}));
+
+    let human = holdup_output(world, false);
+    assert!(human.status.success(), "{human:?}");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for line in [
+        format!("{} (release-plz-2026-10-01, at {older})", url(first)),
+        format!("  ci (required — blocks the merge) failed: {address}"),
+        format!("  lint (not required — does not block) failed: {address}"),
+        format!(
+            "{} (release-plz-2026-10-02, draft, at {newer})",
+            url(second)
+        ),
+        "  no check failed".to_owned(),
+    ] {
+        assert!(stdout.contains(&line), "{line:?} in:\n{stdout}");
+    }
+    assert!(!stdout.contains("release-plz-on-release"), "{stdout}");
+    assert!(!stdout.contains("release-plz-closed"), "{stdout}");
+    assert!(!stdout.contains("feature/not-a-release"), "{stdout}");
+    assert!(
+        world.ledger().len() == before + 4,
+        "the human form makes the same two reads"
+    );
+}
+
+#[test]
+fn a_release_holdup_with_no_match_reads_once_and_one_with_no_release_change_asks_nothing() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("feature/not-a-release", "main", "feature.txt");
+    stack.open("feature/not-a-release", "main", false);
+
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let before = world.ledger().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    let ledger = since(world, before);
+    assert_eq!(ledger.len(), 1, "the listing alone: {ledger:#?}");
+    assert_eq!(holdup["declared"], true);
+    assert_eq!(holdup["changes"], json!([]));
+    let human = holdup_output(world, false);
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains("no open change request of its release tool is holding a release"));
+
+    // A rule with no `release_change` declares nothing, and `gh` is never started.
+    release_rule(world, "");
+    let calls_before = world.host_calls().len();
+    let holdup = succeeded(&holdup_output(world, true));
+    assert_eq!(
+        holdup,
+        json!({
+            "identity": IDENTITY,
+            "declared": false,
+            "changes": [],
+            "cost": {"graphql_points": 0, "rest_requests": 0},
+        })
+    );
+    let human = holdup_output(world, false);
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains("no release_change is declared"),
+        "{human:?}"
+    );
+    assert_eq!(
+        world.host_calls().len(),
+        calls_before,
+        "gh was never invoked"
+    );
+
+    // A glob that could match no branch name is refused, naming the file.
+    release_rule(world, "    release_change:\n      head: \"\"\n");
+    refused(&holdup_output(world, true), 2, "release_change head");
+}

@@ -200,19 +200,20 @@ fn followed_change(
     if reported != *head {
         return Ok(FollowedChange::superseded(url, head.clone()));
     }
-    let checks = declared_checks(pull, number, head, required)?;
+    let (checks, _) = declared_checks(pull, number, head, required)?;
     Ok(FollowedChange::at_head(url, head.clone(), checks))
 }
 
 /// Every check the rollup reports on `head`, each `required` as what the host declares a
 /// merge into the change request's base requires decides — the host's own marking where
-/// that declaration cannot be read, as a publication's watch reads it.
+/// that declaration cannot be read, as a publication's watch reads it — and that
+/// declaration, which a verdict over the same checks is decided against.
 pub(crate) fn declared_checks(
     pull: &Value,
     number: u64,
     head: &Sha,
     required: &mut Required,
-) -> Result<Vec<Check>> {
+) -> Result<(Vec<Check>, Declared)> {
     let base = pull
         .get("baseRefName")
         .and_then(Value::as_str)
@@ -231,7 +232,7 @@ pub(crate) fn declared_checks(
     for check in &mut checks {
         check.required = declared.requires(check);
     }
-    Ok(checks)
+    Ok((checks, declared))
 }
 
 /// The URL GitHub addresses a pull request by, read out of its alias.

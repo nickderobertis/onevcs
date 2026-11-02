@@ -381,6 +381,60 @@ fn first_match<'a>(
         .find(|rule| policy::matches(&rule.r#match, identity, checkout))
 }
 
+/// The identity a repository argument names, and the head-branch glob of the change
+/// requests its release tool opens, where the rule that matches it declares one in a
+/// `release_change` key.
+///
+/// The document is loaded and held to every check a release verb holds it to first, so a
+/// file another release verb refuses is refused here by the same words; the key is then
+/// read off the rule at the position the first match took.
+pub(crate) fn release_change_head(
+    registry: &Registry,
+    repo: &str,
+) -> Result<(String, Option<String>)> {
+    let (key, publication) = locate(registry, repo)?;
+    let file = load()?;
+    let normalized = store::normalize(&key);
+    let checkout = publication.as_deref().unwrap_or(Path::new(""));
+    let Some(index) = file
+        .repositories
+        .iter()
+        .position(|rule| policy::matches(&rule.r#match, &normalized, checkout))
+    else {
+        return Ok((key, None));
+    };
+    let path = default_path()?;
+    let raw = std::fs::read_to_string(&path).map_err(|failure| {
+        error::invalid(format!(
+            "cannot read the release-targets file at {}: {failure}",
+            path.display()
+        ))
+    })?;
+    let rules: crate::releases::ReleaseChangeRules = yaml::from_str(&raw).map_err(|failure| {
+        error::invalid(format!(
+            "the release-targets file at {} is malformed: {failure}",
+            path.display()
+        ))
+    })?;
+    let head = rules
+        .repositories
+        .into_iter()
+        .nth(index)
+        .and_then(|rule| rule.release_change)
+        .map(|change| change.head);
+    if let Some(head) = &head {
+        if head.trim().is_empty() || head.chars().any(char::is_whitespace) {
+            return Err(error::invalid(format!(
+                "the release-targets file at {} gives repository rule {} a release_change head \
+                 of {head:?}, which matches no branch name: name a glob such as \"release-*\"",
+                path.display(),
+                index + 1
+            )));
+        }
+    }
+    Ok((key, head))
+}
+
 /// The identity a repository argument names, and its publication checkout when it
 /// has one.
 fn locate(registry: &Registry, repo: &str) -> Result<(String, Option<PathBuf>)> {
