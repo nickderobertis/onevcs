@@ -34,7 +34,8 @@ use serde_json::Value;
 use url::Url;
 
 use super::{
-    ChangeStanding, ChangeStandings, ChangeState, ReviewStandings, REVIEW_BATCH, STANDINGS_BATCH,
+    ChangeStanding, ChangeStandings, ChangeState, FollowedChange, FollowedChecks, ReviewStandings,
+    REVIEW_BATCH, STANDINGS_BATCH,
 };
 use crate::error::{invalid, Result};
 use crate::gh;
@@ -151,6 +152,115 @@ pub(crate) fn read(repo: &str, root: &str, changes: &[ChangeId]) -> Result<Chang
     Ok(ChangeStandings { standings, cost })
 }
 
+/// Read every check on each change request's named head, one standings query per 50,
+/// each check's `required` decided by its base's declaration.
+pub(crate) fn follow(repo: &str, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks> {
+    let numbers = changes
+        .iter()
+        .map(|(change, _)| review_github::digits(&change.0))
+        .collect::<Result<Vec<u64>>>()?;
+    let mut followed = Vec::with_capacity(numbers.len());
+    let mut cost = ReadCost::default();
+    let mut required = Required::default();
+    for (index, (batch, heads)) in numbers
+        .chunks(STANDINGS_BATCH)
+        .zip(changes.chunks(STANDINGS_BATCH))
+        .enumerate()
+    {
+        let (data, points, _) = ask(repo, batch, false, index == 0)?;
+        cost.graphql_points = cost.graphql_points.saturating_add(points);
+        if index == 0 {
+            required.declared(&data)?;
+        }
+        for (at, (number, (_, head))) in batch.iter().zip(heads).enumerate() {
+            followed.push(followed_change(
+                pull_of(&data, at, *number, repo)?,
+                *number,
+                head,
+                &mut required,
+            )?);
+        }
+    }
+    Ok(FollowedChecks {
+        changes: followed,
+        cost,
+    })
+}
+
+/// One followed change request, read out of its alias: every check on `head` with its
+/// base's declaration deciding which are required, or superseded where the change
+/// request's head has moved on.
+fn followed_change(
+    pull: &Value,
+    number: u64,
+    head: &Sha,
+    required: &mut Required,
+) -> Result<FollowedChange> {
+    let (url, reported) = (pull_url(pull, number)?, pull_head(pull, number)?);
+    if reported != *head {
+        return Ok(FollowedChange::superseded(url, head.clone()));
+    }
+    let checks = declared_checks(pull, number, head, required)?;
+    Ok(FollowedChange::at_head(url, head.clone(), checks))
+}
+
+/// Every check the rollup reports on `head`, each `required` as what the host declares a
+/// merge into the change request's base requires decides — the host's own marking where
+/// that declaration cannot be read, as a publication's watch reads it.
+pub(crate) fn declared_checks(
+    pull: &Value,
+    number: u64,
+    head: &Sha,
+    required: &mut Required,
+) -> Result<Vec<Check>> {
+    let base = pull
+        .get("baseRefName")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub answered about pull request {number} without its baseRefName"
+            ))
+        })?;
+    let declared = match pull.get("baseRef").filter(|found| !found.is_null()) {
+        Some(_) => required.on(base),
+        None => Declared::Unknown(format!(
+            "{base:?} is gone from the origin, so what a merge into it requires cannot be read"
+        )),
+    };
+    let mut checks = rollup(pull, number, head)?;
+    for check in &mut checks {
+        check.required = declared.requires(check);
+    }
+    Ok(checks)
+}
+
+/// The URL GitHub addresses a pull request by, read out of its alias.
+pub(crate) fn pull_url(pull: &Value, number: u64) -> Result<Url> {
+    let text = pull.get("url").and_then(Value::as_str).ok_or_else(|| {
+        invalid(format!(
+            "GitHub answered about pull request {number} without its url"
+        ))
+    })?;
+    Url::parse(text).map_err(|failure| {
+        invalid(format!(
+            "GitHub answered pull request {number}'s URL as {text:?}, which is not one: {failure}"
+        ))
+    })
+}
+
+/// The commit a pull request's head is at, read out of its alias.
+pub(crate) fn pull_head(pull: &Value, number: u64) -> Result<Sha> {
+    pull.get("headRefOid")
+        .and_then(Value::as_str)
+        .filter(|oid| !oid.is_empty())
+        .map(|oid| Sha(oid.to_owned()))
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub answered about pull request {number} without the commit its head is at"
+            ))
+        })
+}
+
 /// Read where each change request stands and its review feedback since its marker, one
 /// query per 150.
 pub(crate) fn read_with_reviews(
@@ -259,7 +369,7 @@ pub(crate) fn reopen(repo: &str, change: &ChangeId) -> Result<ReadCost> {
 
 /// One query of one batch, answered: its `data`, what GitHub charged for it, and whether
 /// it was the query as asked or the one without the closures selection.
-fn ask(
+pub(crate) fn ask(
     repo: &str,
     numbers: &[u64],
     reviews: bool,
@@ -303,7 +413,12 @@ fn ask(
 }
 
 /// The alias for the `at`th change request of a batch, refused where GitHub holds none.
-fn pull_of<'a>(data: &'a Value, at: usize, number: u64, repo: &str) -> Result<&'a Value> {
+pub(crate) fn pull_of<'a>(
+    data: &'a Value,
+    at: usize,
+    number: u64,
+    repo: &str,
+) -> Result<&'a Value> {
     data.pointer(&format!("/repository/c{at}"))
         .filter(|pull| !pull.is_null())
         .ok_or_else(|| invalid(format!("GitHub holds no pull request {number} in {repo}")))
@@ -408,7 +523,7 @@ fn standing(
 /// What the host declares, read once per call, and each base's required set derived
 /// from it — once per distinct base, and remembered for every later batch of the call.
 #[derive(Default)]
-struct Required {
+pub(crate) struct Required {
     /// The repository's declarations, or why they could not be read whole.
     declarations: Option<std::result::Result<Declarations, String>>,
     /// Each base's required set, once derived.
@@ -440,7 +555,7 @@ struct Ruleset {
 
 impl Required {
     /// Read the declarations out of the first query's answer.
-    fn declared(&mut self, data: &Value) -> Result<()> {
+    pub(crate) fn declared(&mut self, data: &Value) -> Result<()> {
         self.declarations = Some(Declarations::read(data)?);
         Ok(())
     }

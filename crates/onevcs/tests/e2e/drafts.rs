@@ -3131,7 +3131,12 @@ fn check_records(session: &Session) -> Vec<(String, String, Value)> {
 /// commit, its
 /// required-checks gate runs less their clock, whether the draft was lifted, and what the
 /// host merged.
-fn decisions(world: &World, session: &Session, host: &MemoryHost, published: &Publication) -> Value {
+fn decisions(
+    world: &World,
+    session: &Session,
+    host: &MemoryHost,
+    published: &Publication,
+) -> Value {
     let outcome = serde_json::to_value(&published.outcome).expect("an outcome");
     let outcome_kind = match &outcome {
         Value::Object(fields) => fields.keys().cloned().collect::<Vec<_>>().join(","),
@@ -3234,8 +3239,8 @@ fn a_failed_check_nothing_requires_is_stamped_attention_and_decides_nothing() {
 }
 
 #[test]
-fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_asks_for_attention(
-) {
+fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_asks_for_attention()
+{
     let (world, _origin, session) = scene(DIRECT, "60", "20");
     let host = MemoryHost::seeded(host_with(
         vec![
@@ -3268,4 +3273,184 @@ fn a_failed_required_check_is_still_stamped_blocker_beside_an_advisory_one_that_
     );
     assert!(is_draft(&host), "still a draft");
     assert!(world.events_of(&session.token.0, "draft-lifted").is_empty());
+}
+
+/// How many readings of its checks a `change-direct` publication with the lifecycle off
+/// makes when its one required check has passed on the first: the watch's reading, and
+/// the merge path's look at the same checks before it lands.
+const WATCH_READINGS: usize = 2;
+
+/// Follow `head` of the first change request, as `onevcs change follow-checks` does.
+fn follow(host: &dyn Hosting, head: &onevcs::Sha) -> onevcs::FollowedChecks {
+    onevcs::follow_checks(
+        &Providers {
+            vcs: &Git,
+            hosting: host,
+        },
+        &onevcs::FollowChecksRequest {
+            repo: "github.com/acme-corp/hosted".to_owned(),
+            root: "main".to_owned(),
+            changes: vec![onevcs::FollowedHead {
+                change: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1")
+                    .expect("a URL"),
+                head: head.clone(),
+            }],
+        },
+    )
+    .expect("the follow read answers")
+}
+
+#[test]
+fn a_check_still_running_when_the_watch_ended_is_followed_and_recorded_once_on_the_session() {
+    // `gate` is required and passes at once, so the watch ends and the change lands
+    // while `late` — required by nothing — is still running. The host concludes `late`
+    // failed on the second reading after the watch: the first follow read finds it
+    // running, the second finds it failed and records it on the session's own stream,
+    // and a third records nothing.
+    let (world, _origin, session) = scene(DIRECT_OFF, "60", "20");
+    let gate = check("gate", Some("success"), true, 1);
+    let running = vec![gate.clone(), check("late", None, false, 2)];
+    let failed = vec![gate, check("late", Some("failure"), false, 2)];
+    let mut readings = polls(WATCH_READINGS + 1, &running);
+    readings.push(failed);
+    let host = scripted(None, readings, None, vec![]);
+
+    let published = publish(&host, &session, &PublishRequest::default());
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    assert_eq!(
+        calls(&host, "change_checks"),
+        WATCH_READINGS,
+        "the watch read the checks as scripted: {:?}",
+        answered(&host)
+    );
+    onevcs::close_session(&Providers::real(), &session.token).expect("the session closes");
+    assert!(
+        kinds(&world, &session).contains(&"session-closed".to_owned()),
+        "{:?}",
+        kinds(&world, &session)
+    );
+    let watched: Vec<(String, String, Value)> = check_records(&session);
+    assert_eq!(
+        watched
+            .iter()
+            .map(|(name, _, payload)| (name.as_str(), payload["state"].as_str().unwrap_or("")))
+            .collect::<Vec<_>>(),
+        [("gate", "passed"), ("late", "pending")],
+        "the watch recorded `late` running and never saw it end"
+    );
+    let head = host.state().changes[0].head_sha.clone();
+    let logs_fetched = calls(&host, "check_log");
+
+    let first = follow(&host, &head);
+    assert_eq!(first.changes.len(), 1);
+    let running_now = &first.changes[0];
+    assert!(
+        running_now.outstanding && !running_now.superseded,
+        "{first:?}"
+    );
+    assert_eq!(
+        running_now.recorded, 0,
+        "nothing moved since the watch recorded it"
+    );
+    assert_eq!(
+        first.cost,
+        onevcs::ReadCost {
+            graphql_points: 1,
+            rest_requests: 0
+        }
+    );
+    assert_eq!(check_records(&session).len(), watched.len());
+
+    let second = follow(&host, &head);
+    let concluded = &second.changes[0];
+    assert!(!concluded.outstanding, "{second:?}");
+    assert_eq!(concluded.recorded, 1, "{second:?}");
+    let late = concluded
+        .checks
+        .iter()
+        .find(|check| check.name == "late")
+        .expect("late is reported");
+    assert!(
+        !late.required && late.state() == CheckState::Failed,
+        "{late:?}"
+    );
+    // Read back from the session's persisted stream.
+    let records = check_records(&session);
+    assert_eq!(records.len(), watched.len() + 1, "{records:?}");
+    let (name, stamp, payload) = records.last().expect("the appended record");
+    assert_eq!(name, "late");
+    assert_eq!(stamp, "attention", "{payload}");
+    assert_eq!(payload["state"], "failed");
+    assert_eq!(payload["from_status"], "in_progress");
+    assert_eq!(payload["required"], false);
+    assert_eq!(
+        payload["url"],
+        "https://github.com/acme-corp/hosted/actions/runs/2/job/2"
+    );
+    let appended = world.events_of(&session.token.0, "change-check");
+    let last = appended.last().expect("the appended record");
+    assert_eq!(last["phase"], "review", "{last}");
+    assert_eq!(last["labels"]["identity"], "github.com/acme-corp/hosted");
+
+    let third = follow(&host, &head);
+    assert!(!third.changes[0].outstanding);
+    assert_eq!(
+        third.changes[0].recorded, 0,
+        "each transition is recorded once"
+    );
+    assert_eq!(check_records(&session).len(), records.len());
+
+    // A head the change request no longer carries is superseded: nothing read, nothing
+    // recorded.
+    let moved = follow(&host, &onevcs::Sha("0".repeat(40)));
+    assert!(moved.changes[0].superseded, "{moved:?}");
+    assert!(moved.changes[0].checks.is_empty() && !moved.changes[0].outstanding);
+    assert_eq!(moved.changes[0].recorded, 0);
+    assert_eq!(check_records(&session).len(), records.len());
+    assert_eq!(
+        calls(&host, "check_log"),
+        logs_fetched,
+        "a follow read fetches no check log: {:?}",
+        answered(&host)
+    );
+}
+
+#[test]
+fn a_change_request_no_session_here_opened_is_answered_and_records_nothing() {
+    let (world, _origin, _session) = scene(DIRECT_OFF, "60", "20");
+    let host = MemoryHost::seeded(host_with(
+        vec![check("late", Some("failure"), false, 2)],
+        None,
+    ));
+    // Opened on the host by somebody else: no stream here records it.
+    let remote = host.for_repo("acme-corp/hosted").expect("a host");
+    let change = remote
+        .open_change(ChangeSpec {
+            head: "feature/elsewhere".to_owned(),
+            base: "main".to_owned(),
+            title: "feat: opened elsewhere".to_owned(),
+            body: None,
+            draft: None,
+            draft_awaiting_checks: false,
+        })
+        .expect("a change request");
+    let streams_before = std::fs::read_dir(world.home().join("streams"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+
+    let read = follow(&host, &change.head_sha);
+
+    assert_eq!(read.changes[0].recorded, 0, "{read:?}");
+    assert_eq!(read.changes[0].checks.len(), 1);
+    assert!(!read.changes[0].superseded);
+    assert_eq!(
+        std::fs::read_dir(world.home().join("streams"))
+            .map(|entries| entries.count())
+            .unwrap_or(0),
+        streams_before,
+        "no stream was written"
+    );
 }

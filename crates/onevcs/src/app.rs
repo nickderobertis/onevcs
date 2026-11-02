@@ -13,16 +13,17 @@ use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
     ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
-    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeReadyArgs, ChangeReopenArgs,
-    ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs, Command, EventsArgs,
-    ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs, HostReleaseChangesArgs,
-    HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs,
-    PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs,
-    RecoverArgs, RecoverableArgs, RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand,
-    ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseLatestArgs, ReleaseStatusArgs,
-    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
-    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeFollowChecksArgs, ChangeReadyArgs,
+    ChangeReopenArgs, ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs,
+    Command, EventsArgs, ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs,
+    HostReleaseChangesArgs, HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs,
+    PoolCommand, PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs,
+    PublishBranchArgs, ReclaimArgs, RecoverArgs, RecoverableArgs, RegisterArgs,
+    ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
+    ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs,
+    RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand, SessionCommand,
+    SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StackBaseArgs, StatusArgs,
+    SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -99,6 +100,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Comments(args) => change_comments(args, providers),
             ChangeCommand::Reply(args) => change_reply(args, providers),
             ChangeCommand::Standings(args) => change_standings(args, providers),
+            ChangeCommand::FollowChecks(args) => change_follow_checks(args, providers),
             ChangeCommand::Retarget(args) => change_retarget(args, providers),
             ChangeCommand::Reopen(args) => change_reopen(args, providers),
         },
@@ -1396,6 +1398,66 @@ fn change_standings(args: &ChangeStandingsArgs, providers: &Providers<'_>) -> Re
     }
     for standing in &read.standings {
         println!("{}", standing_line(standing));
+    }
+    println!(
+        "cost: {} graphql point(s), {} REST request(s)",
+        read.cost.graphql_points, read.cost.rest_requests
+    );
+    Ok(0)
+}
+
+/// Read every check on each named head, the way `onevcs change follow-checks` reports
+/// it: one line per change request, then one per check, then what the read cost.
+fn change_follow_checks(args: &ChangeFollowChecksArgs, providers: &Providers<'_>) -> Result<u8> {
+    let mut changes = Vec::with_capacity(args.changes.len());
+    for named in &args.changes {
+        let (url, head) = named.split_once('=').ok_or_else(|| {
+            error::invalid(format!(
+                "--change {named:?} names no head commit: pass <URL>=<SHA>, the change request \
+                 and the commit whose checks are followed"
+            ))
+        })?;
+        changes.push(crate::FollowedHead {
+            change: change_url(url)?,
+            head: crate::Sha(head.to_owned()),
+        });
+    }
+    let read = crate::follow_checks(
+        providers,
+        &crate::FollowChecksRequest {
+            repo: args.repo.clone(),
+            root: args.root.clone(),
+            changes,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string(&read).map_err(serialization)?);
+        return Ok(0);
+    }
+    for followed in &read.changes {
+        let standing = if followed.superseded {
+            "superseded: its head has moved on".to_owned()
+        } else if followed.outstanding {
+            "checks still running".to_owned()
+        } else {
+            "every check settled".to_owned()
+        };
+        println!(
+            "{} at {}: {standing}; {} record(s) appended",
+            followed.change, followed.head.0, followed.recorded
+        );
+        for check in &followed.checks {
+            println!(
+                "  {} ({}): {}",
+                check.name,
+                if check.required {
+                    "required"
+                } else {
+                    "not required"
+                },
+                crate::status::spell_check_state(check.state())
+            );
+        }
     }
     println!(
         "cost: {} graphql point(s), {} REST request(s)",

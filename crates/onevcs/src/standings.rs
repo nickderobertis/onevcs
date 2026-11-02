@@ -48,7 +48,7 @@ use url::Url;
 use crate::boundary::{Surface, TermScope};
 use crate::error::{invalid, Error, Result};
 use crate::event::EventKind;
-use crate::host::{ChangeId, RemoteHost, Sha};
+use crate::host::{ChangeId, Check, RemoteHost, Sha};
 use crate::providers::Providers;
 use crate::review::{ReadCost, ReadMarker, ReviewRead};
 use crate::stream::Stream;
@@ -200,6 +200,253 @@ pub fn change_standings(
     let landed = repository.take_up(&read.standings, &root);
     repository.record_read(read.standings.len(), &landed, read.cost);
     Ok(read)
+}
+
+/// Which change requests to follow the checks of, each at the head commit followed.
+// llmlint: ignore[invalid_states_unrepresentable] the contract declares these fields as
+// written; `follow_checks` resolves `repo` through the registry, holds `root` to git's
+// branch grammar, every URL to the repository `repo` names and every head to an object
+// id, before the host is asked anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowChecksRequest {
+    /// The identity (normalized origin) or a registered checkout path.
+    pub repo: String,
+    /// The root base, as [`ChangeStandingsRequest::root`].
+    pub root: String,
+    /// Each change request to read, with the head commit whose checks are followed.
+    pub changes: Vec<FollowedHead>,
+}
+
+/// One change request, and the head commit whose checks are followed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowedHead {
+    /// The change request, by URL.
+    pub change: Url,
+    /// The head commit whose checks are read.
+    pub head: Sha,
+}
+
+/// What each followed change request's head reports, and what the read cost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowedChecks {
+    /// One answer per change request asked about, in the order asked.
+    pub changes: Vec<FollowedChange>,
+    /// What the host charged for the read.
+    pub cost: ReadCost,
+}
+
+/// The checks one followed head reports, and what reading them recorded.
+// llmlint: ignore[invalid_states_unrepresentable] the contract declares these fields as
+// written for the engine and the browser view that read them; the one combination the
+// host could contradict itself with — a superseded head reporting checks — is never
+// built, because a superseded answer is constructed with none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowedChange {
+    /// The change request, as the host addresses it.
+    pub change: Url,
+    /// The head commit asked about.
+    pub head: Sha,
+    /// Every check the host reports on `head`, `required` as the base's declaration decides.
+    pub checks: Vec<Check>,
+    /// True while any check on `head` has not settled.
+    pub outstanding: bool,
+    /// True when the change request's head on the host is no longer `head`; then `checks` is empty.
+    pub superseded: bool,
+    /// How many `change-check` records this call appended.
+    pub recorded: u32,
+}
+
+impl FollowedChange {
+    /// The answer for a change request whose head on the host is no longer `head`.
+    pub(crate) fn superseded(change: Url, head: Sha) -> Self {
+        Self {
+            change,
+            head,
+            checks: Vec::new(),
+            outstanding: false,
+            superseded: true,
+            recorded: 0,
+        }
+    }
+
+    /// The answer for a change request still at `head`, reporting `checks`.
+    pub(crate) fn at_head(change: Url, head: Sha, checks: Vec<Check>) -> Self {
+        Self {
+            outstanding: checks.iter().any(|check| !check.settled()),
+            change,
+            head,
+            checks,
+            superseded: false,
+            recorded: 0,
+        }
+    }
+}
+
+/// Read the checks on each named change request's head after its publication's watch
+/// ended, and record each one that moved on the session that opened it.
+///
+/// The library form of `onevcs change follow-checks`. The standings read's own query —
+/// one per 50 change requests, each base's required set read at most once, no REST
+/// request — and no check log. For a change request whose session this host recorded,
+/// every check on `head` whose status, conclusion and start differ from the newest
+/// `change-check` that session's stream holds for it is appended there as a
+/// `change-check` of the shape the watch writes, so repeated calls record each
+/// transition once. A superseded head, and a change request no session here opened,
+/// record nothing.
+pub fn follow_checks(
+    providers: &Providers<'_>,
+    request: &FollowChecksRequest,
+) -> Result<FollowedChecks> {
+    let repository = Repository::of(providers, &request.repo)?;
+    branch_name(&request.root, "the root")?;
+    let asked = request
+        .changes
+        .iter()
+        .map(|followed| {
+            let id = repository.id(&followed.change)?;
+            let head = git::ObjectId::parse(&followed.head.0).ok_or_else(|| {
+                invalid(format!(
+                    "{:?} is not a commit id; name the full id of the head commit {} carries",
+                    followed.head.0, followed.change
+                ))
+            })?;
+            Ok((id, Sha(head.as_str().to_owned())))
+        })
+        .collect::<Result<Vec<(ChangeId, Sha)>>>()?;
+    let mut read = if asked.is_empty() {
+        FollowedChecks {
+            changes: Vec::new(),
+            cost: ReadCost::default(),
+        }
+    } else {
+        repository.host.follow_checks(&asked)?
+    };
+    let answered: Vec<(Option<String>, &Sha)> = read
+        .changes
+        .iter()
+        .map(|followed| {
+            (
+                review::ChangeUrl::parse(followed.change.as_str())
+                    .ok()
+                    .map(|url| url.number),
+                &followed.head,
+            )
+        })
+        .collect();
+    let expected: Vec<(Option<String>, &Sha)> = asked
+        .iter()
+        .map(|(id, head)| (Some(id.0.clone()), head))
+        .collect();
+    if answered != expected {
+        return Err(invalid(format!(
+            "the host answered about {} change request head(s) where {} were asked about, or \
+             not in the order asked, so which checks are whose cannot be read",
+            read.changes.len(),
+            asked.len()
+        )));
+    }
+    for followed in &mut read.changes {
+        followed.recorded = record_followed(&repository.key, followed);
+    }
+    Ok(read)
+}
+
+/// Append a `change-check` for every check on a followed head that moved since the
+/// newest one the session that opened its change request recorded, and answer how many
+/// were appended. Best effort, as every record of something the host already did is.
+fn record_followed(identity: &str, followed: &FollowedChange) -> u32 {
+    if followed.superseded || followed.checks.is_empty() {
+        return 0;
+    }
+    let warn = |failure: &dyn std::fmt::Display| {
+        eprintln!(
+            "onevcs: warning: the checks read on {} are not recorded: {failure}",
+            followed.change
+        );
+        0
+    };
+    let token = match status::opened_stream(followed.change.as_str()) {
+        Ok(Some(token)) => token,
+        Ok(None) => return 0,
+        Err(failure) => return warn(&failure),
+    };
+    let latest = match latest_checks(&token) {
+        Ok(latest) => latest,
+        Err(failure) => return warn(&failure),
+    };
+    let mut stream = match Stream::open(&token) {
+        Ok(stream) => stream,
+        Err(failure) => return warn(&failure),
+    };
+    stream.label("identity", identity);
+    let mut recorded = 0;
+    for check in &followed.checks {
+        let now = CheckReading {
+            status: Some(check.status.clone()),
+            conclusion: check.conclusion.clone(),
+            started_at: check.started_at.clone(),
+        };
+        let previous = latest.get(&check.name);
+        if previous == Some(&now) {
+            continue;
+        }
+        stream.emit_result(
+            EventKind::ChangeCheck,
+            publish::change_check_payload(check, previous.and_then(|was| was.status.clone())),
+            Vec::new(),
+            crate::event::EmissionResult::Check {
+                required: check.required,
+                state: check.state(),
+            },
+        );
+        recorded += 1;
+    }
+    recorded
+}
+
+/// What a `change-check` record says a check reported: the three fields that tell one
+/// reading of it from the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckReading {
+    status: Option<String>,
+    conclusion: Option<String>,
+    started_at: Option<String>,
+}
+
+/// The newest `change-check` a stream holds for each check name.
+fn latest_checks(token: &str) -> Result<BTreeMap<String, CheckReading>> {
+    let mut latest = BTreeMap::new();
+    if !crate::stream::path_for(token)?.is_file() {
+        return Ok(latest);
+    }
+    let mut reader = crate::stream::Reader::open(token)?;
+    for record in reader.records()? {
+        let Ok(envelope) = record.read else {
+            continue;
+        };
+        if envelope.kind.as_str() != "change-check" {
+            continue;
+        }
+        let text = |name: &str| {
+            envelope
+                .payload
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let Some(name) = text("name") else {
+            continue;
+        };
+        latest.insert(
+            name,
+            CheckReading {
+                status: text("status"),
+                conclusion: text("conclusion"),
+                started_at: text("started_at"),
+            },
+        );
+    }
+    Ok(latest)
 }
 
 /// One change request a review-and-standings read is asked about, and the marker an

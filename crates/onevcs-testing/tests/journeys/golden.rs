@@ -30,11 +30,11 @@ use onevcs_testing::{
 use crate::support::{full_host_state, full_vcs_state, Home};
 
 /// What a provider with nothing seeded writes.
-const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v24-empty.json");
-const HOST_EMPTY: &str = include_str!("../golden/host-state-v24-empty.json");
+const VCS_EMPTY: &str = include_str!("../golden/vcs-state-v25-empty.json");
+const HOST_EMPTY: &str = include_str!("../golden/host-state-v25-empty.json");
 /// What a provider holding every field writes.
-const VCS_FULL: &str = include_str!("../golden/vcs-state-v24.json");
-const HOST_FULL: &str = include_str!("../golden/host-state-v24.json");
+const VCS_FULL: &str = include_str!("../golden/vcs-state-v25.json");
+const HOST_FULL: &str = include_str!("../golden/host-state-v25.json");
 /// The same two scenarios as a build one version older wrote them.
 ///
 /// Frozen rather than generated: these are not goldens — nothing writes them any
@@ -241,6 +241,49 @@ fn a_document_declaring_a_version_this_build_does_not_read_is_refused_by_name() 
     std::fs::write(&path, "{}\n").expect("a written document");
     let terse = FileVcs::create(&path).expect("a document with no version");
     assert_eq!(terse.state().expect("readable").version, STATE_VERSION);
+}
+
+/// The same two scenarios as the build before a ledger could name `follow_checks` wrote
+/// them.
+const HOST_V24: &str = include_str!("../golden/host-state-v24.json");
+const VCS_V24: &str = include_str!("../golden/vcs-state-v24.json");
+
+#[test]
+fn a_version_24_document_reads_as_it_was_and_is_written_back_at_this_one() {
+    // A consumer's checked-in scenario, written by the build before a host could be asked
+    // for a change request's checks after its watch ended: version 25 adds that question
+    // to the words a ledger may name, and no field. So a version 24 document reads exactly
+    // as it was, and the next write declares the version it now is.
+    let home = Home::new();
+    let host_path = home.path("host.json");
+    let vcs_path = home.path("vcs.json");
+    assert!(
+        HOST_V24.contains(r#""version": 24"#) && !HOST_V24.contains("follow_checks"),
+        "the previous document is the one that never asked, or it proves nothing"
+    );
+    std::fs::write(&vcs_path, VCS_V24).expect("a document a previous build wrote");
+    std::fs::write(&host_path, HOST_V24).expect("a document a previous build wrote");
+    FileVcs::create(&vcs_path).expect("the previous version reads");
+    let host = FileHost::create(&host_path).expect("the previous version reads");
+    let state = host.state().expect("readable");
+    assert_eq!(state.version, STATE_VERSION);
+    let previous: HostState = serde_json::from_str(HOST_V24).expect("the previous document");
+    assert_eq!(state.ledger, previous.ledger, "nothing it recorded is lost");
+    // Asked now, the question is recorded under its own name.
+    let repo = host.for_repo("acme-corp/widgets").expect("a host");
+    let change = state
+        .changes
+        .first()
+        .expect("a seeded change request")
+        .clone();
+    repo.follow_checks(&[(change.id.clone(), change.head_sha.clone())])
+        .expect("it answers");
+    let written = std::fs::read_to_string(&host_path).expect("a document");
+    assert!(
+        written.contains(&format!(r#""version": {STATE_VERSION}"#))
+            && written.contains(r#""method": "follow_checks""#),
+        "carried forward at this version, with the call it was asked: {written}"
+    );
 }
 
 /// The same two scenarios as the build before a ledger could name `merged_head` wrote

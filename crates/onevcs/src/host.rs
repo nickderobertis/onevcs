@@ -14,7 +14,7 @@ use crate::event::ArtifactId;
 use crate::publish::DraftReason;
 use crate::review::{CommentId, PostedReply, ReadCost, ReadMarker, ReviewRead};
 use crate::rules::MergePolicy;
-use crate::standings::{ChangeStandings, ReviewStandings};
+use crate::standings::{ChangeStandings, FollowedChecks, ReviewStandings};
 use crate::{gh, git, review, standings, stream};
 
 /// What `gh pr checks` exits with when a check it has just reported has not
@@ -515,6 +515,26 @@ pub trait RemoteHost {
     fn head_activity(&self, _cr: &ChangeRequest) -> Result<HeadActivity> {
         Err(Error::NotImplemented {
             operation: "RemoteHost::head_activity",
+        })
+    }
+
+    /// Every check the host reports on each change request's named head commit, one
+    /// [`FollowedChange`](crate::FollowedChange) per change request asked about, in the
+    /// order asked, with what the read cost.
+    ///
+    /// Each check's `required` is what the host declares a merge into that change
+    /// request's base requires, falling back to the host's own per-check marking where
+    /// the declaration cannot be read — the rule a publication's watch reads a check's
+    /// requiredness by. A change request whose head on the host is no longer the one
+    /// named is answered `superseded` with no checks. `recorded` is left `0`: what
+    /// [`follow_checks`](crate::follow_checks) appends is its own to count. Read in the
+    /// batches [`change_standings`](RemoteHost::change_standings) reads in, fetching no
+    /// check log.
+    ///
+    /// Defaulted to the refusal for the reason every other added method is.
+    fn follow_checks(&self, _changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::follow_checks",
         })
     }
 }
@@ -2508,6 +2528,12 @@ impl RemoteHost for GitHub {
     /// One aliased GraphQL query per 50 change requests — see `standings::github`.
     fn change_standings(&self, root: &str, changes: &[ChangeId]) -> Result<ChangeStandings> {
         standings::github::read(&self.repo, root, changes)
+    }
+
+    /// The standings read's own query, one per 50 change requests — see
+    /// `standings::github`.
+    fn follow_checks(&self, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks> {
+        standings::github::follow(&self.repo, changes)
     }
 
     /// One aliased GraphQL query per 150 change requests — see `standings::github`.

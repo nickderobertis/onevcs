@@ -499,6 +499,7 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     );
     let _ = remote.change_standings("main", std::slice::from_ref(&change.id));
     let _ = remote.review_standings("main", &[(change.id.clone(), None)]);
+    let _ = remote.follow_checks(&[(change.id.clone(), change.head_sha.clone())]);
     let _ = remote.retarget_change(&change.id, "release", Some("Moved."));
     let _ = remote.merge(&change, MergePolicy::ChangeDirect);
     let _ = remote.merged_at(&change);
@@ -553,6 +554,14 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
             rest_requests: 2
         },
         "the workflow runs and the check suites on the head"
+    );
+    assert_eq!(
+        charge("follow_checks")[0].charge,
+        ReadCost {
+            graphql_points: 1,
+            rest_requests: 0
+        },
+        "the standings query the real host sends, one point for up to 50"
     );
     // A person's moves are nobody's call.
     assert!(charge("close_unmerged").is_empty());
