@@ -3769,6 +3769,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("change comments", operation!(onevcs::review_comments)),
         ("change reply", operation!(onevcs::reply_to_comment)),
         ("change standings", operation!(onevcs::change_standings)),
+        ("change follow-checks", operation!(onevcs::follow_checks)),
         ("change retarget", operation!(onevcs::retarget_change)),
         ("change reopen", operation!(onevcs::reopen_change)),
         ("change ready", operation!(onevcs::ready_change)),
@@ -3796,6 +3797,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
             "release declaration",
             operation!(onevcs::read_release_declaration),
         ),
+        ("release holdup", operation!(onevcs::release_holdup)),
         (
             "pool declaration",
             operation!(onevcs::repository_config::read_repository_maintenance),
@@ -10634,4 +10636,104 @@ fn release_sweep_runs_disjoint_workloads_after_its_quality_gate() {
         .position(|run| *run == "just workload")
         .expect("release sweep runs workloads");
     assert!(workload > gate);
+}
+
+#[test]
+fn check_visibility_amendment_states_the_surface_the_crate_exports() {
+    let section = regions()
+        .0
+        .split("## Check visibility: attention, late checks, and what holds a release")
+        .nth(1)
+        .expect("the check visibility amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    let declarations = amendment_declaring("pub struct FollowChecksRequest");
+    for declaration in [
+        "pub struct FollowedHead { pub change: Url, pub head: Sha }",
+        "pub struct FollowedChecks { pub changes: Vec<FollowedChange>, pub cost: ReadCost }",
+        "pub fn follow_checks(providers: &Providers, request: &FollowChecksRequest) -> Result<FollowedChecks>;",
+        "fn follow_checks(&self, changes: &[(ChangeId, Sha)]) -> Result<FollowedChecks>;",
+    ] {
+        assert!(declarations.contains(declaration), "{declaration}");
+    }
+    let holdup = amendment_declaring("pub struct ReleaseHoldup");
+    assert!(holdup.contains("pub fn release_holdup(repo: &str) -> Result<ReleaseHoldup>;"));
+    assert!(section.contains("pub enum Significance { Milestone, Blocker, Progress, Attention }"));
+    for phrase in [
+        "onevcs change follow-checks <REPO> --root <R> --change <URL>=<SHA> [--change <URL>=<SHA>]... [--json]",
+        "onevcs release holdup <REPO> [--json]",
+        "release_change: {head: \"release-plz-*\"}",
+        "A reader built before this release refuses an `attention` stamp",
+        "`<name> (required — blocks the merge)`",
+        "`<name> (not required — does not block)`",
+    ] {
+        assert!(section.contains(phrase), "{phrase}");
+    }
+
+    // The code is what the text says: every declared signature, and the wire spellings.
+    let _: fn(
+        &Providers<'_>,
+        &onevcs::FollowChecksRequest,
+    ) -> onevcs::Result<onevcs::FollowedChecks> = onevcs::follow_checks;
+    let _: fn(&str) -> onevcs::Result<onevcs::ReleaseHoldup> = onevcs::release_holdup;
+    let _: fn(
+        &dyn onevcs::RemoteHost,
+        &[(onevcs::ChangeId, onevcs::Sha)],
+    ) -> onevcs::Result<onevcs::FollowedChecks> = |host, changes| host.follow_checks(changes);
+    assert_eq!(
+        serde_json::to_value(onevcs::Significance::Attention).expect("a wire word"),
+        json!("attention")
+    );
+    let matcher = onevcs::MatchFields {
+        significance: Some(onevcs::Significance::Attention),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&matcher).expect("matcher wire schema"),
+        json!({"significance": "attention"})
+    );
+    assert!(EventFilter::parse("include: [{significance: attention}]").is_ok());
+    let followed = onevcs::FollowedChange {
+        change: onevcs::Url::parse("https://github.com/acme-corp/widgets/pull/1").expect("a URL"),
+        head: onevcs::Sha("a".repeat(40)),
+        checks: Vec::new(),
+        outstanding: false,
+        superseded: true,
+        recorded: 0,
+    };
+    let fields: Vec<String> = serde_json::to_value(&followed)
+        .expect("serializes")
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "change",
+            "head",
+            "checks",
+            "outstanding",
+            "superseded",
+            "recorded"
+        ]
+    );
+    let holdup = onevcs::ReleaseHoldup {
+        identity: "github.com/acme-corp/widgets".to_owned(),
+        declared: false,
+        changes: Vec::new(),
+        cost: onevcs::ReadCost::default(),
+    };
+    assert_eq!(
+        serde_json::to_value(&holdup).expect("serializes"),
+        json!({
+            "identity": "github.com/acme-corp/widgets",
+            "declared": false,
+            "changes": [],
+            "cost": {"graphql_points": 0, "rest_requests": 0},
+        })
+    );
 }
