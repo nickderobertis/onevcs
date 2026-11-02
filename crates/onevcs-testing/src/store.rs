@@ -127,7 +127,7 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
         let store = Self::at(path)?;
         let _held = store.held()?;
         if store.path.exists() {
-            store.snapshot()?;
+            store.read()?;
             return Ok(store);
         }
         store.save(fallback)?;
@@ -177,21 +177,34 @@ impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
     /// inode nobody reads any more. The file is left in place, since deleting it under
     /// a waiter would let two writers each lock a different file; it is dot-prefixed
     /// so a listing of the documents beside it does not count it as one.
+    ///
+    /// A reader takes the same lock shared (see [`FileStore::shared`]): the rename a
+    /// save ends with is not atomic for a reader on every platform — on Windows a
+    /// read that opens the document while it is being replaced finds no file at all.
     fn held(&self) -> Result<std::fs::File> {
+        self.locked(std::fs::File::lock)
+    }
+
+    /// Hold this document's writers off, but not its other readers, until dropped.
+    fn shared(&self) -> Result<std::fs::File> {
+        self.locked(std::fs::File::lock_shared)
+    }
+
+    fn locked(&self, lock: fn(&std::fs::File) -> std::io::Result<()>) -> Result<std::fs::File> {
         let mut name = std::ffi::OsString::from(".");
         name.push(self.path.file_name().unwrap_or_default());
         name.push(".lock");
-        let lock = self.path.with_file_name(name);
+        let path = self.path.with_file_name(name);
         let refused = |e: std::io::Error| Error::Invalid {
-            reason: format!("cannot lock {}: {e}", lock.display()),
+            reason: format!("cannot lock {}: {e}", path.display()),
         };
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(&lock)
+            .open(&path)
             .map_err(refused)?;
-        file.lock().map_err(refused)?;
+        lock(&file).map_err(refused)?;
         Ok(file)
     }
 
@@ -233,13 +246,21 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
         F: FnOnce(&mut S) -> Result<R>,
     {
         let _held = self.held()?;
-        let mut state = self.snapshot()?;
+        let mut state = self.read()?;
         let outcome = act(&mut state)?;
         self.save(&state)?;
         Ok(outcome)
     }
 
     fn snapshot(&self) -> Result<S> {
+        let _shared = self.shared()?;
+        self.read()
+    }
+}
+
+impl<S: Serialize + DeserializeOwned + Checked> FileStore<S> {
+    /// The document as it stands, read by a caller already holding its lock.
+    fn read(&self) -> Result<S> {
         let raw = std::fs::read_to_string(&self.path).map_err(|e| Error::Invalid {
             reason: format!(
                 "cannot read the provider state at {}: {e}",
