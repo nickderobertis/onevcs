@@ -95,7 +95,8 @@ mod discovery;
 mod comparison;
 // What a real host answered each check reading with, replayed to the providers' host —
 // shared with the real-backend tier's honesty journey, and held here to the race it
-// exists for.
+// exists for. Unix only, because its one user here, `honesty`, is.
+#[cfg(unix)]
 mod answered;
 // Every platform: concurrent sessions of one repository over real git, with a fixture
 // of its own because `world.rs` is Unix-only. Its own header carries the reason.
