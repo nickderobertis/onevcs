@@ -12,7 +12,7 @@ use onevcs::cli::Cli;
 use onevcs::{Holding, Provenance, Providers, Scope, SessionRequest, SessionToken, Vcs};
 use onevcs_testing::{FileVcs, MemoryHost, MemoryVcs};
 
-use crate::support::{identity, one_repository, Home};
+use crate::support::{full_vcs_state, identity, one_repository, Home};
 
 /// One command line, run against these providers.
 fn run(vcs: &dyn Vcs, args: &[&str]) -> u8 {
@@ -461,4 +461,43 @@ fn a_name_to_cut_is_taken_as_the_branch_and_naming_both_is_refused() {
         1,
         "nothing was opened for either refusal"
     );
+}
+
+#[test]
+fn a_file_backed_repository_read_while_a_journey_reseeds_it_reads_one_whole_document() {
+    // The repository side keeps its document the way the host does: a journey re-seeds
+    // it while a provider in another thread reads it. A read landing inside a save —
+    // which on Windows finds no file at all while the rename replaces it — must
+    // instead wait for the save and read the whole document it left.
+    let home = Home::new();
+    let path = home.path("raced-vcs.json");
+    let state = full_vcs_state();
+    let whole = serde_json::to_value(&state).expect("the seeded document");
+    let reader = FileVcs::seeded(&path, state.clone()).expect("seed the raced repository");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let done = std::sync::Arc::clone(&done);
+        let path = path.clone();
+        let state = state.clone();
+        std::thread::spawn(move || {
+            for _ in 0..400 {
+                FileVcs::seeded(&path, state.clone()).expect("re-seed the raced repository");
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let mut reads = 0_u32;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+        match reader.state() {
+            Ok(read) => assert_eq!(
+                serde_json::to_value(&read).expect("the document read"),
+                whole,
+                "read {reads} saw another document"
+            ),
+            Err(error) => panic!("read {reads} raced a save: {error}"),
+        }
+        reads += 1;
+    }
+    writer.join().expect("the re-seeding thread");
+    assert!(reads > 0, "the reader never ran while the writer did");
 }

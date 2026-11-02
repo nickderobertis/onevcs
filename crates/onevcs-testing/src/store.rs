@@ -253,6 +253,8 @@ impl<S: Serialize + DeserializeOwned + Checked> Store<S> for FileStore<S> {
     }
 
     fn snapshot(&self) -> Result<S> {
+        // Held to it by the `read_while_a_journey_reseeds` journeys over both the
+        // host's and the repository's document.
         let _shared = self.shared()?;
         self.read()
     }
