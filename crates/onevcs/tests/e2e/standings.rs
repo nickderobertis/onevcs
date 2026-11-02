@@ -3308,3 +3308,127 @@ fn a_release_change_request_that_moved_between_the_two_reads_is_not_reported_as_
         .collect();
     assert_eq!(named, [&json!(url(numbers[3]))], "{holdup:#}");
 }
+
+#[test]
+fn a_follow_read_refuses_a_change_request_the_host_answers_without_a_usable_url_or_head() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_checks_on(&tip, &[check("ci", "success", true)]);
+    let number = stack.open("feature/followed", "main", true);
+    let change = [format!("{}={tip}", url(number))];
+    for (answer, says) in [
+        (json!({"url": null}), "without its url"),
+        (json!({"url": "not a url"}), "which is not one"),
+        (
+            json!({"headRefOid": null}),
+            "without the commit its head is at",
+        ),
+        (json!({"headRefOid": "zz"}), "which is not a commit id"),
+    ] {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            answer.to_string(),
+        )
+        .expect("the host's answer for the change request");
+        refused(&follow_output(&stack, &change, true), 2, says);
+    }
+}
+
+#[test]
+fn a_release_holdup_refuses_an_answer_it_cannot_read_rather_than_report_part_of_it() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    stack.branch("release-plz-a", "main", "a.txt");
+    let number = stack.open("release-plz-a", "main", false);
+    release_rule(
+        world,
+        "    release_change:\n      head: \"release-plz-*\"\n",
+    );
+    let node = json!({
+        "number": number,
+        "state": "OPEN",
+        "baseRefName": "main",
+        "headRefName": "release-plz-a",
+    });
+    let listing =
+        |repository: Value| json!({"data": {"rateLimit": {"cost": 1}, "repository": repository}});
+    let whole = |nodes: Value| {
+        listing(json!({
+            "defaultBranchRef": {"name": "main"},
+            "pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+        }))
+    };
+    let without = |field: &str| {
+        let mut stripped = node.clone();
+        stripped.as_object_mut().expect("a node").remove(field);
+        whole(json!([stripped]))
+    };
+    // The listing, malformed each way it can be.
+    for (answer, says) in [
+        (json!({"errors": []}), "with no data"),
+        (
+            json!({"data": {"repository": {}}}),
+            "without what it charged for it",
+        ),
+        (
+            json!({"data": {"rateLimit": {"cost": 1}}}),
+            "without its repository",
+        ),
+        (
+            listing(json!({"pullRequests": {"pageInfo": {"hasNextPage": false}, "nodes": []}})),
+            "which branch is",
+        ),
+        (
+            listing(json!({"defaultBranchRef": {"name": "main"}})),
+            "listing of acme-corp/stacked's open change requests without them",
+        ),
+        (
+            listing(json!({
+                "defaultBranchRef": {"name": "main"},
+                "pullRequests": {"nodes": []},
+            })),
+            "more open change requests than one page",
+        ),
+        (
+            listing(json!({
+                "defaultBranchRef": {"name": "main"},
+                "pullRequests": {"pageInfo": {"hasNextPage": false}},
+            })),
+            "without its nodes",
+        ),
+        (without("number"), "without its number"),
+        (without("state"), "without its state"),
+        (without("baseRefName"), "without its baseRefName"),
+        (without("headRefName"), "without its headRefName"),
+    ] {
+        std::fs::write(
+            world.path("gh-state/open-listing-answer.json"),
+            answer.to_string(),
+        )
+        .expect("the listing's answer");
+        refused(&holdup_output(world, true), 2, says);
+    }
+    std::fs::remove_file(world.path("gh-state/open-listing-answer.json"))
+        .expect("the listing answers as the host holds it again");
+
+    // The rollup read, malformed each way the holdup reads it.
+    for (answer, says) in [
+        (json!({"state": null}), "without its state"),
+        (json!({"baseRefName": null}), "without its baseRefName"),
+        (json!({"headRefName": null}), "without its headRefName"),
+        (
+            json!({"isDraft": "no"}),
+            "without saying whether it is a draft",
+        ),
+        (json!({"headRefOid": "zz"}), "which is not a commit id"),
+        (json!({"url": "not a url"}), "which is not one"),
+    ] {
+        std::fs::write(
+            world.path(format!("gh-state/pull-{number}.json")),
+            answer.to_string(),
+        )
+        .expect("the rollup read's answer for the change request");
+        refused(&holdup_output(world, true), 2, says);
+    }
+}

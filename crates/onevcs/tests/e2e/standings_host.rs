@@ -390,6 +390,11 @@ impl Model {
         }
         let cost = cost_of(query);
         self.charged = Some(cost);
+        // A journey's own answer for the whole listing — how an answer GitHub's schema
+        // would not give is served.
+        if let Ok(text) = std::fs::read_to_string(self.state.join("open-listing-answer.json")) {
+            return (text, String::new(), 0);
+        }
         let numbers: Vec<u64> = (1..)
             .take_while(|number| self.state.join(format!("pr-{number}.env")).exists())
             .collect();

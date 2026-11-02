@@ -3608,6 +3608,14 @@ fn a_session_stream_that_cannot_be_read_or_written_records_nothing_and_the_next_
     std::fs::write(&path, intact.replace("\"name\":\"late\"", "\"name\":7"))
         .expect("a record naming no check");
     answers_and_appends_nothing("a change-check naming no check");
+    let stamped = "\"significance\":\"progress\"";
+    assert!(intact.contains(stamped), "{intact}");
+    std::fs::write(
+        &path,
+        intact.replace(stamped, "\"significance\":\"important\""),
+    )
+    .expect("records carrying a stamp no reader admits");
+    answers_and_appends_nothing("an invalid significance stamp");
     std::fs::write(&path, &intact).expect("the stream restored");
     let mut read_only = std::fs::metadata(&path).expect("the stream").permissions();
     read_only.set_readonly(true);
