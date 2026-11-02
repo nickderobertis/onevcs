@@ -417,7 +417,9 @@ struct CheckReading {
     started_at: Option<String>,
 }
 
-/// The newest `change-check` a stream holds for each check name.
+/// The newest `change-check` a stream holds for each check name, refused where a record
+/// cannot be read or a `change-check` does not say what it recorded: a transition decided
+/// against history this build could not read would be recorded twice, or not at all.
 fn latest_checks(token: &str) -> Result<BTreeMap<String, CheckReading>> {
     let mut latest = BTreeMap::new();
     if !crate::stream::path_for(token)?.is_file() {
@@ -425,28 +427,36 @@ fn latest_checks(token: &str) -> Result<BTreeMap<String, CheckReading>> {
     }
     let mut reader = crate::stream::Reader::open(token)?;
     for record in reader.records()? {
-        let Ok(envelope) = record.read else {
-            continue;
-        };
+        let envelope = record.read.map_err(|failure| {
+            invalid(format!(
+                "a record of the stream {token} could not be read, so which check transitions \
+                 it already holds cannot be told: {failure}"
+            ))
+        })?;
         if envelope.kind.as_str() != "change-check" {
             continue;
         }
-        let text = |name: &str| {
-            envelope
-                .payload
-                .get(name)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
+        let text = |name: &str| -> Result<Option<String>> {
+            match envelope.payload.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+                Some(other) => Err(invalid(format!(
+                    "a change-check on the stream {token} records its {name} as {other}, which \
+                     is not text"
+                ))),
+            }
         };
-        let Some(name) = text("name") else {
-            continue;
-        };
+        let name = text("name")?.ok_or_else(|| {
+            invalid(format!(
+                "a change-check on the stream {token} names no check"
+            ))
+        })?;
         latest.insert(
             name,
             CheckReading {
-                status: text("status"),
-                conclusion: text("conclusion"),
-                started_at: text("started_at"),
+                status: text("status")?,
+                conclusion: text("conclusion")?,
+                started_at: text("started_at")?,
             },
         );
     }

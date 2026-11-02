@@ -2801,6 +2801,14 @@ fn following_51_change_requests_sends_two_standings_queries_and_no_rest_request(
         .as_array()
         .expect("one answer per change request");
     assert_eq!(followed.len(), 51);
+    let human = follow_output(&stack, &changes[..1], false);
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains(&format!(
+            "{} at {tip}: checks still running; 0 record(s) appended",
+            url(numbers[0])
+        )),
+        "{human:?}"
+    );
     for (answer, number) in followed.iter().zip(&numbers) {
         assert_eq!(answer["change"], url(*number));
         assert_eq!(answer["head"], tip);
@@ -2863,13 +2871,27 @@ fn a_followed_head_the_change_request_moved_off_is_superseded_and_the_human_form
     assert_eq!(read["changes"][1]["checks"], json!([]));
     assert_eq!(read["changes"][1]["head"], earlier);
 
-    let human = follow_output(&stack, &[format!("{}={tip}", url(current))], false);
+    let human = follow_output(
+        &stack,
+        &[
+            format!("{}={tip}", url(current)),
+            format!("{}={earlier}", url(moved)),
+        ],
+        false,
+    );
     assert!(human.status.success(), "{human:?}");
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(
         stdout.contains(&format!(
             "{} at {tip}: every check settled; 0 record(s) appended",
             url(current)
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "{} at {earlier}: superseded: its head has moved on; 0 record(s) appended",
+            url(moved)
         )),
         "{stdout}"
     );
@@ -3176,5 +3198,71 @@ fn a_release_holdup_that_cannot_read_the_whole_answer_refuses_rather_than_answer
         &holdup_output(world, true),
         2,
         "more open change requests than one page of the listing",
+    );
+}
+
+#[test]
+fn a_follow_read_whose_declarations_cannot_be_read_takes_requiredness_from_the_hosts_marking() {
+    let stack = Stack::new(HELD_FOR_REVIEW);
+    let world = &stack.world;
+    let tip = stack.branch("feature/followed", "main", "followed.txt");
+    world.host_requires_on("main", &["ci"]);
+    let number = stack.open("feature/followed", "main", true);
+    // The rollup marks the opposite of what the base declares, so which of the two
+    // decided is visible in the answer.
+    let marked = |name: &str, required: bool| {
+        json!({
+            "__typename": "CheckRun",
+            "name": name,
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-09-30T12:00:00Z",
+            "completedAt": "2026-09-30T12:00:30Z",
+            "detailsUrl": "https://github.com/acme-corp/stacked/actions/runs/1",
+            "isRequired": required,
+        })
+    };
+    std::fs::write(
+        world.path(format!("gh-state/pull-{number}.json")),
+        json!({"headRef": {"target": {"statusCheckRollup": {"contexts": {"nodes": [
+            marked("ci", false),
+            marked("lint", true),
+        ]}}}}})
+        .to_string(),
+    )
+    .expect("the change request's rollup");
+    let change = [format!("{}={tip}", url(number))];
+    let required = |read: &Value| -> Vec<(String, bool)> {
+        read["changes"][0]["checks"]
+            .as_array()
+            .expect("its checks")
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().expect("a name").to_owned(),
+                    check["required"].as_bool().expect("required"),
+                )
+            })
+            .collect()
+    };
+
+    let declared = succeeded(&follow_output(&stack, &change, true));
+    assert_eq!(
+        required(&declared),
+        [("ci".to_owned(), true), ("lint".to_owned(), false)],
+        "the base's declaration decides where it can be read"
+    );
+
+    // Rulesets past one page: what a merge into the base requires cannot be read whole.
+    std::fs::write(
+        world.path("gh-state/declarations.json"),
+        json!({"rulesets": {"pageInfo": {"hasNextPage": true}, "nodes": []}}).to_string(),
+    )
+    .expect("a declaration read past one page");
+    let unreadable = succeeded(&follow_output(&stack, &change, true));
+    assert_eq!(
+        required(&unreadable),
+        [("ci".to_owned(), false), ("lint".to_owned(), true)],
+        "the host's own marking decides where the declaration cannot be read"
     );
 }

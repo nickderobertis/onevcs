@@ -109,12 +109,10 @@ impl TryFrom<String> for HeadGlob {
 }
 
 impl HeadGlob {
-    /// The glob as it was written.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Whether `name` matches this glob.
     pub(crate) fn matches(&self, name: &str) -> bool {
         let glob: Vec<char> = self.0.chars().collect();
         let name: Vec<char> = name.chars().collect();

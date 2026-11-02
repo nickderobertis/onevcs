@@ -3389,7 +3389,6 @@ fn a_check_still_running_when_the_watch_ended_is_followed_and_recorded_once_on_t
         !late.required && late.state() == CheckState::Failed,
         "{late:?}"
     );
-    // Read back from the session's persisted stream.
     let records = check_records(&session);
     assert_eq!(records.len(), watched.len() + 1, "{records:?}");
     let (name, stamp, payload) = records.last().expect("the appended record");
@@ -3548,5 +3547,53 @@ fn a_change_request_two_sessions_published_is_followed_onto_the_newest_one() {
     let second = check_records(&second_session);
     assert_eq!(second.len(), second_before + 1);
     let (name, stamp, _) = second.last().expect("the followed record");
+    assert_eq!((name.as_str(), stamp.as_str()), ("late", "attention"));
+}
+
+#[test]
+fn a_session_stream_that_cannot_be_read_records_nothing_and_the_next_read_recovers() {
+    // A record the follow read cannot read is history it cannot decide against: it
+    // answers what the host reports and appends nothing, and once the stream reads
+    // again the transition is recorded.
+    let (world, _origin, session) = scene(DIRECT_OFF, "60", "20");
+    let gate = check("gate", Some("success"), true, 1);
+    let host = MemoryHost::seeded(host_with(
+        vec![gate.clone(), check("late", None, false, 2)],
+        None,
+    ));
+    let published = publish(&host, &session, &PublishRequest::default());
+    assert!(
+        matches!(published.outcome, PublishOutcome::Merged(_)),
+        "{published:?}"
+    );
+    let head = host.state().changes[0].head_sha.clone();
+    host.set_head_checks(&head, vec![gate, check("late", Some("failure"), false, 2)])
+        .expect("the host concludes it");
+    let path = world
+        .home()
+        .join(format!("streams/{}.ndjson", session.token.0));
+    let intact = std::fs::read_to_string(&path).expect("the session's stream");
+    std::fs::write(&path, format!("{intact}{{not a record\n")).expect("a torn stream");
+
+    let torn = follow(&host, &head);
+
+    assert_eq!(torn.changes[0].recorded, 0, "{torn:?}");
+    assert!(
+        torn.changes[0]
+            .checks
+            .iter()
+            .any(|check| check.name == "late" && check.state() == CheckState::Failed),
+        "the read still answers what the host reports: {torn:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the stream"),
+        format!("{intact}{{not a record\n"),
+        "nothing was appended"
+    );
+
+    std::fs::write(&path, &intact).expect("the stream restored");
+    let recovered = follow(&host, &head);
+    assert_eq!(recovered.changes[0].recorded, 1, "{recovered:?}");
+    let (name, stamp, _) = check_records(&session).pop().expect("the recovered record");
     assert_eq!((name.as_str(), stamp.as_str()), ("late", "attention"));
 }
