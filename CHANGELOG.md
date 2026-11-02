@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0](https://github.com/nickderobertis/onevcs/compare/v0.57.6...v0.58.0) - 2026-11-02
+
+### Added
+
+- record failing optional checks as attention, follow late checks and read release holdups ([#598](https://github.com/nickderobertis/onevcs/pull/598))
+
 ## [0.57.6](https://github.com/nickderobertis/onevcs/compare/v0.57.5...v0.57.6) - 2026-11-01
 
 ### Fixed
