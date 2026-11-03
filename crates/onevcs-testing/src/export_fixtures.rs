@@ -208,6 +208,32 @@ fn planted(plant: Option<&Plant>, carrier: Carrier) -> &str {
         .map_or("", |plant| plant.term.as_str())
 }
 
+const JPEG_APP1_LIMIT: usize = 65_533;
+const EXIF_IFD: &[u8] = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x0e\x01\x02\0";
+const EXIF_DESCRIPTION_PREFIX: &str = "frame ";
+const XMP_PREFIX: &str = "http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">";
+const XMP_SUFFIX: &str = "</x:xmpmeta>";
+const STL_HEADER_PREFIX: &str = "Binary triangle ";
+
+fn validate_plant(plant: Option<&Plant>) {
+    let Some(plant) = plant else { return };
+    let limit = match plant.carrier {
+        Carrier::JpegExif => {
+            JPEG_APP1_LIMIT - (EXIF_IFD.len() + 12 + EXIF_DESCRIPTION_PREFIX.len() + 1)
+        }
+        Carrier::JpegXmp => JPEG_APP1_LIMIT - XMP_PREFIX.len() - XMP_SUFFIX.len(),
+        Carrier::StlHeader => 80 - STL_HEADER_PREFIX.len(),
+        _ => return,
+    };
+    // llmlint: ignore[no_panics_on_recoverable_errors] The agreed Vec-returning fixture contract declares these fixed-carrier size preconditions. An oversized plant is caller programming misuse; this assertion preserves the complete term instead of truncating, dropping or splitting it.
+    assert!(
+        plant.term.len() <= limit,
+        "{:?} term-byte limit {limit}; term has {} bytes",
+        plant.carrier,
+        plant.term.len()
+    );
+}
+
 fn jpeg_segment(bytes: &mut Vec<u8>, marker: u8, payload: &[u8]) {
     bytes.extend_from_slice(&[0xff, marker]);
     bytes.extend_from_slice(
@@ -234,18 +260,28 @@ fn png_chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) {
 
 /// Generate notes, JPEG/PNG frames, binary STL, XML-only 3MF and gzipped G-code.
 /// A plant appears in exactly its selected carrier.
+///
+/// # Panics
+/// A planted term must fit the fixed-size carrier: JPEG APP1's 65,533-byte payload
+/// leaves 65,494 term bytes for `JpegExif` or 65,456 for `JpegXmp`; the 80-byte STL
+/// header leaves 64 term bytes for `StlHeader`. Oversized plants are programming
+/// errors, asserted with the carrier, term-byte limit and actual term length.
 pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)> {
+    validate_plant(plant);
     let mut jpeg = vec![0xff, 0xd8];
     // A little-endian TIFF IFD containing ImageDescription (ASCII).
-    let description = format!("frame {}\0", planted(plant, Carrier::JpegExif));
-    let mut exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x0e\x01\x02\0".to_vec();
+    let description = format!(
+        "{EXIF_DESCRIPTION_PREFIX}{}\0",
+        planted(plant, Carrier::JpegExif)
+    );
+    let mut exif = EXIF_IFD.to_vec();
     exif.extend_from_slice(&(description.len() as u32).to_le_bytes());
     exif.extend_from_slice(&26u32.to_le_bytes());
     exif.extend_from_slice(&0u32.to_le_bytes());
     exif.extend_from_slice(description.as_bytes());
     jpeg_segment(&mut jpeg, 0xe1, &exif);
     let xmp = format!(
-        "http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">{}</x:xmpmeta>",
+        "{XMP_PREFIX}{}{XMP_SUFFIX}",
         planted(plant, Carrier::JpegXmp)
     );
     jpeg_segment(&mut jpeg, 0xe1, xmp.as_bytes());
@@ -279,8 +315,7 @@ pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)> {
     );
     png_chunk(&mut png, b"IEND", &[]);
 
-    let header = format!("Binary triangle {}", planted(plant, Carrier::StlHeader));
-    assert!(header.len() <= 80, "STL header term too long");
+    let header = format!("{STL_HEADER_PREFIX}{}", planted(plant, Carrier::StlHeader));
     let mut stl = vec![0; 80];
     stl[..header.len()].copy_from_slice(header.as_bytes());
     stl.extend_from_slice(&1u32.to_le_bytes());
@@ -334,6 +369,43 @@ pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fixed_size_carriers_accept_the_limit_and_explain_oversized_plants() {
+        for (carrier, limit) in [
+            (Carrier::JpegExif, 65_494),
+            (Carrier::JpegXmp, 65_456),
+            (Carrier::StlHeader, 64),
+        ] {
+            let mut plant = Plant {
+                term: "Q".repeat(limit),
+                carrier,
+            };
+            let files = sample_set(Some(&plant));
+            assert_eq!(
+                files
+                    .iter()
+                    .map(|(_, bytes)| bytes
+                        .windows(limit)
+                        .filter(|run| *run == plant.term.as_bytes())
+                        .count())
+                    .sum::<usize>(),
+                1
+            );
+            plant.term.push('Q');
+            let panic = std::panic::catch_unwind(|| sample_set(Some(&plant)))
+                .expect_err("oversized fixed-size carrier is a programming error");
+            let message = panic
+                .downcast_ref::<String>()
+                .expect("formatted carrier assertion");
+            assert!(message.contains(&format!("{carrier:?}")), "{message}");
+            assert!(message.contains(&format!("limit {limit}")), "{message}");
+            assert!(
+                message.contains(&format!("{} bytes", plant.term.len())),
+                "{message}"
+            );
+        }
+    }
+
     use super::*;
     use std::io::Read;
 

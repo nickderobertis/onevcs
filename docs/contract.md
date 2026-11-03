@@ -5745,7 +5745,12 @@ Export screening follows these rules:
 export carriers in code, with no committed binaries. `sample_set` contains
 `notes.md`, `frame.jpg`, `frame.png`, binary `model.stl`, XML-only `model.3mf`, and
 `print.gcode.gz`; a plant's term sits in exactly its carrier. Text without a term
-is the clean counterpart. `sample_opaque_patterns` returns `*.jpg`, `*.png`, `*.stl`.
+is the clean counterpart. A planted term must fit its selected carrier: JPEG APP1
+payloads are limited to 65,533 bytes, leaving 65,494 term bytes for `JpegExif` and
+65,456 for `JpegXmp`; the 80-byte STL header leaves 64 term bytes for `StlHeader`.
+An oversized plant is a caller programming error: `sample_set` deliberately asserts
+with the carrier, term-byte limit and actual term length, never truncating, dropping
+or splitting the term. `sample_opaque_patterns` returns `*.jpg`, `*.png`, `*.stl`.
 `lfs_attributes` tracks `*.jpg`, `*.png`, `*.stl`, `*.3mf`, `*.gz`, each with
 `filter=lfs diff=lfs merge=lfs -text`. `layered` encodes text (UTF-8 input has no NUL)
 then wraps innermost first; `ZipName` uses the text as its member name.
