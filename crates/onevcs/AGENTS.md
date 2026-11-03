@@ -1646,8 +1646,12 @@ every time a pass met a session's leftover worker.
   as `Unavailability::HostVisibility`, exit 2, before a term is derived. Screening it
   instead read every repository whose answer was lost as private, and refused public
   work for carrying its own destination's name (onevcs#432). The reason is built from
-  the status and headers alone, because what `gh` writes can name the repository; that
-  goes to the evidence file.
+  the status and headers alone, because what `gh` writes can name the repository — and
+  being unavailable, the check redacts every locator, so its evidence keeps the
+  destination as `<redacted identity 1>` and what `gh` wrote as `<redacted detail>`.
+  The evidence file's own path, printed in every refusal, is a locator too: screened by
+  the call's matcher on a refusal and redacted on an unavailable check
+  (`evidence::printed_path`).
 - **A removal never refuses.** Every parent diff is held to the addition rule; text
   added and later removed is refused for its addition, including across a merge.
 - **Terms come from committed trees.** `boundary/manifests.rs` reads the commit `HEAD`

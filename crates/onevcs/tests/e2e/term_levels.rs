@@ -1605,19 +1605,14 @@ fn a_replacement_carrying_a_term_holds_a_body_and_a_reply_unwritten() {
     assert!(reviews.requests().is_empty(), "no read and no post");
 }
 
-/// The evidence file a held publication's stderr names, read back.
-pub(crate) fn persisted(stderr: &str) -> Vec<Value> {
-    let marker = "recorded privately at ";
-    let start = stderr
-        .find(marker)
-        .unwrap_or_else(|| panic!("no evidence file named: {stderr}"))
-        + marker.len();
-    let path = stderr[start..]
-        .split(", on this host only")
-        .next()
-        .expect("a path");
-    serde_json::from_str(&std::fs::read_to_string(path.trim()).expect("the evidence file"))
-        .expect("the evidence is JSON")
+/// The evidence file a held publication kept under `home`, found by listing the
+/// evidence directory: a refusal prints its path as a screened locator.
+pub(crate) fn persisted(home: &Path, stderr: &str) -> Vec<Value> {
+    assert!(
+        stderr.contains("recorded privately at "),
+        "no evidence file named: {stderr}"
+    );
+    serde_json::from_value(crate::world::newest_evidence(home)).expect("a list of evidence")
 }
 
 /// Every locator field of persisted evidence: where (`at`), whose (`identity`), and an
@@ -1646,7 +1641,7 @@ fn a_refused_publication_persists_its_evidence_with_every_locator_screened() {
     host.refused(&output, "a path", &before, "a path carrying a term");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_unspelled(&stderr, "stderr");
-    let evidence = persisted(&stderr);
+    let evidence = persisted(&host.world.home(), &stderr);
     assert!(!evidence.is_empty());
     // What was found is still recorded: the surface and the rule.
     assert!(
@@ -1663,6 +1658,39 @@ fn a_refused_publication_persists_its_evidence_with_every_locator_screened() {
             .is_some_and(|at| at.starts_with("<redacted path "))),
         "{evidence:?}"
     );
+}
+
+#[test]
+fn a_refusal_prints_its_evidence_files_path_screened_by_the_calls_matcher() {
+    let levels = Levels::new("hiddenco-work/quietharbor", &[]);
+    let host = &levels.host;
+    let (token, worktree) = host.session("screened-evidence-path");
+    std::fs::create_dir_all(worktree.join("notes")).expect("a directory");
+    std::fs::write(worktree.join("notes/quietharbor-plan.md"), "neutral\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: add notes"]);
+    let before = host.origin_refs();
+    // The same state root, reached through a name carrying the private term: every
+    // path the refusal would print is under it, the evidence file's included.
+    let named = host.world.path("quietharbor-state");
+    std::os::unix::fs::symlink(host.world.home(), &named).expect("a link to the state root");
+    let output = host
+        .world
+        .onevcs()
+        .env("ONEVCS_HOME", &named)
+        .args(["publish", &token])
+        .output()
+        .expect("the binary runs");
+    host.refused(&output, "a path", &before, "a path carrying a term");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_unspelled(&stderr, "stderr");
+    assert!(
+        stderr.contains("recorded privately at <redacted path 1>, on this host only"),
+        "{stderr}"
+    );
+    let evidence = persisted(&host.world.home(), &stderr);
+    assert!(evidence.iter().any(|entry| entry["surface"] == "path"));
 }
 
 #[test]
@@ -1687,7 +1715,7 @@ fn an_unavailable_publication_persists_its_evidence_with_every_locator_redacted(
     );
     assert_eq!(host.origin_refs(), before, "the origin moved");
     assert_unspelled(&stderr, "stderr");
-    let evidence = persisted(&stderr);
+    let evidence = persisted(&host.world.home(), &stderr);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
     assert_eq!(evidence[0]["kind"], "unavailable");
     assert_eq!(evidence[0]["reason"], "declarations");

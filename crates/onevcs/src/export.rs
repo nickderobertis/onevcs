@@ -98,7 +98,7 @@ fn refused(step: &str) -> Error {
         Ok(path) => format!(
             "the export is refused: {step}. Nothing was written to the public repository; \
              the detail is recorded privately at {}, on this host only",
-            path.display()
+            evidence::printed_path(&path, None)
         ),
         Err(_) => {
             format!("the export is refused: {step}. Nothing was written to the public repository")
@@ -171,7 +171,7 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
 
     let screened = screen(request, &read, &mut phases);
     diagnostics::record("export", &screened.0, &phases.ended(started));
-    evidence::settle(screened.0, screened.1)?;
+    evidence::settle(screened.0, screened.1, screened.2.as_ref())?;
 
     let head = write_target(&target.publication, request, &read.files)?;
     Ok(Exported {
@@ -330,14 +330,18 @@ fn screen(
     request: &ExportRequest,
     source: &Source,
     phases: &mut Phases,
-) -> (BoundaryVerdict, Vec<Evidence>) {
+) -> (
+    BoundaryVerdict,
+    Vec<Evidence>,
+    Option<privateterms::Matcher>,
+) {
     let mut evidence = Vec::new();
     let deriving = std::time::Instant::now();
     let derived = match scope::derive(&request.term_scope) {
         Ok(derived) => derived,
         Err(failed) => {
             phases.derivation = deriving.elapsed();
-            return (failed.verdict(&mut evidence), evidence);
+            return (failed.verdict(&mut evidence), evidence, None);
         }
     };
     phases.derivation = deriving.elapsed();
@@ -346,7 +350,7 @@ fn screen(
     let building = std::time::Instant::now();
     let matcher = match derived.matcher() {
         Ok(matcher) => matcher,
-        Err(failed) => return (failed.verdict(&mut evidence), evidence),
+        Err(failed) => return (failed.verdict(&mut evidence), evidence, None),
     };
     phases.matcher_build = building.elapsed();
     let matching = std::time::Instant::now();
@@ -383,7 +387,8 @@ fn screen(
     }
     phases.matching = matching.elapsed();
     // What the export found is persisted, so its locators are screened by this matcher.
-    (verdict, scope::screened(evidence, &matcher))
+    let evidence = scope::screened(evidence, &matcher);
+    (verdict, evidence, Some(matcher))
 }
 
 /// Write the export as one commit on the public base, and cut the branch at it.

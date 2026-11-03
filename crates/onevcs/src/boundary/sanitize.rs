@@ -16,7 +16,7 @@
 
 use std::time::Instant;
 
-use privateterms::{Action, LocatorKind};
+use privateterms::{Action, LocatorKind, Matcher};
 
 use super::diagnostics::{self, Phases};
 use super::scope::{self, Derived, Failed};
@@ -254,14 +254,16 @@ pub fn declared(request: &TermsRequest) -> TermsAnswer {
 
 /// Sanitise one piece of prose a write publishes to `published` — a change request's
 /// body, or a review reply — with the scope's rules, `published`'s own levels and no
-/// caller layer: the text to write, or the verdict that holds the write.
+/// caller layer: the text to write, or the verdict that holds the write with the
+/// matcher a refusal's printed locators are screened by.
 pub fn prose(
     text: &str,
     published: &str,
     scope: &super::TermScope,
     evidence: &mut Vec<Evidence>,
-) -> Result<String, super::BoundaryVerdict> {
-    let unavailable = |failed: Failed, evidence: &mut Vec<Evidence>| failed.verdict(evidence);
+) -> Result<String, (super::BoundaryVerdict, Option<Box<Matcher>>)> {
+    let unavailable =
+        |failed: Failed, evidence: &mut Vec<Evidence>| (failed.verdict(evidence), None);
     let derived = match scope::derive_with(scope, &[], Some(published)) {
         Ok(derived) => derived,
         Err(failed) => return Err(unavailable(failed, evidence)),
@@ -293,7 +295,10 @@ pub fn prose(
         .collect();
     // Its guard persists this evidence, so its locators are screened by this matcher.
     evidence.extend(scope::screened(found, &matcher));
-    Err(super::BoundaryVerdict::Refuse {
-        surface: Surface::Body,
-    })
+    Err((
+        super::BoundaryVerdict::Refuse {
+            surface: Surface::Body,
+        },
+        Some(Box::new(matcher)),
+    ))
 }

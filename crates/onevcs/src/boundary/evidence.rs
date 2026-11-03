@@ -5,10 +5,13 @@
 //! turned down, exit 1 — and an unavailable check is [`Error::Invalid`], exit 2: both
 //! say *where* in the write the check stopped and nothing about what it found. What it
 //! found is written to a file under the state root that only this user can read, and
-//! the refusal names that file, which is on this host and nowhere else. A destination
-//! the host did not say is or is not public is the one unavailable check that says
-//! more: why the host did not answer, and when it says it will again, which names no
-//! repository and is what the operator waits on.
+//! the refusal names that file, which is on this host and nowhere else — as a locator
+//! like any other: screened by the call's matcher on a refusal, and redacted on an
+//! unavailable check, which redacts every locator it would report. A destination the
+//! host did not say is or is not public is the one unavailable check that says more:
+//! why the host did not answer, and when it says it will again, which names no
+//! repository and is what the operator waits on; what `gh` wrote is not kept, because
+//! it can quote the repository and nothing screens it.
 
 use std::time::Instant;
 
@@ -19,6 +22,7 @@ use super::{sanitize, scope, BoundaryVerdict, Evidence, Surface, TermScope, Unav
 use crate::error::{Error, Result};
 use crate::gh::Unanswered;
 use crate::host::Hosting;
+use privateterms::{LocatorKind, Matcher};
 
 /// Refresh the destination's visibility and, unless it is verified not public, screen
 /// `outgoing` against every private repository its scope selects — the destination
@@ -30,12 +34,16 @@ pub fn guard_publication(
     outgoing: &Outgoing<'_>,
     scope: &TermScope,
 ) -> Result<()> {
-    if !owed(visibility::screening(hosting, destination)?, destination)? {
+    if !owed(visibility::screening(hosting, destination)?)? {
         return Ok(());
     }
     let screened = screen::screen(outgoing, scope);
     diagnostics::record("publication", &screened.verdict, &screened.phases);
-    settle(screened.verdict, screened.evidence)
+    settle(
+        screened.verdict,
+        screened.evidence,
+        screened.matcher.as_ref(),
+    )
 }
 
 /// [`guard_publication`] for a write that may ask the host nothing — a publication that
@@ -51,7 +59,11 @@ pub fn guard_publication_unasked(
     }
     let screened = screen::screen(outgoing, scope);
     diagnostics::record("publication", &screened.verdict, &screened.phases);
-    settle(screened.verdict, screened.evidence)
+    settle(
+        screened.verdict,
+        screened.evidence,
+        screened.matcher.as_ref(),
+    )
 }
 
 /// Refresh the destination's visibility and, unless it is verified not public, screen
@@ -62,7 +74,7 @@ pub fn guard_fields(
     fields: &[(Surface, &str)],
     scope: &TermScope,
 ) -> Result<()> {
-    if !owed(visibility::screening(hosting, destination)?, destination)? {
+    if !owed(visibility::screening(hosting, destination)?)? {
         return Ok(());
     }
     screen_fields(fields, scope)
@@ -82,7 +94,7 @@ pub fn guard_change_publication(
     scope: &TermScope,
 ) -> Result<Option<String>> {
     let screened = match hosting {
-        Some(hosting) => owed(visibility::screening(hosting, destination)?, destination)?,
+        Some(hosting) => owed(visibility::screening(hosting, destination)?)?,
         None => visibility::screens_writes_unasked(destination)?,
     };
     let body = outgoing.body.map(str::to_owned);
@@ -102,7 +114,11 @@ pub fn guard_change_publication(
     };
     let screened = screen::screen(&outgoing, scope);
     diagnostics::record("publication", &screened.verdict, &screened.phases);
-    settle(screened.verdict, screened.evidence)?;
+    settle(
+        screened.verdict,
+        screened.evidence,
+        screened.matcher.as_ref(),
+    )?;
     Ok(body)
 }
 
@@ -123,7 +139,7 @@ pub fn screens(hosting: &dyn Hosting, destination: &str, asked: Asked) -> Result
         Asked::Fresh => visibility::screening(hosting, destination)?,
         Asked::UnlessRecorded => visibility::screening_unless_recorded(hosting, destination)?,
     };
-    owed(screening, destination)
+    owed(screening)
 }
 
 /// Sanitise prose a screened write publishes to `destination` — a change request's
@@ -133,44 +149,51 @@ pub fn sanitized_prose(text: &str, destination: &str, scope: &TermScope) -> Resu
     let mut evidence = Vec::new();
     match sanitize::prose(text, destination, scope, &mut evidence) {
         Ok(text) => Ok(text),
-        Err(verdict) => {
+        Err((verdict, matcher)) => {
             let reason = verdict.reason().unwrap_or_default();
-            Err(held(verdict, reason, &evidence))
+            Err(held(verdict, reason, &evidence, matcher.as_deref()))
         }
     }
 }
 
 /// Whether a write to `destination` is screened, or the unavailable check that holds it
 /// because the host did not answer whether it is public.
-fn owed(screening: Screening, destination: &str) -> Result<bool> {
+fn owed(screening: Screening) -> Result<bool> {
     match screening {
         Screening::Screened => Ok(true),
         Screening::Unscreened => Ok(false),
-        Screening::Unanswered(unanswered) => Err(unanswered_check(destination, unanswered)),
+        Screening::Unanswered(unanswered) => Err(unanswered_check(unanswered)),
     }
 }
 
 /// The unavailable check a destination the host did not answer for is: its reason says
-/// why, from what the host sent and nothing it was asked about, and its evidence keeps
-/// what `gh` wrote beside it.
-fn unanswered_check(destination: &str, unanswered: Unanswered) -> Error {
+/// why, from what the host sent and nothing it was asked about. An unavailable check
+/// redacts every locator it would report, so its evidence holds the destination only as
+/// a redacted identity, and what `gh` wrote — which can quote the repository, and which
+/// no matcher screened — only as a redacted detail.
+fn unanswered_check(unanswered: Unanswered) -> Error {
     let reason = Unavailability::HostVisibility;
     let said = format!("{}; retry once the host answers", unanswered.said);
+    let identity = privateterms::redact_all(&[(LocatorKind::Identity, "")], 1)[0].to_string();
     let evidence = vec![Evidence::Unavailable {
         reason,
-        identity: Some(destination.to_owned()),
-        detail: format!("{}; gh wrote: {}", unanswered.said, unanswered.detail),
+        identity: Some(identity),
+        detail: format!("{}; gh wrote: {REDACTED_DETAIL}", unanswered.said),
     }];
     let verdict = BoundaryVerdict::Unavailable { reason };
     let sentence = verdict.reason().unwrap_or_default();
-    held(verdict, format!("{sentence} — {said}"), &evidence)
+    held(verdict, format!("{sentence} — {said}"), &evidence, None)
 }
+
+/// What an unavailable check keeps of what `gh` wrote.
+const REDACTED_DETAIL: &str = "<redacted detail>";
 
 /// Screen short fields against every private repository `scope` selects.
 pub fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()> {
     let started = Instant::now();
     let mut evidence = Vec::new();
     let mut phases = Phases::default();
+    let mut compiled = None;
     let verdict = match scope::derive(scope) {
         Err(failed) => failed.verdict(&mut evidence),
         Ok(derived) => {
@@ -194,13 +217,14 @@ pub fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()
                         }
                     }
                     evidence = scope::screened(evidence, &matcher);
+                    compiled = Some(matcher);
                     verdict
                 }
             }
         }
     };
     diagnostics::record("fields", &verdict, &phases.ended(started));
-    settle(verdict, evidence)
+    settle(verdict, evidence, compiled.as_ref())
 }
 
 /// The lines a command may print beside a verdict, built from `evidence` so that they
@@ -242,28 +266,58 @@ pub fn is_boundary_reason(reason: &str) -> bool {
     reason.contains(super::REFUSED_SENTENCE) || reason.contains(super::UNAVAILABLE_SENTENCE)
 }
 
-/// A verdict as the result a write acts on.
-pub fn settle(verdict: BoundaryVerdict, evidence: Vec<Evidence>) -> Result<()> {
+/// A verdict as the result a write acts on. `matcher` is the one the call compiled,
+/// where it got that far, and screens what a refusal prints.
+pub fn settle(
+    verdict: BoundaryVerdict,
+    evidence: Vec<Evidence>,
+    matcher: Option<&Matcher>,
+) -> Result<()> {
     let Some(reason) = verdict.reason() else {
         return Ok(());
     };
-    Err(held(verdict, reason, &evidence))
+    Err(held(verdict, reason, &evidence, matcher))
 }
 
 /// The error a write that is not going ahead fails with: `reason`, then that nothing
-/// was written and where `evidence` was kept.
-fn held(verdict: BoundaryVerdict, reason: String, evidence: &[Evidence]) -> Error {
+/// was written and where `evidence` was kept — screened by `matcher` on a refusal, and
+/// redacted on an unavailable check.
+fn held(
+    verdict: BoundaryVerdict,
+    reason: String,
+    evidence: &[Evidence],
+    matcher: Option<&Matcher>,
+) -> Error {
+    let screen = match verdict {
+        BoundaryVerdict::Refuse { .. } => matcher,
+        _ => None,
+    };
     let kept = match keep(evidence) {
         Ok(path) => format!(
             "; what it found is recorded privately at {}, on this host only",
-            path.display()
+            printed_path(&path, screen)
         ),
-        Err(error) => format!("; what it found could not be recorded privately: {error}"),
+        Err(error) => format!(
+            "; what it found could not be recorded privately: {}",
+            scope::redacted(&error.to_string(), Vec::new())
+        ),
     };
     let reason = format!("{reason}. Nothing was written to the remote{kept}");
     match verdict {
         BoundaryVerdict::Refuse { .. } => Error::GateFailed { reason },
         _ => Error::Invalid { reason },
+    }
+}
+
+/// The evidence file's path as a message prints it — a locator like any other: screened
+/// by the call's `matcher` (verbatim where it carries no term), and redacted where there
+/// is none, which is every unavailable check.
+pub fn printed_path(path: &std::path::Path, matcher: Option<&Matcher>) -> String {
+    let spelled = path.display().to_string();
+    let pair = [(LocatorKind::Path, spelled.as_str())];
+    match matcher {
+        Some(matcher) => matcher.screen_locators(&pair, 1)[0].to_string(),
+        None => privateterms::redact_all(&pair, 1)[0].to_string(),
     }
 }
 

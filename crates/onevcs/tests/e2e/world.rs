@@ -1438,3 +1438,22 @@ fn open_lock(lock: &Path) -> std::fs::File {
         .open(lock)
         .unwrap_or_else(|e| panic!("the lock at {} is openable: {e}", lock.display()))
 }
+
+/// The evidence file a held or refused write kept under `home`, read back: the newest
+/// in the evidence directory. A refusal prints the file's path as a locator — redacted
+/// on an unavailable check — so a journey finds it by listing the directory rather than
+/// by reading the path back off stderr.
+pub fn newest_evidence(home: &Path) -> serde_json::Value {
+    let directory = home.join("boundary").join("evidence");
+    let newest = std::fs::read_dir(&directory)
+        .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
+        .map(|entry| entry.expect("an evidence entry").path())
+        .max_by_key(|path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .expect("an evidence file's mtime")
+        })
+        .unwrap_or_else(|| panic!("no evidence file in {}", directory.display()));
+    serde_json::from_str(&std::fs::read_to_string(&newest).expect("the evidence"))
+        .expect("the evidence is JSON")
+}

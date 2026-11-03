@@ -975,7 +975,7 @@ fn a_refused_export_persists_its_evidence_with_term_bearing_locators_screened_an
         "a term-bearing path",
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let evidence = persisted(&stderr);
+    let evidence = persisted(&host.world.home(), &stderr);
     for field in locator_fields(&evidence) {
         assert_unspelled(&field, "a persisted locator");
     }
@@ -1030,7 +1030,7 @@ fn an_export_that_cannot_read_its_source_persists_only_the_step() {
         stderr.contains("its source branch does not resolve"),
         "{stderr}"
     );
-    let evidence = persisted(&stderr);
+    let evidence = persisted(&host.world.home(), &stderr);
     assert_eq!(
         evidence,
         [serde_json::json!({

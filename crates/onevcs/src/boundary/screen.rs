@@ -55,6 +55,9 @@ pub struct Screened {
     pub evidence: Vec<Evidence>,
     /// The timings and counts, which name nothing.
     pub phases: Phases,
+    /// The matcher the call compiled, where it got that far: what screens the locators
+    /// a refusal prints.
+    pub matcher: Option<Matcher>,
 }
 
 /// One file of one commit against one parent.
@@ -77,14 +80,15 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
     let started = Instant::now();
     let mut phases = Phases::default();
     let mut evidence = Vec::new();
-    let verdict = match judged(outgoing, scope, &mut phases, &mut evidence) {
-        Ok(verdict) => verdict,
-        Err(failed) => failed.verdict(&mut evidence),
+    let (verdict, matcher) = match judged(outgoing, scope, &mut phases, &mut evidence) {
+        Ok((verdict, matcher)) => (verdict, Some(matcher)),
+        Err(failed) => (failed.verdict(&mut evidence), None),
     };
     Screened {
         verdict,
         evidence,
         phases: phases.ended(started),
+        matcher,
     }
 }
 
@@ -94,7 +98,7 @@ fn judged(
     scope: &TermScope,
     phases: &mut Phases,
     evidence: &mut Vec<Evidence>,
-) -> Result<BoundaryVerdict, Failed> {
+) -> Result<(BoundaryVerdict, Matcher), Failed> {
     let deriving = Instant::now();
     let derived = scope::derive(scope);
     phases.derivation = deriving.elapsed();
@@ -151,7 +155,7 @@ fn judged(
     // What this screen found is persisted by its guard, so its locators are screened by
     // this call's matcher before it is handed back.
     *evidence = scope::screened(std::mem::take(evidence), &matcher);
-    Ok(verdict)
+    Ok((verdict, matcher))
 }
 
 /// What git said went wrong, as its error class and code: its message names the

@@ -5635,11 +5635,16 @@ identity or the path. For `host-visibility` the reason goes on to say what did n
 answer and why — `the host did not answer whether the destination is public — GitHub's
 REST API (GET /repos/{owner}/{repo}) is refused for its rate limit: HTTP 403, limit 5000
 (core), 0 remaining, resets at <RFC3339>; retry once the host answers` — and its
-`Evidence::Unavailable` carries the destination as `identity` and, as `detail`, that same
-account with the limit and reset followed by what `gh` wrote. What the check found is written, as JSON, to a file under
-`$ONEVCS_HOME/boundary/evidence/` in a mode-0700 directory with mode 0600, which the
-refusal names; that is the caller-owned private sink on the command line, and the library
-hands the same detail to `check_public_output_with_evidence`'s caller.
+`Evidence::Unavailable` carries, as an unavailable check redacts every locator, the
+destination as `identity` `<redacted identity 1>` and, as `detail`, that same account
+with the limit and reset followed by `gh wrote: <redacted detail>` — what `gh` wrote can
+quote the repository, and nothing screened it. What the check found is written, as JSON,
+to a file under `$ONEVCS_HOME/boundary/evidence/` in a mode-0700 directory with mode
+0600, which the refusal names; that is the caller-owned private sink on the command line,
+and the library hands the same detail to `check_public_output_with_evidence`'s caller.
+The file's path is a locator like any other: a refusal prints it screened by the call's
+matcher (verbatim where it carries no term), and an unavailable check prints it redacted,
+as `<redacted path 1>`.
 
 **Diagnostics.** Where `ONEVCS_BOUNDARY_DIAGNOSTICS` names a file, each check appends one
 JSON line: `check` (`publication`, `fields` or `export`), `verdict`, `total_us`,
