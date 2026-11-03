@@ -220,7 +220,7 @@ _audit-test:
 
 # The offline suite, split into the Nx test tiers that run it. Each is a nextest
 # filterset over the workspace's test binaries, so the split moves no test: the
-# four below select every test but the `smoke` binary's, which needs a GitHub
+# tiers below select every test but the `smoke` binary's, which needs a GitHub
 # credential and a scratch repository and is run by `just smoke-real` alone, and
 # the `release_pr` binary's, which needs the pinned `release-plz` and is run by
 # `just release-pr-journeys`, and the `lint_llm_diff` binary's, which needs the
@@ -234,14 +234,17 @@ scripts-suites := "test(/^(scripts|packaging|graph|coverage|smoke|state_root|poo
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
 unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(lint_llm_diff) | binary(recovery-workload) | binary(export-workload) | binary(pool-workload))"
-# `onevcs-e2e:test` — the binary's journeys.
-e2e-tier := "binary(e2e) & not " + scripts-suites
+# The GiB decoding bounds keep their own cache edge, with the same binary and
+# source module, so unrelated journeys do not repeat the expensive decoding.
+export-bounds-tier := "binary(e2e) & test(/^export::(extraction_depth_and_byte_limits_refuse_even_accepted_content_without_store_writes|the_export_decoding_budget_is_shared_across_files)$/)"
+# `onevcs-e2e:test` — the binary's remaining journeys.
+e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ")"
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
 scripts-tier := "binary(e2e) & " + scripts-suites
 # `onevcs-contract:test` — the contract tests over workflows, manifests and docs.
 contract-tier := "binary(contract)"
 
-# 95% line coverage is the gate, measured over all four tiers together by
+# 95% line coverage is the gate, measured over all instrumented tiers together by
 # `onevcs:coverage`; lower it only with a documented reason in AGENTS.md.
 coverage-floor := "95"
 
@@ -261,6 +264,8 @@ _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
+_export-bounds-test: (_cover "onevcs-export-bounds" export-bounds-tier)
+_export-bounds-test-quick: (_quick export-bounds-tier)
 
 # Full-size recovery measurement owns one fixture build per scale and invocation.
 _recovery-test:
@@ -308,7 +313,7 @@ _contract-test-quick: (_quick contract-tier)
 
 # The coverage floor over every instrumented tier's profile, merged into one report.
 _crate-coverage:
-    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-scripts-e2e onevcs-contract onevcs-recovery
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-export-bounds onevcs-scripts-e2e onevcs-contract onevcs-recovery
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named

@@ -1,0 +1,66 @@
+{
+  "name": "onevcs-export-bounds",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": [
+    "scope:e2e",
+    "lang:rust"
+  ],
+  "targets": {
+    "test": {
+      "command": "just _export-bounds-test",
+      "inputs": [
+        "{projectRoot}/project.json",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs-testing/src/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/main.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/export.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/boundary.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/registry.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/world.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/support.rs",
+        "{workspaceRoot}/crates/onevcs/tests/fixtures/gh",
+        "{workspaceRoot}/scripts/coverage.sh",
+        "contractDocs",
+        "sharedGlobals"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/onevcs-export-bounds.profdata"
+      ]
+    },
+    "test-quick": {
+      "command": "just _export-bounds-test-quick",
+      "inputs": [
+        "{projectRoot}/project.json",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs-testing/src/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/main.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/export.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/boundary.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/registry.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/world.rs",
+        "{workspaceRoot}/crates/onevcs/tests/e2e/support.rs",
+        "{workspaceRoot}/crates/onevcs/tests/fixtures/gh",
+        "{workspaceRoot}/scripts/coverage.sh",
+        "contractDocs",
+        "sharedGlobals"
+      ]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test"
+      ]
+    }
+  }
+}
