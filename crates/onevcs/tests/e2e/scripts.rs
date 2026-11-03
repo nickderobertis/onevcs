@@ -3323,18 +3323,30 @@ fn ensure_strace(bin: &Path) -> Output {
         .expect("just runs")
 }
 
+/// Write an executable shell script at `path`.
+#[cfg(target_os = "linux")]
+fn executable(path: &Path, body: &str) {
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).expect("a stub");
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
-fn bootstrap_provisions_strace_or_refuses_naming_how_to_install_it() {
+fn bootstrap_installs_strace_through_apt_get_or_refuses_naming_how_to_install_it() {
     // `just bootstrap` provisions strace for the recovery tier's trace of the sanitise
-    // call. A host without it, and without a passwordless `sudo apt-get`, is refused with
-    // the command that installs it — never skipped.
+    // call. `sudo` and `apt-get` are stand-ins that record what they were asked and do
+    // what the real ones would to `PATH`, because installing a package is the one thing a
+    // journey must not do to its host.
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let bin = scratch.path().join("bin");
     std::fs::create_dir_all(&bin).expect("a bin directory");
-    for tool in ["bash", "sh", "sed", "uname"] {
+    for tool in ["bash", "chmod", "sed", "sh", "true", "uname"] {
         std::os::unix::fs::symlink(on_path(tool), bin.join(tool)).expect("a tool");
     }
+
+    // A host without strace and without a passwordless `sudo apt-get` is refused with
+    // the command that installs it — never skipped.
     let refused = ensure_strace(&bin);
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert_eq!(refused.status.code(), Some(1), "{stderr}");
@@ -3344,16 +3356,51 @@ fn bootstrap_provisions_strace_or_refuses_naming_how_to_install_it() {
         "{stderr}"
     );
 
-    // Where it is already there the recipe says nothing and installs nothing.
-    let stub = bin.join("strace");
-    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("a stub");
-    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .expect("executable");
-    let present = ensure_strace(&bin);
-    assert!(
-        present.status.success(),
-        "{}",
-        String::from_utf8_lossy(&present.stderr)
+    // With a passwordless `sudo` and `apt-get`, it installs strace and nothing else.
+    let asked = scratch.path().join("asked");
+    executable(&bin.join("sudo"), "[ \"$1\" = -n ] && shift\nexec \"$@\"\n");
+    executable(
+        &bin.join("apt-get"),
+        &format!(
+            "echo \"$*\" >> {asked}\n[ \"$1\" = install ] && printf '#!/bin/sh\\nexit 0\\n' > {bin}/strace \
+             && chmod 755 {bin}/strace\nexit 0\n",
+            asked = asked.display(),
+            bin = bin.display()
+        ),
     );
+    let installed = ensure_strace(&bin);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&asked).expect("apt-get was asked"),
+        "update -qq\ninstall -y -qq strace\n"
+    );
+    assert!(
+        bin.join("strace").is_file(),
+        "the install put strace on PATH"
+    );
+
+    // Where it is already there the recipe asks nothing and says nothing.
+    std::fs::remove_file(&asked).expect("cleared");
+    let present = ensure_strace(&bin);
+    assert!(present.status.success());
     assert!(present.stdout.is_empty() && present.stderr.is_empty());
+    assert!(!asked.exists(), "nothing was installed");
+
+    // An install that fails fails the recipe, so bootstrap does not go on without it.
+    std::fs::remove_file(bin.join("strace")).expect("removed");
+    executable(
+        &bin.join("apt-get"),
+        "echo 'E: Unable to locate package strace' >&2\nexit 100\n",
+    );
+    let failed = ensure_strace(&bin);
+    assert_ne!(failed.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("Unable to locate package strace"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
 }
