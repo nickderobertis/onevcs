@@ -15,7 +15,11 @@
 //! repository. Every refusal is neutral: it says which step stopped, and what it
 //! found is recorded privately on this host.
 
+mod extract;
+mod lfs;
+
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +76,10 @@ pub struct ExportRequest {
     /// registered private one.
     #[serde(default, skip_serializing_if = "TermScope::is_registry")]
     pub term_scope: TermScope,
+    /// Glob patterns, relative to `directory`, accepting files that are not fully readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // llmlint: ignore[invalid_states_unrepresentable] the agreed public request is Vec<String>; validate_accepted_opaque rejects malformed or duplicate declarations before any read, without echoing private values in construction errors.
+    pub accepted_opaque: Vec<String>,
 }
 
 /// What an export made: the public branch and its one new commit, and nothing else.
@@ -134,6 +142,61 @@ struct File {
 /// Export one directory of a private branch, as one neutral commit, onto a new local
 /// branch of a public repository.
 pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported> {
+    let started = std::time::Instant::now();
+    let mut phases = Phases::default();
+    let mut matcher = None;
+    let mut verdict = BoundaryVerdict::Pass;
+    let result = run_export(providers, request, &mut phases, &mut matcher, &mut verdict);
+    if result.is_err() && verdict == BoundaryVerdict::Pass {
+        verdict = BoundaryVerdict::Refuse {
+            surface: Surface::Content,
+        };
+    }
+    diagnostics::record("export", &verdict, &phases.ended(started), matcher.as_ref());
+    result
+}
+
+/// Validate declarations before reading the registry, source or destination.
+/// Matching is case-sensitive; wildcards never implicitly cross a path separator.
+pub fn validate_accepted_opaque(patterns: &[String]) -> Result<()> {
+    patterns_for(patterns).map(|_| ())
+}
+
+fn patterns_for(patterns: &[String]) -> Result<Vec<globset::GlobMatcher>> {
+    let mut seen = std::collections::BTreeSet::new();
+    patterns
+        .iter()
+        .map(|pattern| {
+            if !normalized(pattern)
+                || pattern
+                    .split('/')
+                    .any(|segment| segment.contains("**") && segment != "**")
+                || !seen.insert(pattern)
+            {
+                return Err(refused(
+                    "an accepted opaque pattern it carries is malformed",
+                ));
+            }
+            globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .backslash_escape(false)
+                .build()
+                .map(|glob| glob.compile_matcher())
+                .map_err(because(
+                    "an accepted opaque pattern it carries is malformed",
+                ))
+        })
+        .collect()
+}
+
+fn run_export(
+    providers: &Providers<'_>,
+    request: &ExportRequest,
+    phases: &mut Phases,
+    matcher: &mut Option<privateterms::Matcher>,
+    verdict: &mut BoundaryVerdict,
+) -> Result<Exported> {
+    let patterns = patterns_for(&request.accepted_opaque)?;
     if !normalized(&request.directory) {
         return Err(refused(
             "its source directory is not a relative, normalized path",
@@ -160,29 +223,107 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
     if destination.effective() != Visibility::Public {
         return Err(refused("its destination is not verified public"));
     }
-
-    let started = std::time::Instant::now();
-    let mut phases = Phases::default();
-    let read = read_source(&source.publication, request)?;
-    phases.diff = started.elapsed();
+    let reading = std::time::Instant::now();
+    let read = read_source(&source.publication, request);
+    phases.diff = reading.elapsed();
+    let mut read = read?;
+    let transferring = std::time::Instant::now();
+    let resolved = lfs::resolve(&source.publication, request, &mut read.files);
+    phases.lfs += transferring.elapsed();
+    resolved?;
     phases.commits = read.messages.len();
     phases.paths = read.files.len();
     phases.bytes = read.files.iter().map(|file| file.contents.len()).sum();
-
-    let screened = screen(request, &read, &mut phases);
-    diagnostics::record(
-        "export",
-        &screened.0,
-        &phases.ended(started),
-        screened.2.as_ref(),
-    );
-    evidence::settle(screened.0, screened.1, screened.2.as_ref())?;
-
-    let head = write_target(&target.publication, request, &read.files)?;
+    let screened = screen(request, &read, phases, &patterns);
+    *verdict = screened.0;
+    *matcher = screened.2;
+    if screened.0 != BoundaryVerdict::Pass {
+        return Err(refused_with(
+            if matches!(screened.0, BoundaryVerdict::Unavailable { .. }) {
+                "its private terms are unavailable"
+            } else {
+                "it carries a private term"
+            },
+            &screened.1,
+            matcher.as_ref(),
+        ));
+    }
+    if let Some(path) = screened.3 {
+        return Err(refused_with(
+            "it carries a file whose contents cannot be checked",
+            &[Evidence::Unavailable {
+                reason: Unavailability::History,
+                identity: None,
+                detail: path,
+            }],
+            matcher.as_ref(),
+        ));
+    }
+    keep_accepted(&screened.4, &request.accepted_opaque)?;
+    let head = write_target(&target.publication, request, &read.files, phases)?;
     Ok(Exported {
         branch: request.branch_name.clone(),
         head,
     })
+}
+
+fn refused_with(
+    step: &str,
+    findings: &[Evidence],
+    matcher: Option<&privateterms::Matcher>,
+) -> Error {
+    let kept = evidence::keep(findings);
+    let detail = kept
+        .map(|path| {
+            format!(
+                "; the detail is recorded privately at {}, on this host only",
+                evidence::printed_path(&path, matcher)
+            )
+        })
+        .unwrap_or_default();
+    let reason = format!(
+        "the export is refused: {step}. Nothing was written to the public repository{detail}"
+    );
+    if step == "it carries a private term" {
+        Error::GateFailed { reason }
+    } else {
+        Error::Invalid { reason }
+    }
+}
+
+#[derive(Serialize)]
+struct Accepted {
+    path: String,
+    pattern: String,
+}
+
+fn keep_accepted(accepted: &[Accepted], patterns: &[String]) -> Result<()> {
+    use std::io::Write;
+    let directory = crate::home::root()?.join("boundary/export-evidence");
+    crate::home::ensure_dir(&directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(because("its private evidence could not be written"))?;
+    }
+    let unused: Vec<_> = patterns
+        .iter()
+        .filter(|pattern| !accepted.iter().any(|file| &file.pattern == *pattern))
+        .collect();
+    let bytes = serde_json::to_vec_pretty(
+        &serde_json::json!({"version":1,"accepted":accepted,"unused":unused}),
+    )
+    .map_err(because("its private evidence could not be written"))?;
+    let mut file = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile_in(directory)
+        .map_err(because("its private evidence could not be written"))?;
+    file.write_all(&bytes)
+        .map_err(because("its private evidence could not be written"))?;
+    file.keep()
+        .map_err(because("its private evidence could not be written"))?;
+    Ok(())
 }
 
 /// What the source branch carries that the export reads.
@@ -275,7 +416,7 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     Ok(Source { files, messages })
 }
 
-/// Every committed file under `tree`, refusing anything that is not a plain text blob.
+/// Every regular committed file, preserving its mode and refusing links and submodules.
 fn collect(
     repository: &git2::Repository,
     tree: &git2::Tree<'_>,
@@ -305,11 +446,6 @@ fn collect(
                     .and_then(|object| object.peel_to_blob())
                     .map_err(because("a file in it cannot be read"))?;
                 let contents = blob.content().to_vec();
-                if contents.contains(&0) || std::str::from_utf8(&contents).is_err() {
-                    return Err(refused(
-                        "it carries a binary file, whose terms cannot be checked",
-                    ));
-                }
                 files.push(File {
                     path,
                     contents,
@@ -335,10 +471,13 @@ fn screen(
     request: &ExportRequest,
     source: &Source,
     phases: &mut Phases,
+    patterns: &[globset::GlobMatcher],
 ) -> (
     BoundaryVerdict,
     Vec<Evidence>,
     Option<privateterms::Matcher>,
+    Option<String>,
+    Vec<Accepted>,
 ) {
     let mut evidence = Vec::new();
     let deriving = std::time::Instant::now();
@@ -346,7 +485,13 @@ fn screen(
         Ok(derived) => derived,
         Err(failed) => {
             phases.derivation = deriving.elapsed();
-            return (failed.verdict(&mut evidence), evidence, None);
+            return (
+                failed.verdict(&mut evidence),
+                evidence,
+                None,
+                None,
+                Vec::new(),
+            );
         }
     };
     phases.derivation = deriving.elapsed();
@@ -355,49 +500,238 @@ fn screen(
     let building = std::time::Instant::now();
     let matcher = match derived.matcher() {
         Ok(matcher) => matcher,
-        Err(failed) => return (failed.verdict(&mut evidence), evidence, None),
+        Err(failed) => {
+            return (
+                failed.verdict(&mut evidence),
+                evidence,
+                None,
+                None,
+                Vec::new(),
+            )
+        }
     };
     phases.matcher_build = building.elapsed();
     let matching = std::time::Instant::now();
     let mut verdict = BoundaryVerdict::Pass;
-    let mut check = |surface: Surface, at: &str, text: &str| {
-        for rule in matcher.find(text) {
-            if verdict == BoundaryVerdict::Pass {
-                verdict = BoundaryVerdict::Refuse { surface };
+    {
+        let mut check = |surface: Surface, at: &str, text: &str| {
+            for rule in matcher.find(text) {
+                if verdict == BoundaryVerdict::Pass {
+                    verdict = BoundaryVerdict::Refuse { surface };
+                }
+                evidence.push(derived.evidence(surface, at.to_owned(), rule));
             }
-            evidence.push(derived.evidence(surface, at.to_owned(), rule));
+        };
+        check(Surface::Branch, "branch-name", &request.branch_name);
+        check(Surface::Path, "target-directory", &request.target_directory);
+        check(Surface::Path, "directory", &request.directory);
+        check(Surface::Metadata, "source-branch", &request.branch);
+        check(Surface::CommitMessage, "export commit", &export_message());
+        for (index, message) in source.messages.iter().enumerate() {
+            check(
+                Surface::CommitMessage,
+                &format!("source commit {}", index + 1),
+                message,
+            );
         }
+        // Metadata matching finishes before workers borrow the shared matcher.
+    }
+    let metadata_matching = matching.elapsed();
+    let mut evidence = scope::screened(evidence, &matcher);
+    let extracting = std::time::Instant::now();
+    let budget = extract::Budget::default();
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(source.files.len().max(1));
+    phases.workers = workers;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    // Only containers spend decoded-byte budget. Ordinary files never wait for
+    // an earlier worker merely to finish scanning, so the pool keeps every core busy.
+    let mut containers = 0;
+    let budget_order: Vec<_> = source
+        .files
+        .iter()
+        .map(|file| {
+            if file.contents.starts_with(&[0x1f, 0x8b]) || file.contents.starts_with(b"PK\x03\x04")
+            {
+                let order = containers;
+                containers += 1;
+                Some(order)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let results = std::thread::scope(|scope_threads| {
+        let worker = || {
+            let next = &next;
+            let matcher = &matcher;
+            let derived = &derived;
+            let budget = &budget;
+            let mut results = Vec::new();
+            let mut matching_time = std::time::Duration::ZERO;
+            loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(file) = source.files.get(index) else {
+                    break;
+                };
+                let mut found = Vec::new();
+                let mut check = |surface, at: extract::Location<'_>, text: &str| {
+                    let started = std::time::Instant::now();
+                    for hit in matcher.hits(text) {
+                        let location = if surface == Surface::Content {
+                            content_at(at, text, hit.span.start)
+                        } else {
+                            at.path.to_owned()
+                        };
+                        // The locator has already been screened one path
+                        // segment at a time. Screen identity attribution
+                        // without screening the layer markers a second time.
+                        let raw = derived.evidence(surface, String::new(), hit.rule);
+                        let mut item = scope::screened(vec![raw], matcher).remove(0);
+                        if let Evidence::Term { at: kept, .. } = &mut item {
+                            *kept = location;
+                        }
+                        found.push(item);
+                    }
+                    matching_time += started.elapsed();
+                };
+                check(
+                    Surface::Path,
+                    extract::Location {
+                        path: &screen_path(matcher, &file.path),
+                        offset: 0,
+                        encoding: "",
+                    },
+                    &file.path,
+                );
+                let written = format!("{}/{}", request.target_directory, file.path);
+                check(
+                    Surface::Path,
+                    extract::Location {
+                        path: &screen_path(matcher, &written),
+                        offset: 0,
+                        encoding: "",
+                    },
+                    &written,
+                );
+                let extraction = extract::inspect(
+                    &file.contents,
+                    &file.path,
+                    budget,
+                    budget_order[index],
+                    |path, at, text| {
+                        check(
+                            if path {
+                                Surface::Path
+                            } else {
+                                Surface::Content
+                            },
+                            at,
+                            text,
+                        )
+                    },
+                    |path| screen_path(matcher, path),
+                );
+                let accepted = if extraction.readable {
+                    None
+                } else {
+                    patterns
+                        .iter()
+                        .position(|pattern| pattern.is_match(&file.path))
+                };
+                results.push((index, found, extraction, accepted));
+            }
+            (results, matching_time)
+        };
+        let mut handles = Vec::new();
+        for _ in 0..workers {
+            match std::thread::Builder::new().spawn_scoped(scope_threads, worker) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => break,
+            }
+        }
+        phases.workers = handles.len().max(1);
+        // If no thread could be started, the calling thread screens the same
+        // ordered queue. A partial pool also drains it without losing any file.
+        let (mut results, mut longest_matching) = if handles.is_empty() {
+            worker()
+        } else {
+            (Vec::new(), std::time::Duration::ZERO)
+        };
+        for handle in handles {
+            let (files, matching) = handle.join().expect("export screening worker");
+            results.extend(files);
+            longest_matching = longest_matching.max(matching);
+        }
+        results.sort_by_key(|result| result.0);
+        (results, longest_matching)
+    });
+    let (results, longest_matching) = results;
+    // Workers overlap. Report the longest worker's matcher time rather than
+    // summing CPU time across cores and presenting it as elapsed wall time.
+    phases.matching = metadata_matching + longest_matching;
+    phases.extraction = extracting.elapsed().saturating_sub(longest_matching);
+    phases.decoded_bytes = budget.bytes.load(Ordering::Relaxed);
+    let mut unreadable = None;
+    let mut accepted_files = Vec::new();
+    for (index, found, extraction, accepted) in results {
+        let file = &source.files[index];
+        if !found.is_empty() && verdict == BoundaryVerdict::Pass {
+            verdict = BoundaryVerdict::Refuse {
+                surface: Surface::Content,
+            };
+        }
+        evidence.extend(found);
+        if !extraction.readable {
+            phases.opaque_files += 1;
+            for (index, _) in patterns
+                .iter()
+                .enumerate()
+                .filter(|(_, pattern)| pattern.is_match(&file.path))
+            {
+                accepted_files.push(Accepted {
+                    path: file.path.clone(),
+                    pattern: request.accepted_opaque[index].clone(),
+                });
+            }
+            if (extraction.bounded || accepted.is_none()) && unreadable.is_none() {
+                unreadable = Some(file.path.clone());
+            }
+        }
+    }
+    (verdict, evidence, Some(matcher), unreadable, accepted_files)
+}
+
+/// Match spans are UTF-8 byte spans of the decoded run; translate UTF-16
+/// spans back into code units before adding the run's offset in its layer.
+fn content_at(at: extract::Location<'_>, text: &str, start: usize) -> String {
+    let displacement = if at.encoding.is_empty() {
+        start
+    } else {
+        text[..start].encode_utf16().count() * 2
     };
-    check(Surface::Branch, "branch-name", &request.branch_name);
-    check(Surface::Path, "target-directory", &request.target_directory);
-    check(Surface::Path, "directory", &request.directory);
-    check(Surface::Metadata, "source-branch", &request.branch);
-    check(Surface::CommitMessage, "export commit", &export_message());
-    for (index, message) in source.messages.iter().enumerate() {
-        check(
-            Surface::CommitMessage,
-            &format!("source commit {}", index + 1),
-            message,
-        );
+    let offset = at.offset + displacement;
+    if at.encoding.is_empty() {
+        format!("{}@{offset}", at.path)
+    } else {
+        format!("{}@{offset}:{}", at.path, at.encoding)
     }
-    for file in &source.files {
-        check(Surface::Path, &file.path, &file.path);
-        let written = format!("{}/{}", request.target_directory, file.path);
-        check(Surface::Path, &written, &written);
-        check(
-            Surface::Content,
-            &file.path,
-            &String::from_utf8_lossy(&file.contents),
-        );
-    }
-    phases.matching = matching.elapsed();
-    // What the export found is persisted, so its locators are screened by this matcher.
-    let evidence = scope::screened(evidence, &matcher);
-    (verdict, evidence, Some(matcher))
+}
+
+/// Only path values are screened: grammar markers and offsets remain literal.
+fn screen_path(matcher: &privateterms::Matcher, path: &str) -> String {
+    matcher.screen_locators(&[(privateterms::LocatorKind::Path, path)], 1)[0].to_string()
 }
 
 /// Write the export as one commit on the public base, and cut the branch at it.
-fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Result<String> {
+fn write_target(
+    checkout: &Path,
+    request: &ExportRequest,
+    files: &[File],
+    phases: &mut Phases,
+) -> Result<String> {
     if git::has_remote(checkout, "origin") {
         git::fetch(checkout, "origin")
             .map_err(because("its destination's base could not be fetched"))?;
@@ -420,7 +754,17 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
         .tree()
         .map_err(because("its destination's base cannot be read"))?;
 
-    let exported = build_tree(&repository, files)?;
+    let transferring = std::time::Instant::now();
+    let uploaded = (|| {
+        let tracked = lfs::tracked(checkout, &repository, &base_tree, request, files)?;
+        lfs::upload(checkout, files, &tracked, phases)
+    })();
+    phases.lfs += transferring.elapsed();
+    let uploaded = uploaded?;
+    phases.lfs_objects = uploaded.objects;
+    phases.lfs_bytes = uploaded.bytes;
+    let writing = std::time::Instant::now();
+    let exported = build_tree(&repository, files, &uploaded.pointers)?;
     let segments: Vec<&str> = request.target_directory.split('/').collect();
     let tree = place(&repository, Some(&base_tree), &segments, exported)?;
     if tree == base_tree.id() {
@@ -444,15 +788,20 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
     repository
         .reference(&reference, commit, false, EXPORT_SUBJECT)
         .map_err(because("its branch cannot be cut"))?;
+    phases.tree_write = writing.elapsed();
     Ok(commit.to_string())
 }
 
 /// The exported files as one tree, written into the destination's object store.
-fn build_tree(repository: &git2::Repository, files: &[File]) -> Result<git2::Oid> {
+fn build_tree(
+    repository: &git2::Repository,
+    files: &[File],
+    pointers: &[Option<Vec<u8>>],
+) -> Result<git2::Oid> {
     let mut root = Node::default();
-    for file in files {
+    for (index, file) in files.iter().enumerate() {
         let blob = repository
-            .blob(&file.contents)
+            .blob(pointers[index].as_deref().unwrap_or(&file.contents))
             .map_err(because("a file cannot be written"))?;
         let mode = if file.executable { 0o100755 } else { 0o100644 };
         root.insert(&file.path.split('/').collect::<Vec<_>>(), blob, mode);

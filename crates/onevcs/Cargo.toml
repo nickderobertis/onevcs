@@ -49,6 +49,9 @@ path = "src/main.rs"
 testing = []
 
 [dependencies]
+flate2 = { workspace = true }
+zip = { workspace = true }
+globset = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
 fs4 = { workspace = true }
