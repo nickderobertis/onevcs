@@ -1457,3 +1457,65 @@ fn the_published_repositorys_own_levels_sanitise_its_change_requests_body() {
         "Ported from a private service."
     );
 }
+
+#[test]
+fn identities_decide_each_others_terms_unless_they_disagree_and_the_published_repository_decides_its_own_prose(
+) {
+    let host = Boundary::new(REVIEWED);
+    let first = private_at(&host, SLUG, "work/a/quietharbor", &[]);
+    private_at(&host, "otherhold/lanternfish", "work/b/lanternfish", &[]);
+    let levels = Levels {
+        host,
+        checkout: first,
+    };
+    // A level above one identity's checkout decides a term another identity derives,
+    // when nothing above that identity names it.
+    levels.level(
+        "work/a",
+        "schema_version = 2\n[[replacements]]\nterm = \"lanternfish\"\nwith = \"a lamp\"\n",
+    );
+    assert_eq!(
+        levels.text("one lanternfish", json!([])).text(),
+        ["one a lamp"]
+    );
+    // Two identities whose levels name it differently reject it.
+    levels.level(
+        "work/b",
+        "schema_version = 2\n[[replacements]]\nterm = \"lanternfish\"\nwith = \"a torch\"\n",
+    );
+    let answered = levels.text("one lanternfish", json!([]));
+    assert_eq!(answered.verdict(), "refuse", "{}", answered.stdout);
+
+    // A change request's body is the published repository's: its own declaration decides
+    // the term over both.
+    let host = &levels.host;
+    let elsewhere = host.world.clone_of(&host.origin, "declare-destination");
+    std::fs::write(
+        elsewhere.join("private-terms.toml"),
+        "schema_version = 2\n[[replacements]]\nterm = \"lanternfish\"\nwith = \"a beacon\"\n",
+    )
+    .expect("a declaration");
+    host.world.git(&elsewhere, &["add", "-A"]);
+    host.world.git(
+        &elsewhere,
+        &["commit", "-q", "-m", "chore: declare replacements"],
+    );
+    host.world
+        .git(&elsewhere, &["push", "-q", "origin", "main"]);
+    host.world
+        .git(&host.public, &["pull", "-q", "origin", "main"]);
+    let (token, worktree) = host.session("across-identities");
+    std::fs::write(worktree.join("a.md"), "a generic example\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: add an example"]);
+    let before = host.origin_refs();
+    let output = host.publish(&token, &["--draft", "--body", "Lit by one lanternfish."]);
+    host.published(&output, &before, "the destination's own decision");
+    assert_eq!(host.world.change_request_body(1), "Lit by one a beacon.");
+    // …which a check of the same text, with no published repository, still refuses.
+    assert_eq!(
+        levels.text("one lanternfish", json!([])).verdict(),
+        "refuse"
+    );
+}

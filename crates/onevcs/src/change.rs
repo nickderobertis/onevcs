@@ -130,7 +130,11 @@ fn describe_within(
     // rewritten — and then it and the title are held to the boundary before the write.
     // The title stays reject-only, because it becomes the landed subject.
     let destination = &session.record.identity;
-    let screened = crate::boundary::evidence::screens(providers.hosting, destination, false)?;
+    let screened = crate::boundary::evidence::screens(
+        providers.hosting,
+        destination,
+        crate::boundary::evidence::Asked::Fresh,
+    )?;
     let body = if screened {
         crate::boundary::evidence::sanitized_prose(
             &description.body,

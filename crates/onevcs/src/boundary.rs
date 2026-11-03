@@ -831,7 +831,7 @@ pub fn sanitize_public_output_with_evidence(
     input: SanitizeInput,
     evidence: &mut Vec<Evidence>,
 ) -> Result<SanitizeAnswer> {
-    Ok(sanitize::sanitize(input, evidence).answer)
+    Ok(sanitize::sanitize(input, evidence))
 }
 
 /// The resolved terms of `request`'s scope with its caller layer: the one answer this

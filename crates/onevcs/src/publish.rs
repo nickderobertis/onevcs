@@ -1366,8 +1366,12 @@ fn publish_resolving(
     // messages, the branch, the title and the body — is held to the public boundary.
     // A change request's body is sanitised first, and the body it is opened with is the
     // one as published; a `local-direct` publication's every field stays reject-only.
-    let sanitise = context.effective != MergePolicy::LocalDirect;
-    let body = hold_to_the_boundary(context, &compared, Some(&subject), sanitise)?;
+    let body = if context.effective == MergePolicy::LocalDirect {
+        Body::AsGiven
+    } else {
+        Body::Sanitised
+    };
+    let body = hold_to_the_boundary(context, &compared, Some(&subject), body)?;
     let published = context.with_body(body);
     let context = &published;
     let environment = merge_path::comparison_env("origin", context.target.base());
@@ -1381,14 +1385,13 @@ fn publish_resolving(
 
 /// Hold what this publication would write to its destination to the public
 /// boundary: refused before any remote mutation where it carries a private term, and
-/// passed without a term being read where the destination is not public. With
-/// `sanitise`, the change request's body is sanitised before it is screened, and the
-/// body answered is the one to publish; otherwise it is the context's own.
+/// passed without a term being read where the destination is not public. The body
+/// answered is the one to publish.
 fn hold_to_the_boundary(
     context: &Context<'_>,
     compared: &str,
     title: Option<&str>,
-    sanitise: bool,
+    body: Body,
 ) -> Result<Option<String>> {
     let tip = context.branch.to_string();
     let base = git::tip(&context.repo, compared).map(|_| compared);
@@ -1403,7 +1406,7 @@ fn hold_to_the_boundary(
     // A publication that defers its checks asks the host nothing, its visibility
     // included: the answer this host last recorded stands for it.
     let hosting = context.adopt.is_none().then_some(context.hosting);
-    if sanitise {
+    if body == Body::Sanitised {
         return crate::boundary::evidence::guard_change_publication(
             hosting,
             &context.resolution.key,
@@ -1425,6 +1428,17 @@ fn hold_to_the_boundary(
         )?,
     }
     Ok(context.body.clone())
+}
+
+/// What a publication's boundary check does with the change request's body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Body {
+    /// Sanitise it — rewrite a declared replacement — before it is screened: a body a
+    /// change request is opened with.
+    Sanitised,
+    /// Screen it as it is: a `local-direct` publication, and every re-screen of a change
+    /// request already opened.
+    AsGiven,
 }
 
 /// The subject a publication of one branch would carry, or the refusal that none
@@ -2524,7 +2538,7 @@ fn resume_within(
     // Held again, under this resumption's own scope: what it may land under — a title,
     // a body — is new, and the commits are screened once more for the same reason.
     let compared = format!("origin/{}", context.target.base());
-    hold_to_the_boundary(context, &compared, context.title.as_deref(), false)?;
+    hold_to_the_boundary(context, &compared, context.title.as_deref(), Body::AsGiven)?;
     // A first publication's push names the branch and the head on its stream, and that
     // is what resolves its change request's URL and its landing back to the work. A
     // resumed one pushes nothing and its stream may hold nothing else, so it names
@@ -3027,7 +3041,7 @@ impl Landing<'_, '_> {
             // carries and a merge commit naming the branch the first screen passed, so no
             // journey can make this screen refuse what that one did not; it is asked because
             // every write to a remote is, and its refusals are held by `publication_boundary`.
-            hold_to_the_boundary(context, &compared, context.title.as_deref(), false)?;
+            hold_to_the_boundary(context, &compared, context.title.as_deref(), Body::AsGiven)?;
             // llmlint: ignore-end[changed_behavior_has_e2e]
             let environment = merge_path::comparison_env("origin", context.target.base());
             push_the_branch(context, stream, &environment, None)?;

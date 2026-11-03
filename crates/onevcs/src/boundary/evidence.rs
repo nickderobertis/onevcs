@@ -106,14 +106,22 @@ pub fn guard_change_publication(
     Ok(body)
 }
 
-/// Whether a write of short fields to `destination` is screened — refreshing its
-/// visibility, or with `unless_recorded` reading what this host recorded and asking the
-/// host only where nothing is — or the unavailable check that holds it.
-pub fn screens(hosting: &dyn Hosting, destination: &str, unless_recorded: bool) -> Result<bool> {
-    let screening = if unless_recorded {
-        visibility::screening_unless_recorded(hosting, destination)?
-    } else {
-        visibility::screening(hosting, destination)?
+/// How a write asks whether its destination is public.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// Refresh it from the host, unless a rule overrides it.
+    Fresh,
+    /// Read what this host recorded, and ask the host only where nothing is: a write a
+    /// caller makes many of to one repository, a reply to a comment.
+    UnlessRecorded,
+}
+
+/// Whether a write of short fields to `destination` is screened, or the unavailable
+/// check that holds it.
+pub fn screens(hosting: &dyn Hosting, destination: &str, asked: Asked) -> Result<bool> {
+    let screening = match asked {
+        Asked::Fresh => visibility::screening(hosting, destination)?,
+        Asked::UnlessRecorded => visibility::screening_unless_recorded(hosting, destination)?,
     };
     owed(screening, destination)
 }

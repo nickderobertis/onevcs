@@ -313,7 +313,11 @@ pub fn derive_with(
                 rule.rule.case_sensitive,
                 rule_key(&rule.rule.term, rule.rule.case_sensitive),
             );
-            let named = names(chain, caller, &rule.rule.term);
+            let decision = if names(chain, caller, &rule.rule.term) {
+                Decision::Named(rule.action.clone())
+            } else {
+                Decision::Unnamed
+            };
             let at = *index.entry(key).or_insert_with(|| {
                 merged.push(Merged {
                     identity: evidence_identity(&rule, chain),
@@ -322,7 +326,7 @@ pub fn derive_with(
                 });
                 merged.len() - 1
             });
-            merged[at].decide(origin.clone(), rule.action, named);
+            merged[at].decide(origin.clone(), decision);
         }
         for level in &chain.levels {
             phrases.extend(level.declaration.phrases.iter().cloned());
@@ -347,26 +351,43 @@ pub fn derive_with(
 struct Merged {
     rule: ResolvedRule,
     identity: String,
-    /// By identity (empty for the fallback-only chain): the action, and whether a level
-    /// or the caller named the term rather than leaving it at the default reject.
-    by: BTreeMap<String, (Action, bool)>,
+    /// What each identity's chains decided (the fallback-only chain's identity is empty).
+    by: BTreeMap<String, Decision>,
+}
+
+/// What one identity's chains made of a rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Decision {
+    /// No level and no caller entry named the term: the default reject.
+    Unnamed,
+    /// A level or the caller named it, or the identity's checkouts disagreed about it
+    /// (which rejects it, as a decision).
+    Named(Action),
+}
+
+impl Decision {
+    fn action(&self) -> Action {
+        match self {
+            Decision::Unnamed => Action::Reject,
+            Decision::Named(action) => action.clone(),
+        }
+    }
 }
 
 impl Merged {
     /// One checkout's resolution of the rule for `identity`. Where an identity's
     /// checkouts resolve it differently it is rejected — and that is a decision, which
     /// no other identity's chain can override.
-    fn decide(&mut self, identity: String, action: Action, named: bool) {
+    fn decide(&mut self, identity: String, decision: Decision) {
         match self.by.get_mut(&identity) {
             None => {
-                self.by.insert(identity, (action, named));
+                self.by.insert(identity, decision);
             }
-            Some((seen, decided)) => {
-                if *seen != action {
-                    *seen = Action::Reject;
-                    *decided = true;
-                } else {
-                    *decided |= named;
+            Some(seen) => {
+                if seen.action() != decision.action() {
+                    *seen = Decision::Named(Action::Reject);
+                } else if matches!(decision, Decision::Named(_)) {
+                    *seen = decision;
                 }
             }
         }
@@ -376,15 +397,16 @@ impl Merged {
     /// where its levels name the term; otherwise the one every identity whose levels
     /// name it agrees on; otherwise reject.
     fn resolved(mut self, published: Option<&str>) -> (ResolvedRule, String) {
-        let published = published
-            .and_then(|key| self.by.get(key))
-            .filter(|(_, named)| *named);
-        self.rule.action = match published {
-            Some((action, _)) => action.clone(),
+        let named = |decision: &Decision| match decision {
+            Decision::Named(action) => Some(action.clone()),
+            Decision::Unnamed => None,
+        };
+        self.rule.action = match published.and_then(|key| self.by.get(key)).and_then(named) {
+            Some(action) => action,
             None => {
-                let mut named = self.by.values().filter(|(_, named)| *named).map(|(a, _)| a);
-                match named.next() {
-                    Some(first) if named.all(|other| other == first) => first.clone(),
+                let mut decided = self.by.values().filter_map(named);
+                match decided.next() {
+                    Some(first) if decided.all(|other| other == first) => first,
                     _ => Action::Reject,
                 }
             }

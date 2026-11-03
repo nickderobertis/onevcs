@@ -3301,3 +3301,59 @@ fn release_pr_check_refuses_a_crate_manifest_it_reads_no_version_from() {
         "nothing is cut from a version it could not read"
     );
 }
+
+/// Where `tool` is on this process's `PATH`.
+#[cfg(target_os = "linux")]
+fn on_path(tool: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(tool))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("{tool} must be on PATH to run this journey"))
+}
+
+/// `just _ensure-strace`, with only what `bin` holds on `PATH`.
+#[cfg(target_os = "linux")]
+fn ensure_strace(bin: &Path) -> Output {
+    Command::new(on_path("just"))
+        .arg("_ensure-strace")
+        .current_dir(workspace_root())
+        .env_clear()
+        .env("PATH", bin)
+        .output()
+        .expect("just runs")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bootstrap_provisions_strace_or_refuses_naming_how_to_install_it() {
+    // `just bootstrap` provisions strace for the recovery tier's trace of the sanitise
+    // call. A host without it, and without a passwordless `sudo apt-get`, is refused with
+    // the command that installs it — never skipped.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let bin = scratch.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("a bin directory");
+    for tool in ["bash", "sh", "sed", "uname"] {
+        std::os::unix::fs::symlink(on_path(tool), bin.join(tool)).expect("a tool");
+    }
+    let refused = ensure_strace(&bin);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("strace is missing"), "{stderr}");
+    assert!(
+        stderr.contains("ACTION: install it — Debian/Ubuntu 'sudo apt-get install -y strace'"),
+        "{stderr}"
+    );
+
+    // Where it is already there the recipe says nothing and installs nothing.
+    let stub = bin.join("strace");
+    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("a stub");
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable");
+    let present = ensure_strace(&bin);
+    assert!(
+        present.status.success(),
+        "{}",
+        String::from_utf8_lossy(&present.stderr)
+    );
+    assert!(present.stdout.is_empty() && present.stderr.is_empty());
+}

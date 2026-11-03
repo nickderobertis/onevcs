@@ -319,8 +319,11 @@ pub fn reply_to_comment(providers: &Providers<'_>, request: &ReplyRequest) -> Re
     // asked anything that could write. A round answers many comments on one repository,
     // so the visibility this host recorded stands for each reply, and the host is asked
     // only where nothing is recorded.
-    let screened =
-        crate::boundary::evidence::screens(providers.hosting, &addressed.identity, true)?;
+    let screened = crate::boundary::evidence::screens(
+        providers.hosting,
+        &addressed.identity,
+        crate::boundary::evidence::Asked::UnlessRecorded,
+    )?;
     let text = if screened {
         crate::boundary::evidence::sanitized_prose(
             &request.body,

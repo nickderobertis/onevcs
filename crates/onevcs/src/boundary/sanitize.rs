@@ -25,14 +25,8 @@ use super::{
     TermAction, TermsAnswer, TermsRequest, TermsUnavailable, Unavailability, Unfixed, Visibility,
 };
 
-/// What sanitisation answered.
-pub struct Sanitized {
-    /// The answer.
-    pub answer: SanitizeAnswer,
-}
-
 /// Sanitise `input`, recording its phases where diagnostics are asked for.
-pub fn sanitize(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Sanitized {
+pub fn sanitize(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> SanitizeAnswer {
     let started = Instant::now();
     let mut phases = Phases::default();
     let answer = match judged(input, &mut phases, evidence) {
@@ -45,7 +39,7 @@ pub fn sanitize(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Sanitized
     };
     let phases = phases.ended(started);
     diagnostics::record_sanitize(&answer, &phases);
-    Sanitized { answer }
+    answer
 }
 
 /// The surface evidence names an entry of `surface` by.
