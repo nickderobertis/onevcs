@@ -290,10 +290,12 @@ pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)> {
     stl.extend_from_slice(&0u16.to_le_bytes());
     let xml = format!("<?xml version=\"1.0\"?><model xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" unit=\"millimeter\"><metadata name=\"Title\">{}</metadata><resources><object id=\"1\" type=\"model\"><mesh><vertices><vertex x=\"0\" y=\"0\" z=\"0\"/><vertex x=\"1\" y=\"0\" z=\"0\"/><vertex x=\"0\" y=\"1\" z=\"0\"/></vertices><triangles><triangle v1=\"0\" v2=\"1\" v3=\"2\"/></triangles></mesh></object></resources><build><item objectid=\"1\"/></build></model>\n", planted(plant, Carrier::ThreeMfMember));
     let relationships = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#;
-    let name = format!(
-        "3D/{}3dmodel.model",
-        planted(plant, Carrier::ThreeMfMemberName)
-    );
+    let name_term = planted(plant, Carrier::ThreeMfMemberName);
+    let name = if name_term.is_empty() {
+        "3D/3dmodel.model".to_owned()
+    } else {
+        format!("3D/{name_term}-3dmodel.model")
+    };
     vec![
         (
             "notes.md".into(),
@@ -460,6 +462,38 @@ mod tests {
                     assert_eq!(bytes, clean_bytes);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn member_name_plant_matches_whole_word_rules() {
+        let matcher = onevcs::TermMatcher::new(vec![onevcs::TermRule {
+            term: "quietharbor".into(),
+            mode: onevcs::TermMode::WholeWord,
+            case_sensitive: false,
+        }])
+        .unwrap();
+        let plant = Plant {
+            term: "quietharbor".into(),
+            carrier: Carrier::ThreeMfMemberName,
+        };
+        for planted in [false, true] {
+            let files = sample_set(planted.then_some(&plant));
+            let bytes = &files
+                .iter()
+                .find(|(name, _)| name == "model.3mf")
+                .unwrap()
+                .1;
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let found = (0..archive.len()).any(|index| {
+                !matcher
+                    .find(archive.by_index(index).unwrap().name())
+                    .is_empty()
+            });
+            assert_eq!(
+                found, planted,
+                "ZIP member name must carry a whole-word term exactly when planted"
+            );
         }
     }
 
