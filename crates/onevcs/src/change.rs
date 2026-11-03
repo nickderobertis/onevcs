@@ -125,22 +125,40 @@ fn describe_within(
     if let Some(title) = &description.title {
         session.hold_to_repository_policy(title)?;
     }
-    // A description is written to the host as it is, and a drafter's finished text is
-    // exactly what reaches a reviewer: so it is held to the boundary before the write.
-    let mut fields = vec![(Surface::Body, description.body.as_str())];
-    if let Some(title) = &description.title {
-        fields.push((Surface::Title, title));
-    }
-    crate::boundary::evidence::guard_fields(
+    // A description is written to the host, and a drafter's finished text is exactly
+    // what reaches a reviewer: so its body is sanitised — a declared replacement
+    // rewritten — and then it and the title are held to the boundary before the write.
+    // The title stays reject-only, because it becomes the landed subject.
+    let destination = &session.record.identity;
+    let screened = crate::boundary::evidence::screens(
         providers.hosting,
-        &session.record.identity,
-        &fields,
-        &description.term_scope,
+        destination,
+        crate::boundary::evidence::Asked::Fresh,
     )?;
+    let body = if screened {
+        crate::boundary::evidence::sanitized_prose(
+            &description.body,
+            destination,
+            &description.term_scope,
+        )?
+    } else {
+        description.body.clone()
+    };
+    if screened {
+        let mut fields = vec![(Surface::Body, body.as_str())];
+        if let Some(title) = &description.title {
+            fields.push((Surface::Title, title));
+        }
+        crate::boundary::evidence::screen_fields(&fields, &description.term_scope)?;
+    }
     session
         .host
-        .describe_change(&change, description.title.as_deref(), &description.body)?;
-    record_description(&session, &change, description);
+        .describe_change(&change, description.title.as_deref(), &body)?;
+    let published = ChangeDescription {
+        body,
+        ..description.clone()
+    };
+    record_description(&session, &change, &published);
     session.read(&change)
 }
 

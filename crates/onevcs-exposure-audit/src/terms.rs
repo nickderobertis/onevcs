@@ -336,6 +336,8 @@ mod tests {
                 term: "nothing-derived".into(),
                 action: ExceptionAction::Drop,
             }],
+            replacements: Vec::new(),
+            phrases: Vec::new(),
         });
         let (terms, refused) = Terms::build(&[quiet], &public(), &PublicPhrases::default());
         let terms = terms.expect("compiles");

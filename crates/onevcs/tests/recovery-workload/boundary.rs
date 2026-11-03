@@ -97,17 +97,21 @@ fn boundary_telemetry_schema_matches_the_producer() {
 
 /// What a child process wrote, how it ended, its peak resident memory, and how long
 /// it ran.
-struct Measured {
-    status: std::process::ExitStatus,
-    stdout: String,
-    stderr: String,
-    peak_rss_kib: u64,
-    wall_ms: u64,
+pub(super) struct Measured {
+    pub status: std::process::ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+    pub peak_rss_kib: u64,
+    pub wall_ms: u64,
 }
 
 /// Run the release binary with `args` over `workload`, reaping it with `wait4` so its
 /// own resource usage is read rather than this process's children's in aggregate.
-fn measured(workload: &boundary::Workload, args: &[&str], diagnostics: &Path) -> Measured {
+pub(super) fn measured(
+    workload: &boundary::Workload,
+    args: &[&str],
+    diagnostics: &Path,
+) -> Measured {
     use std::os::unix::process::ExitStatusExt;
     let mut command = std::process::Command::new(binary());
     command
@@ -157,7 +161,7 @@ fn measured(workload: &boundary::Workload, args: &[&str], diagnostics: &Path) ->
 }
 
 /// The last diagnostics line the binary wrote for `check`.
-fn diagnostics_of(path: &Path, check: &str) -> serde_json::Value {
+pub(super) fn diagnostics_of(path: &Path, check: &str) -> serde_json::Value {
     let text = std::fs::read_to_string(path).expect("the binary wrote its diagnostics");
     text.lines()
         .rev()
@@ -166,7 +170,7 @@ fn diagnostics_of(path: &Path, check: &str) -> serde_json::Value {
         .unwrap_or_else(|| panic!("no {check} line in {text}"))
 }
 
-fn micros(line: &serde_json::Value, key: &str) -> u64 {
+pub(super) fn micros(line: &serde_json::Value, key: &str) -> u64 {
     line[key]
         .as_u64()
         .unwrap_or_else(|| panic!("{key} in {line}"))

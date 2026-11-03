@@ -26,9 +26,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::diagnostics::Phases;
-use super::matcher::Matcher;
 use super::scope::{self, Derived, Failed};
 use super::{BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
+use privateterms::Matcher;
 
 /// Everything one publication is about to write.
 pub struct Outgoing<'a> {
@@ -55,6 +55,9 @@ pub struct Screened {
     pub evidence: Vec<Evidence>,
     /// The timings and counts, which name nothing.
     pub phases: Phases,
+    /// The matcher the call compiled, where it got that far: what screens the locators
+    /// a refusal prints.
+    pub matcher: Option<Matcher>,
 }
 
 /// One file of one commit against one parent.
@@ -77,14 +80,15 @@ pub fn screen(outgoing: &Outgoing<'_>, scope: &TermScope) -> Screened {
     let started = Instant::now();
     let mut phases = Phases::default();
     let mut evidence = Vec::new();
-    let verdict = match judged(outgoing, scope, &mut phases, &mut evidence) {
-        Ok(verdict) => verdict,
-        Err(failed) => failed.verdict(&mut evidence),
+    let (verdict, matcher) = match judged(outgoing, scope, &mut phases, &mut evidence) {
+        Ok((verdict, matcher)) => (verdict, Some(matcher)),
+        Err(failed) => (failed.verdict(&mut evidence), None),
     };
     Screened {
         verdict,
         evidence,
         phases: phases.ended(started),
+        matcher,
     }
 }
 
@@ -94,7 +98,7 @@ fn judged(
     scope: &TermScope,
     phases: &mut Phases,
     evidence: &mut Vec<Evidence>,
-) -> Result<BoundaryVerdict, Failed> {
+) -> Result<(BoundaryVerdict, Matcher), Failed> {
     let deriving = Instant::now();
     let derived = scope::derive(scope);
     phases.derivation = deriving.elapsed();
@@ -147,7 +151,17 @@ fn judged(
         judge.change(change);
     }
     phases.matching = matching.elapsed();
-    Ok(judge.verdict)
+    let verdict = judge.verdict;
+    // What this screen found is persisted by its guard, so its locators are screened by
+    // this call's matcher before it is handed back.
+    *evidence = scope::screened(std::mem::take(evidence), &matcher);
+    Ok((verdict, matcher))
+}
+
+/// What git said went wrong, as its error class and code: its message names the
+/// repository's path, and an unavailable check redacts every locator.
+fn git_problem(error: &git2::Error) -> String {
+    format!("{:?} ({:?})", error.class(), error.code())
 }
 
 /// How evidence names a short field: the surface's own wire word.
@@ -163,32 +177,43 @@ type Read = (Vec<Commit>, Vec<Change>);
 /// Every outgoing commit, and every file each changes against each parent.
 fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
     let repository = git2::Repository::open(outgoing.repo)
-        .map_err(|error| format!("the repository cannot be opened: {error}"))?;
+        .map_err(|error| format!("the repository cannot be opened: {}", git_problem(&error)))?;
     let tip = repository
         .revparse_single(outgoing.tip)
         .and_then(|object| object.peel_to_commit())
-        .map_err(|error| format!("the published revision does not resolve: {error}"))?
+        .map_err(|error| {
+            format!(
+                "the published revision does not resolve: {}",
+                git_problem(&error)
+            )
+        })?
         .id();
     let mut walk = repository
         .revwalk()
-        .map_err(|error| format!("history cannot be walked: {error}"))?;
+        .map_err(|error| format!("history cannot be walked: {}", git_problem(&error)))?;
     walk.push(tip)
         .and_then(|()| walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::REVERSE))
-        .map_err(|error| format!("history cannot be walked: {error}"))?;
+        .map_err(|error| format!("history cannot be walked: {}", git_problem(&error)))?;
     if let Some(base) = outgoing.base {
         let base = repository
             .revparse_single(base)
             .and_then(|object| object.peel_to_commit())
-            .map_err(|error| format!("the destination base does not resolve: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "the destination base does not resolve: {}",
+                    git_problem(&error)
+                )
+            })?;
         walk.hide(base.id())
-            .map_err(|error| format!("history cannot be walked: {error}"))?;
+            .map_err(|error| format!("history cannot be walked: {}", git_problem(&error)))?;
     }
     let mut commits = Vec::new();
     for id in walk {
-        let id = id.map_err(|error| format!("history cannot be walked: {error}"))?;
+        let id =
+            id.map_err(|error| format!("history cannot be walked: {}", git_problem(&error)))?;
         let commit = repository
             .find_commit(id)
-            .map_err(|error| format!("a commit cannot be read: {error}"))?;
+            .map_err(|error| format!("a commit cannot be read: {}", git_problem(&error)))?;
         commits.push(Commit {
             id,
             parents: commit.parent_ids().collect(),
@@ -201,7 +226,7 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
         let tree = repository
             .find_commit(commit.id)
             .and_then(|c| c.tree())
-            .map_err(|error| format!("a commit's tree cannot be read: {error}"))?;
+            .map_err(|error| format!("a commit's tree cannot be read: {}", git_problem(&error)))?;
         // A root commit is diffed against nothing; every other one against each parent.
         let mut parent_trees = Vec::new();
         for parent in &commit.parents {
@@ -209,7 +234,9 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
                 repository
                     .find_commit(*parent)
                     .and_then(|c| c.tree())
-                    .map_err(|error| format!("a parent's tree cannot be read: {error}"))?,
+                    .map_err(|error| {
+                        format!("a parent's tree cannot be read: {}", git_problem(&error))
+                    })?,
             ));
         }
         if parent_trees.is_empty() {
@@ -220,7 +247,7 @@ fn read(outgoing: &Outgoing<'_>) -> Result<Read, String> {
             options.ignore_submodules(false).include_typechange(true);
             let diff = repository
                 .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
-                .map_err(|error| format!("a commit cannot be diffed: {error}"))?;
+                .map_err(|error| format!("a commit cannot be diffed: {}", git_problem(&error)))?;
             for delta in diff.deltas() {
                 changes.push(change(&repository, &delta)?);
             }
@@ -255,7 +282,7 @@ fn change(repository: &git2::Repository, delta: &git2::DiffDelta<'_>) -> Result<
             Ok(blob) => Ok(Some(blob)),
             // A submodule's commit is not an object of this repository.
             Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
-            Err(error) => Err(format!("a blob cannot be read: {error}")),
+            Err(error) => Err(format!("a blob cannot be read: {}", git_problem(&error))),
         }
     };
     let text = |blob: &git2::Blob<'_>| String::from_utf8_lossy(blob.content()).into_owned();
@@ -274,15 +301,15 @@ fn change(repository: &git2::Repository, delta: &git2::DiffDelta<'_>) -> Result<
             let mut options = git2::DiffOptions::new();
             options.context_lines(0);
             let patch = git2::Patch::from_blobs(&old, None, &new, None, Some(&mut options))
-                .map_err(|error| format!("a file cannot be diffed: {error}"))?;
+                .map_err(|error| format!("a file cannot be diffed: {}", git_problem(&error)))?;
             for hunk in 0..patch.num_hunks() {
                 let lines = patch
                     .num_lines_in_hunk(hunk)
-                    .map_err(|error| format!("a file cannot be diffed: {error}"))?;
+                    .map_err(|error| format!("a file cannot be diffed: {}", git_problem(&error)))?;
                 for at in 0..lines {
-                    let line = patch
-                        .line_in_hunk(hunk, at)
-                        .map_err(|error| format!("a file cannot be diffed: {error}"))?;
+                    let line = patch.line_in_hunk(hunk, at).map_err(|error| {
+                        format!("a file cannot be diffed: {}", git_problem(&error))
+                    })?;
                     if line.origin() != '+' {
                         continue;
                     }

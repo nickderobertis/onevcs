@@ -374,14 +374,14 @@ fn a_phrase_file_this_build_cannot_read_exactly_makes_the_check_unavailable_unle
     assert!(host.text("a generic example", None).passed());
 }
 
-/// The private evidence a held write recorded, read off the path its stderr names.
-fn kept(stderr: &str) -> Value {
-    let path = stderr
-        .split("recorded privately at ")
-        .nth(1)
-        .and_then(|rest| rest.split(", on this host only").next())
-        .unwrap_or_else(|| panic!("the reason names where the detail is: {stderr}"));
-    serde_json::from_str(&std::fs::read_to_string(path).expect("the evidence")).expect("JSON")
+/// The private evidence a held write recorded, found by listing the evidence
+/// directory: an unavailable check prints its path redacted.
+fn kept(home: &Path, stderr: &str) -> Value {
+    assert!(
+        stderr.contains("recorded privately at <redacted path 1>, on this host only"),
+        "the reason says the detail was kept, at a redacted path: {stderr}"
+    );
+    crate::world::newest_evidence(home)
 }
 
 fn write(root: &Path, path: &str, contents: &str) {
@@ -484,7 +484,7 @@ fn a_phrase_file_this_build_refuses_holds_a_publication_unless_its_scope_matches
         assert_eq!(host.origin_refs(), before, "{why}: the origin moved");
         assert!(!opened_any(&host), "{why}: a change request was opened");
         // What was wrong is kept privately, naming the file and never a phrase.
-        let evidence = kept(&stderr);
+        let evidence = kept(&host.world.home(), &stderr);
         let entries = evidence.as_array().expect("a list of evidence");
         assert_eq!(entries.len(), 1, "{evidence}");
         assert_eq!(entries[0]["reason"], "public-phrases", "{evidence}");

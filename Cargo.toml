@@ -116,12 +116,16 @@ onemessagebus = "0.9.1"
 # rather than in whatever order a hash map yielded.
 schemars = { version = "1", features = ["preserve_order"] }
 
-# The one matcher the public boundary check runs every term through: one automaton
-# over thousands of terms, matched in a single pass over megabytes of a publication.
-# Already in the graph behind `regex`.
-aho-corasick = "1"
-# NFKC, so a full-width or compatibility spelling of a private term is the term. The
-# same ICU family `icu_properties` is from, and already in the graph behind `url`.
+# The private-terms specification's SDK: the declaration model and its TOML and YAML
+# bindings, layered resolution, the one matcher every term check runs through, and
+# replacement and locator screening. onevcs derives terms from private repositories
+# and holds its publications to them; finding a term is this crate's, so onevcs finds
+# one exactly as every other consumer of it does.
+privateterms = "0.1.0"
+# NFKC, so a full-width or compatibility spelling of a term compares as the term when
+# derivation narrows a name or an exception names a rule. The same normalization the
+# matcher applies; the same ICU family `icu_properties` is from, and already in the
+# graph behind `url` and `privateterms`.
 icu_normalizer = "2.2"
 # The exposure audit's GitHub client, built the way `onemessagebus` builds its own —
 # rustls over ring with the platform's root certificates — so it adds no crate and

@@ -3301,3 +3301,108 @@ fn release_pr_check_refuses_a_crate_manifest_it_reads_no_version_from() {
         "nothing is cut from a version it could not read"
     );
 }
+
+/// Where `tool` is on this process's `PATH`.
+#[cfg(target_os = "linux")]
+fn on_path(tool: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(tool))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("{tool} must be on PATH to run this journey"))
+}
+
+/// `just _ensure-strace`, with only what `bin` holds on `PATH`.
+#[cfg(target_os = "linux")]
+fn ensure_strace(bin: &Path) -> Output {
+    Command::new(on_path("just"))
+        .arg("_ensure-strace")
+        .current_dir(workspace_root())
+        .env_clear()
+        .env("PATH", bin)
+        .output()
+        .expect("just runs")
+}
+
+/// Write an executable shell script at `path`.
+#[cfg(target_os = "linux")]
+fn executable(path: &Path, body: &str) {
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).expect("a stub");
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable");
+}
+
+// llmlint: ignore-block[e2e_not_mocked] `sudo` and `apt-get` are stand-ins because the
+// boundary they replace is installing a package on the host running the suite, which no
+// journey may do; what is under test is the recipe's branching on what they answer, and
+// the real `just`, `bash` and recipe run unmodified.
+#[cfg(target_os = "linux")]
+#[test]
+fn bootstrap_installs_strace_through_apt_get_or_refuses_naming_how_to_install_it() {
+    // `just bootstrap` provisions strace for the recovery tier's trace of the sanitise call.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let bin = scratch.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("a bin directory");
+    for tool in ["bash", "chmod", "sed", "sh", "true", "uname"] {
+        std::os::unix::fs::symlink(on_path(tool), bin.join(tool)).expect("a tool");
+    }
+
+    // A host without strace and without a passwordless `sudo apt-get` is refused with
+    // the command that installs it — never skipped.
+    let refused = ensure_strace(&bin);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("strace is missing"), "{stderr}");
+    assert!(
+        stderr.contains("ACTION: install it — Debian/Ubuntu 'sudo apt-get install -y strace'"),
+        "{stderr}"
+    );
+
+    // With a passwordless `sudo` and `apt-get`, it installs strace and nothing else.
+    let asked = scratch.path().join("asked");
+    executable(&bin.join("sudo"), "[ \"$1\" = -n ] && shift\nexec \"$@\"\n");
+    executable(
+        &bin.join("apt-get"),
+        &format!(
+            "echo \"$*\" >> {asked}\n[ \"$1\" = install ] && printf '#!/bin/sh\\nexit 0\\n' > {bin}/strace \
+             && chmod 755 {bin}/strace\nexit 0\n",
+            asked = asked.display(),
+            bin = bin.display()
+        ),
+    );
+    let installed = ensure_strace(&bin);
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&asked).expect("apt-get was asked"),
+        "update -qq\ninstall -y -qq strace\n"
+    );
+    assert!(
+        bin.join("strace").is_file(),
+        "the install put strace on PATH"
+    );
+
+    // Where it is already there the recipe asks nothing and says nothing.
+    std::fs::remove_file(&asked).expect("cleared");
+    let present = ensure_strace(&bin);
+    assert!(present.status.success());
+    assert!(present.stdout.is_empty() && present.stderr.is_empty());
+    assert!(!asked.exists(), "nothing was installed");
+
+    // An install that fails fails the recipe, so bootstrap does not go on without it.
+    std::fs::remove_file(bin.join("strace")).expect("removed");
+    executable(
+        &bin.join("apt-get"),
+        "echo 'E: Unable to locate package strace' >&2\nexit 100\n",
+    );
+    let failed = ensure_strace(&bin);
+    assert_ne!(failed.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("Unable to locate package strace"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]

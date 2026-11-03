@@ -16,6 +16,30 @@ budgets:
       building the matcher and matching 10 MiB across 1,000 paths plus message, branch,
       title and body. Detail, unbudgeted: the phases, the check process's peak resident
       memory, and one export of the same files.
+  # Basis: estimate (from public-boundary-check-latency's 0.5 s for deriving the same
+  # 20-repository scope and matching 10 MiB in process; a 64 KiB input matches in well
+  # under a millisecond, so derivation and process start dominate, and 0.1 s is allowed
+  # for process start and the level reads). Measurement source: telemetry, the record
+  # the onevcs-recovery journey `boundary_sanitize.rs` writes. Check runtime: about 1
+  # second.
+  - id: public-boundary-sanitize-latency
+    measure: reported
+    command: [node, scripts/boundary-sanitize-budget.mjs]
+    unit: seconds
+    direction: max
+    threshold: 0.6
+    description: >-
+      Wall time of one `onevcs boundary sanitize` process, spawned and awaited as a
+      plan-store write's policy call is, from spawn to exit, over one screened write as
+      the largest real ones are: a 64 KiB body (GitHub's issue-body ceiling) plus 40
+      metadata entries holding 30 replaceable hits, a 20-repository private scope at 100
+      terms each, and three level files above the checkouts (one ancestor, the home
+      directory, the $ONEVCS_HOME fallback) declaring 10 replacements, on a warm
+      filesystem cache. Inner measure: a screened write's whole wall time is dominated by
+      the backend's own write request, which differs per backend; the sanitise call is the
+      only part of it this change adds. Detail, unbudgeted: its phases (term derivation and
+      level-file reads, matcher build, the replacement pass, the re-match), the same input
+      through `boundary check`, and the process's peak resident memory.
   # Basis: design (the manager's rulings: a non-empty head_activity answer reused for
   # 300 s; at most 26). Measurement source: telemetry, the record the onevcs-recovery
   # journey `draft_hold.rs` writes. Check runtime: about 2 seconds.

@@ -314,17 +314,32 @@ pub fn reply_to_comment(providers: &Providers<'_>, request: &ReplyRequest) -> Re
         key: key.to_owned(),
         label: label.map(str::to_owned),
     };
-    let body = compose(&request.body, &marker);
-    // A reply is written to the host as it is, so it is held to the boundary before
-    // the host is asked anything that could write. A round answers many comments on one
-    // repository, so the visibility this host recorded stands for each reply, and the
-    // host is asked only where nothing is recorded.
-    crate::boundary::evidence::guard_fields_unless_recorded(
+    // A reply is written to the host, so it is sanitised — a declared replacement
+    // rewritten — and then held to the boundary, marker included, before the host is
+    // asked anything that could write. A round answers many comments on one repository,
+    // so the visibility this host recorded stands for each reply, and the host is asked
+    // only where nothing is recorded.
+    let screened = crate::boundary::evidence::screens(
         providers.hosting,
         &addressed.identity,
-        &[(Surface::Body, body.as_str())],
-        &request.term_scope,
+        crate::boundary::evidence::Asked::UnlessRecorded,
     )?;
+    let text = if screened {
+        crate::boundary::evidence::sanitized_prose(
+            &request.body,
+            &addressed.identity,
+            &request.term_scope,
+        )?
+    } else {
+        request.body.clone()
+    };
+    let body = compose(&text, &marker);
+    if screened {
+        crate::boundary::evidence::screen_fields(
+            &[(Surface::Body, body.as_str())],
+            &request.term_scope,
+        )?;
+    }
     let _turn = lock::exclusive(&format!("review-reply:{}:{key}", addressed.change_url))?;
     let reply = if request.verified_absent {
         addressed

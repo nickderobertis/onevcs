@@ -1,5 +1,10 @@
 //! Reading a private repository's committed manifests and term declaration.
 //!
+//! The declaration is whichever of `privateterms::FILE_NAMES` the commit holds at its
+//! root — two of them is ambiguous and refused — read by `privateterms::parse` as a
+//! repository level, so its model and both encodings are the crate's and only where it
+//! is read from is this module's.
+//!
 //! Everything is read out of the commit the checkout's `HEAD` names, through git's
 //! object store: a file somebody is editing, has not added, or has ignored is never
 //! read, so what a check derives is what the repository has committed and nothing a
@@ -21,20 +26,48 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::{PrivateTerms, TermSource, PRIVATE_TERMS_FILE, PRIVATE_TERMS_VERSION};
+use privateterms::{Format, LevelKind, FILE_NAMES};
 
-/// A failure, in words that name a manifest and never a term.
+use super::{PrivateTerms, TermSource};
+
+/// A failure, in words that can quote a path git names or what a manifest declares.
 pub type Failure = String;
 
+/// Why a committed tree could not be read for its terms, split by whether the words
+/// for it can carry a locator.
+#[derive(Debug)]
+pub enum SourceFailure {
+    /// The committed declaration is refused: its file's fixed name and the
+    /// `privateterms` crate's own words, which name no content and no path.
+    Declaration(String),
+    /// Anything else — git, a manifest — in words that can quote a path, a member
+    /// pattern or a manifest's content, so a diagnostic says only that it happened.
+    Unreadable(Failure),
+}
+
+impl SourceFailure {
+    /// The words of the failure, for a caller of the library that asked about one
+    /// repository itself.
+    pub fn into_words(self) -> String {
+        match self {
+            SourceFailure::Declaration(words) | SourceFailure::Unreadable(words) => words,
+        }
+    }
+}
+
 /// The term source a registered checkout's committed tree describes.
-pub fn committed_source(checkout: &Path, identity: &str) -> Result<TermSource, Failure> {
+pub fn committed_source(checkout: &Path, identity: &str) -> Result<TermSource, SourceFailure> {
     let (owner, name) = parts(identity);
-    let repository = git2::Repository::open(checkout)
-        .map_err(|error| format!("the checkout is not a readable repository: {error}"))?;
+    let unreadable = SourceFailure::Unreadable;
+    let repository = git2::Repository::open(checkout).map_err(|error| {
+        unreadable(format!(
+            "the checkout is not a readable repository: {error}"
+        ))
+    })?;
     let tree = match repository.head() {
         Ok(head) => Some(
             head.peel_to_tree()
-                .map_err(|error| format!("HEAD names no readable tree: {error}"))?,
+                .map_err(|error| unreadable(format!("HEAD names no readable tree: {error}")))?,
         ),
         Err(error)
             if error.code() == git2::ErrorCode::UnbornBranch
@@ -42,7 +75,7 @@ pub fn committed_source(checkout: &Path, identity: &str) -> Result<TermSource, F
         {
             None
         }
-        Err(error) => return Err(format!("HEAD cannot be read: {error}")),
+        Err(error) => return Err(unreadable(format!("HEAD cannot be read: {error}"))),
     };
     let mut packages = BTreeSet::new();
     let mut declaration = None;
@@ -51,12 +84,10 @@ pub fn committed_source(checkout: &Path, identity: &str) -> Result<TermSource, F
             repository: &repository,
             tree,
         };
-        cargo(&committed, &mut packages)?;
-        npm(&committed, &mut packages)?;
-        python(&committed, &mut packages)?;
-        if let Some(text) = committed.text(PRIVATE_TERMS_FILE)? {
-            declaration = Some(parse_declaration(&text)?);
-        }
+        cargo(&committed, &mut packages).map_err(unreadable)?;
+        npm(&committed, &mut packages).map_err(unreadable)?;
+        python(&committed, &mut packages).map_err(unreadable)?;
+        declaration = committed_declaration(&committed)?;
     }
     Ok(TermSource {
         identity: identity.to_owned(),
@@ -83,18 +114,64 @@ fn parts(identity: &str) -> (Option<String>, String) {
     }
 }
 
-/// A declaration's text, held to its schema.
-pub fn parse_declaration(text: &str) -> Result<PrivateTerms, Failure> {
-    let declaration: PrivateTerms = toml::from_str(text)
-        .map_err(|error| format!("{PRIVATE_TERMS_FILE} does not parse: {}", error.message()))?;
-    if declaration.schema_version != PRIVATE_TERMS_VERSION {
-        return Err(format!(
-            "{PRIVATE_TERMS_FILE} declares schema_version {}; this build reads \
-             {PRIVATE_TERMS_VERSION}",
-            declaration.schema_version
-        ));
+/// The committed declaration of the checkout at `checkout`, read out of the commit its
+/// `HEAD` names, or `None` where it has none or no commit.
+pub fn committed_declaration_at(checkout: &Path) -> Result<Option<PrivateTerms>, SourceFailure> {
+    let unreadable = SourceFailure::Unreadable;
+    let repository = git2::Repository::open(checkout).map_err(|error| {
+        unreadable(format!(
+            "the checkout is not a readable repository: {error}"
+        ))
+    })?;
+    let tree = match repository.head() {
+        Ok(head) => head
+            .peel_to_tree()
+            .map_err(|error| unreadable(format!("HEAD names no readable tree: {error}")))?,
+        Err(error)
+            if error.code() == git2::ErrorCode::UnbornBranch
+                || error.code() == git2::ErrorCode::NotFound =>
+        {
+            return Ok(None)
+        }
+        Err(error) => return Err(unreadable(format!("HEAD cannot be read: {error}"))),
+    };
+    committed_declaration(&Committed {
+        repository: &repository,
+        tree: &tree,
+    })
+}
+
+/// The repository's committed declaration, under whichever of the crate's file names
+/// the commit holds, or `None` where it holds none. A failure names the file and the
+/// problem, and never what it declares.
+fn committed_declaration(committed: &Committed<'_>) -> Result<Option<PrivateTerms>, SourceFailure> {
+    let mut present = Vec::new();
+    for name in FILE_NAMES {
+        if let Some(bytes) = committed.bytes(name).map_err(SourceFailure::Unreadable)? {
+            present.push((name, bytes));
+        }
     }
-    Ok(declaration)
+    let (name, bytes) = match present.len() {
+        0 => return Ok(None),
+        1 => present.remove(0),
+        _ => {
+            return Err(SourceFailure::Declaration(
+                "more than one private-terms declaration is committed at the root, so which \
+                 applies is ambiguous (ambiguous-files)"
+                    .to_owned(),
+            ))
+        }
+    };
+    let format = if name.ends_with(".toml") {
+        Format::Toml
+    } else {
+        Format::Yaml
+    };
+    privateterms::parse(&bytes, format, LevelKind::Repository)
+        .map(Some)
+        .map_err(|refused| {
+            SourceFailure::Declaration(format!("the committed {name} is refused: {refused}"))
+        })
 }
 
 /// One commit's tree, read file by file.
@@ -106,6 +183,13 @@ struct Committed<'r> {
 impl Committed<'_> {
     /// The committed text at `path`, or `None` where nothing is committed there.
     fn text(&self, path: &str) -> Result<Option<String>, Failure> {
+        self.bytes(path)?
+            .map(|bytes| String::from_utf8(bytes).map_err(|_| format!("{path} is not UTF-8")))
+            .transpose()
+    }
+
+    /// The committed bytes at `path`, or `None` where nothing is committed there.
+    fn bytes(&self, path: &str) -> Result<Option<Vec<u8>>, Failure> {
         let entry = match self.tree.get_path(Path::new(path)) {
             Ok(entry) => entry,
             Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
@@ -115,9 +199,7 @@ impl Committed<'_> {
             .to_object(self.repository)
             .and_then(|object| object.peel_to_blob())
             .map_err(|error| format!("{path} is not a readable file: {error}"))?;
-        String::from_utf8(blob.content().to_vec())
-            .map(Some)
-            .map_err(|_| format!("{path} is not UTF-8"))
+        Ok(Some(blob.content().to_vec()))
     }
 
     /// Every committed directory a member pattern names, as paths from the root.

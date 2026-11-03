@@ -1,0 +1,1098 @@
+{
+  "schema_version": 4,
+  "inspect": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "InspectRequest",
+      "description": "What `onevcs boundary inspect` reads: one repository.",
+      "type": "object",
+      "properties": {
+        "repository": {
+          "description": "An identity key, a registered alias, an origin URL, or a path.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repository"
+      ]
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "InspectAnswer",
+      "description": "What `onevcs boundary inspect` answers: its visibility and nothing else.",
+      "type": "object",
+      "properties": {
+        "visibility": {
+          "description": "Its visibility, refreshed from the host unless a rule overrides it.",
+          "$ref": "#/$defs/Visibility"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "visibility"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Whether a repository is public.\n\nOnly [`Public`](Visibility::Public) is: see [`effective`](Visibility::effective).",
+          "oneOf": [
+            {
+              "description": "Anybody can read it.",
+              "type": "string",
+              "const": "public"
+            },
+            {
+              "description": "It is private, or internal to an organisation.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "Nobody has said. Treated as private.",
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "check": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "BoundaryInput",
+      "description": "What a caller is about to write somewhere, put to the check.",
+      "type": "object",
+      "properties": {
+        "destination": {
+          "description": "Where it is going. Anything but `public` passes without a term being read.",
+          "$ref": "#/$defs/Visibility"
+        },
+        "text": {
+          "description": "Prose and file contents.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "paths": {
+          "description": "Paths it names or writes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "metadata": {
+          "description": "Branch names, titles, commit messages and every other short field.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "scope": {
+          "description": "Which private repositories the terms come from.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "destination"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Whether a repository is public.\n\nOnly [`Public`](Visibility::Public) is: see [`effective`](Visibility::effective).",
+          "oneOf": [
+            {
+              "description": "Anybody can read it.",
+              "type": "string",
+              "const": "public"
+            },
+            {
+              "description": "It is private, or internal to an organisation.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "Nobody has said. Treated as private.",
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        }
+      }
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "BoundaryVerdict",
+      "description": "What the check decided.\n\nThe public-facing half carries no term, no identity and no path: a refusal says\n*where* a term was found and nothing about which. The detail is\n[`Evidence`], which only a caller that supplied somewhere private to put it gets.",
+      "oneOf": [
+        {
+          "description": "Nothing private was found, or the destination is not public.",
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "const": "pass"
+            }
+          },
+          "required": [
+            "verdict"
+          ]
+        },
+        {
+          "description": "A private term was found.",
+          "type": "object",
+          "properties": {
+            "surface": {
+              "description": "Where.",
+              "$ref": "#/$defs/Surface"
+            },
+            "verdict": {
+              "type": "string",
+              "const": "refuse"
+            }
+          },
+          "required": [
+            "verdict",
+            "surface"
+          ]
+        },
+        {
+          "description": "The check could not decide, and the write must not go ahead.",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Why.",
+              "$ref": "#/$defs/Unavailability"
+            },
+            "verdict": {
+              "type": "string",
+              "const": "unavailable"
+            }
+          },
+          "required": [
+            "verdict",
+            "reason"
+          ]
+        }
+      ],
+      "$defs": {
+        "Surface": {
+          "description": "Where in a write a private term was found — the whole of what a refusal says\nabout it.",
+          "oneOf": [
+            {
+              "description": "A [`BoundaryInput::text`] entry.",
+              "type": "string",
+              "const": "text"
+            },
+            {
+              "description": "A [`BoundaryInput::paths`] entry, a path a publication adds, or a path an\nexport writes.",
+              "type": "string",
+              "const": "path"
+            },
+            {
+              "description": "A [`BoundaryInput::metadata`] entry.",
+              "type": "string",
+              "const": "metadata"
+            },
+            {
+              "description": "A line a publication adds, or a file an export writes.",
+              "type": "string",
+              "const": "content"
+            },
+            {
+              "description": "A line or a path a publication removes that its destination does not already\ncarry there.",
+              "type": "string",
+              "const": "removal"
+            },
+            {
+              "description": "An outgoing commit's message.",
+              "type": "string",
+              "const": "commit-message"
+            },
+            {
+              "description": "The branch the write is made on.",
+              "type": "string",
+              "const": "branch"
+            },
+            {
+              "description": "A change request's title.",
+              "type": "string",
+              "const": "title"
+            },
+            {
+              "description": "A change request's body.",
+              "type": "string",
+              "const": "body"
+            }
+          ]
+        },
+        "Unavailability": {
+          "description": "Why a check could not decide. Never a pass.",
+          "oneOf": [
+            {
+              "description": "The registry could not be read.",
+              "type": "string",
+              "const": "registry"
+            },
+            {
+              "description": "The rules file could not be read.",
+              "type": "string",
+              "const": "rules"
+            },
+            {
+              "description": "A scoped identity is not registered.",
+              "type": "string",
+              "const": "unregistered"
+            },
+            {
+              "description": "A private identity's committed manifests or term declaration could not be\nread, or declare something this build refuses.",
+              "type": "string",
+              "const": "declarations"
+            },
+            {
+              "description": "The terms could not be compiled into one matcher.",
+              "type": "string",
+              "const": "matcher"
+            },
+            {
+              "description": "What is being published could not be read out of the repository.",
+              "type": "string",
+              "const": "history"
+            },
+            {
+              "description": "The host did not answer whether the destination is public — it was rate\nlimited, failing, or out of reach — so nothing it last said was replaced and\nthe write waits for it to answer.",
+              "type": "string",
+              "const": "host-visibility"
+            },
+            {
+              "description": "The host's public phrase file could not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "public-phrases"
+            },
+            {
+              "description": "A directory level's or the `$ONEVCS_HOME` fallback's private-terms declaration\ncould not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "term-levels"
+            },
+            {
+              "description": "A resolved replacement string itself carries a private term, or the caller's\nreplacement list is refused, so nothing may be replaced.",
+              "type": "string",
+              "const": "replacements"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "sanitize": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SanitizeInput",
+      "description": "What a caller is about to write somewhere, put to sanitisation.",
+      "type": "object",
+      "properties": {
+        "destination": {
+          "description": "Where it is going. Anything but `public` passes unchanged without a term being\nderived.",
+          "$ref": "#/$defs/Visibility"
+        },
+        "text": {
+          "description": "Prose that may be rewritten.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "paths": {
+          "description": "Paths that may be rewritten.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "metadata": {
+          "description": "Short fields that may be rewritten.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "fixed": {
+          "description": "Entries that are checked and never rewritten.",
+          "$ref": "#/$defs/FixedEntries",
+          "default": {
+            "text": [],
+            "paths": [],
+            "metadata": []
+          }
+        },
+        "scope": {
+          "description": "Which private repositories the terms come from, exactly as [`BoundaryInput`]'s.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "replacements": {
+          "description": "The caller's replacement layer, over every level: a later entry wins.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Replacement"
+          },
+          "default": []
+        },
+        "locators": {
+          "description": "The identifiers the caller's diagnostics would print, screened in the same call.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LocatorInput"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "destination"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Whether a repository is public.\n\nOnly [`Public`](Visibility::Public) is: see [`effective`](Visibility::effective).",
+          "oneOf": [
+            {
+              "description": "Anybody can read it.",
+              "type": "string",
+              "const": "public"
+            },
+            {
+              "description": "It is private, or internal to an organisation.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "Nobody has said. Treated as private.",
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        },
+        "FixedEntries": {
+          "description": "Entries a sanitisation checks and never rewrites.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "description": "Prose that is checked as it stands.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "paths": {
+              "description": "Paths that are checked as they stand.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "metadata": {
+              "description": "Short fields that are checked as they stand.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        },
+        "Replacement": {
+          "description": "Replace a term with a string, or reject it: exactly one.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "term": {
+                  "type": "string"
+                },
+                "with": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "term",
+                "with"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "term": {
+                  "type": "string"
+                },
+                "reject": {
+                  "const": true
+                }
+              },
+              "required": [
+                "term",
+                "reject"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "LocatorInput": {
+          "description": "One locator a caller's diagnostic would print, put to the same matcher.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "description": "What it names.",
+              "$ref": "#/$defs/LocatorKind"
+            },
+            "value": {
+              "description": "The identifier itself.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        "LocatorKind": {
+          "description": "What a locator names.",
+          "oneOf": [
+            {
+              "description": "A source name.",
+              "type": "string",
+              "const": "source"
+            },
+            {
+              "description": "An item id.",
+              "type": "string",
+              "const": "item"
+            },
+            {
+              "description": "A user-defined field name.",
+              "type": "string",
+              "const": "field"
+            },
+            {
+              "description": "A metadata key.",
+              "type": "string",
+              "const": "metadata-key"
+            },
+            {
+              "description": "A comment id.",
+              "type": "string",
+              "const": "comment"
+            },
+            {
+              "description": "A file path.",
+              "type": "string",
+              "const": "path"
+            },
+            {
+              "description": "A repository identity.",
+              "type": "string",
+              "const": "identity"
+            }
+          ]
+        }
+      }
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SanitizeAnswer",
+      "description": "What sanitisation decided, and the rewritten entries.",
+      "oneOf": [
+        {
+          "description": "Nothing private is left: the entries may be written as answered.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "description": "The `text` entries after replacement, same length and order.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "paths": {
+              "description": "The `paths` entries after replacement.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "metadata": {
+              "description": "The `metadata` entries after replacement.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "replaced": {
+              "description": "How many spans were rewritten.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "unfixed": {
+              "description": "Always empty on a pass.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Unfixed"
+              }
+            },
+            "locators": {
+              "description": "The locators screened, same length and order; omitted when none were given.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Locator"
+              }
+            },
+            "verdict": {
+              "type": "string",
+              "const": "pass"
+            }
+          },
+          "required": [
+            "verdict",
+            "text",
+            "paths",
+            "metadata",
+            "replaced",
+            "unfixed"
+          ]
+        },
+        {
+          "description": "A term is left after replacement, or a locator carries one: nothing may be\nwritten.",
+          "type": "object",
+          "properties": {
+            "surface": {
+              "description": "Where the first one is.",
+              "$ref": "#/$defs/SanitizeSurface"
+            },
+            "text": {
+              "description": "The `text` entries after replacement.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "paths": {
+              "description": "The `paths` entries after replacement.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "metadata": {
+              "description": "The `metadata` entries after replacement.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "replaced": {
+              "description": "How many spans were rewritten.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "unfixed": {
+              "description": "Every entry still carrying a term.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Unfixed"
+              }
+            },
+            "locators": {
+              "description": "The locators screened; omitted when none were given.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Locator"
+              }
+            },
+            "verdict": {
+              "type": "string",
+              "const": "refuse"
+            }
+          },
+          "required": [
+            "verdict",
+            "surface",
+            "text",
+            "paths",
+            "metadata",
+            "replaced",
+            "unfixed"
+          ]
+        },
+        {
+          "description": "The call could not decide, and nothing may be written. It carries no locator:\nits caller redacts every one (`privateterms::redact_all`).",
+          "type": "object",
+          "properties": {
+            "reason": {
+              "description": "Why.",
+              "$ref": "#/$defs/Unavailability"
+            },
+            "verdict": {
+              "type": "string",
+              "const": "unavailable"
+            }
+          },
+          "required": [
+            "verdict",
+            "reason"
+          ]
+        }
+      ],
+      "$defs": {
+        "Unfixed": {
+          "description": "One entry still carrying a term after replacement: where it is, never what.",
+          "type": "object",
+          "properties": {
+            "surface": {
+              "description": "Which list.",
+              "$ref": "#/$defs/SanitizeSurface"
+            },
+            "index": {
+              "description": "Its index in that list (in `fixed`'s list where `fixed` is true).",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "fixed": {
+              "description": "Whether it is an entry nothing rewrites: a `fixed` one, or a locator.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "surface",
+            "index",
+            "fixed"
+          ]
+        },
+        "SanitizeSurface": {
+          "description": "Which list an entry still carrying a term is in.",
+          "oneOf": [
+            {
+              "description": "A `text` entry.",
+              "type": "string",
+              "const": "text"
+            },
+            {
+              "description": "A `paths` entry.",
+              "type": "string",
+              "const": "path"
+            },
+            {
+              "description": "A `metadata` entry.",
+              "type": "string",
+              "const": "metadata"
+            },
+            {
+              "description": "A `locators` entry.",
+              "type": "string",
+              "const": "locators"
+            }
+          ]
+        },
+        "Locator": {
+          "description": "A screened locator: the string verbatim, or its redacted form.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "redacted": {
+                  "const": true
+                },
+                "kind": {
+                  "$ref": "#/$defs/LocatorKind"
+                },
+                "ordinal": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "redacted",
+                "kind",
+                "ordinal"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "LocatorKind": {
+          "description": "What a locator names.",
+          "oneOf": [
+            {
+              "description": "A source name.",
+              "type": "string",
+              "const": "source"
+            },
+            {
+              "description": "An item id.",
+              "type": "string",
+              "const": "item"
+            },
+            {
+              "description": "A user-defined field name.",
+              "type": "string",
+              "const": "field"
+            },
+            {
+              "description": "A metadata key.",
+              "type": "string",
+              "const": "metadata-key"
+            },
+            {
+              "description": "A comment id.",
+              "type": "string",
+              "const": "comment"
+            },
+            {
+              "description": "A file path.",
+              "type": "string",
+              "const": "path"
+            },
+            {
+              "description": "A repository identity.",
+              "type": "string",
+              "const": "identity"
+            }
+          ]
+        },
+        "Unavailability": {
+          "description": "Why a check could not decide. Never a pass.",
+          "oneOf": [
+            {
+              "description": "The registry could not be read.",
+              "type": "string",
+              "const": "registry"
+            },
+            {
+              "description": "The rules file could not be read.",
+              "type": "string",
+              "const": "rules"
+            },
+            {
+              "description": "A scoped identity is not registered.",
+              "type": "string",
+              "const": "unregistered"
+            },
+            {
+              "description": "A private identity's committed manifests or term declaration could not be\nread, or declare something this build refuses.",
+              "type": "string",
+              "const": "declarations"
+            },
+            {
+              "description": "The terms could not be compiled into one matcher.",
+              "type": "string",
+              "const": "matcher"
+            },
+            {
+              "description": "What is being published could not be read out of the repository.",
+              "type": "string",
+              "const": "history"
+            },
+            {
+              "description": "The host did not answer whether the destination is public — it was rate\nlimited, failing, or out of reach — so nothing it last said was replaced and\nthe write waits for it to answer.",
+              "type": "string",
+              "const": "host-visibility"
+            },
+            {
+              "description": "The host's public phrase file could not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "public-phrases"
+            },
+            {
+              "description": "A directory level's or the `$ONEVCS_HOME` fallback's private-terms declaration\ncould not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "term-levels"
+            },
+            {
+              "description": "A resolved replacement string itself carries a private term, or the caller's\nreplacement list is refused, so nothing may be replaced.",
+              "type": "string",
+              "const": "replacements"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "terms": {
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TermsRequest",
+      "description": "What `onevcs boundary terms` reads.",
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "Which private repositories the terms come from, exactly as [`BoundaryInput`]'s.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "replacements": {
+          "description": "The caller's replacement layer, as [`SanitizeInput::replacements`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Replacement"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "$defs": {
+        "Replacement": {
+          "description": "Replace a term with a string, or reject it: exactly one.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "term": {
+                  "type": "string"
+                },
+                "with": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "term",
+                "with"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "term": {
+                  "type": "string"
+                },
+                "reject": {
+                  "const": true
+                }
+              },
+              "required": [
+                "term",
+                "reject"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
+    "output": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TermsAnswer",
+      "description": "What `onevcs boundary terms` answers: the resolved terms, or why there are none.\n\nThe terms are private output: a caller holds them in memory and never writes them\nanywhere — no log, no file, no cache, no error message.",
+      "anyOf": [
+        {
+          "description": "One entry per rule after resolution.",
+          "type": "object",
+          "properties": {
+            "terms": {
+              "description": "The rules.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DeclaredTerm"
+              }
+            }
+          },
+          "required": [
+            "terms"
+          ]
+        },
+        {
+          "description": "The call could not decide: `{\"verdict\": \"unavailable\", \"reason\": ...}`.",
+          "$ref": "#/$defs/TermsUnavailable"
+        }
+      ],
+      "$defs": {
+        "DeclaredTerm": {
+          "description": "One resolved rule, as `onevcs boundary terms` answers it: private output.",
+          "type": "object",
+          "properties": {
+            "term": {
+              "description": "The term as written.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How it is matched.",
+              "$ref": "#/$defs/TermMode"
+            },
+            "case_sensitive": {
+              "description": "Whether it is compared exactly rather than in lower case.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "term",
+            "mode",
+            "case_sensitive"
+          ],
+          "oneOf": [
+            {
+              "description": "Rewritten to `with`.",
+              "type": "object",
+              "properties": {
+                "with": {
+                  "description": "What its hits are rewritten to.",
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "action",
+                "with"
+              ]
+            },
+            {
+              "description": "Refused.",
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "reject"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          ]
+        },
+        "TermMode": {
+          "description": "How a rule's hits are matched.",
+          "oneOf": [
+            {
+              "description": "Anywhere.",
+              "type": "string",
+              "const": "substring"
+            },
+            {
+              "description": "With no word character immediately before or after.",
+              "type": "string",
+              "const": "whole-word"
+            },
+            {
+              "description": "A qualified `owner/name`, only where it stands as that name.",
+              "type": "string",
+              "const": "owner-name-only"
+            }
+          ]
+        },
+        "TermsUnavailable": {
+          "description": "Why `onevcs boundary terms` could not decide.",
+          "oneOf": [
+            {
+              "description": "It could not.",
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "description": "Why.",
+                  "$ref": "#/$defs/Unavailability"
+                },
+                "verdict": {
+                  "type": "string",
+                  "const": "unavailable"
+                }
+              },
+              "required": [
+                "verdict",
+                "reason"
+              ]
+            }
+          ]
+        },
+        "Unavailability": {
+          "description": "Why a check could not decide. Never a pass.",
+          "oneOf": [
+            {
+              "description": "The registry could not be read.",
+              "type": "string",
+              "const": "registry"
+            },
+            {
+              "description": "The rules file could not be read.",
+              "type": "string",
+              "const": "rules"
+            },
+            {
+              "description": "A scoped identity is not registered.",
+              "type": "string",
+              "const": "unregistered"
+            },
+            {
+              "description": "A private identity's committed manifests or term declaration could not be\nread, or declare something this build refuses.",
+              "type": "string",
+              "const": "declarations"
+            },
+            {
+              "description": "The terms could not be compiled into one matcher.",
+              "type": "string",
+              "const": "matcher"
+            },
+            {
+              "description": "What is being published could not be read out of the repository.",
+              "type": "string",
+              "const": "history"
+            },
+            {
+              "description": "The host did not answer whether the destination is public — it was rate\nlimited, failing, or out of reach — so nothing it last said was replaced and\nthe write waits for it to answer.",
+              "type": "string",
+              "const": "host-visibility"
+            },
+            {
+              "description": "The host's public phrase file could not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "public-phrases"
+            },
+            {
+              "description": "A directory level's or the `$ONEVCS_HOME` fallback's private-terms declaration\ncould not be read, or is one this build refuses.",
+              "type": "string",
+              "const": "term-levels"
+            },
+            {
+              "description": "A resolved replacement string itself carries a private term, or the caller's\nreplacement list is refused, so nothing may be replaced.",
+              "type": "string",
+              "const": "replacements"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

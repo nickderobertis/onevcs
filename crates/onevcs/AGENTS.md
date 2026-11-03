@@ -1607,11 +1607,23 @@ every time a pass met a session's leftover worker.
 `boundary.rs` holds the shapes the contract's public-boundary amendment fixes;
 `boundary/` holds the check. Nine things are easy to undo.
 
-- **One matcher.** Normalization (NFKC, default-ignorables removed, case folding), word
-  boundaries and what each `TermMode` accepts live in `boundary/matcher.rs` and nowhere
-  else. `boundary check`, every publication, export and the exposure audit
-  (`crates/onevcs-exposure-audit`) all compile a `TermMatcher` over derived rules; a
-  second comparison anywhere is the drift this exists to prevent.
+- **One matcher, and it is `privateterms`'.** Normalization, word boundaries, what each
+  `TermMode` accepts, the phrase exemption, replacement and locator screening are the
+  private-terms specification's, implemented by the `privateterms` crate; the declaration
+  model and its TOML/YAML parsing are that crate's too. `boundary check`, `sanitize`,
+  every publication, export and the exposure audit (`crates/onevcs-exposure-audit`) all
+  match through a `privateterms::Matcher` (`TermMatcher` wraps one); a second comparison
+  anywhere is the drift this exists to prevent. `boundary/keys.rs` compares *names*
+  during derivation and searches no text. What is onevcs's is deriving terms and finding
+  the levels (`boundary/scope.rs`): the repository level from the committed tree, the
+  directory levels above **registered** checkouts only (never a session worktree), each
+  read once per call, and the `$ONEVCS_HOME` fallback.
+- **Replace is for prose, reject is for everything a commit carries.** `boundary
+  sanitize`, a change request's body and a review reply are rewritten; a title (the
+  landed subject), commit messages, added lines, paths, branch names and every
+  `local-direct` field stay reject-only, and every check still rejects a replaceable
+  hit. `boundary terms` is the one answer that names terms: stdout only, never stderr,
+  evidence or a log.
 - **Every public write asks before its first remote mutation, and no caller is
   exempt.** `publish::hold_to_the_boundary` runs after the subject is known and before
   either publication path pushes; `preserve`, the merge train's push and `describe_change`
@@ -1634,8 +1646,12 @@ every time a pass met a session's leftover worker.
   as `Unavailability::HostVisibility`, exit 2, before a term is derived. Screening it
   instead read every repository whose answer was lost as private, and refused public
   work for carrying its own destination's name (onevcs#432). The reason is built from
-  the status and headers alone, because what `gh` writes can name the repository; that
-  goes to the evidence file.
+  the status and headers alone, because what `gh` writes can name the repository — and
+  being unavailable, the check redacts every locator, so its evidence keeps the
+  destination as `<redacted identity 1>` and what `gh` wrote as `<redacted detail>`.
+  The evidence file's own path, printed in every refusal, is a locator too: screened by
+  the call's matcher on a refusal and redacted on an unavailable check
+  (`evidence::printed_path`).
 - **A removal never refuses.** Every parent diff is held to the addition rule; text
   added and later removed is refused for its addition, including across a merge.
 - **Terms come from committed trees.** `boundary/manifests.rs` reads the commit `HEAD`
@@ -1647,8 +1663,8 @@ every time a pass met a session's leftover worker.
   read with no leniency (`boundary/phrases.rs`): anything this build cannot read exactly
   is `Unavailability::PublicPhrases`, never a shorter list, and only a missing file is
   none. `scope::Derived::matcher` reads it only when there is a rule, so an empty scope
-  still reads nothing; and the exemption is judged inside `matcher.rs` on the very text
-  each hit was found in. A refusal and its evidence name the file, never a phrase.
+  still reads nothing; and the exemption is judged inside the crate's matcher on the
+  very text each hit was found in. A refusal and its evidence name the file, never a phrase.
 - **Registry version 7 is stamped by a write, never a read.** A version 6 document is
   read as this shape and left byte for byte as it is (`store::SHAPE_SINCE`) until
   something writes, so a read never rewrites shared host state for a version that moved

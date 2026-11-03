@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "description": "The record `crates/onevcs/scripts/boundary-sanitize-budget.mjs` reads, and nothing\nelse writes.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
+    },
+    "scenario": {
+      "$ref": "#/$defs/Scenario"
+    },
+    "covered": {
+      "$ref": "#/$defs/Covered"
+    },
+    "sanitize_wall_us": {
+      "description": "The figure: one sanitise process, spawned and awaited, from spawn to exit.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "phases": {
+      "$ref": "#/$defs/Phases"
+    },
+    "sanitize_peak_rss_kib": {
+      "description": "The sanitise process's peak resident memory, from its own resource usage.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "check_wall_us": {
+      "description": "One `boundary check` of the same input, spawned and awaited the same way.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "preparation_ms": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "load1": {
+      "type": "number",
+      "format": "double"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "build",
+    "scenario",
+    "covered",
+    "sanitize_wall_us",
+    "phases",
+    "sanitize_peak_rss_kib",
+    "check_wall_us",
+    "preparation_ms",
+    "load1"
+  ],
+  "$defs": {
+    "Build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ]
+    },
+    "Scenario": {
+      "type": "string",
+      "enum": [
+        "sanitize-call"
+      ]
+    },
+    "Covered": {
+      "description": "What the call covered and did, as the binary counted it.",
+      "type": "object",
+      "properties": {
+        "identities": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "terms": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "levels": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "replaced": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "matcher_builds": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "replacement_passes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "rematches": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "identities",
+        "terms",
+        "levels",
+        "bytes",
+        "metadata",
+        "replaced",
+        "matcher_builds",
+        "replacement_passes",
+        "rematches"
+      ]
+    },
+    "Phases": {
+      "description": "The sanitise call's phases, as the binary timed them, in microseconds.",
+      "type": "object",
+      "properties": {
+        "total_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "derivation_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matcher_build_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "replacement_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "matching_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "total_us",
+        "derivation_us",
+        "matcher_build_us",
+        "replacement_us",
+        "matching_us"
+      ]
+    }
+  },
+  "x-workload": {
+    "identities": 20,
+    "terms": 2000,
+    "levels": 3,
+    "replacements": 10,
+    "bytes": 65536,
+    "metadata": 40,
+    "hits": 30
+  }
+}

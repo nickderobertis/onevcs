@@ -943,3 +943,104 @@ fn an_export_carrying_a_host_public_phrase_is_written_and_one_carrying_the_bare_
     let output = host.export("term-notes", "examples", "fixtures", "term-notes", &[]);
     refused(&host, &output, "term-notes", &before, "the bare term");
 }
+
+#[test]
+fn a_refused_export_persists_its_evidence_with_term_bearing_locators_screened_and_plain_ones_kept()
+{
+    use crate::term_levels::{assert_unspelled, locator_fields, persisted};
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    let before = host.origin_refs();
+    source.branch(
+        &host.world,
+        "screened-evidence",
+        &[
+            ("examples/quietharbor-notes.txt", Some("neutral\n")),
+            ("examples/plain.txt", Some("from quietharbor\n")),
+        ],
+        "docs: examples",
+    );
+    let output = host.export(
+        "screened-evidence",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    refused(
+        &host,
+        &output,
+        "generic-fixtures",
+        &before,
+        "a term-bearing path",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let evidence = persisted(&host.world.home(), &stderr);
+    for field in locator_fields(&evidence) {
+        assert_unspelled(&field, "a persisted locator");
+    }
+    let at = |surface: &str| -> Vec<String> {
+        evidence
+            .iter()
+            .filter(|entry| entry["surface"] == surface)
+            .filter_map(|entry| entry["at"].as_str().map(str::to_owned))
+            .collect()
+    };
+    // Both spellings of the term-bearing path — read and written — are redacted, and the
+    // plain path whose content carries the term is kept as it is.
+    assert!(
+        at("path")
+            .iter()
+            .all(|at| at.starts_with("<redacted path "))
+            && at("path").len() >= 2,
+        "{evidence:?}"
+    );
+    assert!(
+        at("content").contains(&"plain.txt".to_owned()),
+        "{evidence:?}"
+    );
+    // What was found is still recorded.
+    assert!(evidence
+        .iter()
+        .all(|entry| entry["rule"]["term"].is_string()));
+}
+
+#[test]
+fn an_export_that_cannot_read_its_source_persists_only_the_step() {
+    use crate::term_levels::{assert_unspelled, persisted};
+    let host = Boundary::new(LOCAL);
+    host.source(&[]);
+    let before = host.origin_refs();
+    let output = host.export(
+        "quietharbor-missing",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    refused(
+        &host,
+        &output,
+        "generic-fixtures",
+        &before,
+        "an unknown branch",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("its source branch does not resolve"),
+        "{stderr}"
+    );
+    let evidence = persisted(&host.world.home(), &stderr);
+    assert_eq!(
+        evidence,
+        [serde_json::json!({
+            "kind": "unavailable",
+            "reason": "history",
+            "detail": "the export is refused: its source branch does not resolve",
+        })]
+    );
+    assert_unspelled(
+        &serde_json::to_string(&evidence).expect("JSON"),
+        "the evidence",
+    );
+}

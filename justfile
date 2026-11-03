@@ -55,6 +55,7 @@ _crate-bootstrap:
     @just _ensure-tool cargo-llvm-cov
     @just _ensure-onebudgetspec
     @just _ensure-fuse
+    @just _ensure-strace
     @cargo fetch --locked --quiet
 
 # The compatibility project's own provisioning (the `onevcs-compat:bootstrap` target).
@@ -73,6 +74,21 @@ _ensure-fuse:
       else \
         echo "fusermount3 is missing, and one sweep journey mounts a filesystem through it" >&2; \
         echo "ACTION: install it — Debian/Ubuntu 'sudo apt-get install -y fuse3', Fedora 'sudo dnf install fuse3' — then re-run" >&2; \
+        exit 1; \
+      fi
+
+# One recovery-workload journey traces the sanitise call's processes and network calls
+# through `strace`; Linux is where it is gated. Provisioned here for the reason
+# `_ensure-fuse` is, and a host that cannot install it is told what to — that journey
+# refuses rather than skipping.
+_ensure-strace:
+    @[ "$(uname -s)" = "Linux" ] || exit 0; \
+      command -v strace >/dev/null 2>&1 && exit 0; \
+      if command -v apt-get >/dev/null 2>&1 && sudo -n true 2>/dev/null; then \
+        sudo apt-get update -qq && sudo apt-get install -y -qq strace; \
+      else \
+        echo "strace is missing, and one recovery-workload journey traces the sanitise call through it" >&2; \
+        echo "ACTION: install it — Debian/Ubuntu 'sudo apt-get install -y strace', Fedora 'sudo dnf install strace' — then re-run" >&2; \
         exit 1; \
       fi
 
@@ -253,7 +269,7 @@ _recovery-test:
 _recovery-covered:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" just _cover onevcs-recovery 'binary(recovery-workload)'
-    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs
 
 # Regenerate validated current-build telemetry without running unrelated journeys.
 recoverable-journeys:
@@ -267,7 +283,7 @@ recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "-
 _recovery-quick:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail {{recovery-no-tests}}
-    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs
 
 onebudgetspec-version := "0.1.1"
 onebudgetspec-root := justfile_directory() / "target" / "tools" / ("onebudgetspec-" + onebudgetspec-version)

@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 mod boundary;
+mod boundary_sanitize;
 mod churn;
 mod counting;
 mod draft_hold;

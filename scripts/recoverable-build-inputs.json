@@ -37,6 +37,10 @@
     {
       "directory": "crates/onevcs/scripts",
       "prefix": "retire-hour-host-requests-budget"
+    },
+    {
+      "directory": "crates/onevcs/scripts",
+      "prefix": "boundary-sanitize-budget"
     }
   ]
 }

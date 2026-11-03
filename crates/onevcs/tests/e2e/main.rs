@@ -376,6 +376,12 @@ mod support;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod sweep;
+// Unix only: private-term levels and the replace action over real registered
+// repositories, real directory trees and real publications through `world.rs`'s POSIX
+// fixture; its own header carries the reason for its one substituted program in full.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod term_levels;
 // Unix only: real sessions over `world.rs`'s POSIX fixture and real git, with a
 // valueless entry written into a real configuration file.
 #[cfg(unix)]
