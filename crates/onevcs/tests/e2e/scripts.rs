@@ -3331,6 +3331,10 @@ fn executable(path: &Path, body: &str) {
         .expect("executable");
 }
 
+// llmlint: ignore-block[e2e_not_mocked] `sudo` and `apt-get` are stand-ins because the
+// boundary they replace is installing a package on the host running the suite, which no
+// journey may do; what is under test is the recipe's branching on what they answer, and
+// the real `just`, `bash` and recipe run unmodified.
 #[cfg(target_os = "linux")]
 #[test]
 fn bootstrap_installs_strace_through_apt_get_or_refuses_naming_how_to_install_it() {
@@ -3404,3 +3408,4 @@ fn bootstrap_installs_strace_through_apt_get_or_refuses_naming_how_to_install_it
         String::from_utf8_lossy(&failed.stderr)
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]

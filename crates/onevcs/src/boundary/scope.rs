@@ -99,15 +99,17 @@ impl Derived {
     /// Nothing to look for but what the caller's own replacement list names, which
     /// needs nothing read.
     pub fn empty(caller: &[Replacement]) -> Result<Derived, Failed> {
-        let resolved = privateterms::resolve(Vec::new(), &[], caller).map_err(|refused| {
-            Failed::new(Unavailability::Replacements, None, refused.to_string())
-        })?;
-        let identities = resolved.iter().map(|_| "caller".to_owned()).collect();
+        let chains = [Chain {
+            identity: None,
+            rules: Vec::new(),
+            levels: Vec::new(),
+        }];
+        let (resolved, identities, phrases) = merge(&chains, caller, None)?;
         Ok(Derived {
             rules: resolved.iter().map(|r| r.rule.clone()).collect(),
             resolved,
             identities,
-            phrases: Vec::new(),
+            phrases,
             sources: 0,
             levels: 0,
         })
@@ -278,31 +280,43 @@ pub fn derive_with(
         });
     }
 
+    let (resolved, identities, phrases) = merge(&chains, caller, published)?;
+    Ok(Derived {
+        rules: resolved.iter().map(|r| r.rule.clone()).collect(),
+        resolved,
+        identities,
+        phrases,
+        sources: selected.len(),
+        levels: reader.read,
+    })
+}
+
+/// What merging the chains yields: the rules, what each one's evidence names, and every
+/// phrase the levels declare.
+type Merged3 = (Vec<ResolvedRule>, Vec<String>, Vec<String>);
+
+/// Resolve every chain with the caller's list and merge them rule by rule.
+fn merge(
+    chains: &[Chain],
+    caller: &[Replacement],
+    published: Option<&str>,
+) -> Result<Merged3, Failed> {
     // Each rule once, with what every identity's chains resolved it to.
     let mut merged: Vec<Merged> = Vec::new();
     let mut index: HashMap<(TermMode, bool, String), usize> = HashMap::new();
     let mut phrases: Vec<String> = Vec::new();
-    for chain in &chains {
+    for chain in chains {
         let origin = chain.identity.clone().unwrap_or_default();
         let rules = chain
             .rules
             .iter()
             .map(|rule| (rule.clone(), origin.clone()))
             .collect();
+        // `resolve` refuses only a level that is invalid for its kind; every level was
+        // read and validated already, so this is a level and never the caller's list.
         let resolved = privateterms::resolve(rules, &chain.levels, caller).map_err(|refused| {
-            let reason = if refused.member == Some(privateterms::Member::Replacements)
-                && refused.path.is_none()
-                && chain
-                    .levels
-                    .iter()
-                    .all(|l| l.declaration.replacements.is_empty())
-            {
-                Unavailability::Replacements
-            } else {
-                Unavailability::TermLevels
-            };
             Failed::new(
-                reason,
+                Unavailability::TermLevels,
                 None,
                 format!("the levels do not resolve: {refused}"),
             )
@@ -332,19 +346,11 @@ pub fn derive_with(
             phrases.extend(level.declaration.phrases.iter().cloned());
         }
     }
-    let merged: Vec<(ResolvedRule, String)> = merged
+    let (resolved, identities): (Vec<ResolvedRule>, Vec<String>) = merged
         .into_iter()
         .map(|merged| merged.resolved(published))
-        .collect();
-    let (resolved, identities): (Vec<ResolvedRule>, Vec<String>) = merged.into_iter().unzip();
-    Ok(Derived {
-        rules: resolved.iter().map(|r| r.rule.clone()).collect(),
-        resolved,
-        identities,
-        phrases,
-        sources: selected.len(),
-        levels: reader.read,
-    })
+        .unzip();
+    Ok((resolved, identities, phrases))
 }
 
 /// One rule, and what each identity's chains resolved it to.

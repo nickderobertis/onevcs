@@ -1519,3 +1519,65 @@ fn identities_decide_each_others_terms_unless_they_disagree_and_the_published_re
         "refuse"
     );
 }
+
+#[test]
+fn a_replacement_carrying_a_term_holds_a_body_and_a_reply_unwritten() {
+    let levels = Levels::under(
+        REVIEWED,
+        "work/quietharbor",
+        &[(
+            "private-terms.toml",
+            "schema_version = 2\n[[replacements]]\nterm = \"lanternfish\"\nwith = \"the quietharbor lamp\"\n",
+        )],
+    );
+    let host = &levels.host;
+    let (token, worktree) = host.session("held-prose");
+    std::fs::write(worktree.join("a.md"), "a generic example\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: add an example"]);
+    let before = host.origin_refs();
+    let output = host.publish(&token, &["--body", "A neutral body."]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the public boundary check is unavailable: replacements"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Nothing was written to the remote"),
+        "{stderr}"
+    );
+    assert_unspelled(&stderr, "stderr");
+    assert_eq!(host.origin_refs(), before, "the origin moved");
+    assert!(
+        !host
+            .world
+            .host_calls()
+            .iter()
+            .any(|call| call.starts_with("pr create")),
+        "nothing was opened"
+    );
+
+    let reviews = host.world.serve_reviews("sample-owner/openwidget");
+    reviews.pull(1);
+    let asked = reviews.conversation(1, "a-reviewer", "Why?");
+    let reply = host
+        .world
+        .onevcs()
+        .args([
+            "change",
+            "reply",
+            "https://github.com/sample-owner/openwidget/pull/1",
+            "--comment",
+            &asked,
+            "--key",
+            "k",
+            "--body",
+            "Because.",
+        ])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(reply.status.code(), Some(2));
+    assert!(reviews.requests().is_empty(), "no read and no post");
+}
