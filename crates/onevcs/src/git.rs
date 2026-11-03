@@ -4184,6 +4184,18 @@ impl Pushed {
     }
 }
 
+/// Upload objects from a screened branch's original history before a squash
+/// replaces that history with its final tree. No Git ref is written here.
+pub(crate) fn upload_lfs_history(
+    cwd: &Path,
+    branch: &str,
+    base: &str,
+    environment: &[(String, String)],
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Output>> {
+    lfs::upload_from(cwd, branch, "origin", Some(base), environment, Some(stop))
+}
+
 /// Push a branch, returning everything the push wrote.
 pub fn push(cwd: &Path, branch: &str, remote: &str, env: &[(String, String)]) -> Result<Pushed> {
     if let Some(refused) = lfs::upload(cwd, branch, remote, env, None)? {

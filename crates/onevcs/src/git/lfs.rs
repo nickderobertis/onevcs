@@ -1,7 +1,7 @@
 //! LFS objects travel with publishing refs, including from shared session clones.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{run_unless, Output};
 use crate::error::{Error, Result};
@@ -12,25 +12,26 @@ fn invalid(error: git2::Error) -> Error {
     }
 }
 
+fn storage(repository: &git2::Repository) -> Result<PathBuf> {
+    let configured = repository.config().map_err(invalid)?;
+    let storage = match configured.get_path("lfs.storage") {
+        Ok(storage) if storage.is_absolute() => storage,
+        Ok(storage) => repository.commondir().join(storage),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {
+            repository.commondir().join("lfs")
+        }
+        Err(error) => return Err(invalid(error)),
+    };
+    std::path::absolute(storage).map_err(|error| Error::Invalid {
+        reason: format!("Git LFS's shared local store could not be located: {error}"),
+    })
+}
+
 /// A shared Git clone must also retain access to its lender's LFS cache. Unlike
 /// Git objects, LFS objects do not follow `objects/info/alternates`.
 pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -> Result<()> {
     let source = git2::Repository::open(source).map_err(invalid)?;
-    let source_config = source.config().map_err(invalid)?;
-    let storage = match source_config.get_path("lfs.storage") {
-        Ok(storage) => {
-            if storage.is_absolute() {
-                storage
-            } else {
-                source.commondir().join(storage)
-            }
-        }
-        Err(error) if error.code() == git2::ErrorCode::NotFound => source.commondir().join("lfs"),
-        Err(error) => return Err(invalid(error)),
-    };
-    let storage = std::path::absolute(storage).map_err(|error| Error::Invalid {
-        reason: format!("Git LFS's shared local store could not be located: {error}"),
-    })?;
+    let storage = storage(&source)?;
     let destination_repository = git2::Repository::open(destination).map_err(invalid)?;
     let common = destination_repository.commondir();
     let _configuration = crate::lock::exclusive_at(&common.join("onevcs-lfs.lock"))?;
@@ -121,7 +122,12 @@ fn tree_oids(
     Ok(())
 }
 
-fn outgoing_oids(cwd: &Path, branch: &str, remote: &str) -> Result<BTreeSet<String>> {
+fn outgoing_oids(
+    cwd: &Path,
+    branch: &str,
+    remote: &str,
+    base: Option<&str>,
+) -> Result<BTreeSet<String>> {
     let mut oids = BTreeSet::new();
     // A deleting refspec has no content to upload.
     let reference = branch
@@ -143,9 +149,18 @@ fn outgoing_oids(cwd: &Path, branch: &str, remote: &str) -> Result<BTreeSet<Stri
     tree_oids(&repository, commit.tree_id(), &mut seen, &mut oids).map_err(invalid)?;
     let mut revisions = repository.revwalk().map_err(invalid)?;
     revisions.push(commit.id()).map_err(invalid)?;
-    revisions
-        .hide_glob(&format!("refs/remotes/{remote}/*"))
-        .map_err(invalid)?;
+    match base {
+        Some(base) => {
+            let base = repository
+                .revparse_single(base)
+                .and_then(|object| object.peel_to_commit())
+                .map_err(invalid)?;
+            revisions.hide(base.id()).map_err(invalid)?;
+        }
+        None => revisions
+            .hide_glob(&format!("refs/remotes/{remote}/*"))
+            .map_err(invalid)?,
+    }
     for revision in revisions {
         let commit = repository
             .find_commit(revision.map_err(invalid)?)
@@ -164,7 +179,49 @@ pub(super) fn upload(
     environment: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
 ) -> Result<Option<Output>> {
-    let oids = outgoing_oids(cwd, branch, remote)?;
+    upload_from(cwd, branch, remote, None, environment, stop)
+}
+
+/// Include the original outgoing history before local-direct publication squashes
+/// it. Its known comparison base avoids treating a shared clone's borrowed local
+/// branches as refs the origin actually has.
+pub(super) fn upload_from(
+    cwd: &Path,
+    branch: &str,
+    remote: &str,
+    base: Option<&str>,
+    environment: &[(String, String)],
+    stop: Option<&dyn Fn() -> bool>,
+) -> Result<Option<Output>> {
+    let oids = outgoing_oids(cwd, branch, remote, base)?;
+    if !oids.is_empty() {
+        let repository = git2::Repository::open(cwd).map_err(invalid)?;
+        let media = storage(&repository)?.join("objects");
+        if oids
+            .iter()
+            .any(|oid| !media.join(&oid[..2]).join(&oid[2..4]).join(oid).is_file())
+        {
+            // The pushed tree can retain a base pointer whose media was evicted
+            // locally. The origin already owns it; recover that cache entry rather
+            // than asking --object-id to upload a nonexistent local path. --all
+            // also covers an object referenced only by an outgoing ancestor, and
+            // Git LFS skips every object the persistent cache already holds.
+            let reference = branch
+                .trim_start_matches('+')
+                .split(':')
+                .next()
+                .unwrap_or("");
+            let fetched = run_unless(
+                &["lfs", "fetch", "--all", remote, reference],
+                Some(cwd),
+                environment,
+                stop,
+            )?;
+            if !fetched.ok() {
+                return Ok(Some(fetched));
+            }
+        }
+    }
     // Repositories carrying no pointers work without a git-lfs installation.
     let oids: Vec<_> = oids.into_iter().collect();
     // Bound argv independently of the number of files in a branch.
