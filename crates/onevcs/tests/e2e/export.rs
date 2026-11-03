@@ -2681,6 +2681,19 @@ fn printable_screening_keeps_unicode_normalization_and_utf16_error_recovery() {
                 "{spelling}, {encoding:?}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            let evidence = crate::term_levels::persisted(
+                &host.world.home(),
+                &String::from_utf8_lossy(&output.stderr),
+            );
+            let expected = match encoding {
+                Encoding::Utf8 => "carrier.dat@5",
+                Encoding::Utf16Le => "carrier.dat@10:utf16le",
+                Encoding::Utf16Be => "carrier.dat@10:utf16be",
+            };
+            assert!(
+                evidence.iter().any(|finding| finding["at"] == expected),
+                "{spelling}, {encoding:?}: {evidence:?}"
+            );
             assert_eq!(destination_stores(&host), before);
         }
     }
@@ -2703,5 +2716,20 @@ fn printable_screening_keeps_unicode_normalization_and_utf16_error_recovery() {
         );
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("it carries a private term"));
+        let evidence = crate::term_levels::persisted(
+            &host.world.home(),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let suffix = if matches!(encoding, Encoding::Utf16Le) {
+            "utf16le"
+        } else {
+            "utf16be"
+        };
+        assert!(
+            evidence
+                .iter()
+                .any(|finding| finding["at"] == format!("carrier.dat@2:{suffix}")),
+            "{evidence:?}"
+        );
     }
 }

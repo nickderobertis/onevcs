@@ -5740,6 +5740,37 @@ Export screening follows these rules:
     both with `publish-branch` and when published from a session opened on that branch
     as an export consumer opens it.
 
+
+**The testing crate follows.** `onevcs-testing::export_fixtures` builds the shared
+export carriers in code, with no committed binaries. `sample_set` contains
+`notes.md`, `frame.jpg`, `frame.png`, binary `model.stl`, XML-only `model.3mf`, and
+`print.gcode.gz`; a plant's term sits in exactly its carrier. Text without a term
+is the clean counterpart. `sample_opaque_patterns` returns `*.jpg`, `*.png`, `*.stl`.
+`lfs_attributes` tracks `*.jpg`, `*.png`, `*.stl`, `*.3mf`, `*.gz`, each with
+`filter=lfs diff=lfs merge=lfs -text`. `layered` encodes text (UTF-8 input has no NUL)
+then wraps innermost first; `ZipName` uses the text as its member name.
+`zip_with_unreadable_member` has one clean XML member and a member named `visible`
+with the supplied text and unreadable kind. `gzip_of_zeros` repeats a precomputed
+member so many GiB remain cheap to build.
+
+```rust
+pub mod export_fixtures {
+    pub enum Carrier { JpegExif, JpegXmp, PngText, StlHeader, ThreeMfMember, ThreeMfMemberName, GzipPayload, MarkdownText }
+    pub struct Plant { pub term: String, pub carrier: Carrier }
+    pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)>;
+    pub fn sample_opaque_patterns() -> Vec<String>;
+    pub fn lfs_attributes() -> String;
+    pub enum Encoding { Utf8, Utf16Le, Utf16Be }
+    pub enum ZipForm { Stored, Deflate, Zip64 }
+    pub enum Layer { Gzip, Zip { member: String, form: ZipForm }, ZipName { form: ZipForm } }
+    pub fn layered(text: &str, encoding: Encoding, layers: &[Layer]) -> Vec<u8>;
+    pub fn gzip_members(texts: &[&str]) -> Vec<u8>;
+    pub enum UnreadableMember { Encrypted, Lzma }
+    pub fn zip_with_unreadable_member(kind: UnreadableMember, visible: &str) -> Vec<u8>;
+    pub fn gzip_of_zeros(decoded_len: u64) -> Vec<u8>;
+}
+```
+
 **`rules apply`** composes a base rules file with overlays, in order, and installs the
 result atomically at the registry's rules reference — or at `$ONEVCS_HOME/rules.yml`,
 recorded as the reference, where the registry names none. An overlay is a rules file
