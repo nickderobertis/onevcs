@@ -15,11 +15,15 @@ fn media(checkout: &Path, step: &'static str) -> Result<PathBuf> {
     if output.status != 0 {
         return Err(refused(step));
     }
-    output
-        .stdout
+    media_directory(&output.stdout).ok_or_else(|| refused(step))
+}
+
+fn media_directory(output: &str) -> Option<PathBuf> {
+    let mut directories = output
         .lines()
-        .find_map(|line| line.strip_prefix("LocalMediaDir=").map(PathBuf::from))
-        .ok_or_else(|| refused(step))
+        .filter_map(|line| line.strip_prefix("LocalMediaDir="));
+    let path = PathBuf::from(directories.next()?);
+    (directories.next().is_none() && path.is_absolute()).then_some(path)
 }
 
 /// Fetch missing pointers together. Git LFS's own local store is the retry cache.
@@ -285,6 +289,33 @@ pub(super) fn upload<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_directory_requires_one_nonempty_absolute_path() {
+        let root = tempfile::tempdir().expect("absolute fixture directory");
+        let store = root.path().join("LFS objects");
+        let output = format!(
+            "git-lfs fixture\nLocalMediaDir={}\nTempDir=irrelevant\n",
+            store.display()
+        );
+        assert_eq!(media_directory(&output), Some(store.clone()));
+        for malformed in [
+            "LocalMediaDir=\n".to_owned(),
+            "LocalMediaDir=objects\n".to_owned(),
+            "LocalMediaDir=../objects\n".to_owned(),
+            "TempDir=objects\n".to_owned(),
+            format!(
+                "LocalMediaDir={}\nLocalMediaDir={}\n",
+                store.display(),
+                root.path().display()
+            ),
+        ] {
+            assert!(
+                media_directory(&malformed).is_none(),
+                "invalid media directory response: {malformed:?}"
+            );
+        }
+    }
 
     #[test]
     fn check_attr_rejects_malformed_or_misattributed_records() {
