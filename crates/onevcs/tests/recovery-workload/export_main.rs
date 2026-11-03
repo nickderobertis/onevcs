@@ -326,7 +326,7 @@ fn diagnostics(path: &Path) -> Value {
 
 /// Completed downloads in git-lfs's real progress format:
 /// direction current/total bytes/size name. Intermediate updates count no bytes.
-fn progress(path: &Path, files: &[(String, Vec<u8>)]) -> Value {
+fn progress(path: &Path, trace_path: &Path, files: &[(String, Vec<u8>)]) -> Value {
     let text = std::fs::read_to_string(path).expect("git-lfs transfer progress file");
     let known: Vec<_> = files
         .iter()
@@ -360,7 +360,68 @@ fn progress(path: &Path, files: &[(String, Vec<u8>)]) -> Value {
             *completed.entry(matched[0].1.clone()).or_default() += total;
         }
     }
-    json!({"objects": completed.len(), "bytes": completed.values().sum::<u64>(), "progress_lines": text.lines().count(), "completed": completed})
+    let trace = std::fs::read_to_string(trace_path).expect("git-lfs client trace");
+    assert!(
+        trace.contains("trace git-lfs:"),
+        "a real git-lfs client wrote the trace"
+    );
+    let mut completion_events = transfers.len();
+    let counted_from = if text.is_empty() {
+        // The standalone-file adapter does not send byte progress. Count only the
+        // real client's successful response to a preceding download job, never a
+        // fetch request or a queued job. Upload completions cannot satisfy this.
+        let sizes: std::collections::BTreeMap<_, _> = known
+            .iter()
+            .map(|(_, oid, size)| (oid.as_str(), *size))
+            .collect();
+        let mut pending = std::collections::BTreeSet::new();
+        for line in trace.lines() {
+            if let Some((_, message)) = line.split_once("sending message: ") {
+                let message: Value =
+                    serde_json::from_str(message).expect("client transfer request JSON");
+                if message["event"] == "download" {
+                    let oid = message["oid"].as_str().expect("download oid");
+                    assert_eq!(
+                        message["size"].as_u64(),
+                        sizes.get(oid).copied(),
+                        "source object size"
+                    );
+                    pending.insert(oid.to_owned());
+                }
+            } else if let Some((_, message)) = line.split_once("received response: ") {
+                let message: Value =
+                    serde_json::from_str(message).expect("client transfer response JSON");
+                if message["event"] == "complete" {
+                    let oid = message["oid"].as_str().expect("completed oid");
+                    if pending.remove(oid) && message.get("error").is_none() {
+                        assert!(
+                            message["path"].as_str().is_some(),
+                            "download response has its materialized path"
+                        );
+                        *completed.entry(oid.to_owned()).or_default() += sizes[oid];
+                        completion_events += 1;
+                    }
+                }
+            }
+        }
+        "git-lfs-trace-complete"
+    } else {
+        "git-lfs-progress"
+    };
+    json!({"objects": completed.len(), "bytes": completed.values().sum::<u64>(), "progress_lines": text.lines().count(), "trace_lines":trace.lines().count(), "counted_from":counted_from, "completion_events":completion_events, "completed": completed})
+}
+
+fn workload_lock() -> std::fs::File {
+    use fs4::fs_std::FileExt;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/recovery-workload.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+    lock
 }
 
 fn require_release_profile() {
@@ -388,17 +449,10 @@ fn export_scenario(downloads: bool) {
         eprintln!("skipped: git-lfs is unavailable");
         return;
     }
-    use fs4::fs_std::FileExt;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root.join("target/budget-records");
     std::fs::create_dir_all(&directory).unwrap();
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(root.join("target/recovery-workload.lock"))
-        .unwrap();
-    lock.lock_exclusive().unwrap();
+    let _lock = workload_lock();
     let record_name = if downloads {
         "export-source-lfs.json"
     } else {
@@ -418,6 +472,8 @@ fn export_scenario(downloads: bool) {
     std::env::set_var("ONEVCS_HOME", &workload.home);
     std::env::remove_var("GIT_CONFIG_GLOBAL");
     std::env::remove_var("GIT_LFS_PROGRESS");
+    std::env::remove_var("GIT_TRACE");
+    std::env::remove_var("GIT_TRANSFER_TRACE");
     let diagnostic_path = holder.path().join("diagnostics.ndjson");
     std::env::set_var("ONEVCS_BOUNDARY_DIAGNOSTICS", &diagnostic_path);
     let source = workload.root.join("checkouts/quietvault00");
@@ -525,7 +581,7 @@ fn export_scenario(downloads: bool) {
         } else {
             peak_rss_kib
         };
-        let record = json!({"version":2,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export","covered":covered,"wall_us":wall_us,"phases":phases,"peak_rss_kib":peak_rss_kib,"load1":load1});
+        let record = json!({"version":3,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export","covered":covered,"wall_us":wall_us,"phases":phases,"peak_rss_kib":peak_rss_kib,"load1":load1});
 
         finish(&record);
         return;
@@ -570,6 +626,10 @@ fn export_scenario(downloads: bool) {
     let source_before = store_snapshot(&source_store);
     let first_progress = holder.path().join("first-progress");
     std::fs::write(&first_progress, "").unwrap();
+    let first_trace = holder.path().join("first-trace");
+    std::fs::write(&first_trace, "").unwrap();
+    std::env::set_var("GIT_TRACE", &first_trace);
+    std::env::set_var("GIT_TRANSFER_TRACE", "1");
     std::env::set_var("GIT_LFS_PROGRESS", &first_progress);
     let refusal = onevcs::export(&Providers::real(), &retry).expect_err("upload refuses");
     assert!(
@@ -578,14 +638,25 @@ fn export_scenario(downloads: bool) {
             .contains("its destination's Git LFS store could not take its objects"),
         "{refusal}"
     );
-    let first = progress(&first_progress, &files);
+    let actual_scope = |mut counts: Value| {
+        let phases = diagnostics(&diagnostic_path);
+        for key in ["identities", "terms"] {
+            assert_eq!(phases[key], covered[key], "actual source export scope");
+            counts[key] = phases[key].clone();
+        }
+        counts
+    };
+    let first = actual_scope(progress(&first_progress, &first_trace, &files));
     assert_eq!(first["objects"], LFS_OBJECTS);
     endpoint(&workload.destination, &workload.destination_origin);
     let second_progress = holder.path().join("second-progress");
     std::fs::write(&second_progress, "").unwrap();
+    let second_trace = holder.path().join("second-trace");
+    std::fs::write(&second_trace, "").unwrap();
+    std::env::set_var("GIT_TRACE", &second_trace);
     std::env::set_var("GIT_LFS_PROGRESS", &second_progress);
     let landed = onevcs::export(&Providers::real(), &retry).expect("cached retry lands");
-    let second = progress(&second_progress, &files);
+    let second = actual_scope(progress(&second_progress, &second_trace, &files));
     assert_eq!(second["bytes"], 0, "retry downloads nothing");
     verify(&workload, &landed.head, &files, &destination_store);
     for (path, bytes) in &files {
@@ -607,10 +678,123 @@ fn export_scenario(downloads: bool) {
         .filter(|(path, _)| tracked(path))
         .map(|(_, bytes)| (digest(bytes), bytes.len() as u64))
         .collect();
-    let download = json!({"version":2,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export-source-lfs","covered":covered,"attempts":[first,second],"object_sizes":object_sizes,"load1":load1});
+    let download = json!({"version":3,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export-source-lfs","covered":covered,"attempts":[first,second],"object_sizes":object_sizes,"load1":load1});
     finish(&download);
     eprintln!(
         "source LFS cold {} bytes; retry {} bytes; load1 {load1}",
         download["attempts"][0]["bytes"], download["attempts"][1]["bytes"]
     );
+}
+
+#[test]
+fn source_trace_uses_successful_download_completions() {
+    if !Command::new("git-lfs")
+        .arg("version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        eprintln!("skipped: git-lfs is unavailable");
+        return;
+    }
+    let _lock = workload_lock();
+    let scratch = std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let holder = tempfile::Builder::new()
+        .prefix("export-transfer-proof-")
+        .tempdir_in(scratch)
+        .unwrap();
+    let repo = holder.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Fixture"]);
+    git(&repo, &["config", "user.email", "fixture@example.invalid"]);
+    git(&repo, &["lfs", "install", "--local"]);
+    let origin = holder.path().join("origin.git");
+    git(&repo, &["init", "--bare", "-q", &origin.to_string_lossy()]);
+    git(
+        &repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    endpoint(&repo, &origin);
+    let files: Vec<_> = export_fixtures::sample_set(None)
+        .into_iter()
+        .filter(|(path, _)| path == "frame.jpg")
+        .collect();
+    write(
+        &repo.join(".gitattributes"),
+        b"*.jpg filter=lfs diff=lfs merge=lfs -text\n",
+    );
+    write(&repo.join("frame.jpg"), &files[0].1);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "fixture"]);
+    let oid = digest(&files[0].1);
+    git(&repo, &["lfs", "push", "--object-id", "origin", &oid]);
+    std::fs::remove_dir_all(repo.join(".git/lfs")).unwrap();
+    let progress_file = holder.path().join("progress");
+    let trace_file = holder.path().join("trace");
+    std::fs::write(&progress_file, "").unwrap();
+    let transfer = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env("GIT_TRACE", &trace_file)
+            .env("GIT_TRANSFER_TRACE", "1")
+            .env("GIT_LFS_PROGRESS", &progress_file)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    transfer(&["lfs", "fetch", "origin", "main"]);
+    let measured = progress(&progress_file, &trace_file, &files);
+    assert_eq!(measured["objects"], 1);
+    assert_eq!(measured["bytes"], files[0].1.len());
+    assert_eq!(measured["completion_events"], 1);
+    assert_eq!(
+        std::fs::read(object(&repo.join(".git/lfs"), &oid)).unwrap(),
+        files[0].1
+    );
+
+    // Add an actual upload completion to the same client trace: it is not a download.
+    let other = holder.path().join("upload.git");
+    git(&repo, &["init", "--bare", "-q", &other.to_string_lossy()]);
+    endpoint(&repo, &other);
+    transfer(&["lfs", "push", "--object-id", "origin", &oid]);
+    assert_eq!(
+        std::fs::read(object(&other.join("lfs"), &oid)).unwrap(),
+        files[0].1
+    );
+    let both_transfers = std::fs::read_to_string(&trace_file).unwrap();
+    assert!(both_transfers.contains("\"event\":\"upload\""));
+    assert_eq!(
+        both_transfers
+            .lines()
+            .filter(|line| line.contains("received response: ")
+                && line.contains("\"event\":\"complete\""))
+            .count(),
+        2
+    );
+    assert_eq!(
+        progress(&progress_file, &trace_file, &files)["bytes"],
+        files[0].1.len()
+    );
+
+    // Induced incomplete trace: real queued jobs and finished-job messages remain,
+    // but successful completion responses have been removed. Requests prove no bytes.
+    let trace = std::fs::read_to_string(&trace_file).unwrap();
+    let requests_only = trace
+        .lines()
+        .filter(|line| !line.contains("\"event\":\"complete\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(requests_only.contains("\"event\":\"download\""));
+    std::fs::write(&trace_file, requests_only).unwrap();
+    std::fs::write(&progress_file, "").unwrap();
+    let incomplete = progress(&progress_file, &trace_file, &files);
+    assert_eq!(incomplete["objects"], 0);
+    assert_eq!(incomplete["bytes"], 0);
 }

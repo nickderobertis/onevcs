@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "version": {
-      "const": 2
+      "const": 3
     },
     "build": {
       "type": "object",
@@ -175,6 +175,16 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "identities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -192,7 +202,9 @@
         "decoded_bytes",
         "opaque_files",
         "lfs_objects",
-        "lfs_bytes"
+        "lfs_bytes",
+        "identities",
+        "terms"
       ],
       "additionalProperties": true
     },

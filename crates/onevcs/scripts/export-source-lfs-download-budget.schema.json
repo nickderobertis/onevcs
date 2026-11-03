@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "version": {
-      "const": 2
+      "const": 3
     },
     "build": {
       "type": "object",
@@ -123,13 +123,42 @@
               "minimum": 0,
               "maximum": 9007199254740991
             }
+          },
+          "counted_from": {
+            "enum": [
+              "git-lfs-progress",
+              "git-lfs-trace-complete"
+            ]
+          },
+          "trace_lines": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "completion_events": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "identities": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "terms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
           }
         },
         "required": [
           "objects",
           "bytes",
           "progress_lines",
-          "completed"
+          "completed",
+          "counted_from",
+          "trace_lines",
+          "completion_events",
+          "identities",
+          "terms"
         ],
         "additionalProperties": false
       }

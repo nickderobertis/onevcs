@@ -41,12 +41,17 @@ export function readExportRecord(kind, directory = recordDirectory, sourceRoot =
   if (kind === "wall-time") {
     const phases = record.phases;
     const times = ["diff_us", "derivation_us", "matcher_build_us", "extraction_us", "matching_us", "lfs_us", "tree_write_us"];
-    if (times.some(key => phases[key] > phases.total_us) || record.wall_us < phases.total_us || phases.workers < 1 || phases.paths !== record.covered.paths || phases.bytes !== record.covered.bytes || phases.lfs_objects !== record.covered.lfs_objects || phases.lfs_bytes !== record.covered.lfs_bytes) throw new Error("incomplete export diagnostics");
+    if (times.some(key => phases[key] > phases.total_us) || record.wall_us < phases.total_us || phases.workers < 1 || phases.paths !== record.covered.paths || phases.bytes !== record.covered.bytes || phases.lfs_objects !== record.covered.lfs_objects || phases.lfs_bytes !== record.covered.lfs_bytes || phases.identities !== record.covered.identities || phases.terms !== record.covered.terms) throw new Error("incomplete export diagnostics");
   } else {
     const [cold, retry] = record.attempts;
-    if (cold.objects !== record.covered.lfs_objects || cold.progress_lines < cold.objects) throw new Error("incomplete cold source downloads");
+    if (cold.objects !== record.covered.lfs_objects) throw new Error("incomplete cold source downloads");
     for (const attempt of [cold, retry]) {
+      if (attempt.identities !== record.covered.identities || attempt.terms !== record.covered.terms) throw new Error("foreign actual source scope");
       const objects = Object.entries(attempt.completed);
+      if ((attempt.counted_from === "git-lfs-progress" && attempt.progress_lines < attempt.completion_events) ||
+          (attempt.counted_from === "git-lfs-trace-complete" && (attempt.progress_lines !== 0 || attempt.trace_lines < attempt.completion_events))) throw new Error("incomplete client transfer evidence");
+      if (objects.some(([oid, bytes]) => !record.object_sizes[oid] || bytes % record.object_sizes[oid] !== 0) ||
+          objects.reduce((sum, [oid, bytes]) => sum + bytes / record.object_sizes[oid], 0) !== attempt.completion_events) throw new Error("incomplete completed-transfer accounting");
       if (objects.some(([oid]) => !digest(oid)) || objects.length !== attempt.objects || objects.reduce((sum, [, bytes]) => sum + bytes, 0) !== attempt.bytes) throw new Error("incomplete download accounting");
     }
     if (Object.values(record.object_sizes).reduce((sum, bytes) => sum + bytes, 0) !== record.covered.lfs_bytes) throw new Error("shrunk source object bytes");

@@ -114,5 +114,8 @@ budgets:
       194.9 MB set and 2,000-term private scope. The cold source has its 462
       objects only in origin's file-backed store. Attempt one refuses at an
       unwritable destination endpoint; attempt two lands. Completed git-lfs
-      downloads per object, less one copy of each size; detail retains each
-      attempt's objects, bytes and progress lines.
+      downloads per object, less one copy of each size. Use byte progress when
+      available; the file adapter fallback counts the real client's successful
+      download-completion trace responses, never queued requests. Detail retains
+      each attempt's objects, bytes, progress and trace lines, completion count
+      and the counting source.
