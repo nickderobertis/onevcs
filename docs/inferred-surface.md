@@ -1095,3 +1095,38 @@ around the command even on failure. Measurement errors warn and leave disk null
 without changing the outcome; `duration_ms` times the command alone. Human slot
 lines append `, worktree <before> → <after>` in sweep's byte format.
 <!-- repository-maintenance-summary:end -->
+
+## Private-term levels and `boundary sanitize`, and the shapes their amendment left to inference
+
+The amendment beside *Host public phrases* in [`contract.md`](contract.md) fixes the
+inputs, the three answers and their exit codes; these shapes it left open, and are
+recorded here rather than invented silently.
+
+- **The `surface` words of `unfixed` and of a refusal** are `SanitizeSurface`'s
+  `text`, `path`, `metadata` and `locators` — the check's own `Surface` words for the
+  first three, and the amendment's `locators` for the fourth. A refusal's `surface` is
+  the first `unfixed` entry's, in the order rewritable lists, fixed lists, locators.
+- **`locators` in an answer is omitted when the input gave none**, so the amendment's
+  own example answers read back byte for byte, and a caller that sends locators always
+  gets the list back at the same length.
+- **`boundary terms`' answer is an untagged `TermsAnswer`**: `{"terms": [...]}` at exit
+  0, or the unavailable verdict at exit 2. A replacement that itself carries a term
+  makes it unavailable (`replacements`), as it does `sanitize`, because a caller would
+  otherwise act on a replacement the check would refuse.
+- **Merging two checkouts' chains is per rule identity** (mode, case rule, and the term
+  normalized and folded unless case-sensitive), so a term two identities' checkouts
+  resolve differently is rejected too, not only one identity's two checkouts.
+- **"The levels of the repository being published"** for a body or a reply is one more
+  chain: the published identity's committed declaration (its replacements and phrases),
+  the directories above each of its registered checkouts, and the fallback, beside the
+  chains of the identities the write's scope selects.
+- **A level term's evidence identity** is the level's directory, `caller` for a caller
+  entry, and a locator refusal's evidence is `Evidence::Term` on the `metadata` surface
+  with `at` = `locator <i>`, since `Evidence` has no locator variant to add without a
+  second public change.
+- **The diagnostics line of a sanitisation** adds `levels`, `replacement_us`,
+  `matcher_builds`, `replacement_passes` and `rematches`; every other check's line is
+  byte for byte what it was.
+- **`boundary/keys.rs` keeps the normalization key** (NFKC, default-ignorables removed,
+  lower case) because derivation compares *names* before any matcher exists and the
+  `privateterms` crate does not export its key. It searches no text.
