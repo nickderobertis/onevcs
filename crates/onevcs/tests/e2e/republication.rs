@@ -3,15 +3,14 @@
 //! A publication whose push the merge path accepted, and whose next read of the host —
 //! who is calling, which change request the branch has, opening one — failed, ends
 //! `pushed-unverified`. The work is on origin; a caller answers that ending by
-//! publishing the same session again, and onepipeline does so on its own clock.
-//! Measured on onepipeline's credentialled smoke (run 41627141781): that second
-//! publication fetched, decided the base, and **pushed the unchanged branch again** —
-//! `fetch, base-merge, push` twice before the one `change-opened` — running the
-//! `pre-push` gate a second time and recording a second `push` for one change.
+//! publishing the same session again. Git runs the `pre-push` gate even for a push that
+//! is up to date, so pushing the unchanged branch again verifies the same tree twice and
+//! records a second `push` for one change.
 //!
-//! So these journeys hold the second publication to pushing only what moved: nothing
-//! where the head and the base are where the accepted push left them, and once more
-//! where the session's head moved or origin's base moved past what the branch carries.
+//! So these journeys hold the second publication to pushing only where something
+//! moved: nothing where the head, the base and what verification reads are where the
+//! accepted push left them and origin still has that head; once more where any of
+//! them moved, or the record of that push cannot be read.
 //!
 //! In-process for the reason `gate_runs.rs` is: supplying a host is something only a
 //! caller embedding the crate can do, and the host from `onevcs-testing` is how its
@@ -66,6 +65,15 @@ fn unreadable_after_the_push() -> (World, Session, std::path::PathBuf, FileHost)
     std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
     let (origin, _) = hosted(&world, DIRECT_READY);
     let session = worked(&world, "feature/republished");
+    // An installed hooks directory outside the tree, whose `pre-push` notes each run:
+    // the gate a repeated push would run again, and an input verification reads.
+    let hooks = world.path("hooks");
+    std::fs::create_dir_all(&hooks).expect("a hooks directory");
+    gate(&world, "the first gate");
+    world.git(
+        &session.worktree,
+        &["config", "core.hooksPath", &hooks.to_string_lossy()],
+    );
     let host = FileHost::seeded(
         world.path("host.json"),
         HostState {
@@ -92,6 +100,12 @@ fn unreadable_after_the_push() -> (World, Session, std::path::PathBuf, FileHost)
         1,
         "the first publication pushed once"
     );
+    assert_eq!(gate_runs(&world), 1, "the first push ran the gate");
+    assert_eq!(
+        push_records(&world).len(),
+        1,
+        "the accepted push is recorded"
+    );
     assert_eq!(
         origin_tip(&world, &origin, "feature/republished").as_deref(),
         Some(tip(&world, &session.worktree).as_str()),
@@ -103,6 +117,44 @@ fn unreadable_after_the_push() -> (World, Session, std::path::PathBuf, FileHost)
     state.authenticated_user = HostState::default().authenticated_user;
     let host = FileHost::seeded(world.path("host.json"), state).expect("the host answers");
     (world, session, origin, host)
+}
+
+/// Install the `pre-push` gate, `label` naming its content, which notes every run.
+fn gate(world: &World, label: &str) {
+    let hook = world.path("hooks").join("pre-push");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\n# {label}\necho ran >> '{}'\nexit 0\n",
+            world.path("gate-runs").display()
+        ),
+    )
+    .expect("a hook");
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("an executable hook");
+}
+
+/// How many times the `pre-push` gate ran.
+fn gate_runs(world: &World) -> usize {
+    std::fs::read_to_string(world.path("gate-runs"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// The records of accepted pushes this host keeps.
+fn push_records(world: &World) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(world.home().join("verified").join("pushed"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.expect("an entry").path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn publish(host: &FileHost, session: &Session) -> Publication {
@@ -174,6 +226,57 @@ fn a_session_published_again_over_an_unmoved_head_and_base_pushes_once() {
         "one `fetch, base-merge, push`: {:?}",
         world.events(&session.token.0)
     );
+    assert_eq!(gate_runs(&world), 1, "the gate ran once");
+    assert!(
+        push_records(&world).is_empty(),
+        "the landing forgot the push it recorded"
+    );
+}
+
+/// Publish again after `change`, and hold the publication to having pushed — and run
+/// the gate — a second time.
+fn pushed_again_after(change: impl FnOnce(&World, &Session, &Path)) {
+    let (world, session, origin, host) = unreadable_after_the_push();
+    let head = tip(&world, &session.worktree);
+    change(&world, &session, &origin);
+
+    let second = publish(&host, &session);
+
+    landed(&second, &world, &session);
+    let pushes = pushes(&world, &session);
+    assert_eq!(pushes.len(), 2, "the branch was pushed again: {pushes:?}");
+    assert_eq!(pushes[1]["payload"]["head"], head.as_str(), "{pushes:?}");
+    assert_eq!(pushes[1]["payload"]["accepted"], true, "{pushes:?}");
+    assert_eq!(gate_runs(&world), 2, "the gate ran again");
+    assert_eq!(
+        origin_tip(&world, &origin, "feature/republished").as_deref(),
+        Some(head.as_str()),
+        "origin has the head"
+    );
+}
+
+#[test]
+fn a_changed_gate_is_run_again_over_an_unmoved_head() {
+    pushed_again_after(|world, _, _| gate(world, "a changed gate"));
+}
+
+#[test]
+fn a_push_record_that_cannot_be_read_is_pushed_again() {
+    pushed_again_after(|world, _, _| {
+        for record in push_records(world) {
+            std::fs::write(record, "not a record\n").expect("a corrupted record");
+        }
+    });
+}
+
+#[test]
+fn a_branch_origin_no_longer_has_at_its_head_is_pushed_again() {
+    pushed_again_after(|world, _, origin| {
+        world.git(
+            origin,
+            &["update-ref", "-d", "refs/heads/feature/republished"],
+        );
+    });
 }
 
 #[test]
