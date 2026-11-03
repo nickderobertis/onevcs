@@ -21,8 +21,9 @@ use privateterms::{Action, LocatorKind};
 use super::diagnostics::{self, Phases};
 use super::scope::{self, Derived, Failed};
 use super::{
-    DeclaredTerm, Evidence, Locator, SanitizeAnswer, SanitizeInput, SanitizeSurface, Surface,
-    TermAction, TermsAnswer, TermsRequest, TermsUnavailable, Unavailability, Unfixed, Visibility,
+    DeclaredTerm, EntrySurface, Evidence, Locator, SanitizeAnswer, SanitizeInput, SanitizeSurface,
+    Surface, TermAction, TermsAnswer, TermsRequest, TermsUnavailable, Unavailability, Unfixed,
+    Visibility,
 };
 
 /// Sanitise `input`, recording its phases where diagnostics are asked for.
@@ -99,9 +100,9 @@ fn judged(
     let mut unfixed = Vec::new();
     let mut rewritten: [Vec<String>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (slot, (surface, entries)) in [
-        (SanitizeSurface::Text, &input.text),
-        (SanitizeSurface::Path, &input.paths),
-        (SanitizeSurface::Metadata, &input.metadata),
+        (EntrySurface::Text, &input.text),
+        (EntrySurface::Path, &input.paths),
+        (EntrySurface::Metadata, &input.metadata),
     ]
     .into_iter()
     .enumerate()
@@ -110,15 +111,11 @@ fn judged(
             let outcome = matcher.replace(entry);
             replaced += outcome.replaced;
             if !outcome.remaining.is_empty() {
-                unfixed.push(Unfixed {
-                    surface,
-                    index,
-                    fixed: false,
-                });
+                unfixed.push(Unfixed::Rewritable { surface, index });
                 note(
                     &derived,
                     evidence,
-                    surface,
+                    surface.into(),
                     index.to_string(),
                     outcome.remaining,
                 );
@@ -131,19 +128,21 @@ fn judged(
 
     let matching = Instant::now();
     for (surface, entries) in [
-        (SanitizeSurface::Text, &input.fixed.text),
-        (SanitizeSurface::Path, &input.fixed.paths),
-        (SanitizeSurface::Metadata, &input.fixed.metadata),
+        (EntrySurface::Text, &input.fixed.text),
+        (EntrySurface::Path, &input.fixed.paths),
+        (EntrySurface::Metadata, &input.fixed.metadata),
     ] {
         for (index, entry) in entries.iter().enumerate() {
             let found = matcher.find(entry);
             if !found.is_empty() {
-                unfixed.push(Unfixed {
-                    surface,
-                    index,
-                    fixed: true,
-                });
-                note(&derived, evidence, surface, format!("fixed {index}"), found);
+                unfixed.push(Unfixed::Fixed { surface, index });
+                note(
+                    &derived,
+                    evidence,
+                    surface.into(),
+                    format!("fixed {index}"),
+                    found,
+                );
             }
         }
     }
@@ -155,11 +154,7 @@ fn judged(
     let locators = matcher.screen_locators(&pairs, 1);
     for (index, locator) in locators.iter().enumerate() {
         if matches!(locator, Locator::Redacted { .. }) {
-            unfixed.push(Unfixed {
-                surface: SanitizeSurface::Locators,
-                index,
-                fixed: true,
-            });
+            unfixed.push(Unfixed::Locator { index });
             let found = matcher.find(pairs[index].1);
             note(
                 &derived,
@@ -191,7 +186,7 @@ fn judged(
             locators,
         },
         Some(first) => SanitizeAnswer::Refuse {
-            surface: first.surface,
+            surface: first.surface(),
             text,
             paths,
             metadata,

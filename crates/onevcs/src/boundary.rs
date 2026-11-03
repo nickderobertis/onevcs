@@ -663,16 +663,128 @@ pub enum SanitizeSurface {
     Locators,
 }
 
+/// Which list of entries an entry is in.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntrySurface {
+    /// A `text` entry.
+    Text,
+    /// A `paths` entry.
+    Path,
+    /// A `metadata` entry.
+    Metadata,
+}
+
+impl From<EntrySurface> for SanitizeSurface {
+    fn from(surface: EntrySurface) -> SanitizeSurface {
+        match surface {
+            EntrySurface::Text => SanitizeSurface::Text,
+            EntrySurface::Path => SanitizeSurface::Path,
+            EntrySurface::Metadata => SanitizeSurface::Metadata,
+        }
+    }
+}
+
+/// One entry still carrying a term after replacement: where it is, never what.
+///
+/// On the wire it is `{"surface", "index", "fixed"}`: a rewritable entry is
+/// `fixed: false`, and a `fixed` entry and a locator — which nothing rewrites — are
+/// `fixed: true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "UnfixedWire", try_from = "UnfixedWire")]
+pub enum Unfixed {
+    /// A rewritable entry, by its index in its own list.
+    Rewritable {
+        /// Which list.
+        surface: EntrySurface,
+        /// Its index there.
+        index: usize,
+    },
+    /// An entry of `fixed`, by its index in `fixed`'s list.
+    Fixed {
+        /// Which of `fixed`'s lists.
+        surface: EntrySurface,
+        /// Its index there.
+        index: usize,
+    },
+    /// A locator, by its index in `locators`.
+    Locator {
+        /// Its index there.
+        index: usize,
+    },
+}
+
+impl Unfixed {
+    /// Which list it is in.
+    pub fn surface(&self) -> SanitizeSurface {
+        match self {
+            Unfixed::Rewritable { surface, .. } | Unfixed::Fixed { surface, .. } => {
+                (*surface).into()
+            }
+            Unfixed::Locator { .. } => SanitizeSurface::Locators,
+        }
+    }
+}
+
 /// One entry still carrying a term after replacement: where it is, never what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Unfixed {
+#[schemars(rename = "Unfixed")]
+struct UnfixedWire {
     /// Which list.
-    pub surface: SanitizeSurface,
+    surface: SanitizeSurface,
     /// Its index in that list (in `fixed`'s list where `fixed` is true).
-    pub index: usize,
+    index: usize,
     /// Whether it is an entry nothing rewrites: a `fixed` one, or a locator.
-    pub fixed: bool,
+    fixed: bool,
+}
+
+impl From<Unfixed> for UnfixedWire {
+    fn from(unfixed: Unfixed) -> UnfixedWire {
+        let (index, fixed) = match unfixed {
+            Unfixed::Rewritable { index, .. } => (index, false),
+            Unfixed::Fixed { index, .. } | Unfixed::Locator { index } => (index, true),
+        };
+        UnfixedWire {
+            surface: unfixed.surface(),
+            index,
+            fixed,
+        }
+    }
+}
+
+impl TryFrom<UnfixedWire> for Unfixed {
+    type Error = &'static str;
+
+    fn try_from(wire: UnfixedWire) -> std::result::Result<Unfixed, Self::Error> {
+        let index = wire.index;
+        let entry = |surface| {
+            if wire.fixed {
+                Unfixed::Fixed { surface, index }
+            } else {
+                Unfixed::Rewritable { surface, index }
+            }
+        };
+        match (wire.surface, wire.fixed) {
+            (SanitizeSurface::Locators, true) => Ok(Unfixed::Locator { index }),
+            (SanitizeSurface::Locators, false) => Err("a locator is never rewritable"),
+            (SanitizeSurface::Text, _) => Ok(entry(EntrySurface::Text)),
+            (SanitizeSurface::Path, _) => Ok(entry(EntrySurface::Path)),
+            (SanitizeSurface::Metadata, _) => Ok(entry(EntrySurface::Metadata)),
+        }
+    }
+}
+
+impl JsonSchema for Unfixed {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        UnfixedWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        UnfixedWire::json_schema(generator)
+    }
 }
 
 /// What sanitisation decided, and the rewritten entries.

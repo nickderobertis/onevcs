@@ -5768,7 +5768,9 @@ pub struct FixedEntries { pub text: Vec<String>, pub paths: Vec<String>, pub met
 pub struct LocatorInput { pub kind: LocatorKind, pub value: String }
 pub struct SanitizeInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub fixed: FixedEntries, pub scope: TermScope, pub replacements: Vec<Replacement>, pub locators: Vec<LocatorInput> }
 pub enum SanitizeSurface { Text, Path, Metadata, Locators }   // serde: kebab-case
-pub struct Unfixed { pub surface: SanitizeSurface, pub index: usize, pub fixed: bool }
+pub enum EntrySurface { Text, Path, Metadata }   // serde: kebab-case
+pub enum Unfixed { Rewritable { surface: EntrySurface, index: usize }, Fixed { surface: EntrySurface, index: usize }, Locator { index: usize } }   // wire: {"surface", "index", "fixed"}
+impl Unfixed { pub fn surface(&self) -> SanitizeSurface; }
 pub enum SanitizeAnswer { Pass { text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Refuse { surface: SanitizeSurface, text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Unavailable { reason: Unavailability } }   // tag: verdict; locators omitted when empty
 pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>;
 pub fn sanitize_public_output_with_evidence(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Result<SanitizeAnswer>;

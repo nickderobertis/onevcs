@@ -9436,7 +9436,9 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub struct LocatorInput { pub kind: LocatorKind, pub value: String }",
         "pub struct SanitizeInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub fixed: FixedEntries, pub scope: TermScope, pub replacements: Vec<Replacement>, pub locators: Vec<LocatorInput> }",
         "pub enum SanitizeSurface { Text, Path, Metadata, Locators }",
-        "pub struct Unfixed { pub surface: SanitizeSurface, pub index: usize, pub fixed: bool }",
+        "pub enum EntrySurface { Text, Path, Metadata }",
+        "pub enum Unfixed { Rewritable { surface: EntrySurface, index: usize }, Fixed { surface: EntrySurface, index: usize }, Locator { index: usize } }",
+        "impl Unfixed { pub fn surface(&self) -> SanitizeSurface; }",
         "pub enum SanitizeAnswer { Pass { text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Refuse { surface: SanitizeSurface, text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Unavailable { reason: Unavailability } }",
         "pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>;",
         "pub fn sanitize_public_output_with_evidence(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Result<SanitizeAnswer>;",
@@ -9838,8 +9840,19 @@ fn the_term_levels_and_sanitize_amendment_fixtures_are_the_shapes_this_build_rea
         } = &answer
         {
             assert_eq!(*surface, SanitizeSurface::Text);
-            assert!(!unfixed[0].fixed);
+            assert_eq!(
+                unfixed[0],
+                onevcs::boundary::Unfixed::Rewritable {
+                    surface: onevcs::boundary::EntrySurface::Text,
+                    index: 0
+                }
+            );
         }
+        // A rewritable locator is no state an answer can carry.
+        assert!(serde_json::from_value::<onevcs::boundary::Unfixed>(
+            json!({"surface": "locators", "index": 0, "fixed": false})
+        )
+        .is_err());
         if let SanitizeAnswer::Unavailable { reason } = &answer {
             assert_eq!(*reason, Unavailability::Replacements);
         }

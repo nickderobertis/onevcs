@@ -3338,10 +3338,7 @@ fn executable(path: &Path, body: &str) {
 #[cfg(target_os = "linux")]
 #[test]
 fn bootstrap_installs_strace_through_apt_get_or_refuses_naming_how_to_install_it() {
-    // `just bootstrap` provisions strace for the recovery tier's trace of the sanitise
-    // call. `sudo` and `apt-get` are stand-ins that record what they were asked and do
-    // what the real ones would to `PATH`, because installing a package is the one thing a
-    // journey must not do to its host.
+    // `just bootstrap` provisions strace for the recovery tier's trace of the sanitise call.
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let bin = scratch.path().join("bin");
     std::fs::create_dir_all(&bin).expect("a bin directory");
