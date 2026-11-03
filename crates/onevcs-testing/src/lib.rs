@@ -56,6 +56,9 @@
 
 #![warn(missing_docs)]
 
+/// Deterministic evidence files for export boundary journeys.
+pub mod export_fixtures;
+
 mod events;
 mod landings;
 mod remote;

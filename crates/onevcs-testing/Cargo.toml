@@ -22,6 +22,8 @@ name = "onevcs_testing"
 path = "src/lib.rs"
 
 [dependencies]
+flate2 = { workspace = true }
+zip = { workspace = true }
 # The interfaces these implement, and the types their states are made of. The
 # version requirement is what `cargo publish` uploads — a bare path resolves to
 # nothing on crates.io — and release-plz keeps it in step with the sibling. It is
