@@ -1,4 +1,4 @@
-// Read-only export telemetry, bound to recovery's invocation and both producing binaries.
+// Read-only export telemetry, bound to export's invocation and both producing binaries.
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";

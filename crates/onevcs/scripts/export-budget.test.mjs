@@ -238,3 +238,12 @@ test("export wrapper completes evidence only after the whole producer succeeds",
     assert.equal(JSON.parse(readFileSync(join(root,"target/budget-records/export-invocation.json"))).state,"failed");
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test("expensive export inputs and telemetry fingerprint share the production dependency closure", () => {
+  const nx = readFileSync(new URL("../../../nx.json", import.meta.url), "utf8");
+  const declared = JSON.parse(nx.match(/"exportSource"\s*:\s*(\[[\s\S]*?\])/)[1]);
+  const manifest = JSON.parse(readFileSync(new URL("../../../scripts/export-build-inputs.json", import.meta.url)));
+  assert.deepEqual(declared.map(path => path.replace("{workspaceRoot}/", "")).sort(), manifest.files.filter(path => path.startsWith("crates/onevcs/src/")).sort());
+  const selected = inputFiles(repositoryRoot,"scripts/export-build-inputs.json");
+  for (const path of ["crates/onevcs/src/publish.rs", "crates/onevcs/src/retire.rs", "crates/onevcs-testing/src/recovery.rs"]) assert.ok(!selected.includes(path), `${path} is unrelated to export`);
+});

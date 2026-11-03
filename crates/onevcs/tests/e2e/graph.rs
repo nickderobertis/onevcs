@@ -344,6 +344,9 @@ fn export_bounds_only_follow_the_files_their_journeys_read() {
         ("crates/onevcs/tests/e2e/export.rs", true),
         ("crates/onevcs/tests/e2e/boundary.rs", true),
         ("crates/onevcs/tests/e2e/cli.rs", false),
+        ("crates/onevcs-testing/src/recovery.rs", false),
+        ("crates/onevcs-testing/src/boundary.rs", false),
+        ("crates/onevcs/src/retire.rs", false),
     ] {
         checkout.branch_changing("change", &[path]);
         let tasks = checkout.selected(
@@ -373,6 +376,8 @@ fn full_size_export_and_recovery_workloads_have_independent_edges() {
             true,
             false,
         ),
+        ("crates/onevcs/src/retire.rs", false, true),
+        ("crates/onevcs/src/cli.rs", false, true),
     ] {
         checkout.branch_changing("change", &[path]);
         let tasks = checkout.selected(

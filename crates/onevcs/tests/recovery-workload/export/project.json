@@ -28,7 +28,7 @@
         "{workspaceRoot}/scripts/recoverable-build.mjs",
         "{workspaceRoot}/scripts/export-build-inputs.json",
         "{workspaceRoot}/crates/onevcs/budgets.yaml",
-        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "exportSource",
         "{workspaceRoot}/crates/onevcs/tests/recovery-workload/export/**/*",
         "{workspaceRoot}/scripts/export-*",
         "{workspaceRoot}/crates/onevcs/scripts/export-*"
@@ -62,7 +62,7 @@
         "{workspaceRoot}/scripts/recoverable-build.mjs",
         "{workspaceRoot}/scripts/export-build-inputs.json",
         "{workspaceRoot}/crates/onevcs/budgets.yaml",
-        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "exportSource",
         "{workspaceRoot}/crates/onevcs/tests/recovery-workload/export/**/*",
         "{workspaceRoot}/scripts/export-*",
         "{workspaceRoot}/crates/onevcs/scripts/export-*"
