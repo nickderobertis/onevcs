@@ -44,6 +44,10 @@
           "{workspaceRoot}/crates/onevcs/src/workspace.rs",
           "{workspaceRoot}/crates/onevcs/src/yaml.rs"
     ],
+    "exportCliExitCodeSource": [
+      // llmlint: ignore[expensive_tests_stay_behind_their_own_edge] Refused CLI exports call app::run -> publish::exit_code, so the decoding-bound journeys really read this mapping. Keep this actual dependency; the in-process export workload does not use it.
+      "{workspaceRoot}/crates/onevcs/src/publish.rs"
+    ],
     "sharedGlobals": [
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/package.json",
