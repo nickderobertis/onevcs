@@ -2733,3 +2733,338 @@ fn printable_screening_keeps_unicode_normalization_and_utf16_error_recovery() {
         );
     }
 }
+
+#[test]
+fn a_later_found_term_takes_precedence_over_an_earlier_unaccepted_opaque_file() {
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    fixture_branch(
+        &host,
+        &source,
+        &[
+            ("a.jpg".into(), vec![0xff, 0xd8, 0xff, 0]),
+            ("z.txt".into(), b"from quietharbor\n".to_vec()),
+        ],
+    );
+    let before = destination_stores(&host);
+    let output = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("it carries a private term"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let evidence =
+        crate::term_levels::persisted(&host.world.home(), &String::from_utf8_lossy(&output.stderr));
+    assert!(evidence.iter().any(|finding| finding["at"] == "z.txt@5"));
+    assert_eq!(destination_stores(&host), before);
+}
+
+#[test]
+fn export_diagnostics_preserve_an_unavailable_screening_verdict() {
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    fixture_branch(
+        &host,
+        &source,
+        &[("notes.md".into(), b"generic readable notes\n".to_vec())],
+    );
+    let diagnostics = host.world.path("export-diagnostics.jsonl");
+    let output = host
+        .world
+        .onevcs()
+        .env("ONEVCS_BOUNDARY_DIAGNOSTICS", &diagnostics)
+        .args([
+            "export",
+            "--from",
+            "github.com/hiddenco/quietharbor",
+            "--branch",
+            "fixture-source",
+            "--directory",
+            "examples",
+            "--to",
+            "github.com/sample-owner/openwidget",
+            "--target-directory",
+            "fixtures",
+            "--branch-name",
+            "generic-fixtures",
+            "--term-scope",
+            "github.com/missing/unregistered",
+        ])
+        .output()
+        .expect("export unavailable scope");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
+    let lines = std::fs::read_to_string(diagnostics).expect("diagnostics");
+    let record: serde_json::Value =
+        serde_json::from_str(lines.lines().last().expect("export line")).expect("JSON");
+    assert_eq!(record["verdict"], "unavailable");
+    assert!(!host.has_branch("generic-fixtures"));
+}
+
+#[test]
+fn publishing_an_export_carries_historical_lfs_objects_removed_from_the_tip() {
+    if !require_lfs() {
+        return;
+    }
+    let host = Boundary::new(LOCAL);
+    destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+    let source = host.source(&[]);
+    let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+        .into_iter()
+        .filter(|(name, _)| matches!(name.as_str(), "model.3mf" | "notes.md"))
+        .collect();
+    fixture_branch(&host, &source, &files);
+    let output = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exported = host
+        .world
+        .git(&host.public, &["rev-parse", "generic-fixtures"]);
+    host.world
+        .git(&host.public, &["checkout", "-q", "generic-fixtures"]);
+    host.world
+        .git(&host.public, &["rm", "-q", "fixtures/model.3mf"]);
+    host.world.git(
+        &host.public,
+        &["commit", "-q", "-m", "docs: remove superseded model"],
+    );
+    host.world.git(&host.public, &["checkout", "-q", "main"]);
+    std::fs::remove_dir_all(host.origin.join("lfs")).expect("clear earlier upload");
+    let output = host
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "generic-fixtures",
+            "--repo",
+            host.public.to_str().expect("path"),
+        ])
+        .output()
+        .expect("publish historical object");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let model = &files
+        .iter()
+        .find(|(name, _)| name == "model.3mf")
+        .expect("model")
+        .1;
+    let (pointer, oid) = lfs_pointer(model);
+    let historical = host.world.git_raw(
+        &host.public,
+        &["show", &format!("{}:fixtures/model.3mf", exported.trim())],
+    );
+    assert_eq!(historical.stdout, pointer.as_bytes());
+    let notes = &files
+        .iter()
+        .find(|(name, _)| name == "notes.md")
+        .expect("retained notes")
+        .1;
+    assert_eq!(
+        host.world
+            .git_raw(&host.origin, &["show", "main:fixtures/notes.md"])
+            .stdout,
+        *notes
+    );
+
+    assert!(!host
+        .world
+        .git_raw(&host.origin, &["cat-file", "-e", "main:fixtures/model.3mf"])
+        .status
+        .success());
+    assert_eq!(
+        std::fs::read(
+            host.origin
+                .join(format!("lfs/objects/{}/{}/{oid}", &oid[..2], &oid[2..4]))
+        )
+        .expect("historical LFS object"),
+        *model
+    );
+}
+
+#[test]
+fn a_failed_publication_lfs_upload_keeps_remote_refs_and_can_be_retried() {
+    if !require_lfs() {
+        return;
+    }
+    let host = Boundary::new(LOCAL);
+    destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+    let source = host.source(&[]);
+    let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+        .into_iter()
+        .filter(|(name, _)| name == "model.3mf")
+        .collect();
+    fixture_branch(&host, &source, &files);
+    let output = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lfs = host.origin.join("lfs");
+    std::fs::remove_dir_all(&lfs).expect("clear earlier upload");
+    std::fs::write(&lfs, "not a directory").expect("block LFS endpoint");
+    let refs_before = host.origin_refs();
+    let publish = || {
+        host.world
+            .onevcs()
+            .args([
+                "publish-branch",
+                "generic-fixtures",
+                "--repo",
+                host.public.to_str().expect("path"),
+            ])
+            .output()
+            .expect("publish export")
+    };
+    let failed = publish();
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("push rejected"));
+    assert_eq!(
+        host.origin_refs(),
+        refs_before,
+        "Git refs cannot move before upload succeeds"
+    );
+    std::fs::remove_file(&lfs).expect("repair endpoint");
+    let retry = publish();
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    let (pointer, oid) = lfs_pointer(&files[0].1);
+    assert_eq!(
+        host.world
+            .git_raw(&host.origin, &["show", "main:fixtures/model.3mf"])
+            .stdout,
+        pointer.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(
+            host.origin
+                .join(format!("lfs/objects/{}/{}/{oid}", &oid[..2], &oid[2..4]))
+        )
+        .expect("retry LFS object"),
+        files[0].1
+    );
+}
+
+#[test]
+fn publishing_new_lfs_content_does_not_require_cached_media_already_on_origin() {
+    if !require_lfs() {
+        return;
+    }
+    let host = Boundary::new(LOCAL);
+    destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+    let source = host.source(&[]);
+    let sample = onevcs_testing::export_fixtures::sample_set(None);
+    let model = sample
+        .iter()
+        .find(|(name, _)| name == "model.3mf")
+        .expect("model")
+        .clone();
+    fixture_branch(&host, &source, std::slice::from_ref(&model));
+    let first = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    // Establish a real published base object, then model a checkout whose old
+    // media cache has been evicted. The origin still holds the verified object.
+    host.world.git(
+        &host.public,
+        &["push", "-q", "origin", "generic-fixtures:main"],
+    );
+    host.world
+        .git(&host.public, &["branch", "-D", "generic-fixtures"]);
+    std::fs::remove_dir_all(host.public.join(".git/lfs")).expect("evict old media");
+    let gzip = sample
+        .iter()
+        .find(|(name, _)| name == "print.gcode.gz")
+        .expect("gzip")
+        .clone();
+    fixture_branch(&host, &source, std::slice::from_ref(&gzip));
+    let next = host.export(
+        "fixture-source",
+        "examples",
+        "new-fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    let (_, old_oid) = lfs_pointer(&model.1);
+    let old_suffix = format!("lfs/objects/{}/{}/{old_oid}", &old_oid[..2], &old_oid[2..4]);
+    assert!(
+        !host.public.join(".git").join(&old_suffix).exists(),
+        "export need not populate irrelevant old media"
+    );
+    let published = host
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "generic-fixtures",
+            "--repo",
+            host.public.to_str().expect("path"),
+        ])
+        .output()
+        .expect("publish with cold base cache");
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    for (directory, (name, bytes)) in [("fixtures", model), ("new-fixtures", gzip)] {
+        let (pointer, oid) = lfs_pointer(&bytes);
+        assert_eq!(
+            host.world
+                .git_raw(&host.origin, &["show", &format!("main:{directory}/{name}")])
+                .stdout,
+            pointer.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(host.origin.join(format!(
+                "lfs/objects/{}/{}/{oid}",
+                &oid[..2],
+                &oid[2..4]
+            )))
+            .expect("published media"),
+            bytes
+        );
+    }
+}
