@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::boundary::{assert_neutral, register, Boundary};
 
 const LOCAL: &str = "{publication: local-direct, approvals: none}";
+const HOSTED: &str = "{publication: change-direct, approvals: none, drafts: {disabled: true}}";
 
 /// A private source repository with an origin, its base holding `base` committed.
 struct Source {
@@ -3417,6 +3418,17 @@ mod lfs_gate;
 #[test]
 #[cfg(target_os = "linux")]
 fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes() {
+    cancel_actual_lfs_upload(LOCAL);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hosted_change_publication_cancels_actual_lfs_upload_before_its_git_push() {
+    cancel_actual_lfs_upload(HOSTED);
+}
+
+#[cfg(target_os = "linux")]
+fn cancel_actual_lfs_upload(policy: &str) {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -3476,7 +3488,16 @@ fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processe
         return;
     }
     for unconfirmed in [false, true] {
-        let host = Boundary::new(LOCAL);
+        let host = Boundary::new(policy);
+        if policy == HOSTED {
+            host.world.host_checks(&[crate::world::Check {
+                name: "gate",
+                status: "completed",
+                conclusion: Some("success"),
+                required: true,
+            }]);
+        }
+
         destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
         let source = host.source(&[]);
         let model = onevcs_testing::export_fixtures::sample_set(None)
@@ -3549,14 +3570,19 @@ fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processe
         assert_eq!(kind, onevcs::FailureKind::Cancelled, "{reason}");
         if unconfirmed {
             assert!(
-                reason.contains("original branch's Git LFS upload was stopped")
+                (policy != LOCAL
+                    || reason.contains("original branch's Git LFS upload was stopped"))
                     && reason.contains("could not be confirmed")
                     && reason.contains("may still be running"),
                 "{reason}"
             );
         } else {
             assert!(
-                reason.contains("Git LFS objects were being uploaded"),
+                if policy == LOCAL {
+                    reason.contains("Git LFS objects were being uploaded")
+                } else {
+                    reason.contains("publishing push") && reason.contains("were stopped")
+                },
                 "{reason}"
             );
             assert!(!reason.contains("may still be running"), "{reason}");
@@ -3811,4 +3837,250 @@ fn blocked_private_export_evidence_refuses_without_destination_writes_and_recove
         .expect("recovered private evidence directory")
         .next()
         .is_some());
+}
+
+#[test]
+fn hosted_change_publication_uploads_lfs_before_push_and_recovers_from_rejection() {
+    if !require_lfs() {
+        return;
+    }
+    for fail_first in [false, true] {
+        let host = Boundary::new(HOSTED);
+        host.world.host_checks(&[crate::world::Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }]);
+        destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+        let source = host.source(&[]);
+        let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+            .into_iter()
+            .filter(|(name, _)| matches!(name.as_str(), "model.3mf" | "print.gcode.gz"))
+            .collect();
+        fixture_branch(&host, &source, &files);
+        let exported = host.export(
+            "fixture-source",
+            "examples",
+            "fixtures",
+            "generic-fixtures",
+            &[],
+        );
+        assert!(
+            exported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let lfs = host.origin.join("lfs");
+        std::fs::remove_dir_all(&lfs).expect("force publication upload");
+        let publish = || {
+            host.world
+                .onevcs()
+                .args([
+                    "publish-branch",
+                    "generic-fixtures",
+                    "--repo",
+                    host.public.to_str().expect("path"),
+                ])
+                .output()
+                .expect("publish through real hosted change path")
+        };
+        if fail_first {
+            std::fs::write(&lfs, "a file blocks the destination LFS store")
+                .expect("block file endpoint");
+            let before = host.origin_refs();
+            let refused = publish();
+            assert_eq!(refused.status.code(), Some(1));
+            assert!(String::from_utf8_lossy(&refused.stderr).contains("push rejected"));
+            assert_eq!(
+                host.origin_refs(),
+                before,
+                "failed hosted LFS upload cannot push a Git ref"
+            );
+            assert!(
+                !host
+                    .world
+                    .host_calls()
+                    .iter()
+                    .any(|call| call.starts_with("pr create")),
+                "a failed publishing push cannot open a change request"
+            );
+            std::fs::remove_file(&lfs).expect("repair endpoint before retry");
+        }
+        let published = publish();
+        assert!(
+            published.status.success(),
+            "{}",
+            String::from_utf8_lossy(&published.stderr)
+        );
+        assert!(
+            host.world
+                .host_calls()
+                .iter()
+                .any(|call| call.starts_with("pr create")),
+            "the hosted publication opened a real fixture change request"
+        );
+        for (name, bytes) in files {
+            let (pointer, oid) = lfs_pointer(&bytes);
+            assert_eq!(
+                host.world
+                    .git_raw(&host.origin, &["show", &format!("main:fixtures/{name}")])
+                    .stdout,
+                pointer.as_bytes()
+            );
+            assert_eq!(
+                std::fs::read(host.origin.join(format!(
+                    "lfs/objects/{}/{}/{oid}",
+                    &oid[..2],
+                    &oid[2..4]
+                )))
+                .expect("hosted publication uploaded its media"),
+                bytes
+            );
+        }
+    }
+}
+
+#[test]
+fn custom_absolute_and_relative_lfs_storage_survives_source_export_and_session_publication() {
+    if !require_lfs() {
+        return;
+    }
+    for absolute in [false, true] {
+        let host = Boundary::new(LOCAL);
+        destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+        let source = host.source(&[]);
+        let source_store = if absolute {
+            host.world.path("source-media")
+        } else {
+            source.checkout.join(".git/source-media")
+        };
+        let destination_store = if absolute {
+            host.world.path("destination-media")
+        } else {
+            host.public.join(".git/destination-media")
+        };
+        let source_setting = if absolute {
+            source_store.to_str().expect("path")
+        } else {
+            "source-media"
+        };
+        let destination_setting = if absolute {
+            destination_store.to_str().expect("path")
+        } else {
+            "destination-media"
+        };
+        host.world
+            .git(&source.checkout, &["config", "lfs.storage", source_setting]);
+        host.world.git(
+            &host.public,
+            &["config", "lfs.storage", destination_setting],
+        );
+        let source_endpoint = host.world.bare_origin("source-lfs-endpoint");
+        host.world.git(
+            &source.checkout,
+            &[
+                "config",
+                "lfs.url",
+                &format!("file://{}", source_endpoint.display()),
+            ],
+        );
+        let model = onevcs_testing::export_fixtures::sample_set(None)
+            .into_iter()
+            .find(|(name, _)| name == "model.3mf")
+            .expect("model");
+        let (pointer, oid) = lfs_pointer(&model.1);
+        fixture_branch(
+            &host,
+            &source,
+            &[(model.0.clone(), pointer.as_bytes().to_vec())],
+        );
+        let suffix = format!("objects/{}/{}/{oid}", &oid[..2], &oid[2..4]);
+        let source_object = source_store.join(&suffix);
+        std::fs::create_dir_all(source_object.parent().expect("parent"))
+            .expect("custom source store");
+        std::fs::write(&source_object, &model.1).expect("source object only in custom cache");
+        assert!(host
+            .world
+            .git(&source.checkout, &["lfs", "env"])
+            .contains(&format!(
+                "LocalMediaDir={}",
+                source_store.join("objects").display()
+            )));
+        let exported = host.export(
+            "fixture-source",
+            "examples",
+            "fixtures",
+            "generic-fixtures",
+            &[],
+        );
+        assert!(
+            exported.status.success(),
+            "absolute={absolute}: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&source_object).expect("source cache retained"),
+            model.1
+        );
+        assert_eq!(
+            std::fs::read(destination_store.join(&suffix))
+                .expect("export used custom destination cache"),
+            model.1
+        );
+        assert!(!host.public.join(".git/lfs/objects").exists());
+        std::fs::remove_dir_all(host.origin.join("lfs"))
+            .expect("force consumer to use shared custom cache");
+        let opened = host
+            .world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "github.com/sample-owner/openwidget",
+                "--branch",
+                "generic-fixtures",
+                "--caller-merges-base",
+            ])
+            .output()
+            .expect("open export consumer");
+        assert!(
+            opened.status.success(),
+            "absolute={absolute}: {}",
+            String::from_utf8_lossy(&opened.stderr)
+        );
+        let token = crate::world::token_of(&opened.stdout);
+        let published = host
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .output()
+            .expect("publish from custom cache");
+        assert!(
+            published.status.success(),
+            "absolute={absolute}: {}",
+            String::from_utf8_lossy(&published.stderr)
+        );
+        assert_eq!(
+            host.world
+                .git_raw(&host.origin, &["show", "main:fixtures/model.3mf"])
+                .stdout,
+            pointer.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(host.origin.join(format!("lfs/{suffix}")))
+                .expect("consumer uploaded from custom cache"),
+            model.1
+        );
+        assert_eq!(
+            std::fs::read(destination_store.join(&suffix)).expect("custom cache retained"),
+            model.1
+        );
+    }
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn hosted_change_publication_cancels_actual_lfs_upload_before_its_git_push() {
+    eprintln!("skipping actual hosted Git LFS upload cancellation: the held-read fixture requires Linux FUSE");
 }
