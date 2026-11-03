@@ -223,3 +223,18 @@ for (const excludes of ["not-a-list", ["../escape"], ["/absolute"], ["a\\b"], ["
     assert.throws(() => inputFiles(root,"scripts/export-build-inputs.json"), /excludes/);
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+
+test("export wrapper completes evidence only after the whole producer succeeds", () => {
+  const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "export-completion-"));
+  try {
+    mkdirSync(join(root,"scripts"));
+    copyFileSync(new URL("../../../scripts/export-invocation.mjs", import.meta.url),join(root,"scripts/export-invocation.mjs"));
+    const program = `const fs=require('node:fs'); const p=${JSON.stringify(join(root,"target/budget-records/export-invocation.json"))}; const m=JSON.parse(fs.readFileSync(p)); if(m.state!=='started')process.exit(3); fs.writeFileSync(p,JSON.stringify({...m,source_sha256:'a'.repeat(64)}));`;
+    const success = spawnSync(process.execPath,[join(root,"scripts/export-invocation.mjs"),process.execPath,"-e",program],{encoding:"utf8"});
+    assert.equal(success.status,0,success.stderr);
+    assert.equal(JSON.parse(readFileSync(join(root,"target/budget-records/export-invocation.json"))).state,"complete");
+    const missing = spawnSync(process.execPath,[join(root,"scripts/export-invocation.mjs"),process.execPath,"-e",""],{encoding:"utf8"});
+    assert.equal(missing.status,1);
+    assert.equal(JSON.parse(readFileSync(join(root,"target/budget-records/export-invocation.json"))).state,"failed");
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

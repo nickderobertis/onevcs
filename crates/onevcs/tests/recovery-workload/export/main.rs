@@ -553,7 +553,12 @@ fn export_scenario(downloads: bool) {
         {
             std::fs::copy(&binary, directory.join("export-onevcs")).unwrap();
             let mut invocation = build.clone();
-            invocation["state"] = json!("complete");
+            invocation["state"] =
+                json!(if std::env::var_os("ONEVCS_EXPORT_INVOCATION").is_some() {
+                    "started"
+                } else {
+                    "complete"
+                });
             write(
                 &directory.join("export-invocation.json"),
                 &serde_json::to_vec(&invocation).unwrap(),

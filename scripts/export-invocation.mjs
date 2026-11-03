@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Invalidate old evidence before compilation/test startup; failed producers leave it incomplete.
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -40,4 +40,14 @@ if (!program) {
     failed(result.error?.message ?? `${program} ${args.join(" ")} failed with ${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}`);
   }
   process.exitCode = result.status ?? 1;
+  if (process.exitCode === 0 && process.platform !== "win32") {
+    try {
+      const evidence = JSON.parse(readFileSync(`${directory}/export-invocation.json`, "utf8"));
+      if (evidence.run_id !== run_id || evidence.state !== "started" || !/^[0-9a-f]{64}$/.test(evidence.source_sha256 ?? "")) throw new Error("producer did not finish this invocation");
+      writeFileSync(`${directory}/export-invocation.json`, JSON.stringify({...evidence, state:"complete"}));
+    } catch (error) {
+      failed(error.message);
+      process.exitCode = 1;
+    }
+  }
 }
