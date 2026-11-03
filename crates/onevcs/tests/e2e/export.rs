@@ -2707,6 +2707,49 @@ fn printable_screening_keeps_unicode_normalization_and_utf16_error_recovery() {
             assert_eq!(destination_stores(&host), before);
         }
     }
+    // A binary prefix shifts UTF-16 to odd alignment; supplementary scalars
+    // must remain intact and findings address source UTF-16 bytes, not UTF-8.
+    for (prefix, text, offset) in [
+        (vec![1], "quietharbor\n", 1),
+        (vec![], "🌿 é quietharbor\n", 10),
+        (vec![], "from fern🌿harbor\n", 10),
+    ] {
+        for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
+            let host = Boundary::new(LOCAL);
+            let source = host.source(&[(
+                "private-terms.toml",
+                "schema_version = 2\nterms = [\"fern🌿harbor\"]\n",
+            )]);
+            let mut bytes = prefix.clone();
+            bytes.extend(layered(text, encoding, &[]));
+            fixture_branch(&host, &source, &[("carrier.dat".into(), bytes)]);
+            crate::honesty::inhabit(&host.world);
+            let before = destination_stores(&host);
+            let error = onevcs::export(
+                &onevcs::Providers::real(),
+                &library_request(vec!["**".into()]),
+            )
+            .expect_err("accepted UTF-16 still refuses a found term");
+            let diagnostic = error.to_string();
+            assert!(
+                diagnostic.contains("it carries a private term"),
+                "{text:?}, {encoding:?}: {diagnostic}"
+            );
+            let evidence = crate::term_levels::persisted(&host.world.home(), &diagnostic);
+            let suffix = if matches!(encoding, Encoding::Utf16Le) {
+                "utf16le"
+            } else {
+                "utf16be"
+            };
+            assert!(
+                evidence
+                    .iter()
+                    .any(|finding| finding["at"] == format!("carrier.dat@{offset}:{suffix}")),
+                "{text:?}, {encoding:?}: {evidence:?}"
+            );
+            assert_eq!(destination_stores(&host), before);
+        }
+    }
     for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
         let host = Boundary::new(LOCAL);
         let source = host.source(&[]);
