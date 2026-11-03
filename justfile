@@ -289,7 +289,7 @@ export-journeys:
 
 _export-workload:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_EXPORT_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --status-level fail {{recovery-no-tests}}
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_EXPORT_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --test-threads=1 --status-level fail {{recovery-no-tests}}
     @node --test crates/onevcs/scripts/export-budget.test.mjs
 
 # The workload binaries and export bounds are Unix-only, so on Windows they have no tests and
