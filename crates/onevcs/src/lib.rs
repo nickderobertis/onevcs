@@ -76,6 +76,7 @@ mod import;
 mod integrate;
 mod label;
 mod landed;
+mod lfs_pointer;
 mod lock;
 mod merge_path;
 mod native_objects;

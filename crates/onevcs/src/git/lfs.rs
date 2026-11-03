@@ -78,22 +78,6 @@ pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -
     super::append_in_place(common, &settings)
 }
 
-fn pointer_oid(bytes: &[u8]) -> Option<&str> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut lines = text.lines();
-    if lines.next()? != "version https://git-lfs.github.com/spec/v1" {
-        return None;
-    }
-    let oid = lines.next()?.strip_prefix("oid sha256:")?;
-    lines.next()?.strip_prefix("size ")?.parse::<u64>().ok()?;
-    (lines.next().is_none()
-        && oid.len() == 64
-        && oid
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
-    .then_some(oid)
-}
-
 fn tree_oids(
     repository: &git2::Repository,
     tree: git2::Oid,
@@ -111,10 +95,10 @@ fn tree_oids(
         } else if matches!(entry.filemode(), 0o100644 | 0o100755) && seen.insert(entry.id()) {
             // Inspect the header before reading bytes: an ordinary large blob
             // must not be materialized just to learn that it is not a pointer.
-            if odb.read_header(entry.id())?.0 <= 1024 {
+            if odb.read_header(entry.id())?.0 <= crate::lfs_pointer::MAX_BYTES {
                 let blob = repository.find_blob(entry.id())?;
-                if let Some(oid) = pointer_oid(blob.content()) {
-                    oids.insert(oid.to_owned());
+                if let Some(pointer) = crate::lfs_pointer::parse(blob.content()) {
+                    oids.insert(pointer.oid);
                 }
             }
         }

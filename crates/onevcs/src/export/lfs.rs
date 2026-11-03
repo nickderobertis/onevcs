@@ -1,5 +1,6 @@
 //! Git LFS pointer resolution and transfer, always through the installed client.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -10,38 +11,6 @@ use crate::{error::Result, git, ExportRequest};
 
 const SOURCE: &str = "an LFS object it points to cannot be read";
 const DESTINATION: &str = "its destination's Git LFS store could not take its objects";
-
-struct Pointer {
-    oid: String,
-    size: u64,
-}
-
-fn pointer(bytes: &[u8]) -> Option<Pointer> {
-    if bytes.len() > 1024 {
-        return None;
-    }
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut lines = text.lines();
-    if lines.next()? != "version https://git-lfs.github.com/spec/v1" {
-        return None;
-    }
-    let oid = lines.next()?.strip_prefix("oid sha256:")?;
-    if oid.len() != 64
-        || !oid
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return None;
-    }
-    let size = lines.next()?.strip_prefix("size ")?.parse().ok()?;
-    if lines.next().is_some() {
-        return None;
-    }
-    Some(Pointer {
-        oid: oid.to_owned(),
-        size,
-    })
-}
 
 fn media(checkout: &Path, step: &'static str) -> Result<PathBuf> {
     let output = git::run(&["lfs", "env"], Some(checkout)).map_err(because(step))?;
@@ -64,7 +33,9 @@ pub(super) fn resolve(checkout: &Path, request: &ExportRequest, files: &mut [Fil
     let pointers: Vec<_> = files
         .iter()
         .enumerate()
-        .filter_map(|(index, file)| pointer(&file.contents).map(|pointer| (index, pointer)))
+        .filter_map(|(index, file)| {
+            crate::lfs_pointer::parse(&file.contents).map(|pointer| (index, pointer))
+        })
         .collect();
     if pointers.is_empty() {
         return Ok(());
@@ -109,15 +80,34 @@ pub(super) fn resolve(checkout: &Path, request: &ExportRequest, files: &mut [Fil
     Ok(())
 }
 
+/// A file paired with its resulting Git attribute decision.
+pub(super) enum TrackedFile<'a> {
+    Raw(&'a File),
+    Lfs(&'a File),
+}
+
+impl<'a> TrackedFile<'a> {
+    fn file(&self) -> &'a File {
+        match self {
+            Self::Raw(file) | Self::Lfs(file) => file,
+        }
+    }
+}
+
+pub(super) struct PreparedFile<'a> {
+    pub file: &'a File,
+    pub contents: Cow<'a, [u8]>,
+}
+
 /// Evaluate Git's attribute rules against an isolated view of the resulting tree.
 /// The temporary index is empty: removed attributes cannot fall back to the base.
-pub(super) fn tracked(
+pub(super) fn tracked<'a>(
     checkout: &Path,
     repository: &git2::Repository,
     base: &git2::Tree<'_>,
     request: &ExportRequest,
-    files: &[File],
-) -> Result<Vec<bool>> {
+    files: &'a [File],
+) -> Result<Vec<TrackedFile<'a>>> {
     let scratch = tempfile::tempdir().map_err(because(DESTINATION))?;
     let worktree = scratch.path().join("tree");
     std::fs::create_dir(&worktree).map_err(because(DESTINATION))?;
@@ -146,27 +136,40 @@ pub(super) fn tracked(
     if empty.status != 0 {
         return Err(refused(DESTINATION));
     }
-    let paths: Vec<_> = files
+    let requested: Vec<_> = files
         .iter()
-        .map(|file| format!("{}/{}", request.target_directory, file.path))
+        .map(|file| (file, format!("{}/{}", request.target_directory, file.path)))
         .collect();
     let mut args = vec!["-c", "core.bare=false", "check-attr", "-z", "filter", "--"];
-    args.extend(paths.iter().map(String::as_str));
+    args.extend(requested.iter().map(|(_, path)| path.as_str()));
     let checked = git::run_with_env(&args, Some(checkout), &env).map_err(because(DESTINATION))?;
     if checked.status != 0 {
         return Err(refused(DESTINATION));
     }
-    let fields: Vec<_> = checked.stdout.split('\0').collect();
-    if fields.len() != files.len() * 3 + 1 {
+    tracking(&requested, &checked.stdout)
+}
+
+fn tracking<'a>(requested: &[(&'a File, String)], output: &str) -> Result<Vec<TrackedFile<'a>>> {
+    let fields: Vec<_> = output.split('\0').collect();
+    if fields.len() != requested.len() * 3 + 1 || fields.last() != Some(&"") {
         return Err(refused(DESTINATION));
     }
-    Ok(files
+    requested
         .iter()
-        .enumerate()
-        .map(|(index, file)| {
-            file.path.rsplit('/').next() != Some(".gitattributes") && fields[index * 3 + 2] == "lfs"
+        .zip(fields.chunks_exact(3))
+        .map(|((file, path), fields)| {
+            if fields[0] != path || fields[1] != "filter" {
+                return Err(refused(DESTINATION));
+            }
+            Ok(
+                if file.path.rsplit('/').next() != Some(".gitattributes") && fields[2] == "lfs" {
+                    TrackedFile::Lfs(file)
+                } else {
+                    TrackedFile::Raw(file)
+                },
+            )
         })
-        .collect())
+        .collect()
 }
 
 fn attributes(
@@ -204,57 +207,70 @@ fn attributes(
     Ok(())
 }
 
-pub(super) struct Uploaded {
-    pub pointers: Vec<Option<Vec<u8>>>,
+pub(super) struct Uploaded<'a> {
+    pub files: Vec<PreparedFile<'a>>,
     pub objects: usize,
     pub bytes: u64,
 }
 
-/// Store and upload everything before returning pointer bytes to the tree writer.
-pub(super) fn upload(
+/// Store and upload everything before returning prepared bytes to the tree writer.
+pub(super) fn upload<'a>(
     checkout: &Path,
-    files: &[File],
-    tracked: &[bool],
+    tracked: Vec<TrackedFile<'a>>,
     phases: &mut crate::boundary::diagnostics::Phases,
-) -> Result<Uploaded> {
-    let mut pointers = vec![None; files.len()];
-    if !tracked.iter().any(|tracked| *tracked) {
+) -> Result<Uploaded<'a>> {
+    if !tracked
+        .iter()
+        .any(|file| matches!(file, TrackedFile::Lfs(_)))
+    {
         return Ok(Uploaded {
-            pointers,
+            files: tracked
+                .into_iter()
+                .map(|tracked| {
+                    let file = tracked.file();
+                    PreparedFile {
+                        file,
+                        contents: Cow::Borrowed(&file.contents),
+                    }
+                })
+                .collect(),
             objects: 0,
             bytes: 0,
         });
     }
     let store = media(checkout, DESTINATION)?;
+    let mut prepared = Vec::with_capacity(tracked.len());
     let mut oids = BTreeSet::new();
     let mut bytes = 0;
-    for (index, file) in files
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| tracked[*index])
-    {
-        let oid = format!("{:x}", Sha256::digest(&file.contents));
-        let path = object(&store, &oid);
-        std::fs::create_dir_all(path.parent().ok_or_else(|| refused(DESTINATION))?)
-            .map_err(because(DESTINATION))?;
-        // Atomic replacement also repairs an interrupted local object write.
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| refused(DESTINATION))?)
+    for tracked in tracked {
+        match tracked {
+            TrackedFile::Raw(file) => prepared.push(PreparedFile {
+                file,
+                contents: Cow::Borrowed(&file.contents),
+            }),
+            TrackedFile::Lfs(file) => {
+                let oid = format!("{:x}", Sha256::digest(&file.contents));
+                let path = object(&store, &oid);
+                std::fs::create_dir_all(path.parent().ok_or_else(|| refused(DESTINATION))?)
+                    .map_err(because(DESTINATION))?;
+                // Atomic replacement also repairs an interrupted local object write.
+                let mut temporary = tempfile::NamedTempFile::new_in(
+                    path.parent().ok_or_else(|| refused(DESTINATION))?,
+                )
                 .map_err(because(DESTINATION))?;
-        use std::io::Write;
-        temporary
-            .write_all(&file.contents)
-            .map_err(because(DESTINATION))?;
-        temporary.persist(path).map_err(because(DESTINATION))?;
-        pointers[index] = Some(
-            format!(
-                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
-                file.contents.len()
-            )
-            .into_bytes(),
-        );
-        if oids.insert(oid) {
-            bytes += file.contents.len() as u64;
+                use std::io::Write;
+                temporary
+                    .write_all(&file.contents)
+                    .map_err(because(DESTINATION))?;
+                temporary.persist(path).map_err(because(DESTINATION))?;
+                prepared.push(PreparedFile {
+                    file,
+                    contents: Cow::Owned(format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n", file.contents.len()).into_bytes()),
+                });
+                if oids.insert(oid) {
+                    bytes += file.contents.len() as u64;
+                }
+            }
         }
     }
     phases.lfs_objects = oids.len();
@@ -266,8 +282,48 @@ pub(super) fn upload(
         return Err(refused(DESTINATION));
     }
     Ok(Uploaded {
-        pointers,
+        files: prepared,
         objects: oids.len(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_attr_rejects_malformed_or_misattributed_records() {
+        let files = [
+            File {
+                path: "model.3mf".into(),
+                contents: Vec::new(),
+                executable: false,
+            },
+            File {
+                path: "print.gz".into(),
+                contents: Vec::new(),
+                executable: false,
+            },
+        ];
+        let requested = vec![
+            (&files[0], "fixtures/model.3mf".into()),
+            (&files[1], "fixtures/print.gz".into()),
+        ];
+        for output in [
+            "fixtures/other.3mf\0filter\0lfs\0fixtures/print.gz\0filter\0lfs\0",
+            "fixtures/model.3mf\0diff\0lfs\0fixtures/print.gz\0filter\0lfs\0",
+            "fixtures/model.3mf\0filter\0lfs\0fixtures/print.gz\0filter\0lfs\0tail",
+            "fixtures/print.gz\0filter\0lfs\0fixtures/model.3mf\0filter\0lfs\0",
+            "fixtures/model.3mf\0filter\0lfs\0fixtures/model.3mf\0filter\0lfs\0",
+            "fixtures/model.3mf\0filter\0lfs\0fixtures/print.gz\0filter\0lfs",
+            "fixtures/model.3mf\0filter\0lfs\0",
+            "fixtures/model.3mf\0filter\0lfs\0fixtures/print.gz\0filter\0lfs\0extra\0",
+        ] {
+            let error = tracking(&requested, output)
+                .err()
+                .expect("malformed attribute response must refuse");
+            assert!(error.to_string().contains(DESTINATION), "{error}");
+        }
+    }
 }

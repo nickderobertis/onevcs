@@ -765,14 +765,14 @@ fn write_target(
     let transferring = std::time::Instant::now();
     let uploaded = (|| {
         let tracked = lfs::tracked(checkout, &repository, &base_tree, request, files)?;
-        lfs::upload(checkout, files, &tracked, phases)
+        lfs::upload(checkout, tracked, phases)
     })();
     phases.lfs += transferring.elapsed();
     let uploaded = uploaded?;
     phases.lfs_objects = uploaded.objects;
     phases.lfs_bytes = uploaded.bytes;
     let writing = std::time::Instant::now();
-    let exported = build_tree(&repository, files, &uploaded.pointers)?;
+    let exported = build_tree(&repository, &uploaded.files)?;
     let segments: Vec<&str> = request.target_directory.split('/').collect();
     let tree = place(&repository, Some(&base_tree), &segments, exported)?;
     if tree == base_tree.id() {
@@ -801,15 +801,12 @@ fn write_target(
 }
 
 /// The exported files as one tree, written into the destination's object store.
-fn build_tree(
-    repository: &git2::Repository,
-    files: &[File],
-    pointers: &[Option<Vec<u8>>],
-) -> Result<git2::Oid> {
+fn build_tree(repository: &git2::Repository, files: &[lfs::PreparedFile<'_>]) -> Result<git2::Oid> {
     let mut root = Node::default();
-    for (index, file) in files.iter().enumerate() {
+    for prepared in files {
+        let file = prepared.file;
         let blob = repository
-            .blob(pointers[index].as_deref().unwrap_or(&file.contents))
+            .blob(prepared.contents.as_ref())
             .map_err(because("a file cannot be written"))?;
         let mode = if file.executable { 0o100755 } else { 0o100644 };
         root.insert(&file.path.split('/').collect::<Vec<_>>(), blob, mode);
