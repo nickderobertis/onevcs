@@ -317,8 +317,11 @@ struct Accepted {
 
 fn keep_accepted(accepted: &[Accepted], patterns: &[String]) -> Result<()> {
     use std::io::Write;
-    let directory = crate::home::root()?.join("boundary/export-evidence");
-    crate::home::ensure_dir(&directory)?;
+    let directory = crate::home::root()
+        .map_err(because("its private evidence could not be written"))?
+        .join("boundary/export-evidence");
+    crate::home::ensure_dir(&directory)
+        .map_err(because("its private evidence could not be written"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -654,26 +657,24 @@ fn screen(
             (results, matching_time)
         };
         let mut handles = Vec::new();
-        for _ in 0..workers {
+        for _ in 1..workers {
             match std::thread::Builder::new().spawn_scoped(scope_threads, worker) {
                 Ok(handle) => handles.push(handle),
                 Err(_) => break,
             }
         }
-        phases.workers = handles.len().max(1);
-        // If no thread could be started, the calling thread screens the same
-        // ordered queue. A partial pool also drains it without losing any file.
-        let (mut results, mut longest_matching) = if handles.is_empty() {
-            worker()
-        } else {
-            (Vec::new(), std::time::Duration::ZERO)
-        };
+        phases.workers = handles.len() + 1;
+        // The caller always drains the same atomic queue, even if every spawn
+        // failed. Spawn failures only reduce parallelism: no file depends on a
+        // successfully started thread. Each claimed index produces one result.
+        let (mut results, mut longest_matching) = worker();
         for handle in handles {
             let (files, matching) = handle.join().expect("export screening worker");
             results.extend(files);
             longest_matching = longest_matching.max(matching);
         }
         results.sort_by_key(|result| result.0);
+        assert_eq!(results.len(), source.files.len(), "every file was screened");
         (results, longest_matching)
     });
     let (results, longest_matching) = results;
