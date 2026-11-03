@@ -31,11 +31,10 @@ pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -
     let storage = std::path::absolute(storage).map_err(|error| Error::Invalid {
         reason: format!("Git LFS's shared local store could not be located: {error}"),
     })?;
-    let destination = git2::Repository::open(destination).map_err(invalid)?;
-    let mut destination_config = destination.config().map_err(invalid)?;
-    destination_config
-        .set_str("lfs.storage", &storage.to_string_lossy())
-        .map_err(invalid)?;
+    let destination_repository = git2::Repository::open(destination).map_err(invalid)?;
+    let common = destination_repository.commondir();
+    let _configuration = crate::lock::exclusive_at(&common.join("onevcs-lfs.lock"))?;
+    let mut desired = vec![("lfs.storage", storage.to_string_lossy().into_owned())];
     // A repository-local endpoint is not cloned by Git. Keep the same endpoint
     // while the clone's origin is rewritten to the identity's actual origin.
     let configured = git2::Repository::open(configured_from).map_err(invalid)?;
@@ -47,12 +46,35 @@ pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -
         "remote.origin.lfspushurl",
     ] {
         match configured.get_string(key) {
-            Ok(value) => destination_config.set_str(key, &value).map_err(invalid)?,
+            Ok(value) => desired.push((key, value)),
             Err(error) if error.code() == git2::ErrorCode::NotFound => {}
             Err(error) => return Err(invalid(error)),
         }
     }
-    Ok(())
+    let mut missing = Vec::new();
+    for (key, value) in desired {
+        if super::local_setting(destination, key)?.as_deref() != Some(&value) {
+            let writing_key = match key {
+                "remote.origin.lfsurl" => "remote \"origin\".lfsurl",
+                "remote.origin.lfspushurl" => "remote \"origin\".lfspushurl",
+                key => key,
+            };
+            let quoted = format!(
+                "\"{}\"",
+                value
+                    .replace('\\', "\\\\")
+                    .replace('\"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\t', "\\t")
+            );
+            missing.push((writing_key, quoted));
+        }
+    }
+    let settings: Vec<_> = missing
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    super::append_in_place(common, &settings)
 }
 
 fn pointer_oid(bytes: &[u8]) -> Option<&str> {
@@ -61,8 +83,14 @@ fn pointer_oid(bytes: &[u8]) -> Option<&str> {
     if lines.next()? != "version https://git-lfs.github.com/spec/v1" {
         return None;
     }
-    let oid = lines.find_map(|line| line.strip_prefix("oid sha256:"))?;
-    (oid.len() == 64 && oid.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(oid)
+    let oid = lines.next()?.strip_prefix("oid sha256:")?;
+    lines.next()?.strip_prefix("size ")?.parse::<u64>().ok()?;
+    (lines.next().is_none()
+        && oid.len() == 64
+        && oid
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+    .then_some(oid)
 }
 
 fn tree_oids(

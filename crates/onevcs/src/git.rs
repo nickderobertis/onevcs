@@ -1990,7 +1990,9 @@ fn cut_sharing(
     }
     let carried = carry_remote_refs(source, dest, base)?;
     carry_hooks(hooks_from, dest)?;
-    lfs::carry(source, hooks_from, dest)?;
+    if source != hooks_from {
+        lfs::carry(source, hooks_from, dest)?;
+    }
     Ok(carried)
 }
 
@@ -2009,6 +2011,7 @@ fn cut_sharing(
 /// borrows its object store, so every commit these refs name is already reachable
 /// and git transfers nothing.
 pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseCarried> {
+    lfs::carry(source, source, dest)?;
     if has_remote(source, "origin") {
         let source_arg = git_path(source).to_string_lossy();
         checked(
@@ -2294,7 +2297,7 @@ struct Step {
 /// The writes that add `settings` to a configuration holding `content`, in order.
 ///
 /// The settings are appended as one comment, `#[gc] auto = 0#[gc] pruneExpire = never`,
-/// and then each `#` becomes a line end in turn, one byte in place, which a reader sees
+/// and then each leading `#` becomes a line end in turn, one byte in place, which a reader sees
 /// as either byte. Every part of the appended text a reader can be shown — any prefix
 /// of it, whether behind the file's last line or behind a line end the reader read
 /// before the write began — starts with `#`, so it is comment until a whole setting is
@@ -2309,28 +2312,25 @@ struct Step {
 fn addition(content: &[u8], settings: &[(&str, &str)]) -> Vec<Step> {
     let length = content.len() as u64;
     let ended = content.last().is_none_or(|last| *last == b'\n');
-    let appended: String = (!ended)
-        .then_some("\n".to_owned())
-        .into_iter()
-        .chain(settings.iter().map(|(key, value)| {
-            let (section, name) = key.split_once('.').unwrap_or(("core", key));
-            format!("#[{section}] {name} = {value}")
-        }))
-        .collect();
+    let mut appended = if ended {
+        String::new()
+    } else {
+        "\n".to_owned()
+    };
+    let mut markers = Vec::new();
+    for (key, value) in settings {
+        markers.push(appended.len());
+        let (section, name) = key.split_once('.').unwrap_or(("core", key));
+        appended.push_str(&format!("#[{section}] {name} = {value}"));
+    }
     let mut steps = vec![Step {
         at: length,
-        bytes: appended.clone().into_bytes(),
+        bytes: appended.into_bytes(),
     }];
-    steps.extend(
-        appended
-            .bytes()
-            .enumerate()
-            .filter(|(_, byte)| *byte == b'#')
-            .map(|(at, _)| Step {
-                at: length + at as u64,
-                bytes: b"\n".to_vec(),
-            }),
-    );
+    steps.extend(markers.into_iter().map(|at| Step {
+        at: length + at as u64,
+        bytes: b"\n".to_vec(),
+    }));
     steps
 }
 
@@ -6018,6 +6018,39 @@ mod config_addition_tests {
             }
         }
         found
+    }
+
+    #[test]
+    fn lfs_settings_preserve_hashes_and_quotes_through_partial_appends() {
+        let (_scratch, repository, base) = initialized();
+        let settings = [
+            ("lfs.storage", r#""/cache/frames#1/with \"quotes\"""#),
+            ("remote \"origin\".lfsurl", r#""file:///store#endpoint""#),
+        ];
+        let mut content = base.clone();
+        for step in addition(&base, &settings) {
+            for landed in 1..=step.bytes.len() {
+                let state = applied(&content, &step, landed);
+                let read =
+                    listing(&repository, &state).expect("every partial append is valid Git config");
+                for line in read.lines().filter(|line| {
+                    line.starts_with("lfs.storage=") || line.starts_with("remote.origin.lfsurl=")
+                }) {
+                    assert!(
+                        matches!(
+                            line,
+                            "lfs.storage=/cache/frames#1/with \"quotes\""
+                                | "remote.origin.lfsurl=file:///store#endpoint"
+                        ),
+                        "partial setting: {line:?}"
+                    );
+                }
+            }
+            content = applied(&content, &step, step.bytes.len());
+        }
+        let read = listing(&repository, &content).unwrap();
+        assert!(read.contains("lfs.storage=/cache/frames#1/with \"quotes\"\n"));
+        assert!(read.contains("remote.origin.lfsurl=file:///store#endpoint\n"));
     }
 
     #[test]
