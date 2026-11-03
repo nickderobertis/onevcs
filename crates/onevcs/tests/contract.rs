@@ -9454,6 +9454,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub fn inspect_repository(request: &InspectRequest) -> Result<InspectAnswer>;",
         "pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;",
         "pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported>;",
+        "pub fn validate_accepted_opaque(patterns: &[String]) -> Result<(), Error>;",
         "pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied>;",
         "pub struct Exported { pub branch: String, pub head: String }",
         "pub const EXPORT_SUBJECT: &str = \"Add generic example fixtures\";",
@@ -9512,7 +9513,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         rule: rule.clone(),
         identity: "github.com/hiddenco/quietharbor".to_owned(),
     };
-    let _ = ExportRequest {
+    let export_request = ExportRequest {
         from: "github.com/hiddenco/quietharbor".to_owned(),
         branch: "examples".to_owned(),
         directory: "examples".to_owned(),
@@ -9520,7 +9521,20 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         target_directory: "fixtures".to_owned(),
         branch_name: "generic-fixtures".to_owned(),
         term_scope: TermScope::Registry,
+        accepted_opaque: Vec::new(),
     };
+    let serialized = serde_json::to_value(&export_request).expect("request serializes");
+    assert!(serialized.get("accepted_opaque").is_none());
+    let defaulted: ExportRequest =
+        serde_json::from_value(serialized).expect("old request defaults acceptance");
+    assert!(defaulted.accepted_opaque.is_empty());
+    let mut accepted = export_request;
+    accepted.accepted_opaque = vec!["*.jpg".to_owned()];
+    let serialized = serde_json::to_value(&accepted).expect("accepted request serializes");
+    assert_eq!(serialized["accepted_opaque"], json!(["*.jpg"]));
+    let round_trip: ExportRequest =
+        serde_json::from_value(serialized).expect("accepted request round trips");
+    assert_eq!(round_trip.accepted_opaque, accepted.accepted_opaque);
     let _ = Exported {
         branch: "generic-fixtures".to_owned(),
         head: "0".repeat(40),
@@ -9536,6 +9550,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
     let _: fn(&[TermSource], &PublicNames) -> onevcs::Result<Vec<TermRule>> =
         onevcs::boundary::derive_terms;
     let _: fn(&Providers<'_>, &ExportRequest) -> onevcs::Result<Exported> = onevcs::export;
+    let _: fn(&[String]) -> onevcs::Result<()> = onevcs::validate_accepted_opaque;
     let _: fn(&RulesApplyRequest) -> onevcs::Result<RulesApplied> = onevcs::rules_apply;
     let _ = DeclaredVisibility::Private;
     let _ = Observation::Override;

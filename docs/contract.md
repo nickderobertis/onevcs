@@ -5660,8 +5660,9 @@ unavailable; the verdict and exit code are unchanged.
 neutral commit. The source branch's complete net diff to the commit it left its identity's
 base at — deletions and renames included — must be inside `--directory`, or it is
 refused. Both directories must be relative and normalized (no root, `.`, `..`, empty
-segment, `.git` or backslash); a symbolic link, a submodule, and any blob that is not
-UTF-8 or carries a NUL — whose terms cannot be checked — are refused. Only committed blobs
+segment, `.git` or backslash). Every regular file (`100644` or `100755`) crosses
+with its mode once screened; symbolic links and submodules remain refused with
+`it carries a symbolic link` and `it carries a submodule`. Only committed blobs
 are read. Before anything is written, the directory's paths and contents, each path as it
 is written under `--target-directory`, the source branch's own commit messages since its
 base, its name, both directories, the new branch name and the commit message the export
@@ -5675,6 +5676,69 @@ private history, note, trailer, hash, filename, name, source ref or attribution 
 public tree, commit, ref or output; nothing is pushed — an export is never a publication or
 a landing — and a refusal leaves no branch. Every refusal says which step stopped and
 nothing it read.
+
+
+Export screening follows these rules:
+
+1. Every file's path and contents use the existing term matcher. Valid UTF-8 with
+   no NUL is screened whole as text. Every maximal run of at least four printable
+   characters in raw bytes is also screened as UTF-8, UTF-16LE and UTF-16BE.
+   Gzip (initial magic `1f 8b`, including concatenated members) and ZIP (initial local
+   header, read through the central directory, stored and deflate methods, including
+   zip64) are decoded recursively; each layer is screened the same way and every ZIP
+   member name is screened as a path. No other format is opened.
+2. Fully readable means valid UTF-8 with no NUL, or gzip or ZIP whose every layer
+   and member decodes and is fully readable. Anything else crosses only when its
+   path relative to `directory` matches `accepted_opaque`; otherwise the refusal is
+   `it carries a file whose contents cannot be checked`. Accepted content is still
+   screened as far as it reads. A found private term always refuses, taking precedence
+   over unreadability, with the file named privately.
+3. Named constants cap nesting depth, decoded bytes per file, decoded bytes across
+   the export, and the read buffer. Both byte caps exceed the realistic budget set.
+   Decoding streams and stops as soon as a bound would be passed; the count exceeds
+   a cap by at most one buffer. Passing any bound refuses as cannot be checked,
+   regardless of accepted patterns.
+4. Private evidence locates findings at the file path, then one segment per layer
+   (`!gzip`, `!zip:<member path>`), then `@<byte offset>` in the innermost layer,
+   followed by `:utf16le` or `:utf16be` for a UTF-16 run. Member-name findings end at
+   their segment, for example `cases/a/model.3mf!zip:3D/3dmodel.model@1042`.
+   An outer path or complete member path carrying a private term keeps the existing
+   screened path rendering; layer markers, offsets and encoding suffixes remain literal.
+5. A spec v1 source LFS pointer is replaced by its object from the checkout's local
+   LFS store, fetching only missing objects using the host's `git lfs` from source
+   `origin`'s endpoint and retaining fetched objects for retries. SHA-256 and size
+   must match; missing or disagreeing objects refuse with
+   `an LFS object it points to cannot be read`. Resolved bytes receive normal screening.
+6. Destination tracking resolves `filter=lfs` against the resulting tree using Git
+   attribute precedence, combining base `.gitattributes` and carried plain attribute
+   files. Tracked blobs hold spec v1 pointers byte-identical to `git lfs` output;
+   objects are stored locally and uploaded with `git lfs` to destination `origin`.
+   Untracked paths hold raw bytes. All screening precedes destination writes; objects
+   are stored and uploaded next, and only successful uploads permit the commit and
+   branch. Missing git-lfs or upload failure refuses with
+   `its destination's Git LFS store could not take its objects`, creating no commit
+   or branch. No ref is pushed; an uploaded object may remain unreferenced.
+7. `validate_accepted_opaque` runs before any read. It refuses an empty or rooted
+   pattern, `.`, `..`, empty or `.git` segment, backslash, failed compilation or
+   duplicate with `an accepted opaque pattern it carries is malformed`. Matching is
+   case-sensitive against file paths relative to `directory`: `*` and `?` stay within
+   one segment, `**` is a whole segment matching any number, and `[...]` is a class.
+   Patterns never name ZIP members. Each accepted file and its matching pattern is
+   recorded privately; patterns matching nothing or only fully readable files are
+   recorded unused. `accepted_opaque` defaults to an empty vector when omitted from
+   serialized requests and is omitted when empty. No destination content carries a
+   pattern. The CLI has no pattern flag.
+8. Screening cannot see text in pixels or geometry, compressed text in unopened
+   formats (PNG `zTXt`, PDF streams, `.bgcode` blocks, `.7z`), encodings beyond UTF-8
+   and UTF-16, terms shorter than four consecutive printable characters, or obfuscation
+   such as base64. Unopened binary formats therefore require acceptance.
+9. The export diagnostics retain all existing fields and add `extraction_us`,
+   `decoded_bytes` (all files as decoded when stopped), `opaque_files`, `lfs_objects`,
+   `lfs_bytes` and `lfs_us`, including on refusal. Refusals say
+   `the export is refused: <step>. ...`, with findings kept private.
+10. An exported LFS branch publishes every pointer and object to destination origin,
+    both with `publish-branch` and when published from a session opened on that branch
+    as an export consumer opens it.
 
 **`rules apply`** composes a base rules file with overlays, in order, and installs the
 result atomically at the registry's rules reference — or at `$ONEVCS_HOME/rules.yml`,
@@ -5791,12 +5855,13 @@ pub fn declared_terms(request: TermsRequest) -> Result<TermsAnswer>;
 pub trait RemoteHost { fn visibility(&self) -> Result<Visibility> { /* NotImplemented */ } }
 // PublishRequest, BranchPublishRequest, RecoverRequest, PreserveRequest, IntegrateRequest
 // and ChangeDescription each gain: pub term_scope: TermScope  (omitted on the wire when Registry)
-pub struct ExportRequest { pub from: String, pub branch: String, pub directory: String, pub to: String, pub target_directory: String, pub branch_name: String, pub term_scope: TermScope }
+pub struct ExportRequest { pub from: String, pub branch: String, pub directory: String, pub to: String, pub target_directory: String, pub branch_name: String, pub term_scope: TermScope, pub accepted_opaque: Vec<String> }
 pub struct Exported { pub branch: String, pub head: String }
 pub const EXPORT_SUBJECT: &str = "Add generic example fixtures";
 pub const EXPORT_AUTHOR_NAME: &str = "Example Export";
 pub const EXPORT_AUTHOR_EMAIL: &str = "export@example.invalid";
 pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported>;
+pub fn validate_accepted_opaque(patterns: &[String]) -> Result<(), Error>;
 pub struct RulesApplyRequest { pub base: PathBuf, pub overlays: Vec<PathBuf>, pub dry_run: bool }
 pub struct RulesApplied { pub path: PathBuf, pub installed: bool, pub rules: RulesFile, pub document: String }
 pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied>;
