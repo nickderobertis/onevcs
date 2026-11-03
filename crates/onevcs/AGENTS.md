@@ -427,6 +427,13 @@ without it nothing resolves its URL or landing commit to work (onevcs#318). `tes
 moved base, which `base_merge::decide` judges over the verified head, so an unchanged
 head the host would merge as it stands is resumed rather than re-pushed (onevcs#371).
 
+**A push that landed before its change request did is not pushed again.** A host read
+failing after the push ends `pushed-unverified`, and onepipeline answers that by
+publishing the same session again. That publication skips the push, the gate included,
+only where `verified::Pushed` matches the tip, base commit and `inputs` exactly and origin
+still has the tip; anything it cannot read means it pushes. Without this, each re-read ran
+the gate again and recorded a second `push` for one head (`tests/e2e/republication.rs`).
+
 ## …and one verb lands nothing, which is the whole of what it is
 
 `preserve.rs` is `onevcs preserve`, and it is the only verb here that reaches a remote

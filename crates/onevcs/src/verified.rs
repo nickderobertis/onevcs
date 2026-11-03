@@ -24,6 +24,13 @@
 //! written costs only the resume. Nothing else under the state root moves — no
 //! registry key, no session-record field, no event kind — so a build that predates this
 //! directory shares the root without ever reading it.
+//!
+//! **A push is recorded before its change request exists** ([`Pushed`], under
+//! `verified/pushed/`), with the same tip, base commit and [`inputs`] a boundary
+//! names. A publication whose push landed and whose host reads after it failed ends
+//! `pushed-unverified` and is published again; that publication asks the record, and
+//! where all of it reads back the same and origin still has the tip, it does not push
+//! — nor run the `pre-push` gate — a second time over the same tree.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -170,6 +177,78 @@ pub(crate) fn read(identity: &str, branch: &str) -> Stored {
 pub(crate) fn forget(identity: &str, branch: &str) {
     if let Ok(at) = path(identity, branch) {
         let _ = std::fs::remove_file(at);
+    }
+    if let Ok(at) = pushed_path(identity, branch) {
+        let _ = std::fs::remove_file(at);
+    }
+}
+
+// llmlint: ignore-block[invalid_states_unrepresentable] compared whole and never
+// interpreted, for the reason `Boundary` is: every field is copied out of a value this
+// crate already validated, and a record that differs in any field is simply not taken.
+/// What a publication's accepted push verified, recorded the moment the merge path
+/// accepted it — before any change request exists, which is what a [`Boundary`] waits
+/// for.
+///
+/// The record a publication of the same branch asks before it pushes: where the branch
+/// is still at the tip this names, against the same base commit and the same
+/// [`inputs`], the push would only run the same verification over the same tree again.
+/// That is the `pushed-unverified` ending — the push landed and a host read after it
+/// did not — which a caller answers by publishing again. Kept under `verified/pushed/`,
+/// one file per identity and branch, best effort like a boundary: a record that could
+/// not be written costs only a second push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Pushed {
+    /// The identity key the branch belongs to.
+    pub(crate) identity: String,
+    /// The branch that was pushed.
+    pub(crate) branch: String,
+    /// The commit verification passed and the push put on the origin.
+    pub(crate) tip: Sha,
+    /// The base branch it was verified against.
+    pub(crate) base: String,
+    /// The commit of that base verification ran against.
+    pub(crate) base_commit: Sha,
+    /// The digest of every other input verification read; see [`inputs`].
+    pub(crate) inputs: String,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+fn pushed_path(identity: &str, branch: &str) -> Result<PathBuf> {
+    Ok(home::verified_dir()?.join("pushed").join(format!(
+        "{}.json",
+        ids::digest(&format!("{identity}\n{branch}"))
+    )))
+}
+
+impl Pushed {
+    /// Record this push, replacing whatever was recorded for its branch. Said on stderr
+    /// and never a failure: the push it describes has already landed.
+    pub(crate) fn record(&self) {
+        let written = pushed_path(&self.identity, &self.branch).and_then(|at| {
+            let text = serde_json::to_string_pretty(self)
+                .map_err(|failure| error::invalid(failure.to_string()))?;
+            home::ensure_dir(at.parent().expect("a record has a directory"))?;
+            home::atomic_write(&at, &format!("{text}\n"))
+        });
+        if let Err(failure) = written {
+            eprintln!(
+                "onevcs: warning: the verified push of {branch:?} could not be recorded, so \
+                 publishing it again pushes it again: {failure}",
+                branch = self.branch,
+            );
+        }
+    }
+
+    /// Whether this is exactly what the last accepted push of its branch recorded. A
+    /// record that is missing, cannot be read, or differs in any field is not.
+    pub(crate) fn was_recorded(&self) -> bool {
+        pushed_path(&self.identity, &self.branch)
+            .ok()
+            .and_then(|at| std::fs::read_to_string(at).ok())
+            .and_then(|text| serde_json::from_str::<Pushed>(&text).ok())
+            .is_some_and(|recorded| &recorded == self)
     }
 }
 
