@@ -26,13 +26,14 @@ use crate::support::workspace_root;
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
 /// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 10] = [
+const GATE_PROJECTS: [&str; 11] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
     "onevcs-e2e",
     "onevcs-export-bounds",
+    "onevcs-export-cancellation",
     "onevcs-export-workload",
     "onevcs-recovery",
     "onevcs-pool-workload",
@@ -311,6 +312,7 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
             &[
                 "onevcs-contract",
                 "onevcs-export-bounds",
+                "onevcs-export-cancellation",
                 "onevcs-recovery",
                 "onevcs-scripts-e2e",
             ][..],
@@ -399,6 +401,28 @@ fn full_size_export_and_recovery_workloads_have_independent_edges() {
 }
 
 #[test]
+fn lfs_cancellation_follows_its_own_inputs_without_unrelated_commands() {
+    let checkout = Checkout::new();
+    for (path, expected) in [
+        ("crates/onevcs/tests/e2e/export_lfs_gate.rs", true),
+        ("crates/onevcs/src/publish.rs", true),
+        ("crates/onevcs/src/retire.rs", false),
+        ("crates/onevcs/tests/e2e/cli.rs", false),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert_eq!(
+            projects_running(&tasks, "test").contains("onevcs-export-cancellation"),
+            expected,
+            "{path}: {tasks:?}"
+        );
+    }
+}
+
+#[test]
 fn a_change_under_crates_reaches_the_crate_and_every_tier_that_reads_it() {
     let checkout = Checkout::new();
     checkout.branch_changing("change", &["crates/onevcs/src/lib.rs"]);
@@ -480,6 +504,7 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
         set(&[
             "onevcs-contract",
             "onevcs-export-bounds",
+            "onevcs-export-cancellation",
             "onevcs-recovery",
             "onevcs-scripts-e2e"
         ]),

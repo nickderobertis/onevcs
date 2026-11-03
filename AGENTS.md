@@ -108,7 +108,8 @@ not tell you:
   own root. A second Nx project for the wheel or the npm package would run the same
   `--workspace` commands twice.
 - **The tests are split into Nx projects by what they read, not by crate**:
-  `onevcs` (unit), `onevcs-e2e`, `onevcs-export-bounds` (the GiB decoding journeys), `onevcs-scripts-e2e`, `onevcs-contract`,
+  `onevcs` (unit), `onevcs-e2e`, `onevcs-export-bounds` (the GiB decoding journeys),
+  `onevcs-export-cancellation` (real LFS teardown deadlines), `onevcs-scripts-e2e`, `onevcs-contract`,
   `onevcs-recovery`, `onevcs-export-workload` (full-size export telemetry) and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` and the cached
   `onevcs-lint-llm-diff` journeys outside `check`. A script or workflow change reaches the scripts and contract tiers, not
   the crate's unit tier. `workspace` (the root `project.json`) holds the judged

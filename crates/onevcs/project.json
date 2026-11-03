@@ -43,7 +43,8 @@
             "onevcs-export-bounds",
             "onevcs-scripts-e2e",
             "onevcs-contract",
-            "onevcs-recovery"
+            "onevcs-recovery",
+            "onevcs-export-cancellation"
           ]
         }
       ],

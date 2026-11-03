@@ -237,8 +237,11 @@ unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(relea
 # The GiB decoding bounds keep their own cache edge, with the same binary and
 # source module, so unrelated journeys do not repeat the expensive decoding.
 export-bounds-tier := "binary(e2e) & test(/^export::(extraction_depth_and_byte_limits_refuse_even_accepted_content_without_store_writes|the_export_decoding_budget_is_shared_across_files)$/)"
+# Held-read real-client cancellation owns its own affected edge.
+export-cancellation-tier := "binary(e2e) & test(/^export::(actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes|hosted_change_publication_cancels_actual_lfs_upload_before_its_git_push)$/)"
+
 # `onevcs-e2e:test` — the binary's remaining journeys.
-e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ")"
+e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ") & not (" + export-cancellation-tier + ")"
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
 scripts-tier := "binary(e2e) & " + scripts-suites
 # `onevcs-contract:test` — the contract tests over workflows, manifests and docs.
@@ -266,7 +269,12 @@ _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
 _export-bounds-test: (_cover "onevcs-export-bounds" export-bounds-tier)
 _export-bounds-test-quick:
-    @cargo nextest run --workspace --locked --status-level fail -E {{quote(export-bounds-tier)}} {{recovery-no-tests}}
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(export-bounds-tier)}} {{recovery-no-tests}}
+
+_export-cancellation-test: (_cover "onevcs-export-cancellation" export-cancellation-tier)
+_export-cancellation-test-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(export-cancellation-tier)}} {{recovery-no-tests}}
+
 
 # Full-size recovery measurement owns one fixture build per scale and invocation.
 _recovery-test:
@@ -323,7 +331,7 @@ _contract-test-quick: (_quick contract-tier)
 
 # The coverage floor over every instrumented tier's profile, merged into one report.
 _crate-coverage:
-    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-export-bounds onevcs-scripts-e2e onevcs-contract onevcs-recovery
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-export-bounds onevcs-export-cancellation onevcs-scripts-e2e onevcs-contract onevcs-recovery
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named
