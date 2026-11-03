@@ -5352,7 +5352,9 @@ normalized and folded: a compound is never generic because each of its segments 
 `e2e-harness` is a term while `e2e` and `harness` are not. Changing it changes which names
 narrow, and moves its version; version 2 admitted digits and hyphens in an entry.
 
-A repository may commit `private-terms.toml` at its root:
+A repository may commit `private-terms.toml` at its root — or the same declaration as
+YAML, `private-terms.yaml` or `private-terms.yml`; two of them at once are refused as
+ambiguous:
 
 ```toml
 schema_version = 1
@@ -5367,20 +5369,27 @@ term = "quietharbor-core"
 action = "owner-name-only"
 ```
 
-`terms` are added as whole words. Each exception names a derived or declared term,
-compared without case, and only narrows: `drop` removes the rule, `whole-word` and
-`case-sensitive` (which keeps the exception's own spelling) narrow it, and
-`owner-name-only` replaces it with the fully qualified `owner/name`. A declaration that is
-not `schema_version = 1`, carries an unknown key or an empty term, names one term in two
-exceptions (ambiguous), names a term the repository neither derives nor declares, or names
-the repository's own `owner/name` (which always matches) is refused — and a refused or
-unreadable declaration makes the check unavailable rather than passing. A missing
-declaration uses the automatic terms.
+The declaration's data model — `schema_version` 1 or 2, `terms`, `exceptions`, and from
+version 2 `replacements` and `phrases` — and what makes one invalid are the
+[private-terms specification](https://github.com/nickderobertis/privateterms/blob/main/spec/private-terms.md)'s
+(Specification 1, *The declaration*); its file names and both encodings are the
+`privateterms` crate's bindings, and onevcs reads it with `privateterms::parse`, from the
+committed tree. `terms` are added as whole words. Each exception names a derived or
+declared term, compared without case, and only narrows: `drop` removes the rule,
+`whole-word` and `case-sensitive` (which keeps the exception's own spelling) narrow it, and
+`owner-name-only` replaces it with the fully qualified `owner/name` — applying them is
+onevcs's, as deriving the terms is. A declaration the model refuses (an unsupported
+version, a version-1 file carrying `replacements` or `phrases`, an unknown key, an empty
+term, one term in two exceptions), one naming a term the repository neither derives nor
+declares, or one naming the repository's own `owner/name` (which always matches) is
+refused — and a refused or unreadable declaration makes the check unavailable with the
+reason `declarations` rather than passing. A missing declaration uses the automatic terms.
 
-**One matcher** owns every comparison: text and terms are put through Unicode NFKC with
-every default-ignorable code point removed, compared in lower case unless a rule is
-case-sensitive, and a word character is a Unicode letter or digit or `_`. The publication
-check, `boundary check`, export and the exposure audit all match through it.
+**One matcher** owns every comparison, and it is the `privateterms` crate's: what
+normalization, a word boundary, each `TermMode` and the phrase exemption mean is
+Specification 1's *Matching*, and onevcs holds no matcher of its own. The publication
+check, `boundary check`, `boundary sanitize`, export and the exposure audit all match
+through it.
 
 **Host public phrases** (amended). A host may list exact phrases it declares public even
 though a private repository's term occurs inside them, in `$ONEVCS_HOME/public-phrases.yml`
@@ -5405,27 +5414,13 @@ nothing, the phrase file included — and a refused or unreadable file makes tha
 boundary check is unavailable: public-phrases` and makes no remote mutation. Its private
 evidence's `detail` says what was wrong with the file, never a phrase's text.
 
-The exemption is the one matcher's, so every check honours it alike. A phrase is
-normalized and folded exactly as a term that is not case-sensitive, and found without
-case in the same text the term hit was found in — on the case-sensitive path too, its
-spans located in that text. A phrase occurrence counts only where it **stands on its
-own**: the character before it is none of a word character, `-`, or a `.` whose own
-preceding character is a word character; the character after it is none of a word
-character, `-`, or a `.` followed by a word character. Both are read in the text the term
-hit was found in, so a letter there keeps the phrase from standing even where folding
-makes it longer or leaves a non-word remainder (`İ` folds to `i` and a combining dot):
-with the phrase `rig-zorv` and a case-sensitive term `Zorv`, `İrig-Zorv` is still found,
-and with the phrase `zorv-rig`, so is `Zorv-rigİ`. A term hit `[s, e)` is exempt only
-where a standing phrase occurrence `[ps, pe)` has `ps <= s` and `e <= pe`, and a rule is
-found in a text where at least one of its accepted hits is not exempt — under every
-`TermMode` alike. With the phrase `box-ab` and a whole-word term `ab`, the term is exempt
-in `ran on box-ab`, `box-ab.`, `(box-ab)`, `BOX-AB`, and `box-ab` written with a
-zero-width space inside it; and still found in `box-ab-2`, `mybox-ab`, `box-ab.lan`,
-`ab`, `other-ab`, `box-ab-ab` (the second `ab` lies outside the phrase) and
-`box-ab and ab`. A form joined to the phrase by a word character, such as `box-ab_x`, is
-never exempted; under a whole-word term it carries no hit at all, so it gets the same
-result with the phrase file as without it. The private-term derivation, `private-terms.toml`, the generic-word list,
-term scopes, the rules file and the registry are unchanged by it.
+The exemption is the one matcher's, so every check honours it alike: a hit lying wholly
+inside a standing occurrence of a phrase is not a hit, exactly as Specification 1's
+*Matching* states the phrase rule (with the phrase `box-ab` and a whole-word term `ab`,
+`ran on box-ab` carries no hit and `box-ab-2` and `box-ab and ab` still do). The file's
+phrases are unioned with every level's `phrases` (below); it is deprecated in favour of
+them, and read exactly as before. The private-term derivation, the generic-word list, term
+scopes, the rules file and the registry are unchanged by it.
 
 On the library surface, `public_phrases()` answers `PublicPhrases::default()` for a
 missing file and `Error::Invalid` — naming the file and the problem, never a phrase — for
@@ -5435,6 +5430,144 @@ order, deduplicated. `TermMatcher::with_phrases` compiles a matcher with them,
 hits in a text a phrase exempted. `check_public_output`,
 `check_public_output_with_evidence`, `repository_boundary` and every command's flags keep
 their signatures. A consumer keying a cache of boundary passes reads `public_phrases()`.
+
+**Private-term levels, replacement, `boundary sanitize` and `boundary terms`** (amended).
+Beside **reject**, the boundary has a **replace** action: a term declared with a
+replacement is rewritten to its neutral word in prose a public write carries, safely and
+automatically, from one declaration a repository or a host owns. The model, the layered
+precedence, matching and replacement are Specification 1's (*Layered declarations and
+precedence*, *Replacement*, *Locators*), implemented by the `privateterms` crate; what is
+onevcs's is deriving terms, finding the levels, scopes and every publication check.
+
+*Finding the levels.* A check's levels, nearest first, are found once for **each registered
+checkout** of each identity its scope selects — never a session's transient worktree: the
+repository's committed declaration (`HEAD` of its registered checkout, any of the three file
+names); each ancestor directory of the checkout holding a declaration file, up to and
+including the home directory (for a checkout outside it, up to but excluding the
+filesystem root), read with `privateterms::read_dir_level`; and the fallback,
+`$ONEVCS_HOME`, which also reaches a check whose scope selects no checkout. A directory
+level's and the fallback's `terms`, the terms its `replacements` name, and its `phrases`
+join every check whose scope selects a repository beneath it (the fallback's: every check
+whose scope is not the explicitly empty list). Each checkout's chain is resolved with
+`privateterms::resolve` — the caller's entries first, a later one winning, then the nearest
+level naming the term, then reject — and the chains are merged rule by rule: where two
+checkouts resolve one term differently, the term is rejected. Each level file is read once
+per call. A missing file anywhere is nothing, so a host with no level file behaves exactly
+as before. A refused or unreadable directory or fallback level makes the check unavailable
+with the reason `term-levels`. `public-phrases.yml` is read exactly as before and its
+phrases unioned with the levels'. Every check keeps its meaning: `boundary check`, every
+publication, export and the exposure audit reject every rule's hit, a replaceable one
+included.
+
+```toml
+# ~/work/private-terms.toml, above every checkout under ~/work
+schema_version = 2
+phrases = ["harborlight-bridge"]
+
+[[replacements]]
+term = "harborlight"
+with = "a private service"
+
+[[replacements]]
+term = "lantern"
+reject = true
+```
+
+*`boundary sanitize`* (`onevcs boundary sanitize --input -`, and
+`sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>` with
+`sanitize_public_output_with_evidence(input, &mut Vec<Evidence>)`) reads:
+
+```json
+{"destination": "public",
+ "text": ["..."], "paths": ["..."], "metadata": ["..."],
+ "fixed": {"text": [], "paths": [], "metadata": []},
+ "scope": ["github.com/acme/quietharbor"],
+ "replacements": [{"term": "harborlight", "with": "a private service"}, {"term": "lantern", "reject": true}],
+ "locators": [{"kind": "item", "value": "plans:x"}]}
+```
+
+`text`, `paths` and `metadata` are rewritable entries (default `[]`); `fixed` (optional,
+each list default `[]`) holds entries that are checked and never rewritten; `scope` is
+exactly `BoundaryInput`'s; `replacements` (optional, default `[]`) is the caller layer,
+`privateterms::Replacement` entries, a later one winning, over every level; `locators`
+(optional, default `[]`) are the identifiers the caller's diagnostics would print, each a
+`kind` — `source`, `item`, `field`, `metadata-key`, `comment`, `path` or `identity` — and a
+`value`. It answers on standard output and exits **0** pass, **1** refuse, **2**
+unavailable:
+
+```json
+{"verdict": "pass", "text": ["..."], "paths": ["..."], "metadata": ["..."], "replaced": 2, "unfixed": []}
+```
+
+```json
+{"verdict": "refuse", "surface": "text", "text": ["..."], "paths": [], "metadata": [], "replaced": 0,
+ "unfixed": [{"surface": "text", "index": 0, "fixed": false}]}
+```
+
+```json
+{"verdict": "unavailable", "reason": "replacements"}
+```
+
+`text`/`paths`/`metadata` are the rewritable entries after replacement, same length and
+order, on pass and refuse; `replaced` counts the spans rewritten; `unfixed` lists, on
+refuse, every entry (rewritable or `fixed`, by its own list's index; `surface` one of
+`text`, `path`, `metadata`, `locators`) still carrying a term after replacement, and the
+refusal's `surface` is the first of them. `locators`, on pass and refuse, is the same
+length and order as the input's — each the crate's `Locator` serialised, a string or
+`{"redacted": true, "kind": "...", "ordinal": n}` with ordinals from 1 in order — and is
+omitted when the input gave none. A destination that is not public passes with its entries
+unchanged, `replaced: 0`, and no term derived. The order is fixed: read every level once;
+resolve the scope's derived rules, the level terms and the caller's entries with
+`privateterms::resolve`; compile one `privateterms::Matcher` with every phrase; answer the
+whole call unavailable (`replacements`) if `check_replacements` fails; `replace` each
+rewritable entry, which re-matches what it produced; then `find` over every fixed entry and
+screen every locator with `Matcher::screen_locators`, refusing on any hit. A redacted
+locator makes the verdict `refuse` and is listed in `unfixed` as
+`{"surface": "locators", "index": i, "fixed": true}`. An `unavailable` answer carries no
+locators, and its caller redacts every locator with `privateterms::redact_all`. A refusal
+says where, never what, exactly as `boundary check` does; nothing but the answer is written
+to standard output, and no evidence file is written by either command.
+
+*`boundary terms`* (`onevcs boundary terms --input -`, and
+`declared_terms(request: TermsRequest) -> Result<TermsAnswer>`) reads
+`{"scope": [...], "replacements": [...]}`, both optional and meaning what they mean to
+`boundary sanitize`, and answers at exit 0
+`{"terms": [{"term": "...", "mode": "whole-word", "case_sensitive": false, "action": "replace", "with": "..."}]}`
+— one entry per rule after resolution, `action` `replace` or `reject`, `with` only for
+`replace` — or, at exit 2, `{"verdict": "unavailable", "reason": ...}` when it cannot
+decide (a replacement carrying a term included). It is the one command that emits terms,
+and it writes them to standard output only — never to stderr, a log, the evidence store or
+any cache. **Its answer is private output: a caller holds it in memory and must never write
+it anywhere.**
+
+*Locators in every diagnostic.* Specification 1's locator rule binds `boundary sanitize`
+and `boundary check` and every refusal and unavailability they report, on standard output,
+standard error and the evidence store. What onevcs would itself print — a declaration or
+level file's path, a repository identity, a refused entry's path — is screened with the
+call's matcher, and once a check is unavailable every one is redacted (`kind` `path` or
+`identity`), keeping the level's kind and the problem's kind in plain words: a refused
+level file inside a checkout whose directory is named after a private repository is
+reported as `the directory level's declaration at <redacted path 1> is refused
+(malformed): ...`, and a refused `paths` entry as `a refused path entry: <redacted path
+1>`. Every verdict and exit code is unchanged, and a diagnostic's text changes only where it
+would otherwise have printed a term.
+
+*Sanitised prose writes.* On an identity that publishes through a change request, a change
+request's **body** — when it is opened, and when `change describe` replaces it — and every
+**review reply** pass through sanitisation, with the scope's terms, the levels of the
+repository being published and no caller layer, before the boundary check they already
+pass; what is written to the host (and recorded) is the body as published, and a squash
+body composed from a change request's body uses that. **Titles stay reject-only
+everywhere**, because a title becomes the landed subject. Commit messages, added lines,
+paths, branch names and every field of a `local-direct` publication stay reject-only:
+nothing a commit carries is rewritten.
+
+**Budget.** One sanitise call stays as fast as the one check call it stands in for — one
+matcher pass, no network call, no process beyond the one a screened write's policy call
+already is — registered as `public-boundary-sanitize-latency` in `crates/onevcs/budgets.yaml`.
+Where `ONEVCS_BOUNDARY_DIAGNOSTICS` names a file, a sanitisation's line (`check:
+sanitize`) also carries `levels`, `replacement_us`, `matcher_builds`, `replacement_passes`
+and `rematches`.
 
 **Term scope.** By the user's ruling, which private identities a check derives terms from
 is caller-supplied scope, and no check lists an account's repositories. `registry` (the
@@ -5552,16 +5685,21 @@ refreshed, recorded, and nothing else: no term, no echo of the identity, no prov
 **`boundary check`** reads a `BoundaryInput` (its `destination` may be omitted and taken
 from `--destination`, and must agree where both are given), prints its verdict, says the
 neutral reason on stderr, and exits 0 to pass, 1 to refuse and 2 when unavailable.
-**`boundary schema --json`** prints the versioned JSON schemas of both, generated from the
-Rust definitions, with `schema_version` 3; `tests/golden/boundary-schema-v3.json` is the
-checked-in copy. Version 2 added the `host-visibility` reason to the unavailable verdict's
-`Unavailability`, and version 3 adds the `public-phrases` reason to it, and nothing else; a
-reader pinned to an earlier version reads the new reason as no verdict, which stays closed,
-and must re-pin to read it.
+**`boundary schema --json`** prints the versioned JSON schemas of every boundary command,
+generated from the Rust definitions, with `schema_version` 4;
+`tests/golden/boundary-schema-v4.json` is the checked-in copy (and
+`tests/golden/boundary-schema-v3.json` the version before it). Version 2 added the
+`host-visibility` reason to the unavailable verdict's `Unavailability`, version 3 the
+`public-phrases` reason, and version 4 adds the `sanitize` half (`input`, `output`) and
+the `terms` half beside the unchanged `inspect` and `check` halves, and the `term-levels`
+and `replacements` reasons to `Unavailability`; a reader pinned to an earlier version reads
+a new reason as no verdict, which stays closed, and must re-pin to read it.
 
 ```
 onevcs boundary inspect --input - [--json]
 onevcs boundary check --destination <visibility> --input -
+onevcs boundary sanitize --input -
+onevcs boundary terms --input -
 onevcs boundary schema --json
 onevcs export --from <identity> --branch <ref> --directory <relative-dir> --to <identity> --target-directory <relative-dir> --branch-name <neutral-local-ref> [--json] [--term-scope <identity>]... [--term-scope-empty]
 onevcs rules apply --base <file> [--overlay <file>]... [--dry-run]
@@ -5592,18 +5730,19 @@ pub enum Observation { Host, Override, Unknown }             // serde: lowercase
 //                           pub observed_at: Option<String>; and Identity::new(origin, gate)
 // rules::Rule gains: pub visibility: Option<DeclaredVisibility>
 pub enum DeclaredVisibility { Public, Private }             // rules::; serde: lowercase
-pub enum TermMode { Substring, WholeWord, OwnerNameOnly }   // serde: kebab-case
-pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: bool }
+pub enum TermMode { Substring, WholeWord, OwnerNameOnly }   // privateterms::TermMode, re-exported; serde: kebab-case
+pub struct TermRule { pub term: String, pub mode: TermMode, pub case_sensitive: bool }   // privateterms::TermRule, re-exported
 pub enum TermScope { Registry, Identities(Vec<String>) }    // Default: Registry; wire: absent | [identity]
 pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }
 pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }
-pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases }   // serde: kebab-case
+pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases, TermLevels, Replacements }   // serde: kebab-case
 pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }   // tag: verdict
 pub enum Evidence { Term { surface: Surface, at: String, rule: TermRule, identity: String }, Unavailable { reason: Unavailability, identity: Option<String>, detail: String } }
 pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }
-pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }
-pub struct TermException { pub term: String, pub action: ExceptionAction }
-pub enum ExceptionAction { Drop, WholeWord, CaseSensitive, OwnerNameOnly }
+pub type PrivateTerms = privateterms::Declaration;   // { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException>, pub replacements: Vec<Replacement>, pub phrases: Vec<String> }
+pub use privateterms::Exception as TermException;   // { pub term: String, pub action: ExceptionAction }
+pub enum ExceptionAction { Drop, WholeWord, CaseSensitive, OwnerNameOnly }   // privateterms::ExceptionAction, re-exported
+pub use privateterms::{Replacement, Locator, LocatorKind};   // Replacement::{Replace { term, with }, Reject { term }}
 pub struct TermSource { pub identity: String, pub owner: Option<String>, pub name: String, pub packages: BTreeSet<String>, pub declaration: Option<PrivateTerms> }
 impl TermSource { pub fn from_committed(checkout: &Path, identity: &str) -> Result<TermSource>; }
 pub struct PublicNames { pub repositories: BTreeSet<String>, pub owners: BTreeSet<String> }
@@ -5617,14 +5756,28 @@ pub fn public_phrases() -> Result<PublicPhrases>;
 pub struct InspectRequest { pub repository: String }
 pub struct InspectAnswer { pub visibility: Visibility }
 pub const PRIVATE_TERMS_FILE: &str = "private-terms.toml";
-pub const PRIVATE_TERMS_VERSION: u32 = 1;
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;
+pub const PRIVATE_TERMS_VERSION: u32 = 2;
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 4;
 pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;
 pub fn boundary_schema() -> serde_json::Value;
 pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;
 pub fn inspect_repository(request: &InspectRequest) -> Result<InspectAnswer>;
 pub fn check_public_output(input: BoundaryInput) -> Result<BoundaryVerdict>;
 pub fn check_public_output_with_evidence(input: BoundaryInput, evidence: &mut Vec<Evidence>) -> Result<BoundaryVerdict>;
+pub struct FixedEntries { pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String> }   // Default
+pub struct LocatorInput { pub kind: LocatorKind, pub value: String }
+pub struct SanitizeInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub fixed: FixedEntries, pub scope: TermScope, pub replacements: Vec<Replacement>, pub locators: Vec<LocatorInput> }
+pub enum SanitizeSurface { Text, Path, Metadata, Locators }   // serde: kebab-case
+pub struct Unfixed { pub surface: SanitizeSurface, pub index: usize, pub fixed: bool }
+pub enum SanitizeAnswer { Pass { text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Refuse { surface: SanitizeSurface, text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Unavailable { reason: Unavailability } }   // tag: verdict; locators omitted when empty
+pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>;
+pub fn sanitize_public_output_with_evidence(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Result<SanitizeAnswer>;
+pub struct TermsRequest { pub scope: TermScope, pub replacements: Vec<Replacement> }   // Default
+pub enum TermAction { Replace, Reject }   // serde: kebab-case
+pub struct DeclaredTerm { pub term: String, pub mode: TermMode, pub case_sensitive: bool, pub action: TermAction, pub with: Option<String> }
+pub enum TermsAnswer { Terms { terms: Vec<DeclaredTerm> }, Unavailable(TermsUnavailable) }   // untagged
+pub enum TermsUnavailable { Unavailable { reason: Unavailability } }   // tag: verdict
+pub fn declared_terms(request: TermsRequest) -> Result<TermsAnswer>;
 pub trait RemoteHost { fn visibility(&self) -> Result<Visibility> { /* NotImplemented */ } }
 // PublishRequest, BranchPublishRequest, RecoverRequest, PreserveRequest, IntegrateRequest
 // and ChangeDescription each gain: pub term_scope: TermScope  (omitted on the wire when Registry)

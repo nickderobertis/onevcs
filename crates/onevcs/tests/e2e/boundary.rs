@@ -561,7 +561,19 @@ fn declared_terms_and_exceptions_narrow_or_drop_what_was_derived() {
 fn a_malformed_ambiguous_or_unaimed_declaration_makes_the_check_unavailable_and_says_nothing_of_it()
 {
     for (declaration, why) in [
-        ("schema_version = 2\n", "a version this build does not read"),
+        ("schema_version = 3\n", "a version this build does not read"),
+        (
+            "schema_version = 1\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"a service\"\n",
+            "a version-1 declaration carrying replacements",
+        ),
+        (
+            "schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"a service\"\nreject = true\n",
+            "a version-2 replacement that both replaces and rejects",
+        ),
+        (
+            "schema_version = 2\nphrases = [\"\"]\n",
+            "a version-2 declaration with an empty phrase",
+        ),
         ("schema_version = 1\nterms = [\"\"]\n", "an empty term"),
         ("schema_version = 1\ntermz = []\n", "an unknown key"),
         (
@@ -930,19 +942,23 @@ fn the_schema_command_prints_the_checked_in_versioned_schemas() {
         .expect("the binary runs");
     assert!(output.status.success());
     let printed: Value = serde_json::from_slice(&output.stdout).expect("JSON schemas");
-    let golden: Value = serde_json::from_str(include_str!("../golden/boundary-schema-v3.json"))
+    let golden: Value = serde_json::from_str(include_str!("../golden/boundary-schema-v4.json"))
         .expect("the golden is JSON");
     assert_eq!(
         printed, golden,
-        "re-make crates/onevcs/tests/golden/boundary-schema-v3.json — and move \
+        "re-make crates/onevcs/tests/golden/boundary-schema-v4.json — and move \
          BOUNDARY_SCHEMA_VERSION if the shape moved"
     );
-    assert_eq!(printed["schema_version"], 3);
+    assert_eq!(printed["schema_version"], 4);
     for path in [
         "/inspect/input",
         "/inspect/output",
         "/check/input",
         "/check/output",
+        "/sanitize/input",
+        "/sanitize/output",
+        "/terms/input",
+        "/terms/output",
     ] {
         assert!(printed.pointer(path).is_some(), "{path}");
     }

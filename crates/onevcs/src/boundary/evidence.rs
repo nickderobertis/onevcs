@@ -15,7 +15,7 @@ use std::time::Instant;
 use super::diagnostics::{self, Phases};
 use super::screen::{self, Outgoing};
 use super::visibility::{self, Screening};
-use super::{scope, BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
+use super::{sanitize, scope, BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
 use crate::error::{Error, Result};
 use crate::gh::Unanswered;
 use crate::host::Hosting;
@@ -68,23 +68,68 @@ pub fn guard_fields(
     screen_fields(fields, scope)
 }
 
-/// [`guard_fields`] for a write a caller makes many of to one repository — a reply to
-/// a comment: the destination's visibility is the one this host recorded, under the
-/// rule [`guard_publication_unasked`] reads it by, and the host is probed only where
-/// nothing is recorded to go on.
-pub fn guard_fields_unless_recorded(
-    hosting: &dyn Hosting,
+/// [`guard_publication`] (or, with no `hosting`, [`guard_publication_unasked`]) for a
+/// publication that opens a change request: its body is sanitised first — rewritten
+/// where the levels declare a replacement for a term it carries, with the levels of the
+/// repository being published and no caller layer — and the rewritten body is what the
+/// screen then holds to the boundary with everything else. Answers the body to publish:
+/// unchanged where the destination is verified not public. The title, the commits and
+/// the branch stay reject-only, because a title becomes the landed subject.
+pub fn guard_change_publication(
+    hosting: Option<&dyn Hosting>,
     destination: &str,
-    fields: &[(Surface, &str)],
+    outgoing: &Outgoing<'_>,
     scope: &TermScope,
-) -> Result<()> {
-    if !owed(
-        visibility::screening_unless_recorded(hosting, destination)?,
-        destination,
-    )? {
-        return Ok(());
+) -> Result<Option<String>> {
+    let screened = match hosting {
+        Some(hosting) => owed(visibility::screening(hosting, destination)?, destination)?,
+        None => visibility::screens_writes_unasked(destination)?,
+    };
+    let body = outgoing.body.map(str::to_owned);
+    if !screened {
+        return Ok(body);
     }
-    screen_fields(fields, scope)
+    let body = body
+        .map(|body| sanitized_prose(&body, destination, scope))
+        .transpose()?;
+    let outgoing = Outgoing {
+        repo: outgoing.repo,
+        base: outgoing.base,
+        tip: outgoing.tip,
+        branch: outgoing.branch,
+        title: outgoing.title,
+        body: body.as_deref(),
+    };
+    let screened = screen::screen(&outgoing, scope);
+    diagnostics::record("publication", &screened.verdict, &screened.phases);
+    settle(screened.verdict, screened.evidence)?;
+    Ok(body)
+}
+
+/// Whether a write of short fields to `destination` is screened — refreshing its
+/// visibility, or with `unless_recorded` reading what this host recorded and asking the
+/// host only where nothing is — or the unavailable check that holds it.
+pub fn screens(hosting: &dyn Hosting, destination: &str, unless_recorded: bool) -> Result<bool> {
+    let screening = if unless_recorded {
+        visibility::screening_unless_recorded(hosting, destination)?
+    } else {
+        visibility::screening(hosting, destination)?
+    };
+    owed(screening, destination)
+}
+
+/// Sanitise prose a screened write publishes to `destination` — a change request's
+/// body or a review reply — answering the text to write, or holding the write as a
+/// refusal or an unavailable check exactly as a screen does.
+pub fn sanitized_prose(text: &str, destination: &str, scope: &TermScope) -> Result<String> {
+    let mut evidence = Vec::new();
+    match sanitize::prose(text, destination, scope, &mut evidence) {
+        Ok(text) => Ok(text),
+        Err(verdict) => {
+            let reason = verdict.reason().unwrap_or_default();
+            Err(held(verdict, reason, &evidence))
+        }
+    }
 }
 
 /// Whether a write to `destination` is screened, or the unavailable check that holds it
@@ -114,7 +159,7 @@ fn unanswered_check(destination: &str, unanswered: Unanswered) -> Error {
 }
 
 /// Screen short fields against every private repository `scope` selects.
-fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()> {
+pub fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()> {
     let started = Instant::now();
     let mut evidence = Vec::new();
     let mut phases = Phases::default();
@@ -147,6 +192,39 @@ fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()> {
     };
     diagnostics::record("fields", &verdict, &phases.ended(started));
     settle(verdict, evidence)
+}
+
+/// The lines a command may print beside a verdict, built from `evidence` so that they
+/// name no term: a refused level's kind and problem with its file as a redacted
+/// locator, and each refused path entry as a redacted path. A path carrying a term is
+/// exactly what a refusal of it means, so it is always redacted, numbered from 1 in
+/// the order the entries were refused.
+pub fn printable(evidence: &[Evidence]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut paths: Vec<&str> = Vec::new();
+    for item in evidence {
+        match item {
+            Evidence::Unavailable {
+                reason: Unavailability::TermLevels,
+                detail,
+                ..
+            } => lines.push(detail.clone()),
+            Evidence::Term {
+                surface: Surface::Path,
+                at,
+                ..
+            } if !paths.contains(&at.as_str()) => paths.push(at),
+            _ => {}
+        }
+    }
+    let pairs: Vec<(privateterms::LocatorKind, &str)> = paths
+        .iter()
+        .map(|at| (privateterms::LocatorKind::Path, *at))
+        .collect();
+    for locator in privateterms::redact_all(&pairs, 1) {
+        lines.push(format!("a refused path entry: {locator}"));
+    }
+    lines
 }
 
 /// Whether a publication's failure reason is one of this module's, which says nothing

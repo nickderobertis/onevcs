@@ -34,8 +34,12 @@
 //!    narrowed to the fully qualified `owner/name` alone;
 //! 4. its owner, as a whole word — unless that owner also owns a public repository.
 //!
-//! A repository may commit a [`PRIVATE_TERMS_FILE`] adding terms and declaring
-//! exceptions to the derived ones. The manifests read are Cargo's `[package]` and
+//! A repository may commit a declaration — [`PRIVATE_TERMS_FILE`], or its YAML
+//! spellings `private-terms.yaml` and `private-terms.yml` — adding terms and declaring
+//! exceptions to the derived ones, and from `schema_version = 2` replacements and
+//! public phrases. Its model, both encodings and every matching rule are the
+//! [private-terms specification]'s, implemented by the `privateterms` crate; deriving
+//! the terms and applying the exceptions is this crate's. The manifests read are Cargo's `[package]` and
 //! `[workspace].members`, `package.json`'s `name` and `workspaces`, and
 //! `pyproject.toml`'s `[project]` and `[tool.poetry]` names; a member glob may use `*`
 //! within a path segment.
@@ -51,6 +55,20 @@
 //! at least one term rule reads the file. A file that cannot be read exactly makes that
 //! check [`Unavailability::PublicPhrases`] — never a smaller list — and a missing one is
 //! no phrases.
+//!
+//! # Levels and replacement
+//!
+//! Above a repository's own declaration, a declaration file in an ancestor directory of
+//! any of its registered checkouts (up to the home directory) and one in `$ONEVCS_HOME`
+//! (the fallback) add terms, replacements and phrases to every check whose scope
+//! selects a repository beneath them; the nearest level naming a term decides whether
+//! its hits are replaced or rejected, and a caller's own replacement list overrides
+//! them all. [`check_public_output`] rejects every hit whatever its action;
+//! [`sanitize_public_output`] rewrites the replaceable ones, then re-matches everything
+//! and refuses on any hit left. [`declared_terms`] answers the resolved rules — the one
+//! answer this crate gives that names terms, on standard output alone.
+//!
+//! [private-terms specification]: https://github.com/nickderobertis/privateterms/blob/main/spec/private-terms.md
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -64,24 +82,27 @@ use crate::providers::Providers;
 mod derive;
 pub(crate) mod diagnostics;
 pub(crate) mod evidence;
+mod keys;
 mod manifests;
-mod matcher;
 pub(crate) mod phrases;
+pub(crate) mod sanitize;
 pub(crate) mod scope;
 pub(crate) mod screen;
 pub(crate) mod visibility;
 mod words;
 
-/// The file a repository commits at its root to add terms and declare exceptions.
+/// The file a repository commits at its root to add terms and declare exceptions; its
+/// YAML spellings `private-terms.yaml` and `private-terms.yml` are read alike
+/// (`privateterms::FILE_NAMES`), and two of them at once are refused as ambiguous.
 pub const PRIVATE_TERMS_FILE: &str = "private-terms.toml";
 
-/// The `schema_version` a [`PrivateTerms`] declaration is written at, and the only
-/// one this build reads.
-pub const PRIVATE_TERMS_VERSION: u32 = 1;
+/// The newest `schema_version` a [`PrivateTerms`] declaration is read at: version 2
+/// adds `replacements` and `phrases`, and version 1 is read as it always was.
+pub const PRIVATE_TERMS_VERSION: u32 = 2;
 
-/// The version of the JSON shapes `onevcs boundary inspect` and `onevcs boundary
-/// check` exchange, which [`boundary_schema`] carries.
-pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;
+/// The version of the JSON shapes the `onevcs boundary` commands exchange, which
+/// [`boundary_schema`] carries.
+pub const BOUNDARY_SCHEMA_VERSION: u32 = 4;
 
 /// The host file, under the onevcs home, that lists the host's public phrases.
 pub const PUBLIC_PHRASES_FILE: &str = "public-phrases.yml";
@@ -159,33 +180,14 @@ impl Observation {
     }
 }
 
-/// How a [`TermRule`]'s term is found in text.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum TermMode {
-    /// Anywhere, inside a longer word included.
-    Substring,
-    /// Only with no letter, digit or `_` on either side.
-    WholeWord,
-    /// The term is a fully qualified `owner/name`, found only where that qualified
-    /// name stands on its own (`.git` after it included).
-    OwnerNameOnly,
-}
+/// How a [`TermRule`]'s term is found in text, and one term and how it is matched:
+/// the `privateterms` crate's own types, so a rule this crate derives is the rule the
+/// specification matches.
+pub use privateterms::{TermMode, TermRule};
 
-/// One term and how it is matched.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TermRule {
-    /// The text looked for.
-    pub term: String,
-    /// How it is looked for.
-    pub mode: TermMode,
-    /// Whether case must match too. Unset is `false`.
-    #[serde(default)]
-    pub case_sensitive: bool,
-}
+/// A caller's replacement entry (`{"term", "with"}` or `{"term", "reject": true}`), a
+/// locator's kind, and a screened locator: the `privateterms` crate's own types.
+pub use privateterms::{Locator, LocatorKind, Replacement};
 
 /// Which private repositories a check derives its terms from.
 ///
@@ -323,6 +325,12 @@ pub enum Unavailability {
     HostVisibility,
     /// The host's public phrase file could not be read, or is one this build refuses.
     PublicPhrases,
+    /// A directory level's or the `$ONEVCS_HOME` fallback's private-terms declaration
+    /// could not be read, or is one this build refuses.
+    TermLevels,
+    /// A resolved replacement string itself carries a private term, or the caller's
+    /// replacement list is refused, so nothing may be replaced.
+    Replacements,
 }
 
 impl Unavailability {
@@ -341,6 +349,8 @@ impl Unavailability {
                 "the host did not answer whether the destination is public"
             }
             Unavailability::PublicPhrases => "public-phrases",
+            Unavailability::TermLevels => "term-levels",
+            Unavailability::Replacements => "replacements",
         }
     }
 }
@@ -429,43 +439,13 @@ pub struct RepositoryBoundary {
     pub terms: Vec<TermRule>,
 }
 
-/// A repository's committed [`PRIVATE_TERMS_FILE`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrivateTerms {
-    /// Always [`PRIVATE_TERMS_VERSION`].
-    pub schema_version: u32,
-    /// Terms beyond the derived ones, each matched as a whole word.
-    #[serde(default)]
-    pub terms: Vec<String>,
-    /// Changes to the derived and declared terms.
-    #[serde(default)]
-    pub exceptions: Vec<TermException>,
-}
+/// A repository's committed declaration: the `privateterms` crate's model, read from
+/// the committed tree by `privateterms::parse`.
+pub type PrivateTerms = privateterms::Declaration;
 
-/// One declared exception: a term, and what to do to the rules that carry it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TermException {
-    /// The derived or declared term it applies to, compared without case.
-    pub term: String,
-    /// What it does.
-    pub action: ExceptionAction,
-}
-
-/// What an exception does to the rule it names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExceptionAction {
-    /// Remove the rule.
-    Drop,
-    /// Match it only as a whole word.
-    WholeWord,
-    /// Match it only spelled exactly as the exception spells it.
-    CaseSensitive,
-    /// Match only the repository's fully qualified `owner/name`.
-    OwnerNameOnly,
-}
+/// One declared exception, and what it does to the rules carrying its term: the
+/// `privateterms` crate's own types.
+pub use privateterms::{Exception as TermException, ExceptionAction};
 
 /// One private repository, as terms are derived from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,8 +503,12 @@ pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<
     Ok(rules)
 }
 
-/// The one matcher, compiled over a set of rules.
-pub struct TermMatcher(matcher::Matcher);
+/// The one matcher, compiled over a set of rules: a wrapper over
+/// `privateterms::Matcher`, every rule's hits rejected.
+pub struct TermMatcher {
+    rules: Vec<TermRule>,
+    matcher: privateterms::Matcher,
+}
 
 impl TermMatcher {
     /// Compile `rules`, with no public phrases, refusing a set too large for one
@@ -537,26 +521,34 @@ impl TermMatcher {
     /// covers. Refused — naming no phrase — for a phrase empty once normalized, or a set
     /// too large for one automaton.
     pub fn with_phrases(rules: Vec<TermRule>, phrases: &PublicPhrases) -> Result<TermMatcher> {
-        matcher::Matcher::with_phrases(rules, &phrases.phrases)
-            .map(TermMatcher)
+        let resolved = rules
+            .iter()
+            .map(|rule| privateterms::ResolvedRule {
+                rule: rule.clone(),
+                action: privateterms::Action::Reject,
+                origin: "derived".to_owned(),
+            })
+            .collect();
+        privateterms::Matcher::new(resolved, &phrases.phrases)
+            .map(|matcher| TermMatcher { rules, matcher })
             .map_err(|unbuildable| Error::Invalid {
-                reason: format!("the terms could not be compiled: {}", unbuildable.0),
+                reason: format!("the terms could not be compiled: {}", unbuildable.reason),
             })
     }
 
     /// How many term hits in `text` a public phrase exempted.
     pub fn exempted(&self, text: &str) -> usize {
-        self.0.exempted(text)
+        self.matcher.exempted(text)
     }
 
     /// The rules it was compiled over.
     pub fn rules(&self) -> &[TermRule] {
-        self.0.rules()
+        &self.rules
     }
 
     /// The index of every rule whose term `text` carries, ascending.
     pub fn find(&self, text: &str) -> Vec<usize> {
-        self.0.find(text)
+        self.matcher.find(text)
     }
 }
 
@@ -576,7 +568,7 @@ pub struct InspectAnswer {
     pub visibility: Visibility,
 }
 
-/// The JSON schemas of the two boundary commands, generated from the types above.
+/// The JSON schemas of the boundary commands, generated from the types above.
 pub fn boundary_schema() -> serde_json::Value {
     serde_json::json!({
         "schema_version": BOUNDARY_SCHEMA_VERSION,
@@ -588,7 +580,263 @@ pub fn boundary_schema() -> serde_json::Value {
             "input": schemars::schema_for!(BoundaryInput),
             "output": schemars::schema_for!(BoundaryVerdict),
         },
+        "sanitize": {
+            "input": schemars::schema_for!(SanitizeInput),
+            "output": schemars::schema_for!(SanitizeAnswer),
+        },
+        "terms": {
+            "input": schemars::schema_for!(TermsRequest),
+            "output": schemars::schema_for!(TermsAnswer),
+        },
     })
+}
+
+/// Entries a sanitisation checks and never rewrites.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixedEntries {
+    /// Prose that is checked as it stands.
+    #[serde(default)]
+    pub text: Vec<String>,
+    /// Paths that are checked as they stand.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Short fields that are checked as they stand.
+    #[serde(default)]
+    pub metadata: Vec<String>,
+}
+
+/// One locator a caller's diagnostic would print, put to the same matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LocatorInput {
+    /// What it names.
+    pub kind: LocatorKind,
+    /// The identifier itself.
+    pub value: String,
+}
+
+/// What a caller is about to write somewhere, put to sanitisation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SanitizeInput {
+    /// Where it is going. Anything but `public` passes unchanged without a term being
+    /// derived.
+    pub destination: Visibility,
+    /// Prose that may be rewritten.
+    #[serde(default)]
+    pub text: Vec<String>,
+    /// Paths that may be rewritten.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Short fields that may be rewritten.
+    #[serde(default)]
+    pub metadata: Vec<String>,
+    /// Entries that are checked and never rewritten.
+    #[serde(default)]
+    pub fixed: FixedEntries,
+    /// Which private repositories the terms come from, exactly as [`BoundaryInput`]'s.
+    #[serde(default, skip_serializing_if = "TermScope::is_registry")]
+    #[schemars(with = "Option<Vec<String>>")]
+    pub scope: TermScope,
+    /// The caller's replacement layer, over every level: a later entry wins.
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
+    /// The identifiers the caller's diagnostics would print, screened in the same call.
+    #[serde(default)]
+    pub locators: Vec<LocatorInput>,
+}
+
+/// Which list an entry still carrying a term is in.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SanitizeSurface {
+    /// A `text` entry.
+    Text,
+    /// A `paths` entry.
+    Path,
+    /// A `metadata` entry.
+    Metadata,
+    /// A `locators` entry.
+    Locators,
+}
+
+/// One entry still carrying a term after replacement: where it is, never what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Unfixed {
+    /// Which list.
+    pub surface: SanitizeSurface,
+    /// Its index in that list (in `fixed`'s list where `fixed` is true).
+    pub index: usize,
+    /// Whether it is an entry nothing rewrites: a `fixed` one, or a locator.
+    pub fixed: bool,
+}
+
+/// What sanitisation decided, and the rewritten entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "verdict", rename_all = "kebab-case")]
+pub enum SanitizeAnswer {
+    /// Nothing private is left: the entries may be written as answered.
+    Pass {
+        /// The `text` entries after replacement, same length and order.
+        text: Vec<String>,
+        /// The `paths` entries after replacement.
+        paths: Vec<String>,
+        /// The `metadata` entries after replacement.
+        metadata: Vec<String>,
+        /// How many spans were rewritten.
+        replaced: u32,
+        /// Always empty on a pass.
+        unfixed: Vec<Unfixed>,
+        /// The locators screened, same length and order; omitted when none were given.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        locators: Vec<Locator>,
+    },
+    /// A term is left after replacement, or a locator carries one: nothing may be
+    /// written.
+    Refuse {
+        /// Where the first one is.
+        surface: SanitizeSurface,
+        /// The `text` entries after replacement.
+        text: Vec<String>,
+        /// The `paths` entries after replacement.
+        paths: Vec<String>,
+        /// The `metadata` entries after replacement.
+        metadata: Vec<String>,
+        /// How many spans were rewritten.
+        replaced: u32,
+        /// Every entry still carrying a term.
+        unfixed: Vec<Unfixed>,
+        /// The locators screened; omitted when none were given.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        locators: Vec<Locator>,
+    },
+    /// The call could not decide, and nothing may be written. It carries no locator:
+    /// its caller redacts every one (`privateterms::redact_all`).
+    Unavailable {
+        /// Why.
+        reason: Unavailability,
+    },
+}
+
+impl SanitizeAnswer {
+    /// The neutral sentence a refusal or an unavailable call is reported in, or `None`
+    /// for a pass.
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            SanitizeAnswer::Pass { .. } => None,
+            SanitizeAnswer::Refuse { surface, .. } => Some(format!(
+                "{REFUSED_SENTENCE} after replacement, in {}",
+                match surface {
+                    SanitizeSurface::Text => "its text",
+                    SanitizeSurface::Path => "a path",
+                    SanitizeSurface::Metadata => "its metadata",
+                    SanitizeSurface::Locators => "a locator",
+                }
+            )),
+            SanitizeAnswer::Unavailable { reason } => {
+                Some(format!("{UNAVAILABLE_SENTENCE}: {}", reason.describe()))
+            }
+        }
+    }
+}
+
+/// What `onevcs boundary terms` reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TermsRequest {
+    /// Which private repositories the terms come from, exactly as [`BoundaryInput`]'s.
+    #[serde(default, skip_serializing_if = "TermScope::is_registry")]
+    #[schemars(with = "Option<Vec<String>>")]
+    pub scope: TermScope,
+    /// The caller's replacement layer, as [`SanitizeInput::replacements`].
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
+}
+
+/// What a resolved term's hits get.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TermAction {
+    /// Rewritten to `with`.
+    Replace,
+    /// Refused.
+    Reject,
+}
+
+/// One resolved rule, as `onevcs boundary terms` answers it: private output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredTerm {
+    /// The term as written.
+    pub term: String,
+    /// How it is matched.
+    pub mode: TermMode,
+    /// Whether it is compared exactly rather than in lower case.
+    pub case_sensitive: bool,
+    /// What its hits get.
+    pub action: TermAction,
+    /// What its hits are rewritten to, for `replace` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+}
+
+/// What `onevcs boundary terms` answers: the resolved terms, or why there are none.
+///
+/// The terms are private output: a caller holds them in memory and never writes them
+/// anywhere — no log, no file, no cache, no error message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TermsAnswer {
+    /// One entry per rule after resolution.
+    Terms {
+        /// The rules.
+        terms: Vec<DeclaredTerm>,
+    },
+    /// The call could not decide: `{"verdict": "unavailable", "reason": ...}`.
+    Unavailable(TermsUnavailable),
+}
+
+/// Why `onevcs boundary terms` could not decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "verdict", rename_all = "kebab-case")]
+pub enum TermsUnavailable {
+    /// It could not.
+    Unavailable {
+        /// Why.
+        reason: Unavailability,
+    },
+}
+
+/// Rewrite every replaceable term in `input`'s rewritable entries, then decide whether
+/// what is left may be written to its destination.
+///
+/// A destination whose visibility is not `public` passes with its entries unchanged and
+/// no term derived. Otherwise every level is read once, the scope's rules, the levels
+/// and the caller's entries are resolved into one matcher, the rewritable entries are
+/// replaced in one pass, and every rewritten and fixed entry is matched again: any hit
+/// refuses, and a resolved replacement that itself carries a term makes the whole call
+/// [`Unavailability::Replacements`]. Never a pass on anything it could not read.
+pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer> {
+    sanitize_public_output_with_evidence(input, &mut Vec::new())
+}
+
+/// [`sanitize_public_output`], pushing the private detail of its answer onto
+/// `evidence`, which only the caller holds.
+pub fn sanitize_public_output_with_evidence(
+    input: SanitizeInput,
+    evidence: &mut Vec<Evidence>,
+) -> Result<SanitizeAnswer> {
+    Ok(sanitize::sanitize(input, evidence).answer)
+}
+
+/// The resolved terms of `request`'s scope with its caller layer: the one answer this
+/// crate gives that names terms. See [`TermsAnswer`] for what a caller may do with it.
+pub fn declared_terms(request: TermsRequest) -> Result<TermsAnswer> {
+    Ok(sanitize::declared(&request))
 }
 
 /// What one repository contributes to a check: its visibility and its terms.

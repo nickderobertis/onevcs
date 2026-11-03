@@ -5,7 +5,7 @@
 //! repository's own committed declaration, and only ever make a rule narrower or
 //! remove it — a repository's `owner/name` is not theirs to touch.
 
-use super::matcher::{same_term, term_key};
+use super::keys::{same_term, term_key};
 use super::{words, ExceptionAction, PrivateTerms, PublicNames, TermMode, TermRule, TermSource};
 
 /// Where one candidate rule came from, which decides what an exception may do to it.

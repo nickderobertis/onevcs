@@ -49,7 +49,6 @@ path = "src/main.rs"
 testing = []
 
 [dependencies]
-aho-corasick = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
 fs4 = { workspace = true }
@@ -58,6 +57,7 @@ icu_normalizer = { workspace = true }
 icu_properties = { workspace = true }
 minijinja = { workspace = true }
 onemessagebus = { workspace = true }
+privateterms = { workspace = true }
 schemars = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }

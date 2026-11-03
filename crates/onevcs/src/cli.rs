@@ -279,8 +279,31 @@ pub enum BoundaryCommand {
     /// Read a boundary input and answer its verdict: exit 0 to pass, 1 to refuse, and
     /// any other non-zero status when the check is unavailable.
     Check(BoundaryCheckArgs),
-    /// Print the versioned JSON schemas `inspect` and `check` exchange.
+    /// Read a sanitise input, rewrite every replaceable private term in its rewritable
+    /// entries, and answer the rewritten entries and the verdict: exit 0 to pass, 1 to
+    /// refuse, and 2 when it is unavailable.
+    Sanitize(BoundarySanitizeArgs),
+    /// Answer the resolved private terms of a scope on standard output, and nowhere
+    /// else: private output a caller must never write anywhere. Exit 2 when unavailable.
+    Terms(BoundaryTermsArgs),
+    /// Print the versioned JSON schemas the boundary commands exchange.
     Schema(BoundarySchemaArgs),
+}
+
+/// Arguments for `onevcs boundary sanitize`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct BoundarySanitizeArgs {
+    /// Where the input is read from: `-` for standard input, or a file.
+    #[arg(long, value_name = "PATH|-")]
+    pub input: PathBuf,
+}
+
+/// Arguments for `onevcs boundary terms`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct BoundaryTermsArgs {
+    /// Where the request is read from: `-` for standard input, or a file.
+    #[arg(long, value_name = "PATH|-")]
+    pub input: PathBuf,
 }
 
 /// Arguments for `onevcs boundary inspect`.

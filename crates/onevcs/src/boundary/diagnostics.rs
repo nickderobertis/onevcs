@@ -4,7 +4,10 @@
 //! appends one JSON line to it: which check it was, its verdict word, the wall time of
 //! the whole check and of each phase in microseconds, and how many terms, identities,
 //! commits, paths and bytes it covered. A line carries no term, no identity, no path
-//! and no text, so the file is as neutral as the verdict. It is how the release-binary
+//! and no text, so the file is as neutral as the verdict. A sanitisation's line also
+//! carries its replacement and re-match phases, how many level files it read, and how
+//! many matcher builds, replacement passes and re-matches it made — which is how its
+//! one-pass promise is held. It is how the release-binary
 //! journeys time the check from inside the binary that runs it; nothing else reads it.
 
 use std::io::Write;
@@ -12,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::BoundaryVerdict;
+use super::{BoundaryVerdict, SanitizeAnswer};
 
 /// The variable naming the file a check's diagnostics are appended to.
 pub const DIAGNOSTICS_ENV: &str = "ONEVCS_BOUNDARY_DIAGNOSTICS";
@@ -40,6 +43,16 @@ pub struct Phases {
     pub paths: usize,
     /// Bytes of added and removed text.
     pub bytes: usize,
+    /// Level files read (a sanitisation's).
+    pub levels: usize,
+    /// Rewriting the rewritable entries (a sanitisation's).
+    pub replacement: Duration,
+    /// Matchers compiled (a sanitisation's).
+    pub matcher_builds: usize,
+    /// Replacement passes made (a sanitisation's).
+    pub replacement_passes: usize,
+    /// Re-matches of the fixed entries and locators made (a sanitisation's).
+    pub rematches: usize,
 }
 
 impl Phases {
@@ -64,21 +77,50 @@ struct Line<'a> {
     commits: usize,
     paths: usize,
     bytes: usize,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    sanitize: Option<SanitizeLine>,
 }
 
-/// Append one check's line, where the variable asks for one. A diagnostics file that
-/// cannot be written says so on stderr and changes nothing about the check.
-pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases) {
-    let Some(path) = std::env::var_os(DIAGNOSTICS_ENV).filter(|value| !value.is_empty()) else {
-        return;
+/// What only a sanitisation's line carries.
+#[derive(Serialize)]
+struct SanitizeLine {
+    levels: usize,
+    replacement_us: u128,
+    matcher_builds: usize,
+    replacement_passes: usize,
+    rematches: usize,
+}
+
+/// Append one sanitisation's line, where the variable asks for one.
+pub fn record_sanitize(answer: &SanitizeAnswer, phases: &Phases) {
+    let verdict = match answer {
+        SanitizeAnswer::Pass { .. } => "pass",
+        SanitizeAnswer::Refuse { .. } => "refuse",
+        SanitizeAnswer::Unavailable { .. } => "unavailable",
     };
-    let line = Line {
+    write(line(
+        "sanitize",
+        verdict,
+        phases,
+        Some(SanitizeLine {
+            levels: phases.levels,
+            replacement_us: phases.replacement.as_micros(),
+            matcher_builds: phases.matcher_builds,
+            replacement_passes: phases.replacement_passes,
+            rematches: phases.rematches,
+        }),
+    ));
+}
+
+fn line<'a>(
+    check: &'a str,
+    verdict: &'static str,
+    phases: &Phases,
+    sanitize: Option<SanitizeLine>,
+) -> Line<'a> {
+    Line {
         check,
-        verdict: match verdict {
-            BoundaryVerdict::Pass => "pass",
-            BoundaryVerdict::Refuse { .. } => "refuse",
-            BoundaryVerdict::Unavailable { .. } => "unavailable",
-        },
+        verdict,
         total_us: phases.total.as_micros(),
         derivation_us: phases.derivation.as_micros(),
         diff_us: phases.diff.as_micros(),
@@ -89,6 +131,24 @@ pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases) {
         commits: phases.commits,
         paths: phases.paths,
         bytes: phases.bytes,
+        sanitize,
+    }
+}
+
+/// Append one check's line, where the variable asks for one. A diagnostics file that
+/// cannot be written says so on stderr and changes nothing about the check.
+pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases) {
+    let verdict = match verdict {
+        BoundaryVerdict::Pass => "pass",
+        BoundaryVerdict::Refuse { .. } => "refuse",
+        BoundaryVerdict::Unavailable { .. } => "unavailable",
+    };
+    write(line(check, verdict, phases, None));
+}
+
+fn write(line: Line<'_>) {
+    let Some(path) = std::env::var_os(DIAGNOSTICS_ENV).filter(|value| !value.is_empty()) else {
+        return;
     };
     let written = serde_json::to_string(&line)
         .map_err(std::io::Error::other)

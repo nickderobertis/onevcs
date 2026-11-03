@@ -1133,6 +1133,14 @@ pub(crate) fn standing_target(record: &workspace::Record) -> Result<Target> {
 }
 
 impl<'a> Context<'a> {
+    /// The same publication, opening its change request with `body` — the body as its
+    /// boundary check published it.
+    fn with_body(&self, body: Option<String>) -> Context<'a> {
+        let mut context = self.onto(self.target.clone());
+        context.body = body;
+        context
+    }
+
     /// The same publication, landing where `target` says instead.
     fn onto(&self, target: Target) -> Context<'a> {
         Context {
@@ -1356,7 +1364,12 @@ fn publish_resolving(
     // The last thing before the first write to the remote: everything this
     // publication would put there — its commits against every parent, their
     // messages, the branch, the title and the body — is held to the public boundary.
-    hold_to_the_boundary(context, &compared, Some(&subject))?;
+    // A change request's body is sanitised first, and the body it is opened with is the
+    // one as published; a `local-direct` publication's every field stays reject-only.
+    let sanitise = context.effective != MergePolicy::LocalDirect;
+    let body = hold_to_the_boundary(context, &compared, Some(&subject), sanitise)?;
+    let published = context.with_body(body);
+    let context = &published;
     let environment = merge_path::comparison_env("origin", context.target.base());
 
     let outcome = match context.effective {
@@ -1368,8 +1381,15 @@ fn publish_resolving(
 
 /// Hold what this publication would write to its destination to the public
 /// boundary: refused before any remote mutation where it carries a private term, and
-/// passed without a term being read where the destination is not public.
-fn hold_to_the_boundary(context: &Context<'_>, compared: &str, title: Option<&str>) -> Result<()> {
+/// passed without a term being read where the destination is not public. With
+/// `sanitise`, the change request's body is sanitised before it is screened, and the
+/// body answered is the one to publish; otherwise it is the context's own.
+fn hold_to_the_boundary(
+    context: &Context<'_>,
+    compared: &str,
+    title: Option<&str>,
+    sanitise: bool,
+) -> Result<Option<String>> {
     let tip = context.branch.to_string();
     let base = git::tip(&context.repo, compared).map(|_| compared);
     let outgoing = crate::boundary::screen::Outgoing {
@@ -1382,19 +1402,29 @@ fn hold_to_the_boundary(context: &Context<'_>, compared: &str, title: Option<&st
     };
     // A publication that defers its checks asks the host nothing, its visibility
     // included: the answer this host last recorded stands for it.
-    if context.adopt.is_some() {
-        return crate::boundary::evidence::guard_publication_unasked(
+    let hosting = context.adopt.is_none().then_some(context.hosting);
+    if sanitise {
+        return crate::boundary::evidence::guard_change_publication(
+            hosting,
             &context.resolution.key,
             &outgoing,
             &context.term_scope,
         );
     }
-    crate::boundary::evidence::guard_publication(
-        context.hosting,
-        &context.resolution.key,
-        &outgoing,
-        &context.term_scope,
-    )
+    match hosting {
+        None => crate::boundary::evidence::guard_publication_unasked(
+            &context.resolution.key,
+            &outgoing,
+            &context.term_scope,
+        )?,
+        Some(hosting) => crate::boundary::evidence::guard_publication(
+            hosting,
+            &context.resolution.key,
+            &outgoing,
+            &context.term_scope,
+        )?,
+    }
+    Ok(context.body.clone())
 }
 
 /// The subject a publication of one branch would carry, or the refusal that none
@@ -2494,7 +2524,7 @@ fn resume_within(
     // Held again, under this resumption's own scope: what it may land under — a title,
     // a body — is new, and the commits are screened once more for the same reason.
     let compared = format!("origin/{}", context.target.base());
-    hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+    hold_to_the_boundary(context, &compared, context.title.as_deref(), false)?;
     // A first publication's push names the branch and the head on its stream, and that
     // is what resolves its change request's URL and its landing back to the work. A
     // resumed one pushes nothing and its stream may hold nothing else, so it names
@@ -2997,7 +3027,7 @@ impl Landing<'_, '_> {
             // carries and a merge commit naming the branch the first screen passed, so no
             // journey can make this screen refuse what that one did not; it is asked because
             // every write to a remote is, and its refusals are held by `publication_boundary`.
-            hold_to_the_boundary(context, &compared, context.title.as_deref())?;
+            hold_to_the_boundary(context, &compared, context.title.as_deref(), false)?;
             // llmlint: ignore-end[changed_behavior_has_e2e]
             let environment = merge_path::comparison_env("origin", context.target.base());
             push_the_branch(context, stream, &environment, None)?;

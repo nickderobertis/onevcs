@@ -124,10 +124,11 @@ pub mod workspaces;
 mod yaml;
 
 pub use boundary::{
-    boundary_schema, check_public_output, check_public_output_with_evidence, inspect_repository,
-    public_phrases, repository_boundary, BoundaryInput, BoundaryVerdict, PublicPhrases,
-    RepositoryBoundary, TermMatcher, TermMode, TermRule, TermScope, Visibility,
-    PUBLIC_PHRASES_FILE, PUBLIC_PHRASES_VERSION,
+    boundary_schema, check_public_output, check_public_output_with_evidence, declared_terms,
+    inspect_repository, public_phrases, repository_boundary, sanitize_public_output,
+    sanitize_public_output_with_evidence, BoundaryInput, BoundaryVerdict, PublicPhrases,
+    RepositoryBoundary, SanitizeAnswer, SanitizeInput, TermMatcher, TermMode, TermRule, TermScope,
+    TermsAnswer, TermsRequest, Visibility, PUBLIC_PHRASES_FILE, PUBLIC_PHRASES_VERSION,
 };
 pub use change::{ChangeDescription, SessionChange};
 pub use declaration::{

@@ -12,18 +12,18 @@ use std::path::Path;
 use crate::boundary::InspectRequest;
 use crate::change::{ChangeDescription, SessionChange};
 use crate::cli::{
-    ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySchemaArgs,
-    ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs, ChangeFollowChecksArgs, ChangeReadyArgs,
-    ChangeReopenArgs, ChangeReplyArgs, ChangeRetargetArgs, ChangeShowArgs, ChangeStandingsArgs,
-    Command, EventsArgs, ExportArgs, HostChangeChecksArgs, HostCommand, HostCommitRunsArgs,
-    HostReleaseChangesArgs, HostRunJobsArgs, HostSchemaArgs, ImportArgs, IntegrateArgs,
-    PoolCommand, PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs, PreserveArgs, PublishArgs,
-    PublishBranchArgs, ReclaimArgs, RecoverArgs, RecoverableArgs, RegisterArgs,
-    ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs, ReleaseDiscoverArgs,
-    ReleaseHoldupArgs, ReleaseLatestArgs, ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs,
-    ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs, RulesCheckArgs, RulesCommand,
-    SessionCommand, SessionHoldersArgs, SessionOpenArgs, SessionTokenArgs, StackBaseArgs,
-    StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    ArtifactCommand, BoundaryCheckArgs, BoundaryCommand, BoundaryInspectArgs, BoundarySanitizeArgs,
+    BoundarySchemaArgs, BoundaryTermsArgs, ChangeCommand, ChangeCommentsArgs, ChangeDescribeArgs,
+    ChangeFollowChecksArgs, ChangeReadyArgs, ChangeReopenArgs, ChangeReplyArgs, ChangeRetargetArgs,
+    ChangeShowArgs, ChangeStandingsArgs, Command, EventsArgs, ExportArgs, HostChangeChecksArgs,
+    HostCommand, HostCommitRunsArgs, HostReleaseChangesArgs, HostRunJobsArgs, HostSchemaArgs,
+    ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs,
+    PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs, RecoverableArgs,
+    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
+    ReleaseDiscoverArgs, ReleaseHoldupArgs, ReleaseLatestArgs, ReleaseStatusArgs,
+    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
+    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
+    SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -143,6 +143,8 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
         Command::Boundary { command } => match command {
             BoundaryCommand::Inspect(args) => boundary_inspect(args, providers),
             BoundaryCommand::Check(args) => boundary_check(args),
+            BoundaryCommand::Sanitize(args) => boundary_sanitize(args),
+            BoundaryCommand::Terms(args) => boundary_terms(args),
             BoundaryCommand::Schema(args) => boundary_schema(args),
         },
         Command::Export(args) => export(args, providers),
@@ -210,15 +212,59 @@ fn boundary_check(args: &BoundaryCheckArgs) -> Result<u8> {
     }
     let input: crate::boundary::BoundaryInput = serde_json::from_value(input)
         .map_err(|e| error::invalid(format!("the check input is not one this build reads: {e}")))?;
-    let verdict = crate::check_public_output(input)?;
+    let mut evidence = Vec::new();
+    let verdict = crate::check_public_output_with_evidence(input, &mut evidence)?;
     print_json(&verdict)?;
     if let Some(reason) = verdict.reason() {
         eprintln!("onevcs: {reason}");
+    }
+    for line in crate::boundary::evidence::printable(&evidence) {
+        eprintln!("onevcs: {line}");
     }
     Ok(match verdict {
         crate::boundary::BoundaryVerdict::Pass => 0,
         crate::boundary::BoundaryVerdict::Refuse { .. } => 1,
         crate::boundary::BoundaryVerdict::Unavailable { .. } => 2,
+    })
+}
+
+/// Render `onevcs boundary sanitize`: the answer on stdout, its neutral reason and any
+/// screened locator on stderr, and 0 to pass, 1 to refuse, and 2 when unavailable.
+fn boundary_sanitize(args: &BoundarySanitizeArgs) -> Result<u8> {
+    let input: crate::boundary::SanitizeInput =
+        serde_json::from_value(boundary_input(&args.input)?).map_err(|e| {
+            error::invalid(format!(
+                "the sanitize input is not one this build reads: {e}"
+            ))
+        })?;
+    let mut evidence = Vec::new();
+    let answer = crate::sanitize_public_output_with_evidence(input, &mut evidence)?;
+    print_json(&answer)?;
+    if let Some(reason) = answer.reason() {
+        eprintln!("onevcs: {reason}");
+    }
+    for line in crate::boundary::evidence::printable(&evidence) {
+        eprintln!("onevcs: {line}");
+    }
+    Ok(match answer {
+        crate::boundary::SanitizeAnswer::Pass { .. } => 0,
+        crate::boundary::SanitizeAnswer::Refuse { .. } => 1,
+        crate::boundary::SanitizeAnswer::Unavailable { .. } => 2,
+    })
+}
+
+/// Render `onevcs boundary terms`: the resolved terms on stdout and nowhere else — no
+/// stderr line, no log, no evidence — and 0, or the unavailable answer and 2.
+fn boundary_terms(args: &BoundaryTermsArgs) -> Result<u8> {
+    let request: crate::boundary::TermsRequest =
+        serde_json::from_value(boundary_input(&args.input)?).map_err(|e| {
+            error::invalid(format!("the terms input is not one this build reads: {e}"))
+        })?;
+    let answer = crate::declared_terms(request)?;
+    print_json(&answer)?;
+    Ok(match answer {
+        crate::boundary::TermsAnswer::Terms { .. } => 0,
+        crate::boundary::TermsAnswer::Unavailable(_) => 2,
     })
 }
 

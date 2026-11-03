@@ -3811,6 +3811,11 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("supersede", operation!(onevcs::record_supersession)),
         ("boundary inspect", operation!(onevcs::inspect_repository)),
         ("boundary check", operation!(onevcs::check_public_output)),
+        (
+            "boundary sanitize",
+            operation!(onevcs::sanitize_public_output),
+        ),
+        ("boundary terms", operation!(onevcs::declared_terms)),
         ("boundary schema", operation!(onevcs::boundary_schema)),
         ("export", operation!(onevcs::export)),
         ("rules apply", operation!(onevcs::rules_apply)),
@@ -9420,11 +9425,27 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub enum TermScope { Registry, Identities(Vec<String>) }",
         "pub struct BoundaryInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub scope: TermScope }",
         "pub enum Surface { Text, Path, Metadata, Content, Removal, CommitMessage, Branch, Title, Body }",
-        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases }",
+        "pub enum Unavailability { Registry, Rules, Unregistered, Declarations, Matcher, History, HostVisibility, PublicPhrases, TermLevels, Replacements }",
         "pub enum BoundaryVerdict { Pass, Refuse { surface: Surface }, Unavailable { reason: Unavailability } }",
         "pub struct RepositoryBoundary { pub visibility: Visibility, pub terms: Vec<TermRule> }",
-        "pub struct PrivateTerms { pub schema_version: u32, pub terms: Vec<String>, pub exceptions: Vec<TermException> }",
+        "pub type PrivateTerms = privateterms::Declaration;",
+        "pub use privateterms::Exception as TermException;",
         "pub enum ExceptionAction { Drop, WholeWord, CaseSensitive, OwnerNameOnly }",
+        "pub use privateterms::{Replacement, Locator, LocatorKind};",
+        "pub struct FixedEntries { pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String> }",
+        "pub struct LocatorInput { pub kind: LocatorKind, pub value: String }",
+        "pub struct SanitizeInput { pub destination: Visibility, pub text: Vec<String>, pub paths: Vec<String>, pub metadata: Vec<String>, pub fixed: FixedEntries, pub scope: TermScope, pub replacements: Vec<Replacement>, pub locators: Vec<LocatorInput> }",
+        "pub enum SanitizeSurface { Text, Path, Metadata, Locators }",
+        "pub struct Unfixed { pub surface: SanitizeSurface, pub index: usize, pub fixed: bool }",
+        "pub enum SanitizeAnswer { Pass { text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Refuse { surface: SanitizeSurface, text: Vec<String>, paths: Vec<String>, metadata: Vec<String>, replaced: u32, unfixed: Vec<Unfixed>, locators: Vec<Locator> }, Unavailable { reason: Unavailability } }",
+        "pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>;",
+        "pub fn sanitize_public_output_with_evidence(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Result<SanitizeAnswer>;",
+        "pub struct TermsRequest { pub scope: TermScope, pub replacements: Vec<Replacement> }",
+        "pub enum TermAction { Replace, Reject }",
+        "pub struct DeclaredTerm { pub term: String, pub mode: TermMode, pub case_sensitive: bool, pub action: TermAction, pub with: Option<String> }",
+        "pub enum TermsAnswer { Terms { terms: Vec<DeclaredTerm> }, Unavailable(TermsUnavailable) }",
+        "pub enum TermsUnavailable { Unavailable { reason: Unavailability } }",
+        "pub fn declared_terms(request: TermsRequest) -> Result<TermsAnswer>;",
         "pub fn repository_boundary(repository: &str) -> Result<RepositoryBoundary>;",
         "pub fn check_public_output(input: BoundaryInput) -> Result<BoundaryVerdict>;",
         "pub fn check_public_output_with_evidence(input: BoundaryInput, evidence: &mut Vec<Evidence>) -> Result<BoundaryVerdict>;",
@@ -9463,12 +9484,14 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         terms: vec![rule.clone()],
     };
     let _ = PrivateTerms {
-        schema_version: onevcs::boundary::PRIVATE_TERMS_VERSION,
+        schema_version: 1,
         terms: Vec::new(),
         exceptions: vec![TermException {
             term: "x".to_owned(),
             action: ExceptionAction::Drop,
         }],
+        replacements: Vec::new(),
+        phrases: Vec::new(),
     };
     let _ = TermSource {
         identity: "github.com/hiddenco/quietharbor".to_owned(),
@@ -9581,8 +9604,10 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         .as_deref(),
         Some("the public boundary check is unavailable: public-phrases")
     );
-    assert_eq!(onevcs::boundary::BOUNDARY_SCHEMA_VERSION, 3);
-    assert!(declared.contains("pub const BOUNDARY_SCHEMA_VERSION: u32 = 3;"));
+    assert_eq!(onevcs::boundary::BOUNDARY_SCHEMA_VERSION, 4);
+    assert!(declared.contains("pub const BOUNDARY_SCHEMA_VERSION: u32 = 4;"));
+    assert_eq!(onevcs::boundary::PRIVATE_TERMS_VERSION, 2);
+    assert!(declared.contains("pub const PRIVATE_TERMS_VERSION: u32 = 2;"));
 
     // The host's public phrases: the file, its version, its shape, and the matcher
     // that honours them, at the declared signatures and re-exported beside
@@ -9652,6 +9677,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "`{\"verdict\":\"unavailable\",\"reason\":\"public-phrases\"}`",
         "`Occurrences exempted by host public phrases: <n>`",
         "`## Exempted by host public phrases`",
+        "`tests/golden/boundary-schema-v4.json`",
         "`tests/golden/boundary-schema-v3.json`",
     ] {
         assert!(
@@ -9660,18 +9686,16 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         );
     }
     let fixture: serde_json::Value =
-        yaml(&amendment_yaml_spelling("phrases:")).expect("the phrase file fixture reads");
+        yaml(&amendment_yaml_spelling("- \"box-ab\"")).expect("the phrase file fixture reads");
     assert_eq!(fixture, json!({"version": 1, "phrases": ["box-ab"]}));
     // The amendment's own input and verdict fixtures are ones this build reads.
-    let fixture: BoundaryInput = serde_json::from_str(&amendment_block_declaring(
-        "json",
-        "\"destination\": \"public\"",
-    ))
-    .expect("the amendment's input fixture reads");
+    let fixture: BoundaryInput =
+        serde_json::from_str(&amendment_block_declaring("json", "\"examples/demo.txt\""))
+            .expect("the amendment's input fixture reads");
     assert_eq!(fixture.destination, Visibility::Public);
     let verdict: BoundaryVerdict = serde_json::from_str(&amendment_block_declaring(
         "json",
-        "\"verdict\": \"refuse\"",
+        "{\"verdict\": \"refuse\", \"surface\": \"text\"}",
     ))
     .expect("the amendment's verdict fixture reads");
     assert_eq!(
@@ -9730,10 +9754,7 @@ fn the_private_terms_fixture_is_the_declaration_this_build_reads() {
     let fixture = amendment_block_declaring("toml", "[[exceptions]]");
     let declared: onevcs::boundary::PrivateTerms =
         toml::from_str(&fixture).expect("the amendment's declaration reads");
-    assert_eq!(
-        declared.schema_version,
-        onevcs::boundary::PRIVATE_TERMS_VERSION
-    );
+    assert!(declared.schema_version <= onevcs::boundary::PRIVATE_TERMS_VERSION);
     assert_eq!(declared.terms, ["Lantern", "harborlight"]);
     assert_eq!(
         declared
@@ -9750,6 +9771,112 @@ fn the_private_terms_fixture_is_the_declaration_this_build_reads() {
         "`{}` at its root",
         onevcs::boundary::PRIVATE_TERMS_FILE
     )));
+}
+
+#[test]
+fn the_term_levels_and_sanitize_amendment_fixtures_are_the_shapes_this_build_reads() {
+    use onevcs::boundary::{
+        LocatorKind, Replacement, SanitizeAnswer, SanitizeInput, SanitizeSurface, TermScope,
+        TermsAnswer, Unavailability, Visibility,
+    };
+    // The level declaration fixture is one the crate reads as a directory level.
+    let level = amendment_block_declaring("toml", "[[replacements]]");
+    let declaration = privateterms::parse(
+        level.as_bytes(),
+        privateterms::Format::Toml,
+        privateterms::LevelKind::Directory,
+    )
+    .expect("the amendment's level declaration reads");
+    assert_eq!(declaration.schema_version, 2);
+    assert_eq!(
+        declaration.replacements,
+        [
+            Replacement::Replace {
+                term: "harborlight".into(),
+                with: "a private service".into()
+            },
+            Replacement::Reject {
+                term: "lantern".into()
+            }
+        ]
+    );
+    // The input fixture, every member of it, and its defaults.
+    let input: SanitizeInput =
+        serde_json::from_str(&amendment_block_declaring("json", "\"fixed\": {"))
+            .expect("the amendment's sanitize input reads");
+    assert_eq!(input.destination, Visibility::Public);
+    assert_eq!(
+        input.scope,
+        TermScope::Identities(vec!["github.com/acme/quietharbor".into()])
+    );
+    assert_eq!(input.replacements.len(), 2);
+    assert_eq!(input.locators[0].kind, LocatorKind::Item);
+    let bare: SanitizeInput =
+        serde_json::from_value(json!({"destination": "public"})).expect("a bare input reads");
+    assert!(bare.text.is_empty() && bare.fixed.text.is_empty() && bare.locators.is_empty());
+    assert!(
+        serde_json::from_value::<SanitizeInput>(json!({"destination": "public", "textz": []}))
+            .is_err()
+    );
+    // The three answers, read and written back byte for byte in shape.
+    for (marker, verdict) in [
+        ("{\"verdict\": \"pass\", \"text\"", "pass"),
+        ("\"unfixed\": [{\"surface\": \"text\"", "refuse"),
+        ("\"reason\": \"replacements\"", "unavailable"),
+    ] {
+        let block = amendment_block_declaring("json", marker);
+        let answer: SanitizeAnswer = serde_json::from_str(&block).expect("an answer reads");
+        let written = serde_json::to_value(&answer).expect("serializes");
+        assert_eq!(written["verdict"], verdict);
+        assert_eq!(
+            written,
+            serde_json::from_str::<Value>(&block).expect("JSON"),
+            "{verdict} round-trips, and an absent locators list stays absent"
+        );
+        if let SanitizeAnswer::Refuse {
+            surface, unfixed, ..
+        } = &answer
+        {
+            assert_eq!(*surface, SanitizeSurface::Text);
+            assert!(!unfixed[0].fixed);
+        }
+        if let SanitizeAnswer::Unavailable { reason } = &answer {
+            assert_eq!(*reason, Unavailability::Replacements);
+        }
+    }
+    assert_eq!(
+        serde_json::to_value(onevcs::boundary::BoundaryVerdict::Unavailable {
+            reason: Unavailability::TermLevels
+        })
+        .expect("serializes"),
+        json!({"verdict": "unavailable", "reason": "term-levels"})
+    );
+    // The terms answer's two shapes.
+    let terms: TermsAnswer = serde_json::from_value(json!({"terms": [{
+        "term": "harborlight", "mode": "whole-word", "case_sensitive": false,
+        "action": "replace", "with": "a private service"}]}))
+    .expect("a terms answer reads");
+    assert!(matches!(terms, TermsAnswer::Terms { .. }));
+    let unavailable: TermsAnswer =
+        serde_json::from_value(json!({"verdict": "unavailable", "reason": "term-levels"}))
+            .expect("an unavailable answer reads");
+    assert!(matches!(unavailable, TermsAnswer::Unavailable(_)));
+    let _: fn(SanitizeInput) -> onevcs::Result<SanitizeAnswer> = onevcs::sanitize_public_output;
+    let _: fn(onevcs::TermsRequest) -> onevcs::Result<TermsAnswer> = onevcs::declared_terms;
+    let amendment = regions().0;
+    for spelled in [
+        "onevcs boundary sanitize --input -",
+        "onevcs boundary terms --input -",
+        "`term-levels`",
+        "**Titles stay reject-only\neverywhere**",
+        "`public-boundary-sanitize-latency`",
+        "<redacted path 1>",
+    ] {
+        assert!(
+            amendment.contains(spelled),
+            "the amendment no longer states {spelled}"
+        );
+    }
 }
 
 #[test]

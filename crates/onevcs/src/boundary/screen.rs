@@ -26,9 +26,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::diagnostics::Phases;
-use super::matcher::Matcher;
 use super::scope::{self, Derived, Failed};
 use super::{BoundaryVerdict, Evidence, Surface, TermScope, Unavailability};
+use privateterms::Matcher;
 
 /// Everything one publication is about to write.
 pub struct Outgoing<'a> {

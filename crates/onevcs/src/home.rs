@@ -33,15 +33,17 @@ pub fn root() -> Result<PathBuf> {
     }
 }
 
+/// The user's home directory, where the platform names one.
 #[cfg(unix)]
-fn home_directory() -> Option<PathBuf> {
+pub(crate) fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
 }
 
+/// The user's home directory, where the platform names one.
 #[cfg(windows)]
-fn home_directory() -> Option<PathBuf> {
+pub(crate) fn home_directory() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

@@ -7696,6 +7696,8 @@ fn the_boundary_operations_answer_what_the_boundary_commands_print() {
         schema_version: 1,
         terms: vec![String::new()],
         exceptions: Vec::new(),
+        replacements: Vec::new(),
+        phrases: Vec::new(),
     });
     assert!(derive_terms(&[refused], &PublicNames::default()).is_err());
     host.private(

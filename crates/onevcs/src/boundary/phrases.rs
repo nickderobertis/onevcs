@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::matcher::{normalize, term_key};
+use privateterms::DeclarationErrorKind;
+
 use super::{PublicPhrases, PUBLIC_PHRASES_FILE, PUBLIC_PHRASES_VERSION};
 use crate::error::{self, Result};
 use crate::{home, yaml};
@@ -82,20 +83,30 @@ pub(crate) fn parse(raw: &str) -> std::result::Result<PublicPhrases, String> {
     let Value::Array(listed) = listed else {
         return Err("its `phrases` is not a list".to_owned());
     };
-    let mut phrases: Vec<String> = Vec::new();
-    let mut keys: Vec<String> = Vec::new();
-    for (index, entry) in listed.iter().enumerate() {
-        let Value::String(phrase) = entry else {
-            return Err(format!("phrase {} is not a string", index + 1));
-        };
-        if normalize(phrase).is_empty() {
-            return Err(format!("phrase {} is empty once normalized", index + 1));
-        }
-        let key = term_key(phrase);
-        if !keys.contains(&key) {
-            keys.push(key);
-            phrases.push(phrase.clone());
-        }
+    // The phrases themselves are the specification's `phrases` member, so they are held
+    // to it by the one declaration model: a phrase that is not a string or is empty once
+    // normalized is refused by its entry number, and phrases that are one once normalized
+    // and folded are kept once, the first as written. The envelope above is this file's
+    // own; JSON is YAML, so the member is read through the crate's one hardened reader.
+    let member = serde_json::json!({"schema_version": 2, "phrases": listed});
+    let bytes =
+        serde_json::to_vec(&member).map_err(|_| "its `phrases` cannot be read".to_owned())?;
+    match privateterms::parse(
+        &bytes,
+        privateterms::Format::Yaml,
+        privateterms::LevelKind::Fallback,
+    ) {
+        Ok(declaration) => Ok(PublicPhrases {
+            phrases: declaration.phrases,
+        }),
+        Err(refused) => Err(match (refused.kind, refused.entry) {
+            (DeclarationErrorKind::Malformed, Some(entry)) => {
+                format!("phrase {entry} is not a string")
+            }
+            (DeclarationErrorKind::EmptyPhrase, Some(entry)) => {
+                format!("phrase {entry} is empty once normalized")
+            }
+            (kind, _) => format!("its `phrases` is refused ({})", kind.name()),
+        }),
     }
-    Ok(PublicPhrases { phrases })
 }
