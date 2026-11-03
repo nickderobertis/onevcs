@@ -265,7 +265,8 @@ _unit-test-quick: (_quick unit-tier)
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
 _export-bounds-test: (_cover "onevcs-export-bounds" export-bounds-tier)
-_export-bounds-test-quick: (_quick export-bounds-tier)
+_export-bounds-test-quick:
+    @cargo nextest run --workspace --locked --status-level fail -E {{quote(export-bounds-tier)}} {{recovery-no-tests}}
 
 # Full-size recovery measurement owns one fixture build per scale and invocation.
 _recovery-test:
@@ -281,7 +282,7 @@ _recovery-covered:
 recoverable-journeys:
     @node scripts/recoverable-invocation.mjs just _recovery-quick
 
-# The workload binary is `#![cfg(unix)]`, so on Windows it compiles to no tests and
+# The workload binaries and export bounds are Unix-only, so on Windows they have no tests and
 # nextest's default refusal of an empty run is no finding; elsewhere an empty run
 # still fails, because there the journeys exist.
 recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "--no-tests=fail" }
