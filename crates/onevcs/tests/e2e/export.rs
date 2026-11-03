@@ -1228,6 +1228,7 @@ fn malformed_opaque_patterns_are_refused_before_repository_resolution() {
         vec!["a\\b"],
         vec!["a/.git/b"],
         vec!["["],
+        vec!["a**b"],
         vec!["*.jpg", "*.jpg"],
     ] {
         let patterns: Vec<_> = patterns.into_iter().map(str::to_owned).collect();
@@ -3067,4 +3068,240 @@ fn publishing_new_lfs_content_does_not_require_cached_media_already_on_origin() 
             bytes
         );
     }
+}
+
+#[test]
+fn damaged_gzip_screens_recovered_prefix_and_requires_opaque_acceptance() {
+    use onevcs_testing::export_fixtures::{layered, Encoding, Layer};
+    for contaminated in [false, true] {
+        let prefix = if contaminated {
+            "from quietharbor\n"
+        } else {
+            "generic readable prefix\n"
+        };
+        let text = format!("{prefix}{}", "generic printable payload\n".repeat(8000));
+        let valid = layered(&text, Encoding::Utf8, &[Layer::Gzip]);
+        for damage in ["member-crc", "truncated-data", "deflate-data"] {
+            let mut bytes = valid.clone();
+            match damage {
+                "truncated-data" => bytes.truncate(bytes.len() - 20),
+                "deflate-data" => {
+                    let tail = bytes.len() - 12;
+                    bytes[tail] ^= 0x80;
+                }
+                _ => {
+                    let crc = bytes.len() - 8;
+                    bytes[crc] ^= 0xff;
+                }
+            }
+            for accepted in [false, true] {
+                let host = Boundary::new(LOCAL);
+                let source = host.source(&[]);
+                let files = vec![("damaged.gz".into(), bytes.clone())];
+                fixture_branch(&host, &source, &files);
+                let before = destination_stores(&host);
+                crate::honesty::inhabit(&host.world);
+                let result = onevcs::export(
+                    &onevcs::Providers::real(),
+                    &library_request(if accepted { vec!["**".into()] } else { vec![] }),
+                );
+                if contaminated {
+                    let error = result.expect_err("recovered private text cannot be waived");
+                    assert!(
+                        error.to_string().contains("it carries a private term"),
+                        "{error}"
+                    );
+                    assert_eq!(destination_stores(&host), before);
+                    let records = std::fs::read_dir(host.world.home().join("boundary/evidence"))
+                        .expect("private evidence");
+                    let findings = records
+                        .map(|entry| {
+                            std::fs::read_to_string(entry.expect("entry").path()).expect("evidence")
+                        })
+                        .collect::<String>();
+                    assert!(findings.contains("damaged.gz!gzip@5"), "{findings}");
+                } else if accepted {
+                    result.expect("clean damaged stream accepted as opaque");
+                    assert_fixture_blobs(&host, &files);
+                } else {
+                    let error = result.expect_err("damaged stream needs acceptance");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("it carries a file whose contents cannot be checked"),
+                        "{error}"
+                    );
+                    assert_eq!(destination_stores(&host), before);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn damaged_zip_metadata_requires_acceptance_and_never_waives_raw_terms() {
+    use onevcs_testing::export_fixtures::{layered, Encoding, Layer, ZipForm};
+    for contaminated in [false, true] {
+        let text = if contaminated {
+            "from quietharbor\n"
+        } else {
+            "generic readable payload\n"
+        };
+        let valid = layered(
+            text,
+            Encoding::Utf8,
+            &[Layer::Zip {
+                member: "document.xml".into(),
+                form: ZipForm::Stored,
+            }],
+        );
+        for damage in ["truncated-central", "member-crc", "local-header-offset"] {
+            let mut bytes = valid.clone();
+            if damage == "truncated-central" {
+                bytes.truncate(bytes.len() - 22);
+            } else {
+                let central = bytes
+                    .windows(4)
+                    .position(|window| window == b"PK\x01\x02")
+                    .expect("central directory");
+                // The central CRC disagrees with the member bytes while the
+                // archive still has a valid central directory and local header.
+                if damage == "member-crc" {
+                    bytes[central + 16] ^= 0xff;
+                } else {
+                    // Keep the initial local header and the entire central
+                    // directory, but direct the member reader one byte inside
+                    // that header. by_index_raw must reject its invalid signature.
+                    bytes[central + 42..central + 46].copy_from_slice(&1u32.to_le_bytes());
+                }
+            }
+            for accepted in [false, true] {
+                let host = Boundary::new(LOCAL);
+                let source = host.source(&[]);
+                let files = vec![("damaged.zip".into(), bytes.clone())];
+                fixture_branch(&host, &source, &files);
+                let before = destination_stores(&host);
+                crate::honesty::inhabit(&host.world);
+                let result = onevcs::export(
+                    &onevcs::Providers::real(),
+                    &library_request(if accepted { vec!["**".into()] } else { vec![] }),
+                );
+                if contaminated {
+                    let error = result.expect_err("raw private text in malformed ZIP refuses");
+                    assert!(
+                        error.to_string().contains("it carries a private term"),
+                        "{error}"
+                    );
+                    assert_eq!(destination_stores(&host), before);
+                } else if accepted {
+                    result.expect("malformed ZIP accepted as opaque");
+                    assert_fixture_blobs(&host, &files);
+                } else {
+                    let error = result.expect_err("malformed ZIP needs acceptance");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("it carries a file whose contents cannot be checked"),
+                        "{error}"
+                    );
+                    assert_eq!(destination_stores(&host), before);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_matching_opaque_pattern_is_recorded_as_used() {
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    let photo = onevcs_testing::export_fixtures::sample_set(None)
+        .into_iter()
+        .find(|(name, _)| name == "frame.jpg")
+        .expect("photo");
+    fixture_branch(&host, &source, std::slice::from_ref(&photo));
+    crate::honesty::inhabit(&host.world);
+    onevcs::export(
+        &onevcs::Providers::real(),
+        &library_request(vec!["*.jpg".into(), "**".into()]),
+    )
+    .expect("overlapping acceptance");
+    assert_fixture_blobs(&host, &[photo]);
+    let mut records = std::fs::read_dir(host.world.home().join("boundary/export-evidence"))
+        .expect("private export evidence");
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(records.next().expect("record").expect("entry").path())
+            .expect("record bytes"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        record["accepted"],
+        serde_json::json!([{"path":"frame.jpg", "pattern":"*.jpg"}, {"path":"frame.jpg", "pattern":"**"}])
+    );
+    assert_eq!(record["unused"], serde_json::json!([]));
+}
+
+#[test]
+fn replacing_a_subtree_removes_its_old_lfs_attributes() {
+    let host = Boundary::new(LOCAL);
+    put(
+        &host.public,
+        "fixtures/.gitattributes",
+        &onevcs_testing::export_fixtures::lfs_attributes(),
+    );
+    host.world
+        .git(&host.public, &["add", "fixtures/.gitattributes"]);
+    host.world.git(
+        &host.public,
+        &["commit", "-q", "-m", "chore: track fixture models"],
+    );
+    host.world
+        .git(&host.public, &["push", "-q", "origin", "main"]);
+    host.world.git(
+        &host.public,
+        &[
+            "config",
+            "lfs.url",
+            &format!("file://{}", host.origin.display()),
+        ],
+    );
+    let source = host.source(&[]);
+    let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+        .into_iter()
+        .filter(|(name, _)| name == "model.3mf")
+        .collect();
+    fixture_branch(&host, &source, &files);
+    let before_lfs: Vec<_> = destination_stores(&host)
+        .into_iter()
+        .filter(|(path, _)| path.contains("/lfs/"))
+        .collect();
+    let output = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_fixture_blobs(&host, &files);
+    assert!(!host
+        .world
+        .git_raw(
+            &host.public,
+            &["cat-file", "-e", "generic-fixtures:fixtures/.gitattributes"]
+        )
+        .status
+        .success());
+    let after_lfs: Vec<_> = destination_stores(&host)
+        .into_iter()
+        .filter(|(path, _)| path.contains("/lfs/"))
+        .collect();
+    assert_eq!(
+        after_lfs, before_lfs,
+        "removed tracking creates no LFS objects"
+    );
 }
