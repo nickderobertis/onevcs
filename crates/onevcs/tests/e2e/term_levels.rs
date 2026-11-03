@@ -200,7 +200,7 @@ fn run(host: &Boundary, args: &[&str], input: &Value) -> Answered {
 }
 
 /// Fail if `said` carries any invented spelling, case-insensitively.
-fn assert_unspelled(said: &str, sink: &str) {
+pub(crate) fn assert_unspelled(said: &str, sink: &str) {
     let lowered = said.to_lowercase();
     for spelling in SPELLINGS {
         assert!(
@@ -1606,7 +1606,7 @@ fn a_replacement_carrying_a_term_holds_a_body_and_a_reply_unwritten() {
 }
 
 /// The evidence file a held publication's stderr names, read back.
-fn persisted(stderr: &str) -> Vec<Value> {
+pub(crate) fn persisted(stderr: &str) -> Vec<Value> {
     let marker = "recorded privately at ";
     let start = stderr
         .find(marker)
@@ -1623,7 +1623,7 @@ fn persisted(stderr: &str) -> Vec<Value> {
 /// Every locator field of persisted evidence: where (`at`), whose (`identity`), and an
 /// unavailable check's `detail`. The rule a refusal found is the private detail the store
 /// exists for, so it is not one of them.
-fn locator_fields(evidence: &[Value]) -> Vec<String> {
+pub(crate) fn locator_fields(evidence: &[Value]) -> Vec<String> {
     evidence
         .iter()
         .flat_map(|entry| ["at", "identity", "detail"].map(|key| entry[key].clone()))

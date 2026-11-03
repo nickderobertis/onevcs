@@ -83,14 +83,16 @@ pub struct Exported {
     pub head: String,
 }
 
-/// A refusal that names the step and nothing it read, with the detail kept privately.
-fn refused(step: &str, detail: impl Into<String>) -> Error {
-    // An unavailable step redacts every locator it would record, as a check does.
-    let detail = scope::redacted(&detail.into(), Vec::new());
+/// A refusal that names the step and nothing it read.
+///
+/// What failed is recorded privately as the step alone: an unavailable step redacts
+/// every locator it would record, as a check does, and what git or a read says when it
+/// fails can quote a ref name, a path or a file's content — so none of it is kept.
+fn refused(step: &str) -> Error {
     let kept = evidence::keep(&[Evidence::Unavailable {
         reason: Unavailability::History,
         identity: None,
-        detail,
+        detail: format!("the export is refused: {step}"),
     }]);
     let said = match kept {
         Ok(path) => format!(
@@ -105,9 +107,10 @@ fn refused(step: &str, detail: impl Into<String>) -> Error {
     Error::Invalid { reason: said }
 }
 
-/// The refusal for `step`, keeping whatever failed as its private detail.
-fn because<E: std::fmt::Display>(step: &'static str) -> impl FnOnce(E) -> Error {
-    move |error| refused(step, error.to_string())
+/// The refusal for `step`, whatever failed: see [`refused`] for why nothing it said is
+/// kept.
+fn because<E>(step: &'static str) -> impl FnOnce(E) -> Error {
+    move |_| refused(step)
 }
 
 /// A relative, normalized directory: no root, no `.` or `..`, no empty segment, no
@@ -134,20 +137,15 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
     if !normalized(&request.directory) {
         return Err(refused(
             "its source directory is not a relative, normalized path",
-            "--directory",
         ));
     }
     if !normalized(&request.target_directory) {
         return Err(refused(
             "its target directory is not a relative, normalized path",
-            "--target-directory",
         ));
     }
     if !git::is_valid_branch_name(&request.branch_name) {
-        return Err(refused(
-            "its branch name is not a valid branch name",
-            "--branch-name",
-        ));
+        return Err(refused("its branch name is not a valid branch name"));
     }
     let registry = store::load().map_err(because("the registry could not be read"))?;
     let source = store::resolve(&registry, &request.from)
@@ -155,12 +153,12 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
     let target = store::resolve(&registry, &request.to)
         .map_err(because("its destination is not a registered repository"))?;
     if source.key == target.key {
-        return Err(refused("its source and destination are one repository", ""));
+        return Err(refused("its source and destination are one repository"));
     }
     let destination = visibility::refresh(providers.hosting, &target.key)
         .map_err(because("its destination's visibility could not be read"))?;
     if destination.effective() != Visibility::Public {
-        return Err(refused("its destination is not verified public", ""));
+        return Err(refused("its destination is not verified public"));
     }
 
     let started = std::time::Instant::now();
@@ -208,7 +206,7 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
             .and_then(|object| object.peel_to_commit())
             .ok()
     })
-    .ok_or_else(|| refused("its source's base does not resolve", base_name.clone()))?;
+    .ok_or_else(|| refused("its source's base does not resolve"))?;
     let fork = repository
         .merge_base(tip.id(), base.id())
         .and_then(|id| repository.find_commit(id))
@@ -235,7 +233,6 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
         if outside(delta.old_file().path()) || outside(delta.new_file().path()) {
             return Err(refused(
                 "its branch changes a path outside the export directory",
-                "a change outside the directory",
             ));
         }
     }
@@ -257,9 +254,9 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let tree = tip.tree().map_err(because("its branch cannot be read"))?;
     let entry = tree
         .get_path(Path::new(&request.directory))
-        .map_err(|_| refused("its source directory is not on the branch", ""))?;
+        .map_err(|_| refused("its source directory is not on the branch"))?;
     if entry.kind() != Some(git2::ObjectType::Tree) {
-        return Err(refused("its source directory is not a directory", ""));
+        return Err(refused("its source directory is not a directory"));
     }
     let directory = entry
         .to_object(&repository)
@@ -268,7 +265,7 @@ fn read_source(checkout: &Path, request: &ExportRequest) -> Result<Source> {
     let mut files = Vec::new();
     collect(&repository, &directory, "", &mut files)?;
     if files.is_empty() {
-        return Err(refused("its source directory holds no file", ""));
+        return Err(refused("its source directory holds no file"));
     }
     Ok(Source { files, messages })
 }
@@ -283,7 +280,7 @@ fn collect(
     for entry in tree.iter() {
         let name = entry
             .name()
-            .map_err(|_| refused("a path in it is not UTF-8", ""))?;
+            .map_err(|_| refused("a path in it is not UTF-8"))?;
         let path = if prefix.is_empty() {
             name.to_owned()
         } else {
@@ -306,7 +303,6 @@ fn collect(
                 if contents.contains(&0) || std::str::from_utf8(&contents).is_err() {
                     return Err(refused(
                         "it carries a binary file, whose terms cannot be checked",
-                        "a binary file",
                     ));
                 }
                 files.push(File {
@@ -316,12 +312,12 @@ fn collect(
                 });
             }
             0o120000 => {
-                return Err(refused("it carries a symbolic link", "a symbolic link"));
+                return Err(refused("it carries a symbolic link"));
             }
             0o160000 => {
-                return Err(refused("it carries a submodule", "a submodule"));
+                return Err(refused("it carries a submodule"));
             }
-            _ => return Err(refused("it carries an entry of an unknown kind", "")),
+            _ => return Err(refused("it carries an entry of an unknown kind")),
         }
     }
     Ok(())
@@ -402,7 +398,6 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
     if repository.find_reference(&reference).is_ok() {
         return Err(refused(
             "its branch name is already a branch of the destination",
-            "",
         ));
     }
     let base_name = git::default_branch(checkout, "origin")
@@ -419,7 +414,7 @@ fn write_target(checkout: &Path, request: &ExportRequest, files: &[File]) -> Res
     let segments: Vec<&str> = request.target_directory.split('/').collect();
     let tree = place(&repository, Some(&base_tree), &segments, exported)?;
     if tree == base_tree.id() {
-        return Err(refused("it would change nothing in its destination", ""));
+        return Err(refused("it would change nothing in its destination"));
     }
     let tree = repository
         .find_tree(tree)
