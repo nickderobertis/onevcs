@@ -30,7 +30,8 @@ use super::{
 pub fn sanitize(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> SanitizeAnswer {
     let started = Instant::now();
     let mut phases = Phases::default();
-    let answer = match judged(input, &mut phases, evidence) {
+    let mut compiled = None;
+    let answer = match judged(input, &mut phases, evidence, &mut compiled) {
         Ok(answer) => answer,
         Err(failed) => {
             let reason = failed.reason;
@@ -39,7 +40,7 @@ pub fn sanitize(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> SanitizeA
         }
     };
     let phases = phases.ended(started);
-    diagnostics::record_sanitize(&answer, &phases);
+    diagnostics::record_sanitize(&answer, &phases, compiled.as_ref());
     answer
 }
 
@@ -53,10 +54,13 @@ fn evidence_surface(surface: SanitizeSurface) -> Surface {
     }
 }
 
+/// The answer to `input`, handing the matcher it compiled out through `compiled` once
+/// the answer is decided — what screens the locators its diagnostics print.
 fn judged(
     input: SanitizeInput,
     phases: &mut Phases,
     evidence: &mut Vec<Evidence>,
+    compiled: &mut Option<Matcher>,
 ) -> Result<SanitizeAnswer, Failed> {
     if input.destination.effective() != Visibility::Public {
         return Ok(SanitizeAnswer::Pass {
@@ -176,6 +180,7 @@ fn judged(
         .sum();
 
     let [text, paths, metadata] = rewritten;
+    *compiled = Some(matcher);
     Ok(match unfixed.first() {
         None => SanitizeAnswer::Pass {
             text,

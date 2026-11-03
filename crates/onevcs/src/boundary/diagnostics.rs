@@ -9,10 +9,15 @@
 //! many matcher builds, replacement passes and re-matches it made — which is how its
 //! one-pass promise is held. It is how the release-binary
 //! journeys time the check from inside the binary that runs it; nothing else reads it.
+//!
+//! The file's own path is a locator: a warning that it could not be written names it
+//! screened by the call's matcher, and redacted outright where the check was
+//! unavailable or compiled no matcher — the problem itself is still said.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+use privateterms::Matcher;
 use serde::Serialize;
 
 use super::{BoundaryVerdict, SanitizeAnswer};
@@ -100,25 +105,38 @@ struct SanitizeLine {
     rematches: usize,
 }
 
-/// Append one sanitisation's line, where the variable asks for one.
-pub fn record_sanitize(answer: &SanitizeAnswer, phases: &Phases) {
+/// Append one sanitisation's line, where the variable asks for one. `matcher` is the
+/// one the call compiled, which screens the file's path in a warning.
+pub fn record_sanitize(answer: &SanitizeAnswer, phases: &Phases, matcher: Option<&Matcher>) {
     let verdict = match answer {
         SanitizeAnswer::Pass { .. } => Word::Pass,
         SanitizeAnswer::Refuse { .. } => Word::Refuse,
         SanitizeAnswer::Unavailable { .. } => Word::Unavailable,
     };
-    write(line(
-        "sanitize",
-        verdict,
-        phases,
-        Some(SanitizeLine {
-            levels: phases.levels,
-            replacement_us: phases.replacement.as_micros(),
-            matcher_builds: phases.matcher_builds,
-            replacement_passes: phases.replacement_passes,
-            rematches: phases.rematches,
-        }),
-    ));
+    write(
+        line(
+            "sanitize",
+            verdict,
+            phases,
+            Some(SanitizeLine {
+                levels: phases.levels,
+                replacement_us: phases.replacement.as_micros(),
+                matcher_builds: phases.matcher_builds,
+                replacement_passes: phases.replacement_passes,
+                rematches: phases.rematches,
+            }),
+        ),
+        screen(verdict, matcher),
+    );
+}
+
+/// The matcher a warning's path is screened by: none — so the path is redacted — where
+/// the check was unavailable, since an unavailable check redacts every locator.
+fn screen(verdict: Word, matcher: Option<&Matcher>) -> Option<&Matcher> {
+    match verdict {
+        Word::Unavailable => None,
+        Word::Pass | Word::Refuse => matcher,
+    }
 }
 
 fn line<'a>(
@@ -145,17 +163,18 @@ fn line<'a>(
 }
 
 /// Append one check's line, where the variable asks for one. A diagnostics file that
-/// cannot be written says so on stderr and changes nothing about the check.
-pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases) {
+/// cannot be written says so on stderr and changes nothing about the check. `matcher`
+/// is the one the check compiled, which screens the file's path in that warning.
+pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases, matcher: Option<&Matcher>) {
     let verdict = match verdict {
         BoundaryVerdict::Pass => Word::Pass,
         BoundaryVerdict::Refuse { .. } => Word::Refuse,
         BoundaryVerdict::Unavailable { .. } => Word::Unavailable,
     };
-    write(line(check, verdict, phases, None));
+    write(line(check, verdict, phases, None), screen(verdict, matcher));
 }
 
-fn write(line: Line<'_>) {
+fn write(line: Line<'_>, matcher: Option<&Matcher>) {
     let Some(path) = std::env::var_os(DIAGNOSTICS_ENV).filter(|value| !value.is_empty()) else {
         return;
     };
@@ -171,7 +190,7 @@ fn write(line: Line<'_>) {
     if let Err(error) = written {
         eprintln!(
             "onevcs: warning: the boundary diagnostics could not be written to {}: {error}",
-            std::path::Path::new(&path).display()
+            super::evidence::printed_path(std::path::Path::new(&path), matcher)
         );
     }
 }

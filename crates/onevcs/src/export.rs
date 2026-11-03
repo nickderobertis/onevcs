@@ -170,7 +170,12 @@ pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Expo
     phases.bytes = read.files.iter().map(|file| file.contents.len()).sum();
 
     let screened = screen(request, &read, &mut phases);
-    diagnostics::record("export", &screened.0, &phases.ended(started));
+    diagnostics::record(
+        "export",
+        &screened.0,
+        &phases.ended(started),
+        screened.2.as_ref(),
+    );
     evidence::settle(screened.0, screened.1, screened.2.as_ref())?;
 
     let head = write_target(&target.publication, request, &read.files)?;

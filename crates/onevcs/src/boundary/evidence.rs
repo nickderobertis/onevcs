@@ -38,7 +38,12 @@ pub fn guard_publication(
         return Ok(());
     }
     let screened = screen::screen(outgoing, scope);
-    diagnostics::record("publication", &screened.verdict, &screened.phases);
+    diagnostics::record(
+        "publication",
+        &screened.verdict,
+        &screened.phases,
+        screened.matcher.as_ref(),
+    );
     settle(
         screened.verdict,
         screened.evidence,
@@ -58,7 +63,12 @@ pub fn guard_publication_unasked(
         return Ok(());
     }
     let screened = screen::screen(outgoing, scope);
-    diagnostics::record("publication", &screened.verdict, &screened.phases);
+    diagnostics::record(
+        "publication",
+        &screened.verdict,
+        &screened.phases,
+        screened.matcher.as_ref(),
+    );
     settle(
         screened.verdict,
         screened.evidence,
@@ -113,7 +123,12 @@ pub fn guard_change_publication(
         body: body.as_deref(),
     };
     let screened = screen::screen(&outgoing, scope);
-    diagnostics::record("publication", &screened.verdict, &screened.phases);
+    diagnostics::record(
+        "publication",
+        &screened.verdict,
+        &screened.phases,
+        screened.matcher.as_ref(),
+    );
     settle(
         screened.verdict,
         screened.evidence,
@@ -223,7 +238,12 @@ pub fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()
             }
         }
     };
-    diagnostics::record("fields", &verdict, &phases.ended(started));
+    diagnostics::record(
+        "fields",
+        &verdict,
+        &phases.ended(started),
+        compiled.as_ref(),
+    );
     settle(verdict, evidence, compiled.as_ref())
 }
 

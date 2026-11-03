@@ -5651,7 +5651,10 @@ JSON line: `check` (`publication`, `fields` or `export`), `verdict`, `total_us`,
 `derivation_us`, `diff_us`, `matcher_build_us`, `matching_us`, `terms`, `identities`,
 `commits`, `paths` and `bytes`. It carries no term, identity, path or text; it is how the
 release-binary tier times the check from inside the binary. `bytes` counts the added
-text the check matched.
+text the check matched. A file that cannot be written is a warning on standard error
+naming the problem and the file's path as a locator — screened by the call's matcher
+where the check refused or passed, and redacted as `<redacted path 1>` where it was
+unavailable; the verdict and exit code are unchanged.
 
 **Export** copies one directory of a private branch into a public repository as one new
 neutral commit. The source branch's complete net diff to the commit it left its identity's

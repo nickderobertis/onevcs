@@ -1694,6 +1694,98 @@ fn a_refusal_prints_its_evidence_files_path_screened_by_the_calls_matcher() {
 }
 
 #[test]
+fn an_unwritable_diagnostics_file_is_reported_without_its_path_spelling_a_term() {
+    let levels = Levels::new("work/quietharbor", &[]);
+    // Real destinations this host cannot open, because their directory is not there:
+    // one under a directory named after the private repository, one under a plain name.
+    let named = levels
+        .host
+        .world
+        .path("quietharbor-telemetry/missing/diagnostics.ndjson");
+    let plain = levels
+        .host
+        .world
+        .path("telemetry/missing/diagnostics.ndjson");
+    let run_with_diagnostics = |args: &[&str], diagnostics: &Path| {
+        let output = levels
+            .host
+            .world
+            .onevcs()
+            .args(args)
+            .env("ONEVCS_BOUNDARY_DIAGNOSTICS", diagnostics)
+            .write_stdin(
+                json!({"destination": "public", "text": ["ran on quietharbor"]}).to_string(),
+            )
+            .output()
+            .expect("the binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        let answer: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("the answer is JSON ({e}): {stdout}\nstderr: {stderr}"));
+        (output.status.code(), answer, stderr)
+    };
+    let check: &[&str] = &[
+        "boundary",
+        "check",
+        "--destination",
+        "public",
+        "--input",
+        "-",
+    ];
+    let sanitize: &[&str] = &["boundary", "sanitize", "--input", "-"];
+    let warned = "the boundary diagnostics could not be written to";
+    let problem = ": No such file or directory";
+
+    // `boundary check` appends no diagnostics line, so it has no path to print.
+    // A sanitisation does: on a refusal its path is the call's matcher's to screen —
+    // redacted where it carries the term, printed as it is where it does not — and the
+    // problem is still said.
+    for (diagnostics, printed) in [
+        (&named, "<redacted path 1>".to_owned()),
+        (&plain, plain.display().to_string()),
+    ] {
+        let (code, answer, stderr) = run_with_diagnostics(check, diagnostics);
+        assert_eq!(code, Some(1), "check: {stderr}");
+        assert_eq!(answer["verdict"], "refuse", "check: {answer}");
+        assert_unspelled(&stderr, "check");
+        assert!(!stderr.contains(warned), "check: {stderr}");
+
+        let (code, answer, stderr) = run_with_diagnostics(sanitize, diagnostics);
+        assert_eq!(code, Some(1), "sanitize: {stderr}");
+        assert_eq!(answer["verdict"], "refuse", "sanitize: {answer}");
+        assert_unspelled(&stderr, "sanitize");
+        assert!(
+            stderr.contains(&format!("{warned} {printed}{problem}")),
+            "sanitize: {stderr}"
+        );
+    }
+
+    // Unavailable: every locator is redacted, whether or not it carries a term.
+    levels.level(".onevcs", "schema_version = 2\nterms = [\n");
+    for diagnostics in [&named, &plain] {
+        let (code, answer, stderr) = run_with_diagnostics(check, diagnostics);
+        assert_eq!(code, Some(2), "check: {stderr}");
+        assert_eq!(answer["verdict"], "unavailable", "check: {answer}");
+        assert_unspelled(&stderr, "check");
+        assert!(!stderr.contains(warned), "check: {stderr}");
+
+        let (code, answer, stderr) = run_with_diagnostics(sanitize, diagnostics);
+        assert_eq!(code, Some(2), "sanitize: {stderr}");
+        assert_eq!(answer["verdict"], "unavailable", "sanitize: {answer}");
+        assert_unspelled(&stderr, "sanitize");
+        assert!(
+            stderr.contains(&format!("{warned} <redacted path 1>{problem}")),
+            "sanitize: {stderr}"
+        );
+        assert!(!stderr.contains("telemetry"), "sanitize: {stderr}");
+    }
+    assert!(
+        !named.exists() && !plain.exists(),
+        "nothing could be written"
+    );
+}
+
+#[test]
 fn an_unavailable_publication_persists_its_evidence_with_every_locator_redacted() {
     let levels = Levels::new(
         "hiddenco-work/quietharbor",
