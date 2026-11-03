@@ -953,25 +953,45 @@
             "case_sensitive": {
               "description": "Whether it is compared exactly rather than in lower case.",
               "type": "boolean"
-            },
-            "action": {
-              "description": "What its hits get.",
-              "$ref": "#/$defs/TermAction"
-            },
-            "with": {
-              "description": "What its hits are rewritten to, for `replace` only.",
-              "type": [
-                "string",
-                "null"
-              ]
             }
           },
-          "additionalProperties": false,
           "required": [
             "term",
             "mode",
-            "case_sensitive",
-            "action"
+            "case_sensitive"
+          ],
+          "oneOf": [
+            {
+              "description": "Rewritten to `with`.",
+              "type": "object",
+              "properties": {
+                "with": {
+                  "description": "What its hits are rewritten to.",
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "action",
+                "with"
+              ]
+            },
+            {
+              "description": "Refused.",
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "reject"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
           ]
         },
         "TermMode": {
@@ -991,21 +1011,6 @@
               "description": "A qualified `owner/name`, only where it stands as that name.",
               "type": "string",
               "const": "owner-name-only"
-            }
-          ]
-        },
-        "TermAction": {
-          "description": "What a resolved term's hits get.",
-          "oneOf": [
-            {
-              "description": "Rewritten to `with`.",
-              "type": "string",
-              "const": "replace"
-            },
-            {
-              "description": "Refused.",
-              "type": "string",
-              "const": "reject"
             }
           ]
         },

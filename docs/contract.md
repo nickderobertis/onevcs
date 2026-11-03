@@ -5773,8 +5773,8 @@ pub enum SanitizeAnswer { Pass { text: Vec<String>, paths: Vec<String>, metadata
 pub fn sanitize_public_output(input: SanitizeInput) -> Result<SanitizeAnswer>;
 pub fn sanitize_public_output_with_evidence(input: SanitizeInput, evidence: &mut Vec<Evidence>) -> Result<SanitizeAnswer>;
 pub struct TermsRequest { pub scope: TermScope, pub replacements: Vec<Replacement> }   // Default
-pub enum TermAction { Replace, Reject }   // serde: kebab-case
-pub struct DeclaredTerm { pub term: String, pub mode: TermMode, pub case_sensitive: bool, pub action: TermAction, pub with: Option<String> }
+pub enum TermAction { Replace { with: String }, Reject }   // tag: action; serde: kebab-case
+pub struct DeclaredTerm { pub term: String, pub mode: TermMode, pub case_sensitive: bool, pub action: TermAction }   // action flattened: "action": "replace", "with": "..."
 pub enum TermsAnswer { Terms { terms: Vec<DeclaredTerm> }, Unavailable(TermsUnavailable) }   // untagged
 pub enum TermsUnavailable { Unavailable { reason: Unavailability } }   // tag: verdict
 pub fn declared_terms(request: TermsRequest) -> Result<TermsAnswer>;

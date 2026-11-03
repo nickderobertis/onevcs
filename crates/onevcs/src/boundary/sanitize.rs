@@ -248,16 +248,15 @@ pub fn declared(request: &TermsRequest) -> TermsAnswer {
             .resolved()
             .iter()
             .map(|resolved| {
-                let (action, with) = match &resolved.action {
-                    Action::Replace(with) => (TermAction::Replace, Some(with.clone())),
-                    Action::Reject => (TermAction::Reject, None),
+                let action = match &resolved.action {
+                    Action::Replace(with) => TermAction::Replace { with: with.clone() },
+                    Action::Reject => TermAction::Reject,
                 };
                 DeclaredTerm {
                     term: resolved.rule.term.clone(),
                     mode: resolved.rule.mode,
                     case_sensitive: resolved.rule.case_sensitive,
                     action,
-                    with,
                 }
             })
             .collect(),

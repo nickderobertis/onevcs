@@ -12,6 +12,12 @@
 // repositories are real git repositories, the levels are real files above them, and every
 // answer is the compiled binary's or the library's own.
 
+// llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] these are journeys of
+// the binary's own public boundary, on the onevcs-e2e edge every boundary journey shares
+// (`boundary.rs`, `publication_boundary.rs`, `public_phrases.rs`); what reruns that tier is
+// its `e2eInputs` in `nx.json`, which no test in it declares or can narrow, and the whole
+// module runs in about a second.
+
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -1204,5 +1210,250 @@ fn nothing_a_commit_carries_is_rewritten_and_local_direct_stays_reject_only() {
         "its title",
         &before,
         "a local-direct title",
+    );
+}
+
+impl Levels {
+    /// `onevcs boundary sanitize` over `input` with the home directory at `home`, which
+    /// the library in this process is not asked about.
+    fn sanitize_from(&self, home: &Path, input: &Value) -> Answered {
+        let output = self
+            .host
+            .world
+            .onevcs()
+            .args(["boundary", "sanitize", "--input", "-"])
+            .env("HOME", home)
+            .write_stdin(input.to_string())
+            .output()
+            .expect("the binary runs");
+        let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+        Answered {
+            code: output.status.code().expect("the binary exits"),
+            answer: serde_json::from_str(stdout.trim()).expect("the answer is JSON"),
+            stdout,
+            stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        }
+    }
+}
+
+#[test]
+fn directory_levels_stop_at_the_home_directory_and_outside_it_stop_short_of_the_root() {
+    let levels = Levels::new("work/team/quietharbor", &[]);
+    let replace =
+        "schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"a service\"\n";
+    let input = json!({"destination": "public", "text": ["from quietharbor"]});
+
+    // With the home directory at `work`, a level above it is never read, and one in it is.
+    levels.level("", replace);
+    let home = levels.home().join("work");
+    assert_eq!(levels.sanitize_from(&home, &input).verdict(), "refuse");
+    levels.level("work", replace);
+    assert_eq!(
+        levels.sanitize_from(&home, &input).text(),
+        ["from a service"]
+    );
+    std::fs::remove_file(levels.home().join("work/private-terms.toml")).expect("removed");
+
+    // A checkout that is the home directory has no ancestor up to it.
+    levels.level("work/team", replace);
+    assert_eq!(
+        levels.sanitize_from(&levels.checkout, &input).verdict(),
+        "refuse"
+    );
+
+    // A checkout outside the home directory reads every ancestor short of the root.
+    let elsewhere = levels.home().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("another home");
+    assert_eq!(
+        levels.sanitize_from(&elsewhere, &input).text(),
+        ["from a service"]
+    );
+    std::fs::remove_file(levels.home().join("work/team/private-terms.toml")).expect("removed");
+    assert_eq!(
+        levels.sanitize_from(&elsewhere, &input).text(),
+        ["from a service"],
+        "the world's root is an ancestor short of the filesystem root"
+    );
+}
+
+#[test]
+fn an_ambiguous_declaration_an_empty_scope_and_a_scope_that_selects_no_checkout() {
+    // Two declaration files committed at once are ambiguous, for both commands.
+    let levels = Levels::new(
+        "work/quietharbor",
+        &[
+            ("private-terms.toml", "schema_version = 1\n"),
+            ("private-terms.yml", "schema_version: 1\n"),
+        ],
+    );
+    let expected = json!({"verdict": "unavailable", "reason": "declarations"});
+    assert_eq!(levels.text("fine", json!([])).answer, expected);
+    assert_eq!(levels.check(&json!({"text": ["fine"]})).answer, expected);
+
+    // A scope selecting only a public identity still reaches the fallback.
+    let levels = Levels::new("work/quietharbor", &[]);
+    levels.level(
+        ".onevcs",
+        "schema_version = 2\n[[replacements]]\nterm = \"lanternfish\"\nwith = \"a lamp\"\n",
+    );
+    let answered = levels.sanitize(&json!({
+        "destination": "public",
+        "text": ["one lanternfish"],
+        "scope": ["github.com/sample-owner/openwidget"],
+    }));
+    assert_eq!(answered.text(), ["one a lamp"]);
+
+    // An explicitly empty scope reads nothing — not the fallback, not the registry — and
+    // still honours the caller's own entries.
+    levels.level(".onevcs", "not toml at all");
+    std::fs::write(levels.host.world.home().join("registry.json"), "{broken").expect("broken");
+    let output = levels
+        .host
+        .world
+        .onevcs()
+        .args(["boundary", "sanitize", "--input", "-"])
+        .write_stdin(
+            json!({
+                "destination": "public",
+                "text": ["one lanternfish, one quietharbor"],
+                "scope": [],
+                "replacements": [{"term": "lanternfish", "with": "a lamp"}],
+            })
+            .to_string(),
+        )
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(0));
+    let answer: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(answer["text"], json!(["one a lamp, one quietharbor"]));
+}
+
+#[test]
+fn every_rewritable_list_is_rewritten_and_every_list_is_refused_where_a_term_is_left() {
+    let levels = Levels::new(
+        "work/quietharbor",
+        &[(
+            "private-terms.toml",
+            "schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"a-service\"\n",
+        )],
+    );
+    let answered = levels.sanitize(&json!({
+        "destination": "public",
+        "paths": ["docs/quietharbor.md"],
+        "metadata": ["feat: port quietharbor"],
+    }));
+    assert_eq!(answered.verdict(), "pass", "{}", answered.stdout);
+    assert_eq!(answered.answer["paths"], json!(["docs/a-service.md"]));
+    assert_eq!(answered.answer["metadata"], json!(["feat: port a-service"]));
+    assert_eq!(answered.answer["replaced"], 2);
+
+    // The owner is a term nothing replaces: left in a path, a field and a fixed text.
+    let answered = levels.sanitize(&json!({
+        "destination": "public",
+        "paths": ["fine.md", "hiddenco/quietharbor.md"],
+        "metadata": ["by hiddenco"],
+        "fixed": {"text": ["fine", "a hiddenco note"]},
+    }));
+    assert_eq!(answered.verdict(), "refuse");
+    assert_eq!(answered.answer["surface"], "path");
+    assert_eq!(
+        answered.answer["unfixed"],
+        json!([
+            {"surface": "path", "index": 1, "fixed": false},
+            {"surface": "metadata", "index": 0, "fixed": false},
+            {"surface": "text", "index": 1, "fixed": true},
+        ])
+    );
+    assert!(answered
+        .stderr
+        .contains("a refused path entry: <redacted path 1>"));
+    assert_unspelled(&answered.stderr, "stderr");
+}
+
+#[test]
+fn boundary_terms_is_unavailable_where_a_replacement_carries_a_term_or_the_terms_cannot_compile() {
+    let levels = Levels::new("work/quietharbor", &[]);
+    let carrying = levels.terms(&json!({
+        "replacements": [{"term": "lanternfish", "with": "the quietharbor lamp"}],
+    }));
+    assert_eq!(carrying.code, 2);
+    assert_eq!(
+        carrying.answer,
+        json!({"verdict": "unavailable", "reason": "replacements"})
+    );
+    assert!(carrying.stderr.is_empty());
+    std::fs::write(
+        levels.host.world.home().join("public-phrases.yml"),
+        "version: 1\nphrases: [\"\\u200b\"]\n",
+    )
+    .expect("a refused phrase file");
+    let refused = levels.terms(&json!({}));
+    assert_eq!(refused.code, 2);
+    assert_eq!(
+        refused.answer,
+        json!({"verdict": "unavailable", "reason": "public-phrases"})
+    );
+    assert_unspelled(&refused.stdout, "the answer");
+}
+
+#[test]
+fn the_published_repositorys_own_levels_sanitise_its_change_requests_body() {
+    let host = Boundary::new(REVIEWED);
+    private_at(&host, SLUG, "work/quietharbor", &[]);
+    // The public destination's own committed declaration, on its base: the levels of the
+    // repository being published.
+    let declare = |contents: &str| {
+        let elsewhere = host
+            .world
+            .clone_of(&host.origin, &format!("declare-{}", contents.len()));
+        std::fs::write(elsewhere.join("private-terms.toml"), contents).expect("a declaration");
+        host.world.git(&elsewhere, &["add", "-A"]);
+        host.world.git(
+            &elsewhere,
+            &["commit", "-q", "-m", "chore: declare replacements"],
+        );
+        host.world
+            .git(&elsewhere, &["push", "-q", "origin", "main"]);
+        host.world
+            .git(&host.public, &["pull", "-q", "origin", "main"]);
+    };
+    declare("schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"a private service\"\n");
+    let (token, worktree) = host.session("from-the-destination");
+    std::fs::write(worktree.join("a.md"), "a generic example\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: add an example"]);
+    let before = host.origin_refs();
+    let output = host.publish(&token, &["--draft", "--body", "Ported from quietharbor."]);
+    host.published(&output, &before, "a body the destination's levels rewrite");
+    assert_eq!(
+        host.world.change_request_body(1),
+        "Ported from a private service."
+    );
+
+    // A declaration of the destination's that is refused holds the description unwritten.
+    declare("schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"x\"\nreject = true\n");
+    let output = host
+        .world
+        .onevcs()
+        .args([
+            "change",
+            "describe",
+            &token,
+            "--body",
+            "Mirrors quietharbor.",
+        ])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the public boundary check is unavailable"),
+        "{stderr}"
+    );
+    assert_unspelled(&stderr, "stderr");
+    assert_eq!(
+        host.world.change_request_body(1),
+        "Ported from a private service."
     );
 }

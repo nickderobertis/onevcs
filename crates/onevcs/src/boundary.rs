@@ -757,19 +757,22 @@ pub struct TermsRequest {
     pub replacements: Vec<Replacement>,
 }
 
-/// What a resolved term's hits get.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
+/// What a resolved term's hits get, and for a replacement what they are rewritten to:
+/// on the wire `"action": "replace", "with": "..."` or `"action": "reject"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "kebab-case")]
 pub enum TermAction {
     /// Rewritten to `with`.
-    Replace,
+    Replace {
+        /// What its hits are rewritten to.
+        with: String,
+    },
     /// Refused.
     Reject,
 }
 
 /// One resolved rule, as `onevcs boundary terms` answers it: private output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct DeclaredTerm {
     /// The term as written.
     pub term: String,
@@ -778,10 +781,8 @@ pub struct DeclaredTerm {
     /// Whether it is compared exactly rather than in lower case.
     pub case_sensitive: bool,
     /// What its hits get.
+    #[serde(flatten)]
     pub action: TermAction,
-    /// What its hits are rewritten to, for `replace` only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub with: Option<String>,
 }
 
 /// What `onevcs boundary terms` answers: the resolved terms, or why there are none.

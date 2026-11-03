@@ -66,7 +66,7 @@ impl Phases {
 #[derive(Serialize)]
 struct Line<'a> {
     check: &'a str,
-    verdict: &'static str,
+    verdict: Word,
     total_us: u128,
     derivation_us: u128,
     diff_us: u128,
@@ -79,6 +79,15 @@ struct Line<'a> {
     bytes: usize,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     sanitize: Option<SanitizeLine>,
+}
+
+/// A line's verdict word.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Word {
+    Pass,
+    Refuse,
+    Unavailable,
 }
 
 /// What only a sanitisation's line carries.
@@ -94,9 +103,9 @@ struct SanitizeLine {
 /// Append one sanitisation's line, where the variable asks for one.
 pub fn record_sanitize(answer: &SanitizeAnswer, phases: &Phases) {
     let verdict = match answer {
-        SanitizeAnswer::Pass { .. } => "pass",
-        SanitizeAnswer::Refuse { .. } => "refuse",
-        SanitizeAnswer::Unavailable { .. } => "unavailable",
+        SanitizeAnswer::Pass { .. } => Word::Pass,
+        SanitizeAnswer::Refuse { .. } => Word::Refuse,
+        SanitizeAnswer::Unavailable { .. } => Word::Unavailable,
     };
     write(line(
         "sanitize",
@@ -114,7 +123,7 @@ pub fn record_sanitize(answer: &SanitizeAnswer, phases: &Phases) {
 
 fn line<'a>(
     check: &'a str,
-    verdict: &'static str,
+    verdict: Word,
     phases: &Phases,
     sanitize: Option<SanitizeLine>,
 ) -> Line<'a> {
@@ -139,9 +148,9 @@ fn line<'a>(
 /// cannot be written says so on stderr and changes nothing about the check.
 pub fn record(check: &str, verdict: &BoundaryVerdict, phases: &Phases) {
     let verdict = match verdict {
-        BoundaryVerdict::Pass => "pass",
-        BoundaryVerdict::Refuse { .. } => "refuse",
-        BoundaryVerdict::Unavailable { .. } => "unavailable",
+        BoundaryVerdict::Pass => Word::Pass,
+        BoundaryVerdict::Refuse { .. } => Word::Refuse,
+        BoundaryVerdict::Unavailable { .. } => Word::Unavailable,
     };
     write(line(check, verdict, phases, None));
 }

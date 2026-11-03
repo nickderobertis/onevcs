@@ -278,7 +278,8 @@ pub fn derive_with(
         });
     }
 
-    let mut merged: Vec<(ResolvedRule, String)> = Vec::new();
+    // Each rule once, with what every identity's chains resolved it to.
+    let mut merged: Vec<Merged> = Vec::new();
     let mut index: HashMap<(TermMode, bool, String), usize> = HashMap::new();
     let mut phrases: Vec<String> = Vec::new();
     for chain in &chains {
@@ -312,23 +313,25 @@ pub fn derive_with(
                 rule.rule.case_sensitive,
                 rule_key(&rule.rule.term, rule.rule.case_sensitive),
             );
-            match index.get(&key) {
-                Some(&at) => {
-                    if merged[at].0.action != rule.action {
-                        merged[at].0.action = Action::Reject;
-                    }
-                }
-                None => {
-                    let identity = evidence_identity(&rule, chain);
-                    index.insert(key, merged.len());
-                    merged.push((rule, identity));
-                }
-            }
+            let named = names(chain, caller, &rule.rule.term);
+            let at = *index.entry(key).or_insert_with(|| {
+                merged.push(Merged {
+                    identity: evidence_identity(&rule, chain),
+                    rule: rule.clone(),
+                    by: BTreeMap::new(),
+                });
+                merged.len() - 1
+            });
+            merged[at].decide(origin.clone(), rule.action, named);
         }
         for level in &chain.levels {
             phrases.extend(level.declaration.phrases.iter().cloned());
         }
     }
+    let merged: Vec<(ResolvedRule, String)> = merged
+        .into_iter()
+        .map(|merged| merged.resolved(published))
+        .collect();
     let (resolved, identities): (Vec<ResolvedRule>, Vec<String>) = merged.into_iter().unzip();
     Ok(Derived {
         rules: resolved.iter().map(|r| r.rule.clone()).collect(),
@@ -338,6 +341,70 @@ pub fn derive_with(
         sources: selected.len(),
         levels: reader.read,
     })
+}
+
+/// One rule, and what each identity's chains resolved it to.
+struct Merged {
+    rule: ResolvedRule,
+    identity: String,
+    /// By identity (empty for the fallback-only chain): the action, and whether a level
+    /// or the caller named the term rather than leaving it at the default reject.
+    by: BTreeMap<String, (Action, bool)>,
+}
+
+impl Merged {
+    /// One checkout's resolution of the rule for `identity`. Where an identity's
+    /// checkouts resolve it differently it is rejected — and that is a decision, which
+    /// no other identity's chain can override.
+    fn decide(&mut self, identity: String, action: Action, named: bool) {
+        match self.by.get_mut(&identity) {
+            None => {
+                self.by.insert(identity, (action, named));
+            }
+            Some((seen, decided)) => {
+                if *seen != action {
+                    *seen = Action::Reject;
+                    *decided = true;
+                } else {
+                    *decided |= named;
+                }
+            }
+        }
+    }
+
+    /// The rule with its action across identities: the published repository's own,
+    /// where its levels name the term; otherwise the one every identity whose levels
+    /// name it agrees on; otherwise reject.
+    fn resolved(mut self, published: Option<&str>) -> (ResolvedRule, String) {
+        let published = published
+            .and_then(|key| self.by.get(key))
+            .filter(|(_, named)| *named);
+        self.rule.action = match published {
+            Some((action, _)) => action.clone(),
+            None => {
+                let mut named = self.by.values().filter(|(_, named)| *named).map(|(a, _)| a);
+                match named.next() {
+                    Some(first) if named.all(|other| other == first) => first.clone(),
+                    _ => Action::Reject,
+                }
+            }
+        };
+        (self.rule, self.identity)
+    }
+}
+
+/// Whether the caller's list or any level of `chain` names `term` in a replacement
+/// entry, so that its action there is a decision rather than the default reject.
+fn names(chain: &Chain, caller: &[Replacement], term: &str) -> bool {
+    let key = term_key(term);
+    caller.iter().any(|entry| term_key(entry.term()) == key)
+        || chain.levels.iter().any(|level| {
+            level
+                .declaration
+                .replacements
+                .iter()
+                .any(|entry| term_key(entry.term()) == key)
+        })
 }
 
 /// A repository's committed declaration as the level it is above its derived rules: its
