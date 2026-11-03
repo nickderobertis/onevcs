@@ -240,9 +240,9 @@ fn run_export(
     if screened.0 != BoundaryVerdict::Pass {
         return Err(refused_with(
             if matches!(screened.0, BoundaryVerdict::Unavailable { .. }) {
-                "its private terms are unavailable"
+                Refusal::TermsUnavailable
             } else {
-                "it carries a private term"
+                Refusal::PrivateTerm
             },
             &screened.1,
             matcher.as_ref(),
@@ -250,7 +250,7 @@ fn run_export(
     }
     if let Some(path) = screened.3 {
         return Err(refused_with(
-            "it carries a file whose contents cannot be checked",
+            Refusal::ContentsUnchecked,
             &[Evidence::Unavailable {
                 reason: Unavailability::History,
                 identity: None,
@@ -267,11 +267,29 @@ fn run_export(
     })
 }
 
+#[derive(Clone, Copy)]
+enum Refusal {
+    PrivateTerm,
+    TermsUnavailable,
+    ContentsUnchecked,
+}
+
+impl Refusal {
+    fn step(self) -> &'static str {
+        match self {
+            Self::PrivateTerm => "it carries a private term",
+            Self::TermsUnavailable => "its private terms are unavailable",
+            Self::ContentsUnchecked => "it carries a file whose contents cannot be checked",
+        }
+    }
+}
+
 fn refused_with(
-    step: &str,
+    kind: Refusal,
     findings: &[Evidence],
     matcher: Option<&privateterms::Matcher>,
 ) -> Error {
+    let step = kind.step();
     let kept = evidence::keep(findings);
     let detail = kept
         .map(|path| {
@@ -284,7 +302,7 @@ fn refused_with(
     let reason = format!(
         "the export is refused: {step}. Nothing was written to the public repository{detail}"
     );
-    if step == "it carries a private term" {
+    if matches!(kind, Refusal::PrivateTerm) {
         Error::GateFailed { reason }
     } else {
         Error::Invalid { reason }
@@ -602,7 +620,7 @@ fn screen(
                     extract::Location {
                         path: &screen_path(matcher, &file.path),
                         offset: 0,
-                        encoding: "",
+                        encoding: extract::Encoding::Utf8,
                     },
                     &file.path,
                 );
@@ -612,7 +630,7 @@ fn screen(
                     extract::Location {
                         path: &screen_path(matcher, &written),
                         offset: 0,
-                        encoding: "",
+                        encoding: extract::Encoding::Utf8,
                     },
                     &written,
                 );
@@ -621,20 +639,10 @@ fn screen(
                     &file.path,
                     budget,
                     budget_order[index],
-                    |path, at, text| {
-                        check(
-                            if path {
-                                Surface::Path
-                            } else {
-                                Surface::Content
-                            },
-                            at,
-                            text,
-                        )
-                    },
+                    |surface, at, text| check(surface, at, text),
                     |path| screen_path(matcher, path),
                 );
-                let accepted = if extraction.readable {
+                let accepted = if extraction == extract::Extraction::Readable {
                     None
                 } else {
                     patterns
@@ -684,7 +692,7 @@ fn screen(
             };
         }
         evidence.extend(found);
-        if !extraction.readable {
+        if extraction != extract::Extraction::Readable {
             phases.opaque_files += 1;
             for (index, _) in patterns
                 .iter()
@@ -696,7 +704,9 @@ fn screen(
                     pattern: request.accepted_opaque[index].clone(),
                 });
             }
-            if (extraction.bounded || accepted.is_none()) && unreadable.is_none() {
+            if (extraction == extract::Extraction::BoundExceeded || accepted.is_none())
+                && unreadable.is_none()
+            {
                 unreadable = Some(file.path.clone());
             }
         }
@@ -707,16 +717,14 @@ fn screen(
 /// Match spans are UTF-8 byte spans of the decoded run; translate UTF-16
 /// spans back into code units before adding the run's offset in its layer.
 fn content_at(at: extract::Location<'_>, text: &str, start: usize) -> String {
-    let displacement = if at.encoding.is_empty() {
-        start
-    } else {
-        text[..start].encode_utf16().count() * 2
+    let displacement = match at.encoding {
+        extract::Encoding::Utf8 => start,
+        extract::Encoding::Utf16(_) => text[..start].encode_utf16().count() * 2,
     };
     let offset = at.offset + displacement;
-    if at.encoding.is_empty() {
-        format!("{}@{offset}", at.path)
-    } else {
-        format!("{}@{offset}:{}", at.path, at.encoding)
+    match at.encoding.suffix() {
+        None => format!("{}@{offset}", at.path),
+        Some(suffix) => format!("{}@{offset}:{suffix}", at.path),
     }
 }
 

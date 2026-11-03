@@ -4,6 +4,8 @@ use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 
+use crate::boundary::Surface;
+
 /// Every layer counts, including the outermost file at depth zero.
 pub(super) const MAX_DEPTH: usize = 8;
 pub(super) const MAX_FILE_DECODED_BYTES: u64 = 256 * 1024 * 1024;
@@ -37,9 +39,44 @@ impl Budget {
     }
 }
 
-pub(super) struct Extraction {
-    pub readable: bool,
-    pub bounded: bool,
+/// Whether every byte could be interpreted, or why acceptance cannot suffice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Extraction {
+    Readable,
+    Opaque,
+    BoundExceeded,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Endian {
+    Little,
+    Big,
+}
+
+impl Endian {
+    fn unit(self, bytes: &[u8], offset: usize) -> u16 {
+        let pair = [bytes[offset], bytes[offset + 1]];
+        match self {
+            Self::Little => u16::from_le_bytes(pair),
+            Self::Big => u16::from_be_bytes(pair),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Encoding {
+    Utf8,
+    Utf16(Endian),
+}
+
+impl Encoding {
+    pub fn suffix(self) -> Option<&'static str> {
+        match self {
+            Self::Utf8 => None,
+            Self::Utf16(Endian::Little) => Some("utf16le"),
+            Self::Utf16(Endian::Big) => Some("utf16be"),
+        }
+    }
 }
 
 /// A run's original location, formatted only if the matcher finds a term.
@@ -47,7 +84,7 @@ pub(super) struct Extraction {
 pub(super) struct Location<'a> {
     pub path: &'a str,
     pub offset: usize,
-    pub encoding: &'static str,
+    pub encoding: Encoding,
 }
 
 struct Reader<'a, F, L> {
@@ -65,7 +102,7 @@ pub(super) fn inspect(
     at: &str,
     budget: &Budget,
     index: Option<usize>,
-    check: impl FnMut(bool, Location<'_>, &str),
+    check: impl FnMut(Surface, Location<'_>, &str),
     locate: impl Fn(&str) -> String,
 ) -> Extraction {
     let mut reader = Reader {
@@ -81,13 +118,16 @@ pub(super) fn inspect(
     if let Some(index) = index {
         budget.finish(index);
     }
-    Extraction {
-        readable,
-        bounded: reader.bounded,
+    if reader.bounded {
+        Extraction::BoundExceeded
+    } else if readable {
+        Extraction::Readable
+    } else {
+        Extraction::Opaque
     }
 }
 
-impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L> {
+impl<F: FnMut(Surface, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L> {
     fn account(&mut self, count: usize) -> bool {
         // Account the actual read, including the single buffer crossing a cap.
         // Containers spend this budget in path order, so no other decoder can
@@ -161,11 +201,11 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
                 };
                 let member = format!("{at}!zip:{}", (self.locate)(raw.name()));
                 (self.check)(
-                    true,
+                    Surface::Path,
                     Location {
                         path: &member,
                         offset: 0,
-                        encoding: "",
+                        encoding: Encoding::Utf8,
                     },
                     raw.name(),
                 );
@@ -215,11 +255,11 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
             .filter(|_| !bytes.contains(&0));
         if let Some(text) = whole {
             (self.check)(
-                false,
+                Surface::Content,
                 Location {
                     path: at,
                     offset: 0,
-                    encoding: "",
+                    encoding: Encoding::Utf8,
                 },
                 text,
             );
@@ -242,9 +282,9 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
                 }
             }
         }
-        for little in [true, false] {
+        for endian in [Endian::Little, Endian::Big] {
             for alignment in 0..2 {
-                self.utf16(bytes, at, alignment, little);
+                self.utf16(bytes, at, alignment, endian);
             }
         }
     }
@@ -256,11 +296,11 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
             if character.is_control() {
                 if count >= 4 {
                     (self.check)(
-                        false,
+                        Surface::Content,
                         Location {
                             path: at,
                             offset: base + start,
-                            encoding: "",
+                            encoding: Encoding::Utf8,
                         },
                         &text[start..offset],
                     );
@@ -273,36 +313,28 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
         }
         if count >= 4 {
             (self.check)(
-                false,
+                Surface::Content,
                 Location {
                     path: at,
                     offset: base + start,
-                    encoding: "",
+                    encoding: Encoding::Utf8,
                 },
                 &text[start..],
             );
         }
     }
 
-    fn utf16(&mut self, bytes: &[u8], at: &str, alignment: usize, little: bool) {
+    fn utf16(&mut self, bytes: &[u8], at: &str, alignment: usize, endian: Endian) {
         let mut run = String::new();
         let mut count = 0;
         let mut start = alignment;
         let mut offset = alignment;
-        let suffix = if little { "utf16le" } else { "utf16be" };
+        let encoding = Encoding::Utf16(endian);
         while offset + 1 < bytes.len() {
-            let unit = if little {
-                u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
-            } else {
-                u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
-            };
+            let unit = endian.unit(bytes, offset);
             let (character, width) =
                 if (0xd800..=0xdbff).contains(&unit) && offset + 3 < bytes.len() {
-                    let next = if little {
-                        u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]])
-                    } else {
-                        u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]])
-                    };
+                    let next = endian.unit(bytes, offset + 2);
                     if (0xdc00..=0xdfff).contains(&next) {
                         (
                             char::decode_utf16([unit, next]).next().and_then(Result::ok),
@@ -325,11 +357,11 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
                 None => {
                     if count >= 4 {
                         (self.check)(
-                            false,
+                            Surface::Content,
                             Location {
                                 path: at,
                                 offset: start,
-                                encoding: suffix,
+                                encoding,
                             },
                             &run,
                         );
@@ -342,11 +374,11 @@ impl<F: FnMut(bool, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F, L>
         }
         if count >= 4 {
             (self.check)(
-                false,
+                Surface::Content,
                 Location {
                     path: at,
                     offset: start,
-                    encoding: suffix,
+                    encoding,
                 },
                 &run,
             );
