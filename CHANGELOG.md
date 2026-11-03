@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0](https://github.com/nickderobertis/onevcs/compare/v0.58.0...v0.59.0) - 2026-11-03
+
+### Added
+
+- *(boundary)* [**breaking**] replace declared private terms through the privateterms crate and sanitize public output ([#602](https://github.com/nickderobertis/onevcs/pull/602))
+
 ## [0.58.0](https://github.com/nickderobertis/onevcs/compare/v0.57.6...v0.58.0) - 2026-11-02
 
 ### Added
