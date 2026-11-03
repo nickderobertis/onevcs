@@ -214,7 +214,6 @@ impl<F: FnMut(Surface, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F,
                         raw.compression(),
                         zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
                     );
-                let directory = raw.is_dir();
                 if !supported {
                     // A raw member remains readable as bytes even when its
                     // compression/encryption cannot be decoded. Scan its own
@@ -229,9 +228,6 @@ impl<F: FnMut(Surface, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F,
                     continue;
                 }
                 drop(raw);
-                if directory {
-                    continue;
-                }
                 let Ok(file) = archive.by_index(index) else {
                     readable = false;
                     continue;
