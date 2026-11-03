@@ -10,7 +10,7 @@ try {
   const detail = `invocation ${record.build.run_id}: ${covered.identities} private repositories (${covered.terms} terms); ${covered.paths} paths, ${covered.bytes} raw bytes, ` +
     `${phases.decoded_bytes} decoded bytes, ${phases.opaque_files} opaque files; ${phases.workers} workers; ` +
     `${phases.lfs_objects} LFS objects, ${phases.lfs_bytes} LFS bytes; ` +
-    phaseNames.map(name => `${name}=${phases[name]}`).join(", ") +
+    phaseNames.map(name => `${name === "diff_us" ? "source_read_us" : name}=${phases[name]}`).join(", ") +
     `; peak RSS ${record.peak_rss_kib} KiB; load1 ${record.load1}`;
   if (!report(record.wall_us / 1e6, detail)) throw new Error("ONEBUDGETSPEC_RESULT is missing; run through just budgets");
 } catch (error) {

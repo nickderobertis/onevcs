@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
     "build": {
       "type": "object",
@@ -71,6 +71,11 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "lfs_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -80,7 +85,8 @@
         "bytes",
         "largest",
         "lfs_objects",
-        "patterns"
+        "patterns",
+        "lfs_bytes"
       ],
       "additionalProperties": false
     },
@@ -215,6 +221,7 @@
     "bytes": 194900000,
     "largest": 37099984,
     "lfs_objects": 462,
-    "patterns": 3
+    "patterns": 3,
+    "lfs_bytes": 194898393
   }
 }

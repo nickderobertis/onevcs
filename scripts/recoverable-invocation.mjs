@@ -12,7 +12,7 @@ const manifest = state => writeFileSync(`${directory}/recoverable-invocation.jso
 // public boundary check's, the draft hold's and the retirement hour's share its
 // invocation, binary and source identity.
 const retract = () => {
-  for (const name of ["recoverable.json", "boundary.json", "draft-hold.json", "retire-hour.json"]) rmSync(`${directory}/${name}`, { force: true });
+  for (const name of ["recoverable.json", "boundary.json", "draft-hold.json", "retire-hour.json", "export.json", "export-source-lfs.json"]) rmSync(`${directory}/${name}`, { force: true });
 };
 const failed = reason => {
   // The cause and next action come first: a cleanup that fails as well must not hide them.

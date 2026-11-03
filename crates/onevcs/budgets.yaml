@@ -84,3 +84,35 @@ budgets:
       requests retirement makes in it. Detail, unbudgeted: requests per pass and per
       sweep, branches examined, branches decided from records alone, branches the host
       was asked about, and requests by kind (merged-state view, open list, merge time).
+
+  # Basis: arithmetic over 194.9 MB on eight cores; telemetry from the optimized
+  # in-process recovery export journey. Reader runtime: approximately two seconds.
+  - id: export-wall-time
+    measure: reported
+    command: [node, scripts/export-wall-time-budget.mjs]
+    unit: seconds
+    direction: max
+    threshold: 3
+    description: >-
+      One release-profile export call over 496 files, 194.9 MB, largest 37.1 MB:
+      446 JPEG frames with EXIF and XMP, seven G-code, six binary STL, three 3MF
+      with PNG thumbnails, 28 JSON, four Markdown, .gitattributes and Python.
+      Three opaque patterns; 462 LFS-tracked files into a file-backed store;
+      twenty private repositories of 100 terms each. Detail reports phases,
+      worker count, paths, raw and decoded bytes, opaque files, LFS objects and
+      bytes, peak resident memory and load1.
+  # Basis: design: the source local LFS store persists across a refused export
+  # and its retry. Telemetry from git-lfs transfer progress, read in two seconds.
+  - id: export-source-lfs-download
+    measure: reported
+    command: [node, scripts/export-source-lfs-download-budget.mjs]
+    unit: bytes
+    direction: max
+    threshold: 0
+    description: >-
+      Repeated source LFS bytes across two exports of the same realistic 496-file,
+      194.9 MB set and 2,000-term private scope. The cold source has its 462
+      objects only in origin's file-backed store. Attempt one refuses at an
+      unwritable destination endpoint; attempt two lands. Completed git-lfs
+      downloads per object, less one copy of each size; detail retains each
+      attempt's objects, bytes and progress lines.

@@ -195,3 +195,8 @@ path = "tests/recovery-workload/main.rs"
 [[test]]
 name = "pool-workload"
 path = "tests/pool-workload/main.rs"
+
+# Optimized in-process export telemetry; owned by the recovery project.
+[[test]]
+name = "export-workload"
+path = "tests/recovery-workload/export_main.rs"

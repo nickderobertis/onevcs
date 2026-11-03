@@ -41,7 +41,7 @@ export function readExportRecord(kind, directory = recordDirectory, sourceRoot =
   if (kind === "wall-time") {
     const phases = record.phases;
     const times = ["diff_us", "derivation_us", "matcher_build_us", "extraction_us", "matching_us", "lfs_us", "tree_write_us"];
-    if (times.some(key => phases[key] > phases.total_us) || record.wall_us < phases.total_us || phases.workers < 1 || phases.paths !== record.covered.paths || phases.bytes !== record.covered.bytes || phases.lfs_objects !== record.covered.lfs_objects) throw new Error("incomplete export diagnostics");
+    if (times.some(key => phases[key] > phases.total_us) || record.wall_us < phases.total_us || phases.workers < 1 || phases.paths !== record.covered.paths || phases.bytes !== record.covered.bytes || phases.lfs_objects !== record.covered.lfs_objects || phases.lfs_bytes !== record.covered.lfs_bytes) throw new Error("incomplete export diagnostics");
   } else {
     const [cold, retry] = record.attempts;
     if (cold.objects !== record.covered.lfs_objects || cold.progress_lines < cold.objects) throw new Error("incomplete cold source downloads");
@@ -49,6 +49,7 @@ export function readExportRecord(kind, directory = recordDirectory, sourceRoot =
       const objects = Object.entries(attempt.completed);
       if (objects.some(([oid]) => !digest(oid)) || objects.length !== attempt.objects || objects.reduce((sum, [, bytes]) => sum + bytes, 0) !== attempt.bytes) throw new Error("incomplete download accounting");
     }
+    if (Object.values(record.object_sizes).reduce((sum, bytes) => sum + bytes, 0) !== record.covered.lfs_bytes) throw new Error("shrunk source object bytes");
     if (Object.keys(record.object_sizes).length !== record.covered.lfs_objects || Object.entries(record.object_sizes).some(([oid, size]) => !digest(oid) || !(oid in cold.completed) || cold.completed[oid] < size)) throw new Error("incomplete source object inventory");
     if (Object.keys(retry.completed).some(oid => !(oid in cold.completed))) throw new Error("retry downloaded a foreign object");
   }

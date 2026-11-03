@@ -14,7 +14,9 @@
     "crates/onevcs-testing/src/boundary.rs",
     "crates/onevcs-testing/src/lib.rs",
     "crates/onevcs/tests/fixtures/gh",
-    ".cargo/config.toml"
+    ".cargo/config.toml",
+    "crates/onevcs-testing/src/export_fixtures.rs",
+    "crates/onevcs/budgets.yaml"
   ],
   "directories": [
     "crates/onevcs/src",
@@ -41,6 +43,10 @@
     {
       "directory": "crates/onevcs/scripts",
       "prefix": "boundary-sanitize-budget"
+    },
+    {
+      "directory": "crates/onevcs/scripts",
+      "prefix": "export-"
     }
   ]
 }

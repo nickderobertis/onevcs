@@ -17,17 +17,17 @@ function fixture(kind) {
   const schema = JSON.parse(readFileSync(new URL(`./export-${kind}-budget.schema.json`, import.meta.url)));
   const build = { run_id: sha("invocation"), binary: "onevcs", binary_sha256: sha("CLI"), source_sha256: sourceFingerprint() };
   const covered = schema["x-workload"];
-  const record = { version: 1, build, producer_sha256: sha("optimized producer"), covered, load1: 1,
+  const record = { version: 2, build, producer_sha256: sha("optimized producer"), covered, load1: 1,
     scenario: kind === "wall-time" ? "realistic-export" : "realistic-export-source-lfs" };
   if (kind === "wall-time") {
     record.wall_us = 1400000;
     record.peak_rss_kib = 300000;
     record.phases = Object.fromEntries(Object.keys(schema.properties.phases.properties).map(key => [key, 1]));
-    Object.assign(record.phases, {total_us: 1300000, paths: covered.paths, bytes: covered.bytes, lfs_objects: covered.lfs_objects});
+    Object.assign(record.phases, {total_us: 1300000, paths: covered.paths, bytes: covered.bytes, lfs_objects: covered.lfs_objects, lfs_bytes: covered.lfs_bytes});
   } else {
-    const completed = Object.fromEntries(Array.from({length: covered.lfs_objects}, (_, n) => [sha(`object-${n}`), 100]));
+    const completed = Object.fromEntries(Array.from({length: covered.lfs_objects}, (_, n) => [sha(`object-${n}`), Math.floor(covered.lfs_bytes / covered.lfs_objects) + Number(n < covered.lfs_bytes % covered.lfs_objects)]));
     record.object_sizes = {...completed};
-    record.attempts = [{objects:covered.lfs_objects, bytes:covered.lfs_objects * 100, progress_lines:covered.lfs_objects, completed}, {objects:0, bytes:0, progress_lines:0, completed:{}}];
+    record.attempts = [{objects:covered.lfs_objects, bytes:covered.lfs_bytes, progress_lines:covered.lfs_objects, completed}, {objects:0, bytes:0, progress_lines:0, completed:{}}];
   }
   const invocation = { state: "complete", ...build };
   const name = kind === "wall-time" ? "export.json" : "export-source-lfs.json";
@@ -93,5 +93,30 @@ test("source reader preserves overruns for the budget checker to judge", () => {
     f.record.attempts[1] = {objects:1, bytes:100, progress_lines:1, completed:{[oid]:100}};
     f.save();
     assert.equal(repeatedBytes(readExportRecord("source-lfs-download", f.root)), 100);
+  } finally { rmSync(f.root, {recursive:true, force:true}); }
+});
+
+test("source reader refuses incomplete object sizes and transfer totals", () => {
+  for (const mutate of [
+    record => { delete record.object_sizes[Object.keys(record.object_sizes)[0]]; },
+    record => { record.attempts[0].bytes--; },
+    record => { record.object_sizes[Object.keys(record.object_sizes)[0]]--; },
+  ]) {
+    const f = fixture("source-lfs-download");
+    try { mutate(f.record); f.save(); assert.throws(() => readExportRecord("source-lfs-download", f.root)); }
+    finally { rmSync(f.root, {recursive:true, force:true}); }
+  }
+});
+
+test("repeated downloads within the cold attempt count beyond one copy", () => {
+  const f = fixture("source-lfs-download");
+  try {
+    const oid = Object.keys(f.record.object_sizes)[0];
+    const size = f.record.object_sizes[oid];
+    f.record.attempts[0].completed[oid] += size;
+    f.record.attempts[0].bytes += size;
+    f.record.attempts[0].progress_lines++;
+    f.save();
+    assert.equal(repeatedBytes(readExportRecord("source-lfs-download", f.root)), size);
   } finally { rmSync(f.root, {recursive:true, force:true}); }
 });
