@@ -1258,6 +1258,14 @@ fn every_generic_extraction_path_finds_terms_and_preserves_clean_utf8() {
         (Encoding::Utf16Be, vec![], ":utf16be"),
         (Encoding::Utf8, vec![Layer::Gzip], "!gzip@"),
     ];
+    cases.push((
+        Encoding::Utf8,
+        vec![Layer::Zip {
+            member: "metadata/".into(),
+            form: ZipForm::Deflate,
+        }],
+        "!zip:metadata/@",
+    ));
     for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
         cases.push((encoding, vec![Layer::Gzip], "!gzip@"));
         for form in [ZipForm::Stored, ZipForm::Deflate, ZipForm::Zip64] {
@@ -3303,5 +3311,289 @@ fn replacing_a_subtree_removes_its_old_lfs_attributes() {
     assert_eq!(
         after_lfs, before_lfs,
         "removed tracking creates no LFS objects"
+    );
+}
+
+#[test]
+fn export_consumer_sessions_preserve_each_destination_lfs_endpoint_setting() {
+    if !require_lfs() {
+        return;
+    }
+    for key in [
+        "lfs.pushurl",
+        "remote.origin.lfsurl",
+        "remote.origin.lfspushurl",
+    ] {
+        let host = Boundary::new(LOCAL);
+        destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+        let endpoint = host.world.bare_origin("intended-lfs-endpoint");
+        host.world
+            .git(&host.public, &["config", "--unset-all", "lfs.url"]);
+        host.world.git(
+            &host.public,
+            &["config", key, &format!("file://{}", endpoint.display())],
+        );
+        let source = host.source(&[]);
+        let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+            .into_iter()
+            .filter(|(name, _)| matches!(name.as_str(), "model.3mf" | "print.gcode.gz"))
+            .collect();
+        fixture_branch(&host, &source, &files);
+        let output = host.export(
+            "fixture-source",
+            "examples",
+            "fixtures",
+            "generic-fixtures",
+            &[],
+        );
+        assert!(
+            output.status.success(),
+            "{key}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(endpoint.join("lfs"))
+            .expect("export uploaded to intended endpoint");
+        let opened = host
+            .world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "github.com/sample-owner/openwidget",
+                "--branch",
+                "generic-fixtures",
+                "--caller-merges-base",
+            ])
+            .output()
+            .expect("open export consumer");
+        assert!(
+            opened.status.success(),
+            "{key}: {}",
+            String::from_utf8_lossy(&opened.stderr)
+        );
+        let token = crate::world::token_of(&opened.stdout);
+        let published = host
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .output()
+            .expect("publish consumer");
+        assert!(
+            published.status.success(),
+            "{key}: {}",
+            String::from_utf8_lossy(&published.stderr)
+        );
+        for (name, bytes) in files {
+            let (pointer, oid) = lfs_pointer(&bytes);
+            assert_eq!(
+                host.world
+                    .git_raw(&host.origin, &["show", &format!("main:fixtures/{name}")])
+                    .stdout,
+                pointer.as_bytes(),
+                "{key}"
+            );
+            assert_eq!(
+                std::fs::read(endpoint.join(format!(
+                    "lfs/objects/{}/{}/{oid}",
+                    &oid[..2],
+                    &oid[2..4]
+                )))
+                .expect("session used intended LFS endpoint"),
+                bytes,
+                "{key}"
+            );
+        }
+        assert!(
+            !host.origin.join("lfs/objects").exists(),
+            "{key}: no upload to Git origin's default endpoint"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[path = "export_lfs_gate.rs"]
+mod lfs_gate;
+
+#[test]
+#[cfg(target_os = "linux")]
+fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
+    use std::time::{Duration, Instant};
+
+    struct CancelOnRead<'a> {
+        gate: &'a lfs_gate::HeldRead,
+        unconfirmed: bool,
+        triggered: AtomicBool,
+        group: Mutex<Option<i32>>,
+        deadline: Instant,
+    }
+    impl onevcs::PublicationCancellation for CancelOnRead<'_> {
+        fn is_cancelled(&self) -> bool {
+            let Some(pid) = self.gate.reader_pid() else {
+                assert!(
+                    Instant::now() < self.deadline,
+                    "real git-lfs never read its media"
+                );
+                return false;
+            };
+            if !self.triggered.swap(true, Ordering::AcqRel) {
+                let exe =
+                    std::fs::read_link(format!("/proc/{pid}/exe")).expect("reader executable");
+                assert_eq!(
+                    exe.file_name().and_then(|name| name.to_str()),
+                    Some("git-lfs"),
+                    "the real client reached the held media read"
+                );
+                // FUSE identifies the requesting task, which may be a Go worker
+                // thread rather than the thread-group leader ps -p lists.
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .expect("identified reader task");
+                let group: i32 = stat
+                    .rsplit_once(')')
+                    .expect("task command")
+                    .1
+                    .split_whitespace()
+                    .nth(2)
+                    .expect("task process group")
+                    .parse()
+                    .expect("numeric process group");
+                *self.group.lock().expect("group") = Some(group);
+                if !self.unconfirmed {
+                    // Let the kernel finish this interrupted I/O for the
+                    // confirmed-stop case. The other case deliberately keeps
+                    // the actual client blocked until its uncertain stop report.
+                    self.gate.release();
+                }
+            }
+            true
+        }
+    }
+
+    if !require_lfs() {
+        return;
+    }
+    for unconfirmed in [false, true] {
+        let host = Boundary::new(LOCAL);
+        destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
+        let source = host.source(&[]);
+        let model = onevcs_testing::export_fixtures::sample_set(None)
+            .into_iter()
+            .find(|(name, _)| name == "model.3mf")
+            .expect("model");
+        fixture_branch(&host, &source, std::slice::from_ref(&model));
+        let exported = host.export(
+            "fixture-source",
+            "examples",
+            "fixtures",
+            "generic-fixtures",
+            &[],
+        );
+        assert!(
+            exported.status.success(),
+            "{}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let opened = host
+            .world
+            .onevcs()
+            .args([
+                "session",
+                "open",
+                "github.com/sample-owner/openwidget",
+                "--branch",
+                "generic-fixtures",
+                "--caller-merges-base",
+            ])
+            .output()
+            .expect("open consumer");
+        assert!(
+            opened.status.success(),
+            "{}",
+            String::from_utf8_lossy(&opened.stderr)
+        );
+        let token = onevcs::SessionToken(crate::world::token_of(&opened.stdout));
+        std::fs::remove_dir_all(host.origin.join("lfs")).expect("force actual upload");
+        let (_, oid) = lfs_pointer(&model.1);
+        let media = host
+            .public
+            .join(format!(".git/lfs/objects/{}/{}", &oid[..2], &oid[2..4]));
+        let Some(gate) = lfs_gate::HeldRead::mount(&media, &oid, model.1.len() as u64) else {
+            return;
+        };
+        let before = host.origin_refs();
+        crate::honesty::inhabit(&host.world);
+        let cancel = CancelOnRead {
+            gate: &gate,
+            unconfirmed,
+            triggered: AtomicBool::new(false),
+            group: Mutex::new(None),
+            deadline: Instant::now() + Duration::from_secs(60),
+        };
+        let published = onevcs::publish_with_cancellation(
+            &onevcs::Providers::real(),
+            &token,
+            &onevcs::PublishRequest::default(),
+            &cancel,
+        )
+        .expect("cancellation is reported as an outcome");
+        assert!(
+            cancel.triggered.load(Ordering::Acquire),
+            "cancellation followed an actual client read"
+        );
+        let onevcs::PublishOutcome::Failed { kind, reason, .. } = published.outcome else {
+            panic!("actual upload cancellation was not reported: {published:?}");
+        };
+        assert_eq!(kind, onevcs::FailureKind::Cancelled, "{reason}");
+        if unconfirmed {
+            assert!(
+                reason.contains("original branch's Git LFS upload was stopped")
+                    && reason.contains("could not be confirmed")
+                    && reason.contains("may still be running"),
+                "{reason}"
+            );
+        } else {
+            assert!(
+                reason.contains("Git LFS objects were being uploaded"),
+                "{reason}"
+            );
+            assert!(!reason.contains("may still be running"), "{reason}");
+        }
+        assert_eq!(
+            host.origin_refs(),
+            before,
+            "cancelled upload cannot publish a Git ref"
+        );
+        gate.release();
+        let group = cancel
+            .group
+            .lock()
+            .expect("group")
+            .expect("actual upload group");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::process::Command::new("kill")
+            .args(["-0", "--", &format!("-{group}")])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("probe identified upload group")
+            .success()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "actual Git LFS upload group survived cancellation"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        gate.finish();
+    }
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes() {
+    eprintln!(
+        "skipping actual Git LFS upload cancellation: the held-read fixture requires Linux FUSE"
     );
 }
