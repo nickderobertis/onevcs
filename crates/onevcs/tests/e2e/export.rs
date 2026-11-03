@@ -1792,7 +1792,7 @@ fn missing_corrupt_and_wrong_size_source_lfs_objects_refuse() {
             std::fs::write(
                 object,
                 if failure == "corrupt" {
-                    b"different bytes".as_slice()
+                    b"a generic readable MODEL\n".as_slice()
                 } else {
                     bytes.as_slice()
                 },
@@ -1800,6 +1800,7 @@ fn missing_corrupt_and_wrong_size_source_lfs_objects_refuse() {
             .expect("object");
         }
         let before = host.origin_refs();
+        let stores_before = destination_stores(&host);
         let output = host.export(
             "fixture-source",
             "examples",
@@ -1808,6 +1809,7 @@ fn missing_corrupt_and_wrong_size_source_lfs_objects_refuse() {
             &[],
         );
         refused(&host, &output, "generic-fixtures", &before, failure);
+        assert_eq!(destination_stores(&host), stores_before, "{failure}");
         assert!(String::from_utf8_lossy(&output.stderr)
             .contains("an LFS object it points to cannot be read"));
     }
