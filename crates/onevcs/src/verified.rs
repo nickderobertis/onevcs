@@ -188,15 +188,8 @@ pub(crate) fn forget(identity: &str, branch: &str) {
 // crate already validated, and a record that differs in any field is simply not taken.
 /// What a publication's accepted push verified, recorded the moment the merge path
 /// accepted it — before any change request exists, which is what a [`Boundary`] waits
-/// for.
-///
-/// The record a publication of the same branch asks before it pushes: where the branch
-/// is still at the tip this names, against the same base commit and the same
-/// [`inputs`], the push would only run the same verification over the same tree again.
-/// That is the `pushed-unverified` ending — the push landed and a host read after it
-/// did not — which a caller answers by publishing again. Kept under `verified/pushed/`,
-/// one file per identity and branch, best effort like a boundary: a record that could
-/// not be written costs only a second push.
+/// for. One file per identity and branch under `verified/pushed/`, best effort like a
+/// boundary: a record that could not be written costs only a second push.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Pushed {

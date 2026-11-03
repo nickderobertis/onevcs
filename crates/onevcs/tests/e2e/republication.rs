@@ -18,10 +18,12 @@
 
 #![cfg(target_os = "linux")]
 
-// llmlint: ignore-file[e2e_not_mocked] one stand-in, at the one boundary an offline gate
-// cannot cross: the host from `onevcs-testing`, the seam a publication's host reads are
-// driven through. Git, the bare origin, the session's run clone, the push and the stream
-// are all real.
+// llmlint: ignore-file[e2e_not_mocked] two stand-ins, neither in front of the code under
+// test: the host from `onevcs-testing`, the seam a publication's host reads are driven
+// through, which no offline gate can cross otherwise; and a `git` on `PATH` that runs the
+// real git for every call but one armed listing of origin, since nothing else makes a
+// real origin decline to say where a branch is between the fetch and the push. Git, the
+// bare origin, the session's run clone, the push and the stream are all real.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -70,6 +72,7 @@ struct Republishable {
 
 fn republishable(prepare: impl FnOnce(&World)) -> Republishable {
     let world = World::new();
+    refusing_git(&world);
     inhabit(&world);
     std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");
     let (origin, _) = hosted(&world, DIRECT_READY);
@@ -129,6 +132,45 @@ fn republishable(prepare: impl FnOnce(&World)) -> Republishable {
         host,
         first_stderr,
     }
+}
+
+/// The file that, while it exists, has the `git` [`refusing_git`] installs refuse the
+/// next listing of the branch on origin — and remove the file as it does.
+const REFUSE_A_LISTING: &str = "refuse-a-listing";
+
+/// Put a `git` ahead of the real one on this process's `PATH`, before anything here
+/// spawns one — the crate resolves its git once per process. It runs the real git for
+/// everything but a listing of the branch on origin while [`REFUSE_A_LISTING`] exists.
+fn refusing_git(world: &World) {
+    let real = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("a shell")
+            .stdout,
+    )
+    .expect("git's path is text");
+    let directory = world.path("refusing-git");
+    std::fs::create_dir_all(&directory).expect("a directory for the refusing git");
+    let shim = directory.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\n\
+             case \" $* \" in\n\
+             \x20 *' ls-remote '*refs/heads/feature/republished*)\n\
+             \x20   if rm '{armed}' 2>/dev/null; then exit 128; fi;;\n\
+             esac\n\
+             exec '{real}' \"$@\"\n",
+            armed = world.path(REFUSE_A_LISTING).display(),
+            real = real.trim(),
+        ),
+    )
+    .expect("the refusing git is written");
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the refusing git is executable");
+    let path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{path}", directory.display()));
 }
 
 /// Install the `pre-push` gate, `label` naming its content, which notes every run.
@@ -228,7 +270,6 @@ fn merged(published: &Publication, world: &World, session: &Session) {
     );
 }
 
-/// The words a publication that does not push again says so in.
 const NOT_PUSHED_AGAIN: &str = "it is not pushed again";
 
 #[test]
@@ -396,6 +437,20 @@ fn a_branch_origin_has_at_another_commit_is_pushed_again() {
                 &["update-ref", "refs/heads/feature/republished", &base],
             );
         },
+    );
+}
+
+#[test]
+fn a_branch_origin_will_not_say_where_it_is_is_pushed_again() {
+    let republishable = pushed_again_after(
+        |_| {},
+        |world, _, _| {
+            std::fs::write(world.path(REFUSE_A_LISTING), "").expect("the refusal armed");
+        },
+    );
+    assert!(
+        !republishable.world.path(REFUSE_A_LISTING).exists(),
+        "origin was asked where the branch is, and refused"
     );
 }
 
