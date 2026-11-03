@@ -284,6 +284,12 @@ mod registry;
 #[cfg(target_os = "linux")]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod repeated_reads;
+// Linux only, like `gate_runs`: a session published again after its push landed and its
+// host reads did not, in-process because the host from `onevcs-testing` is supplied by a
+// caller embedding the crate. Its own header carries the reason in full.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod republication;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod required_contexts;

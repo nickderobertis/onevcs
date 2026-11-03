@@ -2175,7 +2175,21 @@ fn publish_as_change(
             context.branch
         )));
     }
-    push_the_branch(context, stream, environment, replacing)?;
+    // A publication of the same session again after the last one's push landed and
+    // its host reads did not — the `pushed-unverified` ending, which a caller answers
+    // by publishing again — finds nothing to push: the merge path already ruled on
+    // this head, and origin still has it. Pushing again ran the `pre-push` gate a
+    // second time and recorded a second `push` for one change.
+    if replacing.is_none() && already_pushed(context) {
+        eprintln!(
+            "onevcs: {branch:?} is on origin at the head its last accepted push verified, \
+             against the same {base:?} and the same verification inputs; it is not pushed again",
+            branch = context.branch,
+            base = context.target.base(),
+        );
+    } else {
+        push_the_branch(context, stream, environment, replacing)?;
+    }
 
     // Everything past here reads the *host*, and the push above has already reached
     // the remote: from this point a failure is a merge path this build could not
@@ -2214,6 +2228,46 @@ fn publish_as_change(
     .map_err(|unread| unverified(context, pushed_at.as_deref(), unread))
 }
 
+/// What verifying the branch at `head` would read now: the base commit it is compared
+/// against and every other input [`crate::verified::inputs`] names. `None` where any of
+/// it cannot be read, which nothing may be taken as matching.
+fn verification_at(context: &Context<'_>, head: &str) -> Option<crate::verified::Pushed> {
+    let base = context.target.base();
+    let base_commit = git::tip(&context.repo, &vcs::base_ref(&context.repo, base))?;
+    let inputs = git::configured_hooks(&context.worktree)
+        .and_then(|hooks| crate::verified::inputs(hooks.as_deref(), base, &context.provenance))
+        .ok()?;
+    Some(crate::verified::Pushed {
+        identity: context.resolution.key.clone(),
+        branch: context.branch.to_string(),
+        tip: Sha(head.to_owned()),
+        base: base.to_string(),
+        base_commit: Sha(base_commit),
+        inputs,
+    })
+}
+
+/// Whether the push this publication is about to make would only repeat the last one
+/// the merge path accepted for this branch: the branch is at the tip that push
+/// recorded, verification would read the same base commit and the same inputs, and
+/// origin still has the branch at that tip.
+///
+/// Every way of not knowing answers `false`, which pushes as every publication always
+/// has: no record, a record that differs in anything, inputs that cannot be read, an
+/// origin that will not say where the branch is.
+fn already_pushed(context: &Context<'_>) -> bool {
+    let Some(head) = git::tip(&context.worktree, &format!("refs/heads/{}", context.branch)) else {
+        return false;
+    };
+    if !verification_at(context, &head).is_some_and(|now| now.was_recorded()) {
+        return false;
+    }
+    matches!(
+        git::remote_tip(&context.worktree, "origin", &context.branch, &[]),
+        Ok(git::RemoteTip::At(tip)) if tip.as_str() == head
+    )
+}
+
 /// Run the publishing push of the branch, the `pre-push` hook included, and record it —
 /// refusing a push the merge path did not accept, and naming a declined lease as the
 /// branch having moved on the host.
@@ -2248,6 +2302,14 @@ fn push_the_branch(
         git::tip(&context.worktree, &format!("refs/heads/{}", context.branch)).as_deref(),
     )?;
     record_pre_push(stream, hooked, started, ended, &pushed);
+    if pushed.accepted() {
+        // What this push verified, so a publication of the same branch after a host read
+        // that failed does not run the same verification over the same tree again.
+        let head = git::tip(&context.worktree, &format!("refs/heads/{}", context.branch));
+        if let Some(verified) = head.and_then(|head| verification_at(context, &head)) {
+            verified.record();
+        }
+    }
     if !pushed.accepted() {
         // Which refusal this is depends on what git declined, and that is decided
         // from what git and the host *report* rather than from the sentence either
