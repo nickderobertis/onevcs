@@ -1702,3 +1702,63 @@ fn an_unavailable_publication_persists_its_evidence_with_every_locator_redacted(
         assert_unspelled(&field, "a persisted locator");
     }
 }
+
+#[test]
+fn each_registered_checkout_contributes_the_declaration_its_own_head_commits() {
+    let host = Boundary::new(LOCAL);
+    host.world.host_visibility(SLUG, "private");
+    let origin = host.world.bare_origin("quietharbor");
+    let first = host.world.clone_of(&origin, "work/quietharbor");
+    commit(&host, &first, &[("notes.md", "one\n")]);
+    host.world
+        .git(&first, &["push", "-q", "origin", "HEAD:main"]);
+    register(&host.world, &first, SLUG);
+    let second = host.world.clone_of(&origin, "elsewhere/quietharbor-copy");
+    register(&host.world, &second, SLUG);
+    let declare = |with: &str| {
+        format!("schema_version = 2\n[[replacements]]\nterm = \"quietharbor\"\nwith = \"{with}\"\n")
+    };
+    commit(
+        &host,
+        &first,
+        &[("private-terms.toml", &declare("a service"))],
+    );
+    let levels = Levels {
+        host,
+        checkout: first,
+    };
+    // The second checkout's commit declares nothing for it, so the two disagree.
+    assert_eq!(
+        levels.text("from quietharbor", json!([])).verdict(),
+        "refuse"
+    );
+    // Where the second's own commit declares the same, they agree…
+    commit(
+        &levels.host,
+        &second,
+        &[("private-terms.toml", &declare("a service"))],
+    );
+    assert_eq!(
+        levels.text("from quietharbor", json!([])).text(),
+        ["from a service"]
+    );
+    // …where it declares another replacement, the term is rejected…
+    commit(
+        &levels.host,
+        &second,
+        &[("private-terms.toml", &declare("another"))],
+    );
+    assert_eq!(
+        levels.text("from quietharbor", json!([])).verdict(),
+        "refuse"
+    );
+    // …and where it commits a refused declaration, nothing passes.
+    commit(
+        &levels.host,
+        &second,
+        &[("private-terms.toml", "schema_version = 2\nterms = [\n")],
+    );
+    let expected = json!({"verdict": "unavailable", "reason": "declarations"});
+    assert_eq!(levels.text("fine", json!([])).answer, expected);
+    assert_eq!(levels.check(&json!({"text": ["fine"]})).answer, expected);
+}

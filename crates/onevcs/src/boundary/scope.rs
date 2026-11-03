@@ -375,12 +375,18 @@ pub fn derive_with(
         let rules = derive::derive(&term_source, &public)
             .map_err(|detail| Failed::new(Unavailability::Declarations, Some(key), detail))?;
         // Its terms and exceptions are in the derived rules already; what the level still
-        // adds is its replacements and phrases.
-        let repository = term_source
+        // adds is its replacements and phrases — each checkout's own, read from the
+        // commit its `HEAD` names, the first's already read with its manifests.
+        let primary_level = term_source
             .declaration
             .map(|declaration| repository_level(primary, declaration));
         for checkout in checkouts_of(&registry, key) {
-            let mut levels: Vec<Level> = repository.iter().cloned().collect();
+            let repository = if checkout == primary {
+                primary_level.clone()
+            } else {
+                committed_level(key, checkout)?
+            };
+            let mut levels: Vec<Level> = repository.into_iter().collect();
             levels.extend(reader.ancestors(checkout)?);
             levels.extend(fallback.iter().cloned());
             chains.push(Chain {
@@ -391,12 +397,9 @@ pub fn derive_with(
         }
     }
     if let Some(key) = published.filter(|key| !selected.iter().any(|s| s == key)) {
-        if let Some(primary) = visibility::checkout_of(&registry, key) {
-            let repository = manifests::committed_declaration_at(primary)
-                .map_err(|failure| declarations(key, failure))?
-                .map(|declaration| repository_level(primary, declaration));
+        if visibility::checkout_of(&registry, key).is_some() {
             for checkout in checkouts_of(&registry, key) {
-                let mut levels: Vec<Level> = repository.iter().cloned().collect();
+                let mut levels: Vec<Level> = committed_level(key, checkout)?.into_iter().collect();
                 levels.extend(reader.ancestors(checkout)?);
                 levels.extend(fallback.iter().cloned());
                 chains.push(Chain {
@@ -583,6 +586,13 @@ fn repository_level(checkout: &Path, declaration: Declaration) -> Level {
             ..declaration
         },
     }
+}
+
+/// The repository level `checkout` of `key` commits, where it commits a declaration.
+fn committed_level(key: &str, checkout: &Path) -> Result<Option<Level>, Failed> {
+    Ok(manifests::committed_declaration_at(checkout)
+        .map_err(|failure| declarations(key, failure))?
+        .map(|declaration| repository_level(checkout, declaration)))
 }
 
 /// Every registered checkout of `key`, in path order — never a session's worktree,
