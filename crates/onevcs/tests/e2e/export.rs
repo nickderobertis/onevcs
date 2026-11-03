@@ -3597,3 +3597,218 @@ fn actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processe
         "skipping actual Git LFS upload cancellation: the held-read fixture requires Linux FUSE"
     );
 }
+
+#[test]
+fn publication_uploads_every_distinct_lfs_object_across_multiple_batches() {
+    if !require_lfs() {
+        return;
+    }
+    let host = Boundary::new(LOCAL);
+    destination_lfs(&host, "*.dat filter=lfs diff=lfs merge=lfs -text\n");
+    let source = host.source(&[]);
+    let files: Vec<_> = (0..130)
+        .map(|index| {
+            (
+                format!("model-{index:03}.dat"),
+                onevcs_testing::export_fixtures::layered(
+                    &format!("generic printable model {index:03}\n"),
+                    onevcs_testing::export_fixtures::Encoding::Utf8,
+                    &[],
+                ),
+            )
+        })
+        .collect();
+    let distinct: std::collections::BTreeSet<_> = files
+        .iter()
+        .map(|(_, bytes)| lfs_pointer(bytes).1)
+        .collect();
+    assert_eq!(distinct.len(), 130, "every media object is distinct");
+    fixture_branch(&host, &source, &files);
+    let exported = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    std::fs::remove_dir_all(host.origin.join("lfs")).expect("clear export's earlier uploads");
+    let published = host
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "generic-fixtures",
+            "--repo",
+            host.public.to_str().expect("path"),
+        ])
+        .output()
+        .expect("publish more than one upload batch");
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    for (name, bytes) in files {
+        let (pointer, oid) = lfs_pointer(&bytes);
+        assert_eq!(
+            host.world
+                .git_raw(&host.origin, &["show", &format!("main:fixtures/{name}")])
+                .stdout,
+            pointer.as_bytes(),
+            "{name}"
+        );
+        assert_eq!(
+            std::fs::read(host.origin.join(format!(
+                "lfs/objects/{}/{}/{oid}",
+                &oid[..2],
+                &oid[2..4]
+            )))
+            .unwrap_or_else(|error| panic!("every batch must upload {name} ({oid}): {error}")),
+            bytes,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn malformed_lfs_pointer_lookalikes_remain_raw_through_export_and_publication() {
+    let host = Boundary::new(LOCAL);
+    host.world.git(
+        &host.public,
+        &[
+            "config",
+            "lfs.url",
+            &format!("file://{}", host.origin.display()),
+        ],
+    );
+    let source = host.source(&[]);
+    let source_endpoint = host.world.bare_origin("source-lfs-endpoint");
+    host.world.git(
+        &source.checkout,
+        &[
+            "config",
+            "lfs.url",
+            &format!("file://{}", source_endpoint.display()),
+        ],
+    );
+    let oid = "a".repeat(64);
+    let pointer = |oid: &str, size: &str| {
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
+            .into_bytes()
+    };
+    let mut files = vec![
+        ("oid-nonhex.txt".into(), pointer(&"g".repeat(64), "1")),
+        ("oid-uppercase.txt".into(), pointer(&"A".repeat(64), "1")),
+        ("oid-short.txt".into(), pointer(&"a".repeat(63), "1")),
+        ("oid-long.txt".into(), pointer(&"a".repeat(65), "1")),
+        ("size-negative.txt".into(), pointer(&oid, "-1")),
+        ("size-invalid.txt".into(), pointer(&oid, "one")),
+        (
+            "size-overflow.txt".into(),
+            pointer(&oid, "18446744073709551616"),
+        ),
+        ("size-empty.txt".into(), pointer(&oid, "")),
+    ];
+    let mut extra = pointer(&oid, "1");
+    extra.extend_from_slice(b"extra line\n");
+    files.push(("extra-line.txt".into(), extra));
+    let mut oversized = pointer(&oid, "1");
+    oversized.extend_from_slice("padding\n".repeat(200).as_bytes());
+    assert!(oversized.len() > 1024);
+    files.push(("oversized.txt".into(), oversized));
+    fixture_branch(&host, &source, &files);
+    let exported = host.export(
+        "fixture-source",
+        "examples",
+        "fixtures",
+        "generic-fixtures",
+        &[],
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    assert_fixture_blobs(&host, &files);
+    let published = host
+        .world
+        .onevcs()
+        .args([
+            "publish-branch",
+            "generic-fixtures",
+            "--repo",
+            host.public.to_str().expect("path"),
+        ])
+        .output()
+        .expect("publish ordinary pointer-like text");
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    for (name, bytes) in files {
+        assert_eq!(
+            host.world
+                .git_raw(&host.origin, &["show", &format!("main:fixtures/{name}")])
+                .stdout,
+            bytes,
+            "{name}"
+        );
+    }
+    for store in [
+        host.public.join(".git/lfs/objects"),
+        host.origin.join("lfs/objects"),
+        source.checkout.join(".git/lfs/objects"),
+        source_endpoint.join("lfs/objects"),
+    ] {
+        assert!(
+            !store.exists(),
+            "ordinary text needs no LFS object store: {}",
+            store.display()
+        );
+    }
+}
+
+#[test]
+fn blocked_private_export_evidence_refuses_without_destination_writes_and_recovers() {
+    let host = Boundary::new(LOCAL);
+    let source = host.source(&[]);
+    let files: Vec<_> = onevcs_testing::export_fixtures::sample_set(None)
+        .into_iter()
+        .filter(|(name, _)| name == "frame.jpg")
+        .collect();
+    fixture_branch(&host, &source, &files);
+    crate::honesty::inhabit(&host.world);
+    let blocked = host.world.home().join("boundary/export-evidence");
+    std::fs::create_dir_all(blocked.parent().expect("evidence parent"))
+        .expect("private boundary directory");
+    std::fs::write(&blocked, "an ordinary file blocks the evidence directory\n")
+        .expect("blocked evidence directory");
+    let before = destination_stores(&host);
+    let request = library_request(vec!["*.jpg".into()]);
+    let error = onevcs::export(&onevcs::Providers::real(), &request)
+        .expect_err("export must preserve private acceptance evidence before writing");
+    let reason = error.to_string();
+    assert!(
+        reason.contains("the export is refused: its private evidence could not be written."),
+        "{reason}"
+    );
+    assert!(reason.contains("Nothing was written"), "{reason}");
+    assert_neutral(&reason);
+    assert_eq!(destination_stores(&host), before);
+    assert!(!host.has_branch("generic-fixtures"));
+
+    std::fs::remove_file(&blocked).expect("repair evidence directory path");
+    onevcs::export(&onevcs::Providers::real(), &request)
+        .expect("the same export succeeds after repairing its private evidence path");
+    assert_fixture_blobs(&host, &files);
+    assert!(std::fs::read_dir(&blocked)
+        .expect("recovered private evidence directory")
+        .next()
+        .is_some());
+}
