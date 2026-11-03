@@ -1224,9 +1224,9 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "privateterms"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c9183ff29f16bf22e83ba04e31805e98d439a0cb551629eb9d350fe43441f4a"
+checksum = "3a04734f7f8ba50c628bb3aa62ce25da3ceec1958c1b724f301de4f6f5054ed7"
 dependencies = [
  "aho-corasick",
  "icu_normalizer",
