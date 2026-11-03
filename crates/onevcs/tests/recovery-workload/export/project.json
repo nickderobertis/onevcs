@@ -1,0 +1,85 @@
+{
+  "name": "onevcs-export-workload",
+  "$schema": "../../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": [
+    "scope:export-workload",
+    "lang:rust"
+  ],
+  "targets": {
+    "test": {
+      "command": "just export-journeys",
+      "parallelism": false,
+      "inputs": [
+        "sharedGlobals",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/rust-toolchain.toml",
+        "{workspaceRoot}/justfile",
+        "{workspaceRoot}/package.json",
+        "{workspaceRoot}/package-lock.json",
+        "{workspaceRoot}/nx.json",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/boundary.rs",
+        "{workspaceRoot}/crates/onevcs-testing/src/lib.rs",
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/export_fixtures.rs",
+        "{workspaceRoot}/scripts/recoverable-build.mjs",
+        "{workspaceRoot}/scripts/export-build-inputs.json",
+        "{workspaceRoot}/crates/onevcs/budgets.yaml",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs/tests/recovery-workload/export/**/*",
+        "{workspaceRoot}/scripts/export-*",
+        "{workspaceRoot}/crates/onevcs/scripts/export-*"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/budget-records/export.json",
+        "{workspaceRoot}/target/budget-records/export-source-lfs.json",
+        "{workspaceRoot}/target/budget-records/export-invocation.json",
+        "{workspaceRoot}/target/budget-records/export-onevcs",
+        "{workspaceRoot}/target/budget-records/export-workload"
+      ]
+    },
+    "test-quick": {
+      "command": "just export-journeys",
+      "parallelism": false,
+      "inputs": [
+        "sharedGlobals",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/rust-toolchain.toml",
+        "{workspaceRoot}/justfile",
+        "{workspaceRoot}/package.json",
+        "{workspaceRoot}/package-lock.json",
+        "{workspaceRoot}/nx.json",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/boundary.rs",
+        "{workspaceRoot}/crates/onevcs-testing/src/lib.rs",
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/crates/onevcs-testing/src/export_fixtures.rs",
+        "{workspaceRoot}/scripts/recoverable-build.mjs",
+        "{workspaceRoot}/scripts/export-build-inputs.json",
+        "{workspaceRoot}/crates/onevcs/budgets.yaml",
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{workspaceRoot}/crates/onevcs/tests/recovery-workload/export/**/*",
+        "{workspaceRoot}/scripts/export-*",
+        "{workspaceRoot}/crates/onevcs/scripts/export-*"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/budget-records/export.json",
+        "{workspaceRoot}/target/budget-records/export-source-lfs.json",
+        "{workspaceRoot}/target/budget-records/export-invocation.json",
+        "{workspaceRoot}/target/budget-records/export-onevcs",
+        "{workspaceRoot}/target/budget-records/export-workload"
+      ]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test"
+      ]
+    }
+  }
+}

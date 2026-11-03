@@ -109,7 +109,7 @@ not tell you:
   `--workspace` commands twice.
 - **The tests are split into Nx projects by what they read, not by crate**:
   `onevcs` (unit), `onevcs-e2e`, `onevcs-export-bounds` (the GiB decoding journeys), `onevcs-scripts-e2e`, `onevcs-contract`,
-  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` and the cached
+  `onevcs-recovery`, `onevcs-export-workload` (full-size export telemetry) and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` and the cached
   `onevcs-lint-llm-diff` journeys outside `check`. A script or workflow change reaches the scripts and contract tiers, not
   the crate's unit tier. `workspace` (the root `project.json`) holds the judged
   tier below and the uncached `msrv` and `deps-check`, outside `check` too.

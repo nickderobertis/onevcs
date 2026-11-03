@@ -305,7 +305,7 @@ fn store_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
 }
 
 fn fingerprint(root: &Path) -> String {
-    let output = Command::new("node").current_dir(root).args(["--input-type=module", "-e", "import {sourceFingerprint} from './scripts/recoverable-build.mjs'; process.stdout.write(sourceFingerprint());"]).output().unwrap();
+    let output = Command::new("node").current_dir(root).args(["--input-type=module", "-e", "import {sourceFingerprint} from './scripts/recoverable-build.mjs'; process.stdout.write(sourceFingerprint(undefined, 'scripts/export-build-inputs.json'));"]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -413,7 +413,7 @@ fn progress(path: &Path, trace_path: &Path, files: &[(String, Vec<u8>)]) -> Valu
 
 fn workload_lock() -> std::fs::File {
     use fs4::fs_std::FileExt;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/recovery-workload.lock");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/export-workload.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -523,19 +523,19 @@ fn export_scenario(downloads: bool) {
     let producer = std::env::current_exe().unwrap();
     let producer_hash = digest(&std::fs::read(&producer).unwrap());
     std::fs::copy(&producer, directory.join("export-workload")).unwrap();
-    let binary = std::env::var_os("ONEVCS_RECOVERY_BINARY")
+    let binary = std::env::var_os("ONEVCS_EXPORT_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("target/release/onevcs"));
     let binary_hash = digest(&std::fs::read(&binary).unwrap());
     static LOCAL_RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let run_id = std::env::var("ONEVCS_RECOVERY_INVOCATION").unwrap_or_else(|_| {
+    let run_id = std::env::var("ONEVCS_EXPORT_INVOCATION").unwrap_or_else(|_| {
         LOCAL_RUN
             .get_or_init(|| {
                 digest(format!("{} {:?}", std::process::id(), Instant::now()).as_bytes())
             })
             .clone()
     });
-    let build = json!({"run_id":run_id,"binary":"onevcs","binary_sha256":binary_hash,"source_sha256":source_hash});
+    let build = json!({"run_id":run_id,"binary":"export-onevcs","binary_sha256":binary_hash,"source_sha256":source_hash});
     let load1: f64 = std::fs::read_to_string("/proc/loadavg")
         .unwrap_or_default()
         .split_whitespace()
@@ -550,12 +550,12 @@ fn export_scenario(downloads: bool) {
             &directory.join(record_name),
             &serde_json::to_vec_pretty(record).unwrap(),
         );
-        if std::env::var_os("ONEVCS_RECOVERY_INVOCATION").is_none() {
-            std::fs::copy(&binary, directory.join("onevcs")).unwrap();
+        {
+            std::fs::copy(&binary, directory.join("export-onevcs")).unwrap();
             let mut invocation = build.clone();
             invocation["state"] = json!("complete");
             write(
-                &directory.join("recoverable-invocation.json"),
+                &directory.join("export-invocation.json"),
                 &serde_json::to_vec(&invocation).unwrap(),
             );
         }
@@ -581,7 +581,7 @@ fn export_scenario(downloads: bool) {
         } else {
             peak_rss_kib
         };
-        let record = json!({"version":3,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export","covered":covered,"wall_us":wall_us,"phases":phases,"peak_rss_kib":peak_rss_kib,"load1":load1});
+        let record = json!({"version":4,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export","covered":covered,"wall_us":wall_us,"phases":phases,"peak_rss_kib":peak_rss_kib,"load1":load1});
 
         finish(&record);
         return;
@@ -678,7 +678,7 @@ fn export_scenario(downloads: bool) {
         .filter(|(path, _)| tracked(path))
         .map(|(_, bytes)| (digest(bytes), bytes.len() as u64))
         .collect();
-    let download = json!({"version":3,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export-source-lfs","covered":covered,"attempts":[first,second],"object_sizes":object_sizes,"load1":load1});
+    let download = json!({"version":4,"build":build,"producer_sha256":producer_hash,"scenario":"realistic-export-source-lfs","covered":covered,"attempts":[first,second],"object_sizes":object_sizes,"load1":load1});
     finish(&download);
     eprintln!(
         "source LFS cold {} bytes; retry {} bytes; load1 {load1}",

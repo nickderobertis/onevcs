@@ -63,7 +63,13 @@
         "test",
         "doc",
         "coverage",
-        "budgets"
+        "budgets",
+        {
+          "target": "test",
+          "projects": [
+            "onevcs-export-workload"
+          ]
+        }
       ]
     },
     "budgets": {
@@ -72,7 +78,8 @@
         {
           "target": "test",
           "projects": [
-            "onevcs-recovery"
+            "onevcs-recovery",
+            "onevcs-export-workload"
           ]
         }
       ],
@@ -97,7 +104,8 @@
         "{workspaceRoot}/Cargo.lock",
         "{workspaceRoot}/Cargo.toml",
         "{workspaceRoot}/crates/onevcs/Cargo.toml",
-        "{workspaceRoot}/.cargo/config.toml"
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/scripts/export-*"
       ]
     }
   }

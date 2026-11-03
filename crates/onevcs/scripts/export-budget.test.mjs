@@ -12,12 +12,12 @@ import { sourceFingerprint, inputFiles, repositoryRoot } from "../../../scripts/
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 function fixture(kind) {
   const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "export-reader-"));
-  writeFileSync(join(root, "onevcs"), "CLI");
+  writeFileSync(join(root, "export-onevcs"), "CLI");
   writeFileSync(join(root, "export-workload"), "optimized producer");
   const schema = JSON.parse(readFileSync(new URL(`./export-${kind}-budget.schema.json`, import.meta.url)));
-  const build = { run_id: sha("invocation"), binary: "onevcs", binary_sha256: sha("CLI"), source_sha256: sourceFingerprint() };
+  const build = { run_id: sha("invocation"), binary: "export-onevcs", binary_sha256: sha("CLI"), source_sha256: sourceFingerprint(undefined, "scripts/export-build-inputs.json") };
   const covered = schema["x-workload"];
-  const record = { version: 3, build, producer_sha256: sha("optimized producer"), covered, load1: 1,
+  const record = { version: 4, build, producer_sha256: sha("optimized producer"), covered, load1: 1,
     scenario: kind === "wall-time" ? "realistic-export" : "realistic-export-source-lfs" };
   if (kind === "wall-time") {
     record.wall_us = 1400000;
@@ -33,7 +33,7 @@ function fixture(kind) {
   const name = kind === "wall-time" ? "export.json" : "export-source-lfs.json";
   const save = () => {
     writeFileSync(join(root, name), JSON.stringify(record));
-    writeFileSync(join(root, "recoverable-invocation.json"), JSON.stringify(invocation));
+    writeFileSync(join(root, "export-invocation.json"), JSON.stringify(invocation));
   };
   save();
   return {root, record, invocation, save, name};
@@ -49,7 +49,7 @@ for (const kind of ["wall-time", "source-lfs-download"]) {
     "foreign invocation": f => { f.invocation.run_id = sha("foreign"); f.save(); },
     "stale source": f => { f.record.build.source_sha256 = sha("old"); f.invocation.source_sha256 = sha("old"); f.save(); },
     "stale producer": f => writeFileSync(join(f.root, "export-workload"), "new producer"),
-    "stale CLI": f => writeFileSync(join(f.root, "onevcs"), "new CLI"),
+    "stale CLI": f => writeFileSync(join(f.root, "export-onevcs"), "new CLI"),
     "missing record": f => rmSync(join(f.root, f.name)),
     "incomplete record": f => { delete f.record.covered; f.save(); },
     "shrunk workload": f => { f.record.covered.paths--; f.save(); },
@@ -66,11 +66,11 @@ for (const kind of ["wall-time", "source-lfs-download"]) {
     try {
       mkdirSync(join(f.root, "target/budget-records"), {recursive:true});
       symlinkSync(fileURLToPath(new URL("../../../node_modules", import.meta.url)), join(f.root, "node_modules"), "dir");
-      for (const path of inputFiles()) {
+      for (const path of inputFiles(undefined, "scripts/export-build-inputs.json")) {
         mkdirSync(join(f.root, path, ".."), {recursive:true});
         copyFileSync(join(repositoryRoot, path), join(f.root, path));
       }
-      for (const name of ["onevcs", "export-workload", f.name, "recoverable-invocation.json"]) copyFileSync(join(f.root, name), join(f.root, "target/budget-records", name));
+      for (const name of ["export-onevcs", "export-workload", f.name, "export-invocation.json"]) copyFileSync(join(f.root, name), join(f.root, "target/budget-records", name));
       const script = join(f.root, `crates/onevcs/scripts/export-${kind}-budget.mjs`);
       const result = join(f.root, "result.json");
       const env = {PATH:"", ONEBUDGETSPEC_RESULT:result};
@@ -82,7 +82,7 @@ for (const kind of ["wall-time", "source-lfs-download"]) {
       rmSync(join(f.root, "target/budget-records", f.name));
       const refused = spawnSync(process.execPath, [script], {encoding:"utf8", env});
       assert.equal(refused.status, 1);
-      assert.match(refused.stderr, /just recoverable-journeys/);
+      assert.match(refused.stderr, /just export-journeys/);
     } finally { rmSync(f.root, {recursive:true, force:true}); }
   });
 }
@@ -158,4 +158,68 @@ for (const kind of ["wall-time", "source-lfs-download"]) test(`${kind}: actual d
       } finally { rmSync(f.root, {recursive:true, force:true}); }
     }
   }
+});
+
+test("export and recovery fingerprints own disjoint journey and reader inputs", () => {
+  const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "export-inputs-"));
+  try {
+    const manifests = ["scripts/recoverable-build-inputs.json", "scripts/export-build-inputs.json"];
+    const paths = new Set(manifests.flatMap(manifest => inputFiles(repositoryRoot, manifest)));
+    for (const path of paths) {
+      mkdirSync(join(root, path, ".."), {recursive:true});
+      copyFileSync(join(repositoryRoot, path), join(root, path));
+    }
+    const hashes = () => manifests.map(manifest => sourceFingerprint(root, manifest));
+    const before = hashes();
+    const recovery = "crates/onevcs/tests/recovery-workload/main.rs";
+    writeFileSync(join(root, recovery), readFileSync(join(root, recovery), "utf8") + "\n// recovery-only change\n");
+    const afterRecovery = hashes();
+    assert.notEqual(afterRecovery[0], before[0]);
+    assert.equal(afterRecovery[1], before[1]);
+    const exporter = "crates/onevcs/tests/recovery-workload/export/main.rs";
+    writeFileSync(join(root, exporter), readFileSync(join(root, exporter), "utf8") + "\n// export-only change\n");
+    const afterExport = hashes();
+    assert.equal(afterExport[0], afterRecovery[0]);
+    assert.notEqual(afterExport[1], afterRecovery[1]);
+    const reader = "crates/onevcs/scripts/export-budget-record.mjs";
+    writeFileSync(join(root, reader), readFileSync(join(root, reader), "utf8") + "\n// export reader change\n");
+    const afterReader = hashes();
+    assert.equal(afterReader[0], afterExport[0]);
+    assert.notEqual(afterReader[1], afterExport[1]);
+  } finally { rmSync(root, {recursive:true, force:true}); }
+});
+
+test("failed export invocation retracts only export evidence", () => {
+  const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "export-invocation-"));
+  try {
+    mkdirSync(join(root, "scripts"));
+    mkdirSync(join(root, "target/budget-records"), {recursive:true});
+    copyFileSync(new URL("../../../scripts/export-invocation.mjs", import.meta.url), join(root,"scripts/export-invocation.mjs"));
+    for (const name of ["export.json", "export-source-lfs.json", "recoverable.json", "recoverable-invocation.json"]) writeFileSync(join(root,"target/budget-records",name), name);
+    const result = spawnSync(process.execPath, [join(root,"scripts/export-invocation.mjs"), process.execPath, "-e", "process.exit(1)"], {encoding:"utf8"});
+    assert.equal(result.status, 1);
+    for (const name of ["export.json", "export-source-lfs.json"]) assert.throws(() => readFileSync(join(root,"target/budget-records",name)), /ENOENT/);
+    for (const name of ["recoverable.json", "recoverable-invocation.json"]) assert.equal(readFileSync(join(root,"target/budget-records",name),"utf8"), name);
+    assert.equal(JSON.parse(readFileSync(join(root,"target/budget-records/export-invocation.json"))).state,"failed");
+  } finally { rmSync(root, {recursive:true, force:true}); }
+});
+
+test("export and recovery cache restores cannot overwrite one another", () => {
+  const project = path => JSON.parse(readFileSync(new URL(path, import.meta.url)));
+  const recovery = project("../tests/recovery-workload/project.json");
+  const exporter = project("../tests/recovery-workload/export/project.json");
+  for (const target of ["test", "test-quick"]) {
+    for (const left of recovery.targets[target].outputs) for (const right of exporter.targets[target].outputs) {
+      assert.ok(left !== right && !left.startsWith(`${right}/`) && !right.startsWith(`${left}/`), `${left} overlaps ${right}`);
+    }
+  }
+});
+
+for (const excludes of ["not-a-list", ["../escape"], ["/absolute"], ["a\\b"], [""]]) test(`manifest refuses malformed exclusions ${JSON.stringify(excludes)}`, () => {
+  const root = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "export-manifest-"));
+  try {
+    mkdirSync(join(root,"scripts"));
+    writeFileSync(join(root,"scripts/export-build-inputs.json"), JSON.stringify({version:2,files:[],directories:[],prefixes:[],excludes}));
+    assert.throws(() => inputFiles(root,"scripts/export-build-inputs.json"), /excludes/);
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });

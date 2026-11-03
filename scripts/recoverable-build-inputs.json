@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "files": [
     "Cargo.toml",
     "Cargo.lock",
@@ -14,9 +14,7 @@
     "crates/onevcs-testing/src/boundary.rs",
     "crates/onevcs-testing/src/lib.rs",
     "crates/onevcs/tests/fixtures/gh",
-    ".cargo/config.toml",
-    "crates/onevcs-testing/src/export_fixtures.rs",
-    "crates/onevcs/budgets.yaml"
+    ".cargo/config.toml"
   ],
   "directories": [
     "crates/onevcs/src",
@@ -43,10 +41,9 @@
     {
       "directory": "crates/onevcs/scripts",
       "prefix": "boundary-sanitize-budget"
-    },
-    {
-      "directory": "crates/onevcs/scripts",
-      "prefix": "export-"
     }
+  ],
+  "excludes": [
+    "crates/onevcs/tests/recovery-workload/export"
   ]
 }

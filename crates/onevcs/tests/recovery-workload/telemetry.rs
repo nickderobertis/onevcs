@@ -105,6 +105,8 @@ struct InputManifest {
     files: Vec<String>,
     directories: Vec<String>,
     prefixes: Vec<InputPrefix>,
+    #[serde(default)]
+    excludes: Vec<String>,
 }
 
 /// Parse the build-input manifest, refusing any entry that is not a repository-relative
@@ -125,7 +127,9 @@ fn read_manifest(raw: &[u8]) -> Result<InputManifest, String> {
     }
     let manifest: InputManifest = serde_json::from_slice(raw)
         .map_err(|error| format!("build-input manifest does not parse: {error}"))?;
-    if manifest.version != 1 {
+    if !matches!(manifest.version, 1 | 2)
+        || (manifest.version == 1 && !manifest.excludes.is_empty())
+    {
         return Err("unsupported build-input manifest version".into());
     }
     for path in &manifest.files {
@@ -133,6 +137,9 @@ fn read_manifest(raw: &[u8]) -> Result<InputManifest, String> {
     }
     for path in &manifest.directories {
         relative("directories", path)?;
+    }
+    for path in &manifest.excludes {
+        relative("excludes", path)?;
     }
     for entry in &manifest.prefixes {
         relative("prefixes", &entry.directory)?;
@@ -178,11 +185,72 @@ fn build_input_manifest_refuses_paths_outside_the_repository() {
         let error = refused.expect_err(message);
         assert!(error.contains(message), "{error}");
     }
+    for path in ["", "../outside", "/etc", "a//b", "a/./b", "a\\b"] {
+        let invalid = serde_json::json!({"version":2,"files":[],"directories":[],"prefixes":[],"excludes":[path]});
+        let error = read_manifest(&serde_json::to_vec(&invalid).unwrap())
+            .expect_err("exclusions are validated before filesystem traversal");
+        assert!(error.contains("excludes entry"), "{error}");
+    }
+    let old_version = br#"{"version":1,"files":[],"directories":[],"prefixes":[],"excludes":["workloads/export"]}"#;
+    assert!(read_manifest(old_version)
+        .unwrap_err()
+        .contains("unsupported"));
+}
+
+#[test]
+fn source_fingerprint_excludes_only_declared_files_and_subtrees() {
+    let fixture = tempfile::tempdir().expect("fingerprint fixture");
+    let root = fixture.path();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::create_dir_all(root.join("workloads/export")).unwrap();
+    std::fs::write(root.join("included.txt"), "first").unwrap();
+    std::fs::write(root.join("workloads/recovery.rs"), "first").unwrap();
+    std::fs::write(root.join("workloads/ignored.rs"), "first").unwrap();
+    std::fs::write(root.join("workloads/exported.rs"), "first").unwrap();
+    std::fs::write(root.join("workloads/export/main.rs"), "first").unwrap();
+    std::fs::write(
+        root.join("scripts/recoverable-build-inputs.json"),
+        r#"{"version":2,"files":["included.txt","workloads/ignored.rs"],"directories":["workloads"],"prefixes":[],"excludes":["workloads/export","workloads/ignored.rs"]}"#,
+    ).unwrap();
+    let original = source_fingerprint(root);
+    std::fs::write(root.join("workloads/export/main.rs"), "changed").unwrap();
+    std::fs::write(root.join("workloads/ignored.rs"), "changed").unwrap();
+    assert_eq!(
+        source_fingerprint(root),
+        original,
+        "excluded inputs are independent"
+    );
+    std::fs::write(root.join("workloads/exported.rs"), "changed").unwrap();
+    let neighboring = source_fingerprint(root);
+    assert_ne!(neighboring, original, "exclusions match whole segments");
+    std::fs::write(root.join("workloads/recovery.rs"), "changed").unwrap();
+    let changed = source_fingerprint(root);
+    assert_ne!(
+        changed, neighboring,
+        "included subtrees still invalidate provenance"
+    );
+    std::fs::write(root.join("included.txt"), "changed").unwrap();
+    assert_ne!(
+        source_fingerprint(root),
+        changed,
+        "explicit files remain inputs"
+    );
 }
 
 pub(super) fn source_fingerprint(root: &std::path::Path) -> String {
     use std::collections::BTreeSet;
-    fn walk(root: &std::path::Path, path: &str, files: &mut BTreeSet<String>) {
+    fn excluded(path: &str, excludes: &[String]) -> bool {
+        excludes.iter().any(|exclude| {
+            path == exclude
+                || path
+                    .strip_prefix(exclude)
+                    .is_some_and(|tail| tail.starts_with('/'))
+        })
+    }
+    fn walk(root: &std::path::Path, path: &str, excludes: &[String], files: &mut BTreeSet<String>) {
+        if excluded(path, excludes) {
+            return;
+        }
         let metadata = std::fs::symlink_metadata(root.join(path)).expect("build input");
         if metadata.is_dir() {
             for entry in std::fs::read_dir(root.join(path)).unwrap() {
@@ -190,6 +258,7 @@ pub(super) fn source_fingerprint(root: &std::path::Path) -> String {
                 walk(
                     root,
                     &format!("{path}/{}", entry.file_name().to_str().unwrap()),
+                    excludes,
                     files,
                 );
             }
@@ -203,16 +272,22 @@ pub(super) fn source_fingerprint(root: &std::path::Path) -> String {
             .unwrap_or_else(|error| panic!("{error}"));
     let mut files: BTreeSet<String> = manifest.files.into_iter().collect();
     for directory in manifest.directories {
-        walk(root, &directory, &mut files);
+        walk(root, &directory, &manifest.excludes, &mut files);
     }
     for prefix in manifest.prefixes {
         for entry in std::fs::read_dir(root.join(&prefix.directory)).unwrap() {
             let name = entry.unwrap().file_name().into_string().unwrap();
             if name.starts_with(&prefix.prefix) {
-                walk(root, &format!("{}/{name}", prefix.directory), &mut files);
+                walk(
+                    root,
+                    &format!("{}/{name}", prefix.directory),
+                    &manifest.excludes,
+                    &mut files,
+                );
             }
         }
     }
+    files.retain(|path| !excluded(path, &manifest.excludes));
     let inputs = files
         .into_iter()
         .map(|path| {

@@ -275,12 +275,22 @@ _recovery-test:
 _recovery-covered:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" just _cover onevcs-recovery 'binary(recovery-workload)'
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --status-level fail {{recovery-no-tests}}
-    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs crates/onevcs/scripts/export-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs
 
 # Regenerate validated current-build telemetry without running unrelated journeys.
-recoverable-journeys:
+recoverable-journeys: recovery-journeys export-journeys
+
+recovery-journeys:
     @node scripts/recoverable-invocation.mjs just _recovery-quick
+
+# Export evidence is deliberately release-profile and outside instrumented recovery.
+export-journeys:
+    @node scripts/export-invocation.mjs just _export-workload
+
+_export-workload:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_EXPORT_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --status-level fail {{recovery-no-tests}}
+    @node --test crates/onevcs/scripts/export-budget.test.mjs
 
 # The workload binaries and export bounds are Unix-only, so on Windows they have no tests and
 # nextest's default refusal of an empty run is no finding; elsewhere an empty run
@@ -290,8 +300,7 @@ recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "-
 _recovery-quick:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --example recoverable_latency --release --locked --quiet
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" ONEVCS_RECOVERY_LATENCY="$PWD/target/release/examples/recoverable_latency" cargo nextest run -p onevcs --test recovery-workload --locked -E 'binary(recovery-workload)' --status-level fail {{recovery-no-tests}}
-    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_RECOVERY_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --status-level fail {{recovery-no-tests}}
-    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs crates/onevcs/scripts/export-budget.test.mjs
+    @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs
 
 onebudgetspec-version := "0.1.1"
 onebudgetspec-root := justfile_directory() / "target" / "tools" / ("onebudgetspec-" + onebudgetspec-version)

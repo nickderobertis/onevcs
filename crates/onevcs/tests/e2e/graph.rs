@@ -26,13 +26,14 @@ use crate::support::workspace_root;
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
 /// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 9] = [
+const GATE_PROJECTS: [&str; 10] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
     "onevcs-e2e",
     "onevcs-export-bounds",
+    "onevcs-export-workload",
     "onevcs-recovery",
     "onevcs-pool-workload",
     "onevcs-scripts-e2e",
@@ -353,6 +354,41 @@ fn export_bounds_only_follow_the_files_their_journeys_read() {
             projects_running(&tasks, "test").contains("onevcs-export-bounds"),
             expected,
             "a change to {path} selected {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn full_size_export_and_recovery_workloads_have_independent_edges() {
+    let checkout = Checkout::new();
+    for (path, export, recovery) in [
+        ("crates/onevcs/tests/recovery-workload/main.rs", false, true),
+        (
+            "crates/onevcs/tests/recovery-workload/export/main.rs",
+            true,
+            false,
+        ),
+        (
+            "crates/onevcs/scripts/export-wall-time-budget.mjs",
+            true,
+            false,
+        ),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        let projects = projects_running(&tasks, "test");
+        assert_eq!(
+            projects.contains("onevcs-export-workload"),
+            export,
+            "{path}: {tasks:?}"
+        );
+        assert_eq!(
+            projects.contains("onevcs-recovery"),
+            recovery,
+            "{path}: {tasks:?}"
         );
     }
 }

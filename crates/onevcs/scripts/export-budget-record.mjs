@@ -6,7 +6,7 @@ import Ajv from "ajv/dist/2020.js";
 import { repositoryRoot, sourceFingerprint } from "../../../scripts/recoverable-build.mjs";
 
 export const recordDirectory = fileURLToPath(new URL("../../../target/budget-records/", import.meta.url));
-export const journeyCommand = "just recoverable-journeys";
+export const journeyCommand = "just export-journeys";
 const digest = text => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const validators = new Map();
@@ -24,7 +24,7 @@ export function readExportRecord(kind, directory = recordDirectory, sourceRoot =
   if (!["wall-time", "source-lfs-download"].includes(kind)) throw new Error("unknown export record kind");
   const { schema, validate } = validator(kind);
   const read = name => JSON.parse(readFileSync(`${directory}/${name}`, "utf8"));
-  const invocation = read("recoverable-invocation.json");
+  const invocation = read("export-invocation.json");
   if (invocation.state !== "complete" || !digest(invocation.run_id)) throw new Error("producing invocation is incomplete");
   const record = read(kind === "wall-time" ? "export.json" : "export-source-lfs.json");
   if (!validate(record)) throw new Error(`incomplete export telemetry: ${JSON.stringify(validate.errors)}`);
@@ -32,8 +32,8 @@ export function readExportRecord(kind, directory = recordDirectory, sourceRoot =
   for (const key of ["run_id", "binary", "binary_sha256", "source_sha256"]) {
     if (build[key] !== invocation[key]) throw new Error("stale or foreign invocation/build");
   }
-  if (!digest(build.source_sha256) || build.source_sha256 !== sourceFingerprint(sourceRoot)) throw new Error("stale source/build inputs");
-  if (build.binary !== "onevcs" || !digest(build.binary_sha256) || sha(readFileSync(`${directory}/onevcs`)) !== build.binary_sha256) throw new Error("foreign CLI binary");
+  if (!digest(build.source_sha256) || build.source_sha256 !== sourceFingerprint(sourceRoot, "scripts/export-build-inputs.json")) throw new Error("stale source/build inputs");
+  if (build.binary !== "export-onevcs" || !digest(build.binary_sha256) || sha(readFileSync(`${directory}/export-onevcs`)) !== build.binary_sha256) throw new Error("foreign CLI binary");
   if (!digest(record.producer_sha256) || sha(readFileSync(`${directory}/export-workload`)) !== record.producer_sha256) throw new Error("foreign producing binary");
   for (const [key, expected] of Object.entries(schema["x-workload"])) {
     if (record.covered[key] !== expected) throw new Error(`foreign or shrunk workload: ${key}`);

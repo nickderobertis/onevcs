@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "justfile",
+    "package.json",
+    "package-lock.json",
+    "nx.json",
+    "crates/onevcs/Cargo.toml",
+    "crates/onevcs-testing/Cargo.toml",
+    "crates/onevcs-testing/src/boundary.rs",
+    "crates/onevcs-testing/src/lib.rs",
+    ".cargo/config.toml",
+    "crates/onevcs-testing/src/export_fixtures.rs",
+    "scripts/recoverable-build.mjs",
+    "scripts/export-build-inputs.json",
+    "crates/onevcs/budgets.yaml"
+  ],
+  "directories": [
+    "crates/onevcs/src",
+    "crates/onevcs/tests/recovery-workload/export"
+  ],
+  "prefixes": [
+    {
+      "directory": "scripts",
+      "prefix": "export-"
+    },
+    {
+      "directory": "crates/onevcs/scripts",
+      "prefix": "export-"
+    }
+  ]
+}
