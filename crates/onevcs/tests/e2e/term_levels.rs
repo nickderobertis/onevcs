@@ -1061,6 +1061,23 @@ fn a_change_requests_body_is_published_rewritten_when_opened_and_when_described(
         host.world.change_request_body(1),
         "Now mirrors a private service exactly."
     );
+    // What is recorded is the body as published, never the prose it was given.
+    let described = host.world.events_of(&token, "change-described");
+    let artifact = described
+        .last()
+        .and_then(|event| event["payload"]["artifact"].as_str())
+        .unwrap_or_else(|| panic!("the description names its body: {described:?}"))
+        .to_owned();
+    let recorded = host
+        .world
+        .onevcs()
+        .args(["artifact", "cat", &artifact])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(
+        String::from_utf8_lossy(&recorded.stdout),
+        "Now mirrors a private service exactly."
+    );
     // The title stays reject-only: it becomes the landed subject.
     let before = host.origin_refs();
     let output = host
@@ -1210,6 +1227,12 @@ fn nothing_a_commit_carries_is_rewritten_and_local_direct_stays_reject_only() {
         "its title",
         &before,
         "a local-direct title",
+    );
+    host.refused(
+        &host.publish(&token, &["--body", "Ported from quietharbor."]),
+        "its body",
+        &before,
+        "a local-direct body is never rewritten",
     );
 }
 
