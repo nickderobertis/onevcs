@@ -1581,3 +1581,101 @@ fn a_replacement_carrying_a_term_holds_a_body_and_a_reply_unwritten() {
     assert_eq!(reply.status.code(), Some(2));
     assert!(reviews.requests().is_empty(), "no read and no post");
 }
+
+/// The evidence file a held publication's stderr names, read back.
+fn persisted(stderr: &str) -> Vec<Value> {
+    let marker = "recorded privately at ";
+    let start = stderr
+        .find(marker)
+        .unwrap_or_else(|| panic!("no evidence file named: {stderr}"))
+        + marker.len();
+    let path = stderr[start..]
+        .split(", on this host only")
+        .next()
+        .expect("a path");
+    serde_json::from_str(&std::fs::read_to_string(path.trim()).expect("the evidence file"))
+        .expect("the evidence is JSON")
+}
+
+/// Every locator field of persisted evidence: where (`at`), whose (`identity`), and an
+/// unavailable check's `detail`. The rule a refusal found is the private detail the store
+/// exists for, so it is not one of them.
+fn locator_fields(evidence: &[Value]) -> Vec<String> {
+    evidence
+        .iter()
+        .flat_map(|entry| ["at", "identity", "detail"].map(|key| entry[key].clone()))
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn a_refused_publication_persists_its_evidence_with_every_locator_screened() {
+    let levels = Levels::new("hiddenco-work/quietharbor", &[]);
+    let host = &levels.host;
+    let (token, worktree) = host.session("screened-evidence");
+    std::fs::create_dir_all(worktree.join("notes")).expect("a directory");
+    std::fs::write(worktree.join("notes/quietharbor-plan.md"), "neutral\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: add notes"]);
+    let before = host.origin_refs();
+    let output = host.publish(&token, &[]);
+    host.refused(&output, "a path", &before, "a path carrying a term");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_unspelled(&stderr, "stderr");
+    let evidence = persisted(&stderr);
+    assert!(!evidence.is_empty());
+    // What was found is still recorded: the surface and the rule.
+    assert!(
+        evidence.iter().all(|entry| entry["kind"] == "term"),
+        "{evidence:?}"
+    );
+    assert!(evidence.iter().any(|entry| entry["surface"] == "path"));
+    for field in locator_fields(&evidence) {
+        assert_unspelled(&field, "a persisted locator");
+    }
+    assert!(
+        evidence.iter().any(|entry| entry["at"]
+            .as_str()
+            .is_some_and(|at| at.starts_with("<redacted path "))),
+        "{evidence:?}"
+    );
+}
+
+#[test]
+fn an_unavailable_publication_persists_its_evidence_with_every_locator_redacted() {
+    let levels = Levels::new(
+        "hiddenco-work/quietharbor",
+        &[("private-terms.toml", "schema_version = 2\nterms = [\n")],
+    );
+    let host = &levels.host;
+    let (token, worktree) = host.session("redacted-evidence");
+    std::fs::write(worktree.join("a.md"), "neutral\n").expect("a file");
+    host.world.git(&worktree, &["add", "-A"]);
+    host.world
+        .git(&worktree, &["commit", "-q", "-m", "docs: neutral"]);
+    let before = host.origin_refs();
+    let output = host.publish(&token, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the public boundary check is unavailable"),
+        "{stderr}"
+    );
+    assert_eq!(host.origin_refs(), before, "the origin moved");
+    assert_unspelled(&stderr, "stderr");
+    let evidence = persisted(&stderr);
+    assert_eq!(evidence.len(), 1, "{evidence:?}");
+    assert_eq!(evidence[0]["kind"], "unavailable");
+    assert_eq!(evidence[0]["reason"], "declarations");
+    assert_eq!(evidence[0]["identity"], "<redacted identity 1>");
+    assert!(
+        evidence[0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("malformed")),
+        "the problem's kind is kept in plain words: {evidence:?}"
+    );
+    for field in locator_fields(&evidence) {
+        assert_unspelled(&field, "a persisted locator");
+    }
+}

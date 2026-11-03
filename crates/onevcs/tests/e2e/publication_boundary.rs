@@ -1258,7 +1258,7 @@ fn a_plain_403_is_the_hosts_answer_so_the_destination_is_recorded_unknown_and_sc
     let evidence = kept(&String::from_utf8_lossy(&output.stderr));
     assert_eq!(evidence[0]["kind"], "term", "{evidence}");
     assert_eq!(
-        evidence[0]["identity"], "github.com/sample-owner/openwidget",
+        evidence[0]["identity"], "<redacted identity 1>",
         "{evidence}"
     );
     let recorded = host.destination();
@@ -1316,7 +1316,7 @@ fn what_a_refusal_found_is_kept_privately_and_the_timings_name_nothing() {
         serde_json::from_str(&std::fs::read_to_string(&path).expect("the evidence")).expect("JSON");
     assert_eq!(evidence[0]["kind"], "term");
     assert_eq!(evidence[0]["surface"], "content");
-    assert_eq!(evidence[0]["identity"], "github.com/hiddenco/quietharbor");
+    assert_eq!(evidence[0]["identity"], "<redacted identity 1>");
     assert_eq!(evidence[0]["at"], "examples/demo.md");
 
     // A pass is timed too, and a diagnostics file that cannot be written changes

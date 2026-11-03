@@ -270,8 +270,9 @@ pub fn prose(
         Ok(matcher) => matcher,
         Err(failed) => return Err(unavailable(failed, evidence)),
     };
-    if let Err(carrying) = matcher.check_replacements() {
-        evidence.push(derived.evidence(Surface::Body, "replacement".to_owned(), carrying.rule));
+    // An unavailable check redacts every locator, so it records no rule's identity: the
+    // reason says why, and the evidence store keeps nothing else of it.
+    if matcher.check_replacements().is_err() {
         return Err(unavailable(
             Failed::new(
                 Unavailability::Replacements,
@@ -285,9 +286,13 @@ pub fn prose(
     if outcome.remaining.is_empty() {
         return Ok(outcome.text);
     }
-    for rule in outcome.remaining {
-        evidence.push(derived.evidence(Surface::Body, "body".to_owned(), rule));
-    }
+    let found = outcome
+        .remaining
+        .into_iter()
+        .map(|rule| derived.evidence(Surface::Body, "body".to_owned(), rule))
+        .collect();
+    // Its guard persists this evidence, so its locators are screened by this matcher.
+    evidence.extend(scope::screened(found, &matcher));
     Err(super::BoundaryVerdict::Refuse {
         surface: Surface::Body,
     })

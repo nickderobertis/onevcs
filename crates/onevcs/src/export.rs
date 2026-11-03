@@ -85,7 +85,8 @@ pub struct Exported {
 
 /// A refusal that names the step and nothing it read, with the detail kept privately.
 fn refused(step: &str, detail: impl Into<String>) -> Error {
-    let detail = detail.into();
+    // An unavailable step redacts every locator it would record, as a check does.
+    let detail = scope::redacted(&detail.into(), Vec::new());
     let kept = evidence::keep(&[Evidence::Unavailable {
         reason: Unavailability::History,
         identity: None,
@@ -385,7 +386,8 @@ fn screen(
         );
     }
     phases.matching = matching.elapsed();
-    (verdict, evidence)
+    // What the export found is persisted, so its locators are screened by this matcher.
+    (verdict, scope::screened(evidence, &matcher))
 }
 
 /// Write the export as one commit on the public base, and cut the branch at it.

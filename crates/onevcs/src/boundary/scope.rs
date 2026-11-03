@@ -60,12 +60,20 @@ pub struct Derived {
 }
 
 /// Why a scope could not be derived, and the private detail of it.
+///
+/// An unavailable check redacts every locator it would report (Specification 1,
+/// *Locators*), in the evidence store as much as on standard error: its identity is
+/// held only as `<redacted identity 1>`, and its detail is said with the identity, the
+/// onevcs home and the home directory each replaced by its redacted locator. Every
+/// detail handed to [`Failed::new`] is words that carry no other locator — a level's
+/// kind and problem, the crate's content-free errors, a fixed sentence — and the
+/// callers below keep it so.
 pub struct Failed {
     /// The neutral reason.
     pub reason: Unavailability,
-    /// The identity it could not read, where there was one.
+    /// The identity it could not read, where there was one, redacted.
     pub identity: Option<String>,
-    /// What failed.
+    /// What failed, with every locator redacted.
     pub detail: String,
 }
 
@@ -76,10 +84,14 @@ impl Failed {
         identity: Option<&str>,
         detail: impl Into<String>,
     ) -> Failed {
+        let mut known: Vec<(LocatorKind, String)> = Vec::new();
+        if let Some(identity) = identity {
+            known.push((LocatorKind::Identity, identity.to_owned()));
+        }
         Failed {
             reason,
-            identity: identity.map(str::to_owned),
-            detail: detail.into(),
+            identity: identity.map(|_| redacted_locator(LocatorKind::Identity, 1)),
+            detail: redacted(&detail.into(), known),
         }
     }
 
@@ -93,6 +105,119 @@ impl Failed {
         });
         BoundaryVerdict::Unavailable { reason }
     }
+}
+
+/// The failure a private identity's committed tree is: a refused declaration in the
+/// crate's own words, which carry no content and no path; anything else — git, a
+/// manifest, whose words can quote a path or a member pattern — said only as having
+/// happened.
+fn declarations(key: &str, failure: manifests::SourceFailure) -> Failed {
+    let detail = match failure {
+        manifests::SourceFailure::Declaration(words) => {
+            format!("the repository level of {key} is refused: {words}")
+        }
+        manifests::SourceFailure::Unreadable(_) => {
+            format!("the committed manifests or declaration of {key} could not be read")
+        }
+    };
+    Failed::new(Unavailability::Declarations, Some(key), detail)
+}
+
+/// A locator of `kind` as an unavailable check prints it: the crate's redacted form.
+fn redacted_locator(kind: LocatorKind, ordinal: u32) -> String {
+    privateterms::redact_all(&[(kind, "")], ordinal)[0].to_string()
+}
+
+/// `text` with each of `known` — and the onevcs home and the home directory, which
+/// every path this host writes is under — replaced by its redacted locator, numbered
+/// from 1 in that order. The longest spelling is replaced first, so a path under the
+/// onevcs home is one locator rather than a home with a tail.
+pub fn redacted(text: &str, mut known: Vec<(LocatorKind, String)>) -> String {
+    for root in [home::root().ok(), home::home_directory()]
+        .into_iter()
+        .flatten()
+    {
+        let root = root.to_string_lossy().into_owned();
+        if root.len() > 1 {
+            known.push((LocatorKind::Path, root));
+        }
+    }
+    let numbered: Vec<(String, String)> = known
+        .into_iter()
+        .filter(|(_, spelled)| !spelled.is_empty())
+        .enumerate()
+        .map(|(at, (kind, spelled))| {
+            let ordinal = u32::try_from(at + 1).unwrap_or(u32::MAX);
+            (spelled, redacted_locator(kind, ordinal))
+        })
+        .collect();
+    let mut order: Vec<&(String, String)> = numbered.iter().collect();
+    order.sort_by_key(|(spelled, _)| std::cmp::Reverse(spelled.len()));
+    let mut said = text.to_owned();
+    for (spelled, locator) in order {
+        said = said.replace(spelled.as_str(), locator);
+    }
+    said
+}
+
+/// The evidence of a refusal as the evidence store keeps it: every rule found stays —
+/// it is what the store is for — and every locator (where it was found, whose rule it
+/// is) is screened by the call's own matcher, numbered from 1 in order. A plain
+/// locator is kept verbatim.
+pub fn screened(evidence: Vec<Evidence>, matcher: &Matcher) -> Vec<Evidence> {
+    let located = |surface: Surface| matches!(surface, Surface::Path | Surface::Content);
+    let identity_kind = |identity: &str| {
+        if identity.starts_with('/') {
+            LocatorKind::Path
+        } else {
+            LocatorKind::Identity
+        }
+    };
+    let mut pairs: Vec<(LocatorKind, String)> = Vec::new();
+    for item in &evidence {
+        if let Evidence::Term {
+            surface,
+            at,
+            identity,
+            ..
+        } = item
+        {
+            if located(*surface) {
+                pairs.push((LocatorKind::Path, at.clone()));
+            }
+            pairs.push((identity_kind(identity), identity.clone()));
+        }
+    }
+    let borrowed: Vec<(LocatorKind, &str)> = pairs
+        .iter()
+        .map(|(kind, value)| (*kind, value.as_str()))
+        .collect();
+    let mut screened = matcher
+        .screen_locators(&borrowed, 1)
+        .into_iter()
+        .map(|locator| locator.to_string());
+    evidence
+        .into_iter()
+        .map(|item| match item {
+            Evidence::Term {
+                surface, at, rule, ..
+            } => {
+                let at = if located(surface) {
+                    screened.next().unwrap_or(at)
+                } else {
+                    at
+                };
+                let identity = screened.next().unwrap_or_default();
+                Evidence::Term {
+                    surface,
+                    at,
+                    rule,
+                    identity,
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 impl Derived {
@@ -174,10 +299,20 @@ pub fn derive_with(
     if matches!(scope, TermScope::Identities(named) if named.is_empty()) {
         return Derived::empty(caller);
     }
-    let registry =
-        store::load().map_err(|e| Failed::new(Unavailability::Registry, None, e.to_string()))?;
-    let (file, source) = policy::load(&registry)
-        .map_err(|e| Failed::new(Unavailability::Rules, None, e.to_string()))?;
+    let registry = store::load().map_err(|_| {
+        Failed::new(
+            Unavailability::Registry,
+            None,
+            "the registry could not be read",
+        )
+    })?;
+    let (file, source) = policy::load(&registry).map_err(|_| {
+        Failed::new(
+            Unavailability::Rules,
+            None,
+            "the rules file could not be read",
+        )
+    })?;
 
     let mut visible: BTreeMap<&str, Visibility> = BTreeMap::new();
     let mut public = PublicNames::default();
@@ -236,7 +371,7 @@ pub fn derive_with(
             ));
         };
         let term_source = manifests::committed_source(primary, key)
-            .map_err(|detail| Failed::new(Unavailability::Declarations, Some(key), detail))?;
+            .map_err(|failure| declarations(key, failure))?;
         let rules = derive::derive(&term_source, &public)
             .map_err(|detail| Failed::new(Unavailability::Declarations, Some(key), detail))?;
         // Its terms and exceptions are in the derived rules already; what the level still
@@ -258,7 +393,7 @@ pub fn derive_with(
     if let Some(key) = published.filter(|key| !selected.iter().any(|s| s == key)) {
         if let Some(primary) = visibility::checkout_of(&registry, key) {
             let repository = manifests::committed_declaration_at(primary)
-                .map_err(|detail| Failed::new(Unavailability::Declarations, Some(key), detail))?
+                .map_err(|failure| declarations(key, failure))?
                 .map(|declaration| repository_level(primary, declaration));
             for checkout in checkouts_of(&registry, key) {
                 let mut levels: Vec<Level> = repository.iter().cloned().collect();
@@ -553,27 +688,84 @@ impl LevelReader {
         self.level(&root, LevelKind::Fallback)
     }
 
-    /// Every directory level above `checkout`, nearest first.
+    /// Every directory level above `checkout`, nearest first, found by
+    /// `privateterms::discover_levels` — the crate's binding of levels to directories.
+    ///
+    /// Two things are this crate's on top of it. The checkout's own declaration is the
+    /// repository level read from its commit, never its worktree, so discovery starts at
+    /// the checkout's parent, and the level found there is a directory level like every
+    /// other ancestor (relabelled, and held to that kind when it is resolved). And a
+    /// directory several checkouts share is read once per call: the walk is handed, as
+    /// its `home`, the directory just below the nearest one this call already read, so
+    /// `discover_levels` stops there and the rest comes from what was read.
     fn ancestors(&mut self, checkout: &Path) -> Result<Vec<Level>, Failed> {
         let home = self.home.clone();
-        let inside = home
-            .as_deref()
-            .is_some_and(|home| checkout.starts_with(home));
-        let mut levels = Vec::new();
-        if home.as_deref() == Some(checkout) {
-            return Ok(levels);
-        }
-        for ancestor in checkout.ancestors().skip(1) {
-            if ancestor.as_os_str().is_empty() || (!inside && ancestor.parent().is_none()) {
-                break;
+        let walked = walk(checkout, home.as_deref());
+        let unread = walked
+            .iter()
+            .position(|dir| self.cache.contains_key(*dir))
+            .unwrap_or(walked.len());
+        if unread > 0 {
+            let (start, stop) = (walked[0], walked[unread - 1]);
+            let found = privateterms::discover_levels(start, stop, None).map_err(|refused| {
+                let path = refused
+                    .path
+                    .as_deref()
+                    .unwrap_or(start)
+                    .to_string_lossy()
+                    .into_owned();
+                let locator = privateterms::redact_all(&[(LocatorKind::Path, path.as_str())], 1);
+                Failed::new(
+                    Unavailability::TermLevels,
+                    None,
+                    level_problem(LevelKind::Directory, &locator[0], &refused),
+                )
+            })?;
+            for dir in &walked[..unread] {
+                let level = found
+                    .iter()
+                    .find(|level| level.dir == *dir)
+                    .map(|level| Level {
+                        kind: LevelKind::Directory,
+                        ..level.clone()
+                    });
+                if level.is_some() {
+                    self.read += 1;
+                }
+                self.cache.insert(dir.to_path_buf(), level);
             }
-            levels.extend(self.level(ancestor, LevelKind::Directory)?);
-            if inside && Some(ancestor) == home.as_deref() {
-                break;
-            }
         }
-        Ok(levels)
+        Ok(walked
+            .iter()
+            .filter_map(|dir| self.cache.get(*dir).cloned().flatten())
+            .map(|level| Level {
+                kind: LevelKind::Directory,
+                ..level
+            })
+            .collect())
     }
+}
+
+/// The directories above `checkout` its levels are found in, nearest first: up to and
+/// including `home` for a checkout inside it, and otherwise up to but excluding the
+/// filesystem root — `privateterms::discover_levels`' own bounds, listed so a call can
+/// tell which of them it has read already.
+fn walk<'p>(checkout: &'p Path, home: Option<&Path>) -> Vec<&'p Path> {
+    let inside = home.is_some_and(|home| checkout.starts_with(home));
+    let mut walked = Vec::new();
+    if home == Some(checkout) {
+        return walked;
+    }
+    for ancestor in checkout.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() || (!inside && ancestor.parent().is_none()) {
+            break;
+        }
+        walked.push(ancestor);
+        if inside && Some(ancestor) == home {
+            break;
+        }
+    }
+    walked
 }
 
 /// How a refused level is said: its kind and its problem in plain words, and its file

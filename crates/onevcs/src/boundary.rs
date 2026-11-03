@@ -469,8 +469,11 @@ impl TermSource {
     /// `identity` is a normalized origin: `host/owner/name`, or a local path whose
     /// last segment is taken as the name.
     pub fn from_committed(checkout: &Path, identity: &str) -> Result<TermSource> {
-        manifests::committed_source(checkout, identity).map_err(|detail| Error::Invalid {
-            reason: format!("cannot read the committed term declarations: {detail}"),
+        manifests::committed_source(checkout, identity).map_err(|failure| Error::Invalid {
+            reason: format!(
+                "cannot read the committed term declarations: {}",
+                failure.into_words()
+            ),
         })
     }
 }

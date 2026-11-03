@@ -193,6 +193,7 @@ pub fn screen_fields(fields: &[(Surface, &str)], scope: &TermScope) -> Result<()
                             ));
                         }
                     }
+                    evidence = scope::screened(evidence, &matcher);
                     verdict
                 }
             }
