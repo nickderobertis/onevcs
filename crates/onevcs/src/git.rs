@@ -31,6 +31,8 @@ use crate::error::{self, Error, Result};
 use crate::host::Sha;
 use crate::{ids, lock};
 
+mod lfs;
+
 /// Resolve Git once, preserving the first executable on PATH (including caller
 /// shims). On failure keep the original command so `unstarted` reports the same
 /// missing-Git error as before.
@@ -1988,6 +1990,7 @@ fn cut_sharing(
     }
     let carried = carry_remote_refs(source, dest, base)?;
     carry_hooks(hooks_from, dest)?;
+    lfs::carry(source, hooks_from, dest)?;
     Ok(carried)
 }
 
@@ -4183,6 +4186,9 @@ impl Pushed {
 
 /// Push a branch, returning everything the push wrote.
 pub fn push(cwd: &Path, branch: &str, remote: &str, env: &[(String, String)]) -> Result<Pushed> {
+    if let Some(refused) = lfs::upload(cwd, branch, remote, env, None)? {
+        return Ok(read_push(&refused));
+    }
     pushed(&["push", "--porcelain", remote, branch], cwd, env)
 }
 
@@ -4230,7 +4236,10 @@ pub fn push_replacing(
     if let Some(lease) = lease.as_deref() {
         args.insert(1, lease);
     }
-    let output = run_unless(&args, Some(cwd), env, Some(stop))?;
+    let output = match lfs::upload(cwd, branch, remote, env, Some(stop))? {
+        Some(refused) => refused,
+        None => run_unless(&args, Some(cwd), env, Some(stop))?,
+    };
     let teardown = match &output.ended {
         Ended::Stopped => Ok(()),
         Ended::StoppedUnconfirmed(why) => Err(why.clone()),
