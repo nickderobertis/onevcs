@@ -4,10 +4,8 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
 use super::{because, refused, File};
-use crate::{error::Result, git, ExportRequest};
+use crate::{error::Result, git, lfs_pointer::Sha256Oid, ExportRequest};
 
 const SOURCE: &str = "an LFS object it points to cannot be read";
 const DESTINATION: &str = "its destination's Git LFS store could not take its objects";
@@ -22,10 +20,6 @@ fn media(checkout: &Path, step: &'static str) -> Result<PathBuf> {
         .lines()
         .find_map(|line| line.strip_prefix("LocalMediaDir=").map(PathBuf::from))
         .ok_or_else(|| refused(step))
-}
-
-fn object(store: &Path, oid: &str) -> PathBuf {
-    store.join(&oid[..2]).join(&oid[2..4]).join(oid)
 }
 
 /// Fetch missing pointers together. Git LFS's own local store is the retry cache.
@@ -43,7 +37,7 @@ pub(super) fn resolve(checkout: &Path, request: &ExportRequest, files: &mut [Fil
     let store = media(checkout, SOURCE)?;
     if pointers
         .iter()
-        .any(|(_, pointer)| !object(&store, &pointer.oid).is_file())
+        .any(|(_, pointer)| !pointer.oid().object_path(&store).is_file())
     {
         let include = format!("{}/**", request.directory);
         let reference = format!("refs/heads/{}", request.branch);
@@ -66,13 +60,13 @@ pub(super) fn resolve(checkout: &Path, request: &ExportRequest, files: &mut [Fil
         }
     }
     for (index, pointer) in pointers {
-        let path = object(&store, &pointer.oid);
+        let path = pointer.oid().object_path(&store);
         let metadata = std::fs::metadata(&path).map_err(because(SOURCE))?;
-        if metadata.len() != pointer.size {
+        if metadata.len() != pointer.size() {
             return Err(refused(SOURCE));
         }
         let bytes = std::fs::read(path).map_err(because(SOURCE))?;
-        if format!("{:x}", Sha256::digest(&bytes)) != pointer.oid {
+        if Sha256Oid::digest(&bytes) != *pointer.oid() {
             return Err(refused(SOURCE));
         }
         files[index].contents = bytes;
@@ -249,8 +243,8 @@ pub(super) fn upload<'a>(
                 contents: Cow::Borrowed(&file.contents),
             }),
             TrackedFile::Lfs(file) => {
-                let oid = format!("{:x}", Sha256::digest(&file.contents));
-                let path = object(&store, &oid);
+                let oid = Sha256Oid::digest(&file.contents);
+                let path = oid.object_path(&store);
                 std::fs::create_dir_all(path.parent().ok_or_else(|| refused(DESTINATION))?)
                     .map_err(because(DESTINATION))?;
                 // Atomic replacement also repairs an interrupted local object write.
@@ -276,7 +270,7 @@ pub(super) fn upload<'a>(
     phases.lfs_objects = oids.len();
     phases.lfs_bytes = bytes;
     let mut args = vec!["lfs", "push", "--object-id", "origin"];
-    args.extend(oids.iter().map(String::as_str));
+    args.extend(oids.iter().map(Sha256Oid::as_str));
     let uploaded = git::run(&args, Some(checkout)).map_err(because(DESTINATION))?;
     if uploaded.status != 0 {
         return Err(refused(DESTINATION));

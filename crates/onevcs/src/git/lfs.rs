@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{run_unless, Output};
 use crate::error::{Error, Result};
+use crate::lfs_pointer::Sha256Oid;
 
 fn invalid(error: git2::Error) -> Error {
     Error::Invalid {
@@ -82,7 +83,7 @@ fn tree_oids(
     repository: &git2::Repository,
     tree: git2::Oid,
     seen: &mut BTreeSet<git2::Oid>,
-    oids: &mut BTreeSet<String>,
+    oids: &mut BTreeSet<Sha256Oid>,
 ) -> std::result::Result<(), git2::Error> {
     if !seen.insert(tree) {
         return Ok(());
@@ -98,7 +99,7 @@ fn tree_oids(
             if odb.read_header(entry.id())?.0 <= crate::lfs_pointer::MAX_BYTES {
                 let blob = repository.find_blob(entry.id())?;
                 if let Some(pointer) = crate::lfs_pointer::parse(blob.content()) {
-                    oids.insert(pointer.oid);
+                    oids.insert(pointer.oid().clone());
                 }
             }
         }
@@ -111,7 +112,7 @@ fn outgoing_oids(
     branch: &str,
     remote: &str,
     base: Option<&str>,
-) -> Result<BTreeSet<String>> {
+) -> Result<BTreeSet<Sha256Oid>> {
     let mut oids = BTreeSet::new();
     // A deleting refspec has no content to upload.
     let reference = branch
@@ -181,10 +182,7 @@ pub(super) fn upload_from(
     if !oids.is_empty() {
         let repository = git2::Repository::open(cwd).map_err(invalid)?;
         let media = storage(&repository)?.join("objects");
-        if oids
-            .iter()
-            .any(|oid| !media.join(&oid[..2]).join(&oid[2..4]).join(oid).is_file())
-        {
+        if oids.iter().any(|oid| !oid.object_path(&media).is_file()) {
             // The pushed tree can retain a base pointer whose media was evicted
             // locally. The origin already owns it; recover that cache entry rather
             // than asking --object-id to upload a nonexistent local path. --all
@@ -211,7 +209,7 @@ pub(super) fn upload_from(
     // Bound argv independently of the number of files in a branch.
     for batch in oids.chunks(128) {
         let mut arguments = vec!["lfs", "push", "--object-id", remote];
-        arguments.extend(batch.iter().map(String::as_str));
+        arguments.extend(batch.iter().map(Sha256Oid::as_str));
         let output = run_unless(&arguments, Some(cwd), environment, stop)?;
         if !output.ok() {
             return Ok(Some(output));
