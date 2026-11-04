@@ -256,9 +256,23 @@ fn decided_in(calls: &[Call], branch: &str) -> BTreeSet<PathBuf> {
         .collect()
 }
 
-/// Every directory one read ran a `git` in.
+/// Every repository a read addressed, including reads started outside a run root.
 fn directories(calls: &[Call]) -> BTreeSet<PathBuf> {
-    calls.iter().map(|call| call.cwd.clone()).collect()
+    calls
+        .iter()
+        .map(|call| {
+            // Ref/object reads use an absolute --git-dir from the shared workspaces
+            // root so they cannot make an idle sibling look occupied. That cwd says
+            // nothing about which repository was opened; the explicit target does.
+            call.args
+                .strip_prefix("--git-dir ")
+                .and_then(|args| args.split_once("/.git "))
+                .map_or_else(
+                    || call.cwd.clone(),
+                    |(repository, _)| PathBuf::from(repository),
+                )
+        })
+        .collect()
 }
 
 /// What one row of the tiered fixture below was built to answer.
@@ -1106,7 +1120,7 @@ fn a_filtered_read_opens_no_checkout_its_sessions_cannot_hold_a_branch_in() {
         vec!["--label", "run=r-1"],
         vec!["--session", token.as_str()],
     ] {
-        let (rows, calls, _) = counting.recoverable(&fixture.world, &filter);
+        let (rows, calls) = counting.uncached(&fixture.world, &filter);
         assert_eq!(
             rows.len(),
             1,
@@ -1309,7 +1323,9 @@ fn a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has() {
         .chain(checkouts.iter().take(3).cloned())
         .collect();
     let filter = format!("launcher={LAUNCHER}");
-    let (rows, calls, _) = counting.recoverable(&world, &["--label", &filter]);
+    // Force ref/object reads through real Git: cached answers otherwise hide the
+    // --git-dir routing that must still be attributed to the selected repository.
+    let (rows, calls) = counting.uncached(&world, &["--label", &filter]);
     assert_eq!(
         rows.iter()
             .map(|row| row["branch"]["branch"]

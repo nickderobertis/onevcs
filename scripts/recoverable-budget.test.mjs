@@ -173,10 +173,11 @@ test("Nx budgets follow the single owning producer and restore its complete prov
   const read = path => JSON.parse(readFileSync(new URL(path, import.meta.url)));
   const crate = read("../crates/onevcs/project.json");
   const producer = read("../crates/onevcs/tests/recovery-workload/project.json");
-  assert.deepEqual(crate.targets.budgets.dependsOn, [{target:"test",projects:[producer.name]}]);
+  assert.deepEqual(crate.targets.budgets.dependsOn, [{target:"test",projects:[producer.name,"onevcs-export-workload"]}]);
   assert.ok(crate.targets.check.dependsOn.includes("budgets"));
   assert.equal(producer.targets.test.command,"just _recovery-test");
-  assert.ok(producer.targets.test.outputs.includes("{workspaceRoot}/target/budget-records"));
+  assert.ok(producer.targets.test.outputs.includes("{workspaceRoot}/target/budget-records/recoverable.json"));
+  assert.ok(!producer.targets.test.outputs.includes("{workspaceRoot}/target/budget-records"));
   assert.ok(producer.targets.test.inputs.includes("{workspaceRoot}/crates/onevcs/src/**/*"));
   assert.ok(!crate.targets.budgets.dependsOn.some(edge=>edge.projects?.includes("onevcs-e2e")));
 });

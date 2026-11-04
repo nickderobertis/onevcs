@@ -1,0 +1,239 @@
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 4
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "binary_sha256": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "binary",
+        "binary_sha256",
+        "source_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "producer_sha256": {
+      "type": "string"
+    },
+    "scenario": {
+      "const": "realistic-export"
+    },
+    "covered": {
+      "type": "object",
+      "properties": {
+        "identities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "paths": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "largest": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lfs_objects": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "patterns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lfs_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "identities",
+        "terms",
+        "paths",
+        "bytes",
+        "largest",
+        "lfs_objects",
+        "patterns",
+        "lfs_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "load1": {
+      "type": "number",
+      "minimum": 0
+    },
+    "wall_us": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "phases": {
+      "type": "object",
+      "properties": {
+        "total_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "diff_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "derivation_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "matcher_build_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "extraction_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "matching_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lfs_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "tree_write_us": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "paths": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "decoded_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "opaque_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lfs_objects": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lfs_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "identities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "total_us",
+        "diff_us",
+        "derivation_us",
+        "matcher_build_us",
+        "extraction_us",
+        "matching_us",
+        "lfs_us",
+        "tree_write_us",
+        "workers",
+        "paths",
+        "bytes",
+        "decoded_bytes",
+        "opaque_files",
+        "lfs_objects",
+        "lfs_bytes",
+        "identities",
+        "terms"
+      ],
+      "additionalProperties": true
+    },
+    "peak_rss_kib": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "version",
+    "build",
+    "producer_sha256",
+    "scenario",
+    "covered",
+    "load1",
+    "wall_us",
+    "phases",
+    "peak_rss_kib"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-workload": {
+    "identities": 20,
+    "terms": 2000,
+    "paths": 496,
+    "bytes": 194900000,
+    "largest": 37099984,
+    "lfs_objects": 462,
+    "patterns": 3,
+    "lfs_bytes": 194898393
+  }
+}

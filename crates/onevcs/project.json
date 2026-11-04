@@ -40,9 +40,12 @@
           "projects": [
             "onevcs",
             "onevcs-e2e",
+            "onevcs-export-bounds",
             "onevcs-scripts-e2e",
             "onevcs-contract",
-            "onevcs-recovery"
+            "onevcs-recovery",
+            "onevcs-export-cancellation",
+            "onevcs-recovery-cost"
           ]
         }
       ],
@@ -62,7 +65,13 @@
         "test",
         "doc",
         "coverage",
-        "budgets"
+        "budgets",
+        {
+          "target": "test",
+          "projects": [
+            "onevcs-export-workload"
+          ]
+        }
       ]
     },
     "budgets": {
@@ -71,7 +80,8 @@
         {
           "target": "test",
           "projects": [
-            "onevcs-recovery"
+            "onevcs-recovery",
+            "onevcs-export-workload"
           ]
         }
       ],
@@ -83,6 +93,7 @@
         "{projectRoot}/scripts/draft-early-lift-budget*",
         "{projectRoot}/scripts/retire-hour-host-requests-budget*",
         "{projectRoot}/scripts/boundary-sanitize-budget*",
+        "{projectRoot}/scripts/export-*",
         "{projectRoot}/budgets.yaml",
         "{workspaceRoot}/scripts/recoverable-budget.schema.json",
         "sharedGlobals",
@@ -95,7 +106,8 @@
         "{workspaceRoot}/Cargo.lock",
         "{workspaceRoot}/Cargo.toml",
         "{workspaceRoot}/crates/onevcs/Cargo.toml",
-        "{workspaceRoot}/.cargo/config.toml"
+        "{workspaceRoot}/.cargo/config.toml",
+        "{workspaceRoot}/scripts/export-*"
       ]
     }
   }

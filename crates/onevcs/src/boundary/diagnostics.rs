@@ -58,6 +58,22 @@ pub struct Phases {
     pub replacement_passes: usize,
     /// Re-matches of the fixed entries and locators made (a sanitisation's).
     pub rematches: usize,
+    /// Export extraction time.
+    pub extraction: Duration,
+    /// Export decoded bytes across all layers.
+    pub decoded_bytes: u64,
+    /// Export files requiring opaque acceptance.
+    pub opaque_files: usize,
+    /// Distinct destination LFS objects.
+    pub lfs_objects: usize,
+    /// Destination LFS object bytes.
+    pub lfs_bytes: u64,
+    /// Source and destination LFS time.
+    pub lfs: Duration,
+    /// Export tree and commit writing time.
+    pub tree_write: Duration,
+    /// Export screening worker count.
+    pub workers: usize,
 }
 
 impl Phases {
@@ -84,6 +100,8 @@ struct Line<'a> {
     bytes: usize,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     sanitize: Option<SanitizeLine>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    export: Option<ExportLine>,
 }
 
 /// A line's verdict word.
@@ -93,6 +111,18 @@ enum Word {
     Pass,
     Refuse,
     Unavailable,
+}
+
+#[derive(Serialize)]
+struct ExportLine {
+    extraction_us: u128,
+    decoded_bytes: u64,
+    opaque_files: usize,
+    lfs_objects: usize,
+    lfs_bytes: u64,
+    lfs_us: u128,
+    tree_write_us: u128,
+    workers: usize,
 }
 
 /// What only a sanitisation's line carries.
@@ -159,6 +189,16 @@ fn line<'a>(
         paths: phases.paths,
         bytes: phases.bytes,
         sanitize,
+        export: (check == "export").then_some(ExportLine {
+            extraction_us: phases.extraction.as_micros(),
+            decoded_bytes: phases.decoded_bytes,
+            opaque_files: phases.opaque_files,
+            lfs_objects: phases.lfs_objects,
+            lfs_bytes: phases.lfs_bytes,
+            lfs_us: phases.lfs.as_micros(),
+            tree_write_us: phases.tree_write.as_micros(),
+            workers: phases.workers,
+        }),
     }
 }
 

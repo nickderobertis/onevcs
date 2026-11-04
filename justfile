@@ -220,7 +220,7 @@ _audit-test:
 
 # The offline suite, split into the Nx test tiers that run it. Each is a nextest
 # filterset over the workspace's test binaries, so the split moves no test: the
-# four below select every test but the `smoke` binary's, which needs a GitHub
+# tiers below select every test but the `smoke` binary's, which needs a GitHub
 # credential and a scratch repository and is run by `just smoke-real` alone, and
 # the `release_pr` binary's, which needs the pinned `release-plz` and is run by
 # `just release-pr-journeys`, and the `lint_llm_diff` binary's, which needs the
@@ -233,15 +233,24 @@ _audit-test:
 scripts-suites := "test(/^(scripts|packaging|graph|coverage|smoke|state_root|pool_maintenance)::/)"
 # `onevcs:test` — both crates' unit tests and every test binary not named below
 # (`recorded`, `onevcs-testing`'s `journeys`).
-unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(lint_llm_diff) | binary(recovery-workload) | binary(pool-workload))"
-# `onevcs-e2e:test` — the binary's journeys.
-e2e-tier := "binary(e2e) & not " + scripts-suites
+unit-tier := "not (binary(e2e) | binary(contract) | binary(smoke) | binary(release_pr) | binary(lint_llm_diff) | binary(recovery-workload) | binary(export-workload) | binary(pool-workload))"
+# The GiB decoding bounds keep their own cache edge, with the same binary and
+# source module, so unrelated journeys do not repeat the expensive decoding.
+export-bounds-tier := "binary(e2e) & test(/^export::(extraction_depth_and_byte_limits_refuse_even_accepted_content_without_store_writes|the_export_decoding_budget_is_shared_across_files)$/)"
+# Held-read real-client cancellation owns its own affected edge.
+export-cancellation-tier := "binary(e2e) & test(/^export::(actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes|hosted_change_publication_cancels_actual_lfs_upload_before_its_git_push)$/)"
+
+# Host-scale registry reads own their cache edge; the other cost journeys stay in e2e.
+recovery-cost-tier := "binary(e2e) & test(/^cost::a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has$/)"
+
+# `onevcs-e2e:test` — the binary's remaining journeys.
+e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ") & not (" + export-cancellation-tier + ") & not (" + recovery-cost-tier + ")"
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
 scripts-tier := "binary(e2e) & " + scripts-suites
 # `onevcs-contract:test` — the contract tests over workflows, manifests and docs.
 contract-tier := "binary(contract)"
 
-# 95% line coverage is the gate, measured over all four tiers together by
+# 95% line coverage is the gate, measured over all instrumented tiers together by
 # `onevcs:coverage`; lower it only with a documented reason in AGENTS.md.
 coverage-floor := "95"
 
@@ -261,6 +270,18 @@ _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
+_recovery-cost-test: (_cover "onevcs-recovery-cost" recovery-cost-tier)
+_recovery-cost-test-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(recovery-cost-tier)}} {{recovery-no-tests}}
+
+_export-bounds-test: (_cover "onevcs-export-bounds" export-bounds-tier)
+_export-bounds-test-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(export-bounds-tier)}} {{recovery-no-tests}}
+
+_export-cancellation-test: (_cover "onevcs-export-cancellation" export-cancellation-tier)
+_export-cancellation-test-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(export-cancellation-tier)}} {{recovery-no-tests}}
+
 
 # Full-size recovery measurement owns one fixture build per scale and invocation.
 _recovery-test:
@@ -272,10 +293,21 @@ _recovery-covered:
     @node --test scripts/recoverable-budget.test.mjs scripts/boundary-check-budget.test.mjs crates/onevcs/scripts/draft-early-lift-budget.test.mjs crates/onevcs/scripts/retire-hour-host-requests-budget.test.mjs crates/onevcs/scripts/boundary-sanitize-budget.test.mjs
 
 # Regenerate validated current-build telemetry without running unrelated journeys.
-recoverable-journeys:
+recoverable-journeys: recovery-journeys export-journeys
+
+recovery-journeys:
     @node scripts/recoverable-invocation.mjs just _recovery-quick
 
-# The workload binary is `#![cfg(unix)]`, so on Windows it compiles to no tests and
+# Export evidence is deliberately release-profile and outside instrumented recovery.
+export-journeys:
+    @node scripts/export-invocation.mjs just _export-workload
+
+_export-workload:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo build -p onevcs --bin onevcs --release --locked --quiet
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" ONEVCS_EXPORT_BINARY="$PWD/target/release/onevcs" cargo nextest run -p onevcs --test export-workload --release --locked --test-threads=1 --status-level fail {{recovery-no-tests}}
+    @node --test crates/onevcs/scripts/export-budget.test.mjs
+
+# The workload binaries and export bounds are Unix-only, so on Windows they have no tests and
 # nextest's default refusal of an empty run is no finding; elsewhere an empty run
 # still fails, because there the journeys exist.
 recovery-no-tests := if os_family() == "windows" { "--no-tests=pass" } else { "--no-tests=fail" }
@@ -306,7 +338,7 @@ _contract-test-quick: (_quick contract-tier)
 
 # The coverage floor over every instrumented tier's profile, merged into one report.
 _crate-coverage:
-    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-scripts-e2e onevcs-contract onevcs-recovery
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-recovery-cost onevcs-export-bounds onevcs-export-cancellation onevcs-scripts-e2e onevcs-contract onevcs-recovery
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named

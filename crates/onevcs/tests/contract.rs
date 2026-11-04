@@ -9454,6 +9454,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         "pub fn inspect_repository(request: &InspectRequest) -> Result<InspectAnswer>;",
         "pub fn derive_terms(sources: &[TermSource], public: &PublicNames) -> Result<Vec<TermRule>>;",
         "pub fn export(providers: &Providers<'_>, request: &ExportRequest) -> Result<Exported>;",
+        "pub fn validate_accepted_opaque(patterns: &[String]) -> Result<(), Error>;",
         "pub fn rules_apply(request: &RulesApplyRequest) -> Result<RulesApplied>;",
         "pub struct Exported { pub branch: String, pub head: String }",
         "pub const EXPORT_SUBJECT: &str = \"Add generic example fixtures\";",
@@ -9512,7 +9513,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         rule: rule.clone(),
         identity: "github.com/hiddenco/quietharbor".to_owned(),
     };
-    let _ = ExportRequest {
+    let export_request = ExportRequest {
         from: "github.com/hiddenco/quietharbor".to_owned(),
         branch: "examples".to_owned(),
         directory: "examples".to_owned(),
@@ -9520,7 +9521,20 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
         target_directory: "fixtures".to_owned(),
         branch_name: "generic-fixtures".to_owned(),
         term_scope: TermScope::Registry,
+        accepted_opaque: Vec::new(),
     };
+    let serialized = serde_json::to_value(&export_request).expect("request serializes");
+    assert!(serialized.get("accepted_opaque").is_none());
+    let defaulted: ExportRequest =
+        serde_json::from_value(serialized).expect("old request defaults acceptance");
+    assert!(defaulted.accepted_opaque.is_empty());
+    let mut accepted = export_request;
+    accepted.accepted_opaque = vec!["*.jpg".to_owned()];
+    let serialized = serde_json::to_value(&accepted).expect("accepted request serializes");
+    assert_eq!(serialized["accepted_opaque"], json!(["*.jpg"]));
+    let round_trip: ExportRequest =
+        serde_json::from_value(serialized).expect("accepted request round trips");
+    assert_eq!(round_trip.accepted_opaque, accepted.accepted_opaque);
     let _ = Exported {
         branch: "generic-fixtures".to_owned(),
         head: "0".repeat(40),
@@ -9536,6 +9550,7 @@ fn the_boundary_amendment_declares_the_surface_it_added_and_the_code_has_exactly
     let _: fn(&[TermSource], &PublicNames) -> onevcs::Result<Vec<TermRule>> =
         onevcs::boundary::derive_terms;
     let _: fn(&Providers<'_>, &ExportRequest) -> onevcs::Result<Exported> = onevcs::export;
+    let _: fn(&[String]) -> onevcs::Result<()> = onevcs::validate_accepted_opaque;
     let _: fn(&RulesApplyRequest) -> onevcs::Result<RulesApplied> = onevcs::rules_apply;
     let _ = DeclaredVisibility::Private;
     let _ = Observation::Override;
@@ -10995,4 +11010,72 @@ fn check_visibility_amendment_declares_each_struct_with_the_fields_the_crate_has
     ] {
         assert_eq!(documented_fields(&section, name), fields, "{name}");
     }
+}
+
+#[test]
+fn shared_export_fixtures_match_the_declared_consumer_surface() {
+    use onevcs_testing::export_fixtures::*;
+    let contract = include_str!("../../../docs/contract.md");
+    for declaration in [
+        "pub mod export_fixtures {",
+        "pub enum Carrier { JpegExif, JpegXmp, PngText, StlHeader, ThreeMfMember, ThreeMfMemberName, GzipPayload, MarkdownText }",
+        "pub struct Plant { pub term: String, pub carrier: Carrier }",
+        "pub fn sample_set(plant: Option<&Plant>) -> Vec<(String, Vec<u8>)>;",
+        "pub fn sample_opaque_patterns() -> Vec<String>;",
+        "pub fn lfs_attributes() -> String;",
+        "pub enum Encoding { Utf8, Utf16Le, Utf16Be }",
+        "pub enum ZipForm { Stored, Deflate, Zip64 }",
+        "pub enum Layer { Gzip, Zip { member: String, form: ZipForm }, ZipName { form: ZipForm } }",
+        "pub fn layered(text: &str, encoding: Encoding, layers: &[Layer]) -> Vec<u8>;",
+        "pub fn gzip_members(texts: &[&str]) -> Vec<u8>;",
+        "pub enum UnreadableMember { Encrypted, Lzma }",
+        "pub fn zip_with_unreadable_member(kind: UnreadableMember, visible: &str) -> Vec<u8>;",
+        "pub fn gzip_of_zeros(decoded_len: u64) -> Vec<u8>;",
+    ] {
+        assert!(contract.contains(declaration), "missing declaration: {declaration}");
+    }
+    type SampleFiles = Vec<(String, Vec<u8>)>;
+    let _: fn(Option<&Plant>) -> SampleFiles = sample_set;
+    let _: fn() -> Vec<String> = sample_opaque_patterns;
+    let _: fn() -> String = lfs_attributes;
+    let _: fn(&str, Encoding, &[Layer]) -> Vec<u8> = layered;
+    let _: fn(&[&str]) -> Vec<u8> = gzip_members;
+    let _: fn(UnreadableMember, &str) -> Vec<u8> = zip_with_unreadable_member;
+    let _: fn(u64) -> Vec<u8> = gzip_of_zeros;
+    let plant = Plant {
+        term: "generic".into(),
+        carrier: Carrier::MarkdownText,
+    };
+    let _: String = plant.term;
+    let _: Carrier = plant.carrier;
+    // Exhaustive matches keep the declared enum sets exact for consumers.
+    let _ = |carrier: Carrier| match carrier {
+        Carrier::JpegExif
+        | Carrier::JpegXmp
+        | Carrier::PngText
+        | Carrier::StlHeader
+        | Carrier::ThreeMfMember
+        | Carrier::ThreeMfMemberName
+        | Carrier::GzipPayload
+        | Carrier::MarkdownText => (),
+    };
+    let _ = |encoding: Encoding| match encoding {
+        Encoding::Utf8 | Encoding::Utf16Le | Encoding::Utf16Be => (),
+    };
+    let _ = |form: ZipForm| match form {
+        ZipForm::Stored | ZipForm::Deflate | ZipForm::Zip64 => (),
+    };
+    let _ = |layer: Layer| match layer {
+        Layer::Gzip => (),
+        Layer::Zip { member, form } => {
+            let _: String = member;
+            let _: ZipForm = form;
+        }
+        Layer::ZipName { form } => {
+            let _: ZipForm = form;
+        }
+    };
+    let _ = |kind: UnreadableMember| match kind {
+        UnreadableMember::Encrypted | UnreadableMember::Lzma => (),
+    };
 }

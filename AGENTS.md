@@ -107,12 +107,12 @@ not tell you:
   `crateSource` in `nx.json` names `crates/**/*` rather than only that project's
   own root. A second Nx project for the wheel or the npm package would run the same
   `--workspace` commands twice.
-- **The tests are split into Nx projects by what they read, not by crate**:
-  `onevcs` (unit), `onevcs-e2e`, `onevcs-scripts-e2e`, `onevcs-contract`,
-  `onevcs-recovery` and `onevcs-compat`, plus the uncached `onevcs-release-pr` and `onevcs-live` and the cached
-  `onevcs-lint-llm-diff` journeys outside `check`. A script or workflow change reaches the scripts and contract tiers, not
-  the crate's unit tier. `workspace` (the root `project.json`) holds the judged
-  tier below and the uncached `msrv` and `deps-check`, outside `check` too.
+- **Tests are split into Nx projects by what they read, not by crate.**
+  Expensive decoding, cancellation and export telemetry keep their own precise
+  cache inputs so unrelated changes do not rerun them. Moving a journey to its own
+  edge changes cache ownership, never the normal check or coverage bar: keep both
+  complete. Script and workflow changes reach the scripts and contract tiers
+  rather than the crate's unit tier.
 - **Coverage is enforced once, at 95%, over the union of the instrumented tiers**
   (`onevcs:coverage`), never by one tier alone.
 - **`just lint-llm-diff` is plain llmlint under Nx's own cache.** The cached

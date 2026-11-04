@@ -1376,6 +1376,32 @@ fn publish_resolving(
     let context = &published;
     let environment = merge_path::comparison_env("origin", context.target.base());
 
+    if context.effective == MergePolicy::LocalDirect {
+        if let Some(refused) = git::upload_lfs_history(
+            &context.worktree,
+            &context.branch,
+            &compared,
+            &environment,
+            &|| context.cancellation.is_cancelled(),
+        )? {
+            return Err(match refused.ended {
+                git::Ended::Stopped => {
+                    cancelled_while("the original branch's Git LFS objects were being uploaded")
+                }
+                git::Ended::StoppedUnconfirmed(ref why) => cancelled_while(&format!(
+                    "the original branch's Git LFS upload was stopped, but ending every process \
+                     it started could not be confirmed ({why}), so some may still be running"
+                )),
+                _ => Error::PushRejected {
+                    reason: format!(
+                        "the original branch's Git LFS objects could not be uploaded before publication: {}",
+                        refused.diagnostic()
+                    ),
+                },
+            });
+        }
+    }
+
     let outcome = match context.effective {
         MergePolicy::LocalDirect => publish_locally(context, stream, &compared, &environment)?,
         _ => publish_as_change(context, stream, &subject, &environment, push)?,

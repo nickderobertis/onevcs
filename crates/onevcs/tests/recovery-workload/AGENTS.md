@@ -66,3 +66,10 @@ the plan names — eighteen `retire-finished` passes and two `sweep`s — on the
 binary. It counts what the stand-in's ledger and call log say each run asked, writes
 `retire-hour.json`, retracted with the other records, and
 `crates/onevcs/scripts/retire-hour-host-requests-budget.mjs` is the only reader.
+
+
+`export-workload` must run with `--release`: its budget times the in-process
+library, so a debug or coverage-instrumented build would measure different code.
+Keep it outside the recoverable read's clock. Its source-download retry must
+reuse the same source checkout and local LFS cache after the upload refusal;
+rebuilding either would measure another cold attempt instead of a retry.

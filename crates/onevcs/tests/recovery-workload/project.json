@@ -15,6 +15,7 @@
         "{workspaceRoot}/Cargo.toml",
         "{workspaceRoot}/Cargo.lock",
         "{projectRoot}/**/*",
+        "!{projectRoot}/export/**/*",
         "{workspaceRoot}/crates/onevcs/Cargo.toml",
         "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
         "{workspaceRoot}/crates/onevcs-testing/src/recovery.rs",
@@ -36,17 +37,24 @@
         "{workspaceRoot}/.cargo/config.toml"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/onevcs-recovery.profdata",
-        "{workspaceRoot}/target/budget-records"
+        "{workspaceRoot}/target/budget-records/recoverable.json",
+        "{workspaceRoot}/target/budget-records/boundary.json",
+        "{workspaceRoot}/target/budget-records/boundary-sanitize.json",
+        "{workspaceRoot}/target/budget-records/draft-hold.json",
+        "{workspaceRoot}/target/budget-records/retire-hour.json",
+        "{workspaceRoot}/target/budget-records/recoverable-invocation.json",
+        "{workspaceRoot}/target/budget-records/onevcs",
+        "{workspaceRoot}/target/coverage/onevcs-recovery.profdata"
       ]
     },
     "test-quick": {
-      "command": "just recoverable-journeys",
+      "command": "just recovery-journeys",
       "inputs": [
         "sharedGlobals",
         "{workspaceRoot}/Cargo.toml",
         "{workspaceRoot}/Cargo.lock",
         "{projectRoot}/**/*",
+        "!{projectRoot}/export/**/*",
         "{workspaceRoot}/crates/onevcs/Cargo.toml",
         "{workspaceRoot}/crates/onevcs-testing/Cargo.toml",
         "{workspaceRoot}/crates/onevcs-testing/src/recovery.rs",
@@ -68,7 +76,13 @@
         "{workspaceRoot}/.cargo/config.toml"
       ],
       "outputs": [
-        "{workspaceRoot}/target/budget-records"
+        "{workspaceRoot}/target/budget-records/recoverable.json",
+        "{workspaceRoot}/target/budget-records/boundary.json",
+        "{workspaceRoot}/target/budget-records/boundary-sanitize.json",
+        "{workspaceRoot}/target/budget-records/draft-hold.json",
+        "{workspaceRoot}/target/budget-records/retire-hour.json",
+        "{workspaceRoot}/target/budget-records/recoverable-invocation.json",
+        "{workspaceRoot}/target/budget-records/onevcs"
       ]
     },
     "check": {

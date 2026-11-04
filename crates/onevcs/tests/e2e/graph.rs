@@ -26,13 +26,17 @@ use crate::support::workspace_root;
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
 /// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 8] = [
+const GATE_PROJECTS: [&str; 12] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
     "onevcs-contract",
     "onevcs-e2e",
+    "onevcs-export-bounds",
+    "onevcs-export-cancellation",
+    "onevcs-export-workload",
     "onevcs-recovery",
+    "onevcs-recovery-cost",
     "onevcs-pool-workload",
     "onevcs-scripts-e2e",
 ];
@@ -306,7 +310,14 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
     for (path, tiers) in [
         (
             "scripts/coverage.sh",
-            &["onevcs-contract", "onevcs-recovery", "onevcs-scripts-e2e"][..],
+            &[
+                "onevcs-contract",
+                "onevcs-export-bounds",
+                "onevcs-export-cancellation",
+                "onevcs-recovery",
+                "onevcs-recovery-cost",
+                "onevcs-scripts-e2e",
+            ][..],
         ),
         (
             "npm/onevcs/bin/onevcs.js",
@@ -326,6 +337,118 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
             projects_running(&tasks, "test"),
             set(tiers),
             "a change to {path} selected {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn host_scale_cost_follows_its_own_inputs_without_unrelated_export_work() {
+    let checkout = Checkout::new();
+    for (path, expected) in [
+        ("crates/onevcs/tests/e2e/cost.rs", true),
+        ("crates/onevcs/src/recovery_cache.rs", true),
+        ("crates/onevcs/src/git.rs", true),
+        ("crates/onevcs/tests/e2e/cli.rs", false),
+        ("crates/onevcs/src/export/extract.rs", false),
+        ("crates/onevcs-testing/src/export_fixtures.rs", false),
+        (
+            "crates/onevcs/tests/recovery-workload/export/main.rs",
+            false,
+        ),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert_eq!(
+            projects_running(&tasks, "test").contains("onevcs-recovery-cost"),
+            expected,
+            "a change to {path} selected {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn export_bounds_only_follow_the_files_their_journeys_read() {
+    let checkout = Checkout::new();
+    for (path, expected) in [
+        ("crates/onevcs/tests/e2e/export.rs", true),
+        ("crates/onevcs/tests/e2e/boundary.rs", true),
+        ("crates/onevcs/tests/e2e/cli.rs", false),
+        ("crates/onevcs-testing/src/recovery.rs", false),
+        ("crates/onevcs-testing/src/boundary.rs", false),
+        ("crates/onevcs/src/retire.rs", false),
+        ("crates/onevcs/src/publish.rs", true),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert_eq!(
+            projects_running(&tasks, "test").contains("onevcs-export-bounds"),
+            expected,
+            "a change to {path} selected {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn full_size_export_and_recovery_workloads_have_independent_edges() {
+    let checkout = Checkout::new();
+    for (path, export, recovery) in [
+        ("crates/onevcs/tests/recovery-workload/main.rs", false, true),
+        (
+            "crates/onevcs/tests/recovery-workload/export/main.rs",
+            true,
+            false,
+        ),
+        (
+            "crates/onevcs/scripts/export-wall-time-budget.mjs",
+            true,
+            false,
+        ),
+        ("crates/onevcs/src/retire.rs", false, true),
+        ("crates/onevcs/src/cli.rs", false, true),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        let projects = projects_running(&tasks, "test");
+        assert_eq!(
+            projects.contains("onevcs-export-workload"),
+            export,
+            "{path}: {tasks:?}"
+        );
+        assert_eq!(
+            projects.contains("onevcs-recovery"),
+            recovery,
+            "{path}: {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn lfs_cancellation_follows_its_own_inputs_without_unrelated_commands() {
+    let checkout = Checkout::new();
+    for (path, expected) in [
+        ("crates/onevcs/tests/e2e/export_lfs_gate.rs", true),
+        ("crates/onevcs/src/publish.rs", true),
+        ("crates/onevcs/src/retire.rs", false),
+        ("crates/onevcs/tests/e2e/cli.rs", false),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert_eq!(
+            projects_running(&tasks, "test").contains("onevcs-export-cancellation"),
+            expected,
+            "{path}: {tasks:?}"
         );
     }
 }
@@ -409,7 +532,14 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
     let scoped = checkout.selected(&["just", "ci-tier", "run", "-t", "check"], &ordinary);
     assert_eq!(
         projects_running(&scoped, "check"),
-        set(&["onevcs-contract", "onevcs-recovery", "onevcs-scripts-e2e"]),
+        set(&[
+            "onevcs-contract",
+            "onevcs-export-bounds",
+            "onevcs-export-cancellation",
+            "onevcs-recovery",
+            "onevcs-recovery-cost",
+            "onevcs-scripts-e2e"
+        ]),
         "an ordinary pull request's affected tier selected {scoped:?}"
     );
 }

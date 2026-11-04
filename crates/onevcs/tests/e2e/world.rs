@@ -336,9 +336,20 @@ impl World {
     ) -> std::process::Output {
         let mut command = Command::new("git");
         command
+            // A journey may replace .gitconfig to exercise filters. Fixture
+            // commits still need an explicit identity, never host auto-detection.
+            .args([
+                "-c",
+                "user.useConfigOnly=true",
+                "-c",
+                "user.name=Journey",
+                "-c",
+                "user.email=journey@example.invalid",
+            ])
             .args(args)
             .current_dir(cwd)
             .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root);
         for (name, value) in env {

@@ -365,6 +365,7 @@ fn export(args: &ExportArgs, providers: &Providers<'_>) -> Result<u8> {
             target_directory: args.target_directory.clone(),
             branch_name: args.branch_name.clone(),
             term_scope: args.term_scope.scope(),
+            accepted_opaque: Vec::new(),
         },
     )?;
     if args.json {

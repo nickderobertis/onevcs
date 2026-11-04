@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "files": [
     "Cargo.toml",
     "Cargo.lock",
@@ -42,5 +42,8 @@
       "directory": "crates/onevcs/scripts",
       "prefix": "boundary-sanitize-budget"
     }
+  ],
+  "excludes": [
+    "crates/onevcs/tests/recovery-workload/export"
   ]
 }

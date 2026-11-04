@@ -76,6 +76,7 @@ mod import;
 mod integrate;
 mod label;
 mod landed;
+mod lfs_pointer;
 mod lock;
 mod merge_path;
 mod native_objects;
@@ -141,7 +142,8 @@ pub use event::{
     SOURCE_WORD,
 };
 pub use export::{
-    export, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL, EXPORT_AUTHOR_NAME, EXPORT_SUBJECT,
+    export, validate_accepted_opaque, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL,
+    EXPORT_AUTHOR_NAME, EXPORT_SUBJECT,
 };
 pub use holdup::{release_holdup, ReleaseChange, ReleaseHoldup};
 pub use host::{

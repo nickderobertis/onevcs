@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "accepted": [
+    { "path": "frame.jpg", "pattern": "*.jpg" },
+    { "path": "frame.png", "pattern": "*.png" },
+    { "path": "model.stl", "pattern": "*.stl" }
+  ],
+  "unused": []
+}
