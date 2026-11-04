@@ -1317,9 +1317,9 @@ dependencies = [
 
 [[package]]
 name = "privateterms"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a04734f7f8ba50c628bb3aa62ce25da3ceec1958c1b724f301de4f6f5054ed7"
+checksum = "7e3051afde0476a5588107df0b03d26aa26679f20457540137cabc79ca1ea79a"
 dependencies = [
  "aho-corasick",
  "icu_normalizer",

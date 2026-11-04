@@ -124,7 +124,7 @@ schemars = { version = "1", features = ["preserve_order"] }
 # replacement and locator screening. onevcs derives terms from private repositories
 # and holds its publications to them; finding a term is this crate's, so onevcs finds
 # one exactly as every other consumer of it does.
-privateterms = "0.1.1"
+privateterms = "0.1.2"
 # NFKC, so a full-width or compatibility spelling of a term compares as the term when
 # derivation narrows a name or an exception names a rule. The same normalization the
 # matcher applies; the same ICU family `icu_properties` is from, and already in the
