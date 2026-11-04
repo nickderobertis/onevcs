@@ -3035,11 +3035,16 @@ fn publishing_new_lfs_content_does_not_require_cached_media_already_on_origin() 
     }
     let host = Boundary::new(LOCAL);
     destination_lfs(&host, &onevcs_testing::export_fixtures::lfs_attributes());
-    std::fs::write(
-        host.world.path(".gitconfig"),
-        "[filter \"lfs\"]\nprocess = git-lfs filter-process\nrequired = true\n",
-    )
-    .expect("enable real LFS checkout filters");
+    // Preserve the world's explicit identity when enabling real checkout filters.
+    // Reject auto-detected identities so a developer host cannot hide a missing one.
+    for (key, value) in [
+        ("filter.lfs.process", "git-lfs filter-process"),
+        ("filter.lfs.required", "true"),
+        ("user.useConfigOnly", "true"),
+    ] {
+        host.world
+            .git(&host.public, &["config", "--global", key, value]);
+    }
     let source = host.source(&[]);
     let sample = onevcs_testing::export_fixtures::sample_set(None);
     let model = sample
