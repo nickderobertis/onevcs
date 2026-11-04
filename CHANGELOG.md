@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0](https://github.com/nickderobertis/onevcs/compare/v0.59.1...v0.60.0) - 2026-11-04
+
+### Added
+
+- *(export)* [**breaking**] carry every file across an export, binary and Git LFS included ([#608](https://github.com/nickderobertis/onevcs/pull/608))
+
 ## [0.59.1](https://github.com/nickderobertis/onevcs/compare/v0.59.0...v0.59.1) - 2026-11-03
 
 ### Fixed
