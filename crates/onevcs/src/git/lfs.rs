@@ -13,14 +13,39 @@ fn invalid(error: git2::Error) -> Error {
     }
 }
 
-fn storage(repository: &git2::Repository) -> Result<PathBuf> {
-    let configured = repository.config().map_err(invalid)?;
+fn repository_configuration(cwd: &Path) -> Result<(PathBuf, git2::Config)> {
+    #[cfg(not(windows))]
+    {
+        let repository = git2::Repository::open(cwd).map_err(invalid)?;
+        Ok((
+            repository.commondir().to_owned(),
+            repository.config().map_err(invalid)?,
+        ))
+    }
+    #[cfg(windows)]
+    {
+        windows_configuration(cwd)
+    }
+}
+
+#[cfg(any(test, windows))]
+fn windows_configuration(cwd: &Path) -> Result<(PathBuf, git2::Config)> {
+    // libgit2 reserves room for a full pack filename when opening a repository,
+    // rejecting session paths Git for Windows can use. Read its config directly.
+    let common = super::common_dir(cwd)?;
+    let mut config = git2::Config::open_default().map_err(invalid)?;
+    config
+        .add_file(&common.join("config"), git2::ConfigLevel::Local, true)
+        .map_err(invalid)?;
+    Ok((common, config))
+}
+
+fn storage(cwd: &Path) -> Result<PathBuf> {
+    let (common, configured) = repository_configuration(cwd)?;
     let storage = match configured.get_path("lfs.storage") {
         Ok(storage) if storage.is_absolute() => storage,
-        Ok(storage) => repository.commondir().join(storage),
-        Err(error) if error.code() == git2::ErrorCode::NotFound => {
-            repository.commondir().join("lfs")
-        }
+        Ok(storage) => common.join(storage),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => common.join("lfs"),
         Err(error) => return Err(invalid(error)),
     };
     std::path::absolute(storage).map_err(|error| Error::Invalid {
@@ -31,16 +56,13 @@ fn storage(repository: &git2::Repository) -> Result<PathBuf> {
 /// A shared Git clone must also retain access to its lender's LFS cache. Unlike
 /// Git objects, LFS objects do not follow `objects/info/alternates`.
 pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -> Result<()> {
-    let source = git2::Repository::open(source).map_err(invalid)?;
-    let storage = storage(&source)?;
-    let destination_repository = git2::Repository::open(destination).map_err(invalid)?;
-    let common = destination_repository.commondir();
+    let storage = storage(source)?;
+    let (common, _) = repository_configuration(destination)?;
     let _configuration = crate::lock::exclusive_at(&common.join("onevcs-lfs.lock"))?;
     let mut desired = vec![("lfs.storage", storage.to_string_lossy().into_owned())];
     // A repository-local endpoint is not cloned by Git. Keep the same endpoint
     // while the clone's origin is rewritten to the identity's actual origin.
-    let configured = git2::Repository::open(configured_from).map_err(invalid)?;
-    let configured = configured.config().map_err(invalid)?;
+    let (_, configured) = repository_configuration(configured_from)?;
     for key in [
         "lfs.url",
         "lfs.pushurl",
@@ -76,7 +98,7 @@ pub(super) fn carry(source: &Path, configured_from: &Path, destination: &Path) -
         .iter()
         .map(|(key, value)| (*key, value.as_str()))
         .collect();
-    super::append_in_place(common, &settings)
+    super::append_in_place(&common, &settings)
 }
 
 fn tree_oids(
@@ -107,6 +129,7 @@ fn tree_oids(
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn outgoing_oids(
     cwd: &Path,
     branch: &str,
@@ -155,6 +178,59 @@ fn outgoing_oids(
     Ok(oids)
 }
 
+#[cfg(windows)]
+fn outgoing_oids(
+    cwd: &Path,
+    branch: &str,
+    remote: &str,
+    base: Option<&str>,
+) -> Result<BTreeSet<Sha256Oid>> {
+    windows_outgoing_oids(cwd, branch, remote, base)
+}
+
+#[cfg(any(test, windows))]
+fn windows_outgoing_oids(
+    cwd: &Path,
+    branch: &str,
+    remote: &str,
+    base: Option<&str>,
+) -> Result<BTreeSet<Sha256Oid>> {
+    let reference = branch
+        .trim_start_matches('+')
+        .split(':')
+        .next()
+        .unwrap_or("");
+    let mut oids = BTreeSet::new();
+    if reference.is_empty() {
+        return Ok(oids);
+    }
+    // Git resolves refs and common directories without libgit2's repository-path
+    // limit. The object-only repository needs neither refs nor that path check.
+    let common = super::common_dir(cwd)?;
+    let odb = git2::Odb::new().map_err(invalid)?;
+    odb.add_disk_alternate(&common.join("objects").to_string_lossy())
+        .map_err(invalid)?;
+    let repository = git2::Repository::from_odb(odb).map_err(invalid)?;
+    let tip =
+        super::checked(&["rev-parse", &format!("{reference}^{{tree}}")], Some(cwd))?.trimmed();
+    let mut arguments = vec!["rev-list", "--format=%T", "--no-commit-header", reference];
+    let exclude;
+    if let Some(base) = base {
+        exclude = format!("^{base}");
+        arguments.push(&exclude);
+    } else {
+        exclude = format!("--glob=refs/remotes/{remote}/*");
+        arguments.extend(["--not", &exclude]);
+    }
+    let trees = super::checked(&arguments, Some(cwd))?.stdout;
+    let mut seen = BTreeSet::new();
+    for tree in std::iter::once(tip.as_str()).chain(trees.lines()) {
+        let tree = git2::Oid::from_str(tree).map_err(invalid)?;
+        tree_oids(&repository, tree, &mut seen, &mut oids).map_err(invalid)?;
+    }
+    Ok(oids)
+}
+
 /// Upload before the ref is pushed, without depending on a Git LFS hook being
 /// installed. A failure or cancellation is returned as that push's refusal.
 pub(super) fn upload(
@@ -180,8 +256,7 @@ pub(super) fn upload_from(
 ) -> Result<Option<Output>> {
     let oids = outgoing_oids(cwd, branch, remote, base)?;
     if !oids.is_empty() {
-        let repository = git2::Repository::open(cwd).map_err(invalid)?;
-        let media = storage(&repository)?.join("objects");
+        let media = storage(cwd)?.join("objects");
         if oids.iter().any(|oid| !oid.object_path(&media).is_file()) {
             // The pushed tree can retain a base pointer whose media was evicted
             // locally. The origin already owns it; recover that cache entry rather
@@ -216,4 +291,76 @@ pub(super) fn upload_from(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lfs_preparation_reads_long_session_paths_through_git() {
+        let directory = tempfile::tempdir().expect("scratch host");
+        // Beyond libgit2's Windows repository-open limit, including its reserved
+        // pack filename suffix, but within Git for Windows' ordinary path limit.
+        let checkout = directory.path().join("session".repeat(20)).join("clone");
+        std::fs::create_dir_all(&checkout).expect("session directory");
+        let git = |args: &[&str]| {
+            super::super::checked(
+                &[&["-c", "core.longpaths=true"], args].concat(),
+                Some(&checkout),
+            )
+            .expect("real Git succeeds")
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Journey"]);
+        git(&["config", "user.email", "journey@example.invalid"]);
+        git(&["config", "lfs.storage", "media"]);
+        let oid = "a".repeat(64);
+        std::fs::write(
+            checkout.join("model"),
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize 4\n"),
+        )
+        .expect("pointer");
+        git(&["add", "model"]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-qm", "pointer"]);
+        let base = git(&["rev-parse", "HEAD"]).trimmed();
+        git(&["branch", "remote-base"]);
+        git(&["update-ref", "refs/remotes/origin/main", &base]);
+        std::fs::remove_file(checkout.join("model")).expect("remove from tip");
+        git(&["add", "model"]);
+        git(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "remove pointer",
+        ]);
+        let (common, config) = windows_configuration(&checkout).expect("long-path configuration");
+        assert!(common.ends_with(".git"));
+        assert_eq!(
+            config.get_path("lfs.storage").expect("configured store"),
+            PathBuf::from("media")
+        );
+        // A tip with no pointer still sends pointers from outgoing history.
+        let found =
+            windows_outgoing_oids(&checkout, "main", "unseen", None).expect("outgoing history");
+        assert_eq!(
+            found.iter().map(Sha256Oid::as_str).collect::<Vec<_>>(),
+            vec![oid.as_str()]
+        );
+        assert!(windows_outgoing_oids(&checkout, "main", "origin", None)
+            .expect("remote exclusion")
+            .is_empty());
+        assert!(
+            windows_outgoing_oids(&checkout, "main", "origin", Some("remote-base"))
+                .expect("explicit base")
+                .is_empty()
+        );
+        assert!(
+            windows_outgoing_oids(&checkout, ":refs/heads/main", "origin", None)
+                .expect("deletion")
+                .is_empty()
+        );
+        assert!(windows_outgoing_oids(&checkout, "missing", "origin", None).is_err());
+    }
 }
