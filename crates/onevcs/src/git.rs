@@ -3848,6 +3848,17 @@ pub fn worktree_add_existing(cwd: &Path, path: &Path, branch: &str) -> Result<()
     checked(&["worktree", "add", &path, branch], Some(cwd)).map(|_| ())
 }
 
+/// Check out a publication's pointers without downloading unchanged LFS media.
+pub fn worktree_add_publication(cwd: &Path, path: &Path, branch: &str) -> Result<()> {
+    let path = git_path(path).to_string_lossy();
+    checked_with_env(
+        &["worktree", "add", &path, branch],
+        Some(cwd),
+        &[("GIT_LFS_SKIP_SMUDGE".to_owned(), "1".to_owned())],
+    )
+    .map(|_| ())
+}
+
 /// Check out a ref detached in a new scratch worktree.
 pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result<()> {
     let path = git_path(path).to_string_lossy();

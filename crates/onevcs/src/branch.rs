@@ -328,7 +328,9 @@ pub fn prepare(
     if !git::import_branch(&clone, &source, branch)? {
         return Err(error::at("read branch out of", &source)(branch));
     }
-    git::worktree_add_existing(&clone, &worktree, branch)?;
+    // Publication reads committed blobs and uploads LFS objects separately. Its
+    // disposable checkout needs pointers, not downloads of unchanged base media.
+    git::worktree_add_publication(&clone, &worktree, branch)?;
     git::fetch(&clone, "origin")?;
     let hosted = git::tip(&clone, &format!("origin/{branch}"));
 
