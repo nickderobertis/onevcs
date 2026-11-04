@@ -33,6 +33,7 @@ fn windows_configuration(cwd: &Path) -> Result<(PathBuf, git2::Config)> {
     // libgit2 reserves room for a full pack filename when opening a repository,
     // rejecting session paths Git for Windows can use. Read its config directly.
     let common = super::common_dir(cwd)?;
+    let common = super::git_path(&common).to_owned();
     let mut config = git2::Config::open_default().map_err(invalid)?;
     config
         .add_file(&common.join("config"), git2::ConfigLevel::Local, true)
@@ -207,6 +208,7 @@ fn windows_outgoing_oids(
     // Git resolves refs and common directories without libgit2's repository-path
     // limit. The object-only repository needs neither refs nor that path check.
     let common = super::common_dir(cwd)?;
+    let common = super::git_path(&common).to_owned();
     let odb = git2::Odb::new().map_err(invalid)?;
     odb.add_disk_alternate(&common.join("objects").to_string_lossy())
         .map_err(invalid)?;
@@ -326,6 +328,15 @@ mod tests {
         let base = git(&["rev-parse", "HEAD"]).trimmed();
         git(&["branch", "remote-base"]);
         git(&["update-ref", "refs/remotes/origin/main", &base]);
+        // Retry after Git already took the ref: excluded history still needs its
+        // tip's object uploaded, with either form of comparison base.
+        for base in [None, Some("main")] {
+            let tip = windows_outgoing_oids(&checkout, "main", "origin", base).expect("retry tip");
+            assert_eq!(
+                tip.iter().map(Sha256Oid::as_str).collect::<Vec<_>>(),
+                vec![oid.as_str()]
+            );
+        }
         std::fs::remove_file(checkout.join("model")).expect("remove from tip");
         git(&["add", "model"]);
         git(&[
@@ -362,5 +373,133 @@ mod tests {
                 .is_empty()
         );
         assert!(windows_outgoing_oids(&checkout, "missing", "origin", None).is_err());
+    }
+
+    #[test]
+    fn long_session_clones_carry_lfs_settings_and_publish_tip_objects() {
+        if !super::super::run(&["lfs", "version"], None).is_ok_and(|output| output.ok()) {
+            eprintln!("skipping real LFS publication: git-lfs is unavailable");
+            return;
+        }
+        for storage_kind in ["default", "relative", "absolute"] {
+            for key in [
+                "lfs.url",
+                "lfs.pushurl",
+                "remote.origin.lfsurl",
+                "remote.origin.lfspushurl",
+            ] {
+                let directory = tempfile::tempdir().expect("scratch host");
+                let root = super::super::git_path(directory.path()).to_owned();
+                let source = root.join("source");
+                let origin = root.join("origin");
+                let endpoint = root.join("endpoint");
+                std::fs::create_dir(&source).expect("source checkout");
+                let git = |cwd: &Path, args: &[&str]| {
+                    super::super::checked(args, Some(cwd)).expect("real Git succeeds")
+                };
+                git(
+                    &root,
+                    &[
+                        "init",
+                        "--bare",
+                        "-q",
+                        origin.to_str().expect("origin path"),
+                    ],
+                );
+                git(
+                    &root,
+                    &[
+                        "init",
+                        "--bare",
+                        "-q",
+                        endpoint.to_str().expect("endpoint path"),
+                    ],
+                );
+                git(&source, &["init", "-q", "-b", "main"]);
+                git(&source, &["config", "user.name", "Journey"]);
+                git(
+                    &source,
+                    &["config", "user.email", "journey@example.invalid"],
+                );
+                let store = match storage_kind {
+                    "relative" => {
+                        git(&source, &["config", "lfs.storage", "media"]);
+                        source.join(".git/media")
+                    }
+                    "absolute" => {
+                        let store = root.join("media");
+                        git(
+                            &source,
+                            &["config", "lfs.storage", store.to_str().expect("store path")],
+                        );
+                        store
+                    }
+                    _ => source.join(".git/lfs"),
+                };
+                git(
+                    &source,
+                    &[
+                        "remote",
+                        "add",
+                        "origin",
+                        origin.to_str().expect("origin path"),
+                    ],
+                );
+                let url = url::Url::from_file_path(&endpoint)
+                    .expect("file endpoint")
+                    .to_string();
+                git(&source, &["config", key, &url]);
+                let bytes = b"a model carried from the lender's LFS cache";
+                let oid = Sha256Oid::digest(bytes);
+                let media = oid.object_path(&store.join("objects"));
+                std::fs::create_dir_all(media.parent().expect("media parent"))
+                    .expect("media directories");
+                std::fs::write(&media, bytes).expect("source media");
+                let pointer = format!(
+                    "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                    bytes.len()
+                );
+                std::fs::write(source.join("model"), &pointer).expect("pointer");
+                git(&source, &["add", "model"]);
+                git(
+                    &source,
+                    &["-c", "commit.gpgsign=false", "commit", "-qm", "pointer"],
+                );
+                // Git has the tip already, but LFS has never received its media.
+                git(&source, &["push", "-q", "origin", "main"]);
+                let clone = root.join("session".repeat(20)).join("clone");
+                std::fs::create_dir_all(clone.parent().expect("session parent"))
+                    .expect("session directory");
+                super::super::clone_sharing(
+                    &source,
+                    &clone,
+                    origin.to_str().expect("origin path"),
+                    "main",
+                )
+                .expect("session clone carries settings");
+                assert_eq!(git(&clone, &["config", "--get", key]).trimmed(), url);
+                let carried_store =
+                    git(&clone, &["config", "--path", "--get", "lfs.storage"]).trimmed();
+                assert_eq!(
+                    std::fs::read(oid.object_path(&PathBuf::from(carried_store).join("objects")))
+                        .expect("carried cache"),
+                    bytes
+                );
+                let pushed =
+                    super::super::push_replacing(&clone, "main", "origin", None, &[], &|| false)
+                        .expect("real publication");
+                let super::super::Pushing::Ran(pushed) = pushed else {
+                    panic!("publication stopped")
+                };
+                assert!(pushed.accepted(), "{}", pushed.output());
+                assert_eq!(git(&origin, &["show", "main:model"]).stdout, pointer);
+                assert_eq!(
+                    std::fs::read(oid.object_path(&endpoint.join("lfs/objects")))
+                        .expect("uploaded media"),
+                    bytes
+                );
+                assert_eq!(std::fs::read(media).expect("lender retains media"), bytes);
+            }
+        }
     }
 }
