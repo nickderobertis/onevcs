@@ -922,6 +922,10 @@ fn prefix(repo: &Path) -> Option<Prefix> {
                     | "safe.directory"
                     | "gc.auto"
                     | "gc.pruneexpire"
+                    // Session clones share their source's LFS media store. These
+                    // immutable Git-object queries never read LFS media: pointers
+                    // remain ordinary blobs, including in merge comparisons.
+                    | "lfs.storage"
             )
         {
             return None;
