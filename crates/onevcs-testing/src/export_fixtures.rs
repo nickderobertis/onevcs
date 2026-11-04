@@ -492,7 +492,7 @@ mod tests {
             let mut decoded = Vec::new();
             for index in 0..archive.len() {
                 let mut member = archive.by_index(index).unwrap();
-                decoded.extend_from_slice(member.name().as_bytes());
+                decoded.extend_from_slice(member.name().unwrap().as_bytes());
                 member.read_to_end(&mut decoded).unwrap();
             }
             decoded
@@ -559,7 +559,7 @@ mod tests {
             let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
             let found = (0..archive.len()).any(|index| {
                 !matcher
-                    .find(archive.by_index(index).unwrap().name())
+                    .find(&archive.by_index(index).unwrap().name().unwrap())
                     .is_empty()
             });
             assert_eq!(
@@ -653,7 +653,12 @@ mod tests {
                 .read_to_string(&mut clean)
                 .unwrap();
             assert_eq!(clean, "<model/>\n");
-            assert!(archive.by_name("visible").is_err());
+            let decoded = archive.by_name("visible").and_then(|mut member| {
+                member
+                    .read_to_end(&mut Vec::new())
+                    .map_err(zip::result::ZipError::Io)
+            });
+            assert!(decoded.is_err());
         }
     }
 }

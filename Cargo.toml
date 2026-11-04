@@ -22,7 +22,7 @@ homepage = "https://github.com/nickderobertis/onevcs"
 
 [workspace.dependencies]
 flate2 = "1"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 globset = "0.4"
 dunce = "1.0.5"
 clap = { version = "4.6", features = ["derive"] }

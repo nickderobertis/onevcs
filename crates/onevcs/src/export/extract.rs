@@ -199,7 +199,12 @@ impl<F: FnMut(Surface, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F,
                     readable = false;
                     continue;
                 };
-                let member = format!("{at}!zip:{}", (self.locate)(raw.name()));
+                // llmlint: ignore[changed_behavior_has_e2e] zip 9.3 name() decodes valid UTF-8 directly and every other byte sequence through total CP437 conversion; its Result error is unreachable from an archive. Keep the defensive opaque refusal for a future decoder that can fail, rather than fabricate a mocked ZIP error. Existing real-archive journeys cover member names and continuation past unreadable members.
+                let Ok(name) = raw.name() else {
+                    readable = false;
+                    continue;
+                };
+                let member = format!("{at}!zip:{}", (self.locate)(&name));
                 (self.check)(
                     Surface::Path,
                     Location {
@@ -207,7 +212,7 @@ impl<F: FnMut(Surface, Location<'_>, &str), L: Fn(&str) -> String> Reader<'_, F,
                         offset: 0,
                         encoding: Encoding::Utf8,
                     },
-                    raw.name(),
+                    &name,
                 );
                 let supported = !raw.encrypted()
                     && matches!(
