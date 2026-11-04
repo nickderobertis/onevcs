@@ -26,7 +26,7 @@ use crate::support::workspace_root;
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
 /// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 11] = [
+const GATE_PROJECTS: [&str; 12] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
@@ -36,6 +36,7 @@ const GATE_PROJECTS: [&str; 11] = [
     "onevcs-export-cancellation",
     "onevcs-export-workload",
     "onevcs-recovery",
+    "onevcs-recovery-cost",
     "onevcs-pool-workload",
     "onevcs-scripts-e2e",
 ];
@@ -314,6 +315,7 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
                 "onevcs-export-bounds",
                 "onevcs-export-cancellation",
                 "onevcs-recovery",
+                "onevcs-recovery-cost",
                 "onevcs-scripts-e2e",
             ][..],
         ),
@@ -334,6 +336,34 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
         assert_eq!(
             projects_running(&tasks, "test"),
             set(tiers),
+            "a change to {path} selected {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn host_scale_cost_follows_its_own_inputs_without_unrelated_export_work() {
+    let checkout = Checkout::new();
+    for (path, expected) in [
+        ("crates/onevcs/tests/e2e/cost.rs", true),
+        ("crates/onevcs/src/recovery_cache.rs", true),
+        ("crates/onevcs/src/git.rs", true),
+        ("crates/onevcs/tests/e2e/cli.rs", false),
+        ("crates/onevcs/src/export/extract.rs", false),
+        ("crates/onevcs-testing/src/export_fixtures.rs", false),
+        (
+            "crates/onevcs/tests/recovery-workload/export/main.rs",
+            false,
+        ),
+    ] {
+        checkout.branch_changing("change", &[path]);
+        let tasks = checkout.selected(
+            &["bash", "scripts/nx-affected.sh", "-t", "test"],
+            &[("ONEVCS_NX_BASE_REF", "main")],
+        );
+        assert_eq!(
+            projects_running(&tasks, "test").contains("onevcs-recovery-cost"),
+            expected,
             "a change to {path} selected {tasks:?}"
         );
     }
@@ -507,6 +537,7 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
             "onevcs-export-bounds",
             "onevcs-export-cancellation",
             "onevcs-recovery",
+            "onevcs-recovery-cost",
             "onevcs-scripts-e2e"
         ]),
         "an ordinary pull request's affected tier selected {scoped:?}"

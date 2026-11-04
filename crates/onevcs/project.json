@@ -44,7 +44,8 @@
             "onevcs-scripts-e2e",
             "onevcs-contract",
             "onevcs-recovery",
-            "onevcs-export-cancellation"
+            "onevcs-export-cancellation",
+            "onevcs-recovery-cost"
           ]
         }
       ],

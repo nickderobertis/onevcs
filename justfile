@@ -240,8 +240,11 @@ export-bounds-tier := "binary(e2e) & test(/^export::(extraction_depth_and_byte_l
 # Held-read real-client cancellation owns its own affected edge.
 export-cancellation-tier := "binary(e2e) & test(/^export::(actual_pre_squash_lfs_upload_cancellation_reports_and_tears_down_its_processes|hosted_change_publication_cancels_actual_lfs_upload_before_its_git_push)$/)"
 
+# Host-scale registry reads own their cache edge; the other cost journeys stay in e2e.
+recovery-cost-tier := "binary(e2e) & test(/^cost::a_registry_the_size_of_a_busy_host_answers_inside_the_bound_a_hook_has$/)"
+
 # `onevcs-e2e:test` — the binary's remaining journeys.
-e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ") & not (" + export-cancellation-tier + ")"
+e2e-tier := "binary(e2e) & not " + scripts-suites + " & not (" + export-bounds-tier + ") & not (" + export-cancellation-tier + ") & not (" + recovery-cost-tier + ")"
 # `onevcs-scripts-e2e:test` — the journeys over the scripts and packaging.
 scripts-tier := "binary(e2e) & " + scripts-suites
 # `onevcs-contract:test` — the contract tests over workflows, manifests and docs.
@@ -267,6 +270,10 @@ _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
+_recovery-cost-test: (_cover "onevcs-recovery-cost" recovery-cost-tier)
+_recovery-cost-test-quick:
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(recovery-cost-tier)}} {{recovery-no-tests}}
+
 _export-bounds-test: (_cover "onevcs-export-bounds" export-bounds-tier)
 _export-bounds-test-quick:
     @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run --workspace --locked --status-level fail -E {{quote(export-bounds-tier)}} {{recovery-no-tests}}
@@ -331,7 +338,7 @@ _contract-test-quick: (_quick contract-tier)
 
 # The coverage floor over every instrumented tier's profile, merged into one report.
 _crate-coverage:
-    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-export-bounds onevcs-export-cancellation onevcs-scripts-e2e onevcs-contract onevcs-recovery
+    @bash scripts/coverage.sh report {{coverage-floor}} onevcs onevcs-e2e onevcs-recovery-cost onevcs-export-bounds onevcs-export-cancellation onevcs-scripts-e2e onevcs-contract onevcs-recovery
 
 # A build of `onevcs` that actually shipped, reading what this one writes. It is a
 # separate cargo project, and `compat/Cargo.toml` says why: two packages named
