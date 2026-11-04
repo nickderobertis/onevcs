@@ -30,7 +30,9 @@ fn git(repo: &Path, args: &[&str]) -> Vec<u8> {
         .expect("git runs");
     assert!(
         out.status.success(),
-        "git {args:?}: {}",
+        "git {args:?} ({}): stdout: {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     out.stdout
@@ -482,10 +484,18 @@ fn export_scenario(downloads: bool) {
     for (path, bytes) in &files {
         write(&source.join("examples").join(path), bytes);
     }
+    // Exercise hosts with git-lfs installed system-wide: its process filter takes
+    // precedence over the clean filter unless staging explicitly disables it.
+    git(
+        &source,
+        &["config", "filter.lfs.process", "git-lfs filter-process"],
+    );
     // Plain blobs in the first scenario, even though the exported attributes track them.
     git(
         &source,
         &[
+            "-c",
+            "filter.lfs.process=",
             "-c",
             "filter.lfs.clean=cat",
             "-c",
@@ -606,6 +616,8 @@ fn export_scenario(downloads: bool) {
     git(
         &source,
         &[
+            "-c",
+            "filter.lfs.process=",
             "-c",
             "filter.lfs.clean=cat",
             "-c",
