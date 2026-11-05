@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.20.0...onevcs-testing-v0.20.1) - 2026-11-05
+
+### Added
+
+- *(change)* upsert keyed standing comments without a session ([#620](https://github.com/nickderobertis/onevcs/pull/620))
+
 ## [0.20.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.19.31...onevcs-testing-v0.20.0) - 2026-11-04
 
 ### Added
