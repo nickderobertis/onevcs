@@ -733,7 +733,38 @@ fn public_api_consumer_driver() {
         serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
     assert_eq!(roundtrip, request);
     // This pre-existing implementor has no standing-comment overrides.
-    let old = onevcs_testing::MemoryHost::default();
+    // A consumer implementor written against the old required methods only.
+    // No test-provider crate participates in this library/CLI graph edge.
+    struct OldHost;
+    impl RemoteHost for OldHost {
+        fn authenticated_user(&self) -> onevcs::Result<String> {
+            unreachable!()
+        }
+        fn open_change(&self, _: onevcs::ChangeSpec) -> onevcs::Result<onevcs::ChangeRequest> {
+            unreachable!()
+        }
+        fn find_changes(&self, _: &str, _: &str) -> onevcs::Result<Vec<onevcs::ChangeRequest>> {
+            unreachable!()
+        }
+        fn change_checks(&self, _: &onevcs::ChangeRequest) -> onevcs::Result<onevcs::ChangeChecks> {
+            unreachable!()
+        }
+        fn check_log(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: &onevcs::Check,
+        ) -> onevcs::Result<onevcs::ArtifactId> {
+            unreachable!()
+        }
+        fn merge(
+            &self,
+            _: &onevcs::ChangeRequest,
+            _: onevcs::MergePolicy,
+        ) -> onevcs::Result<onevcs::MergeOutcome> {
+            unreachable!()
+        }
+    }
+    let old = OldHost;
     assert!(matches!(
         old.read_standing_comment(&ChangeId("1".to_owned()), "api"),
         Err(onevcs::Error::NotImplemented { .. })
