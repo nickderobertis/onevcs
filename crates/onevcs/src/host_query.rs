@@ -963,7 +963,12 @@ pub fn run_artifacts(request: &RunArtifactsRequest) -> HostQueryResult<HostArtif
         |body, path| {
             for value in array(body, "artifacts", path)? {
                 artifacts.push(HostArtifact {
-                    id: integer(value, "id", path)?.to_string(),
+                    id: integer(value, "id", path)?
+                        .to_string()
+                        .parse::<PositiveId>()
+                        .map_err(|reason| failed(format!("{path} id: {reason}")))?
+                        .get()
+                        .to_string(),
                     name: string(value, "name", path)?.to_owned(),
                     size_bytes: integer(value, "size_in_bytes", path)?,
                     expired: field(value, "expired", path)?

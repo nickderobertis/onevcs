@@ -20,7 +20,7 @@ fn marker(key: &str) -> String {
 
 struct Found {
     comment: StandingComment,
-    database_id: u64,
+    database_id: crate::host_query::PositiveId,
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -92,6 +92,11 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
         }
         let data = &response["data"];
         let viewer = string(&data["viewer"], "login")?;
+        if viewer.trim().is_empty() {
+            return Err(invalid(
+                "GitHub standing comment viewer login must not be blank",
+            ));
+        }
         let pull = &data["repository"]["pullRequest"];
         let head = string(pull, "headRefOid")?
             .parse::<crate::host_query::CommitSha>()
@@ -121,7 +126,12 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
                 },
                 database_id: comment["databaseId"]
                     .as_u64()
-                    .ok_or_else(|| invalid("GitHub standing comment lacks databaseId"))?,
+                    .ok_or_else(|| invalid("GitHub standing comment lacks databaseId"))?
+                    .to_string()
+                    .parse::<crate::host_query::PositiveId>()
+                    .map_err(|reason| {
+                        invalid(format!("GitHub standing comment databaseId: {reason}"))
+                    })?,
             });
         }
         let page = &pull["comments"]["pageInfo"];
@@ -182,7 +192,7 @@ pub(crate) fn upsert(
     let (method, path, status) = match found {
         Some(found) => (
             "PATCH",
-            format!("repos/{repo}/issues/comments/{}", found.database_id),
+            format!("repos/{repo}/issues/comments/{}", found.database_id.get()),
             StandingCommentStatus::Updated,
         ),
         None => (

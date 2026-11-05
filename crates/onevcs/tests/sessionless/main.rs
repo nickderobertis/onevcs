@@ -969,6 +969,8 @@ fn standing_comments_validate_host_responses_and_render_human_answers() {
         "headRefOid":HEAD,"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}
     }}}});
     for (pointer, bad, diagnostic) in [
+        ("/data/viewer/login", json!(""), "login"),
+        ("/data/viewer/login", json!("  "), "login"),
         (
             "/data/repository/pullRequest/comments/nodes",
             json!("bad"),
@@ -1026,6 +1028,7 @@ fn standing_comments_validate_host_responses_and_render_human_answers() {
         ),
         ("body", Value::Null, "body"),
         ("id", json!("wrong type"), "databaseId"),
+        ("id", json!(0), "databaseId"),
     ] {
         let mut state = valid.clone();
         state["comments"][0][field] = bad;
@@ -1187,6 +1190,7 @@ fn host_query_pages_validation_and_output_failures() {
     state.as_object_mut().unwrap().remove("artifact_pages");
     for (field, value, diagnostic) in [
         ("id", json!("bad"), "id"),
+        ("id", json!(0), "id"),
         ("name", json!(7), "name"),
         ("size_in_bytes", json!(-1), "size_in_bytes"),
         ("expired", json!("yes"), "expired"),

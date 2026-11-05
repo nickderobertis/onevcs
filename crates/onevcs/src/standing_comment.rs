@@ -36,6 +36,7 @@ pub struct StandingComment {
     /// The host's stable comment id.
     pub id: CommentId,
     /// The comment's URL.
+    // llmlint: ignore[invalid_states_unrepresentable] The authoritative public contract fixes url as String; the host adapter validates the comment URL before constructing this answer.
     pub url: String,
     /// The visible body.
     pub body: String,
