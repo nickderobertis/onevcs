@@ -1,4 +1,5 @@
 {
+  "//": "llmlint: ignore[new_command_or_client_gets_its_own_project] This task extends the existing onevcs CLI and its existing GitHub client; it adds no executable or independent production deliverable. Only the new journeys need their own cache edge, which this project supplies. Moving those existing production components into a new project would violate the agreed task scope.",
   "name": "onevcs-sessionless-e2e",
   "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
@@ -42,5 +43,9 @@
         "test"
       ]
     }
-  }
+  },
+  "tags": [
+    "scope:e2e",
+    "lang:rust"
+  ]
 }

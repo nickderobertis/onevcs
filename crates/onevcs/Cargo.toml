@@ -119,6 +119,8 @@ windows-sys = { version = "0.61.2", features = [
 fuser = { workspace = true }
 
 [dev-dependencies]
+syn = { version = "2.0.119", features = ["full"] }
+quote = "1.0.47"
 jsonschema = { version = "0.56.0", default-features = false }
 assert_cmd = { workspace = true }
 # The parser the honesty journey drives `run_with` with, which is the same one the

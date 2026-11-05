@@ -346,10 +346,13 @@ fn standing_comment_upsert(
             serde_json::to_string(&outcome).map_err(serialization)?
         );
     } else {
-        println!(
-            "{}",
-            serde_json::to_string(&outcome.status).map_err(serialization)?
-        );
+        let status = match outcome.status {
+            crate::StandingCommentStatus::Created => "created",
+            crate::StandingCommentStatus::Updated => "updated",
+            crate::StandingCommentStatus::Unchanged => "unchanged",
+            crate::StandingCommentStatus::Stale => "stale",
+        };
+        println!("{status}");
         if let Some(diagnostic) = outcome.diagnostic {
             eprintln!("{diagnostic}");
         }

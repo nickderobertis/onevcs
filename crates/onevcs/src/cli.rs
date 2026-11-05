@@ -235,6 +235,7 @@ pub struct HostRunJobsArgs {
 }
 
 /// Arguments for the bounded workflow run listing.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct HostRunsArgs {
     /// Repository as OWNER/NAME.
@@ -256,6 +257,7 @@ pub struct HostRunsArgs {
     #[arg(long)]
     pub json: bool,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Arguments for listing run artifacts.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -957,6 +959,7 @@ pub enum StandingCommentCommand {
 }
 
 /// Arguments for a keyed comment read.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct StandingCommentShowArgs {
     /// Change request URL.
@@ -968,8 +971,10 @@ pub struct StandingCommentShowArgs {
     #[arg(long)]
     pub json: bool,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Arguments for a keyed comment write.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct StandingCommentUpsertArgs {
     /// Change request URL.
@@ -987,6 +992,7 @@ pub struct StandingCommentUpsertArgs {
     #[arg(long)]
     pub json: bool,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Arguments for `onevcs change comments`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]

@@ -33,6 +33,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
             with (root / 'requests.jsonl').open('a') as log:
                 log.write(json.dumps({'method': self.command, 'path': self.path, 'payload': payload,
                                       'token': self.headers.get('Authorization')}) + '\n')
+            page = int(self.path.split('page=')[-1]) if '&page=' in self.path else 1
             status = state.get('status', 200)
             if '/issues/' in self.path and self.command in ('POST', 'PATCH'):
                 status = state.get('write_status', status)
@@ -47,27 +48,33 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
                         assert field in payload['query'], field
                     comments = [dict(id=c['node_id'], databaseId=c['id'], url=c['html_url'],
                                      body=c['body'], author={'login': c['author']}) for c in state['comments']]
-                    offset = int(variables.get('after', 'cursor:0').split(':')[1])
+                    offset = 0 if state.get('repeat_cursor') else int(variables.get('after', 'cursor:0').split(':')[1])
                     size = state.get('comment_page_size', 100)
                     more = offset + size < len(comments)
                     comments = comments[offset:offset + size]
                     result = {'data': {'viewer': {'login': 'viewer'}, 'repository': {'pullRequest': {
                         'headRefOid': state['head'], 'comments': {'nodes': comments,
-                            'pageInfo': {'hasNextPage': more, 'endCursor': 'cursor:' + str(offset + size) if more else None}}}}}}
+                            'pageInfo': {'hasNextPage': more, 'endCursor': 'cursor:1' if state.get('repeat_cursor') else ('cursor:' + str(offset + size) if more else None)}}}}}}
+                    result = state.get('graphql_override', result)
+                    if 'graphql_raw' in state:
+                        binary = state['graphql_raw'].encode()
                 elif '/issues/' in self.path:
                     if self.command == 'POST':
                         comment = dict(id=100 + len(state['comments']), node_id='owned-new',
-                                       html_url='https://github.com/owner/repo/issues/1#new', author='viewer')
+                                       html_url='https://github.com/owner/repo/pull/1#issuecomment-' + str(100 + len(state['comments'])), author='viewer')
                         state['comments'].append(comment)
                     else:
                         comment = next(c for c in state['comments'] if str(c['id']) == self.path.split('/')[-1])
                     comment['body'] = payload['body']
                     result = comment
                     (root / 'state.json').write_text(json.dumps(state))
+                    result = state.get('write_override', result)
+                    if 'write_raw' in state:
+                        binary = state['write_raw'].encode()
                 elif '/workflows/' in self.path:
                     result = {'workflow_runs': state['runs']}
                 elif '/runs/' in self.path:
-                    result = {'artifacts': state['artifacts']}
+                    result = {'artifacts': state.get('artifact_pages', [state['artifacts']])[page - 1]}
                 elif self.path.endswith('/zip'):
                     self.send_response(302)
                     self.send_header('Location', '/objects/archive')
@@ -83,6 +90,8 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
                     status, result = 404, {'message': 'Not Found'}
             data = binary if binary is not None else json.dumps(result).encode()
             self.send_response(status)
+            if '/runs/' in self.path and state.get('artifact_pages') and page < len(state['artifact_pages']):
+                self.send_header('Link', '<https://api.github.com' + self.path.split('&page=')[0] + '&page=' + str(page + 1) + '>; rel="next"')
             if '/workflows/' in self.path:
                 self.send_header('Link', '<https://api.github.com/forbidden-next-page>; rel="next"')
             self.send_header('Content-Length', str(len(data)))
@@ -90,7 +99,8 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
             self.wfile.write(data)
 
     server = http.server.HTTPServer(('127.0.0.1', 0), Host)
-    (root / 'port').write_text(str(server.server_port))
+    (root / 'port.ready').write_text(str(server.server_port))
+    (root / 'port.ready').replace(root / 'port')
     server.serve_forever()
 else:
     args = sys.argv[1:]
@@ -108,6 +118,8 @@ else:
             fields[key] = int(value) if arg == '-F' and value.isdigit() else value
         elif arg != '--include':
             path = arg
+    if path.startswith('https://api.github.com/'):
+        path = path.removeprefix('https://api.github.com/')
     if path == 'graphql':
         method = 'POST'
         query = fields.pop('query')

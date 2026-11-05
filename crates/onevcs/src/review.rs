@@ -513,7 +513,7 @@ fn checked_label(label: &str) -> Result<&str> {
     Ok(label)
 }
 
-fn checked_comment(comment: &CommentId) -> Result<&CommentId> {
+pub(crate) fn checked_comment(comment: &CommentId) -> Result<&CommentId> {
     if !is_markable(&comment.0) {
         return Err(invalid(format!(
             "{:?} is not a comment id: pass the id `onevcs change comments` reports",

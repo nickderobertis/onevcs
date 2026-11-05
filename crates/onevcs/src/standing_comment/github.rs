@@ -30,6 +30,35 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| invalid(format!("GitHub standing comment response lacks {key}")))
 }
 
+fn identity(value: &Value, id_field: &str, url_field: &str) -> Result<(CommentId, String)> {
+    let id = CommentId(string(value, id_field)?.to_owned());
+    crate::review::checked_comment(&id)?;
+    let text = string(value, url_field)?;
+    let url =
+        url::Url::parse(text).map_err(|_| invalid("GitHub standing comment URL is invalid"))?;
+    let parts: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    let comment = url
+        .fragment()
+        .and_then(|fragment| fragment.strip_prefix("issuecomment-"))
+        .and_then(|id| id.parse::<crate::host_query::PositiveId>().ok());
+    let addressed = matches!(parts.as_slice(), [owner, repo, kind, number]
+        if !owner.is_empty() && !repo.is_empty() && matches!(*kind, "pull" | "issues")
+            && number.parse::<crate::host_query::PositiveId>().is_ok());
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !addressed
+        || comment.is_none()
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(invalid(
+            "GitHub standing comment URL must name a comment on https://github.com",
+        ));
+    }
+    Ok((id, text.to_owned()))
+}
+
 fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Found>)> {
     let (owner, name) = repo
         .split_once('/')
@@ -64,7 +93,11 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
         let data = &response["data"];
         let viewer = string(&data["viewer"], "login")?;
         let pull = &data["repository"]["pullRequest"];
-        let head = string(pull, "headRefOid")?.to_owned();
+        let head = string(pull, "headRefOid")?
+            .parse::<crate::host_query::CommitSha>()
+            .map_err(|reason| invalid(format!("GitHub standing comment headRefOid: {reason}")))?
+            .as_str()
+            .to_owned();
         let comments = pull["comments"]["nodes"]
             .as_array()
             .ok_or_else(|| invalid("GitHub standing comment response lacks comments"))?;
@@ -79,10 +112,11 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
             if found.is_some() {
                 return Err(invalid("multiple owned standing comments have this key; serialize creators per destination/key"));
             }
+            let (id, url) = identity(comment, "id", "url")?;
             found = Some(Found {
                 comment: StandingComment {
-                    id: CommentId(string(comment, "id")?.to_owned()),
-                    url: string(comment, "url")?.to_owned(),
+                    id,
+                    url,
                     body: body.to_owned(),
                 },
                 database_id: comment["databaseId"]
@@ -167,10 +201,11 @@ pub(crate) fn upsert(
             "GitHub did not store the requested standing comment body",
         ));
     }
+    let (id, url) = identity(&response, "node_id", "html_url")?;
     Ok(StandingCommentOutcome {
         comment: Some(StandingComment {
-            id: CommentId(string(&response, "node_id")?.to_owned()),
-            url: string(&response, "html_url")?.to_owned(),
+            id,
+            url,
             body: body.to_owned(),
         }),
         status,

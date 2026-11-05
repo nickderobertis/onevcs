@@ -289,6 +289,7 @@ pub struct RunJobsRequest {
 }
 
 /// A bounded listing of completed workflow runs.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunsRequest {
     /// The repository.
@@ -302,6 +303,7 @@ pub struct RunsRequest {
     /// The response page size, from 1 through 100.
     pub limit: u32,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Artifacts attached to one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +326,7 @@ pub struct ArtifactRequest {
 }
 
 /// One response page of matching completed runs.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HostRuns {
     /// The schema version.
@@ -337,8 +340,10 @@ pub struct HostRuns {
     /// The requests made.
     pub cost: QueryCost,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// One artifact as reported by the host.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HostArtifact {
     /// The artifact id.
@@ -350,8 +355,10 @@ pub struct HostArtifact {
     /// Whether the archive has expired.
     pub expired: bool,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Artifacts attached to a run.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HostArtifacts {
     /// The schema version.
@@ -365,8 +372,10 @@ pub struct HostArtifacts {
     /// The requests made.
     pub cost: QueryCost,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// A downloaded artifact ZIP archive.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactDownload {
     /// The schema version.
@@ -380,6 +389,7 @@ pub struct ArtifactDownload {
     /// The GitHub REST requests; redirected object-store bytes are not REST requests.
     pub cost: QueryCost,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// The requests a query made, in the shape of the review read's cost plus the list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

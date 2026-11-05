@@ -142,6 +142,7 @@ fn standing_comment_cli_preserves_ownership_content_and_refuses_stale_heads() {
     assert_eq!(created["status"], "created");
     assert_eq!(created["comment"]["body"], "first body");
     let stored = host.state();
+    assert_eq!(stored["comments"][1]["body"], "first body\n\n<!-- onevcs:standing-comment:v1:1b158839f8aa339e89bb50b1603e90ec68e0fd5565fe10a7cb32729fddf7070a -->");
     assert_eq!(stored["description"], state["description"]);
     assert_eq!(stored["comments"][0], state["comments"][0]);
     // Another author's copy of our exact marker is not ours.
@@ -261,7 +262,11 @@ fn standing_comment_cli_reports_auth_body_limit_and_unsupported_hosts() {
     host.set(&state);
     let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("401"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("401"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let mut state = host.state();
     state["status"] = json!(403);
     state["message"] = json!("Resource not accessible");
@@ -717,6 +722,83 @@ fn public_api_consumer_driver() {
             .map(String::as_str)
             .collect()
     );
+    // Parse both declaration sources, comparing field types, enum variants and
+    // function signatures as Rust tokens rather than maintaining a third copy.
+    use quote::ToTokens;
+    let declarations = |source: &str| {
+        syn::parse_file(source)
+            .unwrap()
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Struct(item) => Some((
+                    item.ident.to_string(),
+                    item.fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}:{}",
+                                field
+                                    .ident
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default(),
+                                field.ty.to_token_stream()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )),
+                syn::Item::Enum(item) => Some((
+                    item.ident.to_string(),
+                    item.variants
+                        .iter()
+                        .map(|variant| variant.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )),
+                syn::Item::Fn(mut item) => {
+                    item.sig.inputs.pop_punct();
+                    Some((
+                        item.sig.ident.to_string(),
+                        item.sig.to_token_stream().to_string(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let mut actual = declarations(include_str!("../../src/standing_comment.rs"));
+    actual.extend(declarations(include_str!("../../src/host_query.rs")));
+    let amendment = amendment.split("\n---\n").next().unwrap();
+    let blocks: Vec<_> = amendment
+        .split("```rust\n")
+        .skip(1)
+        .map(|block| block.split("```").next().unwrap())
+        .collect();
+    assert_eq!(blocks.len(), 2);
+    for block in blocks {
+        let runnable = block
+            .lines()
+            .map(|line| {
+                if line.starts_with("pub fn ") {
+                    format!("{} {{ unreachable!() }}", line.trim_end_matches(';'))
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (name, definition) in declarations(&runnable) {
+            assert_eq!(
+                actual.get(&name),
+                Some(&definition),
+                "contract and authoritative {name} Rust declaration"
+            );
+        }
+    }
+    assert!(amendment
+        .contains("`<!-- onevcs:standing-comment:v1:<lowercase SHA-256 of UTF-8 key> -->`"));
     let minimal = StandingCommentRequest {
         expected_head: None,
         ..request.clone()
@@ -820,5 +902,371 @@ fn external_public_api_consumer_uses_real_host_without_actions_or_state() {
         writes.len(),
         2,
         "create/update write; unchanged/stale only read"
+    );
+}
+
+#[test]
+fn standing_comments_validate_host_responses_and_render_human_answers() {
+    let host = Boundary::new();
+    let file = host.root.path().join("body");
+    std::fs::write(&file, "human body").unwrap();
+    let args = [
+        "change",
+        "comment",
+        "upsert",
+        CHANGE,
+        "--key",
+        "ci",
+        "--body-file",
+        file.to_str().unwrap(),
+    ];
+    let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    for expected in ["created\n", "unchanged\n"] {
+        let output = host.run(&args);
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    std::fs::write(&file, "edited human body").unwrap();
+    let output = host.run(&args);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "updated\n");
+    let output = host
+        .command()
+        .args(args)
+        .args(["--head", &"b".repeat(40)])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "stale\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no comment written"));
+    let comment = host.success(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+    let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci"]);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{}\nedited human body\n", comment["url"].as_str().unwrap())
+    );
+    let valid = host.state();
+    for (field, bad, diagnostic) in [
+        ("head", json!("not-a-sha"), "headRefOid"),
+        ("head", Value::Null, "headRefOid"),
+        ("graphql_raw", json!("not JSON"), "response"),
+        (
+            "graphql_override",
+            json!({"errors":[{"message":"Resource not accessible"}]}),
+            "read failed",
+        ),
+        ("graphql_override", json!({"data":{}}), "login"),
+    ] {
+        let mut state = valid.clone();
+        state[field] = bad;
+        host.set(&state);
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+        assert!(!output.status.success(), "accepted malformed {field}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
+    let envelope = json!({"data":{"viewer":{"login":"viewer"},"repository":{"pullRequest":{
+        "headRefOid":HEAD,"comments":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}
+    }}}});
+    for (pointer, bad, diagnostic) in [
+        (
+            "/data/repository/pullRequest/comments/nodes",
+            json!("bad"),
+            "comments",
+        ),
+        (
+            "/data/repository/pullRequest/comments/pageInfo/hasNextPage",
+            Value::Null,
+            "pageInfo",
+        ),
+        (
+            "/data/repository/pullRequest/comments/pageInfo",
+            json!({"hasNextPage":true}),
+            "endCursor",
+        ),
+    ] {
+        let mut response = envelope.clone();
+        *response.pointer_mut(pointer).unwrap() = bad;
+        let mut state = valid.clone();
+        state["graphql_override"] = response;
+        host.set(&state);
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
+    for (field, bad, diagnostic) in [
+        ("node_id", json!(""), "comment id"),
+        ("node_id", json!("bad id"), "comment id"),
+        ("html_url", json!("not a URL"), "URL"),
+        (
+            "html_url",
+            json!("https://example.com/owner/repo/pull/1#issuecomment-1"),
+            "URL",
+        ),
+        ("html_url", json!("https://github.com/"), "URL"),
+        (
+            "html_url",
+            json!("http://github.com/owner/repo/pull/1#issuecomment-1"),
+            "URL",
+        ),
+        (
+            "html_url",
+            json!("https://u:p@github.com/owner/repo/pull/1#issuecomment-1"),
+            "URL",
+        ),
+        (
+            "html_url",
+            json!("https://github.com:123/owner/repo/pull/1#issuecomment-1"),
+            "URL",
+        ),
+        (
+            "html_url",
+            json!("https://github.com/owner/repo/pull/1"),
+            "URL",
+        ),
+        ("body", Value::Null, "body"),
+        ("id", json!("wrong type"), "databaseId"),
+    ] {
+        let mut state = valid.clone();
+        state["comments"][0][field] = bad;
+        host.set(&state);
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+        assert!(!output.status.success(), "accepted malformed {field}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut repeated = valid.clone();
+    repeated["comments"]
+        .as_array_mut()
+        .unwrap()
+        .push(valid["comments"][0].clone());
+    repeated["comments"][0]["author"] = json!("other");
+    repeated["comment_page_size"] = json!(1);
+    repeated["repeat_cursor"] = json!(true);
+    host.set(&repeated);
+    let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("repeated a cursor"));
+    for (field, value, diagnostic) in [
+        ("write_raw", json!("bad JSON"), "write response"),
+        (
+            "write_override",
+            json!({"body":"different"}),
+            "did not store",
+        ),
+        (
+            "write_override",
+            json!({"body":"edited human body\n\n<!-- onevcs:standing-comment:v1:1b158839f8aa339e89bb50b1603e90ec68e0fd5565fe10a7cb32729fddf7070a -->","node_id":"","html_url":"https://github.com/owner/repo/pull/1#issuecomment-1"}),
+            "comment id",
+        ),
+        (
+            "write_override",
+            json!({"body":"edited human body\n\n<!-- onevcs:standing-comment:v1:1b158839f8aa339e89bb50b1603e90ec68e0fd5565fe10a7cb32729fddf7070a -->","node_id":"valid-id","html_url":"bad"}),
+            "URL",
+        ),
+    ] {
+        let mut state = valid.clone();
+        state["comments"] = json!([]);
+        state[field] = value;
+        host.set(&state);
+        let output = host.run(&args);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    host.set(&valid);
+    for key in ["x".repeat(256), "é".repeat(128)] {
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", &key, "--json"]);
+        assert!(output.status.success());
+    }
+    for key in ["x".repeat(257), "é".repeat(129)] {
+        let before = host.requests().len();
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", &key, "--json"]);
+        assert!(!output.status.success());
+        assert_eq!(host.requests().len(), before);
+    }
+}
+
+#[test]
+fn host_query_pages_validation_and_output_failures() {
+    let host = Boundary::new();
+    for (branch, event, limit) in [
+        ("main", "push", "0"),
+        ("main", "push", "101"),
+        (" ", "push", "1"),
+        ("main", "", "1"),
+    ] {
+        let output = host.run(&[
+            "host",
+            "runs",
+            "--repo",
+            "owner/repo",
+            "--branch",
+            branch,
+            "--workflow",
+            "7",
+            "--event",
+            event,
+            "--limit",
+            limit,
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(1));
+    }
+    assert!(
+        host.requests().is_empty(),
+        "invalid requests never reach the host"
+    );
+    let mut state = host.state();
+    let mut earlier = run(8, 7, "main", "push", "completed");
+    earlier["created_at"] = json!("2026-11-04T11:00:00Z");
+    state["runs"] = json!([
+        earlier,
+        run(9, 7, "main", "push", "completed"),
+        run(11, 7, "main", "push", "completed")
+    ]);
+    state["artifact_pages"] = json!([
+        [{"id":42,"name":"first","size_in_bytes":250,"expired":false}],
+        [{"id":43,"name":"later","size_in_bytes":200,"expired":true}]
+    ]);
+    host.set(&state);
+    let result = host.success(&[
+        "host",
+        "runs",
+        "--repo",
+        "owner/repo",
+        "--branch",
+        "main",
+        "--workflow",
+        "7",
+        "--event",
+        "push",
+        "--limit",
+        "2",
+        "--json",
+    ]);
+    assert_eq!(
+        result["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| run["id"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [11, 9]
+    );
+    let before = host.requests().len();
+    let artifacts = host.success(&[
+        "host",
+        "run-artifacts",
+        "--repo",
+        "owner/repo",
+        "--run",
+        "9",
+        "--json",
+    ]);
+    assert_eq!(artifacts["artifacts"].as_array().unwrap().len(), 2);
+    assert_eq!(artifacts["artifacts"][1]["name"], "later");
+    assert_eq!(artifacts["cost"]["rest_requests"], 2);
+    let served: Vec<_> = host.requests()[before..]
+        .iter()
+        .map(|request| {
+            request["path"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches('/')
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(artifacts["cost"]["requests"], json!(served));
+    let item = state["artifact_pages"][0][0].clone();
+    state.as_object_mut().unwrap().remove("artifact_pages");
+    for (field, value, diagnostic) in [
+        ("id", json!("bad"), "id"),
+        ("name", json!(7), "name"),
+        ("size_in_bytes", json!(-1), "size_in_bytes"),
+        ("expired", json!("yes"), "expired"),
+    ] {
+        let mut entry = item.clone();
+        entry[field] = value;
+        state["artifacts"] = json!([entry]);
+        host.set(&state);
+        let output = host.run(&[
+            "host",
+            "run-artifacts",
+            "--repo",
+            "owner/repo",
+            "--run",
+            "9",
+            "--json",
+        ]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
+    state["artifacts"] = json!([]);
+    host.set(&state);
+    let output_dir = host.root.path().join("directory");
+    std::fs::create_dir(&output_dir).unwrap();
+    for (path, diagnostic) in [
+        (host.root.path().join("missing/archive.zip"), "cannot write"),
+        (output_dir, "cannot save"),
+    ] {
+        let output = host.run(&[
+            "host",
+            "artifact",
+            "--repo",
+            "owner/repo",
+            "--id",
+            "42",
+            "--output",
+            path.to_str().unwrap(),
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
+    let file = host.root.path().join("replace.zip");
+    std::fs::write(&file, "previous").unwrap();
+    let args = [
+        "host",
+        "artifact",
+        "--repo",
+        "owner/repo",
+        "--id",
+        "42",
+        "--output",
+        file.to_str().unwrap(),
+        "--json",
+    ];
+    let mut command = host.command();
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the child-only hook calls async-signal-safe libc functions and
+    // imposes a file-size limit solely on the subprocess started by this test.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let output = command.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot write"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "previous");
+    host.success(&args);
+    assert!(
+        std::fs::read(&file).unwrap().starts_with(b"PK"),
+        "successful download replaces existing output"
     );
 }

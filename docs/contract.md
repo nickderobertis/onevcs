@@ -7078,7 +7078,12 @@ A matching body returns `Unchanged`. A mismatched expected head returns `Stale`
 with a diagnostic and no write, even for an otherwise identical body. Statuses
 serialize as `created`, `updated`, `unchanged`, `stale`; absent optional request
 and outcome fields are omitted and deserialize as `None`. `show --json` prints
-a comment or `null`; `upsert --json` prints the outcome. Stale is an answered
+a comment or `null`; `upsert --json` prints the outcome. Without `--json`, show
+prints the URL and visible body, or nothing when absent; upsert prints the lowercase
+status and any stale diagnostic on stderr. GitHub heads must be full commit SHAs,
+owned comment IDs must be nonblank marker-safe IDs, and their URLs must address
+GitHub issue comments over HTTPS; malformed responses fail instead of reporting
+stale or successful outcomes. Stale is an answered
 outcome (exit 0); unsupported providers return `Error::NotImplemented` (CLI 70).
 Other validation and host failures use the existing error mapping.
 

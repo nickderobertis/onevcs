@@ -15,6 +15,7 @@ use crate::{ChangeRef, CommentId, Providers};
 pub(crate) mod github;
 
 /// A standing comment to create or replace.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative standing-comment contract fixes key and expected_head as String/Option<String>; the public API validates both before resolving or calling a host, and adding public newtypes would depart from that agreed surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StandingCommentRequest {
     /// The destination change request.
@@ -27,6 +28,7 @@ pub struct StandingCommentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_head: Option<String>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// One owned standing comment, without its transport marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

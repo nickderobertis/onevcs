@@ -269,8 +269,9 @@ _quick filter:
 _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
 _sessionless-test: (_cover "onevcs-sessionless-e2e" "binary(sessionless)")
+# The HTTP executable fixture uses Unix shebangs; Windows still builds this tier.
 _sessionless-test-quick:
-    @cargo nextest run -p onevcs --test sessionless --locked --status-level fail
+    @RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-D warnings" cargo nextest run -p onevcs --test sessionless --locked --status-level fail {{recovery-no-tests}}
 _e2e-test: (_cover "onevcs-e2e" e2e-tier)
 _e2e-test-quick: (_quick e2e-tier)
 _recovery-cost-test: (_cover "onevcs-recovery-cost" recovery-cost-tier)
