@@ -42,7 +42,7 @@ pub(crate) mod github;
 /// A URL needs no session and no registry: it names the repository and the change
 /// request on the host directly, so a caller on a host that has never seen the
 /// change can still read and answer its feedback.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChangeRef {
     /// The open change request of this session — the one `publish` opened for it.
@@ -60,7 +60,9 @@ pub enum ChangeRef {
 // spell. Every one this crate reads is taken from a host response, and one a caller
 // hands in is refused before it reaches a reply marker or a host route when it could
 // not be one.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct CommentId(pub String);
 
@@ -522,9 +524,9 @@ fn checked_comment(comment: &CommentId) -> Result<&CommentId> {
 }
 
 /// One change request, resolved as far as the host that answers for it.
-struct Addressed {
-    host: Box<dyn RemoteHost>,
-    id: ChangeId,
+pub(crate) struct Addressed {
+    pub(crate) host: Box<dyn RemoteHost>,
+    pub(crate) id: ChangeId,
     /// Its canonical URL, which keys the reply lock and names it in every record.
     change_url: String,
     /// The repository's identity key, which the boundary check is made for.
@@ -539,7 +541,7 @@ enum StreamOf {
 }
 
 impl Addressed {
-    fn of(providers: &Providers<'_>, change: &ChangeRef) -> Result<Self> {
+    pub(crate) fn of(providers: &Providers<'_>, change: &ChangeRef) -> Result<Self> {
         match change {
             ChangeRef::Session(token) => {
                 let session = change::Addressed::of(providers, token)?;

@@ -139,6 +139,31 @@ fn check_rollup_refused_for_pat(error: &Error) -> bool {
 
 /// Everything `onevcs` asks of a repository's remote host.
 pub trait RemoteHost {
+    /// Read one keyed comment owned by the authenticated author. Unsupported by default.
+    fn read_standing_comment(
+        &self,
+        _change: &ChangeId,
+        _key: &str,
+    ) -> Result<Option<crate::StandingComment>> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::read_standing_comment",
+        })
+    }
+
+    /// Upsert an owned keyed comment, refusing a stale expected head before writing.
+    /// Creators must be serialized per destination/key: host creation is not transactional.
+    fn upsert_standing_comment(
+        &self,
+        _change: &ChangeId,
+        _key: &str,
+        _body: &str,
+        _expected_head: Option<&str>,
+    ) -> Result<crate::StandingCommentOutcome> {
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::upsert_standing_comment",
+        })
+    }
+
     /// Who the host believes is calling.
     fn authenticated_user(&self) -> Result<String>;
 
@@ -2014,6 +2039,24 @@ fn addressable_branch(value: &str, what: &str) -> Result<()> {
 }
 
 impl RemoteHost for GitHub {
+    fn read_standing_comment(
+        &self,
+        change: &ChangeId,
+        key: &str,
+    ) -> Result<Option<crate::StandingComment>> {
+        crate::standing_comment::github::show(&self.repo, change, key)
+    }
+
+    fn upsert_standing_comment(
+        &self,
+        change: &ChangeId,
+        key: &str,
+        body: &str,
+        expected_head: Option<&str>,
+    ) -> Result<crate::StandingCommentOutcome> {
+        crate::standing_comment::github::upsert(&self.repo, change, key, body, expected_head)
+    }
+
     fn authenticated_user(&self) -> Result<String> {
         let login = gh::invoke(&["api", "user", "--jq", ".login"])?
             .trim()

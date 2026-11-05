@@ -1,0 +1,46 @@
+{
+  "name": "onevcs-sessionless-e2e",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "implicitDependencies": [
+    "onevcs"
+  ],
+  "targets": {
+    "test": {
+      "command": "just _sessionless-test",
+      "inputs": [
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/.cargo/config.toml",
+        "sharedGlobals",
+        "{workspaceRoot}/scripts/coverage.sh",
+        "{workspaceRoot}/docs/contract.md"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/onevcs-sessionless-e2e.profdata"
+      ]
+    },
+    "test-quick": {
+      "command": "just _sessionless-test-quick",
+      "inputs": [
+        "{workspaceRoot}/crates/onevcs/src/**/*",
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/crates/onevcs/Cargo.toml",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/.cargo/config.toml",
+        "sharedGlobals",
+        "{workspaceRoot}/docs/contract.md"
+      ]
+    },
+    "check": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test"
+      ]
+    }
+  }
+}

@@ -119,6 +119,7 @@ windows-sys = { version = "0.61.2", features = [
 fuser = { workspace = true }
 
 [dev-dependencies]
+jsonschema = { version = "0.56.0", default-features = false }
 assert_cmd = { workspace = true }
 # The parser the honesty journey drives `run_with` with, which is the same one the
 # binary uses.
@@ -200,3 +201,7 @@ path = "tests/pool-workload/main.rs"
 [[test]]
 name = "export-workload"
 path = "tests/recovery-workload/export/main.rs"
+
+[[test]]
+name = "sessionless"
+path = "tests/sessionless/main.rs"

@@ -491,3 +491,20 @@ around the command even on failure. Measurement errors warn and leave disk null
 without changing the outcome; `duration_ms` times the command alone. Human slot
 lines append `, worktree <before> → <after>` in sweep's byte format.
 <!-- repository-maintenance-summary:end -->
+
+Standing comments work on a clean runner without registration:
+
+```sh
+onevcs change comment upsert https://github.com/owner/repo/pull/1 --key ci --body-file report.md --head "$SHA" --json
+onevcs change comment show https://github.com/owner/repo/pull/1 --key ci --json
+onevcs host runs --repo owner/repo --branch main --workflow 123 --event push --limit 100 --json
+onevcs host run-artifacts --repo owner/repo --run 456 --json
+onevcs host artifact --repo owner/repo --id 789 --output history.zip --json
+```
+
+Only a comment by the authenticated author carrying the key's marker is updated.
+An identical body is unchanged; a stale head refuses the write. Serialize creators
+per destination/key in the calling action: GitHub has no transactional
+create-if-absent operation. Run lookup reads one response page; the caller validates
+artifact provenance and local git ancestry. Downloaded artifacts are ZIP archives.
+`host schema --json` now prints bundle version 2; each host answer remains version 1.

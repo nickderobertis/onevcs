@@ -3767,6 +3767,14 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
         ("change show", operation!(onevcs::session_change)),
         ("change describe", operation!(onevcs::describe_change)),
         ("change comments", operation!(onevcs::review_comments)),
+        (
+            "change comment show",
+            operation!(onevcs::read_standing_comment),
+        ),
+        (
+            "change comment upsert",
+            operation!(onevcs::upsert_standing_comment),
+        ),
         ("change reply", operation!(onevcs::reply_to_comment)),
         ("change standings", operation!(onevcs::change_standings)),
         ("change follow-checks", operation!(onevcs::follow_checks)),
@@ -3832,6 +3840,12 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
             operation!(onevcs::host_query::commit_runs),
         ),
         ("host run-jobs", operation!(onevcs::host_query::run_jobs)),
+        ("host runs", operation!(onevcs::host_query::runs)),
+        (
+            "host run-artifacts",
+            operation!(onevcs::host_query::run_artifacts),
+        ),
+        ("host artifact", operation!(onevcs::host_query::artifact)),
         ("host schema", operation!(onevcs::host_query::host_schema)),
     ]
 }
@@ -3848,6 +3862,7 @@ fn handler_of() -> BTreeMap<String, String> {
     let dispatch = dispatch.split_once("\n}\n").expect("the dispatch ends").0;
     let mut handlers = BTreeMap::new();
     let mut nested: Option<String> = None;
+    let mut comment_group = false;
     for line in dispatch.lines().map(str::trim) {
         // `Command::Session { command } => match command {` opens a group whose arms
         // are that command's subcommands.
@@ -3857,6 +3872,16 @@ fn handler_of() -> BTreeMap<String, String> {
             .map(|(variant, _)| variant)
         {
             nested = Some(kebab(variant));
+            continue;
+        }
+        if line == "ChangeCommand::Comment { command } => match command {" {
+            nested = Some("change comment".to_owned());
+            comment_group = true;
+            continue;
+        }
+        if line == "}," && comment_group {
+            nested = Some("change".to_owned());
+            comment_group = false;
             continue;
         }
         if line == "}," {
@@ -4114,7 +4139,7 @@ fn the_host_query_amendment_declares_the_operations_the_verbs_render() {
         );
     }
     assert_eq!(HOST_QUERY_SCHEMA_VERSION, 1);
-    assert_eq!(host_schema()["schema_version"], 1);
+    assert_eq!(host_schema()["schema_version"], 2);
 }
 
 #[test]

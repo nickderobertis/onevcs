@@ -106,17 +106,22 @@ pub fn attempt(args: &[&str]) -> Result<Answer> {
 /// [`attempt`], with `env` set on the `gh` process — how a host query hands `gh` the
 /// token its caller chose, rather than whatever `gh auth` would pick.
 pub fn attempt_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<Answer> {
-    let output = Command::new(program())
-        .args(args)
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
-        .output()
-        .map_err(error::at("run", &program()))?;
+    let output = output_with_env(args, env)?;
     Ok(Answer {
         code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+/// Binary-preserving transport for artifact archives.
+pub(crate) fn output_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<std::process::Output> {
+    Command::new(program())
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .output()
+        .map_err(error::at("run", &program()))
 }
 
 /// Run one `gh` invocation and return its standard output.

@@ -1139,6 +1139,7 @@ dependencies = [
  "globset",
  "icu_normalizer",
  "icu_properties",
+ "jsonschema",
  "libc",
  "libz-sys",
  "minijinja",
