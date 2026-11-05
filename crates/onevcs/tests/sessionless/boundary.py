@@ -99,7 +99,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
             self.wfile.write(data)
 
     server = http.server.HTTPServer(('127.0.0.1', 0), Host)
-    (root / 'port.ready').write_text(str(server.server_port))
+    (root / 'port.ready').write_text(str(server.server_port) + '\n')
     (root / 'port.ready').replace(root / 'port')
     server.serve_forever()
 else:

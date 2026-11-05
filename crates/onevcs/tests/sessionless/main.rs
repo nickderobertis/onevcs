@@ -25,20 +25,15 @@ impl Boundary {
             .unwrap(),
         )
         .unwrap();
-        let server = Command::new("python3")
+        let mut server = Command::new("python3")
             .arg(Self::program())
             .arg("serve")
             .arg(root.path())
+            .stderr(std::fs::File::create(root.path().join("server.stderr")).unwrap())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let port = loop {
-            if let Ok(port) = std::fs::read_to_string(root.path().join("port")) {
-                break port;
-            }
-            assert!(Instant::now() < deadline, "HTTP boundary did not start");
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        let port = wait_for_boundary(&mut server, root.path(), Duration::from_secs(60))
+            .unwrap_or_else(|diagnostic| panic!("{diagnostic}"));
         Self {
             root,
             server,
@@ -103,6 +98,79 @@ impl Boundary {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
+}
+
+// The newline is the readiness record terminator; never accept a partial port.
+fn wait_for_boundary(
+    server: &mut Child,
+    root: &std::path::Path,
+    timeout: Duration,
+) -> Result<u16, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let status = server.try_wait().unwrap();
+        if status.is_none() {
+            if let Ok(record) = std::fs::read_to_string(root.join("port")) {
+                if let Some(port) = record
+                    .strip_suffix('\n')
+                    .and_then(|p| p.parse::<u16>().ok())
+                {
+                    if port != 0 {
+                        return Ok(port);
+                    }
+                }
+            }
+        }
+        if status.is_some() || Instant::now() >= deadline {
+            if status.is_none() {
+                server.kill().unwrap();
+            }
+            let status = server.wait().unwrap();
+            let stderr = std::fs::read_to_string(root.join("server.stderr")).unwrap();
+            return Err(format!(
+                "HTTP boundary did not start within {timeout:?}; helper status: {status}; stderr: {stderr}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn boundary_startup_waits_for_complete_readiness_and_reports_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let launch = |program: &str| {
+        Command::new("python3")
+            .args(["-c", program])
+            .arg(root.path())
+            .stderr(std::fs::File::create(root.path().join("server.stderr")).unwrap())
+            .spawn()
+            .unwrap()
+    };
+    let mut server = launch(
+        "import pathlib,sys,time; p=pathlib.Path(sys.argv[1])/'port'; p.write_text('12'); time.sleep(0.2); p.write_text('12345\\n'); time.sleep(60)",
+    );
+    let started = Instant::now();
+    let port = wait_for_boundary(&mut server, root.path(), Duration::from_secs(5)).unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+    assert_eq!(port, 12345);
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    std::fs::remove_file(root.path().join("port")).unwrap();
+
+    let mut server = launch("import sys; print('startup exploded', file=sys.stderr); sys.exit(23)");
+    let diagnostic =
+        wait_for_boundary(&mut server, root.path(), Duration::from_secs(5)).unwrap_err();
+    assert!(diagnostic.contains("23"), "{diagnostic}");
+    assert!(diagnostic.contains("startup exploded"), "{diagnostic}");
+
+    let mut server = launch(
+        "import sys,time; print('startup stalled', file=sys.stderr, flush=True); time.sleep(60)",
+    );
+    let diagnostic =
+        wait_for_boundary(&mut server, root.path(), Duration::from_secs(1)).unwrap_err();
+    assert!(diagnostic.contains("helper status:"), "{diagnostic}");
+    assert!(diagnostic.contains("startup stalled"), "{diagnostic}");
+    assert!(server.try_wait().unwrap().is_some());
 }
 
 impl Drop for Boundary {
