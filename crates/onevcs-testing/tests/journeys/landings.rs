@@ -491,6 +491,18 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let _ = remote.mergeability(&change);
     let _ = remote.head_activity(&change);
     let _ = remote.review_comments(&change.id, None);
+    assert!(matches!(
+        remote.read_standing_comment(&change.id, "report"),
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::read_standing_comment"
+        })
+    ));
+    assert!(matches!(
+        remote.upsert_standing_comment(&change.id, "report", "body", None),
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::upsert_standing_comment"
+        })
+    ));
     let _ = remote.reply_to_comment(
         &change.id,
         &CommentId("I1".to_owned()),
@@ -523,6 +535,10 @@ fn the_ledger_records_a_call_to_every_method_the_host_interface_declares() {
     let charge = |method: &str| -> Vec<&HostCall> {
         ledger.iter().filter(|call| call.method == method).collect()
     };
+    for method in ["read_standing_comment", "upsert_standing_comment"] {
+        assert_eq!(charge(method)[0].charge, ReadCost::default());
+        assert_eq!(charge(method)[0].changes, vec![change.id.clone()]);
+    }
     assert_eq!(
         charge("review_comments")[0].charge,
         ReadCost {

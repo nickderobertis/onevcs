@@ -532,6 +532,32 @@ impl<T: Store<HostState>> RemoteHost for Host<T> {
         read
     }
 
+    /// Record the unsupported read without charging a request that was never sent.
+    fn read_standing_comment(
+        &self,
+        change: &ChangeId,
+        _key: &str,
+    ) -> Result<Option<onevcs::StandingComment>> {
+        self.called("read_standing_comment", &[change], ReadCost::default())?;
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::read_standing_comment",
+        })
+    }
+
+    /// Record the unsupported write without changing any comments.
+    fn upsert_standing_comment(
+        &self,
+        change: &ChangeId,
+        _key: &str,
+        _body: &str,
+        _expected_head: Option<&str>,
+    ) -> Result<onevcs::StandingCommentOutcome> {
+        self.called("upsert_standing_comment", &[change], ReadCost::default())?;
+        Err(Error::NotImplemented {
+            operation: "RemoteHost::upsert_standing_comment",
+        })
+    }
+
     /// One reply, posted in the comment's thread where it has one and as a
     /// conversation comment linking it otherwise, and recorded in
     /// [`HostState::replies`].

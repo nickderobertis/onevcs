@@ -624,6 +624,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "merged_head",
     "mergeability",
     "open_change",
+    "read_standing_comment",
     "ready_for_review",
     "reopen_change",
     "reply_to_comment",
@@ -632,6 +633,7 @@ pub(crate) const LEDGER_METHODS: &[&str] = &[
     "retarget_change",
     "review_comments",
     "review_standings",
+    "upsert_standing_comment",
     "visibility",
 ];
 
