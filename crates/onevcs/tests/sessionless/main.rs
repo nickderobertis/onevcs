@@ -61,6 +61,11 @@ impl Boundary {
             .env("ONEVCS_GH", Self::program())
             .env("SESSIONLESS_HOST", &self.url)
             .current_dir(self.root.path());
+        // Keep subprocess coverage while excluding ambient auth and Actions state.
+        // The public API child copies this same explicit environment below.
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         command
     }
 
@@ -1248,6 +1253,9 @@ fn host_query_pages_validation_and_output_failures() {
     ];
     let mut command = host.command();
     use std::os::unix::process::CommandExt;
+    // This child's deliberate one-byte file limit would truncate its profile too.
+    // Other download journeys record coverage without the injected write failure.
+    command.env("LLVM_PROFILE_FILE", "/dev/null");
     // SAFETY: the child-only hook calls async-signal-safe libc functions and
     // imposes a file-size limit solely on the subprocess started by this test.
     unsafe {
