@@ -108,6 +108,7 @@ mod rules_apply;
 mod session;
 mod significance;
 mod stack_base;
+mod standing_comment;
 mod standings;
 mod status;
 mod store;
@@ -201,6 +202,10 @@ pub use session::{
     SessionRecord, SessionRequest, SessionToken,
 };
 pub use stack_base::{StackBase, StackBaseOutcome, StackBaseRequest, StackParent};
+pub use standing_comment::{
+    read_standing_comment, upsert_standing_comment, StandingComment, StandingCommentOutcome,
+    StandingCommentRequest, StandingCommentStatus,
+};
 pub use standings::{
     change_standings, follow_checks, reopen_change, retarget_change, review_standings,
     ChangeStanding, ChangeStandings, ChangeStandingsRequest, ChangeState, ChecksVerdict,

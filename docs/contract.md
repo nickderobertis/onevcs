@@ -7022,6 +7022,113 @@ pub enum CommitSelector { Commit(CommitSha), Tag(String) }
 pub struct QueryCost { pub graphql_points: u32, pub rest_requests: u32, pub requests: Vec<String> }
 ```
 
+## Sessionless standing comments and artifact queries
+
+This additive amendment is authoritative in `standing_comment.rs` and
+`host_query.rs`; the generated host schema bundle is now version **2**. Existing
+host answers and the new host answers retain `schema_version: 1`. The bundle's
+version is independent of each answer's version. The v2 golden includes the three
+new host answers and the standing comment request, comment and outcome schemas;
+previous answer shapes remain unchanged.
+
+```
+onevcs change comment upsert <URL> --key KEY --body-file PATH [--head SHA] [--json]
+onevcs change comment show <URL> --key KEY [--json]
+onevcs host runs --repo OWNER/NAME --branch REF --workflow ID --event push --limit N [--json]
+onevcs host run-artifacts --repo OWNER/NAME --run ID [--json]
+onevcs host artifact --repo OWNER/NAME --id ID --output PATH [--json]
+```
+
+```rust
+pub struct StandingCommentRequest {
+    pub change: ChangeRef,
+    pub key: String,
+    pub body: String,
+    pub expected_head: Option<String>,
+}
+pub struct StandingComment { pub id: CommentId, pub url: String, pub body: String }
+pub enum StandingCommentStatus { Created, Updated, Unchanged, Stale }
+pub struct StandingCommentOutcome {
+    pub comment: Option<StandingComment>,
+    pub status: StandingCommentStatus,
+    pub diagnostic: Option<String>,
+}
+pub fn upsert_standing_comment(providers: &Providers<'_>, request: &StandingCommentRequest) -> Result<StandingCommentOutcome>;
+pub fn read_standing_comment(providers: &Providers<'_>, change: &ChangeRef, key: &str) -> Result<Option<StandingComment>>;
+```
+
+A URL uses the same `ChangeRef::Url` resolution as review feedback, with
+`Providers::real()` on a clean runner. No registry, session, checkout or Actions
+variables are needed and no local state is created. Session references retain
+existing session resolution. Keys contain 1–256 bytes and no control characters;
+write bodies are nonblank, and an expected head is a full commit SHA. The GitHub
+body limit is 65,536 characters including the appended marker. An owned comment
+has both the authenticated author and the exact trailing marker
+`<!-- onevcs:standing-comment:v1:<lowercase SHA-256 of UTF-8 key> -->`, separated
+from its visible body by two newlines. The API strips this marker on reads.
+Comments by other authors, unrelated comments and descriptions are preserved.
+This sessionless verb performs **no public-output screening** and creates no
+state, even on a host that has registry terms or phrase lists. Its body is the
+caller's responsibility; it is not for posting text that may carry private terms.
+The CI consumer builds its body from the repository's own budget results on its
+own change request. This does not alter the registry-based boundary on other verbs.
+Multiple owned matches are an error. Reads perform one paged read, without polling.
+
+A matching body returns `Unchanged`. A mismatched expected head returns `Stale`
+with a diagnostic and no write, even for an otherwise identical body. Statuses
+serialize as `created`, `updated`, `unchanged`, `stale`; absent optional request
+and outcome fields are omitted and deserialize as `None`. `show --json` prints
+a comment or `null`; `upsert --json` prints the outcome. Without `--json`, show
+prints the URL and visible body, or nothing when absent; upsert prints the lowercase
+status and any stale diagnostic on stderr. GitHub heads must be full commit SHAs,
+owned comment IDs must be nonblank marker-safe IDs, and their URLs must address
+GitHub issue comments over HTTPS; malformed responses fail instead of reporting
+stale or successful outcomes. Stale is an answered
+outcome (exit 0); unsupported providers return `Error::NotImplemented` (CLI 70).
+Other validation and host failures use the existing error mapping.
+
+The provider has no transactional create-if-absent or head-and-write operation.
+**The calling action must serialize creators per destination/key**, using its
+concurrency group. A remote branch may move after the head check. This API does
+not promise compare-and-swap, nor create a local lock or retry an ambiguous write.
+`RemoteHost` adds default-unsupported `read_standing_comment(change: &ChangeId,
+key: &str)` and `upsert_standing_comment(change: &ChangeId, key: &str, body: &str,
+expected_head: Option<&str>)` methods with the same return types as above, so
+existing implementors compile unchanged.
+
+```rust
+// onevcs::host_query
+pub struct RunsRequest { pub repo: RepositorySlug, pub branch: String, pub workflow: PositiveId, pub event: String, pub limit: u32 }
+pub struct RunArtifactsRequest { pub repo: RepositorySlug, pub run_id: PositiveId }
+pub struct ArtifactRequest { pub repo: RepositorySlug, pub artifact_id: PositiveId, pub output: PathBuf }
+pub struct HostRuns { pub schema_version: u32, pub repository: String, pub branch: String, pub runs: Vec<Run>, pub cost: QueryCost }
+pub struct HostArtifact { pub id: String, pub name: String, pub size_bytes: u64, pub expired: bool }
+pub struct HostArtifacts { pub schema_version: u32, pub repository: String, pub run_id: String, pub artifacts: Vec<HostArtifact>, pub cost: QueryCost }
+pub struct ArtifactDownload { pub schema_version: u32, pub repository: String, pub artifact_id: String, pub path: String, pub cost: QueryCost }
+pub fn runs(request: &RunsRequest) -> HostQueryResult<HostRuns>;
+pub fn run_artifacts(request: &RunArtifactsRequest) -> HostQueryResult<HostArtifacts>;
+pub fn artifact(request: &ArtifactRequest) -> HostQueryResult<ArtifactDownload>;
+```
+
+`runs` makes one request to the workflow's runs route, filtering exact branch,
+workflow id, event and completed status both in the query and in returned facts.
+`limit` is 1–100. It sorts the current response page newest first and does not
+follow its next page or query historical commits. Each `Run` already carries
+`head_branch`, `head_sha` and the latest `run_attempt`; no new run fields are added.
+An empty result means no eligible run on that page. The consumer diagnoses an
+unavailable baseline when that page has no usable artifact, and proves ancestry
+with local git. It must not walk older runs through this API.
+
+`run_artifacts` lists the named run's artifacts, following pagination and retaining
+expiration facts. `artifact` downloads a ZIP archive to `output`; extraction and
+provenance validation belong to the consumer. A failed request leaves an existing
+output intact. Missing, expired and unauthorized archive reads fail with their
+host diagnostic. The existing token precedence, error mapping and `QueryCost`
+apply. Each archive GET counts one GitHub REST request, including the REST redirect;
+the redirected object-store archive bytes are a separate transfer and do not count
+as another GitHub REST request. No new HTTP client or installed host CLI is added.
+
+
 ---
 
 ### Shared event envelope (the shape is `onemessagebus`'s; the words in it are this crate's)

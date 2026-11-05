@@ -142,7 +142,13 @@ pub enum HostCommand {
     CommitRuns(HostCommitRunsArgs),
     /// The jobs of a workflow run's latest attempt.
     RunJobs(HostRunJobsArgs),
-    /// Print the versioned JSON schemas of the four answers.
+    /// Read one page of completed runs for an exact workflow, branch and event.
+    Runs(HostRunsArgs),
+    /// List artifacts attached to a run.
+    RunArtifacts(HostRunArtifactsArgs),
+    /// Download an artifact ZIP archive.
+    Artifact(HostArtifactArgs),
+    /// Print the versioned JSON schemas of host answers and standing comments.
     Schema(HostSchemaArgs),
 }
 
@@ -224,6 +230,62 @@ pub struct HostRunJobsArgs {
     #[arg(long, value_name = "ID")]
     pub run: PositiveId,
     /// Accepted for symmetry with other verbs; JSON is the only answer.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for the bounded workflow run listing.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostRunsArgs {
+    /// Repository as OWNER/NAME.
+    #[arg(long)]
+    pub repo: RepositorySlug,
+    /// Exact branch name.
+    #[arg(long)]
+    pub branch: String,
+    /// Workflow id.
+    #[arg(long)]
+    pub workflow: PositiveId,
+    /// Triggering event.
+    #[arg(long)]
+    pub event: String,
+    /// Maximum runs in the single response page, 1 through 100.
+    #[arg(long)]
+    pub limit: u32,
+    /// Print JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// Arguments for listing run artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostRunArtifactsArgs {
+    /// Repository as OWNER/NAME.
+    #[arg(long)]
+    pub repo: RepositorySlug,
+    /// Run id.
+    #[arg(long)]
+    pub run: PositiveId,
+    /// Print JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for downloading an artifact archive.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct HostArtifactArgs {
+    /// Repository as OWNER/NAME.
+    #[arg(long)]
+    pub repo: RepositorySlug,
+    /// Artifact id.
+    #[arg(long)]
+    pub id: PositiveId,
+    /// Destination ZIP archive path.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Print JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -735,6 +797,12 @@ pub enum ChangeCommand {
     /// Read a change request's review threads, review summaries and conversation
     /// comments — every one, or what changed since a marker.
     Comments(ChangeCommentsArgs),
+    /// Read or upsert an authenticated author's keyed standing comment.
+    Comment {
+        /// Standing comment operation.
+        #[command(subcommand)]
+        command: StandingCommentCommand,
+    },
     /// Answer one review comment, in its thread where it has one.
     Reply(ChangeReplyArgs),
     /// Read where a repository's change requests stand — open, merged and into which
@@ -880,6 +948,51 @@ pub struct ChangeDescribeArgs {
     #[command(flatten)]
     pub term_scope: TermScopeArgs,
 }
+
+/// Standing comment operations.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum StandingCommentCommand {
+    /// Create or replace the owned keyed comment.
+    Upsert(StandingCommentUpsertArgs),
+    /// Read the owned keyed comment once.
+    Show(StandingCommentShowArgs),
+}
+
+/// Arguments for a keyed comment read.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct StandingCommentShowArgs {
+    /// Change request URL.
+    pub url: String,
+    /// Stable key.
+    #[arg(long)]
+    pub key: String,
+    /// Print JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// Arguments for a keyed comment write.
+// llmlint: ignore-block[invalid_states_unrepresentable] These parser operands render the agreed String/u32 library request fields. The typed library operation validates them before any host request, so CLI and Rust callers share one refusal boundary without introducing uncontracted public newtypes.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct StandingCommentUpsertArgs {
+    /// Change request URL.
+    pub url: String,
+    /// Stable key.
+    #[arg(long)]
+    pub key: String,
+    /// UTF-8 body file.
+    #[arg(long)]
+    pub body_file: PathBuf,
+    /// Expected head commit.
+    #[arg(long)]
+    pub head: Option<String>,
+    /// Print JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Arguments for `onevcs change comments`.
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]

@@ -23,7 +23,8 @@ use crate::cli::{
     ReleaseDiscoverArgs, ReleaseHoldupArgs, ReleaseLatestArgs, ReleaseStatusArgs,
     ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
     RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StackBaseArgs, StatusArgs, SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
+    SessionTokenArgs, StackBaseArgs, StandingCommentCommand, StatusArgs, SupersedeArgs, SweepArgs,
+    SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -97,6 +98,10 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ChangeCommand::Show(args) => change_show(args, providers),
             ChangeCommand::Describe(args) => change_describe(args, providers),
             ChangeCommand::Ready(args) => change_ready(args, providers),
+            ChangeCommand::Comment { command } => match command {
+                StandingCommentCommand::Show(args) => standing_comment_show(args, providers),
+                StandingCommentCommand::Upsert(args) => standing_comment_upsert(args, providers),
+            },
             ChangeCommand::Comments(args) => change_comments(args, providers),
             ChangeCommand::Reply(args) => change_reply(args, providers),
             ChangeCommand::Standings(args) => change_standings(args, providers),
@@ -153,6 +158,9 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             HostCommand::ChangeChecks(args) => host_change_checks(args),
             HostCommand::CommitRuns(args) => host_commit_runs(args),
             HostCommand::RunJobs(args) => host_run_jobs(args),
+            HostCommand::Runs(args) => host_runs(args),
+            HostCommand::RunArtifacts(args) => host_run_artifacts(args),
+            HostCommand::Artifact(args) => host_artifact(args),
             HostCommand::Schema(args) => host_schema(args),
         },
     }
@@ -297,6 +305,90 @@ fn host_answer<T: serde::Serialize>(answer: crate::host_query::HostQueryResult<T
     }
 }
 
+fn standing_comment_show(
+    args: &crate::cli::StandingCommentShowArgs,
+    providers: &Providers<'_>,
+) -> Result<u8> {
+    let comment = crate::read_standing_comment(
+        providers,
+        &crate::ChangeRef::Url(args.url.clone()),
+        &args.key,
+    )?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&comment).map_err(serialization)?
+        );
+    } else if let Some(comment) = comment {
+        println!("{}\n{}", comment.url, comment.body);
+    }
+    Ok(0)
+}
+
+fn standing_comment_upsert(
+    args: &crate::cli::StandingCommentUpsertArgs,
+    providers: &Providers<'_>,
+) -> Result<u8> {
+    let body = std::fs::read_to_string(&args.body_file)
+        .map_err(error::at("read body", &args.body_file))?;
+    let outcome = crate::upsert_standing_comment(
+        providers,
+        &crate::StandingCommentRequest {
+            change: crate::ChangeRef::Url(args.url.clone()),
+            key: args.key.clone(),
+            body,
+            expected_head: args.head.clone(),
+        },
+    )?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&outcome).map_err(serialization)?
+        );
+    } else {
+        let status = match outcome.status {
+            crate::StandingCommentStatus::Created => "created",
+            crate::StandingCommentStatus::Updated => "updated",
+            crate::StandingCommentStatus::Unchanged => "unchanged",
+            crate::StandingCommentStatus::Stale => "stale",
+        };
+        println!("{status}");
+        if let Some(diagnostic) = outcome.diagnostic {
+            eprintln!("{diagnostic}");
+        }
+    }
+    Ok(0)
+}
+
+fn host_runs(args: &crate::cli::HostRunsArgs) -> Result<u8> {
+    host_answer(crate::host_query::runs(&crate::host_query::RunsRequest {
+        repo: args.repo.clone(),
+        branch: args.branch.clone(),
+        workflow: args.workflow,
+        event: args.event.clone(),
+        limit: args.limit,
+    }))
+}
+
+fn host_run_artifacts(args: &crate::cli::HostRunArtifactsArgs) -> Result<u8> {
+    host_answer(crate::host_query::run_artifacts(
+        &crate::host_query::RunArtifactsRequest {
+            repo: args.repo.clone(),
+            run_id: args.run,
+        },
+    ))
+}
+
+fn host_artifact(args: &crate::cli::HostArtifactArgs) -> Result<u8> {
+    host_answer(crate::host_query::artifact(
+        &crate::host_query::ArtifactRequest {
+            repo: args.repo.clone(),
+            artifact_id: args.id,
+            output: args.output.clone(),
+        },
+    ))
+}
+
 fn host_release_changes(args: &HostReleaseChangesArgs) -> Result<u8> {
     host_answer(crate::host_query::release_changes(
         &crate::host_query::ReleaseChangesRequest {
@@ -343,7 +435,7 @@ fn host_run_jobs(args: &HostRunJobsArgs) -> Result<u8> {
     ))
 }
 
-/// Render `onevcs host schema`: the four answers' JSON schemas, versioned.
+/// Render `onevcs host schema`: host answers and standing comments, versioned.
 fn host_schema(_args: &HostSchemaArgs) -> Result<u8> {
     println!(
         "{}",

@@ -1685,7 +1685,7 @@ worse than a refusal.
 
 ## `onevcs host` asks GitHub and nothing else
 
-`host_query.rs` is `onevcs host release-changes|change-checks|commit-runs|run-jobs|schema`,
+`host_query.rs` is `onevcs host release-changes|change-checks|commit-runs|run-jobs|runs|run-artifacts|artifact|schema`,
 the read-only queries a CI/CD time budget makes; the amendment in `docs/contract.md` is the
 surface, and other repositories' budget nodes name its command lines. Four things are easy
 to undo.
@@ -1694,7 +1694,7 @@ to undo.
   `OWNER/NAME` and the host is `gh` through `gh::attempt_with_env`. A query that resolved an
   identity would migrate a CI job's registry on contact; `the_queries_leave_the_state_root_exactly_as_they_found_it`
   holds every file byte for byte.
-- **`Reader::get` is the only request, and it records itself first**, so `cost.requests` is
+- **`Reader` owns every request and records it first**, including binary artifact downloads, so `cost.requests` is
   every request made. The journeys hold it equal to what the replay served *and* to fixed
   totals (27 for v0.72.0, 6 + 2 per pull request for the new shape): a new read moves both.
 - **Every selection rule has a journey that fails without it.** A rule that changes moves

@@ -1851,19 +1851,25 @@ fn the_schema_command_prints_the_checked_in_versioned_schemas() {
         .expect("ran");
     assert!(output.status.success(), "{output:?}");
     let printed: Value = serde_json::from_slice(&output.stdout).expect("JSON schemas");
-    let golden: Value = serde_json::from_str(include_str!("../golden/host-schema-v1.json"))
+    let golden: Value = serde_json::from_str(include_str!("../golden/host-schema-v2.json"))
         .expect("the golden is JSON");
     assert_eq!(
         printed, golden,
-        "re-make crates/onevcs/tests/golden/host-schema-v1.json — and move \
-         HOST_QUERY_SCHEMA_VERSION if an answer's shape changed"
+        "re-make crates/onevcs/tests/golden/host-schema-v2.json — and move \
+         the schema bundle version if its entries change"
     );
-    assert_eq!(printed["schema_version"], 1);
+    assert_eq!(printed["schema_version"], 2);
     for query in [
         "release-changes",
         "change-checks",
         "commit-runs",
         "run-jobs",
+        "runs",
+        "run-artifacts",
+        "artifact",
+        "standing-comment-request",
+        "standing-comment",
+        "standing-comment-outcome",
     ] {
         assert!(printed[query].is_object(), "{query}'s schema");
     }

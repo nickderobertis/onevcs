@@ -129,7 +129,9 @@ pub struct SessionRequest {
 }
 
 /// The handle a session is adopted, published, and closed by.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct SessionToken(pub String);
 

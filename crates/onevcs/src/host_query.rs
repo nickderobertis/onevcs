@@ -15,7 +15,7 @@
 //!   `$ONEVCS_HOME` — absent, or holding a registry another verb would migrate —
 //!   exactly as it was. The repository is the `OWNER/NAME` the caller names, never an
 //!   identity resolved through the registry, and the host is `gh`, never `Hosting`.
-//! - **Every request is counted where it is made.** `Reader::get` is the only call
+//! - **Every request is counted where it is made.** `Reader` owns every call
 //!   that reaches GitHub, and it appends the request to the answer's `cost` before
 //!   asking, so a request a query makes and does not report cannot exist.
 //! - **A read that failed is never an empty list.** Every list in an answer is `[]`
@@ -25,6 +25,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -35,7 +36,7 @@ use time::OffsetDateTime;
 
 use crate::gh;
 
-/// The `schema_version` every answer and `onevcs host schema` carry.
+/// The `schema_version` every host query answer carries.
 pub const HOST_QUERY_SCHEMA_VERSION: u32 = 1;
 
 const PER_PAGE: u32 = 100;
@@ -287,6 +288,109 @@ pub struct RunJobsRequest {
     pub run: PositiveId,
 }
 
+/// A bounded listing of completed workflow runs.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunsRequest {
+    /// The repository.
+    pub repo: RepositorySlug,
+    /// The exact branch.
+    pub branch: String,
+    /// The workflow id.
+    pub workflow: PositiveId,
+    /// The triggering event.
+    pub event: String,
+    /// The response page size, from 1 through 100.
+    pub limit: u32,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// Artifacts attached to one run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArtifactsRequest {
+    /// The repository.
+    pub repo: RepositorySlug,
+    /// The run id.
+    pub run_id: PositiveId,
+}
+
+/// Download one artifact archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRequest {
+    /// The repository.
+    pub repo: RepositorySlug,
+    /// The artifact id.
+    pub artifact_id: PositiveId,
+    /// The destination for the ZIP archive.
+    pub output: PathBuf,
+}
+
+/// One response page of matching completed runs.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HostRuns {
+    /// The schema version.
+    pub schema_version: u32,
+    /// The repository.
+    pub repository: String,
+    /// The exact requested branch.
+    pub branch: String,
+    /// The matching runs, newest first, retaining their latest attempts.
+    pub runs: Vec<Run>,
+    /// The requests made.
+    pub cost: QueryCost,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// One artifact as reported by the host.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HostArtifact {
+    /// The artifact id.
+    pub id: String,
+    /// The artifact name.
+    pub name: String,
+    /// The archive size in bytes.
+    pub size_bytes: u64,
+    /// Whether the archive has expired.
+    pub expired: bool,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// Artifacts attached to a run.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HostArtifacts {
+    /// The schema version.
+    pub schema_version: u32,
+    /// The repository.
+    pub repository: String,
+    /// The run id.
+    pub run_id: String,
+    /// The artifacts reported by the host, including expired artifacts.
+    pub artifacts: Vec<HostArtifact>,
+    /// The requests made.
+    pub cost: QueryCost,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
+/// A downloaded artifact ZIP archive.
+// llmlint: ignore-block[invalid_states_unrepresentable] The authoritative additive host-query contract fixes these primitive field types, including string-serialized identities. Inputs are validated at the query boundary and host responses while decoding; replacing them with newtypes would break the consumer surface this task must preserve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactDownload {
+    /// The schema version.
+    pub schema_version: u32,
+    /// The repository.
+    pub repository: String,
+    /// The artifact id.
+    pub artifact_id: String,
+    /// The written archive path.
+    pub path: String,
+    /// The GitHub REST requests; redirected object-store bytes are not REST requests.
+    pub cost: QueryCost,
+}
+// llmlint: ignore-end[invalid_states_unrepresentable]
+
 /// The requests a query made, in the shape of the review read's cost plus the list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueryCost {
@@ -496,14 +600,20 @@ pub struct RunJobs {
     pub cost: QueryCost,
 }
 
-/// The JSON schemas of the four answers, generated from the types above.
+/// Version 2 of the query and standing-comment schema bundle, generated from their types.
 pub fn host_schema() -> Value {
     serde_json::json!({
-        "schema_version": HOST_QUERY_SCHEMA_VERSION,
+        "schema_version": 2,
         "release-changes": schemars::schema_for!(ReleaseChanges),
         "change-checks": schemars::schema_for!(ChangeChecks),
         "commit-runs": schemars::schema_for!(CommitRuns),
         "run-jobs": schemars::schema_for!(RunJobs),
+        "runs": schemars::schema_for!(HostRuns),
+        "run-artifacts": schemars::schema_for!(HostArtifacts),
+        "artifact": schemars::schema_for!(ArtifactDownload),
+        "standing-comment-request": schemars::schema_for!(crate::StandingCommentRequest),
+        "standing-comment": schemars::schema_for!(crate::StandingComment),
+        "standing-comment-outcome": schemars::schema_for!(crate::StandingCommentOutcome),
     })
 }
 
@@ -794,6 +904,121 @@ fn tagged_commit(reader: &mut Reader, tag: &str) -> HostQueryResult<CommitSha> {
     }
 }
 
+/// Read one page of completed runs for the exact branch, workflow and event.
+/// No older page or historical commit is queried when this page has no match.
+pub fn runs(request: &RunsRequest) -> HostQueryResult<HostRuns> {
+    if !(1..=PER_PAGE).contains(&request.limit) {
+        return Err(failed("limit must be between 1 and 100"));
+    }
+    if request.branch.trim().is_empty() || request.event.trim().is_empty() {
+        return Err(failed("branch and event must not be empty"));
+    }
+    let mut reader = Reader::new(&request.repo)?;
+    let path = format!(
+        "repos/{}/actions/workflows/{}/runs?branch={}&event={}&status=completed&per_page={}",
+        request.repo.as_str(),
+        request.workflow.get(),
+        encode(&request.branch),
+        encode(&request.event),
+        request.limit
+    );
+    let page = reader.get(&path, "completed workflow runs")?;
+    let mut runs = array(&page.body, "workflow_runs", &path)?
+        .iter()
+        .map(|value| run(value, &path))
+        .collect::<HostQueryResult<Vec<_>>>()?;
+    runs.retain(|run| {
+        run.workflow_id == request.workflow.get()
+            && run.head_branch.as_deref() == Some(request.branch.as_str())
+            && run.event == request.event
+            && run.status == "completed"
+    });
+    runs.sort_by(|a, b| {
+        b.created_at
+            .instant
+            .cmp(&a.created_at.instant)
+            .then(b.id.cmp(&a.id))
+    });
+    runs.truncate(request.limit as usize);
+    Ok(HostRuns {
+        schema_version: HOST_QUERY_SCHEMA_VERSION,
+        repository: request.repo.as_str().to_owned(),
+        branch: request.branch.clone(),
+        runs,
+        cost: reader.cost(),
+    })
+}
+
+/// List a run's artifacts, preserving expiration facts for the caller's selection.
+pub fn run_artifacts(request: &RunArtifactsRequest) -> HostQueryResult<HostArtifacts> {
+    let mut reader = Reader::new(&request.repo)?;
+    let mut artifacts = Vec::new();
+    reader.walk(
+        format!(
+            "repos/{}/actions/runs/{}/artifacts?per_page={PER_PAGE}",
+            request.repo.as_str(),
+            request.run_id.get()
+        ),
+        "run artifacts",
+        |body, path| {
+            for value in array(body, "artifacts", path)? {
+                artifacts.push(HostArtifact {
+                    id: integer(value, "id", path)?
+                        .to_string()
+                        .parse::<PositiveId>()
+                        .map_err(|reason| failed(format!("{path} id: {reason}")))?
+                        .get()
+                        .to_string(),
+                    name: string(value, "name", path)?.to_owned(),
+                    size_bytes: integer(value, "size_in_bytes", path)?,
+                    expired: field(value, "expired", path)?
+                        .as_bool()
+                        .ok_or_else(|| failed(format!("expired is not a boolean in {path}")))?,
+                });
+            }
+            Ok(Paging::More)
+        },
+    )?;
+    Ok(HostArtifacts {
+        schema_version: HOST_QUERY_SCHEMA_VERSION,
+        repository: request.repo.as_str().to_owned(),
+        run_id: request.run_id.get().to_string(),
+        artifacts,
+        cost: reader.cost(),
+    })
+}
+
+/// Download an artifact's ZIP bytes, without decoding or extracting its contents.
+/// GitHub's archive route redirects to object storage: that transfer is not another
+/// GitHub REST request. Missing and expired archives are errors, never empty files.
+pub fn artifact(request: &ArtifactRequest) -> HostQueryResult<ArtifactDownload> {
+    let mut reader = Reader::new(&request.repo)?;
+    let path = format!(
+        "repos/{}/actions/artifacts/{}/zip",
+        request.repo.as_str(),
+        request.artifact_id.get()
+    );
+    let bytes = reader.download(&path)?;
+    let parent = request
+        .output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| failed(format!("cannot write {}: {e}", request.output.display())))?;
+    std::io::Write::write_all(&mut file, &bytes)
+        .map_err(|e| failed(format!("cannot write {}: {e}", request.output.display())))?;
+    file.persist(&request.output)
+        .map_err(|e| failed(format!("cannot save {}: {e}", request.output.display())))?;
+    Ok(ArtifactDownload {
+        schema_version: HOST_QUERY_SCHEMA_VERSION,
+        repository: request.repo.as_str().to_owned(),
+        artifact_id: request.artifact_id.get().to_string(),
+        path: request.output.to_string_lossy().into_owned(),
+        cost: reader.cost(),
+    })
+}
+
 /// Every run at a commit, whole — of one event where `event` names it, which GitHub
 /// filters before paging and the caller still checks on every run it keeps.
 fn runs_at(reader: &mut Reader, sha: &CommitSha, event: Option<&str>) -> HostQueryResult<Vec<Run>> {
@@ -1038,6 +1263,23 @@ impl Reader {
             token,
             requests: Vec::new(),
         })
+    }
+
+    /// One archive GET. gh follows the REST redirect to the object-store bytes.
+    fn download(&mut self, path: &str) -> HostQueryResult<Vec<u8>> {
+        self.requests.push(path.to_owned());
+        let answer = gh::output_with_env(
+            &["api", "--method", "GET", path],
+            &[("GH_TOKEN", &self.token)],
+        )
+        .map_err(|e| failed(format!("could not download {path}: {e}")))?;
+        if !answer.status.success() {
+            return Err(failed(format!(
+                "artifact download failed for {path}: {}",
+                String::from_utf8_lossy(&answer.stderr)
+            )));
+        }
+        Ok(answer.stdout)
     }
 
     fn cost(&self) -> QueryCost {

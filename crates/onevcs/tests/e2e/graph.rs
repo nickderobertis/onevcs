@@ -26,7 +26,7 @@ use crate::support::workspace_root;
 /// sweep runs. The live `onevcs-live` tier and the `onevcs-release-pr` and
 /// `onevcs-lint-llm-diff` journeys carry none; `workspace` holds the judged lint and the repo-level targets, which
 /// run in jobs of their own.
-const GATE_PROJECTS: [&str; 12] = [
+const GATE_PROJECTS: [&str; 13] = [
     "github-workflows",
     "onevcs",
     "onevcs-compat",
@@ -39,6 +39,7 @@ const GATE_PROJECTS: [&str; 12] = [
     "onevcs-recovery-cost",
     "onevcs-pool-workload",
     "onevcs-scripts-e2e",
+    "onevcs-sessionless-e2e",
 ];
 
 /// Copy exactly what Nx would hash — everything git would commit from here — and
@@ -317,6 +318,7 @@ fn a_change_confined_to_scripts_npm_or_workflows_reaches_the_tiers_that_read_the
                 "onevcs-recovery",
                 "onevcs-recovery-cost",
                 "onevcs-scripts-e2e",
+                "onevcs-sessionless-e2e",
             ][..],
         ),
         (
@@ -538,7 +540,8 @@ fn the_release_pull_request_gets_the_sweep_and_an_ordinary_one_the_affected_tier
             "onevcs-export-cancellation",
             "onevcs-recovery",
             "onevcs-recovery-cost",
-            "onevcs-scripts-e2e"
+            "onevcs-scripts-e2e",
+            "onevcs-sessionless-e2e"
         ]),
         "an ordinary pull request's affected tier selected {scoped:?}"
     );
