@@ -9,13 +9,49 @@ use crate::host::ChangeId;
 use crate::standing_comment::{StandingComment, StandingCommentOutcome, StandingCommentStatus};
 use crate::{gh, CommentId};
 
-const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String) { viewer { login } repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRefOid comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { id databaseId url body author { login } } } } } }";
+const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String) { viewer { login } repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRefOid comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { id databaseId url body author { __typename login } } } } } }";
 
 fn marker(key: &str) -> String {
     format!(
         "<!-- onevcs:standing-comment:v1:{:x} -->",
         Sha256::digest(key.as_bytes())
     )
+}
+
+/// The Actions bot's two spellings of one account: GraphQL reads a comment it wrote as
+/// `github-actions`, and its REST author is `github-actions[bot]`.
+const ACTIONS_BOT_LOGINS: [&str; 2] = ["github-actions", "github-actions[bot]"];
+
+/// A comment's author. Its GraphQL type is what tells the Actions bot from a person
+/// reading the same login.
+enum Author<'a> {
+    Bot(&'a str),
+    Other(&'a str),
+}
+
+impl<'a> Author<'a> {
+    /// A deleted account reads as a null author, which is `None`: nobody can own it.
+    fn of_comment(comment: &'a Value) -> Result<Option<Self>> {
+        let value = comment
+            .get("author")
+            .ok_or_else(|| invalid("GitHub standing comment response lacks author"))?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let login = string(value, "login")?;
+        Ok(Some(match string(value, "__typename")? {
+            "Bot" => Self::Bot(login),
+            _ => Self::Other(login),
+        }))
+    }
+
+    fn is_viewer(&self, viewer: &str) -> bool {
+        if !ACTIONS_BOT_LOGINS.contains(&viewer) {
+            let (Self::Bot(login) | Self::Other(login)) = self;
+            return *login == viewer;
+        }
+        matches!(self, Self::Bot(login) if ACTIONS_BOT_LOGINS.contains(login))
+    }
 }
 
 struct Found {
@@ -107,7 +143,8 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
             .as_array()
             .ok_or_else(|| invalid("GitHub standing comment response lacks comments"))?;
         for comment in comments {
-            if comment["author"]["login"].as_str() != Some(viewer) {
+            let author = Author::of_comment(comment)?;
+            if !author.is_some_and(|author| author.is_viewer(viewer)) {
                 continue;
             }
             let body = string(comment, "body")?;

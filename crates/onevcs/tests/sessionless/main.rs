@@ -288,6 +288,307 @@ fn standing_comment_cli_preserves_ownership_content_and_refuses_stale_heads() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("multiple owned standing comments"));
 }
 
+/// Key `ci`'s marker, which every journey below expects the host to hold.
+const CI_MARKER: &str = "<!-- onevcs:standing-comment:v1:1b158839f8aa339e89bb50b1603e90ec68e0fd5565fe10a7cb32729fddf7070a -->";
+
+fn keyed_comment(id: u64, author: &str, author_type: &str, visible: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": format!("node-{id}"),
+        "html_url": format!("https://github.com/owner/repo/pull/1#issuecomment-{id}"),
+        "author": author,
+        "author_type": author_type,
+        "body": format!("{visible}\n\n{CI_MARKER}"),
+    })
+}
+
+fn upsert_ci(host: &Boundary, body: &str) -> Value {
+    let file = host.root.path().join("upsert-body");
+    std::fs::write(&file, body).unwrap();
+    host.success(&[
+        "change",
+        "comment",
+        "upsert",
+        CHANGE,
+        "--key",
+        "ci",
+        "--body-file",
+        file.to_str().unwrap(),
+        "--json",
+    ])
+}
+
+fn writes(host: &Boundary) -> Vec<(String, String)> {
+    host.requests()
+        .iter()
+        .filter(|request| request["method"] != "GET" && request["path"] != "/graphql")
+        .map(|request| {
+            (
+                request["method"].as_str().unwrap().to_owned(),
+                request["path"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+const ACTIONS_VIEWERS: [&str; 2] = ["github-actions[bot]", "github-actions"];
+
+#[test]
+fn actions_bot_updates_its_own_comment_whichever_spelling_the_viewer_reports() {
+    for viewer in ACTIONS_VIEWERS {
+        let host = Boundary::new();
+        let mut state = host.state();
+        state["viewer"] = json!(viewer);
+        // What GitHub's GraphQL reads back for a comment an Actions token wrote.
+        state["written_author"] = json!({"author": "github-actions", "author_type": "Bot"});
+        host.set(&state);
+
+        assert_eq!(upsert_ci(&host, "first report")["status"], "created");
+        let updated = upsert_ci(&host, "second report");
+        assert_eq!(updated["status"], "updated", "viewer {viewer}");
+        assert_eq!(updated["comment"]["body"], "second report");
+        let stored = host.state();
+        let comments = stored["comments"].as_array().unwrap();
+        assert_eq!(
+            comments.len(),
+            1,
+            "viewer {viewer} created a second comment"
+        );
+        let id = comments[0]["id"].as_u64().unwrap();
+        assert_eq!(comments[0]["body"], format!("second report\n\n{CI_MARKER}"));
+        assert_eq!(
+            writes(&host),
+            [
+                (
+                    "POST".to_owned(),
+                    "/repos/owner/repo/issues/1/comments".to_owned()
+                ),
+                (
+                    "PATCH".to_owned(),
+                    format!("/repos/owner/repo/issues/comments/{id}")
+                ),
+            ],
+            "viewer {viewer}"
+        );
+        assert_eq!(upsert_ci(&host, "second report")["status"], "unchanged");
+        assert_eq!(
+            host.success(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"])["body"],
+            "second report"
+        );
+    }
+}
+
+#[test]
+fn actions_bot_finds_a_comment_whose_author_reads_either_spelling() {
+    for viewer in ACTIONS_VIEWERS {
+        for author in ACTIONS_VIEWERS {
+            let host = Boundary::new();
+            let mut state = host.state();
+            state["viewer"] = json!(viewer);
+            state["comments"] = json!([keyed_comment(7, author, "Bot", "old report")]);
+            host.set(&state);
+            assert_eq!(
+                upsert_ci(&host, "new report")["status"],
+                "updated",
+                "viewer {viewer}, author {author}"
+            );
+            assert_eq!(
+                writes(&host),
+                [(
+                    "PATCH".to_owned(),
+                    "/repos/owner/repo/issues/comments/7".to_owned()
+                )]
+            );
+        }
+    }
+}
+
+#[test]
+fn actions_bot_does_not_adopt_a_user_or_another_app_carrying_its_marker() {
+    for viewer in ACTIONS_VIEWERS {
+        let host = Boundary::new();
+        let mut state = host.state();
+        state["viewer"] = json!(viewer);
+        state["written_author"] = json!({"author": "github-actions", "author_type": "Bot"});
+        let foreign = [
+            keyed_comment(7, "github-actions", "User", "a person's comment"),
+            keyed_comment(8, "other-app", "Bot", "another app's comment"),
+        ];
+        state["comments"] = json!(foreign);
+        host.set(&state);
+
+        assert_eq!(
+            host.success(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]),
+            Value::Null,
+            "viewer {viewer}"
+        );
+        assert_eq!(upsert_ci(&host, "report")["status"], "created");
+        let stored = host.state();
+        assert_eq!(stored["comments"][0], foreign[0], "viewer {viewer}");
+        assert_eq!(stored["comments"][1], foreign[1], "viewer {viewer}");
+        assert_eq!(
+            writes(&host),
+            [(
+                "POST".to_owned(),
+                "/repos/owner/repo/issues/1/comments".to_owned()
+            )]
+        );
+    }
+}
+
+#[test]
+fn user_token_updates_only_its_own_comment_among_copies_of_its_marker() {
+    let host = Boundary::new();
+    let foreign = [
+        keyed_comment(7, "github-actions", "Bot", "the Actions bot's comment"),
+        keyed_comment(8, "someone-else", "User", "another person's comment"),
+    ];
+    let mut state = host.state();
+    state["viewer"] = json!("alice");
+    state["comments"] = json!(foreign);
+    host.set(&state);
+
+    // Nothing here is alice's yet, so every copy of the marker is left alone.
+    assert_eq!(
+        host.success(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]),
+        Value::Null
+    );
+    let mut state = host.state();
+    state["comments"]
+        .as_array_mut()
+        .unwrap()
+        .push(keyed_comment(10, "alice", "User", "alice's old comment"));
+    host.set(&state);
+
+    assert_eq!(upsert_ci(&host, "alice's new comment")["status"], "updated");
+    let stored = host.state();
+    assert_eq!(stored["comments"].as_array().unwrap().len(), 3);
+    for (index, comment) in foreign.iter().enumerate() {
+        assert_eq!(&stored["comments"][index], comment);
+    }
+    assert_eq!(
+        stored["comments"][2]["body"],
+        format!("alice's new comment\n\n{CI_MARKER}")
+    );
+    assert_eq!(
+        writes(&host),
+        [(
+            "PATCH".to_owned(),
+            "/repos/owner/repo/issues/comments/10".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn other_bot_updates_a_comment_whose_author_reads_exactly_the_viewer_login() {
+    for login in ["my-app[bot]", "my-app"] {
+        let host = Boundary::new();
+        let mut state = host.state();
+        state["viewer"] = json!(login);
+        state["comments"] = json!([keyed_comment(7, login, "Bot", "old report")]);
+        host.set(&state);
+
+        let updated = upsert_ci(&host, "new report");
+        assert_eq!(updated["status"], "updated", "viewer {login}");
+        assert_eq!(updated["comment"]["body"], "new report");
+        let stored = host.state();
+        assert_eq!(stored["comments"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            stored["comments"][0]["body"],
+            format!("new report\n\n{CI_MARKER}")
+        );
+        assert_eq!(
+            writes(&host),
+            [(
+                "PATCH".to_owned(),
+                "/repos/owner/repo/issues/comments/7".to_owned()
+            )],
+            "viewer {login}"
+        );
+    }
+}
+
+#[test]
+fn only_the_actions_bot_has_its_spellings_reconciled() {
+    let host = Boundary::new();
+    let foreign = keyed_comment(7, "my-app", "Bot", "the app's earlier report");
+    let mut state = host.state();
+    state["viewer"] = json!("my-app[bot]");
+    state["comments"] = json!([foreign]);
+    host.set(&state);
+
+    assert_eq!(upsert_ci(&host, "report")["status"], "created");
+    assert_eq!(host.state()["comments"][0], foreign);
+}
+
+#[test]
+fn actions_bot_refuses_duplicates_left_by_earlier_runs_and_writes_nothing() {
+    let host = Boundary::new();
+    let mut state = host.state();
+    state["viewer"] = json!("github-actions[bot]");
+    state["comments"] = json!([
+        keyed_comment(7, "github-actions", "Bot", "an earlier run's report"),
+        keyed_comment(8, "github-actions", "Bot", "a later run's report"),
+    ]);
+    host.set(&state);
+
+    let file = host.root.path().join("upsert-body");
+    std::fs::write(&file, "report").unwrap();
+    let output = host.run(&[
+        "change",
+        "comment",
+        "upsert",
+        CHANGE,
+        "--key",
+        "ci",
+        "--body-file",
+        file.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("multiple owned standing comments"));
+    assert_eq!(writes(&host), []);
+}
+
+#[test]
+fn comment_authors_are_validated_and_a_deleted_author_owns_nothing() {
+    let host = Boundary::new();
+    let answer = |author: Value| {
+        json!({"data":{"viewer":{"login":"github-actions[bot]"},"repository":{"pullRequest":{
+            "headRefOid":HEAD,"comments":{"nodes":[{
+                "id":"node-7","databaseId":7,
+                "url":"https://github.com/owner/repo/pull/1#issuecomment-7",
+                "body":format!("report\n\n{CI_MARKER}"),"author":author
+            }],"pageInfo":{"hasNextPage":false,"endCursor":null}}
+        }}}})
+    };
+    let mut state = host.state();
+    let mut no_author = answer(Value::Null);
+    no_author["data"]["repository"]["pullRequest"]["comments"]["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("author");
+    for (response, diagnostic) in [
+        (answer(json!({"login": "github-actions"})), "__typename"),
+        (answer(json!({"__typename": "Bot"})), "login"),
+        (answer(json!({"__typename": "Bot", "login": 7})), "login"),
+        (no_author, "author"),
+    ] {
+        state["graphql_override"] = response;
+        host.set(&state);
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+        assert!(!output.status.success(), "accepted a malformed author");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
+
+    state["graphql_override"] = answer(Value::Null);
+    host.set(&state);
+    assert_eq!(
+        host.success(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]),
+        Value::Null
+    );
+}
+
 #[test]
 fn standing_comment_cli_reports_auth_body_limit_and_unsupported_hosts() {
     let host = Boundary::new();
