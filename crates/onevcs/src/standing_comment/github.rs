@@ -9,13 +9,29 @@ use crate::host::ChangeId;
 use crate::standing_comment::{StandingComment, StandingCommentOutcome, StandingCommentStatus};
 use crate::{gh, CommentId};
 
-const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String) { viewer { login } repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRefOid comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { id databaseId url body author { login } } } } } }";
+const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String) { viewer { login } repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRefOid comments(first:100,after:$after) { pageInfo { hasNextPage endCursor } nodes { id databaseId url body author { __typename login } } } } } }";
 
 fn marker(key: &str) -> String {
     format!(
         "<!-- onevcs:standing-comment:v1:{:x} -->",
         Sha256::digest(key.as_bytes())
     )
+}
+
+/// The Actions bot's two spellings of one account: GraphQL reads a comment it wrote as
+/// `github-actions`, and its REST author is `github-actions[bot]`.
+const ACTIONS_BOT_LOGINS: [&str; 2] = ["github-actions", "github-actions[bot]"];
+
+/// Whether the viewer wrote a comment by this author. Logins alone cannot say: a `Bot`
+/// and a person may read the same login and are still different accounts, so the
+/// author's GraphQL type decides alongside it.
+fn owned_by_viewer(viewer: &str, login: &str, author_type: &str) -> bool {
+    let bot = author_type == "Bot";
+    if ACTIONS_BOT_LOGINS.contains(&viewer) {
+        bot && ACTIONS_BOT_LOGINS.contains(&login)
+    } else {
+        !bot && login == viewer
+    }
 }
 
 struct Found {
@@ -107,7 +123,12 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
             .as_array()
             .ok_or_else(|| invalid("GitHub standing comment response lacks comments"))?;
         for comment in comments {
-            if comment["author"]["login"].as_str() != Some(viewer) {
+            let author = &comment["author"];
+            // A deleted account reads as a null author, which nobody can own.
+            let Some(login) = author["login"].as_str() else {
+                continue;
+            };
+            if !owned_by_viewer(viewer, login, string(author, "__typename")?) {
                 continue;
             }
             let body = string(comment, "body")?;

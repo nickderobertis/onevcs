@@ -44,15 +44,15 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
                     variables = payload['variables']
                     assert variables['owner'] == 'owner' and variables['name'] == 'repo'
                     assert variables['number'] == 1
-                    for field in ['viewer', 'login', 'headRefOid', 'comments', 'pageInfo', 'nodes', 'databaseId', 'author']:
+                    for field in ['viewer', 'login', 'headRefOid', 'comments', 'pageInfo', 'nodes', 'databaseId', 'author', '__typename']:
                         assert field in payload['query'], field
                     comments = [dict(id=c['node_id'], databaseId=c['id'], url=c['html_url'],
-                                     body=c['body'], author={'login': c['author']}) for c in state['comments']]
+                                     body=c['body'], author={'__typename': c.get('author_type', 'User'), 'login': c['author']}) for c in state['comments']]
                     offset = 0 if state.get('repeat_cursor') else int(variables.get('after', 'cursor:0').split(':')[1])
                     size = state.get('comment_page_size', 100)
                     more = offset + size < len(comments)
                     comments = comments[offset:offset + size]
-                    result = {'data': {'viewer': {'login': 'viewer'}, 'repository': {'pullRequest': {
+                    result = {'data': {'viewer': {'login': state.get('viewer', 'viewer')}, 'repository': {'pullRequest': {
                         'headRefOid': state['head'], 'comments': {'nodes': comments,
                             'pageInfo': {'hasNextPage': more, 'endCursor': 'cursor:1' if state.get('repeat_cursor') else ('cursor:' + str(offset + size) if more else None)}}}}}}
                     result = state.get('graphql_override', result)
@@ -62,6 +62,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'serve':
                     if self.command == 'POST':
                         comment = dict(id=100 + len(state['comments']), node_id='owned-new',
                                        html_url='https://github.com/owner/repo/pull/1#issuecomment-' + str(100 + len(state['comments'])), author='viewer')
+                        comment.update(state.get('written_author', {}))
                         state['comments'].append(comment)
                     else:
                         comment = next(c for c in state['comments'] if str(c['id']) == self.path.split('/')[-1])
