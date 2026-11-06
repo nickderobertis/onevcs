@@ -22,8 +22,8 @@ fn marker(key: &str) -> String {
 /// `github-actions`, and its REST author is `github-actions[bot]`.
 const ACTIONS_BOT_LOGINS: [&str; 2] = ["github-actions", "github-actions[bot]"];
 
-/// A comment's author. A `Bot` and a person may read the same login and are still
-/// different accounts, so the login never travels without its GraphQL type.
+/// A comment's author. Its GraphQL type is what tells the Actions bot from a person
+/// reading the same login.
 enum Author<'a> {
     Bot(&'a str),
     Other(&'a str),
@@ -46,12 +46,11 @@ impl<'a> Author<'a> {
     }
 
     fn is_viewer(&self, viewer: &str) -> bool {
-        match self {
-            Self::Bot(login) => {
-                ACTIONS_BOT_LOGINS.contains(&viewer) && ACTIONS_BOT_LOGINS.contains(login)
-            }
-            Self::Other(login) => !ACTIONS_BOT_LOGINS.contains(&viewer) && *login == viewer,
+        if !ACTIONS_BOT_LOGINS.contains(&viewer) {
+            let (Self::Bot(login) | Self::Other(login)) = self;
+            return *login == viewer;
         }
+        matches!(self, Self::Bot(login) if ACTIONS_BOT_LOGINS.contains(login))
     }
 }
 

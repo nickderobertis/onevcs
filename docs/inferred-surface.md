@@ -1130,3 +1130,19 @@ recorded here rather than invented silently.
 - **`boundary/keys.rs` keeps the normalization key** (NFKC, default-ignorables removed,
   lower case) because derivation compares *names* before any matcher exists and the
   `privateterms` crate does not export its key. It searches no text.
+
+## Who the authenticated author of a standing comment is on GitHub
+
+The contract says an owned standing comment has "the authenticated author" and does
+not say how a viewer's login is compared with a comment's author. GitHub's GraphQL reads
+a comment written with an Actions token as the `Bot` `github-actions`, and that token's
+viewer is expected to read `github-actions[bot]` (inferred, not observed), so the
+comparison has one exception:
+
+- A viewer reading `github-actions` or `github-actions[bot]` owns a comment whose author
+  is a `Bot` reading either spelling, and nothing else. A `User` named `github-actions`
+  is not the bot.
+- Any other viewer owns a comment whose author reads exactly its login, whatever the
+  author's type. So a user token and an app reading the same login are not told apart,
+  and another app's viewer reading `my-app[bot]` does not own a `Bot` author reading
+  `my-app`.

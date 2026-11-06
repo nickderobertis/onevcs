@@ -442,8 +442,6 @@ fn user_token_updates_only_its_own_comment_among_copies_of_its_marker() {
     let foreign = [
         keyed_comment(7, "github-actions", "Bot", "the Actions bot's comment"),
         keyed_comment(8, "someone-else", "User", "another person's comment"),
-        // An app and a person may share a name; they are different accounts.
-        keyed_comment(9, "alice", "Bot", "an app named alice"),
     ];
     let mut state = host.state();
     state["viewer"] = json!("alice");
@@ -464,12 +462,12 @@ fn user_token_updates_only_its_own_comment_among_copies_of_its_marker() {
 
     assert_eq!(upsert_ci(&host, "alice's new comment")["status"], "updated");
     let stored = host.state();
-    assert_eq!(stored["comments"].as_array().unwrap().len(), 4);
+    assert_eq!(stored["comments"].as_array().unwrap().len(), 3);
     for (index, comment) in foreign.iter().enumerate() {
         assert_eq!(&stored["comments"][index], comment);
     }
     assert_eq!(
-        stored["comments"][3]["body"],
+        stored["comments"][2]["body"],
         format!("alice's new comment\n\n{CI_MARKER}")
     );
     assert_eq!(
@@ -479,6 +477,48 @@ fn user_token_updates_only_its_own_comment_among_copies_of_its_marker() {
             "/repos/owner/repo/issues/comments/10".to_owned()
         )]
     );
+}
+
+#[test]
+fn other_bot_updates_a_comment_whose_author_reads_exactly_the_viewer_login() {
+    for login in ["my-app[bot]", "my-app"] {
+        let host = Boundary::new();
+        let mut state = host.state();
+        state["viewer"] = json!(login);
+        state["comments"] = json!([keyed_comment(7, login, "Bot", "old report")]);
+        host.set(&state);
+
+        let updated = upsert_ci(&host, "new report");
+        assert_eq!(updated["status"], "updated", "viewer {login}");
+        assert_eq!(updated["comment"]["body"], "new report");
+        let stored = host.state();
+        assert_eq!(stored["comments"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            stored["comments"][0]["body"],
+            format!("new report\n\n{CI_MARKER}")
+        );
+        assert_eq!(
+            writes(&host),
+            [(
+                "PATCH".to_owned(),
+                "/repos/owner/repo/issues/comments/7".to_owned()
+            )],
+            "viewer {login}"
+        );
+    }
+}
+
+#[test]
+fn only_the_actions_bot_has_its_spellings_reconciled() {
+    let host = Boundary::new();
+    let foreign = keyed_comment(7, "my-app", "Bot", "the app's earlier report");
+    let mut state = host.state();
+    state["viewer"] = json!("my-app[bot]");
+    state["comments"] = json!([foreign]);
+    host.set(&state);
+
+    assert_eq!(upsert_ci(&host, "report")["status"], "created");
+    assert_eq!(host.state()["comments"][0], foreign);
 }
 
 #[test]

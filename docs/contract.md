@@ -7066,10 +7066,6 @@ body limit is 65,536 characters including the appended marker. An owned comment
 has both the authenticated author and the exact trailing marker
 `<!-- onevcs:standing-comment:v1:<lowercase SHA-256 of UTF-8 key> -->`, separated
 from its visible body by two newlines. The API strips this marker on reads.
-On GitHub the author is matched by account, not by spelling: an Actions token's
-viewer may read `github-actions` or `github-actions[bot]`, and owns comments whose
-author is a `Bot` reading either; any other viewer owns only comments by a non-`Bot`
-author reading its exact login.
 Comments by other authors, unrelated comments and descriptions are preserved.
 This sessionless verb performs **no public-output screening** and creates no
 state, even on a host that has registry terms or phrase lists. Its body is the
