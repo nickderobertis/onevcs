@@ -291,7 +291,6 @@ fn standing_comment_cli_preserves_ownership_content_and_refuses_stale_heads() {
 /// Key `ci`'s marker, which every journey below expects the host to hold.
 const CI_MARKER: &str = "<!-- onevcs:standing-comment:v1:1b158839f8aa339e89bb50b1603e90ec68e0fd5565fe10a7cb32729fddf7070a -->";
 
-/// One stored comment on the boundary, carrying key `ci`'s marker.
 fn keyed_comment(id: u64, author: &str, author_type: &str, visible: &str) -> Value {
     json!({
         "id": id,

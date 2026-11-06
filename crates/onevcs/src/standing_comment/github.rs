@@ -22,15 +22,32 @@ fn marker(key: &str) -> String {
 /// `github-actions`, and its REST author is `github-actions[bot]`.
 const ACTIONS_BOT_LOGINS: [&str; 2] = ["github-actions", "github-actions[bot]"];
 
-/// Whether the viewer wrote a comment by this author. Logins alone cannot say: a `Bot`
-/// and a person may read the same login and are still different accounts, so the
-/// author's GraphQL type decides alongside it.
-fn owned_by_viewer(viewer: &str, login: &str, author_type: &str) -> bool {
-    let bot = author_type == "Bot";
-    if ACTIONS_BOT_LOGINS.contains(&viewer) {
-        bot && ACTIONS_BOT_LOGINS.contains(&login)
-    } else {
-        !bot && login == viewer
+/// A comment's author. A `Bot` and a person may read the same login and are still
+/// different accounts, so the login never travels without its GraphQL type.
+enum Author<'a> {
+    Bot(&'a str),
+    Other(&'a str),
+}
+
+impl<'a> Author<'a> {
+    /// A deleted account reads as a null author, which is `None`: nobody can own it.
+    fn parse(value: &'a Value) -> Result<Option<Self>> {
+        let Some(login) = value["login"].as_str() else {
+            return Ok(None);
+        };
+        Ok(Some(match string(value, "__typename")? {
+            "Bot" => Self::Bot(login),
+            _ => Self::Other(login),
+        }))
+    }
+
+    fn is_viewer(&self, viewer: &str) -> bool {
+        match self {
+            Self::Bot(login) => {
+                ACTIONS_BOT_LOGINS.contains(&viewer) && ACTIONS_BOT_LOGINS.contains(login)
+            }
+            Self::Other(login) => !ACTIONS_BOT_LOGINS.contains(&viewer) && *login == viewer,
+        }
     }
 }
 
@@ -123,12 +140,8 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
             .as_array()
             .ok_or_else(|| invalid("GitHub standing comment response lacks comments"))?;
         for comment in comments {
-            let author = &comment["author"];
-            // A deleted account reads as a null author, which nobody can own.
-            let Some(login) = author["login"].as_str() else {
-                continue;
-            };
-            if !owned_by_viewer(viewer, login, string(author, "__typename")?) {
+            let author = Author::parse(&comment["author"])?;
+            if !author.is_some_and(|author| author.is_viewer(viewer)) {
                 continue;
             }
             let body = string(comment, "body")?;
