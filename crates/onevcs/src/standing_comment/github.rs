@@ -31,10 +31,14 @@ enum Author<'a> {
 
 impl<'a> Author<'a> {
     /// A deleted account reads as a null author, which is `None`: nobody can own it.
-    fn parse(value: &'a Value) -> Result<Option<Self>> {
-        let Some(login) = value["login"].as_str() else {
+    fn of_comment(comment: &'a Value) -> Result<Option<Self>> {
+        let value = comment
+            .get("author")
+            .ok_or_else(|| invalid("GitHub standing comment response lacks author"))?;
+        if value.is_null() {
             return Ok(None);
-        };
+        }
+        let login = string(value, "login")?;
         Ok(Some(match string(value, "__typename")? {
             "Bot" => Self::Bot(login),
             _ => Self::Other(login),
@@ -140,7 +144,7 @@ fn read(repo: &str, change: &ChangeId, key: &str) -> Result<(String, Option<Foun
             .as_array()
             .ok_or_else(|| invalid("GitHub standing comment response lacks comments"))?;
         for comment in comments {
-            let author = Author::parse(&comment["author"])?;
+            let author = Author::of_comment(comment)?;
             if !author.is_some_and(|author| author.is_viewer(viewer)) {
                 continue;
             }

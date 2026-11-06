@@ -523,11 +523,23 @@ fn comment_authors_are_validated_and_a_deleted_author_owns_nothing() {
         }}}})
     };
     let mut state = host.state();
-    state["graphql_override"] = answer(json!({"login": "github-actions"}));
-    host.set(&state);
-    let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
-    assert!(!output.status.success(), "accepted an author with no type");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("__typename"));
+    let mut no_author = answer(Value::Null);
+    no_author["data"]["repository"]["pullRequest"]["comments"]["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("author");
+    for (response, diagnostic) in [
+        (answer(json!({"login": "github-actions"})), "__typename"),
+        (answer(json!({"__typename": "Bot"})), "login"),
+        (answer(json!({"__typename": "Bot", "login": 7})), "login"),
+        (no_author, "author"),
+    ] {
+        state["graphql_override"] = response;
+        host.set(&state);
+        let output = host.run(&["change", "comment", "show", CHANGE, "--key", "ci", "--json"]);
+        assert!(!output.status.success(), "accepted a malformed author");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+    }
 
     state["graphql_override"] = answer(Value::Null);
     host.set(&state);
