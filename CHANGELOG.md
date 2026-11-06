@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.1](https://github.com/nickderobertis/onevcs/compare/v0.61.0...v0.61.1) - 2026-11-06
+
+### Fixed
+
+- *(change)* find a standing comment the GitHub Actions bot wrote ([#624](https://github.com/nickderobertis/onevcs/pull/624))
+
 ## [0.61.0](https://github.com/nickderobertis/onevcs/compare/v0.60.0...v0.61.0) - 2026-11-05
 
 ### Added
