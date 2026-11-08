@@ -2303,7 +2303,6 @@ struct Placing {
     provision: Option<git::PostCheckout>,
 }
 
-/// Record one run of `post-checkout` on the session's stream.
 fn emit_provision(stream: &mut Stream, ran: &git::PostCheckout) {
     let (output, output_truncated) = last_bytes(
         crate::stream::redact(&ran.output),

@@ -4062,7 +4062,6 @@ impl HookTrace {
         Ok(Self { file })
     }
 
-    /// What points one git command at this file.
     fn env(&self) -> Vec<(String, String)> {
         vec![(
             "GIT_TRACE2_EVENT".to_owned(),
@@ -4220,7 +4219,6 @@ fn worktree_hooks(cwd: &Path, worktree: &Path) -> Result<Option<String>> {
     )))
 }
 
-/// `args`, preceded by the setting [`worktree_hooks`] answered, where it answered one.
 fn with_hooks<'a>(hooks: &'a Option<String>, args: &[&'a str]) -> Vec<&'a str> {
     let mut all: Vec<&str> = match hooks {
         Some(hooks) => vec!["-c", hooks],

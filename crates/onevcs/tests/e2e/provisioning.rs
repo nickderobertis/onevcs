@@ -201,7 +201,6 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
         "the close's return records nothing: {closes:#?}"
     );
 
-    // Git reruns it, with the arguments the checkout gave it.
     let said = rerun(&swapped, &reused);
     assert!(said.contains(MARKER), "{said}");
     let lines = ran(&ledger);
@@ -608,4 +607,49 @@ fn a_post_checkout_run_by_a_git_another_hook_started_is_not_the_checkouts() {
         "a nested git ran its own post-checkout during this checkout"
     );
     none_of(&fixture.world, &second);
+}
+
+/// A repository whose `reference-transaction` stalls a ref update while `SLOW` is set,
+/// which is before the checkout that update belongs to has completed.
+fn stalls_its_ref_updates() -> Fixture {
+    let fixture = pooled(&sized(1, "unlimited"));
+    track_hook(
+        &fixture,
+        "reference-transaction",
+        "#!/bin/sh\ncat > /dev/null\n[ \"$1\" = prepared ] && [ -n \"$SLOW\" ] && sleep 60\nexit 0\n",
+    );
+    fixture
+}
+
+fn refused_as_timed_out(fixture: &Fixture, args: &[&str]) {
+    let refused = fixture
+        .world
+        .onevcs()
+        .env("SLOW", "1")
+        .env("ONEVCS_GIT_HOOK_TIMEOUT", "2")
+        .args(args)
+        .assert()
+        .failure();
+    let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(said.contains("timed out"), "{said}");
+}
+
+#[test]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] seconds of waiting on the bound this journey exists to elapse, and it reads every input the session code reads, so an edge of its own would be no narrower.
+fn a_checkout_timed_out_before_it_completed_still_refuses_the_open() {
+    let fixture = stalls_its_ref_updates();
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    close(&fixture, &first);
+    refused_as_timed_out(
+        &fixture,
+        &["session", "open", "project", "--branch", "feature/two"],
+    );
+}
+
+#[test]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] seconds of waiting on the bound this journey exists to elapse, and it reads every input the session code reads, so an edge of its own would be no narrower.
+fn a_return_timed_out_before_it_completed_still_refuses_the_close() {
+    let fixture = stalls_its_ref_updates();
+    let (token, _) = fixture.open(&["--branch", "feature/one"]);
+    refused_as_timed_out(&fixture, &["session", "close", &token]);
 }
