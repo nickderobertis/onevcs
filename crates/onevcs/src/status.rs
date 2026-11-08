@@ -2292,13 +2292,14 @@ pub(crate) struct Recorded {
     gaps: bool,
     /// Every commit this stream records putting on origin under a branch's own name: an
     /// accepted `push` naming its `head`, and a `publication-resumed` naming the head a
-    /// verified change request already carries. Kept per scope, for the reason
-    /// [`proofs`](Recorded::proofs) is.
+    /// verified change request already carries. Each keeps its scope where it has one:
+    /// a session's stream labels no identity, so [`publication_streams`] attributes an
+    /// unscoped entry through the session records instead.
     ///
     /// What `recoverable` asks before it lists a branch as unpublished: a copy of a
     /// branch whose tip this host itself put on origin, or one behind such a commit, is
     /// published work whatever the remote-tracking refs of the checkout holding it say.
-    pushed: Vec<(Scope, PushedHead)>,
+    pushed: Vec<(Option<Scope>, PushedHead)>,
 }
 
 /// One commit a stream records origin carrying under a branch's own name.
@@ -3667,7 +3668,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             EventKind::Push => {
                 let accepted = event.payload.get("accepted").and_then(Value::as_bool);
                 if let (Some(true), Some(pushed)) = (accepted, pushed_head(&field)) {
-                    record.pushed.extend(scope.clone().map(|scope| (scope, pushed)));
+                    record.pushed.push((scope.clone(), pushed));
                 }
                 record.merge_path = Some(Stamped {
                     at,
@@ -3686,7 +3687,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // the commit origin already carries under the branch's name.
             EventKind::PublicationResumed => {
                 if let Some(pushed) = pushed_head(&field) {
-                    record.pushed.extend(scope.clone().map(|scope| (scope, pushed)));
+                    record.pushed.push((scope.clone(), pushed));
                 }
             }
             // A retry's landing superseding this branch, and the branch's own
@@ -3856,31 +3857,71 @@ pub(crate) fn recorded_for(
     }
 }
 
+/// Whether an entry of `record` counts for `identity`: its own scope says so, or it has
+/// none and `record` is the stream of one of that identity's own sessions. A
+/// branch-keyed stream is one per name across repositories, so an unscoped entry there
+/// counts for nobody.
+fn counts_for(
+    scope: &Option<Scope>,
+    record: &Recorded,
+    identity: &str,
+    sessions: &[String],
+) -> bool {
+    match scope {
+        Some(scope) => scope.admits(identity),
+        None => sessions.contains(&record.token),
+    }
+}
+
+/// The streams about one branch: [`relevant_streams`], and the stream of each of the
+/// `sessions` of that identity which recorded the branch.
+fn publication_streams<'a>(
+    streams: &'a [Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> Vec<&'a Recorded> {
+    let named = relevant_streams(streams, identity, branch, None);
+    streams
+        .iter()
+        .filter(|record| {
+            sessions.contains(&record.token)
+                || named.iter().any(|kept| std::ptr::eq(*kept, *record))
+        })
+        .collect()
+}
+
 /// Every commit this host's streams record putting on origin as one branch of one
-/// identity — accepted publishing pushes and resumed publications — across the streams
-/// that recorded that branch.
+/// identity — accepted publishing pushes and resumed publications.
 ///
-/// Held to the branch asked about, for the reason [`preserved_in`] is: a stream is
-/// matched by name as well as by content, and a branch-keyed verb's stream can hold
-/// another branch's push.
+/// `sessions` are the tokens of that identity's sessions of the branch. Held to the
+/// branch asked about, for the reason [`preserved_in`] is: a stream is matched by name
+/// as well as by content, and a branch-keyed verb's stream can hold another branch's
+/// push. A `change-opened` names no head, so it cannot answer this; what it follows
+/// is the push or the resumption that does.
 pub(crate) fn pushed_heads(
     streams: &[Recorded],
     identity: &str,
     branch: &str,
-    session: Option<&str>,
+    sessions: &[String],
 ) -> Vec<ObjectId> {
-    relevant_streams(streams, identity, branch, session)
+    publication_streams(streams, identity, branch, sessions)
         .into_iter()
-        .flat_map(|record| record.pushed.iter())
-        .filter(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
-        .map(|(_, pushed)| pushed.head.clone())
+        .flat_map(|record| {
+            record
+                .pushed
+                .iter()
+                .filter(move |(scope, pushed)| {
+                    pushed.branch == branch && counts_for(scope, record, identity, sessions)
+                })
+                .map(|(_, pushed)| pushed.head.clone())
+        })
         .collect()
 }
 
-/// The newest commit one stream records putting on origin as `branch` of `identity`,
-/// read out of that stream alone — what a copy-back writes the destination's
-/// `origin/<branch>` to, so a checkout handed a published branch does not read it as
-/// work nobody published.
+/// The newest commit one session's stream records putting on origin as `branch` of
+/// `identity` — what a copy-back writes the destination's `origin/<branch>` to, so a
+/// checkout handed a published branch does not read it as work nobody published.
 pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<ObjectId> {
     let directory = home::streams_dir().ok()?;
     if !directory.join(format!("{token}.ndjson")).is_file() {
@@ -3890,19 +3931,29 @@ pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<Obj
         .pushed
         .into_iter()
         .rev()
-        .find(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
+        .find(|(scope, pushed)| {
+            pushed.branch == branch && scope.as_ref().is_none_or(|scope| scope.admits(identity))
+        })
         .map(|(_, pushed)| pushed.head)
 }
 
-/// The tokens of the streams that record pushing one branch of one identity to origin.
-pub(crate) fn pushing_streams(streams: &[Recorded], identity: &str, branch: &str) -> BTreeSet<String> {
-    relevant_streams(streams, identity, branch, None)
+/// The tokens of the streams that record publishing one branch of one identity: an
+/// accepted push of it, or a change request opened for it.
+pub(crate) fn publishing_streams(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> BTreeSet<String> {
+    publication_streams(streams, identity, branch, sessions)
         .into_iter()
         .filter(|record| {
-            record
-                .pushed
+            record.pushed.iter().any(|(scope, pushed)| {
+                pushed.branch == branch && counts_for(scope, record, identity, sessions)
+            }) || record
+                .proofs
                 .iter()
-                .any(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
+                .any(|(scope, proofs)| scope.admits(identity) && proofs.opened.is_some())
         })
         .map(|record| record.token.clone())
         .collect()

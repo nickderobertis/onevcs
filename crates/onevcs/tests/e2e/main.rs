@@ -309,6 +309,9 @@ mod released;
 // compiled binary on both sides of the race.
 #[cfg(unix)]
 mod record_writes;
+// Unix only: real sessions over `world.rs`'s POSIX fixture and substituted `gh`.
+#[cfg(unix)]
+mod recoverable_published;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`.
 // Its own header carries the reason in full.
 #[cfg(unix)]

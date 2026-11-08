@@ -822,12 +822,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // has seen of it. Asked of the default report alone — `--all` lists every
             // preserved branch — and before anything is decided about the branch,
             // because its answer would be discarded.
-            let pushed = crate::status::pushed_heads(
-                streams,
-                identity,
-                &branch,
-                session_holding(sessions, identity, &branch),
-            );
+            let tokens = tokens_of(sessions, identity, &branch);
+            let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
             let covered = published_at(asked, &branch, &tip, &pushed, &preserved_here)?;
             if covered && reporting == Reporting::UnpublishedOnly {
                 continue;
@@ -944,7 +940,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                         session_holding(sessions, identity, &branch),
                     ),
                     retirement,
-                    pushers: crate::status::pushing_streams(streams, identity, &branch),
+                    pushers: crate::status::publishing_streams(streams, identity, &branch, &tokens),
                     covered,
                 },
                 sessions,
@@ -1039,7 +1035,7 @@ struct Preserved<'a> {
     verdict: Landed,
     on_origin: Option<OnOrigin>,
     retirement: Option<crate::retire::Retirement>,
-    /// The streams that record putting this branch on origin, by token.
+    /// The streams that record publishing this branch, by token.
     pushers: BTreeSet<String>,
     /// Whether origin carries this copy's tip under the branch's name ([`published_at`]).
     covered: bool,
@@ -1192,8 +1188,8 @@ fn preserved_row(
 /// The session answering is the one [`latest_session`] names, and what it is said to
 /// have done is what the streams say: a session whose stream records pushing the
 /// branch to origin is never named as one that closed without publishing, and where
-/// some other stream — a later `publish-branch`, say — recorded the push, that stream
-/// is what is named.
+/// some other stream — a later `publish-branch`, say — recorded it, that stream is what
+/// is named. An opened change request counts as publishing here as an accepted push does.
 fn recorded_stop(
     sessions: &[workspace::Record],
     identity: &str,
@@ -1216,11 +1212,13 @@ fn recorded_stop(
                 .map(|token| format!("the stream {token}"))
         });
     match (pusher, answering) {
-        (Some(pusher), _) if covered => {
-            format!("nothing stopped it unpublished: {pusher} records pushing this branch to origin at or past this copy's tip")
-        }
+        (Some(pusher), _) if covered => format!(
+            "nothing stopped it unpublished: {pusher} records publishing this branch, and origin \
+             carries this copy's tip"
+        ),
         (Some(pusher), _) => format!(
-            "{pusher} records pushing this branch to origin, and this copy holds commits past              what any recorded push put there"
+            "{pusher} records publishing this branch, and this copy holds commits past what \
+             origin carries of it"
         ),
         (None, Some(record)) => format!("session {} closed without publishing", record.token),
         (None, None) => {
@@ -1234,8 +1232,8 @@ fn recorded_stop(
 /// Answered first by this host's own records of putting the branch there (`pushed`,
 /// each held to this checkout's view of ancestry), and only where none answers by
 /// asking origin once for that one branch — in process where origin is a bare
-/// repository on this filesystem, and by one `ls-remote` otherwise. What origin said is
-/// then written to this checkout's own `origin/<branch>` where it holds that commit, so
+/// repository on this filesystem, and by one `ls-remote` otherwise. A commit this
+/// checkout does not hold is fetched, that one ref alone. What origin said is then written to this checkout's own `origin/<branch>` where it holds that commit, so
 /// a retained clone whose copy went stale because the branch was published from
 /// somewhere else stops being asked: its next listing no longer names it.
 ///
@@ -1260,6 +1258,13 @@ fn published_at(
     let git::RemoteTip::At(remote) = git::remote_tip_read(asked.path(), "origin", branch)? else {
         return Ok(false);
     };
+    // A retained clone never saw a commit published from somewhere else, and its own
+    // store is what the remote-tracking ref below has to name, whatever the lender
+    // holds. So it takes that one ref, once per published commit:
+    // afterwards the clone holds the commit and reads the question itself.
+    if !git::has_commit(asked.path(), &crate::host::Sha(remote.as_str().to_owned())) {
+        git::fetch_tracking(asked.path(), "origin", branch)?;
+    }
     let carried = remote.as_str() == tip || git::known_to_reach(asked, tip, remote.as_str())?;
     if carried {
         git::record_on_origin(asked.path(), branch, &remote);
@@ -1385,6 +1390,15 @@ fn unfollowable_chain(sessions: &[workspace::Record], identity: &str, branch: &s
         .iter()
         .filter(|record| record.identity == identity && *record.branch == *branch)
         .any(|record| workspace::newest(record).is_err())
+}
+
+/// The tokens of every session of this identity that recorded this branch.
+fn tokens_of(sessions: &[workspace::Record], identity: &str, branch: &str) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|record| record.identity == identity && *record.branch == *branch)
+        .map(|record| record.token.to_string())
+        .collect()
 }
 
 /// The token of an open session holding this branch, for reading its stream.

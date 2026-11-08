@@ -5281,6 +5281,23 @@ pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> 
     .ok())
 }
 
+/// Fetch one branch of a remote to its remote-tracking ref and nothing else — no tag,
+/// no prune — answering whether git took it.
+pub fn fetch_tracking(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
+    Ok(fetching(cwd, || {
+        run(
+            &[
+                "fetch",
+                "--no-tags",
+                remote,
+                &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
+            ],
+            Some(cwd),
+        )
+    })?
+    .ok())
+}
+
 #[cfg(test)]
 mod ref_name_tests {
     use super::*;
