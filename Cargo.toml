@@ -108,11 +108,11 @@ libz-sys = "1.1.29"
 # every producer in the stack, where each used to keep its own. The core is
 # generic over a vocabulary and names no agent; the words `onevcs` writes
 # (`source: vcs`, the four phases, the reserved labels) are this crate's own, in
-# `crates/onevcs/src/vocabulary.rs`. The floor is the release that retired
-# `onemessagebus-agent` and left the bus holding only generic contracts: a
-# consumer resolves one copy of the bus, so every sibling `onepipeline` composes
-# has to require the same release.
-onemessagebus = "0.9.1"
+# `crates/onevcs/src/vocabulary.rs`. The floor is the release `onepipeline`'s
+# planner channel adopted: Cargo treats 0.x minors as incompatible and a consumer
+# has to resolve one copy of the bus, so every sibling `onepipeline` composes has
+# to require the same minor.
+onemessagebus = "0.10.0"
 # The JSON Schema derive the bus core's `Wire` bound asks of every type a
 # vocabulary puts on the wire. `preserve_order` for the same reason `serde_json`
 # has it: a generated schema lists an envelope's properties in declaration order

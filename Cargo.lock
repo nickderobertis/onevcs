@@ -1106,12 +1106,13 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onemessagebus"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ae7dfd47a38b52451c6b00288604d0c4c3f640a0192a302fd00732f805d3729"
+checksum = "949aa9f076e710679ff61a44d253d815b873a81c57cce5ca2074a1cef4f59947"
 dependencies = [
  "getrandom 0.3.4",
  "jsonschema",
+ "rustix",
  "rustls",
  "rustls-native-certs",
  "schemars",
@@ -1122,6 +1123,7 @@ dependencies = [
  "thiserror",
  "time",
  "ureq",
+ "winapi-util",
 ]
 
 [[package]]
@@ -2109,6 +2111,15 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"
