@@ -1684,6 +1684,7 @@ fn rewrite_stream(hosted: &Hosted, token: &str, edit: impl Fn(&mut serde_json::V
 }
 
 /// A clock that could not tell this stream's records apart: one stamp on all of them.
+// llmlint: ignore[tests_mirror_real_usage] A millisecond tie between two records cannot be produced deterministically through any interface; only the stamps of records real publications wrote are rewritten here, because the tie is the state under test.
 fn one_stamp(hosted: &Hosted, token: &str) {
     rewrite_stream(hosted, token, |event| {
         event["ts"] = serde_json::json!("2099-01-01T00:00:00.000Z");
@@ -1805,6 +1806,7 @@ fn a_kept_draft_record_reads_back_what_its_checks_field_says_and_names_what_it_c
     );
 
     // Green with a skipped required check says so where a person reads it.
+    // llmlint: ignore[tests_mirror_real_usage] No publication can write this verdict on a keep today, because a draft's settlement records only all-passed, so the reader's handling of the word can only be reached through the record's field.
     edit_kept(&hosted, &token, |payload| {
         payload["checks"] = serde_json::json!("passed-with-skipped");
     });
