@@ -82,8 +82,10 @@ case $phase in
     : "${HOME_COPY:?HOME_COPY names the scratch copy of ONEVCS_HOME}"
     : "${STAGED:?STAGED names the record record-gains.mjs staged}"
     : "${PRISTINE:?PRISTINE names the record as a cold read wrote it}"
-    : "${BASELINE:?BASELINE names the unmodified read of the copy}"
     for prototype in decision-record decision-record,local-head,no-paths decision-record,local-head,no-paths,batch-cat-file; do
+      name=${prototype//,/+}
+      m "before-staged-$name" --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --no-trace --rows-out "$out/before-staged-$name.rows.json"
+      BASELINE=$out/before-staged-$name.rows.json
       m "staged-warm-$prototype" --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --prototype "$prototype" --stage-record "$STAGED" --baseline-rows "$BASELINE"
       m "pristine-warm-$prototype" --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --prototype "$prototype" --stage-record "$PRISTINE" --baseline-rows "$BASELINE"
     done

@@ -550,9 +550,10 @@ pub(crate) mod decisions {
             if entry.verdict.is_landed() {
                 return Some(entry);
             }
-            // onevcs's own landing record: an unlanded decision is spent once this host
-            // recorded a landing of the branch, whatever the base's history says.
-            if landing_recorded {
+            // onevcs's own landing record: a decision of `no` is spent once this host
+            // recorded a landing of the branch, whatever the base's history says. An
+            // `in-part` decision was reached with that record in hand, so it stands.
+            if landing_recorded && matches!(entry.verdict, crate::Landed::No) {
                 super::event(
                     super::Kind::Record,
                     "landing-record-named",
