@@ -194,6 +194,11 @@ pub(crate) fn shape(args: &[&str]) -> String {
     shape.join(" ")
 }
 
+/// Prototype `native-off` (in `recovery_cache::native`): no git read is answered in
+/// process, so every one the read makes is spawned — how a generated checkout small
+/// enough for `native_objects` to answer is made to reach the argument lists a large
+/// one sends to git.
+///
 /// Prototype `local-head`: where the checkout keeps no `<remote>/HEAD`, the one of
 /// `<remote>/main` and `<remote>/master` it does keep, rather than asking the remote
 /// (`ls-remote --symref`, a request to the code host) on every read.

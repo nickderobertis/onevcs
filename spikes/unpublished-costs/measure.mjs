@@ -6,6 +6,7 @@
 //        [--session ID] [--branch NAME --repo IDENTITY] [--runs-root DIR]
 //        [--acknowledgements DIR] [--onevcs PATH] [--no-trace] [--count]
 //        [--rows-out FILE] [--baseline-rows FILE] [--fixture DIR]
+//        [--stage-record DIR]
 //
 // MEASURE is host, host-warm, session, stop-guard, acknowledge, recoverable-host,
 // record-write or fixture-build. Each measure is one timed, untraced run of the read
@@ -13,6 +14,11 @@
 // --no-trace — one traced run of the same read whose spans and git reads attribute
 // the time to causes. --count adds a third run under `strace -f` counting every
 // program the read starts and every network connection it opens; it is never timed.
+//
+// --stage-record DIR copies a `decision-record` prototype record (as record-gains.mjs
+// stages one) into --onevcs-home's cache before every run, so each run of a warm read
+// meets the same staged state rather than the one the run before it wrote. It needs
+// --onevcs-home, so it can only ever touch a scratch copy.
 //
 // The harness reads only. It points `--acknowledge` at a fresh scratch directory
 // unless --acknowledgements names one, and writes nothing under ONEVCS_HOME; the
@@ -57,6 +63,7 @@ function parse(argv) {
     "--baseline-rows",
     "--fixture",
     "--scale",
+    "--stage-record",
   ]);
   for (let at = 0; at < argv.length; at += 1) {
     const flag = argv[at];
@@ -70,6 +77,8 @@ function parse(argv) {
     } else fail(`unknown argument ${JSON.stringify(flag)}; see the header of ${process.argv[1]}`);
   }
   if (!options.measure) fail(`--measure is required: one of ${MEASURES.join(", ")}`);
+  if (options.stageRecord && !options.onevcsHome)
+    fail("--stage-record needs --onevcs-home naming a scratch copy of ONEVCS_HOME");
   if (!MEASURES.includes(options.measure))
     fail(`unknown measure ${JSON.stringify(options.measure)}: one of ${MEASURES.join(", ")}`);
   return options;
@@ -569,7 +578,16 @@ function counted(argv, env, input) {
   return { status: ran.status, programs, connections };
 }
 
+/** Replace the scratch home's decision record with the staged one. */
+function stageRecord() {
+  if (!options.stageRecord) return;
+  const into = path.join(path.resolve(options.onevcsHome), "cache", "spike-decisions");
+  fs.rmSync(into, { recursive: true, force: true });
+  fs.cpSync(path.resolve(options.stageRecord), into, { recursive: true });
+}
+
 function runRead(run, prototype, trace) {
+  stageRecord();
   const acknowledgements = acknowledgementsFor(run);
   const { argv, input, cwd } = read(acknowledgements);
   const env = environment({ trace, prototype });
@@ -589,6 +607,7 @@ function measureRead() {
     runs_root: options.runsRoot || process.env.ONEPIPELINE_RUNS_DIR || null,
     binary,
     prototype: prototype || null,
+    staged_record: options.stageRecord ? path.resolve(options.stageRecord) : null,
     cores: os.cpus().length,
   };
   if (options.measure === "host-warm" || options.measure === "record-write") {
@@ -621,6 +640,7 @@ function measureRead() {
   if (options.count) {
     const ack = acknowledgementsFor("counted");
     const { argv, input } = read(ack);
+    stageRecord();
     document.counted = counted(argv, environment({ prototype }), input);
   }
   document.git_processes = document.attribution?.git.spawned ?? document.counted?.programs?.git ?? null;

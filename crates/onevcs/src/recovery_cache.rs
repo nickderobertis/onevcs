@@ -404,7 +404,7 @@ pub(crate) fn native(
     cwd: Option<&Path>,
     env: &[(String, String)],
 ) -> Option<git::Output> {
-    if !crate::native_objects::reads(args) {
+    if !crate::native_objects::reads(args) || crate::spike::prototype("native-off") {
         return None;
     }
     let (cwd, borrowing) = admitted(cwd?, env)?;
