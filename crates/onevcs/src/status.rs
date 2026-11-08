@@ -2493,7 +2493,7 @@ pub(crate) fn spell_check_state(state: CheckState) -> &'static str {
 const AWAITING_CHECKS: &str = "awaiting-checks";
 
 /// The `kind` a draft held for its user's review is reported under.
-const KEPT_FOR_REVIEW: &str = "kept-for-review";
+pub(crate) const KEPT_FOR_REVIEW: &str = "kept-for-review";
 
 /// The draft a `draft-kept-for-review` record left standing, read back.
 ///
@@ -2553,13 +2553,9 @@ pub enum ReviewChecks {
 
 impl ReviewChecks {
     /// The word a record spells it with, or none for a word this build does not know.
+    /// Read through this type's own serde spelling, so the wire has one vocabulary.
     fn parse(word: &str) -> Option<Self> {
-        match word {
-            "passed" => Some(ReviewChecks::Passed),
-            "passed-with-skipped" => Some(ReviewChecks::PassedWithSkipped),
-            "unchecked" => Some(ReviewChecks::Unchecked),
-            _ => None,
-        }
+        serde_json::from_value(Value::String(word.to_owned())).ok()
     }
 }
 

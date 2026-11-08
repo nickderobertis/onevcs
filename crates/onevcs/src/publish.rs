@@ -2422,8 +2422,8 @@ fn land_deferred(context: &Context<'_>, stream: &mut Stream, adopt: &Url) -> Pub
             "url": adopt.to_string(),
             "id": number,
             "base": context.target.base().to_string(),
-            "kind": KEPT_FOR_REVIEW,
-            "checks": UNCHECKED,
+            "kind": crate::status::KEPT_FOR_REVIEW,
+            "checks": crate::status::ReviewChecks::Unchecked,
         })),
     );
     crate::standings::record_head(adopt, &context.branch);
@@ -2765,7 +2765,9 @@ fn land_opened_change(
                         "url": change.url.to_string(),
                         "id": change.id.0,
                         "base": change.base,
-                        "checks": watcher.verdict.unwrap_or("passed"),
+                        "checks": watcher
+                            .verdict
+                            .unwrap_or(crate::status::ReviewChecks::Passed),
                     })),
                 );
                 return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));
@@ -3383,14 +3385,6 @@ fn await_as_draft(
 /// while the checks run — the one kind that is no [`DraftReason`], because nobody
 /// asked for it.
 const AWAITING_CHECKS: &str = "awaiting-checks";
-
-/// The `kind` a `change-drafted` payload carries for a draft a deferred publication
-/// pushed into and held for its user's review — no [`DraftReason`] either, because
-/// the policy holds it rather than a caller.
-const KEPT_FOR_REVIEW: &str = "kept-for-review";
-
-/// What such a payload's `checks` says when the publication deferred their verdict.
-const UNCHECKED: &str = "unchecked";
 
 /// Hold a change request open as a draft, and record why.
 ///
@@ -4024,7 +4018,7 @@ struct Watcher<'a> {
     settled: bool,
     /// The verdict that `checks-settled` recorded — `passed` or `passed-with-skipped`
     /// — which a draft kept for review carries as what its watch knew of its checks.
-    verdict: Option<&'static str>,
+    verdict: Option<crate::status::ReviewChecks>,
     /// Whether an early lift prints its warning line: the resolved
     /// `drafts.warn_on_early_lift`.
     warn_on_early_lift: bool,
@@ -4316,9 +4310,9 @@ impl<'a> Watcher<'a> {
         let skipped = skipped_in(standing);
         let ruled = gate_run::passed(!skipped.is_empty());
         let verdict = if skipped.is_empty() {
-            "passed"
+            crate::status::ReviewChecks::Passed
         } else {
-            "passed-with-skipped"
+            crate::status::ReviewChecks::PassedWithSkipped
         };
         self.verdict = Some(verdict);
         let mut payload = object(json!({
