@@ -54,6 +54,15 @@ function fail(message, code = 2) {
   process.exit(code);
 }
 
+/** A path as the filesystem names it, so a symlink cannot alias a guarded directory. */
+function canonical(name) {
+  try {
+    return fs.realpathSync(path.resolve(name));
+  } catch {
+    return path.resolve(name);
+  }
+}
+
 function parse(argv) {
   const options = { trace: true, count: false };
   const valued = new Set([
@@ -91,10 +100,10 @@ function parse(argv) {
   for (const [asked, flag] of [[options.stageRecord, "--stage-record"], [options.measure === "record-write", "--measure record-write"]]) {
     if (!asked) continue;
     if (!options.onevcsHome) fail(`${flag} needs --onevcs-home naming a scratch copy of ONEVCS_HOME`);
-    if (path.resolve(options.onevcsHome) === real)
+    if (canonical(options.onevcsHome) === canonical(real))
       fail(`${flag} writes the decision record under --onevcs-home, which names this user's real ONEVCS_HOME; name a scratch copy`);
   }
-  if (options.stageRecord && path.resolve(options.stageRecord).startsWith(path.join(path.resolve(options.onevcsHome), "cache")))
+  if (options.stageRecord && canonical(options.stageRecord).startsWith(path.join(canonical(options.onevcsHome), "cache")))
     fail("--stage-record must name a directory outside the scratch home's cache, which each run replaces");
   const unknown = (options.prototype || "").split(",").filter((name) => name && !PROTOTYPES.includes(name));
   if (unknown.length) fail(`--prototype ${unknown.join(",")} is no prototype; the prototypes are ${PROTOTYPES.join(", ")}`);
@@ -241,8 +250,10 @@ function rows(stdout) {
   } catch {
     return null;
   }
-  const listing = document.listing || document;
-  if (!Array.isArray(listing.rows)) return null;
+  const listing = document?.listing || document;
+  if (!Array.isArray(listing?.rows)) return null;
+  if (listing.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
+    fail("a listing row carries no identity or branch string, so this is not the listing a decision is read from", 1);
   return {
     verdict: listing.verdict,
     unresolved: (listing.unresolved || []).length,
@@ -321,7 +332,12 @@ function readTrace(file) {
     .readFileSync(file, "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line));
+    .map((line) => {
+      const event = JSON.parse(line);
+      if (typeof event?.kind !== "string" || typeof event.name !== "string" || typeof event.t !== "number" || typeof event.ms !== "number")
+        fail(`${file} holds a trace event without kind, name, t and ms: ${line.slice(0, 200)}`, 1);
+      return event;
+    });
 }
 
 const round = (ms) => Math.round(ms) / 1000;
@@ -661,8 +677,11 @@ function measureRead() {
     } catch (error) {
       fail(`--baseline-rows ${options.baselineRows} cannot be read as JSON: ${error.message}`, 1);
     }
-    if (!Array.isArray(baseline?.rows) || baseline.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
-      fail(`--baseline-rows ${options.baselineRows} is not a --rows-out document: it needs rows, each with an identity and a branch`, 1);
+    const decisions = ["owed", "in_flight", "acknowledged", "unknown"];
+    const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || decisions.some((field) => field in row && typeof row[field] !== "boolean");
+    const keys = new Set((baseline?.rows || []).map((row) => `${row?.identity}/${row?.branch}`));
+    if (!Array.isArray(baseline?.rows) || baseline.rows.some(malformed) || keys.size !== baseline.rows.length)
+      fail(`--baseline-rows ${options.baselineRows} is not a --rows-out document: it needs rows, each once, with an identity, a branch and boolean decision fields`, 1);
     document.rows_against_baseline = compare(baseline, decided);
   }
   if (options.trace) {

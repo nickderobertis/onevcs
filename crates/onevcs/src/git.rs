@@ -2632,6 +2632,7 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
     if let Some(branch) = tracked_head(cwd, remote)? {
         return Ok(branch);
     }
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
     if let Some(branch) = crate::spike::local_head(cwd, remote) {
         return Ok(branch);
     }

@@ -11,6 +11,7 @@
 # named by $FIXTURE_ONE and $FIXTURE_HOST), strategies (each read under each strategy
 # over real state), staged (the warm read over a staged record).
 set -euo pipefail
+[ "$#" -ge 3 ] || { echo "usage: matrix.sh <real|prototypes|strategies|record|staged|fixture> OUT BINARY [SESSION BRANCH REPO]" >&2; exit 2; }
 phase=$1 out=$2 binary=$3 session=${4:-} branch=${5:-} repo=${6:-}
 here=$(cd "$(dirname "$0")" && pwd)
 ack="${XDG_STATE_HOME:-$HOME/.local/state}/ai-orchestrator/stop-unfinished/acknowledged"
@@ -56,7 +57,7 @@ case $phase in
   fixture)
     for which in one host; do
       var=FIXTURE_${which^^}; home=${!var:?$var names a built fixture home}
-      launcher=$(cat "$home/../launcher" 2>/dev/null || echo fixture-launcher-measured)
+      launcher=${FIXTURE_LAUNCHER:?FIXTURE_LAUNCHER names the session the fixture build printed as its launcher}
       m "fixture-$which-host" --measure host --onevcs-home "$home" --acknowledgements "$out/empty-ack"
       m "fixture-$which-recoverable" --measure recoverable-host --onevcs-home "$home" --onevcs "${ONEVCS_BIN:-onevcs}"
       m "fixture-$which-session" --measure session --session "$launcher" --onevcs-home "$home" --acknowledgements "$out/empty-ack"

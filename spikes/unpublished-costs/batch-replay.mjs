@@ -44,7 +44,9 @@ if (shape !== "cat-file-e") {
   process.exit(2);
 }
 const scratch = fs.mkdtempSync(path.join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || os.tmpdir(), "replay-"));
-const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+const found = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" });
+if (found.status !== 0 || !found.stdout.trim()) refuse(`no git on PATH to replay with: ${found.stderr.trim() || `status ${found.status}`}`);
+const real = found.stdout.trim();
 const log = path.join(scratch, "calls.ndjson");
 const shim = path.join(scratch, "bin");
 fs.mkdirSync(shim);
@@ -90,7 +92,12 @@ const clock = () => Number(process.hrtime.bigint()) / 1e9;
 if (!located.length) refuse(`the read spawned ${calls.length} git processes and none was \`cat-file -e <object>\`, so there is nothing to replay`);
 const loadBefore = load();
 let began = clock();
-const one = located.map((call) => spawnSync(real, call.argv, { cwd: call.cwd }).status === 0);
+const one = located.map((call) => {
+  const ran = spawnSync(real, call.argv, { cwd: call.cwd });
+  // A replay that failed to run is no answer about the object; cat-file -e answers 0 or 1.
+  if (ran.error || ![0, 1].includes(ran.status)) refuse(`git cat-file -e did not answer in a checkout: ${ran.error?.message ?? `status ${ran.status}`}`);
+  return ran.status === 0;
+});
 const oneEach = clock() - began;
 
 const byCheckout = new Map();

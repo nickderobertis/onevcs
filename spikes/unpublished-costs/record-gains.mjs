@@ -20,6 +20,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const usage = "record-gains: --home COPY --session ID --listing FILE are required, and nothing else";
@@ -37,10 +38,12 @@ if (!home || !session || !listingFile) {
   process.stderr.write(`${usage}\n`);
   process.exit(2);
 }
+const canonical = (name) => { try { return fs.realpathSync(path.resolve(name)); } catch { return path.resolve(name); } };
 const refuse = (message) => {
   process.stderr.write(`record-gains: ${message}\n`);
   process.exit(1);
 };
+if (canonical(home) === canonical(path.join(os.homedir(), ".onevcs"))) refuse(`--home ${home} is this user's real ONEVCS_HOME; this rewrites decision records, so name a scratch copy`);
 const label = (kind, name) => `${kind}-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
 const dir = path.join(home, "cache", "spike-decisions");
 let listing = null;
@@ -50,6 +53,8 @@ try {
   refuse(`--listing ${listingFile} cannot be read as JSON: ${error.message}`);
 }
 if (!Array.isArray(listing?.rows)) refuse(`--listing ${listingFile} is not \`unpublished --host --format json\` output: it holds no rows`);
+if (listing.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
+  refuse(`--listing ${listingFile} holds a row without identity and branch strings`);
 const moved = new Set(listing.rows.filter((row) => row.manager_session === session).map((row) => `${row.identity}\t${row.branch}`));
 const identityOf = new Map(listing.rows.map((row) => [row.branch, row.identity]));
 const git = (repo, args) => {
@@ -70,8 +75,12 @@ const records = fs
       refuse(`${file} cannot be read as JSON: ${error.message}`);
     }
     // The decision-record prototype's document, at the version spike.rs writes.
-    if (document?.version !== 1 || typeof document.entries !== "object" || document.entries === null)
+    if (document?.version !== 1 || typeof document.entries !== "object" || document.entries === null || Array.isArray(document.entries))
       refuse(`${file} is not a version-1 decision record; write it with a cold read under --prototype decision-record`);
+    for (const [key, entry] of Object.entries(document.entries)) {
+      if (typeof entry?.branch !== "string" || typeof entry.repo !== "string" || typeof entry.base !== "string" || typeof entry.verdict?.state !== "string")
+        refuse(`${file}'s entry ${key} is not a decision: it needs branch, repo, base and verdict.state`);
+    }
     return { file, document };
   });
 
