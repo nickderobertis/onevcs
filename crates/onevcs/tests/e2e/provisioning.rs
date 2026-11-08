@@ -167,6 +167,25 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
     // the hook's own status: the field is what the command ended with.
     assert_eq!(swapped.exit_status, Some(1));
 
+    let kinds: Vec<_> = fixture
+        .world
+        .events(&second)
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    let opened = kinds.iter().position(|kind| kind == "session-opened");
+    let failed = kinds.iter().position(|kind| kind == FAILED);
+    assert!(opened < failed, "the open comes first: {kinds:?}");
+    let closes = fixture.world.events(&first);
+    assert_eq!(
+        closes
+            .iter()
+            .filter(|event| event["kind"] == FAILED || event["kind"] == PROVISIONED)
+            .count(),
+        1,
+        "the close's return records nothing: {closes:#?}"
+    );
+
     // Git reruns it, with the arguments the checkout gave it.
     let said = rerun(&swapped, &reused);
     assert!(said.contains(MARKER), "{said}");
@@ -216,13 +235,17 @@ fn output_past_the_limit_keeps_its_tail() {
     assert!(recorded.output.trim_end().ends_with("the-last-line"));
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] two seconds of waiting on
+// the bound this journey exists to elapse, in a suite whose journeys take as long; it
+// reads every input the session-open code reads, so an edge of its own would be no
+// narrower.
 #[test]
 fn a_hook_past_the_bound_is_recorded_and_the_session_opens() {
     let (fixture, _) = hooked(&format!("echo {MARKER}\nsleep 60"));
     let output = fixture
         .world
         .onevcs()
-        .env("ONEVCS_GIT_HOOK_TIMEOUT", "3")
+        .env("ONEVCS_GIT_HOOK_TIMEOUT", "2")
         .args(["session", "open", "project", "--branch", "feature/one"])
         .assert()
         .success();
@@ -285,4 +308,95 @@ fn a_failure_of_the_checkout_itself_still_fails_the_open() {
         said.contains("feature/refused") && said.contains("failed"),
         "{said}"
     );
+}
+
+#[test]
+fn a_continued_branch_is_recorded_on_each_path() {
+    let (fixture, _) = hooked("exit 5");
+    for branch in ["feature/older", "feature/oldest"] {
+        fixture.world.git(&fixture.checkout, &["branch", branch]);
+    }
+    let (first, _) = fixture.open(&["--branch", "feature/older"]);
+    let added = provision(&fixture.world, &first, FAILED);
+    assert_eq!(added.trigger, ProvisionTrigger::WorktreeAdd);
+    close(&fixture, &first);
+    let (second, _) = fixture.open(&["--branch", "feature/oldest"]);
+    let swapped = provision(&fixture.world, &second, FAILED);
+    assert_eq!(swapped.trigger, ProvisionTrigger::SlotCheckout);
+}
+
+#[test]
+fn an_absolute_hooks_directory_is_honoured_as_it_stands() {
+    let fixture = pooled(&sized(1, "unlimited"));
+    let hooks = fixture.world.path("shared-hooks");
+    std::fs::create_dir_all(&hooks).expect("a hooks directory");
+    let hook = hooks.join("post-checkout");
+    std::fs::write(&hook, format!("#!/bin/sh\necho {MARKER}\n")).expect("a hook");
+    let mut permissions = std::fs::metadata(&hook).expect("the hook").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&hook, permissions).expect("an executable hook");
+    fixture.world.git(
+        &fixture.checkout,
+        &["config", "core.hooksPath", &hooks.to_string_lossy()],
+    );
+    let (token, _) = fixture.open(&["--branch", "feature/one"]);
+    let recorded = provision(&fixture.world, &token, PROVISIONED);
+    assert!(recorded.output.contains(MARKER), "{}", recorded.output);
+}
+
+#[test]
+fn a_cut_lands_on_a_character_boundary() {
+    // 'é' is two bytes, so a limit landing on an odd offset falls inside one.
+    let (fixture, _) =
+        hooked("i=0\nwhile [ $i -lt 1500 ]; do printf 'ééééé'; i=$((i+1)); done\necho\necho o");
+    let (token, _) = fixture.open(&["--branch", "feature/one"]);
+    let recorded = provision(&fixture.world, &token, PROVISIONED);
+    assert!(recorded.output_truncated);
+    assert!(recorded.output.len() <= onevcs::PROVISION_OUTPUT_BYTES);
+    assert!(!recorded.output.contains('\u{FFFD}'), "{}", recorded.output);
+}
+
+#[test]
+fn a_slot_return_past_the_bound_or_signalled_by_its_hook_still_closes() {
+    let (fixture, ledger) = hooked("[ -e \"$HOOK_END\" ] || exit 0\n. \"$HOOK_END\"");
+    let end = fixture.world.path("hook-ends");
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    std::fs::write(&end, "kill -TERM $$\n").expect("the hook's ending");
+    fixture
+        .world
+        .onevcs()
+        .env("HOOK_END", &end)
+        .args(["session", "close", &first])
+        .assert()
+        .success();
+    assert_eq!(ran(&ledger).len(), 2);
+    let (second, _) = fixture.open(&["--branch", "feature/two"]);
+    std::fs::write(&end, "sleep 60\n").expect("the hook's ending");
+    fixture
+        .world
+        .onevcs()
+        .env("HOOK_END", &end)
+        .env("ONEVCS_GIT_HOOK_TIMEOUT", "1")
+        .args(["session", "close", &second])
+        .assert()
+        .success();
+    assert_eq!(ran(&ledger).len(), 4);
+}
+
+#[test]
+fn a_return_git_itself_could_not_make_still_refuses_the_close() {
+    let (fixture, _) = hooked("exit 0");
+    let (token, worktree) = fixture.open(&["--branch", "feature/one"]);
+    let lock = fixture
+        .world
+        .git(&worktree, &["rev-parse", "--git-path", "index.lock"]);
+    std::fs::write(worktree.join(lock.trim()), "").expect("a held index lock");
+    let refused = fixture
+        .world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .failure();
+    let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(said.contains("index.lock"), "{said}");
 }

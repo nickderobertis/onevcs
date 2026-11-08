@@ -3976,7 +3976,7 @@ pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<Option<
         worktree,
         trigger: CheckoutTrigger::SlotCheckout,
         branch,
-        old: Some(old),
+        old,
         target: base,
     })
 }
@@ -3993,7 +3993,7 @@ pub fn checkout_existing(worktree: &Path, branch: &str) -> Result<Option<PostChe
         worktree,
         trigger: CheckoutTrigger::SlotCheckout,
         branch,
-        old: Some(old),
+        old,
         target: &target,
     })
 }
@@ -4022,9 +4022,10 @@ pub struct PostCheckout {
     pub duration: Duration,
     /// Everything git's checkout command wrote, both streams, unredacted and whole.
     pub output: String,
-    /// The three arguments git hands `post-checkout`: the commit before, the commit
-    /// after, and `1` for a branch checkout.
-    pub arguments: [String; 3],
+    /// The commit git handed the hook as the one before.
+    pub previous: String,
+    /// The commit git handed the hook as the one checked out.
+    pub commit: String,
 }
 
 impl PostCheckout {
@@ -4038,10 +4039,11 @@ impl PostCheckout {
     pub fn rerun(&self) -> String {
         let worktree = std::path::absolute(git_path(&self.worktree))
             .unwrap_or_else(|_| git_path(&self.worktree).to_path_buf());
-        let [old, new, flag] = &self.arguments;
         format!(
-            "git -C {} hook run post-checkout -- {old} {new} {flag}",
-            shell_quoted(&worktree.to_string_lossy())
+            "git -C {} hook run post-checkout -- {} {} 1",
+            shell_quoted(&worktree.to_string_lossy()),
+            self.previous,
+            self.commit
         )
     }
 }
@@ -4089,8 +4091,9 @@ fn observed_checkout(checkout: &Checkout<'_>) -> Result<Option<PostCheckout>> {
     let duration = started.elapsed();
     let commit = || commit_of(checkout.cwd, checkout.target);
     let completed = output.ok() || {
-        let commit = commit()?;
-        unremembered(|| checked_out(checkout.worktree, checkout.branch, &commit))
+        commit()?.is_some_and(|commit| {
+            unremembered(|| checked_out(checkout.worktree, checkout.branch, &commit))
+        })
     };
     let refused = || refusal(checkout.args, &output);
     if !completed {
@@ -4107,15 +4110,18 @@ fn observed_checkout(checkout: &Checkout<'_>) -> Result<Option<PostCheckout>> {
             false => Err(refused()),
         };
     }
-    let commit = commit()?;
-    let old = checkout.old.clone().unwrap_or_else(|| null_like(&commit));
+    let Some(commit) = commit()? else {
+        return Err(refused());
+    };
+    let previous = checkout.old.clone().unwrap_or_else(|| null_like(&commit));
     Ok(Some(PostCheckout {
         trigger: checkout.trigger,
         worktree: checkout.worktree.to_path_buf(),
         duration,
         output: output.combined(),
         ended: output.ended,
-        arguments: [old, commit, "1".to_owned()],
+        previous,
+        commit,
     }))
 }
 
@@ -4186,7 +4192,7 @@ fn checked_out(worktree: &Path, branch: &str, commit: &str) -> bool {
 
 /// The commit `reference` names in `cwd`, or nothing where it names none — which is
 /// left for the checkout itself to refuse, in git's own words.
-fn commit_of(cwd: &Path, reference: &str) -> Result<String> {
+fn commit_of(cwd: &Path, reference: &str) -> Result<Option<String>> {
     let read = run(
         &[
             "rev-parse",
@@ -4196,11 +4202,7 @@ fn commit_of(cwd: &Path, reference: &str) -> Result<String> {
         ],
         Some(cwd),
     )?;
-    Ok(if read.ok() {
-        read.trimmed()
-    } else {
-        String::new()
-    })
+    Ok(read.ok().then(|| read.trimmed()))
 }
 
 /// git's null object id in the format `commit` is spelled in: what it hands
@@ -4223,7 +4225,7 @@ pub fn checkout_detached(worktree: &Path) -> Result<()> {
     let args = ["checkout", "-q", "--detach"];
     let commit = commit_of(worktree, "HEAD")?;
     let output = run_unless(&args, Some(worktree), &[], None, Elapse::Answer)?;
-    if output.ok() || unremembered(|| only_the_hook_failed(worktree, &commit))? {
+    if output.ok() || unremembered(|| only_the_hook_failed(worktree, commit.as_deref()))? {
         return Ok(());
     }
     Err(refusal(&args, &output))
@@ -4231,10 +4233,13 @@ pub fn checkout_detached(worktree: &Path) -> Result<()> {
 
 /// Whether a failed `checkout --detach` from `commit` did detach there and git would
 /// have run a hook after it — which leaves the hook as the only thing that failed.
-fn only_the_hook_failed(worktree: &Path, commit: &str) -> Result<bool> {
+fn only_the_hook_failed(worktree: &Path, commit: Option<&str>) -> Result<bool> {
     let detached = !run(&["symbolic-ref", "-q", "HEAD"], Some(worktree))?.ok();
     let at = run(&["rev-parse", "--verify", "-q", "HEAD"], Some(worktree))?;
-    Ok(detached && at.ok() && at.trimmed() == commit && runs_post_checkout(worktree)?)
+    Ok(detached
+        && at.ok()
+        && Some(at.trimmed().as_str()) == commit
+        && runs_post_checkout(worktree)?)
 }
 
 /// Move the worktree's head to `reference` and make the index and the tracked files

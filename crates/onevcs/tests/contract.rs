@@ -853,6 +853,54 @@ fn the_batched_landing_read_is_declared_as_the_crate_exports_it() {
 }
 
 #[test]
+fn the_worktree_provision_table_is_the_payload_type() {
+    let contract = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
+    )
+    .expect("the contract");
+    let section = contract
+        .split("## Amendment: a repository's `post-checkout`")
+        .nth(1)
+        .expect("the amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body");
+    let documented: BTreeSet<String> = section
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|line| line.split('`').next())
+        .map(str::to_owned)
+        .collect();
+    let payload = onevcs::WorktreeProvision {
+        hook: String::new(),
+        trigger: onevcs::ProvisionTrigger::WorktreeAdd,
+        worktree: String::new(),
+        exit_status: None,
+        signal: None,
+        timed_out: false,
+        duration_ms: 0,
+        output: String::new(),
+        output_truncated: false,
+        rerun: String::new(),
+    };
+    let wire = serde_json::to_value(payload).expect("a payload serializes");
+    let keys: BTreeSet<String> = wire
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        documented, keys,
+        "docs/contract.md and WorktreeProvision disagree"
+    );
+    assert!(
+        section.contains(&format!("{} bytes", onevcs::PROVISION_OUTPUT_BYTES)),
+        "docs/contract.md no longer states the output limit"
+    );
+}
+
+#[test]
 fn the_contract_and_the_code_name_the_same_event_kinds() {
     let approved: BTreeSet<String> = backticked_on_line("Event kinds:").into_iter().collect();
     // An amendment may retire a kind, and one has: nothing emits `gate-started` or

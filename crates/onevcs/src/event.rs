@@ -249,6 +249,9 @@ pub enum ProvisionTrigger {
 ///
 /// Every key is always written; `exit_status` and `signal` as `null` where they do not
 /// apply.
+// llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the
+// wire shape two other repositories build against, fixed by the plan that adds this
+// event; a typed ending or hook name would change what `onevcs events` prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeProvision {
     /// The hook: `post-checkout`.
