@@ -1406,6 +1406,7 @@ pub(crate) fn open_with(
         stack_tip,
         conflict,
         base_merge: base_decision,
+        provision,
     } = match cut_or_continue(&Cut {
         clone: &clone,
         worktree: &worktree,
@@ -1500,6 +1501,9 @@ pub(crate) fn open_with(
         payload.insert("base_merge".to_owned(), Value::Object(decision.payload()));
     }
     stream.emit(EventKind::SessionOpened, payload);
+    if let Some(ran) = &provision {
+        emit_provision(&mut stream, ran);
+    }
     drop(lease);
     Ok(Opening {
         record,
@@ -2295,6 +2299,56 @@ struct Placing {
     /// What was decided about merging the base into a continuation, and why — `None`
     /// for a branch cut fresh, or one whose caller writes that merge itself.
     base_merge: Option<crate::base_merge::Decision>,
+    /// git's run of the repository's `post-checkout` at that checkout, where it ran one.
+    provision: Option<git::PostCheckout>,
+}
+
+/// Record one run of `post-checkout` on the session's stream.
+fn emit_provision(stream: &mut Stream, ran: &git::PostCheckout) {
+    let (output, output_truncated) = last_bytes(
+        crate::stream::redact(&ran.output),
+        crate::event::PROVISION_OUTPUT_BYTES,
+    );
+    let (exit_status, signal) = match ran.ended {
+        git::Ended::Code(code) => (Some(code), None),
+        git::Ended::Signal(signal) => (None, Some(signal)),
+        _ => (None, None),
+    };
+    let provision = crate::event::WorktreeProvision {
+        hook: "post-checkout".to_owned(),
+        trigger: match ran.trigger {
+            git::CheckoutTrigger::WorktreeAdd => crate::event::ProvisionTrigger::WorktreeAdd,
+            git::CheckoutTrigger::SlotCheckout => crate::event::ProvisionTrigger::SlotCheckout,
+        },
+        worktree: ran.worktree.display().to_string(),
+        exit_status,
+        signal,
+        timed_out: matches!(ran.ended, git::Ended::Elapsed { .. }),
+        duration_ms: u64::try_from(ran.duration.as_millis()).unwrap_or(u64::MAX),
+        output,
+        output_truncated,
+        rerun: ran.rerun(),
+    };
+    let kind = match ran.passed() {
+        true => EventKind::WorktreeProvisioned,
+        false => EventKind::WorktreeProvisionFailed,
+    };
+    // Plain strings, integers and booleans under string keys, so neither arm can fail.
+    if let Ok(Value::Object(payload)) = serde_json::to_value(provision) {
+        stream.emit(kind, payload);
+    }
+}
+
+/// At most the last `limit` bytes of `text`, starting on a character boundary, and
+/// whether anything was cut.
+fn last_bytes(text: String, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text, false);
+    }
+    let start = (text.len() - limit..=text.len())
+        .find(|start| text.is_char_boundary(*start))
+        .unwrap_or(text.len());
+    (text[start..].to_owned(), true)
 }
 
 /// Put the session's branch in its worktree, and answer the stack its record has to
@@ -2324,10 +2378,10 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
     } = *cut;
     let integrated = integrated_base(clone, base);
     let Some(continued) = continued else {
-        match placed {
+        let provision = match placed {
             Placed::NewWorktree => git::worktree_add(clone, worktree, branch, &integrated)?,
             Placed::InPlace => git::checkout_new(worktree, branch, &integrated)?,
-        }
+        };
         // Read off the worktree that was just cut, which is where the commit it was
         // cut at is by construction — asking the name it was cut from again could
         // answer something else, or nothing.
@@ -2339,6 +2393,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
             stack_tip,
             conflict: None,
             base_merge: None,
+            provision,
         });
     };
 
@@ -2346,10 +2401,10 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
     git::update_ref(clone, &format!("refs/heads/{branch}"), &opened.tip)?;
     git::delete_ref(clone, CONTINUED_REF);
     git::detach_head(clone)?;
-    match placed {
-        Placed::NewWorktree => git::worktree_add_existing(clone, worktree, branch)?,
+    let provision = match placed {
+        Placed::NewWorktree => git::worktree_add_continued(clone, worktree, branch)?,
         Placed::InPlace => git::checkout_existing(worktree, branch)?,
-    }
+    };
 
     // Where this branch's own work begins, read *before* the base is merged in:
     // afterwards the two have the base's tip in common and the fork point is gone.
@@ -2391,6 +2446,7 @@ fn cut_or_continue(cut: &Cut<'_>) -> Result<Placing> {
         stack_tip,
         conflict,
         base_merge: decision,
+        provision,
     })
 }
 

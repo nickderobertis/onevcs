@@ -233,6 +233,7 @@ mod pool_maintenance;
 // reason.
 #[cfg(unix)]
 mod pool;
+mod provisioning;
 // Unix only: it drives real bare origins, real clones, real `git push`es and real
 // `pre-push` hooks, and one of its journeys uses the same substituted `gh` as `host.rs`
 // to assert that a preserving push reaches no host at all. Its own header carries the

@@ -61,7 +61,11 @@ pub fn significance(kind: EventKind, result: EmissionResult) -> Significance {
             _ => Significance::Blocker,
         },
         EventKind::SyncConflict | EventKind::DraftKeptForReview => Significance::Blocker,
-        EventKind::SessionOpened
+        // A failed provisioning hook left a session open that a person should look at;
+        // it blocks nothing.
+        EventKind::WorktreeProvisionFailed => Significance::Attention,
+        EventKind::WorktreeProvisioned
+        | EventKind::SessionOpened
         | EventKind::Fetch
         | EventKind::LockWait
         | EventKind::LockAcquired

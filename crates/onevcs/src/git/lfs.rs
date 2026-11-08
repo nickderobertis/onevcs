@@ -275,6 +275,7 @@ pub(super) fn upload_from(
                 Some(cwd),
                 environment,
                 stop,
+                super::Elapse::Refuse,
             )?;
             if !fetched.ok() {
                 return Ok(Some(fetched));
@@ -287,7 +288,13 @@ pub(super) fn upload_from(
     for batch in oids.chunks(128) {
         let mut arguments = vec!["lfs", "push", "--object-id", remote];
         arguments.extend(batch.iter().map(Sha256Oid::as_str));
-        let output = run_unless(&arguments, Some(cwd), environment, stop)?;
+        let output = run_unless(
+            &arguments,
+            Some(cwd),
+            environment,
+            stop,
+            super::Elapse::Refuse,
+        )?;
         if !output.ok() {
             return Ok(Some(output));
         }
