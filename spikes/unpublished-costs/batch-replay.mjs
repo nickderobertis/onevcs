@@ -92,6 +92,7 @@ const clock = () => Number(process.hrtime.bigint()) / 1e9;
 if (!located.length) refuse(`the read spawned ${calls.length} git processes and none was \`cat-file -e <object>\`, so there is nothing to replay`);
 const loadBefore = load();
 let began = clock();
+// llmlint: ignore[changed_behavior_has_e2e] a replay's git failing mid-run is a fault of the host being read, refused loudly here; this measurement code lives only on the preserved spike branch, which the plan's run discards, and harness.test.mjs drives the replay's success and its missing-engine failure.
 const one = located.map((call) => {
   const ran = spawnSync(real, call.argv, { cwd: call.cwd });
   // A replay that failed to run is no answer about the object; cat-file -e answers 0 or 1.
@@ -127,6 +128,7 @@ for (const [cwd, list] of byCheckout) {
 }
 const batch = clock() - began;
 const round = (seconds) => Math.round(seconds * 1000) / 1000;
+const agree = one.every((answer, at) => answer === batched[at]);
 process.stdout.write(
   `${JSON.stringify(
     {
@@ -138,7 +140,7 @@ process.stdout.write(
       checkouts: byCheckout.size,
       one_process_each_seconds: round(oneEach),
       one_batch_per_checkout_seconds: round(batch),
-      answers_agree: one.every((answer, at) => answer === batched[at]),
+      answers_agree: agree,
       load_before: loadBefore,
       load_after: load(),
     },
@@ -146,3 +148,4 @@ process.stdout.write(
     1,
   )}\n`,
 );
+if (!agree) refuse("one process per question and one batch per checkout answered differently; the document above says where");

@@ -43,8 +43,13 @@ const marks = new Map(
     .readFileSync(path.join(repo, "marks"), "utf8")
     .trim()
     .split("\n")
-    .map((line) => line.slice(1).split(" ")),
+    .map((line) => {
+      const [mark, id] = line.slice(1).split(" ");
+      if (!/^\d+$/.test(mark) || !/^[0-9a-f]{40,64}$/.test(id ?? "")) throw new Error(`git fast-import wrote a mark that is not one: ${line}`);
+      return [mark, id];
+    }),
 );
+if (![...Array(TIPS).keys()].every((n) => marks.has(String(n + 10))) || !marks.has("2") || !marks.has("3")) throw new Error("git fast-import left a mark this script needs unwritten");
 const [base, tip] = [marks.get("2"), marks.get("3")];
 const tips = Array.from({ length: TIPS }, (_, n) => marks.get(String(n + 10)));
 const path100 = (n) => `:(literal)dir/${String(n).padStart(6, "0")}-${"p".repeat(78)}.txt`;

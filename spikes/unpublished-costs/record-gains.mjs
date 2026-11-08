@@ -43,6 +43,7 @@ const refuse = (message) => {
   process.stderr.write(`record-gains: ${message}\n`);
   process.exit(1);
 };
+// llmlint: ignore[boundary_inputs_validated] this harness rewrites only a scratch copy named by --onevcs-home, which the journeys point ONEVCS_HOME at as well, so the real home cannot be told by that variable; ~/.onevcs is the directory it guards, and this measurement code lives only on the preserved spike branch, which the plan's run discards.
 if (canonical(home) === canonical(path.join(os.homedir(), ".onevcs"))) refuse(`--home ${home} is this user's real ONEVCS_HOME; this rewrites decision records, so name a scratch copy`);
 const label = (kind, name) => `${kind}-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
 const dir = path.join(home, "cache", "spike-decisions");
@@ -78,7 +79,9 @@ const records = fs
     if (document?.version !== 1 || typeof document.entries !== "object" || document.entries === null || Array.isArray(document.entries))
       refuse(`${file} is not a version-1 decision record; write it with a cold read under --prototype decision-record`);
     for (const [key, entry] of Object.entries(document.entries)) {
-      if (typeof entry?.branch !== "string" || typeof entry.repo !== "string" || typeof entry.base !== "string" || typeof entry.verdict?.state !== "string")
+      const states = ["yes", "in-part", "no", "unknown"];
+      const commit = entry?.base_commit;
+      if (typeof entry?.branch !== "string" || typeof entry.repo !== "string" || typeof entry.base !== "string" || !states.includes(entry.verdict?.state) || !(commit === null || /^[0-9a-f]{40,64}$/.test(commit ?? "")))
         refuse(`${file}'s entry ${key} is not a decision: it needs branch, repo, base and verdict.state`);
     }
     return { file, document };

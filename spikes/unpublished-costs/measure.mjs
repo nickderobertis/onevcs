@@ -100,6 +100,7 @@ function parse(argv) {
   for (const [asked, flag] of [[options.stageRecord, "--stage-record"], [options.measure === "record-write", "--measure record-write"]]) {
     if (!asked) continue;
     if (!options.onevcsHome) fail(`${flag} needs --onevcs-home naming a scratch copy of ONEVCS_HOME`);
+    // llmlint: ignore[boundary_inputs_validated] this harness rewrites only a scratch copy named by --onevcs-home, which the journeys point ONEVCS_HOME at as well, so the real home cannot be told by that variable; ~/.onevcs is the directory it guards, and this measurement code lives only on the preserved spike branch, which the plan's run discards.
     if (canonical(options.onevcsHome) === canonical(real))
       fail(`${flag} writes the decision record under --onevcs-home, which names this user's real ONEVCS_HOME; name a scratch copy`);
   }
@@ -336,6 +337,9 @@ function readTrace(file) {
       const event = JSON.parse(line);
       if (typeof event?.kind !== "string" || typeof event.name !== "string" || typeof event.t !== "number" || typeof event.ms !== "number")
         fail(`${file} holds a trace event without kind, name, t and ms: ${line.slice(0, 200)}`, 1);
+      // The engine's spans carry no extra payload; a git event's is what the arithmetic reads.
+      if (event.kind === "git" && (typeof event.extra?.how !== "string" || typeof event.extra.argv_bytes !== "number"))
+        fail(`${file} holds a git event without how and argv_bytes: ${line.slice(0, 200)}`, 1);
       return event;
     });
 }
@@ -679,8 +683,9 @@ function measureRead() {
     }
     const decisions = ["owed", "in_flight", "acknowledged", "unknown"];
     const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || decisions.some((field) => field in row && typeof row[field] !== "boolean");
-    const keys = new Set((baseline?.rows || []).map((row) => `${row?.identity}/${row?.branch}`));
-    if (!Array.isArray(baseline?.rows) || baseline.rows.some(malformed) || keys.size !== baseline.rows.length)
+    const rowsOf = Array.isArray(baseline?.rows) ? baseline.rows : null;
+    const keys = new Set((rowsOf || []).map((row) => `${row?.identity}/${row?.branch}`));
+    if (!rowsOf || rowsOf.some(malformed) || keys.size !== rowsOf.length)
       fail(`--baseline-rows ${options.baselineRows} is not a --rows-out document: it needs rows, each once, with an identity, a branch and boolean decision fields`, 1);
     document.rows_against_baseline = compare(baseline, decided);
   }
@@ -704,7 +709,9 @@ function measureRead() {
     clearRecord();
     document.counted = counted(argv, environment({ prototype }), input);
   }
-  document.git_processes = document.attribution?.git.spawned ?? document.counted?.programs?.git ?? null;
+  // Spawned git by the trace; a batched read also keeps one process per checkout, which
+  // only --count's strace sees, so with a batch there is no count without it.
+  document.git_processes = document.counted?.programs?.git ?? (document.attribution?.git.batch > 0 ? null : (document.attribution?.git.spawned ?? null));
   return document;
 }
 
