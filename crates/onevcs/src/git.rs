@@ -4644,8 +4644,7 @@ pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteT
 pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
     let reference = format!("refs/remotes/origin/{branch}");
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a commit this repository
-    // lacks, and a lease lost to a racing fetch. A copy-back fetches the commit first and a
-    // refresh only writes one it just read, and no verb can be held inside this call.
+    // lacks. A copy-back fetches the commit first and a refresh only writes one it just read.
     if !has_commit(repo, &Sha(commit.as_str().to_owned())) {
         return false;
     }
@@ -4660,11 +4659,16 @@ pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
         }
     }
     let lease = current.unwrap_or_else(|| "0".repeat(commit.as_str().len()));
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this lease lost to a racing
+    // fetch, between the read above and this write; no verb can be held inside that span,
+    // and losing it leaves the ref the fetch wrote. The write itself is every copy-back
+    // journey's assertion.
     run(
         &["update-ref", &reference, commit.as_str(), &lease],
         Some(repo),
     )
     .is_ok_and(|written| written.ok())
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 /// Every branch a remote has and the commit each stands at, in one listing — or
