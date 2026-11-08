@@ -611,6 +611,8 @@ function counted(argv, env, input) {
     encoding: "utf8",
   });
   if (ran.error) return { error: ran.error.message };
+  // strace answers with the traced read's status; one that traced nothing is no count.
+  if (!fs.existsSync(log) || !fs.readFileSync(log, "utf8").includes("execve(")) return { error: `strace recorded no exec: ${ran.stderr}` };
   const programs = {};
   const connections = { inet: 0, inet6: 0, unix: 0 };
   let listedOnStdin = 0;

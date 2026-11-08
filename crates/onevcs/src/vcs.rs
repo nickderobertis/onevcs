@@ -899,6 +899,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 )
             });
             let base_now = current.as_ref().map(|sha| sha.0.clone());
+            // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's staged row comparison against the unmodified read (base gains, landings, a moved session) and replaced by the plan's chosen strategy with its own journeys.
             let reused = match (decisions.as_mut(), record_key.as_deref()) {
                 (Some(record), Some(key)) => record.reuse(
                     key,
@@ -976,6 +977,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             let classifying = crate::spike::span("retirement-class");
             // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
             let recorded_retirement = reused.as_ref().and_then(|entry| entry.retirement.clone());
+            // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's staged row comparison against the unmodified read (base gains, landings, a moved session) and replaced by the plan's chosen strategy with its own journeys.
             let retirement = classified
                 .entry(branch.clone())
                 .or_insert_with(|| {
