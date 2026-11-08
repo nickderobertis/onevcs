@@ -1584,6 +1584,7 @@ fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of
     assert_eq!(drafted[0]["payload"]["kind"], "kept-for-review");
     assert_eq!(drafted[0]["payload"]["checks"], "unchecked");
     // Such a record that says nothing of its checks is a gap, not a verdict; restored.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
     let strip = |hosted: &Hosted, keep: bool| {
         rewrite_stream(hosted, &deferred, move |event| {
             if event["kind"] == "change-drafted" {
@@ -1797,6 +1798,7 @@ fn a_kept_draft_record_reads_back_what_its_checks_field_says_and_names_what_it_c
         .success();
 
     // A build before the field wrote this event only once checks were green.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
     edit_kept(&hosted, &token, |payload| {
         payload.as_object_mut().expect("a payload").remove("checks");
     });
@@ -1824,6 +1826,7 @@ fn a_kept_draft_record_reads_back_what_its_checks_field_says_and_names_what_it_c
     );
 
     // A value this build cannot read as a verdict is a gap, said out loud, never green.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
     for unreadable in [
         serde_json::json!("very-green"),
         serde_json::json!(""),
