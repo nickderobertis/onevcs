@@ -20,7 +20,7 @@ mkdir -p "$dir"
 rm -rf "$dir/src-0.101.4"
 cp -r "$source" "$dir/src-0.101.4"
 cd "$dir/src-0.101.4"
-patch -p1 -s < "$here/engine.patch"
+patch -p1 -s < "$here/engine.patch" >&2 || { echo "build.sh: engine.patch no longer applies to onepipeline 0.101.4; refresh it against that source and run build.sh again" >&2; exit 1; }
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/crates/onevcs/Cargo.toml" | head -1)
 python3 - "$version" "$repo" <<'PY'
 import sys
@@ -30,7 +30,9 @@ declared = '[dependencies.onevcs]\nversion = "0.60.0"'
 if declared not in text:
     sys.exit("build.sh: onepipeline 0.101.4's manifest no longer declares onevcs 0.60.0 as expected; update build.sh's replacement before building")
 text = text.replace('[dependencies.onevcs]\nversion = "0.60.0"', f'[dependencies.onevcs]\nversion = "{version}"')
-text += f'\n[patch.crates-io]\nonevcs = {{ path = "{repo}/crates/onevcs" }}\nonevcs-testing = {{ path = "{repo}/crates/onevcs-testing" }}\n'
+def toml_string(value):
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+text += f"\n[patch.crates-io]\nonevcs = {{ path = {toml_string(repo + '/crates/onevcs')} }}\nonevcs-testing = {{ path = {toml_string(repo + '/crates/onevcs-testing')} }}\n"
 open("Cargo.toml", "w").write(text)
 PY
 CARGO_TARGET_DIR="$dir/target" cargo build --release --quiet --bin onepipeline

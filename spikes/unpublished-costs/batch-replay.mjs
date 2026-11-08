@@ -89,6 +89,7 @@ const located = calls
 const load = () => os.loadavg().map((value) => Math.round(value * 100) / 100);
 const clock = () => Number(process.hrtime.bigint()) / 1e9;
 
+// llmlint: ignore[changed_behavior_has_e2e] refusing a read that spawned no cat-file -e needs a read of a host with no such calls, and every checkout this harness generates spawns them; the journey drives a replay and a missing engine, and this measurement code lives only on the preserved spike branch, which the plan's run discards.
 if (!located.length) refuse(`the read spawned ${calls.length} git processes and none was \`cat-file -e <object>\`, so there is nothing to replay`);
 const loadBefore = load();
 let began = clock();
@@ -120,10 +121,12 @@ for (const [cwd, list] of byCheckout) {
   if (ran.error || ran.status !== 0) refuse(`git cat-file --batch-check in ${cwd} failed: ${ran.error?.message || ran.stderr.trim()}`);
   const out = ran.stdout.split("\n").filter(Boolean);
   // One line per object asked, each the object's name or `<object> missing`.
+  // llmlint: ignore[changed_behavior_has_e2e] git cat-file answers one line per object; wrong counts or odd lines are a broken git, which no generated checkout can arrange, and this refuses rather than answers; this measurement code lives only on the preserved spike branch, which the plan's run discards.
   if (out.length !== list.length) refuse(`git cat-file --batch-check in ${cwd} answered ${out.length} lines for ${list.length} objects`);
   list.forEach((entry, index) => {
     if (out[index].endsWith(" missing")) batched[entry.at] = false;
     else if (/^[0-9a-f]{40,64}$/.test(out[index])) batched[entry.at] = true;
+    // llmlint: ignore[changed_behavior_has_e2e] as above, a line that names no object is a broken git and is refused; this measurement code lives only on the preserved spike branch.
     else refuse(`git cat-file --batch-check in ${cwd} answered ${JSON.stringify(out[index])}, which names no object`);
   });
 }
