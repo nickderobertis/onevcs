@@ -108,6 +108,18 @@ const EXIT_POLL: Duration = Duration::from_millis(10);
 /// this changes.
 const READ_BUFFER: usize = 8192;
 
+/// What a run whose bound elapses answers.
+///
+/// A refusal for every caller but one: the checkout a session's worktree is put on its
+/// branch by, whose repository's `post-checkout` hook may be what outlived the bound
+/// after the checkout itself had completed — and whose caller then has a checkout to
+/// go on with and the run's output to record.
+#[derive(Debug, Clone, Copy)]
+enum Elapse {
+    Refuse,
+    Answer,
+}
+
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
 /// repository's own, `Ordinary` where it runs none.
 ///
@@ -207,7 +219,7 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<Output> {
 /// `pre-push` hook: the gate a publishing push runs must judge the same base the
 /// worker's gate already cleared.
 pub fn run_with_env(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Result<Output> {
-    run_unless(args, cwd, env, None)
+    run_unless(args, cwd, env, None, Elapse::Refuse)
 }
 
 /// Run one git command as [`run_with_env`] does, stopping it — and every process it
@@ -221,6 +233,7 @@ fn run_unless(
     cwd: Option<&Path>,
     env: &[(String, String)],
     stop: Option<&dyn Fn() -> bool>,
+    elapse: Elapse,
 ) -> Result<Output> {
     // Before the memo and the proofs, so both are keyed by commits rather than names.
     let pinned = crate::native_refs::pinned(args, cwd, env);
@@ -308,6 +321,7 @@ fn run_unless(
             &format!("git {}", args.join(" ")),
             |e| unstarted(&e, args, cwd),
             stop,
+            elapse,
         )
     };
     let ran = if reading || matches!(args, ["worktree", "remove" | "prune", ..] | ["clean", ..]) {
@@ -324,7 +338,7 @@ fn run_unless(
         stderr: text(ran.stderr),
         read_failures: ran.read_failures,
     };
-    if output.ended.was_stopped() {
+    if output.ended.was_stopped() || matches!(output.ended, Ended::Elapsed { .. }) {
         // What a stopped command wrote is a fragment, and no later read may be
         // answered from it.
         return Ok(output);
@@ -653,6 +667,7 @@ fn bounded(
     label: &str,
     unspawnable: impl FnOnce(std::io::Error) -> Error,
     stop: Option<&dyn Fn() -> bool>,
+    elapse: Elapse,
 ) -> Result<Ran> {
     let bound = bound_for(class)?;
     let started = Instant::now();
@@ -719,16 +734,26 @@ fn bounded(
             terminate_group(&child);
             let _ = child.kill();
             let _ = child.wait();
-            let _ = out_reader.finish();
-            let _ = err_reader.finish();
-            let elapsed = started.elapsed().as_secs_f64();
+            let out = out_reader.finish();
+            let err = err_reader.finish();
             let (knob, _) = class.knob();
-            return Err(Error::Invalid {
-                reason: format!(
-                    "{label} timed out after {elapsed:.3}s (bound {bound}s; raise it with {knob})",
-                    bound = bound.as_secs_f64()
-                ),
-            });
+            let ended = Ended::Elapsed {
+                after: started.elapsed(),
+                bound,
+                knob,
+            };
+            return match elapse {
+                Elapse::Refuse => Err(Error::Invalid {
+                    reason: format!("{label} {ended}"),
+                }),
+                Elapse::Answer => Ok(Ran {
+                    status: 128,
+                    ended,
+                    stdout: out.bytes,
+                    stderr: err.bytes,
+                    read_failures: Vec::new(),
+                }),
+            };
         }
     };
 
@@ -1000,6 +1025,16 @@ pub enum Ended {
     /// Its caller stopped it before it ended, and every process it started was ended
     /// and reaped with it.
     Stopped,
+    /// Its bound elapsed, and its process group was ended with it — answered only to
+    /// a caller that asked for the run rather than a refusal ([`Elapse::Answer`]).
+    Elapsed {
+        /// How long it had run when it was ended.
+        after: Duration,
+        /// The bound that elapsed.
+        bound: Duration,
+        /// The variable that sets that bound.
+        knob: &'static str,
+    },
     /// Its caller stopped it before it ended, and it was ended — but that every process
     /// it started went with it could not be confirmed, for this reason.
     StoppedUnconfirmed(String),
@@ -1042,6 +1077,12 @@ impl std::fmt::Display for Ended {
                 None => write!(f, "was terminated by signal {signal}"),
             },
             Ended::Stopped => write!(f, "was stopped by its caller"),
+            Ended::Elapsed { after, bound, knob } => write!(
+                f,
+                "timed out after {after:.3}s (bound {bound}s; raise it with {knob})",
+                after = after.as_secs_f64(),
+                bound = bound.as_secs_f64()
+            ),
             Ended::StoppedUnconfirmed(why) => write!(
                 f,
                 "was stopped by its caller, but processes it started may still be running: \
@@ -2492,6 +2533,7 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
             ))
         },
         None,
+        Elapse::Refuse,
     );
     let _ = std::fs::remove_file(&file);
     let ran = ran?;
@@ -3819,16 +3861,28 @@ pub fn committed_at(cwd: &Path, reference: &str) -> Option<u64> {
         .and_then(|out| out.trimmed().parse().ok())
 }
 
-/// Create `branch` off `base`, checked out in a new worktree at `path`.
+/// Create `branch` off `base`, checked out in a new worktree at `path`, and say what
+/// git's run of the repository's `post-checkout` hook came to.
 ///
-/// With no upstream, for the reason [`NO_TRACK`] gives.
-pub fn worktree_add(cwd: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-    let path = git_path(path).to_string_lossy();
-    checked(
-        &["worktree", "add", NO_TRACK, "-b", branch, &path, base],
-        Some(cwd),
-    )
-    .map(|_| ())
+/// With no upstream, for the reason [`NO_TRACK`] gives. The checkout is observed
+/// rather than required to succeed, for the reason [`observed_checkout`] gives.
+pub fn worktree_add(
+    cwd: &Path,
+    path: &Path,
+    branch: &str,
+    base: &str,
+) -> Result<Option<PostCheckout>> {
+    let commit = commit_of(cwd, base)?;
+    let spelled = git_path(path).to_string_lossy().into_owned();
+    observed_checkout(&Checkout {
+        args: &["worktree", "add", NO_TRACK, "-b", branch, &spelled, base],
+        cwd,
+        worktree: path,
+        trigger: CheckoutTrigger::WorktreeAdd,
+        branch,
+        old: null_like(&commit),
+        commit,
+    })
 }
 
 /// What a branch this crate cuts is given instead of git's default upstream.
@@ -3846,6 +3900,26 @@ const NO_TRACK: &str = "--no-track";
 pub fn worktree_add_existing(cwd: &Path, path: &Path, branch: &str) -> Result<()> {
     let path = git_path(path).to_string_lossy();
     checked(&["worktree", "add", &path, branch], Some(cwd)).map(|_| ())
+}
+
+/// [`worktree_add_existing`] for the worktree a session opens in, saying what git's
+/// run of the repository's `post-checkout` hook came to as [`worktree_add`] does.
+pub fn worktree_add_continued(
+    cwd: &Path,
+    path: &Path,
+    branch: &str,
+) -> Result<Option<PostCheckout>> {
+    let commit = commit_of(cwd, &format!("refs/heads/{branch}"))?;
+    let spelled = git_path(path).to_string_lossy().into_owned();
+    observed_checkout(&Checkout {
+        args: &["worktree", "add", &spelled, branch],
+        cwd,
+        worktree: path,
+        trigger: CheckoutTrigger::WorktreeAdd,
+        branch,
+        old: null_like(&commit),
+        commit,
+    })
 }
 
 /// Check out a publication's pointers without downloading unchanged LFS media.
@@ -3875,20 +3949,188 @@ pub fn worktree_add_detached(cwd: &Path, path: &Path, reference: &str) -> Result
 /// detached on the base: git rewrites only the files that differ between the two
 /// trees, which is what lets an incremental build in the slot see a branch diff.
 ///
-/// With no upstream, for the reason [`NO_TRACK`] gives.
-pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<()> {
-    checked(
-        &["checkout", "-q", NO_TRACK, "-b", branch, base],
-        Some(worktree),
-    )
-    .map(|_| ())
+/// With no upstream, for the reason [`NO_TRACK`] gives; observed, for the reason
+/// [`observed_checkout`] gives.
+pub fn checkout_new(worktree: &Path, branch: &str, base: &str) -> Result<Option<PostCheckout>> {
+    let commit = commit_of(worktree, base)?;
+    let old = commit_of(worktree, "HEAD")?;
+    observed_checkout(&Checkout {
+        args: &["checkout", "-q", NO_TRACK, "-b", branch, base],
+        cwd: worktree,
+        worktree,
+        trigger: CheckoutTrigger::SlotCheckout,
+        branch,
+        old,
+        commit,
+    })
 }
 
 /// Check out an existing local branch in the worktree that is already there.
 ///
-/// The in-place form of [`worktree_add_existing`], for the same slot.
-pub fn checkout_existing(worktree: &Path, branch: &str) -> Result<()> {
-    checked(&["checkout", "-q", branch], Some(worktree)).map(|_| ())
+/// The in-place form of [`worktree_add_continued`], for the same slot.
+pub fn checkout_existing(worktree: &Path, branch: &str) -> Result<Option<PostCheckout>> {
+    let commit = commit_of(worktree, &format!("refs/heads/{branch}"))?;
+    let old = commit_of(worktree, "HEAD")?;
+    observed_checkout(&Checkout {
+        args: &["checkout", "-q", branch],
+        cwd: worktree,
+        worktree,
+        trigger: CheckoutTrigger::SlotCheckout,
+        branch,
+        old,
+        commit,
+    })
+}
+
+/// Which of the two checkouts a session's worktree is put on its branch by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutTrigger {
+    /// `git worktree add`: a run root's worktree, or a pool slot's cut for this session.
+    WorktreeAdd,
+    /// `git checkout` in a warm pool slot's worktree, which a session reuses.
+    SlotCheckout,
+}
+
+/// git's run of a repository's `post-checkout` hook, read off the checkout command
+/// that ran it — and never off a run of onevcs's own.
+#[derive(Debug, Clone)]
+pub struct PostCheckout {
+    /// Which checkout ran it.
+    pub trigger: CheckoutTrigger,
+    /// The worktree that was checked out, which is where git ran the hook.
+    pub worktree: PathBuf,
+    /// How git's checkout command ended — git takes its exit status from the hook
+    /// once the checkout itself has completed.
+    pub ended: Ended,
+    /// How long git's checkout command ran.
+    pub duration: Duration,
+    /// Everything git's checkout command wrote, both streams, unredacted and whole.
+    pub output: String,
+    /// The three arguments git hands `post-checkout`: the commit before, the commit
+    /// after, and `1` for a branch checkout.
+    pub arguments: [String; 3],
+}
+
+impl PostCheckout {
+    /// Whether the hook passed: git's checkout command exited 0.
+    pub fn passed(&self) -> bool {
+        self.ended == Ended::Code(0)
+    }
+}
+
+/// One checkout of a session's worktree onto its branch, as [`observed_checkout`]
+/// runs it.
+struct Checkout<'a> {
+    /// The git command.
+    args: &'a [&'a str],
+    /// Where it runs: the clone for `worktree add`, the worktree for `checkout`.
+    cwd: &'a Path,
+    /// The worktree it checks out.
+    worktree: &'a Path,
+    /// Which of the two it is.
+    trigger: CheckoutTrigger,
+    /// The branch the worktree is to be on.
+    branch: &'a str,
+    /// The commit `HEAD` stood at before, as git hands it to the hook — all zeros for
+    /// a worktree that did not exist.
+    old: String,
+    /// The commit the worktree is to stand at.
+    commit: String,
+}
+
+/// Run one checkout of a session's worktree, and say what git's run of the
+/// repository's `post-checkout` hook came to.
+///
+/// git runs `post-checkout` after the checkout itself has completed, and exits with
+/// the hook's status — so a failing provisioning hook made a session's open fail over
+/// a worktree that was in fact checked out, and what it said was lost. Git is still
+/// the only party that runs the hook, exactly once: nothing here installs, suppresses
+/// or runs one. What changes is what git's ending is taken to mean. A checkout that
+/// completed — the worktree is on the branch, at the commit asked for — is the
+/// checkout this crate asked for whatever the command ended with, and a non-zero,
+/// signalled or timed-out ending over it is the hook's, recorded rather than refused.
+/// One that did not complete is git's own failure, refused as it always was.
+///
+/// `None` where git would run no `post-checkout` hook, which is read from git itself
+/// after the run: `rev-parse --git-path hooks/post-checkout` where the command ran,
+/// which honours `core.hooksPath`.
+fn observed_checkout(checkout: &Checkout<'_>) -> Result<Option<PostCheckout>> {
+    let started = Instant::now();
+    let output = run_unless(
+        checkout.args,
+        Some(checkout.cwd),
+        &[],
+        None,
+        Elapse::Answer,
+    )?;
+    let duration = started.elapsed();
+    let completed = output.ok()
+        || unremembered(|| checked_out(checkout.worktree, checkout.branch, &checkout.commit));
+    let refused = || match &output.ended {
+        Ended::Elapsed { .. } => Error::Invalid {
+            reason: format!("git {} {}", checkout.args.join(" "), output.ended),
+        },
+        _ => Error::Invalid {
+            reason: format!(
+                "git {} failed (exit {}): {}",
+                checkout.args.join(" "),
+                output.status,
+                output.diagnostic()
+            ),
+        },
+    };
+    if !completed {
+        return Err(refused());
+    }
+    if !unremembered(|| runs_post_checkout(checkout.cwd))? {
+        // No hook ran, so a failure over a completed checkout is git's own — which
+        // nothing has been seen to produce, and which is refused as it always was.
+        return match output.ok() {
+            true => Ok(None),
+            false => Err(refused()),
+        };
+    }
+    Ok(Some(PostCheckout {
+        trigger: checkout.trigger,
+        worktree: checkout.worktree.to_path_buf(),
+        duration,
+        output: output.combined(),
+        ended: output.ended,
+        arguments: [
+            checkout.old.clone(),
+            checkout.commit.clone(),
+            "1".to_owned(),
+        ],
+    }))
+}
+
+/// Whether git, run in `cwd`, would run a `post-checkout` hook.
+fn runs_post_checkout(cwd: &Path) -> Result<bool> {
+    Ok(executable(&git_owned_path(cwd, "hooks/post-checkout")?))
+}
+
+/// Whether a worktree stands on `branch` at `commit` — which is what a checkout that
+/// completed leaves, whatever the hook git ran after it did.
+fn checked_out(worktree: &Path, branch: &str, commit: &str) -> bool {
+    let on = run(&["symbolic-ref", "-q", "HEAD"], Some(worktree))
+        .is_ok_and(|head| head.ok() && head.trimmed() == format!("refs/heads/{branch}"));
+    on && run(&["rev-parse", "--verify", "-q", "HEAD"], Some(worktree))
+        .is_ok_and(|head| head.ok() && head.trimmed() == commit)
+}
+
+/// The commit `reference` names in `cwd`, refused as git refuses it.
+fn commit_of(cwd: &Path, reference: &str) -> Result<String> {
+    Ok(checked(
+        &["rev-parse", "--verify", "-q", &format!("{reference}^{{commit}}")],
+        Some(cwd),
+    )?
+    .trimmed())
+}
+
+/// git's null object id in the format `commit` is spelled in: what it hands
+/// `post-checkout` as the commit before a worktree that did not exist.
+fn null_like(commit: &str) -> String {
+    "0".repeat(commit.len())
 }
 
 /// Leave the branch the worktree is on, staying at the commit it stands on.
@@ -4261,7 +4503,7 @@ pub fn push_replacing(
     }
     let output = match lfs::upload(cwd, branch, remote, env, Some(stop))? {
         Some(refused) => refused,
-        None => run_unless(&args, Some(cwd), env, Some(stop))?,
+        None => run_unless(&args, Some(cwd), env, Some(stop), Elapse::Refuse)?,
     };
     let teardown = match &output.ended {
         Ended::Stopped => Ok(()),
