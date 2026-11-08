@@ -49,7 +49,6 @@ impl Host {
         Self { fixture, other }
     }
 
-    /// Open `branch` from the other checkout and commit `file` there.
     fn work(&self, branch: &str, file: &str, pool: &str) -> (String, PathBuf) {
         let opened = self
             .fixture
@@ -142,7 +141,6 @@ impl Host {
             .git(&self.fixture.origin, &["rev-parse", branch])
     }
 
-    /// The branch is unlisted and the destination tracks the pushed commit.
     fn assert_handed_back_as_published(&self, branch: &str) {
         let pushed = self.on_origin(branch);
         assert_eq!(
@@ -285,6 +283,58 @@ fn a_recorded_push_naming_no_usable_head_answers_nothing() {
     let moved = host.fixture.origin.with_extension("away");
     std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
     assert_eq!(host.rows(branch).len(), 1, "nothing proves it published");
+}
+
+#[test]
+fn a_destination_refusing_the_copy_still_tracks_what_was_pushed_and_keeps_its_branch() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/refused-copy";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    let pushed = host.on_origin(branch);
+
+    world.git(&host.other, &["checkout", "-q", "-b", branch, "main"]);
+    world.commit_file(&host.other, "theirs.txt", "theirs\n", "feat: their own");
+    world.git(&host.other, &["checkout", "-q", "main"]);
+    let theirs = world.git(&host.other, &["rev-parse", branch]);
+    world.git(
+        &host.other,
+        &[
+            "fetch",
+            "-q",
+            "--refmap=",
+            "origin",
+            &format!("refs/heads/{branch}"),
+        ],
+    );
+
+    host.close(&token);
+    assert_eq!(world.git(&host.other, &["rev-parse", branch]), theirs);
+    assert_eq!(host.tracking(&host.other, branch), pushed);
+}
+
+#[test]
+fn a_branch_origin_holds_as_a_symbolic_ref_is_answered_by_git_and_unlisted() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/symbolic";
+    let (token, worktree) = host.work(branch, "a.txt", "0");
+    world.git(
+        &worktree,
+        &["push", "-q", "origin", &format!("{branch}:refs/heads/real")],
+    );
+    world.git(
+        &host.fixture.origin,
+        &[
+            "symbolic-ref",
+            &format!("refs/heads/{branch}"),
+            "refs/heads/real",
+        ],
+    );
+    host.close(&token);
+    assert_eq!(host.rows(branch), Vec::<Value>::new());
+    assert_eq!(host.tracking(&host.other, branch), host.on_origin("real"));
 }
 
 #[test]
