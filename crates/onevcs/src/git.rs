@@ -344,6 +344,7 @@ fn run_unless(
         crate::checkout_reads::mutating(execute)
     };
     drop(shims);
+    // llmlint: ignore[changed_behavior_has_e2e] a trace-only branch recording a git that failed to start; the real-state reads the report states record 115 such refusals of `rev-parse --is-inside-work-tree` in every traced read, and this code lives only on the preserved spike branch.
     if crate::spike::enabled() {
         let why = ran.as_ref().err().map(ToString::to_string);
         let answered = match &ran {
