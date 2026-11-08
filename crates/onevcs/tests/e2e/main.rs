@@ -310,9 +310,9 @@ mod released;
 #[cfg(unix)]
 mod record_writes;
 // Unix only: real sessions over `world.rs`'s POSIX fixture and substituted `gh`.
+#[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] a module declaration substitutes nothing; the module's
 // own header states what `world.rs` stands in for and why.
-#[cfg(unix)]
 mod recoverable_published;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`.
 // Its own header carries the reason in full.
