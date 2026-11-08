@@ -4022,6 +4022,9 @@ pub struct PostCheckout {
     pub duration: Duration,
     /// Everything git's checkout command wrote, both streams, unredacted and whole.
     pub output: String,
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed object ids,
+    // only ever spliced into the `rerun` line as git handed them to the hook; the
+    // crate's `Sha` wraps an unvalidated `String` and would make no state unrepresentable.
     /// The commit git handed the hook as the one before.
     pub previous: String,
     /// The commit git handed the hook as the one checked out.

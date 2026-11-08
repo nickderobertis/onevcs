@@ -150,6 +150,15 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
     assert!(added.output.contains(MARKER), "{}", added.output);
     assert!(!added.output_truncated);
     assert_eq!(Path::new(&added.worktree), worktree);
+    let said = rerun(&added, &worktree);
+    assert!(said.contains(MARKER), "{said}");
+    let lines = ran(&ledger);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        lines[1], lines[0],
+        "the rerun's arguments are the worktree add's"
+    );
+    assert!(lines[0].starts_with("0000000"), "{lines:?}");
 
     close(&fixture, &first);
     assert_eq!(
@@ -160,7 +169,7 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
 
     let (second, reused) = fixture.open(&["--branch", "feature/two"]);
     assert_eq!(reused, worktree, "the open reused the slot");
-    assert_eq!(ran(&ledger).len(), 3, "git ran it once at the reuse");
+    assert_eq!(ran(&ledger).len(), 4, "git ran it once at the reuse");
     let swapped = provision(&fixture.world, &second, FAILED);
     assert_eq!(swapped.trigger, ProvisionTrigger::SlotCheckout);
     // git's `checkout` answers 1 for any failing hook, where `worktree add` passes on
@@ -356,6 +365,9 @@ fn a_cut_lands_on_a_character_boundary() {
     assert!(!recorded.output.contains('\u{FFFD}'), "{}", recorded.output);
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] one second of waiting on
+// the bound this journey exists to elapse, and it reads every input the session-close
+// code reads, so an edge of its own would be no narrower.
 #[test]
 fn a_slot_return_past_the_bound_or_signalled_by_its_hook_still_closes() {
     let (fixture, ledger) = hooked("[ -e \"$HOOK_END\" ] || exit 0\n. \"$HOOK_END\"");
@@ -399,4 +411,65 @@ fn a_return_git_itself_could_not_make_still_refuses_the_close() {
         .failure();
     let said = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
     assert!(said.contains("index.lock"), "{said}");
+}
+
+/// Open a session whose hook runs what `ending` holds, under `extra` environment.
+fn open_ending(fixture: &Fixture, ending: &str, branch: &str, extra: &[(&str, &str)]) -> String {
+    let end = fixture.world.path("hook-ends");
+    std::fs::write(&end, ending).expect("the hook's ending");
+    let mut command = fixture.world.onevcs();
+    command.env("HOOK_END", &end);
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    let opened = command
+        .args(["session", "open", "project", "--branch", branch])
+        .assert()
+        .success();
+    crate::world::token_of(&opened.get_output().stdout)
+}
+
+const ENDS_AS_ASKED: &str = "[ -e \"$HOOK_END\" ] || exit 0\n. \"$HOOK_END\"";
+
+#[test]
+fn a_reused_slots_hook_can_signal_itself_and_the_session_opens() {
+    let (fixture, _) = hooked(ENDS_AS_ASKED);
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    close(&fixture, &first);
+    let token = open_ending(&fixture, "kill -TERM $$\n", "feature/two", &[]);
+    let recorded = provision(&fixture.world, &token, FAILED);
+    assert_eq!(recorded.trigger, ProvisionTrigger::SlotCheckout);
+    assert_eq!(recorded.exit_status, Some(1));
+    assert_eq!(recorded.signal, None);
+}
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] two seconds of waiting on
+// the bound this journey exists to elapse, and it reads every input the session-open
+// code reads, so an edge of its own would be no narrower.
+#[test]
+fn a_reused_slots_hook_past_the_bound_is_recorded_and_the_session_opens() {
+    let (fixture, _) = hooked(ENDS_AS_ASKED);
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    close(&fixture, &first);
+    let token = open_ending(
+        &fixture,
+        "sleep 60\n",
+        "feature/two",
+        &[("ONEVCS_GIT_HOOK_TIMEOUT", "2")],
+    );
+    let recorded = provision(&fixture.world, &token, FAILED);
+    assert_eq!(recorded.trigger, ProvisionTrigger::SlotCheckout);
+    assert!(recorded.timed_out);
+    assert_eq!(recorded.exit_status, None);
+}
+
+#[test]
+fn a_signal_that_ends_git_after_the_checkout_is_recorded_and_the_session_opens() {
+    let (fixture, _) = hooked("kill -KILL $PPID");
+    let (token, worktree) = fixture.open(&["--branch", "feature/one"]);
+    assert!(worktree.is_dir());
+    let recorded = provision(&fixture.world, &token, FAILED);
+    assert_eq!(recorded.signal, Some(9));
+    assert_eq!(recorded.exit_status, None);
+    assert!(!recorded.timed_out);
 }
