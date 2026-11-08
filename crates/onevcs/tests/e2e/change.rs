@@ -1400,10 +1400,11 @@ fn status_names_the_change_request_change_show_answers_for_a_stacked_session() {
     );
     // A reasonless publication adopts the held draft as awaiting its checks, and on
     // this team identity — change-open, approvals required — green keeps it a draft
-    // for its user's review rather than lifting it.
+    // for its user's review rather than lifting it, which is what stands now.
     assert_eq!(report["publication"]["held_as_draft"], true, "{report}");
     assert_eq!(
-        report["publication"]["draft"]["kind"], "awaiting-checks",
+        report["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
         "{report}"
     );
 }
@@ -1447,4 +1448,404 @@ fn status_of_a_stacked_session_whose_target_cannot_be_resolved_does_not_ask_abou
         Value::Null,
         "{report}"
     );
+}
+
+/// A session continuing `branch` with one more commit on it, as a rework is opened:
+/// the token, after committing `file` in its worktree.
+fn reworked(hosted: &Hosted, branch: &str, file: &str, subject: &str) -> String {
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["session", "open", "hosted", "--branch", branch])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.clone();
+    let worktree = crate::world::worktree_of(&stdout);
+    hosted
+        .world
+        .commit_file(&worktree, file, &format!("{file}\n"), subject);
+    crate::world::token_of(&stdout)
+}
+
+/// What `onevcs status REFERENCE` prints for a person.
+fn status_line(hosted: &Hosted, reference: &str) -> String {
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["status", reference])
+        .assert()
+        .success();
+    String::from_utf8_lossy(&assert.get_output().stdout).into_owned()
+}
+
+#[test]
+fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of_it() {
+    // A team identity — change-open, approvals required — keeps a green draft for its
+    // user's review. `status` is what a person and a manager read to decide whether to
+    // act, so it must say the draft is waiting for a reviewer rather than that its
+    // checks are still running, and every later publication of the draft must report
+    // its own record rather than the first one's.
+    let hosted = Hosted::new(REVIEWED);
+    let branch = "feature/reviewed";
+    let token = hosted.change(branch, "feat: add the reviewed thing");
+    let url = "https://github.com/acme-corp/hosted/pull/1";
+
+    // While the required check runs, the draft is awaiting it — and the watch's bound
+    // elapses with the check still running, so that is what stands.
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .assert()
+        .failure();
+    let report = status(&hosted, branch);
+    assert_eq!(report["publication"]["change_url"], url, "{report}");
+    assert_eq!(report["publication"]["held_as_draft"], true, "{report}");
+    assert_eq!(
+        report["publication"]["draft"],
+        serde_json::json!({"kind": "awaiting-checks"}),
+        "{report}"
+    );
+    assert!(
+        status_line(&hosted, branch)
+            .contains("draft reason: awaiting-checks — its required checks are still running"),
+        "{}",
+        status_line(&hosted, branch)
+    );
+
+    // Green: the same session publishes again, its watch settles, and the draft is kept
+    // for review. That is what `status` says now, as JSON and as the line a person reads.
+    let green = [crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }];
+    hosted.world.host_checks(&green);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
+    for reference in [branch, token.as_str()] {
+        let report = status(&hosted, reference);
+        assert_eq!(report["publication"]["held_as_draft"], true, "{report}");
+        assert_eq!(
+            report["publication"]["draft"],
+            serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
+            "green checks under approvals: required hold the draft for review: {report}"
+        );
+    }
+    let said = status_line(&hosted, branch);
+    assert!(
+        said.contains(
+            "draft reason: kept-for-review — required checks are green; held for a person's \
+             review"
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("still running"),
+        "nothing is running, and the line must not say so: {said}"
+    );
+    let kept = hosted.world.events_of(&token, "draft-kept-for-review");
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0]["payload"]["checks"], "passed");
+
+    // A rework that defers its checks pushes into the held draft and reads nothing of
+    // them: `status` reports that republication — unchecked — and not the green the
+    // first one saw.
+    let deferred = reworked(
+        &hosted,
+        branch,
+        "two.txt",
+        "feat: rework the reviewed thing",
+    );
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &deferred, "--defer-checks", "--adopt", url])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("its checks were not read"));
+    let drafted = hosted.world.events_of(&deferred, "change-drafted");
+    assert_eq!(drafted.len(), 1, "{drafted:?}");
+    assert_eq!(drafted[0]["payload"]["kind"], "kept-for-review");
+    assert_eq!(drafted[0]["payload"]["checks"], "unchecked");
+    // Such a record that says nothing of its checks is a gap, not a verdict; restored.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
+    let strip = |hosted: &Hosted, keep: bool| {
+        rewrite_stream(hosted, &deferred, move |event| {
+            if event["kind"] == "change-drafted" {
+                if keep {
+                    event["payload"]["checks"] = serde_json::json!("unchecked");
+                } else {
+                    event["payload"]
+                        .as_object_mut()
+                        .expect("a payload")
+                        .remove("checks");
+                }
+            }
+        });
+    };
+    strip(&hosted, false);
+    assert!(status(&hosted, branch)["notes"]
+        .to_string()
+        .contains("records a draft whose reason cannot be read"),);
+    strip(&hosted, true);
+    for reference in [branch, deferred.as_str()] {
+        let report = status(&hosted, reference);
+        assert_eq!(report["publication"]["change_url"], url, "{report}");
+        assert_eq!(
+            report["publication"]["draft"],
+            serde_json::json!({"kind": "kept-for-review", "checks": "unchecked"}),
+            "the republication's own record stands, not the first publication's: {report}"
+        );
+    }
+    assert!(
+        status_line(&hosted, branch).contains(
+            "draft reason: kept-for-review — republished without reading its checks; held for \
+             a person's review"
+        ),
+        "{}",
+        status_line(&hosted, branch)
+    );
+
+    // A rework that watches its checks reports its own verdict again: the one draft,
+    // awaiting its checks and then kept for review once they are green.
+    let watched = reworked(&hosted, branch, "three.txt", "feat: rework it once more");
+    // The host reads the head from the push, so the watch sees this commit's checks.
+    hosted.world.host_notices_the_push_after(0);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &watched])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "kept as a draft for its user's review",
+        ));
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
+    );
+    assert_eq!(
+        hosted
+            .world
+            .host_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count(),
+        1,
+        "every republication was of the one draft"
+    );
+
+    // A later lift still ends a draft held for review.
+    hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &watched])
+        .assert()
+        .success();
+    let report = status(&hosted, branch);
+    assert_eq!(report["publication"]["held_as_draft"], false, "{report}");
+    assert!(
+        report["publication"].get("draft").is_none(),
+        "a lifted draft has no standing reason: {report}"
+    );
+}
+
+fn rewrite_stream(hosted: &Hosted, token: &str, edit: impl Fn(&mut serde_json::Value)) {
+    let stream = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let rewritten = std::fs::read_to_string(&stream)
+        .expect("the session wrote a stream")
+        .lines()
+        .map(|line| {
+            let mut event: serde_json::Value = serde_json::from_str(line).expect("a record");
+            edit(&mut event);
+            format!("{event}\n")
+        })
+        .collect::<String>();
+    std::fs::write(&stream, rewritten).expect("the stream is written back");
+}
+
+/// A clock that could not tell this stream's records apart: one stamp on all of them.
+// llmlint: ignore[tests_mirror_real_usage] A millisecond tie between two records cannot be produced deterministically through any interface; only the stamps of records real publications wrote are rewritten here, because the tie is the state under test.
+fn one_stamp(hosted: &Hosted, token: &str) {
+    rewrite_stream(hosted, token, |event| {
+        event["ts"] = serde_json::json!("2099-01-01T00:00:00.000Z");
+    });
+}
+
+fn edit_kept(hosted: &Hosted, token: &str, edit: impl Fn(&mut serde_json::Value)) {
+    rewrite_stream(hosted, token, |event| {
+        if event["kind"] == "draft-kept-for-review" {
+            edit(&mut event["payload"]);
+        }
+    });
+}
+
+#[test]
+fn a_stream_orders_its_draft_records_by_sequence_when_its_clock_cannot() {
+    // The fold follows what each stream wrote in the order it wrote it. These are the
+    // real records of real publications, re-stamped to the one tie a millisecond clock
+    // can produce, so only sequence is left to tell them apart.
+    let hosted = Hosted::new(REVIEWED);
+    let branch = "feature/relifted";
+    let token = hosted.change(branch, "feat: add the relifted thing");
+    let green = [crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }];
+    hosted.world.host_checks(&green);
+    let publish = || {
+        hosted
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .success();
+    };
+    publish();
+    hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &token])
+        .assert()
+        .success();
+
+    // A person converts it back to a draft at the host, and the next publication runs
+    // out of time on a pending check: `change-drafted` comes after the lift, at its stamp.
+    std::fs::remove_file(hosted.world.path("gh-state/ready-1")).expect("the host held it ready");
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "1")
+        .assert()
+        .failure();
+    one_stamp(&hosted, &token);
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "awaiting-checks"}),
+    );
+
+    // Green: `draft-kept-for-review` is the later record, at the same stamp.
+    hosted.world.host_checks(&green);
+    publish();
+    one_stamp(&hosted, &token);
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
+    );
+
+    // And the other order: the real lift is the later record, and it ends the draft.
+    hosted
+        .world
+        .onevcs()
+        .args(["change", "ready", &token])
+        .assert()
+        .success();
+    one_stamp(&hosted, &token);
+    let report = status(&hosted, branch);
+    assert!(
+        report["publication"].get("draft").is_none(),
+        "a later lift ends a draft held for review: {report}"
+    );
+}
+
+#[test]
+fn a_kept_draft_record_reads_back_what_its_checks_field_says_and_names_what_it_cannot_read() {
+    // Each state starts from the record a real publication wrote; only the field
+    // under test differs, the way a record from another build differs from this one's.
+    let hosted = Hosted::new(REVIEWED);
+    let branch = "feature/kept";
+    let token = hosted.change(branch, "feat: add the kept thing");
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+
+    // A build before the field wrote this event only once checks were green.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
+    edit_kept(&hosted, &token, |payload| {
+        payload.as_object_mut().expect("a payload").remove("checks");
+    });
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
+    );
+
+    // Green with a skipped required check says so where a person reads it.
+    // llmlint: ignore[tests_mirror_real_usage] No publication can write this verdict on a keep today, because a draft's settlement records only all-passed, so the reader's handling of the word can only be reached through the record's field.
+    edit_kept(&hosted, &token, |payload| {
+        payload["checks"] = serde_json::json!("passed-with-skipped");
+    });
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed-with-skipped"}),
+    );
+    let said = status_line(&hosted, branch);
+    assert!(
+        said.contains(
+            "draft reason: kept-for-review — required checks are green, some of them skipped; \
+             held for a person's review"
+        ),
+        "{said}"
+    );
+
+    // A value this build cannot read as a verdict is a gap, said out loud, never green.
+    // llmlint: ignore[tests_mirror_real_usage] This build's publication always writes a readable verdict, so a record from an older build or a damaged one can only reach the status reader's trust boundary by editing that field of a record a real publication wrote.
+    for unreadable in [
+        serde_json::json!("very-green"),
+        serde_json::json!(""),
+        serde_json::Value::Null,
+        serde_json::json!(7),
+    ] {
+        edit_kept(&hosted, &token, |payload| {
+            payload["checks"] = unreadable.clone();
+        });
+        let report = status(&hosted, branch);
+        assert_ne!(
+            report["publication"]["draft"]["kind"], "kept-for-review",
+            "{unreadable}: {report}"
+        );
+        assert!(
+            report["notes"]
+                .to_string()
+                .contains("records a draft kept for review whose checks cannot be read"),
+            "{unreadable}: {report}"
+        );
+    }
 }

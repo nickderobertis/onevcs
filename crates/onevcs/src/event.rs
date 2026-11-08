@@ -78,7 +78,10 @@ pub enum EventKind {
     /// carries its URL, the host's identifier for it, its base, and the reason — its
     /// `kind`, and every field of that kind: for `awaiting-release` the repository
     /// whose release is awaited, which target of it, the reference the change is
-    /// pinned to, and the one line a person reads; for `held` that one line alone.
+    /// pinned to, and the one line a person reads; for `held` that one line alone;
+    /// for `awaiting-checks` nothing more; and for `kept-for-review` — a deferred
+    /// publication pushing into a draft held for its user's review — `checks`, which is
+    /// `unchecked` because that publication read no verdict.
     ///
     /// Beside [`ChangeOpened`](EventKind::ChangeOpened) rather than instead of it: the
     /// change request *was* opened, and the link from its URL back to the branch is
@@ -102,7 +105,9 @@ pub enum EventKind {
     DraftLiftedEarly,
     /// Green required checks left a `change-open` change whose approvals are required
     /// a draft, for its own user's review rather than the team's; carries its URL,
-    /// identifier and base.
+    /// identifier and base, and `checks` — the verdict its watch's `checks-settled`
+    /// recorded, `passed` or `passed-with-skipped` (absent from a record written before
+    /// the field, which was only ever written green).
     DraftKeptForReview,
     /// A publication's watch saw every required check stop blocking; carries the
     /// change request's URL and identifier, the commit watched, the verdict —

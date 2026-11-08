@@ -40,8 +40,8 @@ use crate::world::{Check, World};
 
 /// What the CLI writes for a report carrying every optional field it can carry at
 /// once, and for one carrying none of them.
-const FULL: &str = include_str!("../golden/status-report-v12.json");
-const MINIMAL: &str = include_str!("../golden/status-report-v12-minimal.json");
+const FULL: &str = include_str!("../golden/status-report-v13.json");
+const MINIMAL: &str = include_str!("../golden/status-report-v13-minimal.json");
 
 /// Every key the report leaves out when it holds nothing, as a path into the object.
 ///
@@ -807,11 +807,11 @@ fn a_host_that_cannot_be_asked_leaves_its_section_unavailable_and_answers_the_re
         "each unreadable draft record is its own gap:\n{notes}"
     );
     // The draft that does stand is the one the publication itself recorded — its
-    // own, awaiting its checks and kept for review — and none of the unreadable
-    // records became a reason in its place.
+    // own, kept for review once its checks came back green — and none of the
+    // unreadable records became a reason in its place.
     assert_eq!(
         answer["publication"]["draft"],
-        serde_json::json!({"kind": "awaiting-checks"}),
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
         "a record that could not be read is a gap, never a reason to render: {answer}"
     );
     // …and the two kinds this build has no word for cost nothing at all. One note
@@ -1986,7 +1986,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&full, &hosted.world, Some(&token)),
         FULL,
         "the object `onevcs status --json` writes is its checked-in golden; re-make \
-         crates/onevcs/tests/golden/status-report-v12.json from the run above, and bump \
+         crates/onevcs/tests/golden/status-report-v13.json from the run above, and bump \
          the version in docs/inferred-surface.md and src/status.rs if the shape moved"
     );
     for path in OPTIONAL {
@@ -2029,7 +2029,7 @@ fn the_status_report_is_the_versioned_object_its_goldens_record() {
         readable(&minimal, &plain.world, None),
         MINIMAL,
         "the object a report with nothing optional in it writes is its checked-in \
-         golden; re-make crates/onevcs/tests/golden/status-report-v12-minimal.json"
+         golden; re-make crates/onevcs/tests/golden/status-report-v13-minimal.json"
     );
     // Omitted rather than null: a consumer that has never heard of a field is not
     // handed one, and "no session" and "a session that is null" are different

@@ -603,7 +603,7 @@ fn session(vcs: &dyn Vcs, branch: &str) -> Session {
 
 #[test]
 fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_record_of() {
-    let _home = Home::new();
+    let home = Home::new();
     let vcs = MemoryVcs::seeded(one_repository());
     let host = MemoryHost::new();
     let providers = Providers {
@@ -616,6 +616,18 @@ fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_re
     let PublishOutcome::ChangeReviewDraft(url) = drafted.outcome else {
         panic!("held for review: {drafted:?}");
     };
+    // The same words the real publication records, which `status` reads back.
+    let record = |token: &onevcs::SessionToken, kind: &str| {
+        home.events(&token.0)
+            .into_iter()
+            .rfind(|event| event["kind"] == kind)
+            .unwrap_or_else(|| panic!("{kind} was recorded"))["payload"]
+            .clone()
+    };
+    assert_eq!(
+        record(&held.token, "draft-kept-for-review")["checks"],
+        "passed"
+    );
 
     let again = session(&vcs, "feature/held");
     let before = host.ledger().expect("the ledger").len();
@@ -633,6 +645,9 @@ fn a_deferred_publication_asks_the_host_nothing_and_refuses_a_draft_it_has_no_re
         deferred.outcome,
         PublishOutcome::ChangeReviewDraftUnchecked(url.clone())
     );
+    let republished = record(&again.token, "change-drafted");
+    assert_eq!(republished["kind"], "kept-for-review");
+    assert_eq!(republished["checks"], "unchecked");
     assert_eq!(
         host.ledger().expect("the ledger").len(),
         before,

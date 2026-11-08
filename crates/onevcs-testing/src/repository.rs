@@ -455,9 +455,24 @@ impl<T: Store<VcsState>> Vcs for Repository<T> {
                         "base": session.base,
                     })),
                 };
+                // …and the draft's reason, this publication's own, which read nothing of
+                // the checks — as next door.
+                let drafted = Emission {
+                    stream: token.0.clone(),
+                    identity: Some(identity.clone()),
+                    kind: EventKind::ChangeDrafted,
+                    result: EmissionResult::Success,
+                    payload: object(json!({
+                        "url": adopt.to_string(),
+                        "id": number,
+                        "base": session.base,
+                        "kind": "kept-for-review",
+                        "checks": "unchecked",
+                    })),
+                };
                 let (publication, emissions) = published(
                     PublishOutcome::ChangeReviewDraftUnchecked(adopt),
-                    vec![emission],
+                    vec![emission, drafted],
                 );
                 state.publications.push(publication.clone());
                 return Ok((publication, emissions));
@@ -958,12 +973,20 @@ fn publish_as_change(
     };
     if still_draft {
         if policy == MergePolicy::ChangeOpen && publishing.approvals == Approvals::Required {
+            // The verdict the watch's own settlement recorded, carried with the keep.
+            let verdict = emissions
+                .iter()
+                .rev()
+                .find(|emission| emission.kind == EventKind::ChecksSettled)
+                .and_then(|settled| settled.payload.get("verdict").cloned())
+                .unwrap_or_else(|| json!("passed"));
             emissions.push(publishing.emission(
                 EventKind::DraftKeptForReview,
                 json!({
                     "url": change.url.to_string(),
                     "id": change.id.0,
                     "base": change.base,
+                    "checks": verdict,
                 }),
             ));
             return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));

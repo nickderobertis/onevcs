@@ -337,7 +337,7 @@ leaves the process and is read by whoever consumes the command, which makes it t
 same kind of thing as the registry document and the rules file: it declares its own
 shape rather than leaving a consumer to infer one from which keys it can find.
 
-The report's schema version is `12`, and it is deliberately not a migration boundary
+The report's schema version is `13`, and it is deliberately not a migration boundary
 — nothing in this build reads a report back, so the number is what a **consumer**
 branches on and there is no older shape here to read. Version 2 is
 `publication.landed` and the eighth `publication.state`, both recorded below.
@@ -405,6 +405,18 @@ the session that cut it recorded, as its publication resolves it now, and the ro
 where no session recorded one — which is also the base `recoverable` lists the branch
 against. A change drafted on a stack base is measured by its own commits rather than by
 its parents' merges, and one standing at the stack base's head has nothing to publish.
+Version 13 is `publication.draft` reading `{"kind": "kept-for-review", "checks": …}`: a
+draft held for a person's review under `change-open` with approvals required, described
+as "required checks are green; held for a person's review". `draft-kept-for-review` is
+folded with `change-drafted` and `draft-lifted` — by line order within a stream, by stamp
+across streams — so a later lift ends it and a later `change-drafted` replaces it.
+`checks` is what the latest publication knew: `passed` or `passed-with-skipped` from its
+watch (the event now carries the verdict; a record without it was only ever written
+green, so reads as `passed`), or `unchecked`, from the `change-drafted` of kind
+`kept-for-review` a `--defer-checks` republication records. A watched republication
+records `awaiting-checks` and then its own keep. Every earlier kind and key is unchanged,
+no host-state schema version moved, and an older build sharing the state root notes a
+`kept-for-review` record it has no word for as a gap rather than misreading it.
 Two rules follow, and they are the ones the goldens exist to enforce:
 
 - **Every change to what the object carries bumps the version**, in the same change
@@ -420,8 +432,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v12.json` and
-`status-report-v12-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v13.json` and
+`status-report-v13-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
@@ -462,7 +474,7 @@ name `onevcs status` is the fix, and it belongs to whoever owns the amendment.
 | `status REF` | one operand, four spellings, read in the documented order | A change request's URL, a session token, a branch name, and a commit are four names for one piece of work, and which one somebody has depends on where they are standing. Four options would make a caller say which they hold; one operand does not. First match wins, so a session token is a session token even where a branch of that name exists, and ambiguity is *within* a spelling — one branch name in two identities — which is refused naming every candidate. |
 | the sections | identity, session, branch, publication, checks, merge path, next | What an agent had to reach outside for, in one place. `next` is the surface the branch-keyed refusals already are: a report that diagnoses without naming the command that advances the work leaves an agent to invent one. |
 | `landed` | decided from the base's own history, in four tiers, naming the one that decided it | Publication squashes, so a branch that landed is an ancestor of nothing afterwards — and the content comparison that used to answer this is an inference that stops being true the moment anything else lands on the base. The tiers are recorded below. It is the same question `vcs::collect` excludes a branch on, which is what keeps the report and `recoverable` from disagreeing about one branch. |
-| `publication.draft` | the `DraftReason` currently holding the change back, omitted where nothing is | The one thing a draft change request cannot tell anybody. The approved amendment puts the reason in the publication record — the session's own event stream — and **nothing in the change request's body**, so a host renders that the change *is* a draft and never why. This report is where that record is read back, because it is the only place in this crate that reads a stream for a person. The reason is `DraftReason` itself rather than a second shape beside it, `kind` and all: a consumer that routes on `awaiting`/`target`/`reference` to decide when to lift is reading the same fields the publication was given, and one that reads `held` knows the session holding it is what lifts it. Omitted for a change nobody drafted **and** for one whose draft has been lifted, which are one answer — nothing is holding this back now — and the history of both is in `onevcs events`. |
+| `publication.draft` | the `DraftReason` currently holding the change back, omitted where nothing is | The one thing a draft change request cannot tell anybody. The approved amendment puts the reason in the publication record — the session's own event stream — and **nothing in the change request's body**, so a host renders that the change *is* a draft and never why. This report is where that record is read back, because it is the only place in this crate that reads a stream for a person. The reason is `DraftReason` itself rather than a second shape beside it, `kind` and all: a consumer that routes on `awaiting`/`target`/`reference` to decide when to lift is reading the same fields the publication was given, and one that reads `held` knows the session holding it is what lifts it. Omitted for a change nobody drafted **and** for one whose draft has been lifted, which are one answer — nothing is holding this back now — and the history of both is in `onevcs events`. Since version 13 it may also be `{"kind": "kept-for-review", "checks": …}`, a draft policy holds for a person's review, whose `KeptForReview` and `ReviewChecks` types sit beside `AwaitingChecks` in a private module. |
 | `publication.held_as_draft` | what the host says, omitted where it could not be asked or would not say | The record above says why a draft was opened; the host says whether one stands, and the two are two facts — a draft lifted on the host by hand is one the record still holds a reason for. Never `false` for a host that would not say: "not a draft" is what lets a change be asked to merge. |
 | `publication.described` | the newest `change-described`, omitted where there is none | `change describe` is the one write to a change request's prose after it exists, and the stream is the only record of it. The report names when, the artifact the body is readable under, and the title where the description replaced it — never the body itself, which is prose of unbounded size and is what `onevcs artifact cat` is for. |
 | how a lift is read | the newest `change-drafted` held against the newest `draft-lifted`, across every stream of the branch | A publication carrying no reason is what lifts a draft, and a branch-keyed verb writes its own stream — so the draft and the lift routinely sit in two *different* records of one branch, and a reader that consulted only the drafting stream would report a reason nothing is holding. An equal stamp clears the draft: the two cannot be simultaneous, so it is a clock that could not tell them apart, and reporting a spent reason sends somebody to wait for a release that has arrived. |
