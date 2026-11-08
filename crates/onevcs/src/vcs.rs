@@ -830,7 +830,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // the reason its row gives.
             let tokens = tokens_of(sessions, identity, &branch);
             let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
-            let covered = settle_published(asked, &branch, &tip, &pushed, &preserved_here)?;
+            let opened = crate::status::opened_change_at(streams, identity, &branch, &tokens);
+            let covered = settle_published(asked, &branch, &tip, &pushed, opened, &preserved_here)?;
             // Unless something is still working on it: a publication resuming a pushed
             // branch has not finished, and its held row is what stops anybody touching it.
             if covered
@@ -1249,6 +1250,11 @@ fn recorded_stop(
 /// ref alone, and origin's answer is written to its `origin/<branch>`, so a retained
 /// clone left stale by a publication from somewhere else stops being a candidate.
 ///
+/// A `change-opened` names no head, so `opened` covers only a tip committed wholly
+/// before that moment — a commit in the same second may be later work — and it is
+/// weaker than a recorded head: it answers only where origin cannot be asked, and any
+/// answer from origin that does not carry this tip lists the branch.
+///
 /// A branch `onevcs preserve` put on origin and no record says was pushed is never asked
 /// of origin: being there under its own name is what preserving it did, and is not
 /// publishing it. Every other way of not knowing is `false`, which lists the branch.
@@ -1257,6 +1263,7 @@ fn settle_published(
     branch: &str,
     tip: &str,
     pushed: &[git::ObjectId],
+    opened: Option<std::time::SystemTime>,
     preserved: &BTreeSet<String>,
 ) -> Result<bool> {
     let mut recorded = false;
@@ -1266,7 +1273,8 @@ fn settle_published(
             break;
         }
     }
-    if !recorded && preserved.contains(branch) {
+    let opened_after = !recorded && opened.is_some_and(|at| committed_before(asked, tip, at));
+    if !recorded && !opened_after && preserved.contains(branch) {
         return Ok(false);
     }
     match git::remote_tip_read(asked.path(), "origin", branch) {
@@ -1284,8 +1292,16 @@ fn settle_published(
             }
             Ok(carried || recorded)
         }
-        Ok(_) | Err(_) => Ok(recorded),
+        Ok(_) | Err(_) => Ok(recorded || opened_after),
     }
+}
+
+/// Whether `tip` was committed wholly before `at`. Git keeps whole seconds, so the
+/// commit's second has to have ended by then.
+fn committed_before(asked: git::Asked<'_>, tip: &str, at: std::time::SystemTime) -> bool {
+    git::committed_at(asked.path(), tip)
+        .and_then(|seconds| seconds.checked_add(1))
+        .is_some_and(|end| std::time::UNIX_EPOCH + std::time::Duration::from_secs(end) <= at)
 }
 
 /// The session that answers for a branch: the newest record naming it.
