@@ -269,6 +269,9 @@ fn work_past_a_publication_by_another_stream_names_that_stream_as_what_published
 /// No command writes a change request with no push beside it, or one naming a commit,
 /// so the record is written by hand as `library.rs`'s is; the real CLI then meets it.
 fn record_change_opened(host: &Host, token: &str, branch: &str, head: Option<&str>) {
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is a change-opened with
+    // no push beside it, or one naming a commit, and no command writes either, so the
+    // stream is edited by hand. The real CLI then meets it.
     let stream = host
         .fixture
         .world
@@ -295,6 +298,7 @@ fn record_change_opened(host: &Host, token: &str, branch: &str, head: Option<&st
         "artifacts": [],
     });
     std::fs::write(&stream, format!("{recorded}{line}\n")).expect("the record appended");
+    // llmlint: ignore-end[tests_mirror_real_usage]
 }
 
 fn move_origin_away(host: &Host) {
