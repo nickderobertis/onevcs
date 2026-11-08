@@ -1227,19 +1227,20 @@ fn recorded_stop(
     }
 }
 
-/// Whether origin carries `tip` under `branch`'s own name — this commit or one past it.
+/// Whether this copy's `tip` is published work: this host recorded putting the branch
+/// on origin at or past it, or origin carries it under the branch's own name.
 ///
-/// Answered first by this host's own records of putting the branch there (`pushed`,
-/// each held to this checkout's view of ancestry), and only where none answers by
-/// asking origin once for that one branch — in process where origin is a bare
-/// repository on this filesystem, and by one `ls-remote` otherwise. A commit this
-/// checkout does not hold is fetched, that one ref alone. What origin said is then written to this checkout's own `origin/<branch>` where it holds that commit, so
-/// a retained clone whose copy went stale because the branch was published from
-/// somewhere else stops being asked: its next listing no longer names it.
+/// Origin is asked once for that one branch — in process where it is a bare repository
+/// on this filesystem, and by one `ls-remote` otherwise. A record stands wherever origin
+/// cannot answer or still has the branch, and gives way only to origin verifiably not
+/// having it: a branch deleted there unlanded has its only copy here, which is exactly
+/// what this report is for. A commit this checkout does not hold is fetched, that one
+/// ref alone, and origin's answer is written to its `origin/<branch>`, so a retained
+/// clone left stale by a publication from somewhere else stops being a candidate.
 ///
-/// A branch `onevcs preserve` put on origin is never asked of origin: being there under
-/// its own name is exactly what preserving it did, and is not publishing it. Every way
-/// origin cannot answer is `false`, which lists the branch as before.
+/// A branch `onevcs preserve` put on origin and no record says was pushed is never asked
+/// of origin: being there under its own name is what preserving it did, and is not
+/// publishing it. Every other way of not knowing is `false`, which lists the branch.
 fn published_at(
     asked: git::Asked<'_>,
     branch: &str,
@@ -1247,29 +1248,33 @@ fn published_at(
     pushed: &[git::ObjectId],
     preserved: &BTreeSet<String>,
 ) -> Result<bool> {
+    let mut recorded = false;
     for head in pushed {
         if head.as_str() == tip || git::known_to_reach(asked, tip, head.as_str())? {
-            return Ok(true);
+            recorded = true;
+            break;
         }
     }
-    if preserved.contains(branch) {
+    if !recorded && preserved.contains(branch) {
         return Ok(false);
     }
-    let git::RemoteTip::At(remote) = git::remote_tip_read(asked.path(), "origin", branch)? else {
-        return Ok(false);
-    };
-    // A retained clone never saw a commit published from somewhere else, and its own
-    // store is what the remote-tracking ref below has to name, whatever the lender
-    // holds. So it takes that one ref, once per published commit:
-    // afterwards the clone holds the commit and reads the question itself.
-    if !git::has_commit(asked.path(), &crate::host::Sha(remote.as_str().to_owned())) {
-        git::fetch_tracking(asked.path(), "origin", branch)?;
+    match git::remote_tip_read(asked.path(), "origin", branch) {
+        Ok(git::RemoteTip::Absent) => Ok(false),
+        Ok(git::RemoteTip::At(remote)) => {
+            let held = crate::host::Sha(remote.as_str().to_owned());
+            if !git::has_commit(asked.path(), &held) {
+                // Best effort: a clone that cannot take the ref still has its answer.
+                let _ = git::fetch_tracking(asked.path(), "origin", branch);
+            }
+            let carried =
+                remote.as_str() == tip || git::known_to_reach(asked, tip, remote.as_str())?;
+            if carried {
+                git::record_on_origin(asked.path(), branch, &remote);
+            }
+            Ok(carried || recorded)
+        }
+        Ok(_) | Err(_) => Ok(recorded),
     }
-    let carried = remote.as_str() == tip || git::known_to_reach(asked, tip, remote.as_str())?;
-    if carried {
-        git::record_on_origin(asked.path(), branch, &remote);
-    }
-    Ok(carried)
 }
 
 /// The session that answers for a branch: the newest record naming it.

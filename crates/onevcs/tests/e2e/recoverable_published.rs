@@ -157,7 +157,23 @@ fn a_branch_a_session_published_is_tracked_and_unlisted_after_its_copy_back() {
 }
 
 #[test]
-fn a_recorded_push_answers_when_origin_no_longer_has_the_branch() {
+fn a_recorded_push_answers_while_origin_cannot_be_asked() {
+    let host = Host::new();
+    let branch = "feature/unreachable";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    host.close(&token);
+    host.fixture.world.git(
+        &host.other,
+        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
+    );
+    let moved = host.fixture.origin.with_extension("away");
+    std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
+    assert_eq!(host.rows(branch), Vec::<Value>::new());
+}
+
+#[test]
+fn a_branch_deleted_from_origin_unlanded_stays_listed_and_names_who_published_it() {
     let host = Host::new();
     let world = &host.fixture.world;
     let branch = "feature/deleted";
@@ -169,7 +185,10 @@ fn a_recorded_push_answers_when_origin_no_longer_has_the_branch() {
         &host.other,
         &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
     );
-    assert_eq!(host.rows(branch), Vec::<Value>::new());
+    let rows = host.rows(branch);
+    assert_eq!(rows.len(), 1, "its only copy is local: {rows:?}");
+    let because = rows[0]["stopped_because"].as_str().expect("a reason");
+    assert!(!because.contains("closed without publishing"), "{because}");
 }
 
 #[test]
@@ -216,6 +235,15 @@ fn a_slot_taken_by_the_next_session_hands_a_pushed_branch_back_tracked() {
         "the branch was copied back"
     );
     assert_eq!(host.tracking(&host.other, "feature/slotted"), pushed);
+    host.fixture.world.git(
+        &host.other,
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("{pushed}:refs/heads/feature/slotted"),
+        ],
+    );
     assert_eq!(host.rows("feature/slotted"), Vec::<Value>::new());
     host.close(&next);
 }
@@ -255,6 +283,11 @@ fn a_retained_clone_behind_a_branch_published_elsewhere_lists_no_row() {
     assert_ne!(behind, published);
 
     assert_eq!(host.rows(branch), Vec::<Value>::new());
+    assert_eq!(
+        host.tracking(&clone, branch),
+        published,
+        "the clone was refreshed"
+    );
 }
 
 #[test]
