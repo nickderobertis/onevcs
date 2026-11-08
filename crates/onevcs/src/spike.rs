@@ -59,15 +59,21 @@ pub(crate) enum Prototype {
     NativeOff,
     /// [`decisions`].
     DecisionRecord,
+    /// [`batched_cat_file`].
+    BatchCatFile,
+    /// [`rev_list_stdin`].
+    StdinLists,
 }
 
 impl Prototype {
-    const ALL: [(Self, &'static str); 5] = [
+    const ALL: [(Self, &'static str); 7] = [
         (Self::LocalHead, "local-head"),
         (Self::NoPaths, "no-paths"),
         (Self::NativeUnbounded, "native-unbounded"),
         (Self::NativeOff, "native-off"),
         (Self::DecisionRecord, "decision-record"),
+        (Self::BatchCatFile, "batch-cat-file"),
+        (Self::StdinLists, "stdin-lists"),
     ];
 
     fn named(name: &str) -> Option<Self> {
@@ -192,6 +198,8 @@ pub(crate) enum Answered<'a> {
     Native,
     /// From a stored proof.
     Proof,
+    /// By the one `cat-file --batch-check` this process keeps for the checkout.
+    Batched,
     /// By a spawned git, which exited with this status or failed to start.
     Spawned(std::result::Result<i32, &'a str>),
 }
@@ -206,6 +214,7 @@ pub(crate) fn git_read(args: &[&str], began: Instant, answered: &Answered<'_>) {
         Answered::Memo => ("memo", serde_json::Value::Null),
         Answered::Native => ("native", serde_json::Value::Null),
         Answered::Proof => ("proof", serde_json::Value::Null),
+        Answered::Batched => ("batch", serde_json::Value::Null),
         Answered::Spawned(Ok(code)) => ("spawn", serde_json::json!(code)),
         Answered::Spawned(Err(why)) => ("spawn", serde_json::json!(why)),
     };
@@ -254,6 +263,126 @@ pub(crate) fn shape(args: &[&str]) -> String {
         }
     }
     shape.join(" ")
+}
+
+/// One long-lived `git cat-file --batch-check` for a checkout.
+struct CheckBatch {
+    input: std::process::ChildStdin,
+    output: std::io::BufReader<std::process::ChildStdout>,
+    _child: std::process::Child,
+}
+
+impl CheckBatch {
+    fn opened(cwd: &std::path::Path) -> Option<Self> {
+        let mut child = std::process::Command::new("git")
+            .args(["cat-file", "--batch-check"])
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        Some(Self {
+            input: child.stdin.take()?,
+            output: std::io::BufReader::new(child.stdout.take()?),
+            _child: child,
+        })
+    }
+
+    fn exists(&mut self, rev: &str) -> Option<bool> {
+        use std::io::BufRead;
+        writeln!(self.input, "{rev}").ok()?;
+        self.input.flush().ok()?;
+        let mut line = String::new();
+        (self.output.read_line(&mut line).ok()? > 0).then(|| !line.trim_end().ends_with(" missing"))
+    }
+}
+
+/// Prototype `batch-cat-file`: a `cat-file -e <rev>` asked of a checkout with no
+/// environment of its own, answered by one `cat-file --batch-check` per checkout for the
+/// whole process, rather than a process per question. The exit status is the one
+/// `cat-file -e` gives: 0 present, 1 absent. `None` is every case it does not take, which
+/// the ordinary spawn then answers.
+pub(crate) fn batched_cat_file(
+    args: &[&str],
+    cwd: Option<&std::path::Path>,
+    env: &[(String, String)],
+) -> Option<i32> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    type Batches = Mutex<HashMap<PathBuf, Arc<Mutex<Option<CheckBatch>>>>>;
+    static BATCHES: OnceLock<Batches> = OnceLock::new();
+    if !prototype(Prototype::BatchCatFile) || !env.is_empty() {
+        return None;
+    }
+    let ["cat-file", "-e", rev] = args else {
+        return None;
+    };
+    let cwd = cwd?;
+    let slot = BATCHES
+        .get_or_init(Mutex::default)
+        .lock()
+        .ok()?
+        .entry(cwd.to_path_buf())
+        .or_default()
+        .clone();
+    let mut batch = slot.lock().ok()?;
+    if batch.is_none() {
+        *batch = CheckBatch::opened(cwd);
+    }
+    let found = batch.as_mut()?.exists(rev);
+    if found.is_none() {
+        *batch = None;
+    }
+    Some(i32::from(!found?))
+}
+
+/// Prototype `stdin-lists`: for a `rev-list … --not <rev>… --` that is about to be
+/// spawned, the argv with the excluded revisions moved to `--stdin`, and the standard
+/// input that carries them. `None` where the prototype is off or `args` has no such list.
+pub(crate) fn rev_list_stdin(args: &[&str]) -> Option<(Vec<String>, String)> {
+    if !prototype(Prototype::StdinLists) || args.first() != Some(&"rev-list") {
+        return None;
+    }
+    let not = args.iter().position(|arg| *arg == "--not")?;
+    let end = args.iter().rposition(|arg| *arg == "--")?;
+    let excluded = args.get(not + 1..end)?;
+    if excluded.is_empty() || excluded.iter().any(|arg| arg.starts_with('-')) {
+        return None;
+    }
+    let mut argv: Vec<String> = args[..not].iter().map(|arg| (*arg).to_owned()).collect();
+    argv.push("--stdin".to_owned());
+    argv.extend(args[end..].iter().map(|arg| (*arg).to_owned()));
+    let input = excluded.iter().map(|rev| format!("^{rev}\n")).collect();
+    Some((argv, input))
+}
+
+thread_local! {
+    static PENDING_STDIN: RefCell<Option<std::fs::File>> = const { RefCell::new(None) };
+}
+
+/// Hold `input` as the standard input of the next command this thread spawns: a file
+/// already unlinked, so a list of any size neither blocks a pipe nor outlives the read.
+pub(crate) fn pend_stdin(input: Option<&str>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let Some(input) = input else {
+        return;
+    };
+    let path = std::env::temp_dir().join(format!(
+        "onevcs-spike-stdin-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let opened = std::fs::write(&path, input).and_then(|()| std::fs::File::open(&path));
+    let _ = std::fs::remove_file(&path);
+    PENDING_STDIN.with(|pending| *pending.borrow_mut() = opened.ok());
+}
+
+/// The standard input [`pend_stdin`] left for the command being spawned.
+pub(crate) fn take_stdin() -> Option<std::fs::File> {
+    PENDING_STDIN.with(|pending| pending.borrow_mut().take())
 }
 
 /// Prototype `native-off` (in `recovery_cache::native`): no git read is answered in
@@ -415,10 +544,22 @@ pub(crate) mod decisions {
             asked: crate::git::Asked<'_>,
             base_commit: Option<&str>,
             trailers: &crate::provenance::Trailers,
+            landing_recorded: bool,
         ) -> Option<Entry> {
             let entry = self.document.entries.get(key)?.clone();
             if entry.verdict.is_landed() {
                 return Some(entry);
+            }
+            // onevcs's own landing record: an unlanded decision is spent once this host
+            // recorded a landing of the branch, whatever the base's history says.
+            if landing_recorded {
+                super::event(
+                    super::Kind::Record,
+                    "landing-record-named",
+                    Instant::now(),
+                    serde_json::json!({"branch": entry.branch}),
+                );
+                return None;
             }
             if entry.base_commit.as_deref() == base_commit {
                 return Some(entry);

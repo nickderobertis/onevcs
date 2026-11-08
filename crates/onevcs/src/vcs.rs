@@ -900,9 +900,13 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             });
             let base_now = current.as_ref().map(|sha| sha.0.clone());
             let reused = match (decisions.as_mut(), record_key.as_deref()) {
-                (Some(record), Some(key)) => {
-                    record.reuse(key, asked, base_now.as_deref(), trailers)
-                }
+                (Some(record), Some(key)) => record.reuse(
+                    key,
+                    asked,
+                    base_now.as_deref(),
+                    trailers,
+                    recorded.landing.is_some(),
+                ),
                 _ => None,
             };
             let verdict = if let Some(entry) = &reused {

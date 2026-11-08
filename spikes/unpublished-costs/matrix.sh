@@ -8,7 +8,8 @@
 # BINARY is the engine built by build.sh. Phases: real (this host's real state),
 # prototypes (each prototype over real state), record (the decision record over a
 # scratch copy of ONEVCS_HOME, named by $HOME_COPY), fixture (the generated fixtures,
-# named by $FIXTURE_ONE and $FIXTURE_HOST).
+# named by $FIXTURE_ONE and $FIXTURE_HOST), strategies (each read under each strategy
+# over real state), staged (the warm read over a staged record).
 set -euo pipefail
 phase=$1 out=$2 binary=$3 session=${4:-} branch=${5:-} repo=${6:-}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -62,6 +63,32 @@ case $phase in
       m "fixture-$which-stop-guard" --measure stop-guard --session "$launcher" --onevcs-home "$home" --acknowledgements "$out/empty-ack"
     done
     ;;
-  *) echo "matrix.sh: unknown phase $phase; the phases are real, prototypes, record and fixture" >&2; exit 2 ;;
+  strategies)
+    # Each read under each strategy, a host or session read compared with an unmodified
+    # read of the same state taken immediately before it.
+    all=local-head,no-paths,batch-cat-file,stdin-lists
+    for prototype in local-head no-paths batch-cat-file stdin-lists native-unbounded "$all"; do
+      name=${prototype//,/+}; [ "$prototype" = "$all" ] && name=all-but-native
+      m "before-$name-host" --measure host --acknowledgements "$ack" --no-trace --rows-out "$out/before-$name-host.rows.json"
+      m "$name-host" --measure host --acknowledgements "$ack" --prototype "$prototype" --baseline-rows "$out/before-$name-host.rows.json" --count
+      m "before-$name-session" --measure session --session "$session" --acknowledgements "$ack" --no-trace --rows-out "$out/before-$name-session.rows.json"
+      m "$name-session" --measure session --session "$session" --acknowledgements "$ack" --prototype "$prototype" --baseline-rows "$out/before-$name-session.rows.json"
+      m "$name-stop-guard" --measure stop-guard --session "$session" --acknowledgements "$ack" --prototype "$prototype"
+      m "$name-acknowledge" --measure acknowledge --session "$session" --branch "$branch" --repo "$repo" --acknowledgements "$ack" --prototype "$prototype"
+    done
+    ;;
+  staged)
+    # The warm read over a scratch copy whose record is staged by record-gains.mjs.
+    : "${HOME_COPY:?HOME_COPY names the scratch copy of ONEVCS_HOME}"
+    : "${STAGED:?STAGED names the record record-gains.mjs staged}"
+    : "${PRISTINE:?PRISTINE names the record as a cold read wrote it}"
+    : "${BASELINE:?BASELINE names the unmodified read of the copy}"
+    for prototype in decision-record decision-record,local-head,no-paths decision-record,local-head,no-paths,batch-cat-file; do
+      m "staged-warm-$prototype" --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --prototype "$prototype" --stage-record "$STAGED" --baseline-rows "$BASELINE"
+      m "pristine-warm-$prototype" --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --prototype "$prototype" --stage-record "$PRISTINE" --baseline-rows "$BASELINE"
+    done
+    m record-acknowledge --measure acknowledge --session "$session" --branch "$branch" --repo "$repo" --acknowledgements "$ack" --onevcs-home "$HOME_COPY" --prototype decision-record --stage-record "$PRISTINE"
+    ;;
+  *) echo "matrix.sh: unknown phase $phase; the phases are real, prototypes, record, staged, strategies and fixture" >&2; exit 2 ;;
 esac
 exit "$failed"

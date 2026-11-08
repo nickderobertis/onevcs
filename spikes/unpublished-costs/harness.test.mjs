@@ -109,6 +109,19 @@ test("a prototype's rows are compared field by field with a baseline", () => {
   );
 });
 
+test("the batch and stdin prototypes answer as the unmodified read does, and the batch is what answered", () => {
+  const { root, home, env } = host();
+  const baseline = path.join(root, "baseline.json");
+  measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--prototype", "native-off", "--rows-out", baseline], env);
+  const ran = measureWith(
+    ["--measure", "host", "--binary", engine, "--onevcs-home", home, "--prototype", "native-off,batch-cat-file,stdin-lists", "--baseline-rows", baseline],
+    env,
+  );
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(ran.document.rows_against_baseline, { identical: true, differences: [] });
+  assert.ok(ran.document.attribution.git.batch > 0, JSON.stringify(ran.document.attribution.git));
+});
+
 test("the decision record is written on a cold read and reused on a warm one", () => {
   const { home, env } = host();
   const { status, stderr, document } = measureWith(

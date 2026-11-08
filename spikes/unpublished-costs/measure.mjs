@@ -47,7 +47,7 @@ const MEASURES = [
 ];
 
 // The prototypes `crates/onevcs/src/spike.rs` switches on, by the names it reads.
-const PROTOTYPES = ["local-head", "no-paths", "native-unbounded", "native-off", "decision-record"];
+const PROTOTYPES = ["local-head", "no-paths", "native-unbounded", "native-off", "decision-record", "batch-cat-file", "stdin-lists"];
 
 function fail(message, code = 2) {
   process.stderr.write(`measure: ${message}\n`);
@@ -553,10 +553,11 @@ function attribute(events, wall) {
     git: {
       spawned: gits.filter((event) => event.extra.how === "spawn").length,
       native: gits.filter((event) => event.extra.how === "native").length,
+      batch: gits.filter((event) => event.extra.how === "batch").length,
       proof: gits.filter((event) => event.extra.how === "proof").length,
       memo: gits.filter((event) => event.extra.how === "memo").length,
       thread_seconds_by_how: Object.fromEntries(
-        ["spawn", "native", "proof", "memo"].map((how) => [how, fix(sum(gits.filter((event) => event.extra.how === how)) / 1000)]),
+        ["spawn", "native", "proof", "memo", "batch"].map((how) => [how, fix(sum(gits.filter((event) => event.extra.how === how)) / 1000)]),
       ),
       by_shape: shapes.slice(0, 40),
       refused,
@@ -577,7 +578,7 @@ function attribute(events, wall) {
 /** Every program the read starts and every connection it opens, under strace. */
 function counted(argv, env, input) {
   const log = path.join(scratch, "strace.log");
-  const ran = spawnSync("strace", ["-f", "-qq", "-e", "trace=execve,connect", "-o", log, ...argv], {
+  const ran = spawnSync("strace", ["-f", "-qq", "-s", "256", "-e", "trace=execve,connect", "-o", log, ...argv], {
     env,
     input,
     cwd: scratch,
@@ -587,11 +588,13 @@ function counted(argv, env, input) {
   if (ran.error) return { error: ran.error.message };
   const programs = {};
   const connections = { inet: 0, inet6: 0, unix: 0 };
+  let listedOnStdin = 0;
   for (const line of fs.readFileSync(log, "utf8").split("\n")) {
     const exec = line.match(/execve\("([^"]+)"/);
     if (exec && !line.includes("ENOENT")) {
       const name = path.basename(exec[1]);
       programs[name] = (programs[name] || 0) + 1;
+      if (name === "git" && line.includes('"--stdin"')) listedOnStdin += 1;
     }
     if (line.includes("connect(")) {
       if (line.includes("AF_INET6")) connections.inet6 += 1;
@@ -599,7 +602,7 @@ function counted(argv, env, input) {
       else if (line.includes("AF_UNIX")) connections.unix += 1;
     }
   }
-  return { status: ran.status, programs, connections };
+  return { status: ran.status, programs, connections, git_with_stdin_list: listedOnStdin };
 }
 
 /** Replace the scratch home's decision record with the staged one. */

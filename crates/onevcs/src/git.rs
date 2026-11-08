@@ -280,6 +280,19 @@ fn run_unless(
         return Ok(output);
     }
     let began = std::time::Instant::now();
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), measured by the spike's real-host row comparison and replaced by the plan's chosen strategy with its own journeys.
+    if let Some(status) = crate::spike::batched_cat_file(args, cwd, env) {
+        crate::spike::git_read(args, began, &crate::spike::Answered::Batched);
+        let output = Output {
+            status,
+            ended: Ended::Code(status),
+            stdout: String::new(),
+            stderr: String::new(),
+            read_failures: Vec::new(),
+        };
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
     // hand each hook the environment of the tree it starts in — see [`HookShims`].
@@ -290,13 +303,21 @@ fn run_unless(
         _ => None,
     };
     let outside = from_outside(args, cwd);
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), measured by the spike's real-host row comparison and replaced by the plan's chosen strategy with its own journeys.
+    let listed_on_stdin = crate::spike::rev_list_stdin(args);
+    let spawned: Vec<&str> = listed_on_stdin.as_ref().map_or_else(
+        || args.to_vec(),
+        |(argv, _)| argv.iter().map(String::as_str).collect(),
+    );
+    crate::spike::pend_stdin(listed_on_stdin.as_ref().map(|(_, input)| input.as_str()));
+    let args_as_spawned = spawned.as_slice();
     let mut command = Command::new(git_program());
     match &outside {
         Some((git_dir, _)) => {
-            command.arg("--git-dir").arg(git_dir).args(args);
+            command.arg("--git-dir").arg(git_dir).args(args_as_spawned);
         }
         None => {
-            command.args(args);
+            command.args(args_as_spawned);
         }
     }
     let execute = || {
@@ -672,8 +693,9 @@ fn bounded(
     let bound = bound_for(class)?;
     let started = Instant::now();
 
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs): null unless `stdin-lists` left a list for this very command.
     command
-        .stdin(Stdio::null())
+        .stdin(crate::spike::take_stdin().map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(directory) = cwd {
