@@ -31,6 +31,14 @@ fn hooked(body: &str) -> (Fixture, PathBuf) {
 }
 
 fn track_hook(fixture: &Fixture, name: &str, script: &str) {
+    track_hook_on(fixture, name, script);
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "HEAD"]);
+}
+
+/// Commit an executable hook on the branch the checkout is on, unpublished.
+fn track_hook_on(fixture: &Fixture, name: &str, script: &str) {
     let hooks = fixture.checkout.join(".githooks");
     std::fs::create_dir_all(&hooks).expect("a hooks directory");
     let hook = hooks.join(name);
@@ -45,9 +53,6 @@ fn track_hook(fixture: &Fixture, name: &str, script: &str) {
         script,
         "chore: track a provisioning hook",
     );
-    fixture
-        .world
-        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
 }
 
 fn ran(ledger: &Path) -> Vec<String> {
@@ -505,4 +510,75 @@ fn a_hook_git_would_not_run_records_neither_kind() {
         .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
     let (token, _) = fixture.open(&["--branch", "feature/one"]);
     none_of(&fixture.world, &token);
+}
+
+/// A pooled repository that tracks a `pre-push`, and a `post-checkout` only on `branch`.
+fn hook_only_on(branch: &str) -> (Fixture, PathBuf) {
+    let fixture = pooled(&sized(1, "unlimited"));
+    track_hook(&fixture, "pre-push", "#!/bin/sh\nexit 0\n");
+    let ledger = fixture.world.path("post-checkout-ran");
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "-b", branch]);
+    track_hook_on(
+        &fixture,
+        "post-checkout",
+        &format!("#!/bin/sh\necho \"$*\" >> '{}'\n", ledger.display()),
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    (fixture, ledger)
+}
+
+#[test]
+fn a_hook_only_the_incoming_branch_tracks_is_not_reported_when_git_did_not_run_it() {
+    let (fixture, ledger) = hook_only_on("feature/adds-hook");
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    none_of(&fixture.world, &first);
+    close(&fixture, &first);
+    assert!(ran(&ledger).is_empty());
+
+    let (second, worktree) = fixture.open(&["--branch", "feature/adds-hook"]);
+    assert!(
+        worktree.join(".githooks/post-checkout").is_file(),
+        "the reused slot now holds the branch's hook"
+    );
+    let invocations = ran(&ledger);
+    let provisioned = fixture.world.events_of(&second, PROVISIONED);
+    let failed = fixture.world.events_of(&second, FAILED);
+    assert_eq!(
+        (invocations.len(), provisioned.len() + failed.len()),
+        (0, 0),
+        "the ledger and the stream disagree: ledger {invocations:?}, \
+         provisioned {provisioned:#?}, failed {failed:#?}"
+    );
+}
+
+#[test]
+fn a_hook_the_incoming_branch_drops_is_recorded_as_what_git_ran() {
+    let (fixture, ledger) = hooked("exit 0");
+    fixture.world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "feature/drops"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["rm", "-q", ".githooks/post-checkout"]);
+    fixture.world.git(
+        &fixture.checkout,
+        &["commit", "-q", "-m", "chore: drop the hook"],
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["checkout", "-q", "main"]);
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    close(&fixture, &first);
+    let before = ran(&ledger).len();
+
+    let (second, worktree) = fixture.open(&["--branch", "feature/drops"]);
+    assert!(!worktree.join(".githooks/post-checkout").exists());
+    assert_eq!(ran(&ledger).len(), before, "the hook itself is gone");
+    let recorded = provision(&fixture.world, &second, FAILED);
+    assert_eq!(recorded.trigger, ProvisionTrigger::SlotCheckout);
 }

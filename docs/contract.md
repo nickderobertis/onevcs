@@ -7047,9 +7047,10 @@ Event kinds added: `worktree-provisioned`, `worktree-provision-failed`.
 
 Both are in the `development` phase. `worktree-provisioned` (the hook exited 0) is
 `progress`; `worktree-provision-failed` (any other ending) is `attention`. Exactly one
-is emitted per checkout on those two paths for which git would run a `post-checkout`
-hook, after the session's `session-opened`, and neither where it would run none, as
-`git rev-parse --git-path hooks/post-checkout` in the worktree answers.
+is emitted per checkout on those two paths for which git ran a `post-checkout`
+hook, after the session's `session-opened`, and neither where it ran none, as git's own
+trace2 stream for that command answers. A hook that only the incoming branch tracks may
+be in the worktree afterwards and still not have run, and then neither kind is emitted.
 
 The payload is one exported type, `onevcs::WorktreeProvision`, and every key is always
 present:

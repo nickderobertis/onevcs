@@ -4051,6 +4051,56 @@ impl PostCheckout {
     }
 }
 
+/// The file one checkout's git writes its trace2 events to, removed when dropped.
+struct HookTrace {
+    file: tempfile::NamedTempFile,
+}
+
+impl HookTrace {
+    fn cut() -> Result<Self> {
+        let file = tempfile::NamedTempFile::new()
+            .map_err(error::at("create the hook trace in", &std::env::temp_dir()))?;
+        Ok(Self { file })
+    }
+
+    /// What points one git command at this file.
+    fn env(&self) -> Vec<(String, String)> {
+        vec![(
+            "GIT_TRACE2_EVENT".to_owned(),
+            self.file.path().to_string_lossy().into_owned(),
+        )]
+    }
+
+    /// Whether the command itself started a `post-checkout` hook.
+    ///
+    /// Unreadable reads as no: nothing then says git ran one, and a failure over the
+    /// checkout goes on to be refused in git's own words.
+    fn ran_post_checkout(&self) -> bool {
+        std::fs::read_to_string(self.file.path())
+            .is_ok_and(|trace| trace_started_post_checkout(&trace))
+    }
+}
+
+/// Whether a trace2 event stream has its first process starting `post-checkout`.
+///
+/// The variable is inherited by everything the command starts, so a git a hook runs
+/// writes here too; the first line is always the command's own, and only its session
+/// id counts.
+fn trace_started_post_checkout(trace: &str) -> bool {
+    let mut events = trace
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok());
+    let Some(own) = events.next().and_then(|first| first.get("sid").cloned()) else {
+        return false;
+    };
+    events.any(|event| {
+        event.get("sid") == Some(&own)
+            && event["event"] == "child_start"
+            && event["child_class"] == "hook"
+            && event["hook_name"] == "post-checkout"
+    })
+}
+
 /// One checkout of a session's worktree onto its branch, as [`observed_checkout`]
 /// runs it.
 struct Checkout<'a> {
@@ -4085,12 +4135,20 @@ struct Checkout<'a> {
 /// signalled or timed-out ending over it is the hook's, recorded rather than refused.
 /// One that did not complete is git's own failure, refused as it always was.
 ///
-/// `None` where git would run no `post-checkout` hook, which is read from git itself
-/// after the run: `rev-parse --git-path hooks/post-checkout` in the worktree, which
-/// honours `core.hooksPath`.
+/// `None` where git ran no `post-checkout` hook, which git itself says: its trace2
+/// stream names every hook the command started. What is on disk afterwards cannot
+/// answer that, because [`HookShims`] are listed before the checkout, so a hook only
+/// the incoming branch tracks is on disk and was not run.
 fn observed_checkout(checkout: &Checkout<'_>) -> Result<Option<PostCheckout>> {
+    let trace = HookTrace::cut()?;
     let started = Instant::now();
-    let output = run_unless(checkout.args, Some(checkout.cwd), &[], None, Elapse::Answer)?;
+    let output = run_unless(
+        checkout.args,
+        Some(checkout.cwd),
+        &trace.env(),
+        None,
+        Elapse::Answer,
+    )?;
     let duration = started.elapsed();
     let commit = || commit_of(checkout.cwd, checkout.target);
     let completed = output.ok() || {
@@ -4102,10 +4160,7 @@ fn observed_checkout(checkout: &Checkout<'_>) -> Result<Option<PostCheckout>> {
     if !completed {
         return Err(refused());
     }
-    // From the worktree, because that is where a relative hooks directory means
-    // anything: it is what [`worktree_hooks`] handed `worktree add`, and where `checkout`
-    // ran.
-    if !unremembered(|| runs_post_checkout(checkout.worktree))? {
+    if !trace.ran_post_checkout() {
         // No hook ran, so a failure over a completed checkout is git's own — which
         // nothing has been seen to produce, and which is refused as it always was.
         return match output.ok() {
@@ -6485,5 +6540,23 @@ mod config_addition_tests {
         );
         retain_objects_for_borrowers(&repository).expect_err("nothing is written to it");
         assert_eq!(std::fs::read(&config).expect("the configuration"), broken);
+    }
+}
+
+#[cfg(test)]
+mod hook_trace_tests {
+    use super::trace_started_post_checkout;
+
+    const OWN: &str = r#"{"event":"version","sid":"a"}"#;
+    const HOOK: &str =
+        r#"{"event":"child_start","child_class":"hook","hook_name":"post-checkout","#;
+
+    #[test]
+    fn only_the_commands_own_start_of_the_hook_counts() {
+        let own = format!("{OWN}\n{HOOK}\"sid\":\"a\"}}\n");
+        let nested = format!("{OWN}\n{HOOK}\"sid\":\"a/b\"}}\n");
+        assert!(trace_started_post_checkout(&own));
+        assert!(!trace_started_post_checkout(&nested), "a git a hook ran");
+        assert!(!trace_started_post_checkout(""), "no trace at all");
     }
 }
