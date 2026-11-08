@@ -819,9 +819,9 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // Measured against this checkout's remote-tracking refs, which a copy-back
             // or a publication from somewhere else leaves behind: a branch this host
             // put on origin at or past this tip is published work, whatever this copy
-            // has seen of it. Asked of the default report alone — `--all` lists every
-            // preserved branch — and before anything is decided about the branch,
-            // because its answer would be discarded.
+            // has seen of it. Asked before anything is decided about the branch, because
+            // the default report discards that decision; `--all` keeps the answer for
+            // the reason its row gives.
             let tokens = tokens_of(sessions, identity, &branch);
             let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
             let covered = settle_published(asked, &branch, &tip, &pushed, &preserved_here)?;

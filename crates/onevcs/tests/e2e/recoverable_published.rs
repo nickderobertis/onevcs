@@ -1,9 +1,9 @@
 //! `onevcs recoverable` lists work nobody published, and only that.
 //!
 //! Each journey drives the real binary over real git and a real bare origin, with two
-//! registered checkouts of one identity where a copy-back is the subject. No journey
-//! runs a fetch in the checkout it reads, because a fetch is what used to hide the
-//! defect these hold.
+//! registered checkouts of one identity where a copy-back is the subject. A journey
+//! about a copy-back runs no fetch in the checkout it reads, because a fetch is what
+//! used to hide the defect these hold.
 
 // llmlint: ignore-file[e2e_not_mocked] the remote host is the one boundary an offline
 // gate cannot drive, and `world.rs` installs the program that answers as `gh`. The
@@ -235,6 +235,56 @@ fn a_tracking_ref_already_past_what_the_session_pushed_is_left_where_it_is() {
     world.git(&worktree, &["reset", "-q", "--hard", pushed.trim()]);
     host.close(&token);
     assert_eq!(host.tracking(&host.other, branch), newer);
+}
+
+#[test]
+fn work_past_a_publication_by_another_stream_names_that_stream_as_what_published_it() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/keyed-reason";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.close(&token);
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &host.other.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+    world.git(&host.other, &["checkout", "-q", branch]);
+    world.commit_file(&host.other, "b.txt", "local\n", "feat: add b");
+    world.git(&host.other, &["checkout", "-q", "main"]);
+
+    let rows = host.rows(branch);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let because = rows[0]["stopped_because"].as_str().expect("a reason");
+    assert!(because.contains("the stream publish-branch-"), "{because}");
+    assert!(!because.contains("closed without publishing"), "{because}");
+}
+
+#[test]
+fn a_recorded_push_naming_no_usable_head_answers_nothing() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/torn-record";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    host.close(&token);
+    let stream = world.home().join(format!("streams/{token}.ndjson"));
+    let recorded = std::fs::read_to_string(&stream).expect("the session's stream");
+    let head = host.on_origin(branch);
+    assert!(recorded.contains(&head), "the push names its head");
+    std::fs::write(&stream, recorded.replace(&head, "not-a-commit")).expect("a torn head");
+    world.git(
+        &host.other,
+        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
+    );
+    let moved = host.fixture.origin.with_extension("away");
+    std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
+    assert_eq!(host.rows(branch).len(), 1, "nothing proves it published");
 }
 
 #[test]
