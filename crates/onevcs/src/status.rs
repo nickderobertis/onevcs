@@ -136,10 +136,17 @@ use crate::{gh, git, guidance, home, policy, provenance, stream, vcs, workspace}
 /// session recorded one — rather than always the root, so a change drafted on a stack
 /// base, or stacked on the change below, is measured by its own commits.
 ///
+/// `13` is `publication.draft` reading `{"kind": "kept-for-review", "checks": …}`: a
+/// draft held for a person's review under `change-open` with approvals required, which
+/// read as `awaiting-checks` for as long as it stood. `checks` is what the publication
+/// that last held it knew of its required checks — `passed` or `passed-with-skipped`
+/// from its watch, or `unchecked` where it deferred their verdict — so a republished
+/// draft reports its own publication rather than the first one's.
+///
 /// Every change to what the object carries bumps this in the same change that
 /// updates the checked-in goldens under `crates/onevcs/tests/golden/`, which
 /// `tests/e2e/accounting.rs` holds to this command's own output byte for byte.
-pub const REPORT_VERSION: u32 = 12;
+pub const REPORT_VERSION: u32 = 13;
 
 /// A schema version this build reads, checked where a report is read.
 ///
@@ -910,8 +917,10 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
 /// The reason a draft is standing over this branch right now, or none.
 ///
 /// Two records decide it and both are stamped, because they are written by two
-/// different publications: `change-drafted` says a change was opened as one and why,
-/// and `draft-lifted` says a later publication took it out. Which is newer is the
+/// different publications: `change-drafted` says a change was opened as one and why —
+/// or `draft-kept-for-review`, written later by the same publication, says green checks
+/// left it one for a person's review, which replaces the reason in the order that
+/// stream wrote them — and `draft-lifted` says a later publication took it out. Which is newer is the
 /// answer, so a lift is compared against the draft it answers rather than assumed to
 /// follow it in the order the streams happened to be listed in — a branch drafted by
 /// a session and lifted by `publish-branch` has the two in *different* streams, and
@@ -2441,6 +2450,15 @@ fn read_draft_reason(field: &dyn Fn(&str) -> Option<String>) -> Option<StandingD
         // The lifecycle's own draft, which no caller asked for and so carries no
         // reason to check.
         Some(AWAITING_CHECKS) => return Some(StandingDraft::AwaitingChecks(AwaitingChecks)),
+        // A republication into a draft held for review, recording what it knew of the
+        // checks — `unchecked` where it deferred their verdict. The verdict is required
+        // here: a record that held a draft for review and said nothing of its checks is
+        // one this cannot render honestly either way.
+        Some(KEPT_FOR_REVIEW) => {
+            return field("checks")
+                .and_then(|checks| ReviewChecks::parse(&checks))
+                .map(|checks| StandingDraft::KeptForReview(KeptForReview { checks }))
+        }
         Some("held") => DraftReason::Held {
             because: field("because")?,
         },
@@ -2470,6 +2488,22 @@ pub(crate) fn spell_check_state(state: CheckState) -> &'static str {
 /// The `kind` the lifecycle's own draft is recorded under.
 const AWAITING_CHECKS: &str = "awaiting-checks";
 
+/// The `kind` a draft held for its user's review is reported under.
+const KEPT_FOR_REVIEW: &str = "kept-for-review";
+
+/// The draft a `draft-kept-for-review` record left standing, read back.
+///
+/// Absent `checks` is a record a build before the field wrote, and that event was only
+/// ever written once the required checks came back green, so it reads as `passed`. A
+/// word this build does not know is not read as green — it is a gap, said as one.
+fn read_kept_for_review(field: &dyn Fn(&str) -> Option<String>) -> Option<StandingDraft> {
+    let checks = match field("checks") {
+        None => ReviewChecks::Passed,
+        Some(word) => ReviewChecks::parse(&word)?,
+    };
+    Some(StandingDraft::KeptForReview(KeptForReview { checks }))
+}
+
 /// Why a change request stands as a draft, as this report reads it back: a reason a
 /// caller asked for, or the lifecycle's own draft while the required checks run.
 ///
@@ -2484,6 +2518,82 @@ pub enum StandingDraft {
     Asked(DraftReason),
     /// A draft the publication opened while its required checks run.
     AwaitingChecks(AwaitingChecks),
+    /// A draft held for a person's review under `change-open` with approvals
+    /// required: green, or republished into with its checks' verdict deferred.
+    KeptForReview(KeptForReview),
+}
+
+/// A draft held for its user's review, which serializes as `{"kind":
+/// "kept-for-review", "checks": …}`.
+///
+/// `checks` is what the publication that last held it knew of its checks: the verdict
+/// its watch recorded, or `unchecked` where it deferred that verdict — so a draft
+/// republished without a watch never reads as the green an earlier publication saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptForReview {
+    /// What the publication that held it knew of its required checks.
+    pub checks: ReviewChecks,
+}
+
+/// What the publication holding a draft for review knew of its required checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewChecks {
+    /// Every required check passed.
+    Passed,
+    /// Every required check stopped blocking, and some of them concluded skipped.
+    PassedWithSkipped,
+    /// The publication deferred their verdict and read nothing of them.
+    Unchecked,
+}
+
+impl ReviewChecks {
+    /// The word a record spells it with, or none for a word this build does not know.
+    fn parse(word: &str) -> Option<Self> {
+        match word {
+            "passed" => Some(ReviewChecks::Passed),
+            "passed-with-skipped" => Some(ReviewChecks::PassedWithSkipped),
+            "unchecked" => Some(ReviewChecks::Unchecked),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for KeptForReview {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("kind", KEPT_FOR_REVIEW)?;
+        map.serialize_entry("checks", &self.checks)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for KeptForReview {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Tagged {
+            kind: String,
+            checks: ReviewChecks,
+        }
+        let tagged = Tagged::deserialize(deserializer)?;
+        if tagged.kind == KEPT_FOR_REVIEW {
+            Ok(KeptForReview {
+                checks: tagged.checks,
+            })
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "{:?} is not the kind of a draft held for review",
+                tagged.kind
+            )))
+        }
+    }
 }
 
 /// The lifecycle's own draft, which serializes as `{"kind": "awaiting-checks"}`.
@@ -2529,6 +2639,7 @@ impl StandingDraft {
         match self {
             StandingDraft::Asked(reason) => reason.kind(),
             StandingDraft::AwaitingChecks(_) => AWAITING_CHECKS.to_owned(),
+            StandingDraft::KeptForReview(_) => KEPT_FOR_REVIEW.to_owned(),
         }
     }
 
@@ -2537,6 +2648,15 @@ impl StandingDraft {
         match self {
             StandingDraft::Asked(reason) => reason.because(),
             StandingDraft::AwaitingChecks(_) => "its required checks are still running",
+            StandingDraft::KeptForReview(kept) => match kept.checks {
+                ReviewChecks::Passed => "required checks are green; held for a person's review",
+                ReviewChecks::PassedWithSkipped => {
+                    "required checks are green, some of them skipped; held for a person's review"
+                }
+                ReviewChecks::Unchecked => {
+                    "republished without reading its checks; held for a person's review"
+                }
+            },
         }
     }
 
@@ -2544,7 +2664,7 @@ impl StandingDraft {
     fn checked(&self) -> Result<()> {
         match self {
             StandingDraft::Asked(reason) => reason.checked(),
-            StandingDraft::AwaitingChecks(_) => Ok(()),
+            StandingDraft::AwaitingChecks(_) | StandingDraft::KeptForReview(_) => Ok(()),
         }
     }
 }
@@ -3476,7 +3596,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         // of them — which is what a retired `gate-started` did, and the report an
         // operator is told is the only thing that says where the work is arrived
         // buried under hundreds of them. Nothing is missing from the answer: this
-        // match acts on six kinds, and a kind with no word here is not one of them.
+        // match acts on seven kinds, and a kind with no word here is not one of them.
         let Line::Known(known) = read else {
             continue;
         };
@@ -3529,6 +3649,20 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     )),
                 }
             }
+            // Green checks keeping a draft for its user's review, which no
+            // `change-drafted` says: it replaces the reason the same publication
+            // recorded when it opened the draft, in the order the stream wrote them,
+            // and a later lift or draft answers it exactly as it answers that one.
+            EventKind::DraftKeptForReview => match read_kept_for_review(&field) {
+                Some(kept) => record.draft = Some(Stamped { at, value: kept }),
+                None => notes.push(format!(
+                    "line {} of the event stream at {} records a draft kept for review whose \
+                     checks cannot be read, so why {} is held back is not in this report",
+                    index + 1,
+                    path.display(),
+                    record.branch.as_deref().unwrap_or("this change"),
+                )),
+            },
             EventKind::DraftLifted => record.lifted = Some(at),
             // The description's own record: the body is the artifact the payload
             // names, never inlined, so what is read back is where it can be read.
@@ -5053,8 +5187,8 @@ mod round_trip {
     use serde_json::Value;
 
     /// The same bytes `tests/e2e/accounting.rs` holds the real CLI's output to.
-    const FULL: &str = include_str!("../tests/golden/status-report-v12.json");
-    const MINIMAL: &str = include_str!("../tests/golden/status-report-v12-minimal.json");
+    const FULL: &str = include_str!("../tests/golden/status-report-v13.json");
+    const MINIMAL: &str = include_str!("../tests/golden/status-report-v13-minimal.json");
 
     /// One golden as the object a consumer parses.
     fn parsed(golden: &str) -> Value {

@@ -2396,7 +2396,8 @@ fn push_the_branch(
 /// The `change-opened` it records is the one a watched publication records, less the
 /// author — which only the host could say — so `status`, `landing_status` and a later
 /// deferred publication read this one's change request exactly as they read a watched
-/// one's.
+/// one's. Beside it, a `change-drafted` of kind `kept-for-review` whose `checks` is
+/// `unchecked`: the draft's reason is now this publication's, which read no verdict.
 fn land_deferred(context: &Context<'_>, stream: &mut Stream, adopt: &Url) -> PublishOutcome {
     let number = adopt
         .path_segments()
@@ -2410,6 +2411,19 @@ fn land_deferred(context: &Context<'_>, stream: &mut Stream, adopt: &Url) -> Pub
             "host": "github",
             "id": number,
             "base": context.target.base().to_string(),
+        })),
+    );
+    // A republication of a draft held for review records its own reason, and says it
+    // read nothing of the checks: otherwise the reason the first publication recorded —
+    // green, or awaiting checks — would go on standing for commits nothing watched.
+    stream.emit(
+        EventKind::ChangeDrafted,
+        object(json!({
+            "url": adopt.to_string(),
+            "id": number,
+            "base": context.target.base().to_string(),
+            "kind": KEPT_FOR_REVIEW,
+            "checks": UNCHECKED,
         })),
     );
     crate::standings::record_head(adopt, &context.branch);
@@ -2742,12 +2756,16 @@ fn land_opened_change(
         // this waits for is the verdict a person reviews against, not a turn.
         if settle(&mut watcher, stream, drafted)? {
             if green == policy::GreenDraft::KeepForReview {
+                // The verdict travels with the keep, so the record of a draft held
+                // for review says what its own watch saw rather than leaving a reader
+                // to find the settlement that preceded it.
                 stream.emit(
                     EventKind::DraftKeptForReview,
                     object(json!({
                         "url": change.url.to_string(),
                         "id": change.id.0,
                         "base": change.base,
+                        "checks": watcher.verdict.unwrap_or("passed"),
                     })),
                 );
                 return Ok(PublishOutcome::ChangeReviewDraft(change.url.clone()));
@@ -3365,6 +3383,14 @@ fn await_as_draft(
 /// while the checks run — the one kind that is no [`DraftReason`], because nobody
 /// asked for it.
 const AWAITING_CHECKS: &str = "awaiting-checks";
+
+/// The `kind` a `change-drafted` payload carries for a draft a deferred publication
+/// pushed into and held for its user's review — no [`DraftReason`] either, because
+/// the policy holds it rather than a caller.
+const KEPT_FOR_REVIEW: &str = "kept-for-review";
+
+/// What such a payload's `checks` says when the publication deferred their verdict.
+const UNCHECKED: &str = "unchecked";
 
 /// Hold a change request open as a draft, and record why.
 ///
@@ -3996,6 +4022,9 @@ struct Watcher<'a> {
     logs: Vec<(String, crate::event::ArtifactId)>,
     /// Whether `checks-settled` has been recorded, which it is once per watch.
     settled: bool,
+    /// The verdict that `checks-settled` recorded — `passed` or `passed-with-skipped`
+    /// — which a draft kept for review carries as what its watch knew of its checks.
+    verdict: Option<&'static str>,
     /// Whether an early lift prints its warning line: the resolved
     /// `drafts.warn_on_early_lift`.
     warn_on_early_lift: bool,
@@ -4042,6 +4071,7 @@ impl<'a> Watcher<'a> {
             reported: Vec::new(),
             logs: Vec::new(),
             settled: false,
+            verdict: None,
             declaration: None,
             elapsed: false,
             armed: false,
@@ -4290,6 +4320,7 @@ impl<'a> Watcher<'a> {
         } else {
             "passed-with-skipped"
         };
+        self.verdict = Some(verdict);
         let mut payload = object(json!({
             "url": self.change.url.to_string(),
             "id": self.change.id.0,

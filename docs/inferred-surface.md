@@ -420,8 +420,8 @@ Two rules follow, and they are the ones the goldens exist to enforce:
   fields that moved. A key nobody declared is refused for the reason the registry
   document refuses one: it is usually a typo for one that matters.
 
-`crates/onevcs/tests/golden/status-report-v12.json` and
-`status-report-v12-minimal.json` are those bytes — a report carrying every optional
+`crates/onevcs/tests/golden/status-report-v13.json` and
+`status-report-v13-minimal.json` are those bytes — a report carrying every optional
 field it can carry at once, and one carrying none of them — compared byte for byte
 against the real CLI's own output by
 `the_status_report_is_the_versioned_object_its_goldens_record` in
