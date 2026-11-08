@@ -1453,7 +1453,7 @@ fn a_skipped_check_is_reported_as_skipped_and_never_as_passed_wherever_a_check_i
     assert_eq!(row("gate")["state"], "passed");
     assert_eq!(
         json["publication"]["draft"],
-        serde_json::json!({"kind": "awaiting-checks"})
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"})
     );
     let rendered = report.render();
     let line = rendered
@@ -1465,7 +1465,7 @@ fn a_skipped_check_is_reported_as_skipped_and_never_as_passed_wherever_a_check_i
         "{line:?}"
     );
     assert!(
-        rendered.contains("draft reason: awaiting-checks"),
+        rendered.contains("draft reason: kept-for-review"),
         "{rendered}"
     );
 

@@ -1566,7 +1566,12 @@ fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of
     // A rework that defers its checks pushes into the held draft and reads nothing of
     // them: `status` reports that republication — unchecked — and not the green the
     // first one saw.
-    let deferred = reworked(&hosted, branch, "two.txt", "feat: rework the reviewed thing");
+    let deferred = reworked(
+        &hosted,
+        branch,
+        "two.txt",
+        "feat: rework the reviewed thing",
+    );
     hosted
         .world
         .onevcs()
@@ -1599,6 +1604,8 @@ fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of
     // A rework that watches its checks reports its own verdict again: the one draft,
     // awaiting its checks and then kept for review once they are green.
     let watched = reworked(&hosted, branch, "three.txt", "feat: rework it once more");
+    // The host reads the head from the push, so the watch sees this commit's checks.
+    hosted.world.host_notices_the_push_after(0);
     hosted
         .world
         .onevcs()
@@ -1635,5 +1642,72 @@ fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of
     assert!(
         report["publication"].get("draft").is_none(),
         "a lifted draft has no standing reason: {report}"
+    );
+}
+
+#[test]
+fn a_draft_recorded_after_a_lift_in_one_stream_stands_though_their_stamps_are_equal() {
+    // Lifts and drafts carry millisecond stamps, so within one stream a tie says
+    // nothing about which came first. The stream's own order does.
+    let hosted = Hosted::new(REVIEWED);
+    let branch = "feature/relifted";
+    let token = hosted.change(branch, "feat: add the relifted thing");
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let stream = hosted
+        .world
+        .home()
+        .join("streams")
+        .join(format!("{token}.ndjson"));
+    let recorded = std::fs::read_to_string(&stream).expect("the session wrote a stream");
+    let line = |seq: u32, kind: &str| {
+        serde_json::json!({
+            "v": 1,
+            "ts": "2099-01-01T00:00:00.000Z",
+            "stream": token,
+            "seq": seq,
+            "source": "vcs",
+            "kind": kind,
+            "labels": {},
+            "payload": {"url": "https://github.com/acme-corp/hosted/pull/1", "checks": "passed"},
+            "artifacts": [],
+        })
+        .to_string()
+    };
+    std::fs::write(
+        &stream,
+        format!(
+            "{recorded}{}\n{}\n",
+            line(9000, "draft-lifted"),
+            line(9001, "draft-kept-for-review"),
+        ),
+    )
+    .expect("the stream takes the two records");
+    assert_eq!(
+        status(&hosted, branch)["publication"]["draft"],
+        serde_json::json!({"kind": "kept-for-review", "checks": "passed"}),
+    );
+
+    // The other order, at the same stamp: the lift is the later record and ends it.
+    let rewritten = std::fs::read_to_string(&stream).expect("the stream reads back");
+    std::fs::write(
+        &stream,
+        format!("{rewritten}{}\n", line(9002, "draft-lifted")),
+    )
+    .expect("the stream takes the lift");
+    let report = status(&hosted, branch);
+    assert!(
+        report["publication"].get("draft").is_none(),
+        "a later lift ends a draft held for review: {report}"
     );
 }

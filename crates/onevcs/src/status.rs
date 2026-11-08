@@ -926,6 +926,10 @@ fn from_streams(streams: &[Recorded], work: &Work, session: Option<&str>) -> Tol
 /// a session and lifted by `publish-branch` has the two in *different* streams, and
 /// reading only the drafting one would report a reason nothing is holding.
 ///
+/// Within one stream the order is the stream's own: a draft record written after a
+/// lift has already forgotten that lift when it is read, so this compares only what
+/// separate streams recorded.
+///
 /// A lift stamped at the same moment as a draft clears it. The two cannot be
 /// simultaneous — a lift answers a draft the host was already holding — so an equal
 /// stamp is a clock that could not tell them apart, and reporting a reason that may
@@ -3635,7 +3639,12 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             EventKind::ChangeDrafted => {
                 let read = read_draft_reason(&field);
                 match read {
-                    Some(reason) => record.draft = Some(Stamped { at, value: reason }),
+                    Some(reason) => {
+                        record.draft = Some(Stamped { at, value: reason });
+                        // Written after any lift this stream recorded, whatever the
+                        // two stamps say: a stream's own order is its sequence.
+                        record.lifted = None;
+                    }
                     // Said out loud rather than read as a change nobody drafted: the
                     // whole point of this field is that the host cannot say *why* a
                     // change is held back, so a record that could not be read is a gap
@@ -3654,7 +3663,10 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // recorded when it opened the draft, in the order the stream wrote them,
             // and a later lift or draft answers it exactly as it answers that one.
             EventKind::DraftKeptForReview => match read_kept_for_review(&field) {
-                Some(kept) => record.draft = Some(Stamped { at, value: kept }),
+                Some(kept) => {
+                    record.draft = Some(Stamped { at, value: kept });
+                    record.lifted = None;
+                }
                 None => notes.push(format!(
                     "line {} of the event stream at {} records a draft kept for review whose \
                      checks cannot be read, so why {} is held back is not in this report",
@@ -5293,6 +5305,19 @@ mod round_trip {
         // And it is a reason a publication could have carried, by the crate's own rule
         // rather than by this test restating it.
         held.checked().expect("the golden's reason is a usable one");
+
+        // The draft held for review reads back as what it wrote, for each verdict, and
+        // a record of one that says nothing of its checks is refused rather than
+        // read as green.
+        for checks in ["passed", "passed-with-skipped", "unchecked"] {
+            let written = serde_json::json!({"kind": "kept-for-review", "checks": checks});
+            let read: StandingDraft =
+                serde_json::from_value(written.clone()).expect("a draft held for review");
+            assert!(matches!(read, StandingDraft::KeptForReview(_)), "{read:?}");
+            assert_eq!(serde_json::to_value(&read).expect("it writes"), written);
+        }
+        serde_json::from_value::<StandingDraft>(serde_json::json!({"kind": "kept-for-review"}))
+            .expect_err("no verdict is not a verdict");
 
         // Present round-trips to the same bytes, and absent stays absent: writing the
         // key as `null` would hand a consumer that never heard of drafts a field, and
