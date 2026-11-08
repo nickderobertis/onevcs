@@ -80,6 +80,7 @@ fn host_shaped(root: &Path, home: &Path) -> Built<serde_json::Value> {
         .as_object()
         .ok_or_else(|| format!("{} holds no `checkouts` object", registry_path.display()))?
         .clone();
+    // llmlint: ignore[boundary_inputs_validated] the registry is the one `onevcs_testing` just wrote in this same build, so a checkout without a number, path or identity is one it did not write; this measurement code lives only on the preserved spike branch, which the plan's run discards.
     let mut by_number: Vec<(usize, PathBuf, String)> = checkouts
         .iter()
         .filter_map(|(alias, checkout)| {

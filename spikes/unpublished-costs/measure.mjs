@@ -251,6 +251,7 @@ function rows(stdout) {
   } catch {
     return null;
   }
+  // llmlint: ignore[boundary_inputs_validated] this document is the engine's own `--format json` output for the read this harness just spawned, not external input, and a schema mismatch shows as a measurement difference; this measurement code lives only on the preserved spike branch, which the plan's run discards.
   const listing = document?.listing || document;
   if (!Array.isArray(listing?.rows)) return null;
   if (listing.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
@@ -334,6 +335,7 @@ function readTrace(file) {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
+      // llmlint: ignore[boundary_inputs_validated] the trace is written by the spike instrumentation on this same branch for the run this harness just spawned, and its required fields are checked below; this measurement code lives only on the preserved spike branch, which the plan's run discards.
       const event = JSON.parse(line);
       if (typeof event?.kind !== "string" || typeof event.name !== "string" || typeof event.t !== "number" || typeof event.ms !== "number")
         fail(`${file} holds a trace event without kind, name, t and ms: ${line.slice(0, 200)}`, 1);
@@ -681,6 +683,7 @@ function measureRead() {
     } catch (error) {
       fail(`--baseline-rows ${options.baselineRows} cannot be read as JSON: ${error.message}`, 1);
     }
+    // llmlint: ignore[boundary_inputs_validated] the baseline is a --rows-out document this harness wrote itself for the same comparison; this measurement code lives only on the preserved spike branch, which the plan's run discards.
     const decisions = ["owed", "in_flight", "acknowledged", "unknown"];
     const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || decisions.some((field) => field in row && typeof row[field] !== "boolean");
     const rowsOf = Array.isArray(baseline?.rows) ? baseline.rows : null;

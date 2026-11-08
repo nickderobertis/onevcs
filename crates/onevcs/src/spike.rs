@@ -5,9 +5,10 @@
 //! `ONEVCS_SPIKE_TRACE=<file>` appends one JSON line per traced event to that file,
 //! and `ONEVCS_SPIKE_PROTOTYPE=<name>[,<name>…]` switches on the named prototypes.
 //! With neither set, [`enabled`] and [`prototype`] answer `false` from a value read
-//! once, and every other entry point here returns at that guard before doing
-//! anything, so every existing path is the path the suite covers. `spikes/unpublished-costs/` on the spike's branch is the harness
-//! that sets them and reads the trace back.
+//! once, each prototype's entry point stays on the existing path, and [`take_stdin`]
+//! has nothing held, so the existing paths are the ones the suite covers.
+//! `spikes/unpublished-costs/` on the spike's branch is the harness that sets them and
+//! reads the trace back.
 // llmlint: ignore-file[invalid_states_unrepresentable,boundary_inputs_validated] the decision
 // record's entries carry the same String fields `Recoverable` rows carry, and are read back
 // only by the process kind that wrote them under a version check; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
@@ -55,7 +56,8 @@ pub(crate) enum Prototype {
     NoPaths,
     /// `native_objects` without its object allowance.
     NativeUnbounded,
-    /// No git read answered in process: see `recovery_cache::native`.
+    /// No git read answered in process (`recovery_cache::native`): how a generated
+    /// checkout small enough for `native_objects` reaches the lists a large one sends to git.
     NativeOff,
     /// [`decisions`].
     DecisionRecord,
@@ -385,11 +387,6 @@ pub(crate) fn take_stdin() -> Option<std::fs::File> {
     PENDING_STDIN.with(|pending| pending.borrow_mut().take())
 }
 
-/// Prototype `native-off` (in `recovery_cache::native`): no git read is answered in
-/// process, so every one the read makes is spawned — how a generated checkout small
-/// enough for `native_objects` to answer is made to reach the argument lists a large
-/// one sends to git.
-///
 /// Prototype `local-head`: where the checkout keeps no `<remote>/HEAD`, the one of
 /// `<remote>/main` and `<remote>/master` it does keep, rather than asking the remote
 /// (`ls-remote --symref`, a request to the code host) on every read.

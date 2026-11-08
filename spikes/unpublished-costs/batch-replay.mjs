@@ -116,6 +116,7 @@ for (const [cwd, list] of byCheckout) {
     encoding: "utf8",
     maxBuffer: 1 << 28,
   });
+  // llmlint: ignore[changed_behavior_has_e2e] these refusals are of a git process failing on the host being read, which no generated checkout can arrange on demand; each is written to refuse rather than answer, and this measurement code lives only on the preserved spike branch, which the plan's run discards.
   if (ran.error || ran.status !== 0) refuse(`git cat-file --batch-check in ${cwd} failed: ${ran.error?.message || ran.stderr.trim()}`);
   const out = ran.stdout.split("\n").filter(Boolean);
   // One line per object asked, each the object's name or `<object> missing`.
@@ -148,4 +149,5 @@ process.stdout.write(
     1,
   )}\n`,
 );
+// llmlint: ignore[changed_behavior_has_e2e] no generated checkout can make a batched and a spawned cat-file disagree; a disagreement exits non-zero here rather than reading as a result, and this measurement code lives only on the preserved spike branch, which the plan's run discards.
 if (!agree) refuse("one process per question and one batch per checkout answered differently; the document above says where");
