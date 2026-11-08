@@ -4103,15 +4103,11 @@ fn trace_started_post_checkout(trace: &str) -> bool {
 /// One checkout of a session's worktree onto its branch, as [`observed_checkout`]
 /// runs it.
 struct Checkout<'a> {
-    /// The git command.
     args: &'a [&'a str],
     /// Where it runs: the clone for `worktree add`, the worktree for `checkout`.
     cwd: &'a Path,
-    /// The worktree it checks out.
     worktree: &'a Path,
-    /// Which of the two it is.
     trigger: CheckoutTrigger,
-    /// The branch the worktree is to be on.
     branch: &'a str,
     /// The commit `HEAD` stood at before, as git hands it to the hook — `None` for a
     /// worktree that did not exist, which git hands it as all zeros.
