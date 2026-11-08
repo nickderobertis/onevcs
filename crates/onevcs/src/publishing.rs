@@ -28,6 +28,7 @@
 //! file and nobody else's. A reader treats every record there as a holder, including
 //! one named by the lease digest alone, which is what a build before this wrote.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -204,4 +205,33 @@ pub fn running(identity: &str, branch: &str) -> Result<Option<PathBuf>> {
         }
     }
     Ok(None)
+}
+
+/// Every branch of `identity` a publication is running on right now.
+///
+/// A report's candidates, so a branch mid-publication keeps its row whatever its
+/// remote-tracking ref says. A record this cannot read is passed over here: asking
+/// [`running`] about its branch is what names it as the defect it is.
+pub fn running_branches(identity: &str) -> Result<BTreeSet<String>> {
+    let Ok(branches) = std::fs::read_dir(home::publishing_dir()?) else {
+        return Ok(BTreeSet::new());
+    };
+    let mut found = BTreeSet::new();
+    for path in branches
+        .flatten()
+        .flat_map(|branch| std::fs::read_dir(branch.path()).into_iter().flatten())
+        .flatten()
+        .map(|entry| entry.path())
+    {
+        let Some(record) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Record>(&raw).ok())
+        else {
+            continue;
+        };
+        if record.identity == identity && lock::is_occupied(&lease_of(&record.run_root))? {
+            found.insert(record.branch);
+        }
+    }
+    Ok(found)
 }

@@ -784,9 +784,15 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         // refs, which is a process per branch per checkout that a filtered read
         // has no reason to spend — and the ones `onevcs preserve` put on the
         // origin are listed whatever those refs say: see `reported_branches`.
+        // …and so are the ones a publication is running on, whose held row is what stops
+        // anybody touching them: `settle_published` may have moved those refs already.
+        let listed_regardless: BTreeSet<String> = preserved_here
+            .union(&publishing::running_branches(identity)?)
+            .cloned()
+            .collect();
         let listed = reported_branches(
             &repo,
-            &preserved_here,
+            &listed_regardless,
             |branch| {
                 narrowed
                     .as_ref()
@@ -825,7 +831,12 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             let tokens = tokens_of(sessions, identity, &branch);
             let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
             let covered = settle_published(asked, &branch, &tip, &pushed, &preserved_here)?;
-            if covered && reporting == Reporting::UnpublishedOnly {
+            // Unless something is still working on it: a publication resuming a pushed
+            // branch has not finished, and its held row is what stops anybody touching it.
+            if covered
+                && reporting == Reporting::UnpublishedOnly
+                && held_by(sessions, identity, &branch)?.is_none()
+            {
                 continue;
             }
             // Judged against the base the session that cut it recorded — a stack base,
