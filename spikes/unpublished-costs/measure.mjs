@@ -631,6 +631,8 @@ function counted(argv, env, input) {
 function stageRecord() {
   if (!options.stageRecord) return;
   const into = path.join(path.resolve(options.onevcsHome), "cache", "spike-decisions");
+  if (!fs.statSync(options.stageRecord, { throwIfNoEntry: false })?.isDirectory())
+    fail(`--stage-record ${options.stageRecord} is no directory holding a decision record; stage one with record-gains.mjs`);
   fs.rmSync(into, { recursive: true, force: true });
   fs.cpSync(path.resolve(options.stageRecord), into, { recursive: true });
 }

@@ -117,11 +117,16 @@ const fromFile = git(["diff", "--quiet", tip, base, `--pathspec-from-file=${list
 const viaStdin = git(["rev-list", "--count", "--stdin"], { input: `${tip}\n--not\n${tips.join("\n")}\n` });
 const viaArgv = starts(shapes["unpublished_ahead: rev-list --count T --not <origin tip>… --"](TIPS));
 
+const argMax = spawnSync("getconf", ["ARG_MAX"], { encoding: "utf8" });
+if (argMax.error || argMax.status !== 0 || !(Number(argMax.stdout.trim()) > 0)) {
+  process.stderr.write(`argv-limits: getconf ARG_MAX did not answer: ${argMax.error?.message ?? (argMax.stderr || argMax.stdout)}\n`);
+  process.exit(1);
+}
 process.stdout.write(
   `${JSON.stringify(
     {
       git: git(["--version"]).stdout.trim(),
-      arg_max: Number(spawnSync("getconf", ["ARG_MAX"], { encoding: "utf8" }).stdout.trim()),
+      arg_max: Number(argMax.stdout.trim()),
       environment_bytes: Object.entries(process.env).reduce((t, [k, v]) => t + k.length + v.length + 2, 0),
       path_bytes: path100(0).length,
       results,
