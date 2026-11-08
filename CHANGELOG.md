@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.0](https://github.com/nickderobertis/onevcs/compare/v0.61.1...v0.62.0) - 2026-11-08
+
+### Added
+
+- *(session)* record post-checkout provisioning as a session event and never fail an open on it ([#642](https://github.com/nickderobertis/onevcs/pull/642))
+
 ## [0.61.1](https://github.com/nickderobertis/onevcs/compare/v0.61.0...v0.61.1) - 2026-11-06
 
 ### Fixed
