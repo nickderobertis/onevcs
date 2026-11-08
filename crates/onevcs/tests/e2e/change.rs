@@ -1665,7 +1665,6 @@ fn status_says_a_team_draft_is_held_for_review_and_follows_each_republication_of
     );
 }
 
-/// Every line of `token`'s stream, rewritten by `edit` and written back.
 fn rewrite_stream(hosted: &Hosted, token: &str, edit: impl Fn(&mut serde_json::Value)) {
     let stream = hosted
         .world
@@ -1691,7 +1690,6 @@ fn one_stamp(hosted: &Hosted, token: &str) {
     });
 }
 
-/// Rewrite this payload of each `draft-kept-for-review` record `token` wrote.
 fn edit_kept(hosted: &Hosted, token: &str, edit: impl Fn(&mut serde_json::Value)) {
     rewrite_stream(hosted, token, |event| {
         if event["kind"] == "draft-kept-for-review" {
@@ -1823,19 +1821,26 @@ fn a_kept_draft_record_reads_back_what_its_checks_field_says_and_names_what_it_c
         "{said}"
     );
 
-    // A word this build does not know is a gap, said out loud, never read as green.
-    edit_kept(&hosted, &token, |payload| {
-        payload["checks"] = serde_json::json!("very-green");
-    });
-    let report = status(&hosted, branch);
-    assert_ne!(
-        report["publication"]["draft"]["kind"], "kept-for-review",
-        "{report}"
-    );
-    assert!(
-        report["notes"]
-            .to_string()
-            .contains("records a draft kept for review whose checks cannot be read"),
-        "{report}"
-    );
+    // A value this build cannot read as a verdict is a gap, said out loud, never green.
+    for unreadable in [
+        serde_json::json!("very-green"),
+        serde_json::json!(""),
+        serde_json::Value::Null,
+        serde_json::json!(7),
+    ] {
+        edit_kept(&hosted, &token, |payload| {
+            payload["checks"] = unreadable.clone();
+        });
+        let report = status(&hosted, branch);
+        assert_ne!(
+            report["publication"]["draft"]["kind"], "kept-for-review",
+            "{unreadable}: {report}"
+        );
+        assert!(
+            report["notes"]
+                .to_string()
+                .contains("records a draft kept for review whose checks cannot be read"),
+            "{unreadable}: {report}"
+        );
+    }
 }

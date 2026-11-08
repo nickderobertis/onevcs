@@ -2500,10 +2500,10 @@ pub(crate) const KEPT_FOR_REVIEW: &str = "kept-for-review";
 /// Absent `checks` is a record a build before the field wrote, and that event was only
 /// ever written once the required checks came back green, so it reads as `passed`. A
 /// word this build does not know is not read as green — it is a gap, said as one.
-fn read_kept_for_review(field: &dyn Fn(&str) -> Option<String>) -> Option<StandingDraft> {
-    let checks = match field("checks") {
+fn read_kept_for_review(checks: Option<&Value>) -> Option<StandingDraft> {
+    let checks = match checks {
         None => ReviewChecks::Passed,
-        Some(word) => ReviewChecks::parse(&word)?,
+        Some(word) => ReviewChecks::parse(word.as_str()?)?,
     };
     Some(StandingDraft::KeptForReview(KeptForReview { checks }))
 }
@@ -3658,19 +3658,21 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // `change-drafted` says: it replaces the reason the same publication
             // recorded when it opened the draft, in the order the stream wrote them,
             // and a later lift or draft answers it exactly as it answers that one.
-            EventKind::DraftKeptForReview => match read_kept_for_review(&field) {
-                Some(kept) => {
-                    record.draft = Some(Stamped { at, value: kept });
-                    record.lifted = None;
-                }
-                None => notes.push(format!(
-                    "line {} of the event stream at {} records a draft kept for review whose \
+            EventKind::DraftKeptForReview => {
+                match read_kept_for_review(event.payload.get("checks")) {
+                    Some(kept) => {
+                        record.draft = Some(Stamped { at, value: kept });
+                        record.lifted = None;
+                    }
+                    None => notes.push(format!(
+                        "line {} of the event stream at {} records a draft kept for review whose \
                      checks cannot be read, so why {} is held back is not in this report",
-                    index + 1,
-                    path.display(),
-                    record.branch.as_deref().unwrap_or("this change"),
-                )),
-            },
+                        index + 1,
+                        path.display(),
+                        record.branch.as_deref().unwrap_or("this change"),
+                    )),
+                }
+            }
             EventKind::DraftLifted => record.lifted = Some(at),
             // The description's own record: the body is the artifact the payload
             // names, never inlined, so what is read back is where it can be read.
