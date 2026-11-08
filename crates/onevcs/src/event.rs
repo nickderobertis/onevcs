@@ -249,23 +249,25 @@ pub enum ProvisionTrigger {
 ///
 /// Every key is always written; `exit_status` and `signal` as `null` where they do not
 /// apply.
-// llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the
-// wire shape two other repositories build against, fixed by the plan that adds this
-// event; a typed ending or hook name would change what `onevcs events` prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeProvision {
     /// The hook: `post-checkout`.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
     pub hook: String,
     /// Which checkout ran it.
     pub trigger: ProvisionTrigger,
     /// The absolute path of the worktree that was checked out.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
     pub worktree: String,
     /// The exit status git's checkout command ended with, which git takes from the hook
     /// once the checkout has completed; `null` when it ended without one.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
     pub exit_status: Option<i32>,
     /// The signal that ended git's checkout command, or `null`.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
     pub signal: Option<i32>,
     /// Whether `ONEVCS_GIT_HOOK_TIMEOUT` ended git's checkout command.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
     pub timed_out: bool,
     /// How long git's checkout command ran.
     pub duration_ms: u64,

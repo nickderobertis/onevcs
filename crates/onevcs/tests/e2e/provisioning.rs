@@ -158,6 +158,7 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
         lines[1], lines[0],
         "the rerun's arguments are the worktree add's"
     );
+    assert!(added.duration_ms < 60_000, "{}", added.duration_ms);
     assert!(lines[0].starts_with("0000000"), "{lines:?}");
 
     close(&fixture, &first);
@@ -244,11 +245,8 @@ fn output_past_the_limit_keeps_its_tail() {
     assert!(recorded.output.trim_end().ends_with("the-last-line"));
 }
 
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] two seconds of waiting on
-// the bound this journey exists to elapse, in a suite whose journeys take as long; it
-// reads every input the session-open code reads, so an edge of its own would be no
-// narrower.
 #[test]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] seconds of waiting on the bound this journey exists to elapse, and it reads every input the session code reads, so an edge of its own would be no narrower.
 fn a_hook_past_the_bound_is_recorded_and_the_session_opens() {
     let (fixture, _) = hooked(&format!("echo {MARKER}\nsleep 60"));
     let output = fixture
@@ -265,6 +263,7 @@ fn a_hook_past_the_bound_is_recorded_and_the_session_opens() {
     assert!(recorded.timed_out);
     assert_eq!(recorded.exit_status, None);
     assert_eq!(recorded.signal, None);
+    assert!(recorded.duration_ms >= 2000, "{}", recorded.duration_ms);
     assert!(recorded.output.contains(MARKER), "{}", recorded.output);
 }
 
@@ -365,10 +364,8 @@ fn a_cut_lands_on_a_character_boundary() {
     assert!(!recorded.output.contains('\u{FFFD}'), "{}", recorded.output);
 }
 
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] one second of waiting on
-// the bound this journey exists to elapse, and it reads every input the session-close
-// code reads, so an edge of its own would be no narrower.
 #[test]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] seconds of waiting on the bound this journey exists to elapse, and it reads every input the session code reads, so an edge of its own would be no narrower.
 fn a_slot_return_past_the_bound_or_signalled_by_its_hook_still_closes() {
     let (fixture, ledger) = hooked("[ -e \"$HOOK_END\" ] || exit 0\n. \"$HOOK_END\"");
     let end = fixture.world.path("hook-ends");
@@ -443,10 +440,8 @@ fn a_reused_slots_hook_can_signal_itself_and_the_session_opens() {
     assert_eq!(recorded.signal, None);
 }
 
-// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] two seconds of waiting on
-// the bound this journey exists to elapse, and it reads every input the session-open
-// code reads, so an edge of its own would be no narrower.
 #[test]
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] seconds of waiting on the bound this journey exists to elapse, and it reads every input the session code reads, so an edge of its own would be no narrower.
 fn a_reused_slots_hook_past_the_bound_is_recorded_and_the_session_opens() {
     let (fixture, _) = hooked(ENDS_AS_ASKED);
     let (first, _) = fixture.open(&["--branch", "feature/one"]);
@@ -472,4 +467,42 @@ fn a_signal_that_ends_git_after_the_checkout_is_recorded_and_the_session_opens()
     assert_eq!(recorded.signal, Some(9));
     assert_eq!(recorded.exit_status, None);
     assert!(!recorded.timed_out);
+}
+
+#[test]
+fn a_home_relative_hooks_directory_is_honoured_as_it_stands() {
+    let fixture = pooled(&sized(1, "unlimited"));
+    // Every command in a world runs with its root as `HOME`.
+    let hooks = fixture.world.path("shared-hooks");
+    std::fs::create_dir_all(&hooks).expect("a hooks directory");
+    let hook = hooks.join("post-checkout");
+    std::fs::write(&hook, format!("#!/bin/sh\necho {MARKER}\n")).expect("a hook");
+    let mut permissions = std::fs::metadata(&hook).expect("the hook").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&hook, permissions).expect("an executable hook");
+    fixture.world.git(
+        &fixture.checkout,
+        &["config", "core.hooksPath", "~/shared-hooks"],
+    );
+    let (token, _) = fixture.open(&["--branch", "feature/one"]);
+    let recorded = provision(&fixture.world, &token, PROVISIONED);
+    assert!(recorded.output.contains(MARKER), "{}", recorded.output);
+}
+
+#[test]
+fn a_hook_git_would_not_run_records_neither_kind() {
+    let fixture = pooled(&sized(1, "unlimited"));
+    let hooks = fixture.checkout.join(".githooks");
+    std::fs::create_dir_all(&hooks).expect("a hooks directory");
+    fixture.world.commit_file(
+        &fixture.checkout,
+        ".githooks/post-checkout",
+        "#!/bin/sh\nexit 9\n",
+        "chore: track a hook that is not executable",
+    );
+    fixture
+        .world
+        .git(&fixture.checkout, &["push", "-q", "origin", "main"]);
+    let (token, _) = fixture.open(&["--branch", "feature/one"]);
+    none_of(&fixture.world, &token);
 }
