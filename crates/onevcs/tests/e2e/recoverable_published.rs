@@ -8,6 +8,9 @@
 // llmlint: ignore-file[e2e_not_mocked] the remote host is the one boundary an offline
 // gate cannot drive, and `world.rs` installs the program that answers as `gh`. The
 // origin, the checkouts, the clones and every push are real.
+// llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] each journey is about
+// a second of real git, and the task places them in this e2e binary, whose input edge is
+// the crate they exercise; a tier of their own would rerun them on exactly those inputs.
 
 #![cfg(unix)]
 
@@ -94,6 +97,10 @@ impl Host {
     }
 
     fn rows(&self, branch: &str) -> Vec<Value> {
+        self.rows_with(branch, &[])
+    }
+
+    fn rows_with(&self, branch: &str, extra: &[&str]) -> Vec<Value> {
         let output = self
             .fixture
             .world
@@ -104,6 +111,7 @@ impl Host {
                 "--repo",
                 &self.other.to_string_lossy(),
             ])
+            .args(extra)
             .assert()
             .success()
             .get_output()
@@ -170,6 +178,152 @@ fn a_recorded_push_answers_while_origin_cannot_be_asked() {
     let moved = host.fixture.origin.with_extension("away");
     std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
     assert_eq!(host.rows(branch), Vec::<Value>::new());
+    // Every branch is listed under --all, and the reason still says what was recorded.
+    let rows = host.rows_with(branch, &["--all"]);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let because = rows[0]["stopped_because"].as_str().expect("a reason");
+    assert!(
+        because.contains("nothing stopped it unpublished"),
+        "{because}"
+    );
+    assert!(because.contains(&token), "{because}");
+}
+
+#[test]
+fn a_failed_publish_branch_after_its_push_tracks_what_it_pushed_and_lists_nothing() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/keyed";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.close(&token);
+    world.answer_malformed("no-url");
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &host.other.to_string_lossy(),
+        ])
+        .assert()
+        .failure();
+    assert_eq!(host.tracking(&host.other, branch), host.on_origin(branch));
+    assert_eq!(host.rows(branch), Vec::<Value>::new());
+}
+
+#[test]
+fn a_tracking_ref_already_past_what_the_session_pushed_is_left_where_it_is() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/moved-on";
+    let (token, worktree) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    let pushed = host.on_origin(branch);
+    world.commit_file(&worktree, "b.txt", "more\n", "feat: add b");
+    world.git(&worktree, &["push", "-q", "origin", branch]);
+    let newer = host.on_origin(branch);
+    assert_ne!(pushed, newer);
+    world.git(&host.other, &["fetch", "-q", "origin", branch]);
+    world.git(
+        &host.other,
+        &[
+            "update-ref",
+            &format!("refs/remotes/origin/{branch}"),
+            newer.trim(),
+        ],
+    );
+    world.git(&worktree, &["reset", "-q", "--hard", pushed.trim()]);
+    host.close(&token);
+    assert_eq!(host.tracking(&host.other, branch), newer);
+}
+
+#[test]
+fn a_keyed_stream_push_of_one_identity_answers_nothing_for_another() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/shared-name";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.close(&token);
+    world
+        .onevcs()
+        .args([
+            "publish-branch",
+            branch,
+            "--repo",
+            &host.other.to_string_lossy(),
+        ])
+        .assert()
+        .success();
+
+    // A second identity holds the same commit under the same name and its origin cannot
+    // be asked, so only a record could drop its row, and none of them is its own.
+    let origin = world.bare_origin("second");
+    let second = world.clone_of(&origin, "second");
+    world
+        .onevcs()
+        .args([
+            "register",
+            &second.to_string_lossy(),
+            "--origin",
+            "https://github.com/acme-corp/second.git",
+        ])
+        .assert()
+        .success();
+    world.git(
+        &second,
+        &[
+            "fetch",
+            "-q",
+            &host.other.to_string_lossy(),
+            &format!("{branch}:{branch}"),
+        ],
+    );
+    std::fs::rename(&origin, origin.with_extension("away")).expect("origin moved aside");
+    let output = world
+        .onevcs()
+        .args(["recoverable", "--json", "--repo", &second.to_string_lossy()])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        String::from_utf8_lossy(&output).contains(branch),
+        "the other identity's push proved nothing here: {}",
+        String::from_utf8_lossy(&output)
+    );
+}
+
+#[test]
+fn a_stale_clone_that_cannot_take_the_ref_is_listed_rather_than_refused() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/unfetchable";
+    let (token, worktree) = host.work(branch, "a.txt", "0");
+    world.git(&worktree, &["push", "-q", "origin", branch]);
+    world.commit_file(&worktree, "b.txt", "more\n", "feat: add b");
+    let clone = world.git(
+        &worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    let clone = PathBuf::from(clone.trim());
+    let behind = host.tracking(&clone, branch);
+    host.close(&token);
+    world.git(&host.other, &["branch", "-q", "-D", branch]);
+
+    let elsewhere = world.clone_of(&host.fixture.origin, "elsewhere");
+    world.git(
+        &elsewhere,
+        &["fetch", "-q", &clone.to_string_lossy(), branch],
+    );
+    world.git(&elsewhere, &["checkout", "-q", "-b", branch, "FETCH_HEAD"]);
+    world.commit_file(&elsewhere, "c.txt", "later\n", "feat: add c");
+    world.git(&elsewhere, &["push", "-q", "origin", branch]);
+    world.git(&clone, &["config", "protocol.file.allow", "never"]);
+
+    let rows = host.rows(branch);
+    assert_eq!(rows.len(), 1, "unknowable is listed: {rows:?}");
+    assert_eq!(host.tracking(&clone, branch), behind);
 }
 
 #[test]

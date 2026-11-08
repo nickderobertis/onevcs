@@ -4643,9 +4643,13 @@ pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteT
 /// made. The write is leased on the value read, so a fetch racing it wins.
 pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
     let reference = format!("refs/remotes/origin/{branch}");
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a commit this repository
+    // lacks, and a lease lost to a racing fetch. A copy-back fetches the commit first and a
+    // refresh only writes one it just read, and no verb can be held inside this call.
     if !has_commit(repo, &Sha(commit.as_str().to_owned())) {
         return false;
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
     let current = tip(repo, &reference);
     if let Some(current) = &current {
         if current == commit.as_str() {

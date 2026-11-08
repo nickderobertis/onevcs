@@ -824,7 +824,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // because its answer would be discarded.
             let tokens = tokens_of(sessions, identity, &branch);
             let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
-            let covered = published_at(asked, &branch, &tip, &pushed, &preserved_here)?;
+            let covered = settle_published(asked, &branch, &tip, &pushed, &preserved_here)?;
             if covered && reporting == Reporting::UnpublishedOnly {
                 continue;
             }
@@ -1037,7 +1037,7 @@ struct Preserved<'a> {
     retirement: Option<crate::retire::Retirement>,
     /// The streams that record publishing this branch, by token.
     pushers: BTreeSet<String>,
-    /// Whether origin carries this copy's tip under the branch's name ([`published_at`]).
+    /// Whether origin carries this copy's tip under the branch's name ([`settle_published`]).
     covered: bool,
 }
 
@@ -1241,7 +1241,7 @@ fn recorded_stop(
 /// A branch `onevcs preserve` put on origin and no record says was pushed is never asked
 /// of origin: being there under its own name is what preserving it did, and is not
 /// publishing it. Every other way of not knowing is `false`, which lists the branch.
-fn published_at(
+fn settle_published(
     asked: git::Asked<'_>,
     branch: &str,
     tip: &str,

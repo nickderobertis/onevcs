@@ -2290,22 +2290,21 @@ pub(crate) struct Recorded {
     /// Whether some of the stream could not be read — the file, or a line of it — so
     /// what it recorded is not all here.
     gaps: bool,
-    /// Every commit this stream records putting on origin under a branch's own name: an
-    /// accepted `push` naming its `head`, and a `publication-resumed` naming the head a
-    /// verified change request already carries. Each keeps its scope where it has one:
-    /// a session's stream labels no identity, so [`publication_streams`] attributes an
-    /// unscoped entry through the session records instead.
+    /// Every commit this stream records putting on origin under a branch's own name,
+    /// from each accepted `push` naming its `head`. Each keeps its scope where it has
+    /// one: a session's stream labels no identity, so [`publication_streams`] attributes
+    /// an unscoped entry through the session records instead.
     ///
-    /// What `recoverable` asks before it lists a branch as unpublished: a copy of a
-    /// branch whose tip this host itself put on origin, or one behind such a commit, is
-    /// published work whatever the remote-tracking refs of the checkout holding it say.
+    /// What `recoverable` asks before it lists a branch as unpublished: a copy whose tip
+    /// this host itself put on origin, or one behind such a commit, is published work
+    /// whatever the remote-tracking refs of the checkout holding it say.
     pushed: Vec<(Option<Scope>, PushedHead)>,
 }
 
 /// One commit a stream records origin carrying under a branch's own name.
 #[derive(Debug, Clone)]
 pub(crate) struct PushedHead {
-    pub(crate) branch: String,
+    pub(crate) branch: Ref,
     pub(crate) head: ObjectId,
 }
 
@@ -2315,20 +2314,36 @@ pub(crate) struct PushedHead {
 /// state root must keep computing one key for one record.
 impl std::fmt::Debug for Recorded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Recorded {
+            token,
+            identity,
+            branch,
+            proofs,
+            draft,
+            lifted,
+            described,
+            on_origin,
+            asked_the_host_to_land,
+            merge_path,
+            superseded,
+            retired,
+            gaps,
+            pushed: _,
+        } = self;
         f.debug_struct("Recorded")
-            .field("token", &self.token)
-            .field("identity", &self.identity)
-            .field("branch", &self.branch)
-            .field("proofs", &self.proofs)
-            .field("draft", &self.draft)
-            .field("lifted", &self.lifted)
-            .field("described", &self.described)
-            .field("on_origin", &self.on_origin)
-            .field("asked_the_host_to_land", &self.asked_the_host_to_land)
-            .field("merge_path", &self.merge_path)
-            .field("superseded", &self.superseded)
-            .field("retired", &self.retired)
-            .field("gaps", &self.gaps)
+            .field("token", token)
+            .field("identity", identity)
+            .field("branch", branch)
+            .field("proofs", proofs)
+            .field("draft", draft)
+            .field("lifted", lifted)
+            .field("described", described)
+            .field("on_origin", on_origin)
+            .field("asked_the_host_to_land", asked_the_host_to_land)
+            .field("merge_path", merge_path)
+            .field("superseded", superseded)
+            .field("retired", retired)
+            .field("gaps", gaps)
             .finish()
     }
 }
@@ -3683,13 +3698,6 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                     },
                 });
             }
-            // A verified change request resumed rather than pushed again: its head is
-            // the commit origin already carries under the branch's name.
-            EventKind::PublicationResumed => {
-                if let Some(pushed) = pushed_head(&field) {
-                    record.pushed.push((scope.clone(), pushed));
-                }
-            }
             // A retry's landing superseding this branch, and the branch's own
             // retirement: both read through the one reader of their payloads, which
             // holds each value to the check its kind meets and records nothing for a
@@ -3713,7 +3721,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
 /// The branch and head one event says origin carries, each through the check its kind
 /// meets: a stream is input, and both go on to name a ref and a revision.
 fn pushed_head(field: &impl Fn(&str) -> Option<String>) -> Option<PushedHead> {
-    let branch = field("branch").filter(|name| Ref::try_from(name.clone()).is_ok())?;
+    let branch = field("branch").and_then(|name| Ref::try_from(name).ok())?;
     let head = field("head").as_deref().and_then(ObjectId::parse)?;
     Some(PushedHead { branch, head })
 }
@@ -3892,13 +3900,13 @@ fn publication_streams<'a>(
 }
 
 /// Every commit this host's streams record putting on origin as one branch of one
-/// identity — accepted publishing pushes and resumed publications.
+/// identity, from accepted publishing pushes.
 ///
 /// `sessions` are the tokens of that identity's sessions of the branch. Held to the
 /// branch asked about, for the reason [`preserved_in`] is: a stream is matched by name
 /// as well as by content, and a branch-keyed verb's stream can hold another branch's
-/// push. A `change-opened` names no head, so it cannot answer this; what it follows
-/// is the push or the resumption that does.
+/// push. A `change-opened` names no head, so it cannot answer this; the push it
+/// follows does.
 pub(crate) fn pushed_heads(
     streams: &[Recorded],
     identity: &str,
@@ -3912,7 +3920,7 @@ pub(crate) fn pushed_heads(
                 .pushed
                 .iter()
                 .filter(move |(scope, pushed)| {
-                    pushed.branch == branch && counts_for(scope, record, identity, sessions)
+                    *pushed.branch == *branch && counts_for(scope, record, identity, sessions)
                 })
                 .map(|(_, pushed)| pushed.head.clone())
         })
@@ -3932,7 +3940,7 @@ pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<Obj
         .into_iter()
         .rev()
         .find(|(scope, pushed)| {
-            pushed.branch == branch && scope.as_ref().is_none_or(|scope| scope.admits(identity))
+            *pushed.branch == *branch && scope.as_ref().is_none_or(|scope| scope.admits(identity))
         })
         .map(|(_, pushed)| pushed.head)
 }
@@ -3949,7 +3957,7 @@ pub(crate) fn publishing_streams(
         .into_iter()
         .filter(|record| {
             record.pushed.iter().any(|(scope, pushed)| {
-                pushed.branch == branch && counts_for(scope, record, identity, sessions)
+                *pushed.branch == *branch && counts_for(scope, record, identity, sessions)
             }) || record
                 .proofs
                 .iter()
@@ -5209,6 +5217,26 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// answer for that are deliberately private, so proving they round-trip from outside
 /// the crate would mean making a dozen of them public for a test's benefit. The two
 /// halves read the same two files, so neither can drift from the other.
+#[cfg(test)]
+mod recorded_digest_bytes {
+    use super::read_stream;
+
+    /// Retirement verdicts are keyed on these bytes across builds sharing one state
+    /// root. `Recorded` is private and its `Debug` reaches no output, so no journey can
+    /// read them: the literal is what a build before `pushed` existed printed.
+    #[test]
+    fn a_record_debug_prints_the_bytes_builds_before_pushed_keyed_on() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let record = read_stream(directory.path(), "t", &mut Vec::new());
+        assert_eq!(
+            format!("{record:?}"),
+            "Recorded { token: \"t\", identity: None, branch: None, proofs: {}, draft: None, \
+             lifted: None, described: None, on_origin: None, asked_the_host_to_land: false, \
+             merge_path: None, superseded: [], retired: None, gaps: false }"
+        );
+    }
+}
+
 #[cfg(test)]
 mod round_trip {
     use super::{DraftReason, Landing, Report, ReportVersion, StandingDraft, REPORT_VERSION};
