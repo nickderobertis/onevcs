@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# The invocations behind the report's figures, in the order they were taken. Each
+# writes one measure.mjs document to "$OUT/<name>.json".
+#
+#   spikes/unpublished-costs/matrix.sh <phase> OUT BINARY [SESSION BRANCH REPO]
+#
+# BINARY is the engine built by build.sh. Phases: real (this host's real state),
+# prototypes (each prototype over real state), record (the decision record over a
+# scratch copy of ONEVCS_HOME, named by $HOME_COPY), fixture (the generated fixtures,
+# named by $FIXTURE_ONE and $FIXTURE_HOST).
+set -euo pipefail
+phase=$1 out=$2 binary=$3 session=${4:-} branch=${5:-} repo=${6:-}
+here=$(cd "$(dirname "$0")" && pwd)
+ack="${XDG_STATE_HOME:-$HOME/.local/state}/ai-orchestrator/stop-unfinished/acknowledged"
+mkdir -p "$out"
+m() { local name=$1; shift; node "$here/measure.mjs" --binary "$binary" "$@" > "$out/$name.json" 2> "$out/$name.err" || echo "measure $name failed: see $out/$name.err" >&2; }
+reads() { # prefix, extra args
+  local prefix=$1; shift
+  m "$prefix-host" --measure host --acknowledgements "$ack" --rows-out "$out/$prefix-host.rows.json" "$@"
+  m "$prefix-session" --measure session --session "$session" --acknowledgements "$ack" "$@"
+  m "$prefix-stop-guard" --measure stop-guard --session "$session" --acknowledgements "$ack" "$@"
+  m "$prefix-acknowledge" --measure acknowledge --session "$session" --branch "$branch" --repo "$repo" --acknowledgements "$ack" "$@"
+}
+case $phase in
+  real)
+    m real-host-counted --measure host --acknowledgements "$ack" --no-trace --count
+    reads real
+    ;;
+  prototypes)
+    for prototype in local-head no-paths native-unbounded local-head,no-paths,native-unbounded; do
+      m "proto-$prototype-host" --measure host --acknowledgements "$ack" --prototype "$prototype" \
+        --rows-out "$out/proto-$prototype-host.rows.json"
+    done
+    reads combined --prototype local-head,no-paths,native-unbounded
+    ;;
+  record)
+    : "${HOME_COPY:?HOME_COPY names the scratch copy of ONEVCS_HOME}"
+    m record-cold-unmodified --measure host --acknowledgements "$ack" --onevcs-home "$HOME_COPY" \
+      --rows-out "$out/record-unmodified.rows.json"
+    m record-cold --measure record-write --acknowledgements "$ack" --onevcs-home "$HOME_COPY" \
+      --prototype decision-record --baseline-rows "$out/record-unmodified.rows.json"
+    m record-warm --measure host-warm --acknowledgements "$ack" --onevcs-home "$HOME_COPY" \
+      --prototype decision-record --baseline-rows "$out/record-unmodified.rows.json"
+    ;;
+  fixture)
+    for which in one host; do
+      var=FIXTURE_${which^^}; home=${!var:?$var names a built fixture home}
+      launcher=$(cat "$home/../launcher" 2>/dev/null || echo fixture-launcher-measured)
+      m "fixture-$which-host" --measure host --onevcs-home "$home" --acknowledgements "$out/empty-ack"
+      m "fixture-$which-recoverable" --measure recoverable-host --onevcs-home "$home" --onevcs "${ONEVCS_BIN:-onevcs}"
+      m "fixture-$which-session" --measure session --session "$launcher" --onevcs-home "$home" --acknowledgements "$out/empty-ack"
+      m "fixture-$which-stop-guard" --measure stop-guard --session "$launcher" --onevcs-home "$home" --acknowledgements "$out/empty-ack"
+    done
+    ;;
+  *) echo "matrix.sh: unknown phase $phase" >&2; exit 2 ;;
+esac

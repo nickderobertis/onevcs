@@ -1,0 +1,139 @@
+// The harness's journey: drive `measure.mjs` the way the report's figures were taken,
+// over a generated host — a real origin, a registered checkout and one unpublished
+// branch — with the real engine and onevcs, and its two failure paths.
+//
+//   SPIKE_ENGINE=<onepipeline built by build.sh> [SPIKE_ONEVCS=<onevcs>] \
+//     node --test spikes/unpublished-costs/harness.test.mjs
+//
+// It refuses rather than skips without SPIKE_ENGINE: a journey that passed without the
+// engine it measures would prove nothing.
+
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const measure = path.join(here, "measure.mjs");
+const engine = process.env.SPIKE_ENGINE;
+const onevcs = process.env.SPIKE_ONEVCS || "onevcs";
+assert.ok(engine && fs.existsSync(engine), "SPIKE_ENGINE must name the engine build.sh built");
+
+function host() {
+  const root = fs.mkdtempSync(path.join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || os.tmpdir(), "harness-"));
+  const home = path.join(root, "home");
+  const origin = path.join(root, "origin.git");
+  const checkout = path.join(root, "checkout");
+  fs.mkdirSync(home);
+  const env = {
+    ...process.env,
+    ONEVCS_HOME: home,
+    HOME: root,
+    XDG_STATE_HOME: path.join(root, "state"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Harness",
+    GIT_AUTHOR_EMAIL: "harness@example.invalid",
+    GIT_COMMITTER_NAME: "Harness",
+    GIT_COMMITTER_EMAIL: "harness@example.invalid",
+  };
+  const run = (argv, cwd = root) => {
+    const ran = spawnSync(argv[0], argv.slice(1), { cwd, env, encoding: "utf8" });
+    assert.equal(ran.status, 0, `${argv.join(" ")}: ${ran.stderr}`);
+    return ran.stdout;
+  };
+  run(["git", "init", "-q", "--bare", "-b", "main", origin]);
+  run(["git", "init", "-q", "-b", "main", checkout]);
+  fs.writeFileSync(path.join(checkout, "a.txt"), "a\n");
+  run(["git", "add", "a.txt"], checkout);
+  run(["git", "commit", "-q", "-m", "chore: seed"], checkout);
+  run(["git", "remote", "add", "origin", origin], checkout);
+  run(["git", "push", "-q", "origin", "main"], checkout);
+  run(["git", "fetch", "-q", "origin"], checkout);
+  run(["git", "remote", "set-head", "origin", "main"], checkout);
+  run(["git", "checkout", "-q", "-b", "work/left-behind"], checkout);
+  fs.writeFileSync(path.join(checkout, "b.txt"), "b\n");
+  run(["git", "add", "b.txt"], checkout);
+  run(["git", "commit", "-q", "-m", "feat: work nobody published"], checkout);
+  run(["git", "checkout", "-q", "main"], checkout);
+  run([onevcs, "register", checkout]);
+  return { root, home, env };
+}
+
+function measureWith(args, env) {
+  const ran = spawnSync("node", [measure, ...args], { env, encoding: "utf8", maxBuffer: 1 << 28 });
+  return { status: ran.status, stderr: ran.stderr, document: ran.status === 0 ? JSON.parse(ran.stdout) : null };
+}
+
+test("the host read is timed, attributed and its owed branch counted", () => {
+  const { root, home, env } = host();
+  const { status, stderr, document } = measureWith(
+    ["--measure", "host", "--binary", engine, "--onevcs-home", home, "--rows-out", path.join(root, "rows.json")],
+    env,
+  );
+  assert.equal(status, 0, stderr);
+  assert.equal(document.timed.status, 7, "one unpublished branch is owed");
+  assert.equal(document.timed.decided.owed, 1);
+  assert.ok(document.timed.wall_seconds > 0);
+  assert.equal(document.timed.load_before.length, 3);
+  assert.ok(document.attribution.causes.length > 0, "the traced run attributes causes");
+  assert.ok(document.attribution.attributed_share >= 80, `attributed ${document.attribution.attributed_share}%`);
+  assert.ok(document.attribution.causes.some((cause) => cause.cause.startsWith("onevcs scan")));
+  assert.equal(typeof document.git_processes, "number");
+  const rows = JSON.parse(fs.readFileSync(path.join(root, "rows.json"), "utf8"));
+  assert.equal(rows.rows.length, 1);
+  assert.ok(!JSON.stringify(rows).includes("left-behind"), "rows carry labels, never branch names");
+});
+
+test("a prototype's rows are compared field by field with a baseline", () => {
+  const { root, home, env } = host();
+  const baseline = path.join(root, "baseline.json");
+  measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--rows-out", baseline], env);
+  const same = measureWith(
+    ["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--prototype", "no-paths,local-head", "--baseline-rows", baseline],
+    env,
+  );
+  assert.equal(same.status, 0, same.stderr);
+  assert.deepEqual(same.document.rows_against_baseline, { identical: true, differences: [] });
+  const altered = JSON.parse(fs.readFileSync(baseline, "utf8"));
+  altered.rows[0].owed = false;
+  fs.writeFileSync(baseline, JSON.stringify(altered));
+  const differs = measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--baseline-rows", baseline], env);
+  assert.equal(differs.document.rows_against_baseline.identical, false);
+  assert.deepEqual(
+    differs.document.rows_against_baseline.differences.map(({ field, was, now }) => ({ field, was, now })),
+    [{ field: "owed", was: false, now: true }],
+  );
+});
+
+test("the decision record is written on a cold read and reused on a warm one", () => {
+  const { home, env } = host();
+  const { status, stderr, document } = measureWith(
+    ["--measure", "host-warm", "--binary", engine, "--onevcs-home", home, "--prototype", "decision-record"],
+    env,
+  );
+  assert.equal(status, 0, stderr);
+  assert.equal(document.priming.decided.owed, 1);
+  assert.equal(document.timed.decided.owed, 1, "a reused decision answers what the derivation did");
+  assert.ok(fs.readdirSync(path.join(home, "cache", "spike-decisions")).length === 1);
+  assert.equal(document.record["write-entry"], undefined, "a warm read with nothing moved writes nothing");
+  assert.ok(document.record.key.count >= 1);
+});
+
+test("a measure missing what it reads is refused naming it, and an unknown one is refused", () => {
+  const { env } = host();
+  const missing = measureWith(["--measure", "acknowledge", "--binary", engine, "--session", "s"], env);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /--branch NAME/);
+  const unknown = measureWith(["--measure", "everything", "--binary", engine], env);
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /unknown measure "everything"/);
+});
+
+test("a read that cannot start is a measurement not made", () => {
+  const { home, env } = host();
+  const ran = measureWith(["--measure", "host", "--binary", path.join(home, "no-such-engine"), "--onevcs-home", home, "--no-trace"], env);
+  assert.equal(ran.status, 1);
+});

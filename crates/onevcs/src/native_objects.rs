@@ -71,7 +71,13 @@ fn spend() -> Option<()> {
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
-    UNSPENT.with(|unspent| unspent.set(OBJECT_LIMIT));
+    UNSPENT.with(|unspent| {
+        unspent.set(if crate::spike::prototype("native-unbounded") {
+            usize::MAX - 1
+        } else {
+            OBJECT_LIMIT
+        });
+    });
     let answered = within_allowance(&shape, repo, borrowing);
     let spent = UNSPENT.with(|unspent| unspent.replace(usize::MAX)) == 0;
     answered.filter(|_| !spent)

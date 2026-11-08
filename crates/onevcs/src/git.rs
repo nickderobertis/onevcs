@@ -247,6 +247,7 @@ fn run_unless(
         // store. They still read this checkout and must keep its turn throughout.
         || (args.first() == Some(&"merge-tree")
             && env.iter().any(|(key, _)| key == "GIT_OBJECT_DIRECTORY"));
+    let waiting = crate::spike::span("checkout-turn-wait");
     let _checkout = if reading {
         cwd.map(crate::checkout_reads::checkout)
             .transpose()?
@@ -254,7 +255,10 @@ fn run_unless(
     } else {
         None
     };
+    drop(waiting);
+    let began = std::time::Instant::now();
     if let Some(recalled) = reads::recall(args, cwd, env) {
+        crate::spike::git_read(args, began, &crate::spike::Answered::Memo);
         return Ok(recalled);
     }
     // Native answers need no process or disk proof. Their immutable bytes may be
@@ -262,6 +266,7 @@ fn run_unless(
     // answers that would read too much still go to the proofs below. Like any
     // read, the result is remembered for the rest of this read.
     if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
+        crate::spike::git_read(args, began, &crate::spike::Answered::Native);
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
@@ -270,9 +275,11 @@ fn run_unless(
         .as_ref()
         .and_then(crate::recovery_cache::Query::read)
     {
+        crate::spike::git_read(args, began, &crate::spike::Answered::Proof);
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
+    let began = std::time::Instant::now();
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
     // hand each hook the environment of the tree it starts in — see [`HookShims`].
@@ -316,6 +323,14 @@ fn run_unless(
         crate::checkout_reads::mutating(execute)
     };
     drop(shims);
+    if crate::spike::enabled() {
+        let why = ran.as_ref().err().map(ToString::to_string);
+        let answered = match &ran {
+            Ok(ran) => crate::spike::Answered::Spawned(Ok(ran.status)),
+            Err(_) => crate::spike::Answered::Spawned(Err(why.as_deref().unwrap_or(""))),
+        };
+        crate::spike::git_read(args, began, &answered);
+    }
     let ran = ran?;
     let output = Output {
         status: ran.status,
@@ -2595,6 +2610,9 @@ pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
     if let Some(branch) = tracked_head(cwd, remote)? {
         return Ok(branch);
     }
+    if let Some(branch) = crate::spike::local_head(cwd, remote) {
+        return Ok(branch);
+    }
     if let Some(branch) = advertised_head(cwd, remote)? {
         return Ok(branch);
     }
@@ -3520,6 +3538,30 @@ pub fn known_to_carry_changes<'a>(
         // The commit changed nothing since the fork, and a base built on that fork
         // carries the nothing it changed.
         return Ok(true);
+    }
+    if crate::spike::prototype("no-paths") {
+        // The same question with no path named: every path differing between the two
+        // commits, listed whole, against the paths the commit touched.
+        let listed = checked_in(
+            cwd,
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                commit,
+                base,
+                "--",
+            ],
+        )?;
+        let wanted: std::collections::HashSet<&str> = listed
+            .stdout
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .collect();
+        return Ok(!touched
+            .iter()
+            .any(|spec| wanted.contains(spec.trim_start_matches(":(literal)"))));
     }
     let mut args = vec!["diff", "--quiet", commit, base, "--"];
     args.extend(touched.iter().map(String::as_str));
@@ -5122,6 +5164,30 @@ pub fn differing_among<'a>(
 ) -> Result<Vec<String>> {
     if paths.is_empty() {
         return Ok(Vec::new());
+    }
+    if crate::spike::prototype("no-paths") {
+        let listed = checked_in(
+            cwd.into(),
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                first,
+                second,
+                "--",
+            ],
+        )?;
+        let wanted: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let mut differing: Vec<String> = listed
+            .stdout
+            .split('\0')
+            .filter(|path| !path.is_empty() && wanted.contains(path))
+            .map(str::to_owned)
+            .collect();
+        differing.sort();
+        differing.dedup();
+        return Ok(differing);
     }
     let mut args = vec![
         "diff".to_owned(),

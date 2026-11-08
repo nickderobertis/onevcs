@@ -1,0 +1,134 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6fbd529..fb97460 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -45,6 +45,7 @@
+ #![warn(missing_docs)]
+ 
+ pub mod agents;
++mod spike_trace;
+ pub mod branchname;
+ pub mod channel;
+ pub mod cli;
+diff --git a/src/spike_trace.rs b/src/spike_trace.rs
+new file mode 100644
+index 0000000..73436b8
+--- /dev/null
++++ b/src/spike_trace.rs
+@@ -0,0 +1,36 @@
++//! Spike spans for `spike-unpublished-costs`: written only where `ONEVCS_SPIKE_TRACE`
++//! names a file, to the same file onevcs's spike trace appends to.
++use std::io::Write;
++use std::sync::OnceLock;
++use std::time::Instant;
++
++fn origin() -> Instant {
++    static AT: OnceLock<Instant> = OnceLock::new();
++    *AT.get_or_init(Instant::now)
++}
++
++pub(crate) struct Span(&'static str, Instant);
++
++impl Drop for Span {
++    fn drop(&mut self) {
++        let Some(path) = std::env::var_os("ONEVCS_SPIKE_TRACE") else {
++            return;
++        };
++        let line = serde_json::json!({
++            "kind": "engine",
++            "name": self.0,
++            "t": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |now| now.as_secs_f64() * 1000.0) - self.1.elapsed().as_secs_f64() * 1000.0,
++            "ms": self.1.elapsed().as_secs_f64() * 1000.0,
++            "thread": format!("{:?}", std::thread::current().id()),
++            "identity": "", "branch": "", "extra": null,
++        });
++        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
++            let _ = writeln!(file, "{line}");
++        }
++    }
++}
++
++pub(crate) fn span(name: &'static str) -> Span {
++    origin();
++    Span(name, Instant::now())
++}
+diff --git a/src/stopguard.rs b/src/stopguard.rs
+index 8c9b7f3..1c73b39 100644
+--- a/src/stopguard.rs
++++ b/src/stopguard.rs
+@@ -398,6 +398,7 @@ pub(crate) struct Unpublishing {
+ /// answers `none`, as every block of this guard does.
+ fn owed(asked: &Asked, unpublishing: &std::result::Result<Unpublishing, String>) -> Verdict {
+     use crate::unpublished::{Target, UnpublishedRequest, Verdict as Decided};
++    let _guarding = crate::spike_trace::span("stop-guard-unpublished");
+     let session = asked.session.as_str();
+     let name = unpublished_memory(session);
+     let by_hand = format!("onepipeline unpublished --session {session}");
+diff --git a/src/unpublished.rs b/src/unpublished.rs
+index be91f86..0d3c00e 100644
+--- a/src/unpublished.rs
++++ b/src/unpublished.rs
+@@ -397,9 +397,11 @@ fn listing(
+     graph: Option<&Path>,
+ ) -> Result<Unpublished> {
+     let mut unresolved = Vec::new();
++    let reading = crate::spike_trace::span("recovery-read");
+     let read = onevcs::Providers::real()
+         .vcs
+         .recoverable_matching(Scope::All, selection);
++    drop(reading);
+     let recoverable = match read {
+         Ok(rows) => rows,
+         // A named session onevcs cannot load is refused, in onevcs's own words:
+@@ -421,6 +423,7 @@ fn listing(
+             });
+         }
+     };
++    let _deciding = crate::spike_trace::span("acknowledgements-and-rows");
+     decided(request, recoverable, unresolved, graph)
+ }
+ 
+@@ -1010,7 +1013,10 @@ pub fn acknowledge(request: &AcknowledgeRequest, graph: Option<PathBuf>) -> Resu
+     // under the same lock, so one cannot start between the two and be hidden.
+     // Landing state that cannot be read refuses before anything else is asked.
+     let root = crate::ledger::runs_root();
++    let locking = crate::spike_trace::span("registration-lock");
+     let _registering = crate::flow::registration_lock(&root)?;
++    drop(locking);
++    let landing_read = crate::spike_trace::span("every-landing");
+     let landings = crate::flow::every_landing(&root).map_err(|why| {
+         Error::Refused(format!(
+             "whether a live landing advances {} cannot be said, so it is not acknowledged: \
+@@ -1018,6 +1024,8 @@ pub fn acknowledge(request: &AcknowledgeRequest, graph: Option<PathBuf>) -> Resu
+             request.branch
+         ))
+     })?;
++    drop(landing_read);
++    let host_read = crate::spike_trace::span("host-recovery-read");
+     let providers = onevcs::Providers::real();
+     let rows = providers
+         .vcs
+@@ -1034,6 +1042,7 @@ pub fn acknowledge(request: &AcknowledgeRequest, graph: Option<PathBuf>) -> Resu
+                  {error}"
+             ))
+         })?;
++    drop(host_read);
+     let identity = match &request.repo {
+         Some(repo) if rows.iter().any(|row| row.identity == *repo) => Some(repo.clone()),
+         Some(repo) => Some(
+@@ -1151,6 +1160,7 @@ pub fn acknowledge(request: &AcknowledgeRequest, graph: Option<PathBuf>) -> Resu
+             acknowledged: kept,
+         },
+     )?;
++    let _listing = crate::spike_trace::span("session-listing-after-ack");
+     let listing = unpublished(&UnpublishedRequest {
+         target: Target::Session {
+             session: request.session.clone(),
+@@ -1229,6 +1239,7 @@ fn landed_word(landed: &Landed) -> &'static str {
+ 
+ /// The text listing `--format text` writes on standard output.
+ pub fn render(listing: &Unpublished) -> String {
++    let _rendering = crate::spike_trace::span("render");
+     let mut out = String::new();
+     let drafted = listing
+         .rows

@@ -571,10 +571,14 @@ fn collected(
     reporting: Reporting,
     selection: &Selection,
 ) -> Result<Vec<Recoverable>> {
+    let registering = crate::spike::span("registry-and-rules");
     let registry = store::load()?;
     let (rules, _source) = crate::policy::load(&registry)?;
     let trailers = provenance::from_rules(&rules);
+    drop(registering);
+    let reading_sessions = crate::spike::span("session-records");
     let sessions = crate::recovery_sessions::read(selection)?;
+    drop(reading_sessions);
     // Which sessions were asked about, and therefore which identities, checkouts and
     // branch names the scan below may stop at. Read before anything is opened, so a
     // token naming no record is refused before a single repository is.
@@ -584,10 +588,12 @@ fn collected(
     // this report has nowhere to say one — and costs only certainty: a branch whose
     // record could not be read falls to a lower tier and is judged from the base's own
     // history instead.
+    let reading_streams = crate::spike::span("event-streams");
     let streams = crate::status::recorded_streams_about(
         narrowed.as_ref().map(|only| &only.branches),
         &sessions,
     )?;
+    drop(reading_streams);
     let wanted = match scope {
         Scope::All => None,
         Scope::Repo(repo) => Some(store::resolve(&registry, repo)?.key),
@@ -646,9 +652,14 @@ fn collected(
     // they join the answer only where no such copy did.
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
-    for scanned in concurrently(&identities, |identity| {
+    let scanning = crate::spike::span("identity-scans");
+    let answers = concurrently(&identities, |identity| {
+        crate::spike::at_identity(identity);
+        let _identity = crate::spike::span("identity");
         crate::recovery_cache::scope(|| git::memoized(|| scanned(identity, &scan)))
-    }) {
+    });
+    drop(scanning);
+    for scanned in answers {
         let scanned = scanned?;
         rows.extend(scanned.rows);
         withheld_rows.extend(scanned.withheld_rows);
@@ -718,6 +729,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
     // *not* hold the same work, and a verdict borrowed across that difference would be
     // this report answering about commits it never looked at.
     let mut decided: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let resolving = crate::spike::span("resolve-and-base");
     let resolution = store::resolve(registry, identity)?;
     let publication = resolution.publication.clone();
     let current = git::default_branch(&publication, "origin")
@@ -734,6 +746,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
     // What each branch is for the question of whether it may be deleted, read from the
     // same records and local refs this report reads and nothing else — no host, no
     // fetch — and decided once per branch, since the answer is about every copy of it.
+    drop(resolving);
+    let censusing = crate::spike::span("census");
     let census = crate::retire::Census::read(
         registry,
         identity,
@@ -744,8 +758,12 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         narrowed.as_ref().map(|only| &only.checkouts),
     )?
     .looking_once(scan.look);
+    drop(censusing);
+    let mut decisions = crate::spike::decisions::open(identity);
     let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
+    let waiting = crate::spike::span("identity-turn-wait");
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
+    drop(waiting);
     for repo in workspace::checkouts_among(registry, &resolution, sessions) {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
@@ -767,6 +785,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             }
             continue;
         }
+        crate::spike::at_branch("");
+        let opening = crate::spike::span("checkout-open");
         let base = match git::default_branch(&repo, "origin") {
             Ok(base) => base,
             Err(_) => continue,
@@ -784,6 +804,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         // refs, which is a process per branch per checkout that a filtered read
         // has no reason to spend — and the ones `onevcs preserve` put on the
         // origin are listed whatever those refs say: see `reported_branches`.
+        drop(opening);
+        let listing = crate::spike::span("branch-listing");
         let listed = reported_branches(
             &repo,
             &preserved_here,
@@ -794,7 +816,9 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             },
             |branch| recorded_base(sessions, identity, branch).map(|base| base.to_string()),
         )?;
+        drop(listing);
         for (branch, tip) in listed {
+            crate::spike::at_branch(&branch);
             let key = (identity.to_owned(), branch.clone());
             if seen.contains(&key) {
                 continue;
@@ -820,6 +844,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // for a change drafted on one — and against the root only where no session
             // recorded one, or where this checkout cannot name the one it did: the rule
             // `onevcs status` judges the same branch by.
+            let deciding = crate::spike::span("landing-decision");
             let own_base = recorded_base(sessions, identity, &branch)
                 .map(|recorded| recorded.to_string())
                 .filter(|recorded| *recorded != base && names_a_base(&repo, recorded));
@@ -857,7 +882,31 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // whatever they found would be replaced by it: one such branch on the
             // consuming host spent seventy-five content merges on a verdict that
             // was then discarded.
-            let verdict = if unfollowable_chain(sessions, identity, &branch) {
+            let unfollowable = unfollowable_chain(sessions, identity, &branch);
+            let record_key = decisions.as_ref().map(|_| {
+                crate::spike::decisions::key(
+                    &crate::spike::decisions::Subject {
+                        identity,
+                        repo: &repo,
+                        branch: &branch,
+                        tip: &tip,
+                        base: &base,
+                    },
+                    &recorded,
+                    sessions,
+                    unfollowable,
+                )
+            });
+            let base_now = current.as_ref().map(|sha| sha.0.clone());
+            let reused = match (decisions.as_mut(), record_key.as_deref()) {
+                (Some(record), Some(key)) => {
+                    record.reuse(key, asked, base_now.as_deref(), trailers)
+                }
+                _ => None,
+            };
+            let verdict = if let Some(entry) = &reused {
+                entry.verdict.clone()
+            } else if unfollowable {
                 Landed::Unknown
             } else {
                 landed::decide(
@@ -875,8 +924,37 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // may be work nobody published, so withholding it is how preserved
             // work goes missing — and it is listed, saying so, with no line that
             // reads as "paste this".
+            drop(deciding);
             let withheld = verdict.is_landed();
+            let mut recording = match (decisions.is_some(), record_key.clone()) {
+                (true, Some(key)) => {
+                    let unmoved = reused.as_ref().is_some_and(|entry| {
+                        entry.verdict.is_landed() || entry.base_commit == base_now
+                    });
+                    (!unmoved).then(|| {
+                        (
+                            key,
+                            crate::spike::decisions::Entry {
+                                branch: branch.clone(),
+                                tip: tip.clone(),
+                                repo: repo.clone(),
+                                base: base.clone(),
+                                base_commit: base_now.clone(),
+                                change: recorded.change.as_ref().map(ToString::to_string),
+                                verdict: verdict.clone(),
+                                retirement: reused
+                                    .as_ref()
+                                    .and_then(|entry| entry.retirement.clone()),
+                            },
+                        )
+                    })
+                }
+                _ => None,
+            };
             if withheld && reporting == Reporting::UnpublishedOnly {
+                if let (Some(record), Some((key, entry))) = (decisions.as_mut(), recording.take()) {
+                    record.write(key, entry);
+                }
                 continue;
             }
             // A stack base is not preserved work in either report: it merges branches
@@ -888,10 +966,35 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if crate::stack_base::is_stack_base(&branch) {
                 continue;
             }
+            let classifying = crate::spike::span("retirement-class");
+            let recorded_retirement = reused.as_ref().and_then(|entry| entry.retirement.clone());
             let retirement = classified
                 .entry(branch.clone())
-                .or_insert_with(|| crate::retire::classify_offline(&census, &branch))
+                .or_insert_with(|| {
+                    recorded_retirement
+                        .unwrap_or_else(|| crate::retire::classify_offline(&census, &branch))
+                })
                 .clone();
+            drop(classifying);
+            if let Some(record) = decisions.as_mut() {
+                let fresh = reused
+                    .as_ref()
+                    .is_none_or(|entry| entry.retirement.is_none());
+                if let Some((key, mut entry)) = recording.take() {
+                    entry.retirement = Some(retirement.clone());
+                    record.write(key, entry);
+                } else if fresh {
+                    if let (Some(key), Some(entry)) = (record_key.clone(), reused.clone()) {
+                        record.write(
+                            key,
+                            crate::spike::decisions::Entry {
+                                retirement: Some(retirement.clone()),
+                                ..entry
+                            },
+                        );
+                    }
+                }
+            }
             // A branch that provably holds nothing beyond its base is finished work
             // exactly as a landed one is, and is left out of the default report for
             // the same reason: its row would be read as work left to publish.
@@ -908,6 +1011,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if !withheld {
                 seen.push(key);
             }
+            let rowing = crate::spike::span("row-holders-and-command");
             let row = preserved_row(
                 &Preserved {
                     identity,
@@ -934,12 +1038,16 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 scan.detail,
                 Some(tip.clone()),
             )?;
+            drop(rowing);
             if withheld {
                 withheld_rows.push(row);
             } else {
                 rows.push(row);
             }
         }
+    }
+    if let Some(record) = decisions {
+        record.save();
     }
     Ok(Scanned {
         rows,

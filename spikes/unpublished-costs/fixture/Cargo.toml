@@ -1,0 +1,14 @@
+# The spike's fixture builder: `onevcs-testing`'s recovery workload at Scale::One, and
+# the host-shaped variant `spikes/unpublished-costs/measure.mjs --measure fixture-build`
+# times. Its own workspace, so it is no member of the repository's.
+[package]
+name = "unpublished-costs-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+onevcs-testing = { path = "../../../crates/onevcs-testing" }
+serde_json = "1"

@@ -1190,10 +1190,12 @@ impl<'a> Census<'a> {
             )),
         };
         let base = base.ok();
+        let waiting = crate::spike::span("identity-turn-wait");
         let _reads = match reach {
             Reach::Fetch => crate::checkout_reads::teardown(identity)?,
             Reach::Offline | Reach::Remote => crate::checkout_reads::identity(identity)?,
         };
+        drop(waiting);
         let mut places: Vec<Place> = vec![Place {
             kind: BranchHolderKind::Checkout,
             repo: publication.clone(),
