@@ -137,3 +137,29 @@ test("a read that cannot start is a measurement not made", () => {
   const ran = measureWith(["--measure", "host", "--binary", path.join(home, "no-such-engine"), "--onevcs-home", home, "--no-trace"], env);
   assert.equal(ran.status, 1);
 });
+
+test("a staged decision record is what every run of the read meets, and needs a scratch home", () => {
+  const { root, home, env } = host();
+  const cold = measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--prototype", "decision-record"], env);
+  assert.equal(cold.document.timed.decided.owed, 1);
+  // Stage the record as record-gains.mjs does: the one decision rewritten, here to a
+  // landing, so a read that met the staged record withholds the branch it was owed.
+  const staged = path.join(root, "staged");
+  fs.cpSync(path.join(home, "cache", "spike-decisions"), staged, { recursive: true });
+  for (const name of fs.readdirSync(staged)) {
+    const file = path.join(staged, name);
+    const record = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const entry of Object.values(record.entries))
+      entry.verdict = { state: "yes", evidence: { tier: "recorded-landing", commit: entry.tip } };
+    fs.writeFileSync(file, JSON.stringify(record));
+  }
+  const args = ["--measure", "host", "--binary", engine, "--prototype", "decision-record", "--stage-record", staged];
+  const warm = measureWith([...args, "--onevcs-home", home], env);
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.equal(warm.document.timed.decided.owed, 0, "the timed run met the staged landing");
+  assert.equal(warm.document.traced.decided.owed, 0, "so did the traced run after it");
+  assert.equal(warm.document.staged_record, staged);
+  const unscoped = measureWith(args, env);
+  assert.equal(unscoped.status, 2);
+  assert.match(unscoped.stderr, /--stage-record needs --onevcs-home/);
+});
