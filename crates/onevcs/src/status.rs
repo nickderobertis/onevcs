@@ -2240,7 +2240,7 @@ fn holders_of(
 /// The stream is what `onevcs` knows it did, and it is the only durable link from a
 /// change request's URL back to the branch that opened it: the URL is the host's
 /// name for the change, and nothing on the branch carries it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Recorded {
     token: String,
     identity: Option<String>,
@@ -2290,6 +2290,46 @@ pub(crate) struct Recorded {
     /// Whether some of the stream could not be read — the file, or a line of it — so
     /// what it recorded is not all here.
     gaps: bool,
+    /// Every commit this stream records putting on origin under a branch's own name: an
+    /// accepted `push` naming its `head`, and a `publication-resumed` naming the head a
+    /// verified change request already carries. Kept per scope, for the reason
+    /// [`proofs`](Recorded::proofs) is.
+    ///
+    /// What `recoverable` asks before it lists a branch as unpublished: a copy of a
+    /// branch whose tip this host itself put on origin, or one behind such a commit, is
+    /// published work whatever the remote-tracking refs of the checkout holding it say.
+    pushed: Vec<(Scope, PushedHead)>,
+}
+
+/// One commit a stream records origin carrying under a branch's own name.
+#[derive(Debug, Clone)]
+pub(crate) struct PushedHead {
+    pub(crate) branch: String,
+    pub(crate) head: ObjectId,
+}
+
+/// Written out by hand so that it prints exactly what the derived form printed before
+/// [`pushed`](Recorded::pushed) existed: [`recorded_digest`] keys a retirement verdict
+/// on these bytes, the retirement derivation reads no push head, and builds sharing one
+/// state root must keep computing one key for one record.
+impl std::fmt::Debug for Recorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recorded")
+            .field("token", &self.token)
+            .field("identity", &self.identity)
+            .field("branch", &self.branch)
+            .field("proofs", &self.proofs)
+            .field("draft", &self.draft)
+            .field("lifted", &self.lifted)
+            .field("described", &self.described)
+            .field("on_origin", &self.on_origin)
+            .field("asked_the_host_to_land", &self.asked_the_host_to_land)
+            .field("merge_path", &self.merge_path)
+            .field("superseded", &self.superseded)
+            .field("retired", &self.retired)
+            .field("gaps", &self.gaps)
+            .finish()
+    }
 }
 
 /// Whose an event's proofs are, as the record-scoping rule reads it.
@@ -3411,6 +3451,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         superseded: Vec::new(),
         retired: None,
         gaps: false,
+        pushed: Vec::new(),
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -3624,6 +3665,10 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // push's output, so `accepted` is what it ruled. A push that recorded no
             // such field said nothing, which is not the same as saying no.
             EventKind::Push => {
+                let accepted = event.payload.get("accepted").and_then(Value::as_bool);
+                if let (Some(true), Some(pushed)) = (accepted, pushed_head(&field)) {
+                    record.pushed.extend(scope.clone().map(|scope| (scope, pushed)));
+                }
                 record.merge_path = Some(Stamped {
                     at,
                     value: MergePathReport {
@@ -3636,6 +3681,13 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
                         recorded_by: token.to_owned(),
                     },
                 });
+            }
+            // A verified change request resumed rather than pushed again: its head is
+            // the commit origin already carries under the branch's name.
+            EventKind::PublicationResumed => {
+                if let Some(pushed) = pushed_head(&field) {
+                    record.pushed.extend(scope.clone().map(|scope| (scope, pushed)));
+                }
             }
             // A retry's landing superseding this branch, and the branch's own
             // retirement: both read through the one reader of their payloads, which
@@ -3655,6 +3707,14 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         }
     }
     record
+}
+
+/// The branch and head one event says origin carries, each through the check its kind
+/// meets: a stream is input, and both go on to name a ref and a revision.
+fn pushed_head(field: &impl Fn(&str) -> Option<String>) -> Option<PushedHead> {
+    let branch = field("branch").filter(|name| Ref::try_from(name.clone()).is_ok())?;
+    let head = field("head").as_deref().and_then(ObjectId::parse)?;
+    Some(PushedHead { branch, head })
 }
 
 /// The proofs one scope of a stream holds, made where they are first written — or
@@ -3794,6 +3854,58 @@ pub(crate) fn recorded_for(
         )
         .and_then(|opened| Url::parse(&opened.url).ok()),
     }
+}
+
+/// Every commit this host's streams record putting on origin as one branch of one
+/// identity — accepted publishing pushes and resumed publications — across the streams
+/// that recorded that branch.
+///
+/// Held to the branch asked about, for the reason [`preserved_in`] is: a stream is
+/// matched by name as well as by content, and a branch-keyed verb's stream can hold
+/// another branch's push.
+pub(crate) fn pushed_heads(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    session: Option<&str>,
+) -> Vec<ObjectId> {
+    relevant_streams(streams, identity, branch, session)
+        .into_iter()
+        .flat_map(|record| record.pushed.iter())
+        .filter(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
+        .map(|(_, pushed)| pushed.head.clone())
+        .collect()
+}
+
+/// The newest commit one stream records putting on origin as `branch` of `identity`,
+/// read out of that stream alone — what a copy-back writes the destination's
+/// `origin/<branch>` to, so a checkout handed a published branch does not read it as
+/// work nobody published.
+pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<ObjectId> {
+    let directory = home::streams_dir().ok()?;
+    if !directory.join(format!("{token}.ndjson")).is_file() {
+        return None;
+    }
+    read_stream(&directory, token, &mut Vec::new())
+        .pushed
+        .into_iter()
+        .rev()
+        .find(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
+        .map(|(_, pushed)| pushed.head)
+}
+
+/// The tokens of the streams that record pushing one branch of one identity to origin.
+pub(crate) fn pushing_streams(streams: &[Recorded], identity: &str, branch: &str) -> BTreeSet<String> {
+    relevant_streams(streams, identity, branch, None)
+        .into_iter()
+        .filter(|record| {
+            record
+                .pushed
+                .iter()
+                .any(|(scope, pushed)| scope.admits(identity) && pushed.branch == branch)
+        })
+        .map(|record| record.token.clone())
+        .collect()
 }
 
 /// Where the newest preservation of one branch put it on its origin, across the
