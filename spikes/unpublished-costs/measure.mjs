@@ -685,7 +685,8 @@ function measureRead() {
     }
     // llmlint: ignore[boundary_inputs_validated] the baseline is a --rows-out document this harness wrote itself for the same comparison; this measurement code lives only on the preserved spike branch, which the plan's run discards.
     const decisions = ["owed", "in_flight", "acknowledged", "unknown"];
-    const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || decisions.some((field) => field in row && typeof row[field] !== "boolean");
+    const nullableText = (value) => value === null || typeof value === "string";
+    const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || !nullableText(row.tip) || !nullableText(row.landed) || decisions.some((field) => typeof row[field] !== "boolean");
     const rowsOf = Array.isArray(baseline?.rows) ? baseline.rows : null;
     const keys = new Set((rowsOf || []).map((row) => `${row?.identity}/${row?.branch}`));
     if (!rowsOf || rowsOf.some(malformed) || keys.size !== rowsOf.length)

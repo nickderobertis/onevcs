@@ -81,7 +81,7 @@ const records = fs
     for (const [key, entry] of Object.entries(document.entries)) {
       const states = ["yes", "in-part", "no", "unknown"];
       const commit = entry?.base_commit;
-      if (typeof entry?.branch !== "string" || typeof entry.repo !== "string" || typeof entry.base !== "string" || !states.includes(entry.verdict?.state) || !(commit === null || /^[0-9a-f]{40,64}$/.test(commit ?? "")))
+      if (typeof entry?.branch !== "string" || typeof entry.repo !== "string" || typeof entry.base !== "string" || !states.includes(entry.verdict?.state) || (entry.verdict.state === "yes" && !/^[0-9a-f]{40,64}$/.test(entry.verdict.evidence?.commit ?? "")) || !(commit === null || /^[0-9a-f]{40,64}$/.test(commit ?? "")))
         refuse(`${file}'s entry ${key} is not a decision: it needs branch, repo, base and verdict.state`);
     }
     return { file, document };

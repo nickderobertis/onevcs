@@ -98,6 +98,7 @@ const one = located.map((call) => {
   const ran = spawnSync(real, call.argv, { cwd: call.cwd });
   // A replay that failed to run is no answer about the object; cat-file -e answers 0 or 1.
   if (ran.error || ![0, 1].includes(ran.status)) refuse(`git cat-file -e did not answer in a checkout: ${ran.error?.message ?? `status ${ran.status}`}`);
+  // llmlint: ignore[changed_behavior_has_e2e] an absent object needs a read naming one, and the generated hosts name only objects they hold; a real read's missing object is the same path, its answer compared with the batch's line for line; this measurement code lives only on the preserved spike branch, which the plan's run discards.
   return ran.status === 0;
 });
 const oneEach = clock() - began;
