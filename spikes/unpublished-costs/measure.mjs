@@ -615,8 +615,8 @@ function counted(argv, env, input) {
   const connections = { inet: 0, inet6: 0, unix: 0 };
   let listedOnStdin = 0;
   for (const line of fs.readFileSync(log, "utf8").split("\n")) {
-    const exec = line.match(/execve\("([^"]+)"/);
-    if (exec && !line.includes("ENOENT")) {
+    const exec = line.match(/execve\("([^"]+)".*\) += 0$/);
+    if (exec) {
       const name = path.basename(exec[1]);
       programs[name] = (programs[name] || 0) + 1;
       if (name === "git" && line.includes('"--stdin"')) listedOnStdin += 1;
@@ -694,7 +694,7 @@ function measureRead() {
     const malformed = (row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || !nullableText(row.tip) || !nullableText(row.landed) || decisions.some((field) => typeof row[field] !== "boolean");
     const rowsOf = Array.isArray(baseline?.rows) ? baseline.rows : null;
     const keys = new Set((rowsOf || []).map((row) => `${row?.identity}/${row?.branch}`));
-    if (!rowsOf || rowsOf.some(malformed) || keys.size !== rowsOf.length)
+    if (typeof baseline?.verdict !== "string" || !rowsOf || rowsOf.some(malformed) || keys.size !== rowsOf.length)
       fail(`--baseline-rows ${options.baselineRows} is not a --rows-out document: it needs rows, each once, with an identity, a branch and boolean decision fields`, 1);
     document.rows_against_baseline = compare(baseline, decided);
   }

@@ -1,4 +1,4 @@
-# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] the engine's spans write the envelope crates/onevcs/src/spike.rs writes on this same branch; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
+# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate,changed_behavior_has_e2e] the spans it adds run in the measure.mjs reads behind every report figure, the acknowledge and text-render ones included; the engine's spans write the envelope crates/onevcs/src/spike.rs writes on this same branch; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 diff --git a/src/lib.rs b/src/lib.rs
 index 6fbd529..fb97460 100644
 --- a/src/lib.rs

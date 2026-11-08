@@ -148,6 +148,7 @@ impl Kind {
     }
 }
 
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] this envelope and the engine patch's are written by one spike's two halves on this same branch and read by measure.mjs, which refuses a line missing a field; this measurement code lives only on the preserved spike branch, which the plan's run discards.
 /// Write one event: what it was, when it began, how long it took, and anything else.
 pub(crate) fn event(kind: Kind, name: &str, began: Instant, extra: serde_json::Value) {
     let Some(sink) = sink() else {
