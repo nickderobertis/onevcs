@@ -275,7 +275,11 @@ fn a_recorded_push_naming_no_usable_head_answers_nothing() {
     let recorded = std::fs::read_to_string(&stream).expect("the session's stream");
     let head = host.on_origin(branch);
     assert!(recorded.contains(&head), "the push names its head");
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is a push record no
+    // onevcs wrote, naming no commit, and no command writes one, so the stream a real
+    // publication left is edited by hand. The real CLI then meets it.
     std::fs::write(&stream, recorded.replace(&head, "not-a-commit")).expect("a torn head");
+    // llmlint: ignore-end[tests_mirror_real_usage]
     world.git(
         &host.other,
         &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
@@ -283,6 +287,35 @@ fn a_recorded_push_naming_no_usable_head_answers_nothing() {
     let moved = host.fixture.origin.with_extension("away");
     std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
     assert_eq!(host.rows(branch).len(), 1, "nothing proves it published");
+}
+
+#[test]
+fn a_publication_record_that_will_not_parse_refuses_the_report_rather_than_hiding_a_holder() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/unreadable-holder";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    host.close(&token);
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is a publication record
+    // no onevcs wrote, and no command writes one, so it is placed under the state root
+    // by hand. The real CLI then meets it.
+    let directory = world.home().join("publishing/some-branch");
+    std::fs::create_dir_all(&directory).expect("a branch's records");
+    let record = directory.join("garbled.json");
+    std::fs::write(&record, "not a record").expect("a garbled record");
+    // llmlint: ignore-end[tests_mirror_real_usage]
+
+    let refused = world
+        .onevcs()
+        .args(["recoverable", "--json"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&refused.get_output().stderr).into_owned();
+    assert!(stderr.contains(&*record.to_string_lossy()), "{stderr}");
+
+    std::fs::remove_file(&record).expect("remove the record");
+    assert!(host.rows(branch).is_empty(), "removing it is all it takes");
 }
 
 #[test]
