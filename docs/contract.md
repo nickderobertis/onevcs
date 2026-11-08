@@ -1213,6 +1213,7 @@ base it is going onto, it is proposed and ruled on, and what carries it is relea
 ```text
 development  session-opened fetch lock-wait lock-acquired commit-preserved
              branch-preserved recovery-attested session-closed push:own-branch
+             worktree-provisioned worktree-provision-failed
 integrate    merge-queued merge-completed sync-conflict push:any-other-branch
              branch-superseded branch-retired gate-run:pre-push
              stack-base-assembled base-merge base-arrived
@@ -6620,6 +6621,8 @@ The producer classification table is exhaustive over current kinds:
 | change-opened, change-drafted, change-merged, base-arrived | milestone | One actual base arrival, not each train member or merge step |
 | checks-settled | blocker | milestone for passed or passed-with-skipped |
 | sync-conflict, draft-kept-for-review | blocker | A conflict or a required person |
+| worktree-provision-failed | attention | The hook failed and the session opened anyway |
+| worktree-provisioned | progress | The hook exited 0 |
 | change-check | progress | blocker for a required failed or no-verdict check (including timed-out, action-required, cancelled, stale); attention for a failed or no-verdict check that is not required |
 | gate-run | progress | blocker for failed or no-verdict; passed and passed-with-skipped remain progress |
 | stack-base-assembled | progress | blocker for conflicted or refused; created, advanced, unchanged remain progress |
@@ -7021,6 +7024,52 @@ pub struct RepositorySlug; pub struct CommitSha; pub struct PositiveId; pub stru
 pub enum CommitSelector { Commit(CommitSha), Tag(String) }
 pub struct QueryCost { pub graphql_points: u32, pub rest_requests: u32, pub requests: Vec<String> }
 ```
+
+
+## Amendment: a repository's `post-checkout` is observed at session open
+
+Git defines and runs hooks; onevcs observes what git did. At the two checkouts that put
+a session's worktree on its branch — the `worktree add` that opens a session on a run
+root or a new pool slot, and the `checkout` that reuses a pooled slot — a repository's
+`post-checkout` runs exactly once, by git. onevcs installs no hook, suppresses none, and
+runs none. Where a relative `core.hooksPath` would resolve to nothing from the clone a
+`worktree add` runs in, that one command is handed the absolute form of the same
+directory, resolved against the new worktree, so git honours the repository's setting.
+
+git exits with the hook's result once the checkout has completed, so a non-zero,
+signalled or timed-out git command over a checkout that did complete is the hook's
+failure and never fails the open or the slot checkout. One over a checkout that did not
+complete is git's own error, and fails the open as before. The checkout that returns a
+slot when a pooled session closes runs the same hook: the close completes when only the
+hook failed over a completed checkout at the same commit, and it records no event.
+
+Event kinds added: `worktree-provisioned`, `worktree-provision-failed`.
+
+Both are in the `development` phase. `worktree-provisioned` (the hook exited 0) is
+`progress`; `worktree-provision-failed` (any other ending) is `attention`. Exactly one
+is emitted per checkout on those two paths for which git ran a `post-checkout`
+hook, after the session's `session-opened`, and neither where it ran none, as git's own
+trace2 stream for that command answers. A hook that only the incoming branch tracks may
+be in the worktree afterwards and still not have run, and then neither kind is emitted.
+
+The payload is one exported type, `onevcs::WorktreeProvision`, and every key is always
+present:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `hook` | string | `"post-checkout"` |
+| `trigger` | string (`onevcs::ProvisionTrigger`) | `"worktree-add"` or `"slot-checkout"` |
+| `worktree` | string | Absolute path of the checked-out worktree |
+| `exit_status` | integer or null | The exit status git's checkout command ended with, which git takes from the hook; `null` when the command ended without one |
+| `signal` | integer or null | The signal that ended git's checkout command, or `null` |
+| `timed_out` | boolean | True when the existing bound `ONEVCS_GIT_HOOK_TIMEOUT` ended that command |
+| `duration_ms` | non-negative integer | That command's duration |
+| `output` | string | That command's combined stdout and stderr, carrying the hook's, credentials redacted, trimmed to at most its last 4096 bytes (`onevcs::PROVISION_OUTPUT_BYTES`, the longest string a stream payload holds uncut) on a UTF-8 boundary |
+| `output_truncated` | boolean | Whether `output` was cut |
+| `rerun` | string | One shell command line, printed for a person and never run by onevcs, through which git runs the same hook with the same three arguments in that worktree |
+
+A hook that ends itself with a signal does not end git: git reports it through its own
+exit status, so `signal` stays `null` and `exit_status` holds what git exited with.
 
 ## Sessionless standing comments and artifact queries
 

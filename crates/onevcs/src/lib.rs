@@ -139,8 +139,8 @@ pub use declaration::{
 pub use error::{Error, Result};
 pub use event::{
     ArtifactId, ArtifactRef, Dimensions, Envelope, EventFilter, EventKind, EventMatcher, Labels,
-    MatchFields, Phase, PhaseOf, Significance, Source, VcsEvents, DIMENSIONS, RESERVED_LABELS,
-    SOURCE_WORD,
+    MatchFields, Phase, PhaseOf, ProvisionTrigger, Significance, Source, VcsEvents,
+    WorktreeProvision, DIMENSIONS, PROVISION_OUTPUT_BYTES, RESERVED_LABELS, SOURCE_WORD,
 };
 pub use export::{
     export, validate_accepted_opaque, ExportRequest, Exported, EXPORT_AUTHOR_EMAIL,

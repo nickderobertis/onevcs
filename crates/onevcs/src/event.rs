@@ -224,7 +224,66 @@ pub enum EventKind {
     /// branch and head on a stream, and a resumed one has none, so this is what
     /// resolves its change request's URL and its landing commit back to the work.
     PublicationResumed,
+    /// The repository's `post-checkout` hook, run by git at the checkout of a session's
+    /// worktree, exited 0; carries a [`WorktreeProvision`].
+    WorktreeProvisioned,
+    /// The repository's `post-checkout` hook, run by git at the checkout of a session's
+    /// worktree, ended any other way. The session opened regardless; carries a
+    /// [`WorktreeProvision`].
+    WorktreeProvisionFailed,
 }
+
+/// Which checkout of a session's worktree git ran `post-checkout` at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProvisionTrigger {
+    /// The `git worktree add` that cut a run root's or a pool slot's worktree.
+    WorktreeAdd,
+    /// The `git checkout` that put a reused pool slot on the session's branch.
+    SlotCheckout,
+}
+
+/// The payload of [`EventKind::WorktreeProvisioned`] and
+/// [`EventKind::WorktreeProvisionFailed`]: what git's own run of the repository's
+/// `post-checkout` hook came to, read off the git command that ran it.
+///
+/// Every key is always written; `exit_status` and `signal` as `null` where they do not
+/// apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeProvision {
+    /// The hook: `post-checkout`.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
+    pub hook: String,
+    /// Which checkout ran it.
+    pub trigger: ProvisionTrigger,
+    /// The absolute path of the worktree that was checked out.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
+    pub worktree: String,
+    /// The exit status git's checkout command ended with, which git takes from the hook
+    /// once the checkout has completed; `null` when it ended without one.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
+    pub exit_status: Option<i32>,
+    /// The signal that ended git's checkout command, or `null`.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
+    pub signal: Option<i32>,
+    /// Whether `ONEVCS_GIT_HOOK_TIMEOUT` ended git's checkout command.
+    // llmlint: ignore[invalid_states_unrepresentable] the flat keys and plain strings are the wire shape two other repositories build against, fixed by the plan that adds this event.
+    pub timed_out: bool,
+    /// How long git's checkout command ran.
+    pub duration_ms: u64,
+    /// That command's combined output with credentials redacted, at most its last
+    /// [`PROVISION_OUTPUT_BYTES`] bytes, cut on a UTF-8 boundary.
+    pub output: String,
+    /// Whether `output` was cut.
+    pub output_truncated: bool,
+    /// One shell command line through which git runs the same hook with the same three
+    /// arguments in that worktree: printed for a person, and never run by onevcs.
+    pub rerun: String,
+}
+
+/// The most of a hook run's output a [`WorktreeProvision`] carries, in bytes: the
+/// longest string a stream payload holds uncut.
+pub const PROVISION_OUTPUT_BYTES: usize = 4096;
 
 /// How much attention an event asks of its consumer, stamped by its producer.
 #[derive(
@@ -257,6 +316,8 @@ impl EventKind {
     fn wire(self) -> &'static str {
         match self {
             EventKind::SessionOpened => "session-opened",
+            EventKind::WorktreeProvisioned => "worktree-provisioned",
+            EventKind::WorktreeProvisionFailed => "worktree-provision-failed",
             EventKind::Fetch => "fetch",
             EventKind::LockWait => "lock-wait",
             EventKind::LockAcquired => "lock-acquired",
@@ -354,6 +415,9 @@ impl PhaseOf for Phase {
             // it puts the branch back into a state its merge path can rule on, and
             // it happens before that branch may enter one at all.
             | EventKind::RecoveryAttested
+            // A repository provisioning the worktree the work is about to be made in.
+            | EventKind::WorktreeProvisioned
+            | EventKind::WorktreeProvisionFailed
             | EventKind::SessionClosed => Phase::Development,
             EventKind::MergeQueued | EventKind::MergeCompleted | EventKind::SyncConflict | EventKind::BaseArrived => {
                 Phase::Integrate

@@ -367,6 +367,8 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::BaseMerge,
         EventKind::MergeArmed,
         EventKind::PublicationResumed,
+        EventKind::WorktreeProvisioned,
+        EventKind::WorktreeProvisionFailed,
     ];
     for kind in &kinds {
         // Exhaustive on purpose: this is what makes the list above complete.
@@ -407,7 +409,9 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::BaseMerge
             | EventKind::BaseArrived
             | EventKind::MergeArmed
-            | EventKind::PublicationResumed => {}
+            | EventKind::PublicationResumed
+            | EventKind::WorktreeProvisioned
+            | EventKind::WorktreeProvisionFailed => {}
         }
     }
     kinds
@@ -846,6 +850,64 @@ fn the_batched_landing_read_is_declared_as_the_crate_exports_it() {
             "the amendment no longer says: {said}"
         );
     }
+}
+
+#[test]
+fn the_worktree_provision_table_is_the_payload_type() {
+    let contract = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
+    )
+    .expect("the contract");
+    let section = contract
+        .split("## Amendment: a repository's `post-checkout`")
+        .nth(1)
+        .expect("the amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body");
+    let documented: BTreeSet<String> = section
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .filter_map(|line| line.split('`').next())
+        .map(str::to_owned)
+        .collect();
+    let payload = onevcs::WorktreeProvision {
+        hook: String::new(),
+        trigger: onevcs::ProvisionTrigger::WorktreeAdd,
+        worktree: String::new(),
+        exit_status: None,
+        signal: None,
+        timed_out: false,
+        duration_ms: 0,
+        output: String::new(),
+        output_truncated: false,
+        rerun: String::new(),
+    };
+    let wire = serde_json::to_value(payload).expect("a payload serializes");
+    let keys: BTreeSet<String> = wire
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        documented, keys,
+        "docs/contract.md and WorktreeProvision disagree"
+    );
+    for (trigger, word) in [
+        (onevcs::ProvisionTrigger::WorktreeAdd, "worktree-add"),
+        (onevcs::ProvisionTrigger::SlotCheckout, "slot-checkout"),
+    ] {
+        assert_eq!(serde_json::to_value(trigger).unwrap(), word);
+        assert!(
+            section.contains(&format!("`\"{word}\"`")),
+            "{word} undocumented"
+        );
+    }
+    assert!(
+        section.contains(&format!("{} bytes", onevcs::PROVISION_OUTPUT_BYTES)),
+        "docs/contract.md no longer states the output limit"
+    );
 }
 
 #[test]
