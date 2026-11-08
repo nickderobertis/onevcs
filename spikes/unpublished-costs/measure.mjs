@@ -158,6 +158,8 @@ function timed(argv, { env, input, cwd }) {
   const [, user, sys] = fs.existsSync(times)
     ? fs.readFileSync(times, "utf8").trim().split(/\s+/).slice(-3).map(Number)
     : [null, null, null];
+  if (fs.existsSync(times) && !(Number.isFinite(user) && Number.isFinite(sys)))
+    fail(`${argv[0]} ran, but /usr/bin/time wrote no user and system times in ${times}`, 1);
   return {
     wall_seconds: Math.round(wall * 1000) / 1000,
     user_seconds: user,
@@ -254,7 +256,7 @@ function rows(stdout) {
   // llmlint: ignore[boundary_inputs_validated] this document is the engine's own `--format json` output for the read this harness just spawned, not external input, and a schema mismatch shows as a measurement difference; this measurement code lives only on the preserved spike branch, which the plan's run discards.
   const listing = document?.listing || document;
   if (!Array.isArray(listing?.rows)) return null;
-  if (listing.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
+  if (typeof listing.verdict !== "string" || listing.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string" || typeof row.counted !== "boolean" || typeof row.in_flight !== "boolean"))
     fail("a listing row carries no identity or branch string, so this is not the listing a decision is read from", 1);
   return {
     verdict: listing.verdict,
@@ -337,8 +339,9 @@ function readTrace(file) {
     .map((line) => {
       // llmlint: ignore[boundary_inputs_validated] the trace is written by the spike instrumentation on this same branch for the run this harness just spawned, and its required fields are checked below; this measurement code lives only on the preserved spike branch, which the plan's run discards.
       const event = JSON.parse(line);
-      if (typeof event?.kind !== "string" || typeof event.name !== "string" || typeof event.t !== "number" || typeof event.ms !== "number")
-        fail(`${file} holds a trace event without kind, name, t and ms: ${line.slice(0, 200)}`, 1);
+      if (typeof event?.kind !== "string" || typeof event.name !== "string" || typeof event.t !== "number" || typeof event.ms !== "number" || event.ms < 0
+        || typeof event.thread !== "string" || typeof event.identity !== "string" || typeof event.branch !== "string")
+        fail(`${file} holds a trace event missing kind, name, t, ms, thread, identity or branch: ${line.slice(0, 200)}`, 1);
       // The engine's spans carry no extra payload; a git event's is what the arithmetic reads.
       if (event.kind === "git" && (typeof event.extra?.how !== "string" || typeof event.extra.argv_bytes !== "number"))
         fail(`${file} holds a git event without how and argv_bytes: ${line.slice(0, 200)}`, 1);

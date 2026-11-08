@@ -74,7 +74,12 @@ const counted = spawnSync(binary, ["unpublished", "--host", "--format", "json", 
 // or a read that never started, made no calls worth replaying.
 if (counted.error || ![0, 1, 7].includes(counted.status))
   refuse(`the counting read did not run to an answer: ${counted.error?.message || `exit ${counted.status}: ${counted.stderr.trim().split("\n").at(-1)}`}`);
-const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => {
+  const call = JSON.parse(line);
+  if (typeof call?.cwd !== "string" || !Array.isArray(call.argv) || call.argv.some((arg) => typeof arg !== "string"))
+    refuse(`the shim's log holds a call without cwd and argv strings: ${line.slice(0, 200)}`);
+  return call;
+}) : [];
 // `git [-C dir] cat-file -e <object>`, wherever the directory was given.
 const located = calls
   .map((call) => {

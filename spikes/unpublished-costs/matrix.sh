@@ -22,7 +22,7 @@ failed=0
 m() {
   local name=$1; shift
   if ! node "$here/measure.mjs" --binary "$binary" "$@" > "$out/$name.json" 2> "$out/$name.err"; then
-    echo "matrix: measure $name failed: $(tail -1 "$out/$name.err" 2>/dev/null || echo 'no diagnostic'); see $out/$name.err, then re-run its measure.mjs line" >&2
+    echo "matrix: measure $name failed: $(tail -1 "$out/$name.err" 2>/dev/null || echo 'no diagnostic'); see $out/$name.err and $out/$name.json, then re-run its measure.mjs line" >&2
     failed=1
   fi
 }
