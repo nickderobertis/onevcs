@@ -1,3 +1,4 @@
+# llmlint: ignore-file[crates_stay_in_one_cargo_workspace,new_command_or_client_gets_its_own_project] this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree; a workspace member or an Nx project would put it into every check of main.
 # The spike's fixture builder: `onevcs-testing`'s recovery workload at Scale::One, and
 # the host-shaped variant `spikes/unpublished-costs/measure.mjs --measure fixture-build`
 # times. Its own workspace, so it is no member of the repository's.

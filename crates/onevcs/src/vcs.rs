@@ -883,6 +883,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // consuming host spent seventy-five content merges on a verdict that
             // was then discarded.
             let unfollowable = unfollowable_chain(sessions, identity, &branch);
+            // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
             let record_key = decisions.as_ref().map(|_| {
                 crate::spike::decisions::key(
                     &crate::spike::decisions::Subject {
@@ -926,6 +927,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // reads as "paste this".
             drop(deciding);
             let withheld = verdict.is_landed();
+            // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
             let mut recording = match (decisions.is_some(), record_key.clone()) {
                 (true, Some(key)) => {
                     let unmoved = reused.as_ref().is_some_and(|entry| {
@@ -976,6 +978,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 })
                 .clone();
             drop(classifying);
+            // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
             if let Some(record) = decisions.as_mut() {
                 let fresh = reused
                     .as_ref()

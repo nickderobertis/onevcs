@@ -1,3 +1,4 @@
+// llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] it writes the record shape crates/onevcs/src/spike.rs on this same branch reads; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 // The harness's journey: drive `measure.mjs` the way the report's figures were taken,
 // over a generated host — a real origin, a registered checkout and one unpublished
 // branch — with the real engine and onevcs, and its two failure paths.
@@ -162,4 +163,69 @@ test("a staged decision record is what every run of the read meets, and needs a 
   const unscoped = measureWith(args, env);
   assert.equal(unscoped.status, 2);
   assert.match(unscoped.stderr, /--stage-record needs --onevcs-home/);
+});
+
+test("a comparison names a row missing, a row added and a verdict that moved", () => {
+  const { root, home, env } = host();
+  const baseline = path.join(root, "baseline.json");
+  measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--rows-out", baseline], env);
+  const altered = JSON.parse(fs.readFileSync(baseline, "utf8"));
+  const [row] = altered.rows;
+  altered.rows = [{ ...row, branch: "branch-elsewhere" }];
+  altered.verdict = "none";
+  fs.writeFileSync(baseline, JSON.stringify(altered));
+  const ran = measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--baseline-rows", baseline], env);
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(
+    ran.document.rows_against_baseline.differences.map(({ change, field, was, now }) => ({ change, field, was, now })),
+    [
+      { change: "added", field: undefined, was: undefined, now: undefined },
+      { change: "missing", field: undefined, was: undefined, now: undefined },
+      { change: undefined, field: "verdict", was: "none", now: "owed" },
+    ],
+  );
+  fs.writeFileSync(baseline, JSON.stringify({ rows: [{}] }));
+  const malformed = measureWith(["--measure", "host", "--binary", engine, "--onevcs-home", home, "--no-trace", "--baseline-rows", baseline], env);
+  assert.equal(malformed.status, 1);
+  assert.match(malformed.stderr, /is not a --rows-out document/);
+});
+
+test("the session read and the stop guard are timed over a launcher's session", () => {
+  const { home, env } = host();
+  for (const measure of ["session", "stop-guard"]) {
+    const ran = measureWith(["--measure", measure, "--binary", engine, "--onevcs-home", home, "--session", "no-launcher-here"], env);
+    assert.equal(ran.status, 0, `${measure}: ${ran.stderr}`);
+    assert.ok(ran.document.timed.wall_seconds > 0);
+    assert.ok(ran.document.attribution.attributed_share >= 80, `${measure} attributed ${ran.document.attribution.attributed_share}%`);
+  }
+});
+
+test("a fixture build that fails, or says nothing of what it built, is no measurement", () => {
+  const { root, env } = host();
+  const builder = path.join(root, "builder");
+  fs.writeFileSync(builder, "#!/bin/sh\necho 'not json'\nexit 0\n", { mode: 0o755 });
+  const silent = measureWith(["--measure", "fixture-build", "--binary", builder, "--fixture", path.join(root, "f")], env);
+  assert.equal(silent.status, 1);
+  fs.writeFileSync(builder, "#!/bin/sh\necho 'unpublished-costs-fixture: cannot run git' >&2\nexit 1\n", { mode: 0o755 });
+  const failed = spawnSync("node", [measure, "--measure", "fixture-build", "--binary", builder, "--fixture", path.join(root, "g")], { env, encoding: "utf8" });
+  assert.equal(failed.status, 1);
+  assert.equal(JSON.parse(failed.stdout).usable, false);
+  assert.match(JSON.parse(failed.stdout).stderr_tail, /cannot run git/);
+});
+
+test("a read's spawned cat-file -e calls replay batched per checkout with the same answers", () => {
+  const { root, home, env } = host();
+  const ack = path.join(root, "ack");
+  fs.mkdirSync(ack);
+  const replay = (binary) =>
+    spawnSync("node", [path.join(here, "batch-replay.mjs"), "--binary", binary, "--acknowledgements", ack, "--onevcs-home", home], { env, encoding: "utf8" });
+  const ran = replay(engine);
+  assert.equal(ran.status, 0, ran.stderr);
+  const document = JSON.parse(ran.stdout);
+  assert.equal(document.read_status, 7);
+  assert.ok(document.calls > 0 && document.checkouts >= 1, JSON.stringify(document));
+  assert.equal(document.answers_agree, true);
+  const broken = replay(path.join(root, "no-such-engine"));
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /the counting read did not run to an answer/);
 });

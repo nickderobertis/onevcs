@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // For each git invocation onevcs's recovery, landing and diff layer builds whose
+// llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate,changed_behavior_has_e2e] a one-off probe of the argv shapes git.rs builds today, whose printed sizes are the report's evidence; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 // argument list grows with paths, refs or commits, find the size at which spawning
 // it is refused E2BIG, on a generated repository, with the argv onevcs builds.
 //
@@ -15,10 +16,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const at = process.argv.indexOf("--dir");
-const root = fs.mkdtempSync(
-  path.join(at > 0 ? process.argv[at + 1] : process.env.ONEPIPELINE_NODE_SCRATCH_DIR || os.tmpdir(), "argv-limits-"),
-);
+const argv = process.argv.slice(2);
+if (!(argv.length === 0 || (argv.length === 2 && argv[0] === "--dir" && !argv[1].startsWith("--")))) {
+  process.stderr.write(`argv-limits: expected [--dir DIR], got ${JSON.stringify(argv)}\n`);
+  process.exit(2);
+}
+const root = fs.mkdtempSync(path.join(argv[1] || process.env.ONEPIPELINE_NODE_SCRATCH_DIR || os.tmpdir(), "argv-limits-"));
 const repo = path.join(root, "repo");
 const git = (args, options = {}) =>
   spawnSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 1 << 28, ...options });
@@ -67,7 +70,14 @@ const shapes = {
 const bytes = (argv) => argv.reduce((total, arg) => total + Buffer.byteLength(arg) + 1, 0);
 const starts = (argv) => {
   const ran = spawnSync("git", argv, { cwd: repo, encoding: "utf8", maxBuffer: 1 << 28 });
-  return ran.error ? { started: false, error: ran.error.code } : { started: true, status: ran.status };
+  if (!ran.error) return { started: true, status: ran.status };
+  // Only the kernel's refusal of the argument list is the limit this measures; any other
+  // failure to start is the measurement not made.
+  if (ran.error.code !== "E2BIG") {
+    process.stderr.write(`argv-limits: git could not start for a reason other than E2BIG: ${ran.error.message}\n`);
+    process.exit(1);
+  }
+  return { started: false, error: ran.error.code };
 };
 
 const results = [];

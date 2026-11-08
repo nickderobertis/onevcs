@@ -5,9 +5,12 @@
 //! `ONEVCS_SPIKE_TRACE=<file>` appends one JSON line per traced event to that file,
 //! and `ONEVCS_SPIKE_PROTOTYPE=<name>[,<name>…]` switches on the named prototypes.
 //! With neither set, [`enabled`] and [`prototype`] answer `false` from a value read
-//! once, and no other line of this module runs, so every existing path is the path
-//! the suite covers. `spikes/unpublished-costs/` on the spike's branch is the harness
+//! once, and every other entry point here returns at that guard before doing
+//! anything, so every existing path is the path the suite covers. `spikes/unpublished-costs/` on the spike's branch is the harness
 //! that sets them and reads the trace back.
+// llmlint: ignore-file[invalid_states_unrepresentable,boundary_inputs_validated] the decision
+// record's entries carry the same String fields `Recoverable` rows carry, and are read back
+// only by the process kind that wrote them under a version check; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 // llmlint: ignore-file[changed_behavior_has_e2e] spike instrumentation and prototypes,
 // switched off unless the spike's harness names them; the harness's own journey
 // (`spikes/unpublished-costs/harness.test.mjs`) is what drives them, and the plan this
@@ -43,21 +46,59 @@ pub(crate) fn enabled() -> bool {
     sink().is_some()
 }
 
-/// Whether the prototype `name` is switched on for this process.
-pub(crate) fn prototype(name: &str) -> bool {
-    static NAMED: OnceLock<Vec<String>> = OnceLock::new();
+/// A prototype the spike can switch on: the closed list `ONEVCS_SPIKE_PROTOTYPE` names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Prototype {
+    /// [`local_head`].
+    LocalHead,
+    /// `git::known_to_carry_changes` and `git::differing_among` naming no path.
+    NoPaths,
+    /// `native_objects` without its object allowance.
+    NativeUnbounded,
+    /// No git read answered in process: see `recovery_cache::native`.
+    NativeOff,
+    /// [`decisions`].
+    DecisionRecord,
+}
+
+impl Prototype {
+    const ALL: [(Self, &'static str); 5] = [
+        (Self::LocalHead, "local-head"),
+        (Self::NoPaths, "no-paths"),
+        (Self::NativeUnbounded, "native-unbounded"),
+        (Self::NativeOff, "native-off"),
+        (Self::DecisionRecord, "decision-record"),
+    ];
+
+    fn named(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(_, spelled)| *spelled == name)
+            .map(|(prototype, _)| *prototype)
+    }
+}
+
+/// Whether `which` is switched on for this process. A name `ONEVCS_SPIKE_PROTOTYPE`
+/// carries that is not a prototype is said once on standard error, naming the ones
+/// that are, so a misspelt switch is never a measurement of the default path.
+pub(crate) fn prototype(which: Prototype) -> bool {
+    static NAMED: OnceLock<Vec<Prototype>> = OnceLock::new();
     NAMED
         .get_or_init(|| {
-            std::env::var("ONEVCS_SPIKE_PROTOTYPE")
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned)
-                .collect()
+            let named = std::env::var("ONEVCS_SPIKE_PROTOTYPE").unwrap_or_default();
+            let mut on = Vec::new();
+            for name in named.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+                match Prototype::named(name) {
+                    Some(prototype) => on.push(prototype),
+                    None => eprintln!(
+                        "onevcs: ONEVCS_SPIKE_PROTOTYPE names {name:?}, which is no prototype; the prototypes are {}",
+                        Prototype::ALL.map(|(_, spelled)| spelled).join(", ")
+                    ),
+                }
+            }
+            on
         })
-        .iter()
-        .any(|named| named == name)
+        .contains(&which)
 }
 
 thread_local! {
@@ -78,14 +119,35 @@ pub(crate) fn at_branch(branch: &str) {
     }
 }
 
+/// What kind of thing a traced event is: the closed list the harness reads.
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    /// A span of this process's own work.
+    Span,
+    /// One git read and how it was answered.
+    Git,
+    /// One operation on the decision record.
+    Record,
+}
+
+impl Kind {
+    fn spelled(self) -> &'static str {
+        match self {
+            Self::Span => "span",
+            Self::Git => "git",
+            Self::Record => "record",
+        }
+    }
+}
+
 /// Write one event: what it was, when it began, how long it took, and anything else.
-pub(crate) fn event(kind: &str, name: &str, began: Instant, extra: serde_json::Value) {
+pub(crate) fn event(kind: Kind, name: &str, began: Instant, extra: serde_json::Value) {
     let Some(sink) = sink() else {
         return;
     };
     let (identity, branch) = AT.with(|at| at.borrow().clone());
     let line = serde_json::json!({
-        "kind": kind,
+        "kind": kind.spelled(),
         "name": name,
         "t": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -110,7 +172,7 @@ pub(crate) struct Span {
 
 impl Drop for Span {
     fn drop(&mut self) {
-        event("span", self.name, self.began, serde_json::Value::Null);
+        event(Kind::Span, self.name, self.began, serde_json::Value::Null);
     }
 }
 
@@ -148,7 +210,7 @@ pub(crate) fn git_read(args: &[&str], began: Instant, answered: &Answered<'_>) {
         Answered::Spawned(Err(why)) => ("spawn", serde_json::json!(why)),
     };
     event(
-        "git",
+        Kind::Git,
         &shape(args),
         began,
         serde_json::json!({
@@ -203,7 +265,7 @@ pub(crate) fn shape(args: &[&str]) -> String {
 /// `<remote>/main` and `<remote>/master` it does keep, rather than asking the remote
 /// (`ls-remote --symref`, a request to the code host) on every read.
 pub(crate) fn local_head(cwd: &std::path::Path, remote: &str) -> Option<String> {
-    if !prototype("local-head") {
+    if !prototype(Prototype::LocalHead) {
         return None;
     }
     let held: Vec<&str> = ["main", "master"]
@@ -266,7 +328,7 @@ pub(crate) mod decisions {
 
     /// The record of `identity`, where the prototype is on.
     pub(crate) fn open(identity: &str) -> Option<Decisions> {
-        if !super::prototype("decision-record") {
+        if !super::prototype(super::Prototype::DecisionRecord) {
             return None;
         }
         let began = Instant::now();
@@ -280,7 +342,7 @@ pub(crate) mod decisions {
             .filter(|document| document.version == VERSION)
             .unwrap_or_default();
         super::event(
-            "record",
+            super::Kind::Record,
             "load",
             began,
             serde_json::json!({"entries": document.entries.len()}),
@@ -340,7 +402,7 @@ pub(crate) mod decisions {
             ])
             .to_string(),
         );
-        super::event("record", "key", began, serde_json::Value::Null);
+        super::event(super::Kind::Record, "key", began, serde_json::Value::Null);
         key
     }
 
@@ -410,7 +472,7 @@ pub(crate) mod decisions {
                 }
             }
             super::event(
-                "record",
+                super::Kind::Record,
                 "base-gain-check",
                 began,
                 serde_json::json!({
@@ -433,7 +495,12 @@ pub(crate) mod decisions {
             let began = Instant::now();
             self.document.entries.insert(key, entry);
             self.written += 1;
-            super::event("record", "write-entry", began, serde_json::Value::Null);
+            super::event(
+                super::Kind::Record,
+                "write-entry",
+                began,
+                serde_json::Value::Null,
+            );
         }
 
         /// Persist the record, where anything was written.
@@ -455,7 +522,7 @@ pub(crate) mod decisions {
                 }
             }
             super::event(
-                "record",
+                super::Kind::Record,
                 "save",
                 began,
                 serde_json::json!({"entries": self.document.entries.len(), "written": self.written}),

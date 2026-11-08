@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # The invocations behind the report's figures, in the order they were taken. Each
+# llmlint: ignore-file[changed_behavior_has_e2e] the order the report's figures were taken in, each step a measure.mjs call harness.test.mjs drives; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 # writes one measure.mjs document to "$OUT/<name>.json".
 #
 #   spikes/unpublished-costs/matrix.sh <phase> OUT BINARY [SESSION BRANCH REPO]
@@ -13,7 +14,16 @@ phase=$1 out=$2 binary=$3 session=${4:-} branch=${5:-} repo=${6:-}
 here=$(cd "$(dirname "$0")" && pwd)
 ack="${XDG_STATE_HOME:-$HOME/.local/state}/ai-orchestrator/stop-unfinished/acknowledged"
 mkdir -p "$out"
-m() { local name=$1; shift; node "$here/measure.mjs" --binary "$binary" "$@" > "$out/$name.json" 2> "$out/$name.err" || echo "measure $name failed: see $out/$name.err" >&2; }
+failed=0
+# Each measure runs whatever the one before it answered, so one that fails is named with
+# its own last diagnostic, and the matrix exits 1 once the rest have run.
+m() {
+  local name=$1; shift
+  if ! node "$here/measure.mjs" --binary "$binary" "$@" > "$out/$name.json" 2> "$out/$name.err"; then
+    echo "matrix: measure $name failed: $(tail -1 "$out/$name.err" 2>/dev/null || echo 'no diagnostic'); its document is $out/$name.json" >&2
+    failed=1
+  fi
+}
 reads() { # prefix, extra args
   local prefix=$1; shift
   m "$prefix-host" --measure host --acknowledgements "$ack" --rows-out "$out/$prefix-host.rows.json" "$@"
@@ -52,5 +62,6 @@ case $phase in
       m "fixture-$which-stop-guard" --measure stop-guard --session "$launcher" --onevcs-home "$home" --acknowledgements "$out/empty-ack"
     done
     ;;
-  *) echo "matrix.sh: unknown phase $phase" >&2; exit 2 ;;
+  *) echo "matrix.sh: unknown phase $phase; the phases are real, prototypes, record and fixture" >&2; exit 2 ;;
 esac
+exit "$failed"

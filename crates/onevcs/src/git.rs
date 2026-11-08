@@ -3539,7 +3539,8 @@ pub fn known_to_carry_changes<'a>(
         // carries the nothing it changed.
         return Ok(true);
     }
-    if crate::spike::prototype("no-paths") {
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
+    if crate::spike::prototype(crate::spike::Prototype::NoPaths) {
         // The same question with no path named: every path differing between the two
         // commits, listed whole, against the paths the commit touched.
         let listed = checked_in(
@@ -5165,7 +5166,8 @@ pub fn differing_among<'a>(
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    if crate::spike::prototype("no-paths") {
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
+    if crate::spike::prototype(crate::spike::Prototype::NoPaths) {
         let listed = checked_in(
             cwd.into(),
             &[

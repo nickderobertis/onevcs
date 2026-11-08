@@ -71,12 +71,15 @@ fn spend() -> Option<()> {
 /// The answer git would give to `args`, where this is one of the shapes read here.
 pub(crate) fn answer(args: &[&str], repo: &Path, borrowing: Option<&Path>) -> Option<Output> {
     let shape = Shape::of(args)?;
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
     UNSPENT.with(|unspent| {
-        unspent.set(if crate::spike::prototype("native-unbounded") {
-            usize::MAX - 1
-        } else {
-            OBJECT_LIMIT
-        });
+        unspent.set(
+            if crate::spike::prototype(crate::spike::Prototype::NativeUnbounded) {
+                usize::MAX - 1
+            } else {
+                OBJECT_LIMIT
+            },
+        );
     });
     let answered = within_allowance(&shape, repo, borrowing);
     let spent = UNSPENT.with(|unspent| unspent.replace(usize::MAX)) == 0;

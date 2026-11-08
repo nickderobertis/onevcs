@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // One measurement of one `unpublished` read, printed as one JSON document.
+// llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate,changed_behavior_has_e2e] it reads the trace crates/onevcs/src/spike.rs on this same branch writes, and harness.test.mjs drives each measure kind it was asked to; the attribution arithmetic is checked by the report figures it produced; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 //
 //   node spikes/unpublished-costs/measure.mjs --measure <MEASURE>
 //        [--onevcs-home DIR] [--binary PATH] [--prototype NAME[,NAME]]
@@ -20,9 +21,13 @@
 // meets the same staged state rather than the one the run before it wrote. It needs
 // --onevcs-home, so it can only ever touch a scratch copy.
 //
-// The harness reads only. It points `--acknowledge` at a fresh scratch directory
-// unless --acknowledgements names one, and writes nothing under ONEVCS_HOME; the
-// read itself keeps its derived caches there as it always does.
+// The harness reads this host's state and records nothing into it. It points
+// `--acknowledge` at a fresh scratch directory (a copy of --acknowledgements where one is
+// named), and the reads keep their derived caches under ONEVCS_HOME as they always do.
+// Only two options write under ONEVCS_HOME themselves, and both refuse unless
+// --onevcs-home names a directory other than this user's real one: --stage-record
+// replaces the decision record there, and --measure record-write removes it before each
+// run, so that run is the one writing it.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -40,6 +45,9 @@ const MEASURES = [
   "record-write",
   "fixture-build",
 ];
+
+// The prototypes `crates/onevcs/src/spike.rs` switches on, by the names it reads.
+const PROTOTYPES = ["local-head", "no-paths", "native-unbounded", "native-off", "decision-record"];
 
 function fail(message, code = 2) {
   process.stderr.write(`measure: ${message}\n`);
@@ -77,8 +85,19 @@ function parse(argv) {
     } else fail(`unknown argument ${JSON.stringify(flag)}; see the header of ${process.argv[1]}`);
   }
   if (!options.measure) fail(`--measure is required: one of ${MEASURES.join(", ")}`);
-  if (options.stageRecord && !options.onevcsHome)
-    fail("--stage-record needs --onevcs-home naming a scratch copy of ONEVCS_HOME");
+  // This user's real home, which the reads default to; a journey's own scratch home may
+  // be what ONEVCS_HOME names, so that is not the test.
+  const real = path.join(os.homedir(), ".onevcs");
+  for (const [asked, flag] of [[options.stageRecord, "--stage-record"], [options.measure === "record-write", "--measure record-write"]]) {
+    if (!asked) continue;
+    if (!options.onevcsHome) fail(`${flag} needs --onevcs-home naming a scratch copy of ONEVCS_HOME`);
+    if (path.resolve(options.onevcsHome) === real)
+      fail(`${flag} writes the decision record under --onevcs-home, which names this user's real ONEVCS_HOME; name a scratch copy`);
+  }
+  if (options.stageRecord && path.resolve(options.stageRecord).startsWith(path.join(path.resolve(options.onevcsHome), "cache")))
+    fail("--stage-record must name a directory outside the scratch home's cache, which each run replaces");
+  const unknown = (options.prototype || "").split(",").filter((name) => name && !PROTOTYPES.includes(name));
+  if (unknown.length) fail(`--prototype ${unknown.join(",")} is no prototype; the prototypes are ${PROTOTYPES.join(", ")}`);
   if (!MEASURES.includes(options.measure))
     fail(`unknown measure ${JSON.stringify(options.measure)}: one of ${MEASURES.join(", ")}`);
   return options;
@@ -269,7 +288,12 @@ function summarizeRows(decided) {
   };
 }
 
-/** Field-by-field comparison of two row sets: every row missing, added or differing. */
+/**
+ * Two row sets compared by what a decision is: every row missing or added, each of a
+ * row's tip, landed, owed, in-flight, acknowledged and unknown fields that differs, and
+ * the verdict. A row's launcher and the listing's unresolved count are reported beside
+ * the rows but are not decisions, so they are not compared.
+ */
 function compare(baseline, candidate) {
   const key = (row) => `${row.identity}/${row.branch}`;
   const by = new Map(baseline.rows.map((row) => [key(row), row]));
@@ -586,8 +610,15 @@ function stageRecord() {
   fs.cpSync(path.resolve(options.stageRecord), into, { recursive: true });
 }
 
+/** Under --measure record-write, remove the scratch home's record so the run writes it. */
+function clearRecord() {
+  if (options.measure !== "record-write") return;
+  fs.rmSync(path.join(path.resolve(options.onevcsHome), "cache", "spike-decisions"), { recursive: true, force: true });
+}
+
 function runRead(run, prototype, trace) {
   stageRecord();
+  clearRecord();
   const acknowledgements = acknowledgementsFor(run);
   const { argv, input, cwd } = read(acknowledgements);
   const env = environment({ trace, prototype });
@@ -610,18 +641,25 @@ function measureRead() {
     staged_record: options.stageRecord ? path.resolve(options.stageRecord) : null,
     cores: os.cpus().length,
   };
-  if (options.measure === "host-warm" || options.measure === "record-write") {
+  if (options.measure === "host-warm") {
     // A first read fills whatever a later read reuses — the proofs, and with the
     // decision-record prototype, the record — and is reported but not the figure.
     const priming = runRead("priming", prototype, null);
     document.priming = { ...strip(priming), decided: summarizeRows(rows(priming.stdout)) };
   }
-  const untimed = runRead("timed", prototype, null);
-  const decided = rows(untimed.stdout);
-  document.timed = { ...strip(untimed), decided: summarizeRows(decided) };
+  const timedRun = runRead("timed", prototype, null);
+  const decided = rows(timedRun.stdout);
+  document.timed = { ...strip(timedRun), decided: summarizeRows(decided) };
   if (options.rowsOut && decided) fs.writeFileSync(options.rowsOut, JSON.stringify(decided, null, 1));
   if (options.baselineRows && decided) {
-    const baseline = JSON.parse(fs.readFileSync(options.baselineRows, "utf8"));
+    let baseline = null;
+    try {
+      baseline = JSON.parse(fs.readFileSync(options.baselineRows, "utf8"));
+    } catch (error) {
+      fail(`--baseline-rows ${options.baselineRows} cannot be read as JSON: ${error.message}`, 1);
+    }
+    if (!Array.isArray(baseline?.rows) || baseline.rows.some((row) => typeof row?.identity !== "string" || typeof row?.branch !== "string"))
+      fail(`--baseline-rows ${options.baselineRows} is not a --rows-out document: it needs rows, each with an identity and a branch`, 1);
     document.rows_against_baseline = compare(baseline, decided);
   }
   if (options.trace) {
@@ -641,6 +679,7 @@ function measureRead() {
     const ack = acknowledgementsFor("counted");
     const { argv, input } = read(ack);
     stageRecord();
+    clearRecord();
     document.counted = counted(argv, environment({ prototype }), input);
   }
   document.git_processes = document.attribution?.git.spawned ?? document.counted?.programs?.git ?? null;
@@ -676,12 +715,15 @@ function measureFixtureBuild() {
   } catch {
     built = null;
   }
+  // A build that failed, or printed no account of what it built, is no measurement.
+  const usable = ran.status === 0 && typeof built?.home === "string" && typeof built?.launcher === "string";
   return {
     measure: "fixture-build",
     scale: options.scale || "one",
     fixture,
     ...strip(ran),
     built,
+    usable,
   };
 }
 
@@ -689,5 +731,7 @@ const document = options.measure === "fixture-build" ? measureFixtureBuild() : m
 process.stdout.write(`${JSON.stringify(document, null, 1)}\n`);
 // The read's own answers — 0 none, 7 owed, 1 unanswered — are measurements; a refusal
 // (2), a program that could not start (126, 127) or a signal is a measurement not made.
-const status = document.timed?.status ?? document.status;
+// A fixture build has no such answers: it built what it says, or it is no measurement.
+if (document.measure === "fixture-build") process.exit(document.usable ? 0 : 1);
+const status = document.timed?.status;
 process.exit([0, 1, 7].includes(status) ? 0 : 1);

@@ -1,3 +1,4 @@
+// llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate,changed_behavior_has_e2e] this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree; it reads the registry Scale::One writes in the same build, and what it built is printed and stated with each figure in the spike's report.
 //! Build the recovery workload `onevcs-testing` defines at `Scale::One`, or the
 //! host-shaped variant of it, into an empty directory, and print what was built.
 //!
@@ -17,28 +18,44 @@ use std::time::Instant;
 
 use onevcs_testing::recovery::{build, Scale};
 
-fn git(repo: &Path, args: &[&str]) -> String {
+/// What went wrong building the fixture, said whole: the build stops at the first one.
+type Built<T> = Result<T, String>;
+
+fn git(repo: &Path, args: &[&str]) -> Built<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
-        .expect("git runs");
-    assert!(out.status.success(), "git {args:?} in {}: {}", repo.display(), String::from_utf8_lossy(&out.stderr));
-    String::from_utf8(out.stdout).expect("utf-8").trim().to_owned()
+        .map_err(|error| format!("cannot run git {args:?} in {}: {error}", repo.display()))?;
+    if !out.status.success() {
+        return Err(format!("git {args:?} in {} failed: {}", repo.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    String::from_utf8(out.stdout)
+        .map(|text| text.trim().to_owned())
+        .map_err(|_| format!("git {args:?} in {} printed bytes that are not UTF-8", repo.display()))
 }
 
-fn import(repo: &Path, stream: &[u8]) {
+fn import(repo: &Path, stream: &[u8]) -> Built<()> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(["fast-import", "--quiet"])
         .stdin(Stdio::piped())
         .spawn()
-        .expect("fast-import runs");
-    child.stdin.take().expect("stdin").write_all(stream).expect("stream written");
-    assert!(child.wait().expect("fast-import ends").success(), "fast-import in {}", repo.display());
+        .map_err(|error| format!("cannot run git fast-import in {}: {error}", repo.display()))?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| "git fast-import took no standard input".to_owned())
+        .and_then(|mut stdin| stdin.write_all(stream).map_err(|error| format!("writing git fast-import's stream: {error}")));
+    let ended = child.wait().map_err(|error| format!("waiting for git fast-import: {error}"))?;
+    written?;
+    if !ended.success() {
+        return Err(format!("git fast-import in {} failed: {ended}", repo.display()));
+    }
+    Ok(())
 }
 
 fn commit(stream: &mut Vec<u8>, reference: &str, parent: &str, subject: &str, files: &[(String, usize)]) {
@@ -54,11 +71,15 @@ fn blob(stream: &mut Vec<u8>, mark: usize, text: &str) {
 }
 
 /// Grow a Scale::One workload to this host's shape.
-fn host_shaped(root: &Path, home: &Path) -> serde_json::Value {
+fn host_shaped(root: &Path, home: &Path) -> Built<serde_json::Value> {
     let registry_path = home.join("registry.json");
+    let bytes = std::fs::read(&registry_path).map_err(|error| format!("reading {}: {error}", registry_path.display()))?;
     let mut registry: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&registry_path).expect("registry")).expect("registry json");
-    let checkouts = registry["checkouts"].as_object().expect("checkouts").clone();
+        serde_json::from_slice(&bytes).map_err(|error| format!("{} is not JSON: {error}", registry_path.display()))?;
+    let checkouts = registry["checkouts"]
+        .as_object()
+        .ok_or_else(|| format!("{} holds no `checkouts` object", registry_path.display()))?
+        .clone();
     let mut by_number: Vec<(usize, PathBuf, String)> = checkouts
         .iter()
         .filter_map(|(alias, checkout)| {
@@ -72,19 +93,22 @@ fn host_shaped(root: &Path, home: &Path) -> serde_json::Value {
     let mut added_branches = 0;
     for (number, repo, _) in by_number.iter().take(11) {
         let wanted = if *number == 1 { 64 } else { 3 };
-        let main = git(repo, &["rev-parse", "refs/heads/main"]);
+        let main = git(repo, &["rev-parse", "refs/heads/main"])?;
         let mut stream = Vec::new();
         for n in 0..wanted {
             blob(&mut stream, n + 1, &format!("host work {number}-{n}\n"));
             commit(&mut stream, &format!("refs/heads/host/r{number}-{n}"), &main, &format!("feat: host work {number}-{n}"), &[(format!("host/w{n}.txt"), n + 1)]);
         }
-        import(repo, &stream);
+        import(repo, &stream)?;
         added_branches += wanted;
     }
     // One checkout of 8,500 refs: distinct origin tips on a chain off main, the shape
     // a busy origin's remote-tracking refs take.
+    if by_number.len() < 11 {
+        return Err(format!("Scale::One registered {} numbered checkouts; the host shape grows 11", by_number.len()));
+    }
     let (_, busy, _) = &by_number[0];
-    let main = git(busy, &["rev-parse", "refs/remotes/origin/main"]).to_owned();
+    let main = git(busy, &["rev-parse", "refs/remotes/origin/main"])?;
     let mut stream = Vec::new();
     blob(&mut stream, 1, "busy\n");
     let mut parent = main.clone();
@@ -92,10 +116,10 @@ fn host_shaped(root: &Path, home: &Path) -> serde_json::Value {
         commit(&mut stream, &format!("refs/remotes/origin/busy/{n}"), &parent, &format!("chore: busy {n}"), &[(format!("busy/{}.txt", n % 50), 1)]);
         parent = format!("refs/remotes/origin/busy/{n}");
     }
-    import(busy, &stream);
+    import(busy, &stream)?;
     // Two branches each changing 30,000 paths of about 100 bytes.
     let (_, wide, _) = &by_number[1];
-    let main = git(wide, &["rev-parse", "refs/heads/main"]);
+    let main = git(wide, &["rev-parse", "refs/heads/main"])?;
     for n in 0..2 {
         let mut stream = Vec::new();
         blob(&mut stream, 1, &format!("wide {n}\n"));
@@ -103,7 +127,7 @@ fn host_shaped(root: &Path, home: &Path) -> serde_json::Value {
             .map(|i| (format!("wide/{n}/{}/f{i:05}-{}.txt", i % 100, "x".repeat(76)), 1))
             .collect();
         commit(&mut stream, &format!("refs/heads/host/wide-{n}"), &main, &format!("feat: wide change {n}"), &files);
-        import(wide, &stream);
+        import(wide, &stream)?;
         added_branches += 1;
     }
     // 45 checkouts: shared clones registered beside the identities' own, over the
@@ -118,46 +142,87 @@ fn host_shaped(root: &Path, home: &Path) -> serde_json::Value {
             .arg(repo)
             .arg(&clone)
             .status()
-            .expect("clone runs");
-        assert!(made.success());
-        git(&clone, &["remote", "set-url", "origin", identity]);
-        git(&clone, &["fetch", "-q", "origin"]);
+            .map_err(|error| format!("cannot run git clone of {}: {error}", repo.display()))?;
+        if !made.success() {
+            return Err(format!("git clone of {} into {} failed: {made}", repo.display(), clone.display()));
+        }
+        git(&clone, &["remote", "set-url", "origin", identity])?;
+        git(&clone, &["fetch", "-q", "origin"])?;
         registry["checkouts"][format!("r{number}-c{k}")] =
             serde_json::json!({"path": clone, "identity": identity});
         added_checkouts += 1;
     }
-    std::fs::write(&registry_path, serde_json::to_vec_pretty(&registry).expect("json")).expect("registry written");
-    serde_json::json!({
+    let text = serde_json::to_vec_pretty(&registry).map_err(|error| format!("serializing the registry: {error}"))?;
+    std::fs::write(&registry_path, text).map_err(|error| format!("writing {}: {error}", registry_path.display()))?;
+    Ok(serde_json::json!({
         "added_branches": added_branches,
         "added_checkouts": added_checkouts,
         "checkouts": registry["checkouts"].as_object().map_or(0, serde_json::Map::len),
-        "busy_refs": git(busy, &["for-each-ref", "--count=1000000", "--format=x"]).lines().count(),
-    })
+        "busy_refs": git(busy, &["for-each-ref", "--count=1000000", "--format=x"])?.lines().count(),
+    }))
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|at| args.get(at + 1)).cloned();
-    let scale = value("--scale").unwrap_or_else(|| "one".to_owned());
-    let Some(out) = value("--out") else {
-        eprintln!("unpublished-costs-fixture: --out DIR is required");
-        std::process::exit(2);
-    };
-    if scale != "one" && scale != "host" {
-        eprintln!("unpublished-costs-fixture: --scale is one or host, not {scale:?}");
-        std::process::exit(2);
+/// Which workload to build.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// `Scale::One` as `onevcs-testing` defines it.
+    One,
+    /// `Scale::One` grown to this host's shape.
+    Host,
+}
+
+/// What the command line asked for.
+struct Asked {
+    shape: Shape,
+    out: PathBuf,
+    hold: Option<u64>,
+}
+
+fn asked(args: &[String]) -> Built<Asked> {
+    let usage = "usage: unpublished-costs-fixture --scale one|host --out DIR [--hold SECONDS]";
+    let mut shape = Shape::One;
+    let mut out = None;
+    let mut hold = None;
+    let mut at = 0;
+    while at < args.len() {
+        let value = args
+            .get(at + 1)
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(|| format!("{} needs a value; {usage}", args[at]))?;
+        match args[at].as_str() {
+            "--scale" => {
+                shape = match value.as_str() {
+                    "one" => Shape::One,
+                    "host" => Shape::Host,
+                    other => return Err(format!("--scale is one or host, not {other:?}; {usage}")),
+                }
+            }
+            "--out" => out = Some(PathBuf::from(value)),
+            "--hold" => {
+                hold = Some(value.parse::<u64>().map_err(|_| format!("--hold takes whole seconds, not {value:?}; {usage}"))?)
+            }
+            other => return Err(format!("unknown argument {other:?}; {usage}")),
+        }
+        at += 2;
     }
+    let out = out.ok_or_else(|| format!("--out DIR is required; {usage}"))?;
+    Ok(Asked { shape, out, hold })
+}
+
+fn run() -> Built<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Asked { shape, out, hold } = asked(&args)?;
     let began = Instant::now();
-    let fixture = build(Path::new(&out), Scale::One).unwrap_or_else(|error| {
-        eprintln!("unpublished-costs-fixture: {error}");
-        std::process::exit(1);
-    });
+    let fixture = build(&out, Scale::One).map_err(|error| format!("building Scale::One: {error}"))?;
     let one = began.elapsed().as_secs_f64();
-    let grown = (scale == "host").then(|| host_shaped(&fixture.root, &fixture.home));
+    let grown = match shape {
+        Shape::Host => Some(host_shaped(&fixture.root, &fixture.home)?),
+        Shape::One => None,
+    };
     println!(
         "{}",
         serde_json::json!({
-            "scale": scale,
+            "scale": if shape == Shape::Host { "host" } else { "one" },
             "root": fixture.root,
             "home": fixture.home,
             "launcher": fixture.launcher,
@@ -167,7 +232,15 @@ fn main() {
             "grown": grown,
         })
     );
-    if let Some(hold) = value("--hold").and_then(|s| s.parse::<u64>().ok()) {
-        std::thread::sleep(std::time::Duration::from_secs(hold));
+    if let Some(seconds) = hold {
+        std::thread::sleep(std::time::Duration::from_secs(seconds));
+    }
+    Ok(())
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("unpublished-costs-fixture: {error}");
+        std::process::exit(1);
     }
 }

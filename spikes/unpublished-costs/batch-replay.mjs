@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // The batched-read strategy for the spawned git reads one read makes, measured by replay.
+// llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] a one-off replay of git's own cat-file shape; this measurement code lives only on the preserved spike branch, which the plan's run discards once it succeeds (orchestration.md, Spikes), and is never merged into the repository's tree.
 //
 //   node spikes/unpublished-costs/batch-replay.mjs --binary ENGINE --acknowledgements DIR
 //        [--onevcs-home DIR] [--shape cat-file-e]
@@ -17,16 +18,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const flag = (name) => {
-  const at = process.argv.indexOf(name);
-  return at > 0 ? process.argv[at + 1] : undefined;
-};
+const given = {};
+for (let at = 2; at < process.argv.length; at += 2) {
+  const [name, value] = [process.argv[at], process.argv[at + 1]];
+  if (!["--binary", "--acknowledgements", "--onevcs-home", "--shape"].includes(name) || value === undefined || value.startsWith("--")) {
+    process.stderr.write(`batch-replay: ${JSON.stringify(name)} is not --binary, --acknowledgements, --onevcs-home or --shape, or has no value\n`);
+    process.exit(2);
+  }
+  given[name] = value;
+}
+const flag = (name) => given[name];
 const binary = flag("--binary");
 const acknowledgements = flag("--acknowledgements");
 if (!binary || !acknowledgements) {
   process.stderr.write("batch-replay: --binary ENGINE --acknowledgements DIR are required\n");
   process.exit(2);
 }
+const refuse = (message) => {
+  process.stderr.write(`batch-replay: ${message}\n`);
+  process.exit(1);
+};
 const shape = flag("--shape") || "cat-file-e";
 if (shape !== "cat-file-e") {
   process.stderr.write(`batch-replay: only --shape cat-file-e is replayed, not ${shape}\n`);
@@ -57,6 +68,10 @@ const counted = spawnSync(binary, ["unpublished", "--host", "--format", "json", 
   encoding: "utf8",
   maxBuffer: 1 << 30,
 });
+// The read's own answers are 0 (none owed), 7 (owed) and 1 (unanswered); anything else,
+// or a read that never started, made no calls worth replaying.
+if (counted.error || ![0, 1, 7].includes(counted.status))
+  refuse(`the counting read did not run to an answer: ${counted.error?.message || `exit ${counted.status}: ${counted.stderr.trim().split("\n").at(-1)}`}`);
 const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 // `git [-C dir] cat-file -e <object>`, wherever the directory was given.
 const located = calls
@@ -72,6 +87,7 @@ const located = calls
 const load = () => os.loadavg().map((value) => Math.round(value * 100) / 100);
 const clock = () => Number(process.hrtime.bigint()) / 1e9;
 
+if (!located.length) refuse(`the read spawned ${calls.length} git processes and none was \`cat-file -e <object>\`, so there is nothing to replay`);
 const loadBefore = load();
 let began = clock();
 const one = located.map((call) => spawnSync(real, call.argv, { cwd: call.cwd }).status === 0);
@@ -86,14 +102,20 @@ located.forEach((call, at) => {
 const batched = new Array(located.length);
 began = clock();
 for (const [cwd, list] of byCheckout) {
-  const out = spawnSync(real, ["cat-file", "--batch-check=%(objectname)"], {
+  const ran = spawnSync(real, ["cat-file", "--batch-check=%(objectname)"], {
     cwd,
     input: list.map((entry) => entry.object).join("\n") + "\n",
     encoding: "utf8",
     maxBuffer: 1 << 28,
-  }).stdout.split("\n");
+  });
+  if (ran.error || ran.status !== 0) refuse(`git cat-file --batch-check in ${cwd} failed: ${ran.error?.message || ran.stderr.trim()}`);
+  const out = ran.stdout.split("\n").filter(Boolean);
+  // One line per object asked, each the object's name or `<object> missing`.
+  if (out.length !== list.length) refuse(`git cat-file --batch-check in ${cwd} answered ${out.length} lines for ${list.length} objects`);
   list.forEach((entry, index) => {
-    batched[entry.at] = !(out[index] || "").endsWith(" missing");
+    if (out[index].endsWith(" missing")) batched[entry.at] = false;
+    else if (/^[0-9a-f]{40,64}$/.test(out[index])) batched[entry.at] = true;
+    else refuse(`git cat-file --batch-check in ${cwd} answered ${JSON.stringify(out[index])}, which names no object`);
   });
 }
 const batch = clock() - began;

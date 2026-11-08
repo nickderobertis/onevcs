@@ -404,7 +404,10 @@ pub(crate) fn native(
     cwd: Option<&Path>,
     env: &[(String, String)],
 ) -> Option<git::Output> {
-    if !crate::native_objects::reads(args) || crate::spike::prototype("native-off") {
+    // llmlint: ignore[changed_behavior_has_e2e] an off-by-default spike prototype (spike.rs), proved by the spike's real-host row comparison against the unmodified read and replaced by the plan's chosen strategy with its own journeys.
+    if !crate::native_objects::reads(args)
+        || crate::spike::prototype(crate::spike::Prototype::NativeOff)
+    {
         return None;
     }
     let (cwd, borrowing) = admitted(cwd?, env)?;
@@ -1227,9 +1230,7 @@ fn sound(root: &Path, store: &Store) -> bool {
         .iter()
         .filter(|line| !remembered.contains(**line))
         .count();
-    let share = if crate::spike::prototype("prove-all") {
-        usize::MAX
-    } else if owed > OBJECTS_PER_READ {
+    let share = if owed > OBJECTS_PER_READ {
         OBJECTS_PER_READ / 4
     } else {
         OBJECTS_PER_READ
@@ -1260,11 +1261,7 @@ fn sound(root: &Path, store: &Store) -> bool {
     let headers = crate::vcs::concurrently_on(threads, &unproved, |line| {
         loose_header(&path_of(line).0).map(|header| header.starts_with(b"blob "))
     });
-    let mut budget = if crate::spike::prototype("prove-all") {
-        u64::MAX
-    } else {
-        PROVED_PER_READ
-    };
+    let mut budget = PROVED_PER_READ;
     let mut inflated: Vec<&String> = Vec::new();
     for (line, header) in unproved.iter().zip(&headers) {
         // A blob is never read in process, so its header saying it is one is enough;

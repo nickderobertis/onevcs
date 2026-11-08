@@ -11,8 +11,11 @@ set -euo pipefail
 dir=${1:?build.sh DIR}
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-source=$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/onepipeline-0.101.4 2>/dev/null | head -1)
-[ -n "$source" ] || { echo "build.sh: onepipeline-0.101.4 is not in cargo's registry; fetch it first" >&2; exit 1; }
+source=
+for candidate in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/onepipeline-0.101.4; do
+  [ -d "$candidate" ] && { source=$candidate; break; }
+done
+[ -n "$source" ] || { echo "build.sh: onepipeline-0.101.4 is not in cargo's registry; fetch it first with 'cargo install onepipeline --version 0.101.4 --locked' or a 'cargo fetch' of a project depending on it" >&2; exit 1; }
 mkdir -p "$dir"
 rm -rf "$dir/src-0.101.4"
 cp -r "$source" "$dir/src-0.101.4"
@@ -23,6 +26,9 @@ python3 - "$version" "$repo" <<'PY'
 import sys
 version, repo = sys.argv[1], sys.argv[2]
 text = open("Cargo.toml").read()
+declared = '[dependencies.onevcs]\nversion = "0.60.0"'
+if declared not in text:
+    sys.exit("build.sh: onepipeline 0.101.4's manifest no longer declares onevcs 0.60.0 as expected; update build.sh's replacement before building")
 text = text.replace('[dependencies.onevcs]\nversion = "0.60.0"', f'[dependencies.onevcs]\nversion = "{version}"')
 text += f'\n[patch.crates-io]\nonevcs = {{ path = "{repo}/crates/onevcs" }}\nonevcs-testing = {{ path = "{repo}/crates/onevcs-testing" }}\n'
 open("Cargo.toml", "w").write(text)
