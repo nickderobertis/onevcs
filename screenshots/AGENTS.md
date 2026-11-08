@@ -62,8 +62,9 @@ at all).
   `Resume:` lines. `--all` rather than the default, because it is the only form in
   which the `Landed:` line appears, and the branches are chosen so that every one of
   those line kinds shows: one preserved onto its origin, one a stopped run left open,
-  one that reached its base — and the `status` scene's branch, which its unsettled
-  publication handed back and which is kept because its change request is open.
+  one that reached its base. The `status` scene's branch is deliberately not among
+  them: its publication pushed it and opened its change request, so nothing on it
+  needs recovering.
 - **`pool-status`** — `onevcs pool status widgets`: the capacity, and both slot states
   — one holding a live session, one idle with the outcome and time of its last
   maintenance on it.
