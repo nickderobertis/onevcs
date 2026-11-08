@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.4](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.20.3...onevcs-testing-v0.20.4) - 2026-11-08
+
+### Fixed
+
+- *(status)* report a draft held for review as held for review ([#641](https://github.com/nickderobertis/onevcs/pull/641))
+
 ## [0.20.1](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.20.0...onevcs-testing-v0.20.1) - 2026-11-05
 
 ### Added
