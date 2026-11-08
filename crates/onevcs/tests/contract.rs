@@ -894,6 +894,16 @@ fn the_worktree_provision_table_is_the_payload_type() {
         documented, keys,
         "docs/contract.md and WorktreeProvision disagree"
     );
+    for (trigger, word) in [
+        (onevcs::ProvisionTrigger::WorktreeAdd, "worktree-add"),
+        (onevcs::ProvisionTrigger::SlotCheckout, "slot-checkout"),
+    ] {
+        assert_eq!(serde_json::to_value(trigger).unwrap(), word);
+        assert!(
+            section.contains(&format!("`\"{word}\"`")),
+            "{word} undocumented"
+        );
+    }
     assert!(
         section.contains(&format!("{} bytes", onevcs::PROVISION_OUTPUT_BYTES)),
         "docs/contract.md no longer states the output limit"

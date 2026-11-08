@@ -582,3 +582,30 @@ fn a_hook_the_incoming_branch_drops_is_recorded_as_what_git_ran() {
     let recorded = provision(&fixture.world, &second, FAILED);
     assert_eq!(recorded.trigger, ProvisionTrigger::SlotCheckout);
 }
+
+#[test]
+fn a_post_checkout_run_by_a_git_another_hook_started_is_not_the_checkouts() {
+    let fixture = pooled(&sized(1, "unlimited"));
+    let nested = fixture.world.path("nested-post-checkout-ran");
+    track_hook(
+        &fixture,
+        "reference-transaction",
+        &format!(
+            "#!/bin/sh\ncat > /dev/null\n[ \"$1\" = committed ] && [ -z \"$NESTED\" ] || exit 0\n\
+             export NESTED=1\nunset $(git rev-parse --local-env-vars)\ncd \"$(mktemp -d)\"\ngit init -q .\n\
+             git -c user.name=a -c user.email=a@a commit -q --allow-empty -m x\n\
+             printf '#!/bin/sh\\necho ran >> {ledger}\\n' > .git/hooks/post-checkout\n\
+             chmod +x .git/hooks/post-checkout\ngit checkout -q -b nested\n",
+            ledger = nested.display()
+        ),
+    );
+    let (first, _) = fixture.open(&["--branch", "feature/one"]);
+    close(&fixture, &first);
+    let before = ran(&nested).len();
+    let (second, _) = fixture.open(&["--branch", "feature/two"]);
+    assert!(
+        ran(&nested).len() > before,
+        "a nested git ran its own post-checkout during this checkout"
+    );
+    none_of(&fixture.world, &second);
+}

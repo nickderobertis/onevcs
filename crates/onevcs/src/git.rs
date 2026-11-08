@@ -4022,12 +4022,11 @@ pub struct PostCheckout {
     pub duration: Duration,
     /// Everything git's checkout command wrote, both streams, unredacted and whole.
     pub output: String,
-    // llmlint: ignore[invalid_states_unrepresentable] git's own printed object ids,
-    // only ever spliced into the `rerun` line as git handed them to the hook; the
-    // crate's `Sha` wraps an unvalidated `String` and would make no state unrepresentable.
     /// The commit git handed the hook as the one before.
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed object id, only spliced into the `rerun` line as git handed it to the hook; the crate's `Sha` wraps an unvalidated `String` and would make no state unrepresentable.
     pub previous: String,
     /// The commit git handed the hook as the one checked out.
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed object id, only spliced into the `rerun` line as git handed it to the hook; the crate's `Sha` wraps an unvalidated `String` and would make no state unrepresentable.
     pub commit: String,
 }
 
@@ -4116,6 +4115,7 @@ struct Checkout<'a> {
     branch: &'a str,
     /// The commit `HEAD` stood at before, as git hands it to the hook — `None` for a
     /// worktree that did not exist, which git hands it as all zeros.
+    // llmlint: ignore[invalid_states_unrepresentable] git's own printed object id, only spliced into the `rerun` line as git handed it to the hook; the crate's `Sha` wraps an unvalidated `String` and would make no state unrepresentable.
     old: Option<String>,
     /// What names the commit the worktree is to stand at. Resolved only where an
     /// answer needs it, so a checkout of a repository with no hook costs no read.
@@ -4234,11 +4234,6 @@ fn with_hooks<'a>(hooks: &'a Option<String>, args: &[&'a str]) -> Vec<&'a str> {
     all
 }
 
-/// Whether git, run in `cwd`, would run a `post-checkout` hook.
-fn runs_post_checkout(cwd: &Path) -> Result<bool> {
-    Ok(executable(&git_owned_path(cwd, "hooks/post-checkout")?))
-}
-
 /// Whether a worktree stands on `branch` at `commit` — which is what a checkout that
 /// completed leaves, whatever the hook git ran after it did.
 fn checked_out(worktree: &Path, branch: &str, commit: &str) -> bool {
@@ -4282,22 +4277,22 @@ fn null_like(commit: &str) -> String {
 pub fn checkout_detached(worktree: &Path) -> Result<()> {
     let args = ["checkout", "-q", "--detach"];
     let commit = commit_of(worktree, "HEAD")?;
-    let output = run_unless(&args, Some(worktree), &[], None, Elapse::Answer)?;
-    if output.ok() || unremembered(|| only_the_hook_failed(worktree, commit.as_deref()))? {
+    let trace = HookTrace::cut()?;
+    let output = run_unless(&args, Some(worktree), &trace.env(), None, Elapse::Answer)?;
+    if output.ok()
+        || (trace.ran_post_checkout() && unremembered(|| detached_at(worktree, commit.as_deref()))?)
+    {
         return Ok(());
     }
     Err(refusal(&args, &output))
 }
 
-/// Whether a failed `checkout --detach` from `commit` did detach there and git would
-/// have run a hook after it — which leaves the hook as the only thing that failed.
-fn only_the_hook_failed(worktree: &Path, commit: Option<&str>) -> Result<bool> {
+/// Whether the worktree's head is detached at `commit`, which is what a `checkout
+/// --detach` from there leaves once it has completed.
+fn detached_at(worktree: &Path, commit: Option<&str>) -> Result<bool> {
     let detached = !run(&["symbolic-ref", "-q", "HEAD"], Some(worktree))?.ok();
     let at = run(&["rev-parse", "--verify", "-q", "HEAD"], Some(worktree))?;
-    Ok(detached
-        && at.ok()
-        && Some(at.trimmed().as_str()) == commit
-        && runs_post_checkout(worktree)?)
+    Ok(detached && at.ok() && Some(at.trimmed().as_str()) == commit)
 }
 
 /// Move the worktree's head to `reference` and make the index and the tracked files
