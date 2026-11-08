@@ -263,26 +263,35 @@ fn work_past_a_publication_by_another_stream_names_that_stream_as_what_published
     assert!(!because.contains("closed without publishing"), "{because}");
 }
 
-/// Appends the `change-opened` a stream written without a `push` carries, stamped `at`.
+/// Appends a `change-opened` naming `head` where one is given; `payload` is otherwise
+/// what a publication writes.
 ///
-/// No command writes a change request with no push beside it, so the record is written
-/// by hand as `library.rs`'s is; the real CLI then meets it.
-fn record_change_opened(host: &Host, token: &str, at: &str) {
+/// No command writes a change request with no push beside it, or one naming a commit,
+/// so the record is written by hand as `library.rs`'s is; the real CLI then meets it.
+fn record_change_opened(host: &Host, token: &str, branch: &str, head: Option<&str>) {
     let stream = host
         .fixture
         .world
         .home()
         .join(format!("streams/{token}.ndjson"));
     let recorded = std::fs::read_to_string(&stream).unwrap_or_default();
+    let mut payload = serde_json::json!({
+        "url": format!("https://github.com/{SLUG}/pull/7"),
+        "base": "main",
+        "branch": branch,
+    });
+    if let Some(head) = head {
+        payload["head"] = head.into();
+    }
     let line = serde_json::json!({
         "v": 1,
-        "ts": at,
+        "ts": "2026-01-01T00:00:00.000Z",
         "stream": token,
         "seq": recorded.lines().count() + 1,
         "source": "vcs",
         "kind": "change-opened",
         "labels": {},
-        "payload": {"url": format!("https://github.com/{SLUG}/pull/7"), "base": "main"},
+        "payload": payload,
         "artifacts": [],
     });
     std::fs::write(&stream, format!("{recorded}{line}\n")).expect("the record appended");
@@ -293,32 +302,106 @@ fn move_origin_away(host: &Host) {
     std::fs::rename(&host.fixture.origin, &moved).expect("origin moved aside");
 }
 
+/// Puts a commit on `branch` of `repo` without checking it out, dated long before any
+/// record this suite writes, and answers it.
+fn commit_dated_long_ago(host: &Host, repo: &Path, branch: &str) -> String {
+    let world = &host.fixture.world;
+    let tip = world.git(repo, &["rev-parse", branch]);
+    let long_ago = "2001-01-01T00:00:00Z";
+    let commit = world.git_env(
+        repo,
+        &[
+            ("GIT_AUTHOR_DATE", long_ago),
+            ("GIT_COMMITTER_DATE", long_ago),
+            ("GIT_AUTHOR_NAME", "Later"),
+            ("GIT_AUTHOR_EMAIL", "later@example.com"),
+            ("GIT_COMMITTER_NAME", "Later"),
+            ("GIT_COMMITTER_EMAIL", "later@example.com"),
+        ],
+        &[
+            "commit-tree",
+            &format!("{tip}^{{tree}}"),
+            "-p",
+            &tip,
+            "-m",
+            "feat: later work",
+        ],
+    );
+    world.git(
+        repo,
+        &["update-ref", &format!("refs/heads/{branch}"), &commit],
+    );
+    commit
+}
+
+fn stopped_because(rows: &[Value]) -> String {
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0]["stopped_because"]
+        .as_str()
+        .expect("a reason")
+        .to_owned()
+}
+
 #[test]
-fn a_recorded_change_request_answers_while_origin_cannot_be_asked() {
+fn a_change_request_naming_no_commit_with_origin_unreachable_keeps_its_row_and_says_so() {
     let host = Host::new();
     let branch = "feature/opened-only";
     let (token, _) = host.work(branch, "a.txt", "0");
     host.close(&token);
-    assert_eq!(host.rows(branch).len(), 1, "nothing records publishing it");
-    record_change_opened(&host, &token, "2999-01-01T00:00:00.000Z");
-    assert_eq!(
-        host.rows(branch).len(),
-        1,
-        "origin, asked, verifiably does not hold it"
-    );
+    record_change_opened(&host, &token, branch, None);
     move_origin_away(&host);
+    let because = stopped_because(&host.rows(branch));
+    assert!(because.contains("opened a change request"), "{because}");
+    assert!(because.contains("could not be asked"), "{because}");
+    assert!(!because.contains("closed without publishing"), "{because}");
+}
+
+#[test]
+fn a_change_request_naming_no_commit_is_settled_by_origin_when_origin_can_be_asked() {
+    let host = Host::new();
+    let world = &host.fixture.world;
+    let branch = "feature/opened-asked";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.close(&token);
+    record_change_opened(&host, &token, branch, None);
+    assert_eq!(host.rows(branch).len(), 1, "origin does not hold it");
+    world.git(
+        &host.other,
+        &["push", "-q", "--no-verify", "origin", branch],
+    );
+    world.git(
+        &host.other,
+        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
+    );
     assert_eq!(host.rows(branch), Vec::<Value>::new());
 }
 
 #[test]
-fn work_committed_after_a_recorded_change_request_is_listed() {
+fn a_change_request_naming_its_tip_answers_and_a_later_old_dated_commit_is_listed() {
     let host = Host::new();
-    let branch = "feature/opened-then-worked";
+    let branch = "feature/opened-at-head";
     let (token, _) = host.work(branch, "a.txt", "0");
     host.close(&token);
-    record_change_opened(&host, &token, "2001-01-01T00:00:00.000Z");
+    let head = host.fixture.world.git(&host.other, &["rev-parse", branch]);
+    record_change_opened(&host, &token, branch, Some(&head));
     move_origin_away(&host);
-    assert_eq!(host.rows(branch).len(), 1, "the record predates this tip");
+    assert_eq!(host.rows(branch), Vec::<Value>::new());
+    commit_dated_long_ago(&host, &host.other, branch);
+    assert_eq!(host.rows(branch).len(), 1, "no record names this commit");
+}
+
+#[test]
+fn an_old_dated_commit_past_a_real_publication_stays_listed_while_origin_cannot_be_asked() {
+    let host = Host::new();
+    let branch = "feature/published-then-old-dated";
+    let (token, _) = host.work(branch, "a.txt", "0");
+    host.publish(&token);
+    host.close(&token);
+    commit_dated_long_ago(&host, &host.other, branch);
+    move_origin_away(&host);
+    let because = stopped_because(&host.rows(branch));
+    assert!(because.contains(&token), "{because}");
+    assert!(!because.contains("closed without publishing"), "{because}");
 }
 
 #[test]
@@ -336,13 +419,7 @@ fn a_recorded_push_naming_no_usable_head_answers_nothing() {
     // llmlint: ignore-block[tests_mirror_real_usage] the premise is a push record no
     // onevcs wrote, naming no commit, and no command writes one, so the stream a real
     // publication left is edited by hand. The real CLI then meets it.
-    let torn: String = recorded
-        .replace(&head, "not-a-commit")
-        .lines()
-        .filter(|line| !line.contains("\"kind\":\"change-opened\""))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    std::fs::write(&stream, torn).expect("a torn head");
+    std::fs::write(&stream, recorded.replace(&head, "not-a-commit")).expect("a torn head");
     // llmlint: ignore-end[tests_mirror_real_usage]
     world.git(
         &host.other,

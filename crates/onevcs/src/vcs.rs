@@ -830,8 +830,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // the reason its row gives.
             let tokens = tokens_of(sessions, identity, &branch);
             let pushed = crate::status::pushed_heads(streams, identity, &branch, &tokens);
-            let opened = crate::status::opened_change_at(streams, identity, &branch, &tokens);
-            let covered = settle_published(asked, &branch, &tip, &pushed, opened, &preserved_here)?;
+            let settled = settle_published(asked, &branch, &tip, &pushed, &preserved_here)?;
+            let covered = settled.covered;
             // Unless something is still working on it: a publication resuming a pushed
             // branch has not finished, and its held row is what stops anybody touching it.
             if covered
@@ -954,6 +954,10 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                     retirement,
                     pushers: crate::status::publishing_streams(streams, identity, &branch, &tokens),
                     covered,
+                    unconfirmed_change: settled.origin_silent
+                        && crate::status::opened_change_recorded(
+                            streams, identity, &branch, &tokens,
+                        ),
                 },
                 sessions,
                 trailers,
@@ -1051,6 +1055,9 @@ struct Preserved<'a> {
     pushers: BTreeSet<String>,
     /// Whether origin carries this copy's tip under the branch's name ([`settle_published`]).
     covered: bool,
+    /// Whether a change request is recorded for this branch and origin could not be
+    /// asked to confirm this copy's tip.
+    unconfirmed_change: bool,
 }
 
 /// The row one preserved branch answers with.
@@ -1074,6 +1081,7 @@ fn preserved_row(
         ref retirement,
         ref pushers,
         covered,
+        unconfirmed_change,
     } = *preserved;
     // A marker under a prefix this host does not read is still a marker:
     // reporting the branch as complete is what would let somebody hand
@@ -1110,7 +1118,14 @@ fn preserved_row(
                 because = held.holding.because(),
                 worktree = held.worktree.display(),
             ),
-            None => recorded_stop(sessions, identity, branch, pushers, covered),
+            None => recorded_stop(
+                sessions,
+                identity,
+                branch,
+                pushers,
+                covered,
+                unconfirmed_change,
+            ),
         },
     };
     if let Landed::InPart { evidence, unlanded } = verdict {
@@ -1208,6 +1223,7 @@ fn recorded_stop(
     branch: &str,
     pushers: &BTreeSet<String>,
     covered: bool,
+    unconfirmed_change: bool,
 ) -> String {
     let answering = latest_session(sessions, identity, branch);
     if let Some(record) = answering.filter(|record| record.state == Lifecycle::Open) {
@@ -1227,6 +1243,10 @@ fn recorded_stop(
         (Some(pusher), _) if covered => format!(
             "nothing stopped it unpublished: {pusher} records publishing this branch, and origin \
              carries this copy's tip"
+        ),
+        (Some(pusher), _) if unconfirmed_change => format!(
+            "onevcs opened a change request for this branch ({pusher} records it), but origin \
+             could not be asked to confirm this copy's tip"
         ),
         (Some(pusher), _) => format!(
             "{pusher} records publishing this branch, and this copy holds commits past what \
@@ -1250,11 +1270,6 @@ fn recorded_stop(
 /// ref alone, and origin's answer is written to its `origin/<branch>`, so a retained
 /// clone left stale by a publication from somewhere else stops being a candidate.
 ///
-/// A `change-opened` names no head, so `opened` covers only a tip committed wholly
-/// before that moment — a commit in the same second may be later work — and it is
-/// weaker than a recorded head: it answers only where origin cannot be asked, and any
-/// answer from origin that does not carry this tip lists the branch.
-///
 /// A branch `onevcs preserve` put on origin and no record says was pushed is never asked
 /// of origin: being there under its own name is what preserving it did, and is not
 /// publishing it. Every other way of not knowing is `false`, which lists the branch.
@@ -1263,9 +1278,8 @@ fn settle_published(
     branch: &str,
     tip: &str,
     pushed: &[git::ObjectId],
-    opened: Option<std::time::SystemTime>,
     preserved: &BTreeSet<String>,
-) -> Result<bool> {
+) -> Result<Settled> {
     let mut recorded = false;
     for head in pushed {
         if head.as_str() == tip || git::known_to_reach(asked, tip, head.as_str())? {
@@ -1273,12 +1287,15 @@ fn settle_published(
             break;
         }
     }
-    let opened_after = !recorded && opened.is_some_and(|at| committed_before(asked, tip, at));
-    if !recorded && !opened_after && preserved.contains(branch) {
-        return Ok(false);
+    let answered = |covered| Settled {
+        covered,
+        origin_silent: false,
+    };
+    if !recorded && preserved.contains(branch) {
+        return Ok(answered(false));
     }
     match git::remote_tip_read(asked.path(), "origin", branch) {
-        Ok(git::RemoteTip::Absent) => Ok(false),
+        Ok(git::RemoteTip::Absent) => Ok(answered(false)),
         Ok(git::RemoteTip::At(remote)) => {
             let held = crate::host::Sha(remote.as_str().to_owned());
             if !git::has_commit(asked.path(), &held) {
@@ -1290,18 +1307,21 @@ fn settle_published(
             if carried {
                 git::record_on_origin(asked.path(), branch, &remote);
             }
-            Ok(carried || recorded)
+            Ok(answered(carried || recorded))
         }
-        Ok(_) | Err(_) => Ok(recorded || opened_after),
+        Ok(_) | Err(_) => Ok(Settled {
+            covered: recorded,
+            origin_silent: true,
+        }),
     }
 }
 
-/// Whether `tip` was committed wholly before `at`. Git keeps whole seconds, so the
-/// commit's second has to have ended by then.
-fn committed_before(asked: git::Asked<'_>, tip: &str, at: std::time::SystemTime) -> bool {
-    git::committed_at(asked.path(), tip)
-        .and_then(|seconds| seconds.checked_add(1))
-        .is_some_and(|end| std::time::UNIX_EPOCH + std::time::Duration::from_secs(end) <= at)
+/// What [`settle_published`] found.
+struct Settled {
+    /// Whether origin carries this copy's tip under the branch's name.
+    covered: bool,
+    /// Whether origin was asked and could not answer.
+    origin_silent: bool,
 }
 
 /// The session that answers for a branch: the newest record naming it.

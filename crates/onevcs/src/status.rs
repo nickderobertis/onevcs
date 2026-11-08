@@ -2291,7 +2291,8 @@ pub(crate) struct Recorded {
     /// what it recorded is not all here.
     gaps: bool,
     /// Every commit this stream records putting on origin under a branch's own name,
-    /// from each accepted `push` naming its `head`. Each keeps its scope where it has
+    /// from each accepted `push` naming its `head` and each `change-opened` naming both
+    /// its `branch` and its `head`. Each keeps its scope where it has
     /// one: a session's stream labels no identity, so [`publication_streams`] attributes
     /// an unscoped entry through the session records instead.
     ///
@@ -3551,6 +3552,9 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         );
         match kind {
             EventKind::ChangeOpened => {
+                if let Some(named) = pushed_head(&field) {
+                    record.pushed.push((scope.clone(), named));
+                }
                 if let (Some(url), Some(proofs)) = (field("url"), scoped(&mut record, &scope)) {
                     proofs.opened = Some(Stamped {
                         at,
@@ -3905,8 +3909,7 @@ fn publication_streams<'a>(
 /// `sessions` are the tokens of that identity's sessions of the branch. Held to the
 /// branch asked about, for the reason [`preserved_in`] is: a stream is matched by name
 /// as well as by content, and a branch-keyed verb's stream can hold another branch's
-/// push. A `change-opened` names no head, so it cannot answer this: see
-/// [`opened_change_at`].
+/// push. A `change-opened` naming no head cannot answer this; the push it follows does.
 pub(crate) fn pushed_heads(
     streams: &[Recorded],
     identity: &str,
@@ -3945,26 +3948,24 @@ pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<Obj
         .map(|(_, pushed)| pushed.head)
 }
 
-/// When this host's streams last record a change request opened for one branch of one
+/// Whether this host's streams record a change request opened for one branch of one
 /// identity, held to that identity's repository and to a stream about that branch: a
 /// session's of it, or one whose events name it.
 ///
-/// `change-opened` names no head, so this is the moment and not a commit; the caller
-/// decides what that moment covers.
-pub(crate) fn opened_change_at(
+/// Says that one was opened and nothing about which commit: only a commit a record
+/// names can cover a tip ([`pushed_heads`]).
+pub(crate) fn opened_change_recorded(
     streams: &[Recorded],
     identity: &str,
     branch: &str,
     sessions: &[String],
-) -> Option<std::time::SystemTime> {
+) -> bool {
     publication_streams(streams, identity, branch, sessions)
         .into_iter()
         .filter(|record| {
             sessions.contains(&record.token) || record.branch.as_deref() == Some(branch)
         })
-        .filter_map(|record| record.opened_for(identity))
-        .filter_map(|opened| crate::ids::instant_of(&String::from(opened.at)))
-        .max()
+        .any(|record| record.opened_for(identity).is_some())
 }
 
 /// The tokens of the streams that record publishing one branch of one identity: an
