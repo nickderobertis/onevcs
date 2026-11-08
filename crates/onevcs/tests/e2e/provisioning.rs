@@ -163,7 +163,7 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
     close(&fixture, &first);
     assert_eq!(
         ran(&ledger).len(),
-        2,
+        3,
         "git ran it once at the close's return"
     );
 
@@ -199,12 +199,12 @@ fn a_failing_hook_never_fails_an_open_and_git_runs_it_once_per_checkout() {
     let said = rerun(&swapped, &reused);
     assert!(said.contains(MARKER), "{said}");
     let lines = ran(&ledger);
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 5);
     assert_eq!(
-        lines[3], lines[2],
+        lines[4], lines[3],
         "the rerun's three arguments are the checkout's"
     );
-    assert_eq!(lines[2].split(' ').count(), 3);
+    assert_eq!(lines[3].split(' ').count(), 3);
 }
 
 #[test]
