@@ -40,6 +40,13 @@ mod base_merge;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod change;
+// llmlint: ignore[e2e_not_mocked] these journeys drive `Vcs::recoverable_matching` over real
+// git because that typed library call is the surface a consumer links. Unix only: the
+// counting `git` they all reach is a shell script found on a colon-separated PATH.
+#[cfg(unix)]
+mod decisions;
+#[cfg(unix)]
+mod decisions_support;
 // Unix only: the prefix a host configures and the name a caller proposes, driven
 // against real branches in real clones. Mostly the compiled binary; three journeys
 // drive the library seam in process, for the reason `library.rs` gives. Its own

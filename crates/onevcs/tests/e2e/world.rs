@@ -154,6 +154,9 @@ impl World {
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)
             .env("ONEVCS_HOME", self.home())
+            // The journeys of what a read derives count its derivation; only
+            // `decisions.rs` is about the record that would otherwise serve them.
+            .env("ONEVCS_DECISION_RECORD", "off")
             // Journeys must not wait out a production bound when something is
             // genuinely stuck; each one that tests a bound sets its own.
             .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "60")
@@ -189,6 +192,7 @@ impl World {
             .env("PATH", path)
             .env("HOME", &self.root)
             .env("ONEVCS_HOME", self.home())
+            .env("ONEVCS_DECISION_RECORD", "off")
             .env("ONEVCS_LOCK_TIMEOUT_SECONDS", "60")
             .env("ONEVCS_CHECKS_POLL_SECONDS", "0.02")
             .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20")

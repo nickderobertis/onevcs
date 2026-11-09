@@ -32,7 +32,7 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   }
   const record = read("recoverable.json");
   if (!validate(record)) throw new Error(`incomplete telemetry: ${JSON.stringify(validate.errors)}`);
-  if (record.version !== 2 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
+  if (record.version !== 3 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
   if (record.build.run_id !== expected.run_id || record.build.binary !== expected.binary ||
       record.build.binary_sha256 !== expected.binary_sha256 || record.build.source_sha256 !== expected.source_sha256) throw new Error("stale or foreign invocation/build");
   if (!digest(record.build.source_sha256) || record.build.source_sha256 !== sourceFingerprint(sourceRoot)) {
@@ -43,6 +43,21 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   }
   if (record.preparation_ms <= 0 || record.total_ms < record.preparation_ms || !Number.isFinite(record.load1) || record.load1 < 0) {
     throw new Error("incomplete preparation/total timing");
+  }
+  for (const sample of [record.host.cold, ...record.host.warm]) {
+    if (!(sample.wall_ms > 0) || !Number.isFinite(sample.load1) || sample.load1 < 0 || !digest(sample.verdict_sha256)) {
+      throw new Error("incomplete host-shaped sample");
+    }
+  }
+  if (new Set(record.host.warm.map(sample => sample.verdict_sha256)).size !== 1 || new Set(record.host.warm.map(sample => sample.rows)).size !== 1 || record.host.warm[0].rows <= 0) {
+    throw new Error("host-shaped warm samples answered different rows");
+  }
+  if (record.host.warm[0].verdict_sha256 !== record.host.cold.verdict_sha256 || record.host.warm[0].rows !== record.host.cold.rows) {
+    throw new Error("host-shaped warm samples and the cold read answered different rows");
+  }
+  if (!digest(record.host.rows_sha256) || record.host.git_executions < 0 ||
+      record.host.checks.by_gain.some(check => !(check.seconds >= 0) || !(check.gained >= 0))) {
+    throw new Error("incomplete host-shaped detail");
   }
   for (const [index, workload] of record.workloads.entries()) {
     const expectedScale = index === 0 ? 1 : 10;

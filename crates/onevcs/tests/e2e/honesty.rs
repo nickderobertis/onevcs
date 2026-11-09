@@ -65,6 +65,7 @@ const AUTHOR: &str = "tester";
 pub fn inhabit(world: &World) {
     std::env::set_var("HOME", world.path(""));
     std::env::set_var("ONEVCS_HOME", world.home());
+    std::env::set_var("ONEVCS_DECISION_RECORD", "off");
     std::env::set_var("ONEVCS_LOCK_TIMEOUT_SECONDS", "60");
     std::env::set_var("ONEVCS_CHECKS_POLL_SECONDS", "0.02");
     std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "20");

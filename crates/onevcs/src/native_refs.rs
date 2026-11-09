@@ -322,14 +322,38 @@ pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
 /// HEAD under: `Some(None)` for a branch the remote does not have, and `None` for git
 /// to answer. A branch whose ref is symbolic is git's too.
 pub(crate) fn advertised_tip(repo: &Path, remote: &str, branch: &str) -> Option<Option<String>> {
-    let remote = local_remote(repo, remote)?;
-    let reference = match remote.find_reference(&format!("refs/heads/{branch}")) {
-        Ok(reference) => reference,
-        Err(missing) if missing.code() == git2::ErrorCode::NotFound => return Some(None),
-        Err(_) => return None,
-    };
-    (reference.kind() == Some(git2::ReferenceType::Direct))
-        .then(|| reference.target().map(|id| id.to_string()))
+    advertised_tips(repo, remote)?.tip(branch)
+}
+
+/// One local remote opened once, for asking where several of its branches stand.
+pub(crate) struct AdvertisedTips(git2::Repository);
+
+impl AdvertisedTips {
+    /// [`advertised_tip`] of one branch: `None` for git to answer, and `Some(None)` for
+    /// a branch this remote does not have.
+    pub(crate) fn tip(&self, branch: &str) -> Option<Option<String>> {
+        let reference = match self.0.find_reference(&format!("refs/heads/{branch}")) {
+            Ok(reference) => reference,
+            Err(missing) if missing.code() == git2::ErrorCode::NotFound => return Some(None),
+            Err(_) => return None,
+        };
+        (reference.kind() == Some(git2::ReferenceType::Direct))
+            .then(|| reference.target().map(|id| id.to_string()))
+    }
+}
+
+/// The remote [`AdvertisedTips`] asks, under the conditions [`advertised_head`] reads one.
+pub(crate) fn advertised_tips(repo: &Path, remote: &str) -> Option<AdvertisedTips> {
+    local_remote(repo, remote).map(AdvertisedTips)
+}
+
+/// Whether `remote`'s URL is a path on this filesystem, so asking it reaches no network.
+pub(crate) fn remote_on_this_filesystem(repo: &Path, remote: &str) -> bool {
+    remote_url(repo, remote).is_some_and(|url| {
+        !url.contains("://")
+            && !url.contains("::")
+            && (Path::new(&url).is_absolute() || !url.contains(':'))
+    })
 }
 
 /// The bare repository on this filesystem `remote` names, opened, where what it

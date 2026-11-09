@@ -59,6 +59,7 @@ mod change;
 mod checkout_reads;
 pub mod cli;
 mod closing;
+mod decisions;
 pub mod declaration;
 mod error;
 mod event;

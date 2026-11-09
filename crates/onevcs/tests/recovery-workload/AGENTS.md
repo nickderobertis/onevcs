@@ -73,3 +73,8 @@ library, so a debug or coverage-instrumented build would measure different code.
 Keep it outside the recoverable read's clock. Its source-download retry must
 reuse the same source checkout and local LFS cache after the upload refusal;
 rebuilding either would measure another cold attempt instead of a retry.
+
+`host.rs` is the host-shaped budget journey. Every warm sample starts from the state
+`AgedHost::restore` re-establishes, because each read refreshes the records and a sample
+taken after one would measure nothing moved. Its samples stay out of the
+`--scale 1|10` workloads the other budgets read.

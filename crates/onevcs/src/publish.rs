@@ -3553,6 +3553,7 @@ fn record_landing(context: &Context<'_>, sha: &Sha) {
             merged = sha.0,
         );
     }
+    crate::decisions::refresh(&context.resolution.publication, &context.branch);
 }
 
 /// Record what each of this identity's **automated** release targets had at the

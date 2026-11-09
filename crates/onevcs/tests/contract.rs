@@ -3076,6 +3076,7 @@ fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_field
             detail: onevcs::Detail::Full,
             sessions: vec![SessionToken("s-1".to_owned())],
             labels: BTreeMap::from([("run".to_owned(), "r-1".to_owned())]),
+            branch: None,
         })
         .expect("a selection serializes"),
         json!({"detail": "full", "sessions": ["s-1"], "labels": {"run": "r-1"}})
@@ -9441,6 +9442,32 @@ fn recovery_detail_and_tip_match_the_declared_wire_surface() {
         assert!(contract.contains(declaration), "missing {declaration}");
     }
     assert_eq!(Selection::default().detail, Detail::Full);
+    assert_eq!(Selection::default().branch, None);
+    assert!(
+        contract.contains("pub branch: Option<String>"),
+        "the contract declares Selection.branch"
+    );
+    let filtered = serde_json::to_value(Selection {
+        branch: Some("work/a".to_owned()),
+        ..Selection::default()
+    })
+    .unwrap();
+    assert_eq!(filtered["branch"], "work/a");
+    assert!(
+        serde_json::to_value(Selection::default())
+            .unwrap()
+            .get("branch")
+            .is_none(),
+        "an unset branch filter is omitted"
+    );
+    assert!(
+        !Selection {
+            branch: Some("work/a".to_owned()),
+            ..Selection::default()
+        }
+        .is_empty(),
+        "is_empty counts it"
+    );
     assert_eq!(
         serde_json::from_value::<Selection>(json!({}))
             .unwrap()

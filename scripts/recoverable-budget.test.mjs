@@ -20,7 +20,8 @@ function fixture() {
   const class_counts = Object.fromEntries(["in-part","landed","live","no","retirable","superseded","unknown"].map(name=>[name,1]));
   const call = {wall_ms:12.5,load1:1,rows:5,verdict_sha256:sha("uncached verdict")};
   const calls = () => Array.from({length:10},()=>({...call}));
-  const record = {version:2,build,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
+  const hostRecord = {warm:calls(),cold:call,rederived:26,checks:{by_gain:[{gained:600,seconds:0.01}]},git_executions:40,slowest_ms:13,build_ms:5,load1:1,rows_sha256:sha("host rows")};
+  const record = {version:3,build,host:hostRecord,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
     workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256,
       uncached_verdict_sha256:call.verdict_sha256,in_process_warm:calls(),...(scale === 1 ? {in_process_cold:calls()} : {})}))};
   const invocation = {state:"complete",...build};
@@ -59,6 +60,7 @@ const refusals = {
   "missing in-process cold calls":f=>{delete f.record.workloads[0].in_process_cold;f.save();},
   "too few in-process calls":f=>{f.record.workloads[0].in_process_cold.pop();f.save();},
   "an in-process call answering other rows":f=>{f.record.workloads[0].in_process_warm[3].verdict_sha256=sha("different verdict");f.save();},
+  "a host warm read answering other rows than the cold one":f=>{f.record.host.cold.verdict_sha256=sha("different verdict");f.save();},
   "an untimed in-process call":f=>{f.record.workloads[1].in_process_warm[9].wall_ms=0;f.save();},
   "foreign scale":f=>{f.record.workloads[0].scale=10;f.save();},
   "shrunk workload":f=>{f.record.workloads[0].shape=[1,1,1,1];f.save();},
@@ -139,6 +141,33 @@ test("latency reader reports median wall time despite minority outliers and refu
       const maximum = args[1] === "10" ? "5000.0" : "12.5";
       assert.equal(result.detail, `invocation ${f.record.build.run_id}: ${args[2].slice(2)} in-process launcher Decision, scale ${args[1]}: median of 10 calls ${(value * 1000).toFixed(1)}ms (maximum ${maximum}ms), load1 1-1`);
     }
+    rmSync(join(f.root, "result.json"), { force: true });
+    const host = run("--scale", "host", "--warm");
+    assert.equal(host.status, 0, host.stderr);
+    const hostResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+    assert.equal(hostResult.value, 0.0125);
+    assert.match(hostResult.detail, /re-derived 26 branches; base-increment checks by commits gained: 600: 10\.0ms; a further warm call started 40 git processes/);
+    assert.match(hostResult.detail, /cold 12\.5ms/);
+    // A host record that is incomplete or inconsistent is refused, not reported.
+    const saved = structuredClone(f.record.host);
+    for (const mangle of [
+      host => { host.warm[0].wall_ms = -1; },
+      host => { host.cold.verdict_sha256 = "not hex"; },
+      host => { host.checks.by_gain[0].seconds = -1; },
+      host => { host.rows_sha256 = "not hex"; },
+      host => { host.warm[0].verdict_sha256 = sha("different rows"); },
+      host => { host.warm[0].rows = 3; },
+      host => { host.warm[0].rows = 0; },
+    ]) {
+      f.record.host = structuredClone(saved);
+      mangle(f.record.host);
+      writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
+      const refused = run("--scale", "host", "--warm");
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /host-shaped/);
+    }
+    f.record.host = saved;
+    writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
     // A systematic slowdown still reaches the checker as an over-budget value.
     for (const call of f.record.workloads[1].in_process_warm) call.wall_ms += 400;
     writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
@@ -148,10 +177,10 @@ test("latency reader reports median wall time despite minority outliers and refu
     const unrecorded = run("--scale", "10", "--cold");
     assert.equal(unrecorded.status, 2);
     assert.match(unrecorded.stderr, /in-process cold calls are recorded at --scale 1 only/);
-    assert.match(unrecorded.stderr, /next: pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold/);
+    assert.match(unrecorded.stderr, /next: pass --scale 1 --warm, --scale 10 --warm, --scale 1 --cold or --scale host --warm/);
     const malformed = run("--scale", "2", "--warm");
     assert.equal(malformed.status, 2);
-    assert.match(malformed.stderr, /expected --scale 1\|10 --cold\|--warm/);
+    assert.match(malformed.stderr, /expected --scale 1\|10\|host --cold\|--warm/);
     assert.match(malformed.stderr, /next: pass --scale 1 --warm/);
     // Run outside onebudgetspec it has nowhere to report, and names the recipe that
     // gives it somewhere.

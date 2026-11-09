@@ -49,6 +49,13 @@ budgets:
     direction: max
     threshold: 0.4
     description: Median wall time of ten in-process launcher-filtered Decision recoverable_matching calls after one priming call over the unchanged 10x workload, each answering the uncached read's rows; the 10x warm Stop-hook bound less the guard's own process start and unwatched check.
+  - id: recoverable-host-decision-latency-warm
+    measure: reported
+    command: [node, scripts/recoverable-latency-budget.mjs, --scale, host, --warm]
+    unit: seconds
+    direction: max
+    threshold: 0.3
+    description: Median wall time of ten in-process unfiltered Decision recoverable_matching calls over onevcs_testing::recovery::HOST aged by age_host, each started from the state AgedHost::restore and verify re-establish; the host-wide read's warm bound on this repository's CI runner, 1 s on the host less the engine's start and rendering, divided by the measured runner ratio. Detail reports the cold read, branches re-derived, the per-checkout base-increment checks and a separate call's git executions.
   - id: recoverable-decision-latency-labelled-cold
     measure: reported
     command: [node, scripts/recoverable-latency-budget.mjs, --scale, '1', --cold]

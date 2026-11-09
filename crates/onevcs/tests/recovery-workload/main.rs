@@ -14,7 +14,11 @@ mod boundary;
 mod boundary_sanitize;
 mod churn;
 mod counting;
+mod decisions_journeys;
+#[path = "../e2e/decisions_support.rs"]
+mod decisions_support;
 mod draft_hold;
+mod host;
 mod retire_hour;
 #[cfg(target_os = "linux")]
 mod scoped;
@@ -299,6 +303,18 @@ fn class_name(class: Class) -> &'static str {
         Class::InPart => "in-part",
     }
 }
+/// The landing state and retirement class a fixture class declares.
+fn class_outcome(class: Class) -> (&'static str, &'static str) {
+    match class {
+        Class::Landed => ("yes", "retirable"),
+        Class::Retirable => ("unknown", "retirable"),
+        Class::Superseded => ("no", "superseded-with-changes"),
+        Class::Live | Class::No => ("no", "keep"),
+        Class::Unknown => ("unknown", "keep"),
+        Class::InPart => ("in-part", "keep"),
+    }
+}
+
 fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
     assert_eq!(rows.len(), fixture.expected.len(), "all selected branches");
     let mut classes = BTreeMap::new();
@@ -312,14 +328,7 @@ fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
         assert_eq!(row["tip"], expected.tip.as_str());
         assert_eq!(row["session"], *expected.session);
         assert_eq!(row["labels"]["launcher"], fixture.launcher);
-        let (state, retirement) = match expected.class {
-            Class::Landed => ("yes", "retirable"),
-            Class::Retirable => ("unknown", "retirable"),
-            Class::Superseded => ("no", "superseded-with-changes"),
-            Class::Live | Class::No => ("no", "keep"),
-            Class::Unknown => ("unknown", "keep"),
-            Class::InPart => ("in-part", "keep"),
-        };
+        let (state, retirement) = class_outcome(expected.class);
         assert_eq!(row["landed"]["state"], state, "{}", expected.branch);
         assert_eq!(
             row["retirement"]["class"], retirement,
@@ -739,11 +748,24 @@ fn full_workload_recovery() {
         )
         .unwrap();
     }
+    let host_root = tempfile::Builder::new()
+        .prefix("recovery-host-")
+        .tempdir_in(
+            std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir),
+        )
+        .expect("empty disposable host");
+    let host_preparation = Instant::now();
+    let host = host::journey(host_root.path());
+    preparation_ms += milliseconds(host_preparation).min(host.build_ms);
+    host_root.close().expect("required host fixture cleanup");
     let mut record = Record {
-        version: 2,
+        version: 3,
         build: provenance.clone(),
         scenario: Scenario::LauncherDecision,
         workloads: workloads.try_into().expect("both workloads"),
+        host,
         preparation_ms,
         total_ms: milliseconds(start),
         load1: initial_load,
@@ -824,7 +846,20 @@ fn the_latency_program_refuses_what_it_cannot_use() {
         ),
         (
             vec!["--launcher", "x", "--calls", "1", "--mode", "hot"],
-            "is not warm, cold or uncached",
+            "is not warm, cold, uncached or once",
+        ),
+        (
+            vec![
+                "--launcher",
+                "x",
+                "--selection",
+                "host",
+                "--calls",
+                "1",
+                "--mode",
+                "once",
+            ],
+            "are alternatives",
         ),
         (
             vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
@@ -866,6 +901,35 @@ fn the_latency_program_refuses_what_it_cannot_use() {
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
     assert!(silent, "a failed read prints no report");
+
+    // A cold read answers from nothing a read left behind, its decision records included;
+    // a warm one keeps both. The clearing comes before the read this state root fails.
+    let left = [
+        home.join("cache/recoverable/v1/left.json"),
+        home.join("decisions/v1/identity/branch.json"),
+    ];
+    let leave = || {
+        for file in &left {
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(file, "{}").expect("what a read left");
+        }
+    };
+    leave();
+    run(
+        &["--launcher", "x", "--calls", "1", "--mode", "warm"],
+        Some(&home),
+    );
+    assert!(left.iter().all(|file| file.exists()), "warm keeps them");
+    for mode in ["cold", "uncached"] {
+        leave();
+        run(
+            &["--launcher", "x", "--calls", "1", "--mode", mode],
+            Some(&home),
+        );
+        for file in &left {
+            assert!(!file.exists(), "{mode} leaves {}", file.display());
+        }
+    }
 }
 
 /// A long-lived caller repeats this read for hours, so one process making it two

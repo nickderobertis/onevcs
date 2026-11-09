@@ -346,6 +346,27 @@ thread_local! {
 /// removal marker between attempts, which a queued kernel wait could not.
 const PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
+thread_local! {
+    /// Whether this thread is making a read that takes no turn: see [`unturned`].
+    static UNTURNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `read` taking no read turn and waiting on no probe: the decision record's read
+/// of branches it will not re-derive, which only looks at refs and records already
+/// written and so must not be held up by another process's turn. Whatever that read
+/// meets half torn down answers as absent, which sends the branch to the derivation
+/// that does take its turn.
+pub(crate) fn unturned<T>(read: impl FnOnce() -> T) -> T {
+    let before = UNTURNED.with(|flag| flag.replace(true));
+    let answer = read();
+    UNTURNED.with(|flag| flag.set(before));
+    answer
+}
+
+fn is_unturned() -> bool {
+    UNTURNED.with(std::cell::Cell::get)
+}
+
 /// Hold an identity's checkouts stable across a traversal and its git children.
 pub(crate) fn identity(identity: &str) -> Result<Turn> {
     at(workspace::identity_dir(identity)?, Mode::Shared)
@@ -353,6 +374,9 @@ pub(crate) fn identity(identity: &str) -> Result<Turn> {
 
 /// Protect a managed checkout even when its session record is no longer open.
 pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
+    if is_unturned() {
+        return Ok(None);
+    }
     let managed = managed(path)?;
     let turn = managed
         .as_ref()
@@ -764,6 +788,13 @@ pub(crate) fn session(token: &str) -> Result<(Turn, workspace::Record)> {
 }
 
 fn at(root: PathBuf, mode: Mode) -> Result<Turn> {
+    if is_unturned() {
+        return Ok(Rc::new(Lease {
+            guard: RefCell::new(None),
+            mode,
+            checkouts: RefCell::new(HashMap::new()),
+        }));
+    }
     HELD.with(|held| {
         if let Some(guard) = held.borrow().get(&root).and_then(Weak::upgrade) {
             if mode == Mode::Exclusive && guard.mode == Mode::Shared {
@@ -1312,6 +1343,124 @@ mod tests {
     #[cfg(unix)]
     const PROCESS_IDENTITY: &str = "github.com/owner/two-processes";
 
+    /// A warm read of recorded branches answers while another process holds the
+    /// identity's turn, and a read that must re-derive a branch waits for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_warm_read_answers_through_anothers_turn_and_a_derivation_waits_for_it() {
+        if let Ok(role) = std::env::var(PROCESS_ROLE) {
+            return lease_process(&role);
+        }
+        use crate::session::{Detail, Scope, Selection};
+        const TEST: &str =
+            "a_warm_read_answers_through_anothers_turn_and_a_derivation_waits_for_it";
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().canonicalize().unwrap();
+        let git = |repo: &Path, args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .current_dir(repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        let repo = root.join("repo");
+        let origin = root.join("origin.git");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(
+            &root,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(&root, &["init", "-q", "-b", "main", repo.to_str().unwrap()]);
+        git(&repo, &["config", "user.name", "F"]);
+        git(&repo, &["config", "user.email", "f@example.invalid"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        git(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        git(&repo, &["checkout", "-q", "-b", "work/a"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "feat: a"]);
+        let tip_commit = |repo: &Path| {
+            std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+            git(repo, &["add", "."]);
+            git(repo, &["commit", "-q", "-m", "feat: more"]);
+        };
+        git(&repo, &["checkout", "-q", "main"]);
+        std::env::set_var("ONEVCS_HOME", &root);
+        let key = origin.to_string_lossy().into_owned();
+        let registry = serde_json::json!({
+            "version": crate::store::VERSION,
+            "identities": {&key: crate::registry::Identity::new(key.clone(), "true")},
+            "checkouts": {"only": {"path": repo, "identity": key}},
+        });
+        crate::home::atomic_write(&root.join("registry.json"), &registry.to_string()).unwrap();
+        std::env::set_var("ONEVCS_TEST_LEASE_IDENTITY", &key);
+        let read = || {
+            crate::vcs::collect_matching(
+                &Scope::All,
+                crate::vcs::Reporting::UnpublishedOnly,
+                &Selection {
+                    detail: Detail::Decision,
+                    ..Selection::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(read().len(), 1, "the first read records the decision");
+
+        let mut holder = LeaseProcess::start(TEST, "idle", home.path());
+        holder.expect("ready", "the holder is up");
+        holder.tell("teardown");
+        holder.expect("writer", "the holder has the turn");
+
+        // Served from the record: no wait for the holder.
+        let (sent, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sent.send(read().len()).unwrap());
+        assert_eq!(
+            got.recv_timeout(std::time::Duration::from_secs(20)),
+            Ok(1),
+            "the warm read answers while the turn is held"
+        );
+
+        // A moved tip must re-derive, which takes the turn.
+        git(&repo, &["checkout", "-q", "work/a"]);
+        tip_commit(&repo);
+        git(&repo, &["checkout", "-q", "main"]);
+        let (sent, got) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sent.send(read().len()).unwrap());
+        assert!(
+            got.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+            "a derivation waits for the holder"
+        );
+        holder.tell("release-writer");
+        holder.expect("writer-released", "the holder lets go");
+        assert_eq!(
+            got.recv_timeout(std::time::Duration::from_secs(20)),
+            Ok(1),
+            "the derivation answers once the turn is free"
+        );
+        LeaseProcess::finish([&mut holder]);
+    }
+
     /// One of the two processes below: this test binary run again, taking leases
     /// through the real API on the commands its parent writes to its stdin and
     /// printing `lease:<event>` as each lease is taken.
@@ -1350,9 +1499,11 @@ mod tests {
                 }
                 "teardown" => {
                     let (release, released) = std::sync::mpsc::channel::<()>();
+                    let holding = std::env::var("ONEVCS_TEST_LEASE_IDENTITY")
+                        .unwrap_or_else(|_| PROCESS_IDENTITY.to_owned());
                     writer = Some((
                         release,
-                        std::thread::spawn(move || match teardown(PROCESS_IDENTITY) {
+                        std::thread::spawn(move || match teardown(&holding) {
                             Ok(turn) => {
                                 println!("lease:writer");
                                 let _ = released.recv();

@@ -107,6 +107,13 @@ pub fn landing_trailer() -> String {
     crate::provenance::Trailers::default().landed().to_owned()
 }
 
+/// The default production change-URL trailer key.
+pub fn change_url_trailer() -> String {
+    crate::provenance::Trailers::default()
+        .change_url()
+        .to_owned()
+}
+
 /// Append real envelopes with production numbering, phase, vocabulary and bounds.
 pub fn write_events(
     home: &Path,
