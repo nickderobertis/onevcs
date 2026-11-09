@@ -3766,14 +3766,17 @@ pub(crate) fn octopus_base(
         let mut args = vec!["merge-base", "--octopus", common.as_str()];
         args.extend(chunk.iter().copied());
         let found = run_given(asked, &args, b"")?;
-        if !found.ok() {
+        let answered = found.trimmed();
+        let whole =
+            found.ok() && found.read_failures.is_empty() && ObjectId::parse(&answered).is_some();
+        if !whole {
             return Err(error::invalid(format!(
                 "git merge-base --octopus over {} commits failed: {}",
                 chunk.len() + 1,
                 found.diagnostic()
             )));
         }
-        common = found.trimmed();
+        common = answered;
     }
     Ok(common)
 }
@@ -4074,7 +4077,7 @@ pub(crate) fn commits_with_parents<'a>(
             &["rev-list", "--parents", "--stdin", "--"],
             input.as_bytes(),
         )?;
-        if !given.ok() {
+        if !given.ok() || !given.read_failures.is_empty() {
             return Err(error::invalid(format!(
                 "git rev-list --parents {tip} over {} excluded commits failed: {}",
                 not.len(),
