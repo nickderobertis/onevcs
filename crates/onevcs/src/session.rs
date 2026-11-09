@@ -372,6 +372,9 @@ pub struct Selection {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
     /// The one branch asked about, whichever sessions hold it.
+    // llmlint: ignore[invalid_states_unrepresentable] the contract fixes this field's type,
+    // and the name is only ever compared against ref names git listed, so a name that is
+    // not one matches nothing rather than reaching git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }

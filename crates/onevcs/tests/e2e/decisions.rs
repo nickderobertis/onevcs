@@ -7,6 +7,9 @@
 //! which it derived. In-process, so each test holds its own `ONEVCS_HOME`; nextest
 //! runs each test in a process of its own.
 
+// llmlint: ignore-file[tests_mirror_real_usage] the appended events and truncated streams
+// are the input under test: the stream shapes a real host leaves behind, written by the
+// production writer, with one journey driving real session verbs for the record hooks.
 // llmlint: ignore-file[e2e_not_mocked] the only substitution is `git` by a shim that logs
 // each invocation and then execs the real git, the same instrument `cost.rs` uses.
 
@@ -23,7 +26,8 @@ use serde_json::{json, Value};
 use crate::lifecycle::Fixture as Fixture2;
 
 use super::decisions_support::{
-    gain_unrelated, landed_on_main, landed_state, list, onevcs_digest, run, set, with_shim, Host,
+    base_commit, gain_unrelated, landed_on_main, landed_state, list, onevcs_digest, run, set,
+    with_shim, Host,
 };
 
 #[test]
@@ -357,8 +361,7 @@ fn event_streams_changing_answer_what_the_uncached_read_answers() {
             .join(format!("{}.ndjson", Host::token(branch)))
     };
 
-    // Appended: a recorded landing the base does not carry names no new answer but the
-    // stream did change for this branch.
+    // Appended: the stream changed for this branch, whatever the event said.
     testing::write_events(
         &host.home,
         &Host::token("work/a"),
@@ -548,4 +551,97 @@ fn a_branch_filter_answers_that_branchs_rows_and_reads_no_other_checkout_for_it(
     });
     let spent_on_other = log.iter().filter(|line| line.contains("work/a")).count();
     assert_eq!(spent_on_other, 0, "nothing about the other branch: {log:?}");
+}
+
+#[test]
+fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
+    let host = Host::new();
+    host.branch("work/path");
+    host.branch("work/subject");
+    host.branch("work/change");
+    run(&host.repo, &["checkout", "-q", "work/change"]);
+    run(
+        &host.repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "feat: names its change request\n\n{} https://github.com/o/r/pull/7",
+                testing::change_url_trailer()
+            ),
+        ],
+    );
+    run(&host.repo, &["checkout", "-q", "main"]);
+    host.branch("work/unrelated");
+    host.read();
+    base_commit(&host, "chore: touches work/path's file", "work-path");
+    assert!(host
+        .assert_matches_uncached("a changed path names it")
+        .contains("work/path"));
+    base_commit(&host, "feat: work/subject", "subject-carried");
+    assert!(host
+        .assert_matches_uncached("a subject names it")
+        .contains("work/subject"));
+    base_commit(&host, "fix: change landed (#7)", "number-carried");
+    assert!(host
+        .assert_matches_uncached("a number names it")
+        .contains("work/change"));
+    // A landing trailer naming a commit below every recorded branch's fork may land any
+    // of them, so the check names them all rather than guessing.
+    let seed = run(&host.repo, &["rev-list", "--max-parents=0", "main"]);
+    base_commit(
+        &host,
+        &format!("feat: elsewhere\n\n{} {seed}", testing::landing_trailer()),
+        "trailer-carried",
+    );
+    let every = host.assert_matches_uncached("a shared trailer names every branch");
+    assert!(every.contains("work/unrelated"), "{every:?}");
+}
+
+#[test]
+fn a_record_is_reanchored_after_a_long_gain_and_stays_correct() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    gain_unrelated(&host, 260);
+    host.assert_matches_uncached("the long gain");
+    let decided: Value =
+        serde_json::from_slice(&std::fs::read(host.record_path("work/a")).unwrap()).unwrap();
+    assert_eq!(
+        decided["decided_against"],
+        run(&host.repo, &["rev-parse", "main"])
+    );
+    assert_eq!(host.assert_matches_uncached("reanchored"), set(&[]));
+}
+
+#[test]
+fn a_partial_stream_line_and_a_removed_stream_answer_the_uncached_read() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/gone");
+    host.read();
+    let path = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let mut text = std::fs::read(&path).unwrap();
+    let tail = text.split_off(text.len() / 2);
+    std::fs::write(&path, &text).unwrap();
+    host.assert_matches_uncached("a stream cut mid-line");
+    text.extend_from_slice(&tail);
+    std::fs::write(&path, &text).unwrap();
+    host.assert_matches_uncached("the line completed");
+
+    std::fs::remove_file(
+        host.home
+            .join("streams")
+            .join(format!("{}.ndjson", Host::token("work/gone"))),
+    )
+    .unwrap();
+    assert_eq!(
+        host.assert_matches_uncached("a removed stream"),
+        set(&["work/gone"])
+    );
 }

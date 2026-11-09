@@ -281,10 +281,29 @@ pub fn landed_on_main(host: &Host, branch: &str, how: &str) {
 pub fn gain_unrelated(host: &Host, n: usize) {
     let stamp = run(&host.repo, &["rev-list", "--count", "HEAD"]);
     for at in 0..n {
-        std::fs::write(host.repo.join(format!("unrelated-{stamp}-{at}.txt")), "x\n").unwrap();
+        run(
+            &host.repo,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("chore: unrelated {stamp}-{at}"),
+            ],
+        );
     }
+    let tip = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/main", &tip],
+    );
+}
+
+/// One commit onto the base with `message`, touching `path`, leaving no other trace.
+pub fn base_commit(host: &Host, message: &str, path: &str) {
+    std::fs::write(host.repo.join(path), "base\n").unwrap();
     run(&host.repo, &["add", "."]);
-    run(&host.repo, &["commit", "-q", "-m", "chore: unrelated"]);
+    run(&host.repo, &["commit", "-q", "-m", message]);
     let tip = run(&host.repo, &["rev-parse", "main"]);
     run(
         &host.repo,

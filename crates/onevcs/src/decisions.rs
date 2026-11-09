@@ -45,8 +45,9 @@ pub(crate) const REANCHOR_AFTER: usize = 256;
 const OCTOPUS_BATCH: usize = 64;
 
 // llmlint: ignore-block[invalid_states_unrepresentable] the spec fixes this document's
-// fields, and a record whose fields disagree is refused where it is read (`coherent`)
-// rather than typed apart, so the wire shape stays what later readers name.
+// fields and `Listing`'s and `Gained`'s string ids are git's own printed object names, read
+// back through `coherent` and matched as keys; a record whose fields disagree is refused
+// where it is read rather than typed apart, so the wire shape stays what later readers name.
 /// What one branch's decision was made from and answered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Decision {
@@ -64,7 +65,6 @@ pub(crate) struct Decision {
     /// remote-tracking ref, which nothing asks about until its tip moves.
     pub row: Option<Recoverable>,
 }
-// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// The facts a read would otherwise spawn git for, about a branch whose inputs held.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -96,6 +96,7 @@ pub(crate) struct Listing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Whether reads on this thread may use the record at all: never where a read has been
 /// told to bypass reuse, as an uncached reader's `GIT_*` override does.
@@ -160,7 +161,20 @@ pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
 /// Whether a record's own fields agree, so one edited by hand or written by a bug is
 /// no record rather than a served contradiction.
 fn coherent(decision: &Decision) -> bool {
-    if git::ObjectId::parse(&decision.tip).is_none() {
+    let is_object = |id: &str| git::ObjectId::parse(id).is_some();
+    if !is_object(&decision.tip)
+        || !decision.listing.commits.iter().all(|id| is_object(id))
+        || decision
+            .decided_against
+            .as_deref()
+            .is_some_and(|id| !is_object(id))
+        || !decision.listing.paths.len().is_multiple_of(16)
+        || !decision
+            .listing
+            .paths
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
         return false;
     }
     match &decision.row {
@@ -289,6 +303,8 @@ pub(crate) fn change_number(url: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] these are object ids and subjects
+// git itself just printed, kept as the strings they are only to be looked up by.
 /// What a base gained since the commits its records were decided against.
 #[derive(Debug, Default)]
 pub(crate) struct Gained {
@@ -300,10 +316,11 @@ pub(crate) struct Gained {
     pub subjects: HashSet<String>,
     pub paths: HashSet<String>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
-/// Read what `current` gained since every commit in `decided` in one pass, however many
-/// commits or records that covers: three git processes per check, whichever way either
-/// grows. Any of them failing is an `Err`, which covers every branch that check names.
+/// Read what `current` gained since every commit in `decided` in one pass. One `log` and
+/// one `diff`, plus a `merge-base --octopus` per batch of commits to anchor from: the
+/// log and the diff do not grow with what was gained or how many records are checked. Any of them failing is an `Err`, which covers every branch that check names.
 pub(crate) fn gained(
     asked: git::Asked<'_>,
     current: &str,
@@ -577,6 +594,16 @@ fn read_one(directory: &Path, token: &str, entry: Option<&StreamEntry>) -> Step 
             && tail_digest(&file, entry.length).as_deref() == Some(entry.digest.as_str());
         if unchanged {
             let record = fold(token, &path, &entry.answer.kept);
+            // A kept answer that does not mean what its fingerprint says is no answer.
+            if fingerprint(&record) != entry.answer.fingerprint
+                || !entry
+                    .answer
+                    .kept
+                    .iter()
+                    .is_sorted_by_key(|(index, _)| *index)
+            {
+                return read_whole(token, &path);
+            }
             if size == entry.length {
                 return Step::Same(record);
             }
@@ -707,8 +734,8 @@ pub(crate) fn host_streams() -> Result<StreamAnswers> {
     let listing = match std::fs::read_dir(&directory) {
         Ok(listing) => listing,
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
-            for (identity, entry) in answers.entries.values() {
-                absorb_removed(&mut answers.moved, identity, entry, &directory);
+            for (token, (_, entry)) in &answers.entries {
+                absorb_removed(&mut answers.moved, token, entry, &directory);
             }
             return Ok(answers);
         }
@@ -740,7 +767,7 @@ pub(crate) fn host_streams() -> Result<StreamAnswers> {
         .collect();
     for token in removed {
         if let Some((identity, entry)) = answers.entries.remove(&token) {
-            absorb_removed(&mut answers.moved, &identity, &entry, &directory);
+            absorb_removed(&mut answers.moved, &token, &entry, &directory);
             answers.changed.insert(identity);
         }
     }
@@ -785,8 +812,8 @@ pub(crate) fn host_streams() -> Result<StreamAnswers> {
     Ok(answers)
 }
 
-fn absorb_removed(moved: &mut Moved, _identity: &str, entry: &StreamEntry, directory: &Path) {
-    let named = fold("", directory, &entry.answer.kept).branches();
+fn absorb_removed(moved: &mut Moved, token: &str, entry: &StreamEntry, directory: &Path) {
+    let named = fold(token, directory, &entry.answer.kept).branches();
     if named.is_empty() && !entry.answer.kept.is_empty() {
         moved.every = true;
     }

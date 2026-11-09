@@ -512,7 +512,7 @@ impl Narrowed {
 
     /// Whether the read is confined to some identities: a branch filter alone is not,
     /// since any identity may hold the name.
-    fn confines(&self, identity: &str) -> bool {
+    fn excludes_identity(&self, identity: &str) -> bool {
         !(self.only_branch.is_some() && !self.selected_sessions)
             && !self.identities.contains(identity)
     }
@@ -688,7 +688,7 @@ fn collected(
         // publication checkout, not its base, not one of its clones.
         if narrowed
             .as_ref()
-            .is_some_and(|only| only.confines(identity))
+            .is_some_and(|only| only.excludes_identity(identity))
         {
             return false;
         }
