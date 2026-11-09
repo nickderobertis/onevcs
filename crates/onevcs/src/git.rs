@@ -6095,8 +6095,6 @@ mod list_bounds {
         (dir, repo)
     }
 
-    /// Past one batch of tips, a branch one tip reaches is ruled out by the batch holding
-    /// that tip, and one no tip reaches survives every batch.
     #[cfg(windows)]
     #[test]
     fn a_finished_commands_output_is_whole_on_windows() {
@@ -6106,6 +6104,8 @@ mod list_bounds {
         assert_eq!(output.read_failures, Vec::<String>::new());
     }
 
+    /// Past one batch of tips, a branch one tip reaches is ruled out by the batch holding
+    /// that tip, and one no tip reaches survives every batch.
     #[test]
     fn a_branch_survives_only_the_batches_of_tips_that_do_not_reach_it() {
         let (_dir, repo) = repo();
