@@ -901,3 +901,54 @@ fn a_filtered_read_notices_a_recorded_stream_that_was_removed() {
         "a session-scoped read answers what the uncached one does with the stream gone"
     );
 }
+
+#[test]
+fn a_recorded_read_of_everything_keeps_the_landed_rows_the_uncached_read_keeps() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    landed_on_main(&host, "work/a", "squash");
+    let select = || {
+        let rows = Git
+            .preserved_matching(Scope::All, &Host::selection())
+            .unwrap();
+        rows.into_iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect::<Vec<_>>()
+    };
+    host.read();
+    let warm = select();
+    std::env::set_var("GIT_NAMESPACE", "");
+    let uncached = select();
+    std::env::remove_var("GIT_NAMESPACE");
+    assert_eq!(
+        warm, uncached,
+        "every preserved row answers what git answers"
+    );
+    assert!(warm.iter().any(|row| row["branch"]["branch"] == "work/a"));
+}
+
+#[test]
+fn a_host_whose_streams_directory_is_gone_or_unreadable_answers_the_uncached_read() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let streams = host.home.join("streams");
+    let parked = host.root.join("parked");
+    std::fs::rename(&streams, &parked).unwrap();
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "streams removed");
+    assert_eq!(derived, set(&["work/a", "work/b"]));
+    std::fs::rename(&parked, &streams).unwrap();
+    host.read();
+
+    let mode = std::fs::metadata(&streams).unwrap().permissions();
+    std::fs::set_permissions(&streams, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (rows, derived) = host.read();
+    let uncached = host.uncached();
+    std::fs::set_permissions(&streams, mode).unwrap();
+    assert_eq!(rows, uncached, "streams unreadable");
+    assert_eq!(derived, set(&["work/a", "work/b"]));
+}
