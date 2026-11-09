@@ -240,13 +240,6 @@ fn arguments() -> Result<Arguments, String> {
         }
     };
     let mode = mode.ok_or("--mode warm|cold|uncached|once is required")?;
-    // The host journey sets up the state each read answers from, and clearing the caches
-    // here would leave that host's decision records serving a read named cold.
-    if matches!(asked, Asked::Host) && mode != Mode::Once {
-        return Err(
-            "--selection host reads the state its caller set up: use --mode once".to_owned(),
-        );
-    }
     Ok(Arguments {
         asked,
         calls: calls.ok_or("--calls is required")?,

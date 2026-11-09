@@ -157,19 +157,9 @@ pub(super) fn journey(root: &Path) -> HostRecord {
             &outcomes,
         );
         let note = diagnosed(&diagnostics);
-        let derived: BTreeSet<(String, String)> = note["derived"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|pair| {
-                (
-                    pair[0].as_str().unwrap().to_owned(),
-                    pair[1].as_str().unwrap().to_owned(),
-                )
-            })
-            .collect();
         assert_eq!(
-            derived, want,
+            derived(&note),
+            want,
             "sample {index} re-derived exactly the moved and landed branches"
         );
         if index == 0 {
@@ -191,6 +181,7 @@ pub(super) fn journey(root: &Path) -> HostRecord {
         .expect("the aged state verifies for the count");
     let (git_executions, _count) = count_git(&fixture);
     aged.restore().expect("the records restore after the count");
+    assert_every_mode_answers(&fixture, &aged, &outcomes, &uncached_rows, &want);
     let rederived = want.len();
     HostRecord {
         warm: calls,
@@ -203,6 +194,63 @@ pub(super) fn journey(root: &Path) -> HostRecord {
         load1: load1(),
         rows_sha256: digest(uncached_rows.as_bytes()),
     }
+}
+
+/// Each mode the latency program accepts, from the aged state over the real host, answering
+/// the fixture's rows: warm's second read derives nothing, and cold derives what a record
+/// would otherwise have served, so neither figure can be the other's.
+fn assert_every_mode_answers(
+    fixture: &Fixture,
+    aged: &AgedHost,
+    outcomes: &Outcomes,
+    uncached_rows: &str,
+    want: &BTreeSet<(String, String)>,
+) {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let diagnostics = scratch.path().join("diagnostics.ndjson");
+    let mut derived_by = BTreeMap::new();
+    for mode in ["warm", "cold", "uncached"] {
+        aged.restore().expect("the records restore for the mode");
+        aged.verify().expect("the aged state verifies for the mode");
+        let _ = std::fs::remove_file(&diagnostics);
+        let report = read(fixture, mode, mode == "uncached", Some(&diagnostics), None);
+        assert_eq!(
+            normalized_rows(&report, fixture),
+            uncached_rows,
+            "--mode {mode} answers the uncached rows"
+        );
+        assert_rows(&report, &format!("--mode {mode}"), fixture, outcomes);
+        if mode != "uncached" {
+            derived_by.insert(mode, derived(&diagnosed(&diagnostics)));
+        }
+    }
+    aged.restore().expect("the records restore after the modes");
+    assert_eq!(
+        derived_by["warm"],
+        BTreeSet::new(),
+        "warm's timed read follows one that recorded everything"
+    );
+    let cold = &derived_by["cold"];
+    assert!(
+        cold.is_superset(want) && cold.len() > want.len(),
+        "cold derives past the {} a record cannot answer, and derived {}",
+        want.len(),
+        cold.len()
+    );
+}
+
+fn derived(note: &Value) -> BTreeSet<(String, String)> {
+    note["derived"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| {
+            (
+                pair[0].as_str().unwrap().to_owned(),
+                pair[1].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
 }
 
 /// What the fixture, once aged, declares a branch answers in an unpublished read.
