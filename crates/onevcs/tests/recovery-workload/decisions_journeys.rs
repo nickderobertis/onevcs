@@ -80,42 +80,78 @@ fn a_branch_changing_enough_paths_to_overflow_argv_is_answered_either_way() {
     assert!(child.wait().unwrap().success());
     host.session("big", Lifecycle::Closed);
 
-    // Forced through git's own comparison rather than the in-process diff.
-    let rows = host.uncached();
+    // Not landed: every surface lists the branch, and says its work has not reached the base.
     assert_eq!(
-        landed_state(
-            rows.iter()
-                .find(|row| row["branch"]["branch"] == "big")
-                .unwrap()
-        ),
-        "no"
+        oversized_branch_answers(&host),
+        OversizedAnswers {
+            library_unpublished: Some("no".to_owned()),
+            library_every_preserved: Some("no".to_owned()),
+            cli_unpublished: Some("no".to_owned()),
+            cli_every_preserved: Some("no".to_owned()),
+        }
     );
 
-    // And the command-line verb over the same state.
-    let output = host
-        .binary()
-        .env("ONEVCS_HOME", &host.home)
-        .env("HOME", &host.root)
-        .env("GIT_NAMESPACE", "")
-        .args(["recoverable", "--json", "--detail", "decision"])
-        .assert()
-        .success();
-    let cli: Vec<Value> = serde_json::from_slice(&output.get_output().stdout).unwrap();
-    assert_eq!(
-        landed_state(
-            cli.iter()
-                .find(|row| row["branch"]["branch"] == "big")
-                .unwrap()
-        ),
-        "no"
-    );
-
+    // Landed: the unpublished read drops the branch on both surfaces, and the read that
+    // lists every preserved branch still says what became of it.
     landed_on_main(&host, "big", "squash");
-    let rows = host.uncached();
-    assert!(
-        rows.iter().all(|row| row["branch"]["branch"] != "big"),
-        "landed work answers no unpublished row: {rows:?}"
+    assert_eq!(
+        oversized_branch_answers(&host),
+        OversizedAnswers {
+            library_unpublished: None,
+            library_every_preserved: Some("yes".to_owned()),
+            cli_unpublished: None,
+            cli_every_preserved: Some("yes".to_owned()),
+        }
     );
+}
+
+/// The landing answer each public recovery read gives for the oversized branch; `None`
+/// where the read does not list it.
+#[derive(Debug, PartialEq)]
+struct OversizedAnswers {
+    library_unpublished: Option<String>,
+    library_every_preserved: Option<String>,
+    cli_unpublished: Option<String>,
+    cli_every_preserved: Option<String>,
+}
+
+/// Every read is uncached, which forces it through git's own comparison rather than the
+/// in-process diff: that comparison is the call whose argv used to overflow.
+fn oversized_branch_answers(host: &Host) -> OversizedAnswers {
+    fn landing(rows: &[Value]) -> Option<String> {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == "big")
+            .map(|row| landed_state(row).to_owned())
+    }
+    let cli = |extra: &[&str]| {
+        let output = host
+            .binary()
+            .env("ONEVCS_HOME", &host.home)
+            .env("HOME", &host.root)
+            .env("GIT_NAMESPACE", "")
+            .args(["recoverable", "--json", "--detail", "decision"])
+            .args(extra)
+            .assert()
+            .success();
+        let rows: Vec<Value> = serde_json::from_slice(&output.get_output().stdout).unwrap();
+        landing(&rows)
+    };
+    let every_preserved = {
+        std::env::set_var("GIT_NAMESPACE", "");
+        let rows = Git
+            .preserved_matching(Scope::All, &Host::selection())
+            .unwrap();
+        std::env::remove_var("GIT_NAMESPACE");
+        rows.into_iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect::<Vec<Value>>()
+    };
+    OversizedAnswers {
+        library_unpublished: landing(&host.uncached()),
+        library_every_preserved: landing(&every_preserved),
+        cli_unpublished: cli(&[]),
+        cli_every_preserved: cli(&["--all"]),
+    }
 }
 
 #[test]
