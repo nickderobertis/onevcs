@@ -1276,7 +1276,7 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
         let base = match git::default_branch(&repo, "origin") {
             Ok(base) => base,
             Err(failure) => {
-                unbased_rows(
+                session_rows_without_base(
                     identity,
                     &repo,
                     scan,

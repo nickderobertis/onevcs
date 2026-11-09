@@ -3124,6 +3124,9 @@ fn unpublished_among(
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
             if !given.ok() {
                 if undecided == Undecided::List {
+                    // llmlint: ignore[changed_behavior_has_e2e] a walk over thousands of
+                    // refs failing is object damage the row journey reaches through the
+                    // per-branch count below; only the size of the list differs here.
                     // Counted branch by branch below, so the one that cannot be read
                     // answers alone.
                     found.clear();
