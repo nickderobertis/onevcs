@@ -17,7 +17,7 @@ function reportHost() {
   const median = (timings[4] + timings[5]) / 2;
   const checks = host.checks.by_gain.map(check => `${check.gained}: ${(check.seconds * 1000).toFixed(1)}ms`).join(", ");
   const loads = host.warm.map(call => call.load1);
-  const description = `host warm in-process Decision over the aged host-shaped fixture: median of ${host.warm.length} calls ${median.toFixed(1)}ms (maximum ${host.slowest_ms.toFixed(1)}ms), load1 ${Math.min(...loads)}-${Math.max(...loads)}; cold ${host.cold.wall_ms.toFixed(1)}ms; re-derived ${host.rederived} branches; base-increment checks by commits gained: ${checks}; a further warm call started ${host.git_executions} git processes`;
+  const description = `host warm in-process Decision over the aged host-shaped fixture: median of ${host.warm.length} calls ${median.toFixed(1)}ms (maximum ${timings.at(-1).toFixed(1)}ms), load1 ${Math.min(...loads)}-${Math.max(...loads)}; cold ${host.cold.wall_ms.toFixed(1)}ms; re-derived ${host.rederived} branches; base-increment checks by commits gained: ${checks}; a further warm call started ${host.git_executions} git processes`;
   if (!report(median / 1000, `invocation ${record.build.run_id}: ${description}`)) {
     throw new Unwired("ONEBUDGETSPEC_RESULT is missing, so there is nowhere to report to");
   }

@@ -884,13 +884,29 @@ fn absorb_removed(moved: &mut Moved, token: &str, entry: &StreamEntry, directory
 
 /// What a read narrowed to some branches learns about those streams: which of them
 /// differ from what the record last said.
-pub(crate) fn narrowed_moved(streams: &[Recorded]) -> Moved {
+pub(crate) fn narrowed_moved(streams: &[Recorded], named: &BTreeSet<String>) -> Moved {
     let identities: BTreeSet<String> = streams
         .iter()
         .filter_map(|record| record.identity().map(str::to_owned))
         .collect();
     let entries = load_entries(Some(&identities));
     let mut moved = Moved::default();
+    // A recorded stream of these branches that is gone says something too, which the
+    // read's narrowed listing cannot show by what it returned.
+    let directory = home::streams_dir().ok();
+    let returned: HashSet<&str> = streams.iter().map(Recorded::token).collect();
+    for (token, (_, entry)) in &entries {
+        if returned.contains(token.as_str()) {
+            continue;
+        }
+        let gone = directory
+            .as_ref()
+            .is_some_and(|dir| !dir.join(format!("{token}.ndjson")).exists());
+        let about = fold(token, Path::new(""), &entry.answer.kept).branches();
+        if gone && about.iter().any(|branch| named.contains(branch)) {
+            moved.branches.extend(about);
+        }
+    }
     for record in streams {
         let same = entries
             .get(record.token())

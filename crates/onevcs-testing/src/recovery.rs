@@ -1787,7 +1787,6 @@ pub fn age_host(fixture: &Fixture) -> Result<AgedHost> {
         }
         bases.push((repo, tip));
     }
-    // A snapshot of the state root as `age_host` leaves it.
     let snapshot = list_files(&fixture.home)?;
     Ok(AgedHost {
         home: fixture.home.clone(),

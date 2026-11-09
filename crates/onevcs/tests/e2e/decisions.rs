@@ -331,7 +331,6 @@ fn event_streams_changing_answer_what_the_uncached_read_answers() {
     )
     .unwrap();
     host.assert_matches_uncached("appended");
-    // Truncated.
     std::fs::write(stream("work/b"), "").unwrap();
     assert!(host.assert_matches_uncached("truncated").contains("work/b"));
     // Rewritten: another line of the same length is another answer.
@@ -749,7 +748,6 @@ fn a_recorded_unlisted_branch_answers_again_once_nothing_reaches_it() {
     let tip = run(&host.repo, &["rev-parse", "HEAD"]);
     run(&host.repo, &["checkout", "-q", "main"]);
     host.session("work/reached", Lifecycle::Closed);
-    // The base reaches it, so the read answers no row and records that.
     run(
         &host.repo,
         &["update-ref", "refs/remotes/origin/elsewhere", &tip],
@@ -823,4 +821,83 @@ fn a_final_event_with_no_newline_is_read_and_a_later_newline_changes_nothing() {
     unterminated.push('\n');
     std::fs::write(&path, &unterminated).unwrap();
     host.assert_matches_uncached("the newline arrived");
+}
+
+#[test]
+fn an_unterminated_event_that_changes_the_answer_is_answered_as_written() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    // A landing the base really carries, recorded by an event still being written.
+    run(&host.repo, &["merge", "--squash", "work/a", "-q"]);
+    run(
+        &host.repo,
+        &["commit", "-q", "-m", "feat: squashed by a person"],
+    );
+    let landing = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/main", &landing],
+    );
+    let events = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let scratch = Host::token("work/scratch");
+    testing::write_events(
+        &host.home,
+        &scratch,
+        &host.key,
+        &[(
+            EventKind::MergeCompleted,
+            json!({"branch": "work/a", "sha": landing})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )],
+    )
+    .unwrap();
+    let written = host.home.join("streams").join(format!("{scratch}.ndjson"));
+    let line = std::fs::read_to_string(&written).unwrap();
+    std::fs::remove_file(&written).unwrap();
+    let mut text = std::fs::read_to_string(&events).unwrap();
+    text.push_str(line.trim_end());
+    std::fs::write(&events, &text).unwrap();
+    let derived = host.assert_matches_uncached("a landing still being written");
+    assert!(derived.contains("work/a"), "{derived:?}");
+}
+
+#[test]
+fn a_filtered_read_notices_a_recorded_stream_that_was_removed() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let token = Host::token("work/a");
+    std::fs::remove_file(host.home.join("streams").join(format!("{token}.ndjson"))).unwrap();
+    let sessioned = |branch: Option<String>| {
+        Git.recoverable_matching(
+            Scope::All,
+            &Selection {
+                detail: Detail::Decision,
+                sessions: vec![onevcs::SessionToken(token.clone())],
+                branch,
+                ..Selection::default()
+            },
+        )
+        .unwrap()
+    };
+    let rows = sessioned(None);
+    std::env::set_var("GIT_NAMESPACE", "");
+    let uncached = sessioned(None);
+    std::env::remove_var("GIT_NAMESPACE");
+    assert_eq!(
+        rows.iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect::<Vec<_>>(),
+        uncached
+            .iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect::<Vec<_>>(),
+        "a session-scoped read answers what the uncached one does with the stream gone"
+    );
 }

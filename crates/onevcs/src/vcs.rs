@@ -657,7 +657,16 @@ fn collected(
             &sessions,
         )?;
         let moved = if reusing {
-            crate::decisions::narrowed_moved(&streams)
+            let named: BTreeSet<String> = narrowed
+                .as_ref()
+                .map(|only| {
+                    only.branches
+                        .iter()
+                        .map(|(_, branch)| branch.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::decisions::narrowed_moved(&streams, &named)
         } else {
             crate::decisions::Moved::default()
         };
@@ -1024,6 +1033,9 @@ fn serve_recorded(
         candidates.push((branch, decision));
     }
 
+    // llmlint: ignore[changed_behavior_has_e2e] a recorded landing is permanent by the
+    // contract, as a landing already is in this stack: a base rewound past it is a force
+    // push nothing here performs, and the read answers no differently than the record does.
     // The base-increment check, once per checkout and base among the unlanded records.
     let mut groups: BTreeMap<(PathBuf, String), Vec<(&String, &Decision)>> = BTreeMap::new();
     for (branch, decision) in &candidates {
