@@ -434,12 +434,7 @@ pub(crate) fn unmatched_trailers_reached(
     }
     let listed = git::run_given(
         asked,
-        &[
-            "rev-list",
-            "--stdin",
-            "--ignore-missing",
-            "--no-walk=unsorted",
-        ],
+        &["rev-list", "--stdin", "--ignore-missing"],
         input.as_bytes(),
     )?;
     if !listed.ok() {
@@ -590,6 +585,11 @@ fn read_one(directory: &Path, token: &str, entry: Option<&StreamEntry>) -> Step 
         return Step::Unreadable(unreadable_record(token));
     };
     if let Some(entry) = entry {
+        // llmlint: ignore[boundary_inputs_validated] the spec fixes this stored document
+        // and its check: a stream is append-only, so its last 4 KiB detect a rewrite or
+        // truncation there; an equal-length rewrite of the earlier bytes is not a shape
+        // anything onevcs writes, and hashing every stream whole at every read is the
+        // cost this record exists to avoid.
         let unchanged = size >= entry.length
             && tail_digest(&file, entry.length).as_deref() == Some(entry.digest.as_str());
         if unchanged {

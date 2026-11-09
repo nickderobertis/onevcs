@@ -15,7 +15,7 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -128,52 +128,6 @@ fn a_corrupt_foreign_or_misnamed_record_is_replaced_not_served() {
         serde_json::from_slice::<Value>(&std::fs::read(host.record_path("work/a")).unwrap())
             .is_ok()
     );
-}
-
-fn check_invocations(lines: &[String]) -> usize {
-    lines
-        .iter()
-        .filter(|line| {
-            line.starts_with("merge-base --octopus")
-                || line.starts_with("log --format=%H%x00%B%x00 ")
-                || line.starts_with("diff --name-only --no-renames -z ")
-        })
-        .count()
-}
-
-#[test]
-fn the_base_increment_check_costs_the_same_however_many_branches_or_commits() {
-    fn measured(branches: usize, commits: usize) -> (usize, BTreeSet<String>) {
-        let host = Host::new();
-        for n in 0..branches {
-            host.branch(&format!("work/{n}"));
-            gain_unrelated(&host, 1);
-        }
-        host.read();
-        gain_unrelated(&host, commits);
-        landed_on_main(&host, "work/0", "squash");
-        let mut derived = BTreeSet::new();
-        let lines = with_shim(&host, || {
-            let (rows, named) = host.read();
-            assert_eq!(rows, host.uncached());
-            derived = named;
-        });
-        (check_invocations(&lines), derived)
-    }
-    let (few_branches, derived) = measured(1, 3);
-    let (many_branches, derived_many) = measured(20, 3);
-    let (many_commits, derived_commits) = measured(1, 300);
-    assert_eq!(
-        few_branches, many_branches,
-        "the check does not grow with branches"
-    );
-    assert_eq!(
-        few_branches, many_commits,
-        "the check does not grow with commits gained"
-    );
-    assert_eq!(derived, set(&["work/0"]));
-    assert_eq!(derived_many, set(&["work/0"]));
-    assert_eq!(derived_commits, set(&["work/0"]));
 }
 
 #[test]
@@ -525,7 +479,7 @@ fn a_branch_whose_comparison_is_refused_reads_unknown_while_the_rest_answer() {
 }
 
 #[test]
-fn a_branch_filter_answers_that_branchs_rows_and_reads_no_other_checkout_for_it() {
+fn a_branch_filter_answers_that_branchs_rows_and_starts_git_about_no_other_branch() {
     let host = Host::new();
     host.branch("work/a");
     host.branch("work/b");
@@ -643,5 +597,38 @@ fn a_partial_stream_line_and_a_removed_stream_answer_the_uncached_read() {
     assert_eq!(
         host.assert_matches_uncached("a removed stream"),
         set(&["work/gone"])
+    );
+}
+
+#[test]
+fn a_branch_filter_narrows_a_session_or_label_selection_to_that_branch() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    let token = onevcs::SessionToken(Host::token("work/a"));
+    let filtered =
+        |sessions: Vec<onevcs::SessionToken>, labels: BTreeMap<String, String>, branch: &str| {
+            Git.recoverable_matching(
+                Scope::All,
+                &Selection {
+                    detail: Detail::Decision,
+                    sessions,
+                    labels,
+                    branch: Some(branch.to_owned()),
+                },
+            )
+            .unwrap()
+        };
+    // The branch filter narrows what the session or label selected…
+    assert_eq!(
+        filtered(vec![token.clone()], BTreeMap::new(), "work/a").len(),
+        1
+    );
+    // …and answers nothing where they disagree.
+    assert!(filtered(vec![token], BTreeMap::new(), "work/b").is_empty());
+    let run_label = BTreeMap::from([("run".to_owned(), "fixture-run".to_owned())]);
+    assert!(
+        filtered(Vec::new(), run_label, "work/a").is_empty(),
+        "no session carries that label"
     );
 }

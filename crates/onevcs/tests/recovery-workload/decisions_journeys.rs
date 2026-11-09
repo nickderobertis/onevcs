@@ -10,7 +10,9 @@ use onevcs::{Git, Lifecycle, Scope, Vcs};
 use onevcs_testing::recovery::{age_host, build_host, Fixture};
 use serde_json::Value;
 
-use super::decisions_support::{landed_on_main, landed_state, list, run, with_shim, Host};
+use super::decisions_support::{
+    gain_unrelated, landed_on_main, landed_state, list, run, set, with_shim, Host,
+};
 use super::exclusive;
 
 #[test]
@@ -238,4 +240,51 @@ fn age_host_read(fixture: &Fixture) {
     Git.recoverable_matching(Scope::All, &Host::selection())
         .unwrap();
     aged.restore().unwrap();
+}
+
+fn check_invocations(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .filter(|line| {
+            line.starts_with("merge-base --octopus")
+                || line.starts_with("log --format=%H%x00%B%x00 ")
+                || line.starts_with("diff --name-only --no-renames -z ")
+        })
+        .count()
+}
+
+#[test]
+fn the_base_increment_check_costs_the_same_however_many_branches_or_commits() {
+    let _exclusive = exclusive();
+    fn measured(branches: usize, commits: usize) -> (usize, BTreeSet<String>) {
+        let host = Host::new();
+        for n in 0..branches {
+            host.branch(&format!("work/{n}"));
+            gain_unrelated(&host, 1);
+        }
+        host.read();
+        gain_unrelated(&host, commits);
+        landed_on_main(&host, "work/0", "squash");
+        let mut derived = BTreeSet::new();
+        let lines = with_shim(&host, || {
+            let (rows, named) = host.read();
+            assert_eq!(rows, host.uncached());
+            derived = named;
+        });
+        (check_invocations(&lines), derived)
+    }
+    let (few_branches, derived) = measured(1, 3);
+    let (many_branches, derived_many) = measured(20, 3);
+    let (many_commits, derived_commits) = measured(1, 300);
+    assert_eq!(
+        few_branches, many_branches,
+        "the check does not grow with branches"
+    );
+    assert_eq!(
+        few_branches, many_commits,
+        "the check does not grow with commits gained"
+    );
+    assert_eq!(derived, set(&["work/0"]));
+    assert_eq!(derived_many, set(&["work/0"]));
+    assert_eq!(derived_commits, set(&["work/0"]));
 }
