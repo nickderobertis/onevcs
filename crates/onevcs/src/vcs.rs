@@ -1592,7 +1592,13 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
                     &branch,
                     &row,
                     verdict_kept,
-                    (covered, settled.origin_tip.clone()),
+                    (
+                        covered,
+                        settled
+                            .origin_tip
+                            .as_ref()
+                            .map(|tip| tip.as_str().to_owned()),
+                    ),
                     sessions,
                     trailers,
                 );
@@ -2156,7 +2162,7 @@ fn settle_published(
     }
     let read = git::remote_tip_read(asked.path(), "origin", branch);
     let origin_tip = match &read {
-        Ok(git::RemoteTip::At(remote)) => Some(remote.as_str().to_owned()),
+        Ok(git::RemoteTip::At(remote)) => Some(remote.clone()),
         _ => None,
     };
     let answered = |covered| Settled {
@@ -2198,7 +2204,7 @@ struct Settled {
     origin_silent: bool,
     /// Where origin said the branch stands, which a record of this decision holds so a
     /// later read sees origin moving under it.
-    origin_tip: Option<String>,
+    origin_tip: Option<git::ObjectId>,
 }
 
 /// The session that answers for a branch: the newest record naming it.
