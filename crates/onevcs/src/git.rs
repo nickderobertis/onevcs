@@ -5942,6 +5942,96 @@ pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> 
 }
 
 #[cfg(test)]
+mod list_bounds {
+    use super::*;
+    use std::io::Write as _;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .expect("git starts");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.name", "T"]);
+        git(&repo, &["config", "user.email", "t@example.invalid"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "seed"]);
+        (dir, repo)
+    }
+
+    /// Past one batch of tips, a branch one tip reaches is ruled out by the batch holding
+    /// that tip, and one no tip reaches survives every batch.
+    #[test]
+    fn a_branch_survives_only_the_batches_of_tips_that_do_not_reach_it() {
+        let (_dir, repo) = repo();
+        let mut reached = String::new();
+        let mut updates = String::new();
+        for n in 0..NO_MERGED_BATCH * 3 {
+            git(
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", &format!("tip {n}")],
+            );
+            let tip = git(&repo, &["rev-parse", "HEAD"]);
+            updates.push_str(&format!("create refs/remotes/origin/t{n} {tip}\n"));
+            if n == NO_MERGED_BATCH * 2 + 1 {
+                reached = tip;
+            }
+        }
+        git(&repo, &["branch", "reached", &reached]);
+        git(&repo, &["checkout", "-q", "-b", "unpublished"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&repo, &["checkout", "-q", "main"]);
+        let mut child = Command::new("git")
+            .current_dir(&repo)
+            .args(["update-ref", "--stdin"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(updates.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let unpublished = unpublished_heads(&repo).unwrap();
+        assert!(!unpublished.contains("reached"), "{unpublished:?}");
+        assert!(unpublished.contains("unpublished"), "{unpublished:?}");
+    }
+
+    /// Anchoring over more commits than one octopus names walks them in batches, and
+    /// still answers the commit they all descend from.
+    #[test]
+    fn the_anchor_of_many_commits_is_read_across_batches() {
+        let (_dir, repo) = repo();
+        let root = git(&repo, &["rev-parse", "HEAD"]);
+        let mut decided = BTreeSet::new();
+        for n in 0..70 {
+            git(
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", &format!("c{n}")],
+            );
+            decided.insert(git(&repo, &["rev-parse", "HEAD"]));
+        }
+        decided.insert(root.clone());
+        let tip = git(&repo, &["rev-parse", "HEAD"]);
+        let asked = Asked::from(repo.as_path());
+        assert_eq!(octopus_base(asked, &tip, &decided, 8).unwrap(), root);
+    }
+}
+
+#[cfg(test)]
 mod ref_name_tests {
     use super::*;
 

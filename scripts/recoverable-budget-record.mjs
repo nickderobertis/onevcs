@@ -49,6 +49,9 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
       throw new Error("incomplete host-shaped sample");
     }
   }
+  if (new Set(record.host.warm.map(sample => sample.verdict_sha256)).size !== 1 || record.host.warm.some(sample => sample.rows <= 0)) {
+    throw new Error("host-shaped warm samples answered different rows");
+  }
   if (!digest(record.host.rows_sha256) || record.host.slowest_ms < 0 || record.host.git_executions < 0 ||
       record.host.checks.by_gain.some(check => !(check.seconds >= 0) || !(check.gained >= 0))) {
     throw new Error("incomplete host-shaped detail");

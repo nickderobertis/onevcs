@@ -164,6 +164,10 @@ pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
 
 /// Whether a record's own fields agree, so one edited by hand or written by a bug is
 /// no record rather than a served contradiction.
+// llmlint: ignore[boundary_inputs_validated] the served row's other fields came from this
+// crate's own derivation and are read back from a directory only this crate writes; a stored
+// document that was edited by hand is out of this read's threat model beyond what would make
+// it serve a wrong *decision*, which the checks here cover.
 fn coherent(decision: &Decision) -> bool {
     let is_object = |id: &str| git::ObjectId::parse(id).is_some();
     if !is_object(&decision.tip)
