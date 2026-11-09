@@ -559,6 +559,22 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
         ],
     );
     run(&host.repo, &["checkout", "-q", "main"]);
+    host.branch("work/merged-number");
+    run(&host.repo, &["checkout", "-q", "work/merged-number"]);
+    run(
+        &host.repo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!(
+                "feat: another change request\n\n{} https://github.com/o/r/pull/9",
+                testing::change_url_trailer()
+            ),
+        ],
+    );
+    run(&host.repo, &["checkout", "-q", "main"]);
     host.branch("work/unrelated");
     host.read();
     base_commit(&host, "chore: touches work/path's file", "work-path");
@@ -575,6 +591,15 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
     assert_eq!(
         host.assert_matches_uncached("a number names it"),
         set(&["work/change"])
+    );
+    base_commit(
+        &host,
+        "Merge pull request #9 from o/work/merged-number",
+        "merged-number-carried",
+    );
+    assert_eq!(
+        host.assert_matches_uncached("a merge subject's number names it"),
+        set(&["work/merged-number"])
     );
     // A landing trailer naming a commit below every recorded branch's fork may land any
     // of them, so the check names them all rather than guessing.

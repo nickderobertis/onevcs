@@ -342,9 +342,12 @@ pub(crate) fn gained(
     };
     let range = format!("{from}..{current}");
     let listed = git::run_given(asked, &["log", "--format=%H%x00%B%x00", &range, "--"], b"")?;
-    if !listed.ok() {
+    if !listed.ok()
+        || !listed.read_failures.is_empty()
+        || (listed.stdout.is_empty() && from != current)
+    {
         return Err(crate::error::invalid(format!(
-            "git log {range} failed: {}",
+            "git log {range} could not be read whole: {}",
             listed.diagnostic()
         )));
     }
@@ -385,9 +388,9 @@ pub(crate) fn gained(
         ],
         b"",
     )?;
-    if !changed.ok() {
+    if !changed.ok() || !changed.read_failures.is_empty() {
         return Err(crate::error::invalid(format!(
-            "git diff {from} {current} failed: {}",
+            "git diff {from} {current} could not be read whole: {}",
             changed.diagnostic()
         )));
     }
