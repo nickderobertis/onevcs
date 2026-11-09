@@ -1388,6 +1388,9 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
                 &branch,
                 session_holding(sessions, identity, &branch),
             );
+            // A holder that cannot be told is a refusal of the read, not of this
+            // branch's comparison: it says whether the row may be pasted at all.
+            held_by(sessions, identity, &branch)?;
             let undecided_seen = undecided.is_some();
             let row = match undecided {
                 Some(reason) => undecided_row(

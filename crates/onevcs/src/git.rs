@@ -3832,11 +3832,7 @@ pub fn known_to_carry_changes<'a>(
     // git's output as text, so how much of a listing survived that is a question to
     // settle rather than to assume — a comparison scoped by *some* of the paths a
     // commit touched would answer that the base carries it when the base does not.
-    // As in `changed_paths`, a listing that arrived whole is text whole or not at all,
-    // so only an empty one or one whose pipe failed part way is asked for git's count.
-    if (touched.is_empty() || !listed.read_failures.is_empty())
-        && touched.len() != counted_files(cwd, fork, commit)?
-    {
+    if touched.len() != counted_files(cwd, fork, commit)? {
         // Which leaves the same question asked without paths: a base carrying this
         // commit's whole tree carries its changes too, and that is the one answer
         // that cannot be wrong about a path nobody here could name.
@@ -3857,8 +3853,8 @@ pub fn known_to_carry_changes<'a>(
             "--name-only",
             "--no-renames",
             "-z",
-            commit,
             base,
+            commit,
             "--",
         ],
     )?;

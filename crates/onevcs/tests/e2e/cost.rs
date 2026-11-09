@@ -1005,14 +1005,19 @@ fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() 
     assert_eq!(answered["session"], Value::String(token.clone()));
     // The two questions only the tiers ask: the content comparison at the bottom, and
     // the merge a landing's guard puts to every commit above the landing it found.
-    // The comparison ends in asking whether the base carries what the tip changed —
-    // `git diff --quiet <tip> <base> -- <paths>` — which names the tip it compared.
-    // (Retirement reads a branch's differing paths with `diff --name-only` whatever
+    // The comparison begins by holding its listing to git's count of what the tip
+    // changed since its fork — `git diff --shortstat <fork> <tip>` — which names the tip
+    // it compared. (Retirement reads differing paths with `diff --name-only` whatever
     // its landing, so that listing is not the tiers'.)
     let compared: Vec<String> = calls
         .iter()
-        .filter_map(|call| call.args.strip_prefix("diff --quiet "))
-        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|call| {
+            // The landing comparison counts what the branch changed since its fork
+            // before scoping the comparison; only that tier asks for this count.
+            call.args
+                .strip_prefix("diff --shortstat --no-renames ")
+                .and_then(|rest| rest.split_whitespace().nth(1))
+        })
         .map(str::to_owned)
         .collect();
     let tip = |branch: &str| {

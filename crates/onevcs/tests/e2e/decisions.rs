@@ -125,6 +125,15 @@ impl Host {
         }
     }
 
+    /// The real binary, pointed at this host's scratch state root.
+    fn binary(&self) -> assert_cmd::Command {
+        let mut command = assert_cmd::Command::cargo_bin("onevcs").unwrap();
+        command
+            .env("ONEVCS_HOME", &self.home)
+            .env("HOME", &self.root);
+        command
+    }
+
     fn token(branch: &str) -> String {
         format!("s-{}", branch.replace('/', "-"))
     }
@@ -414,6 +423,7 @@ fn counting_git(dir: &Path) -> (PathBuf, PathBuf) {
 
 fn with_shim(host: &Host, f: impl FnOnce()) -> Vec<String> {
     let (_shim, log) = counting_git(&host.root);
+    let _ = std::fs::remove_file(&log);
     let original = std::env::var("PATH").unwrap();
     std::env::set_var("PATH", format!("{}:{original}", host.root.display()));
     f();
@@ -557,6 +567,7 @@ fn session_close_publication_and_landing_leave_their_branchs_record_current() {
     let read = |args: &[&str]| {
         world
             .onevcs()
+            .env_remove("ONEVCS_DECISION_RECORD")
             .args(args)
             .assert()
             .success()
@@ -566,7 +577,17 @@ fn session_close_publication_and_landing_leave_their_branchs_record_current() {
     };
     // Recording starts with a host read.
     read(&["recoverable", "--json", "--detail", "decision"]);
-    let opened = |branch: &str| fixture.open(&["--branch", branch]);
+    let opened = |branch: &str| -> (String, PathBuf) {
+        let mut command = world.onevcs();
+        command
+            .env_remove("ONEVCS_DECISION_RECORD")
+            .args(["session", "open", "project", "--branch", branch]);
+        let stdout = command.assert().success().get_output().stdout.clone();
+        (
+            crate::world::token_of(&stdout),
+            crate::world::worktree_of(&stdout),
+        )
+    };
     let record = |branch: &str| -> Option<Value> {
         let home = world.home();
         let identity = std::fs::read_dir(home.join("decisions/v1"))
@@ -936,8 +957,8 @@ fn a_branch_changing_enough_paths_to_overflow_argv_is_answered_either_way() {
     );
 
     // And the command-line verb over the same state.
-    let output = assert_cmd::Command::cargo_bin("onevcs")
-        .unwrap()
+    let output = host
+        .binary()
         .env("ONEVCS_HOME", &host.home)
         .env("HOME", &host.root)
         .env("GIT_NAMESPACE", "")

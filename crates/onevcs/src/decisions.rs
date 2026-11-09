@@ -96,7 +96,13 @@ pub(crate) struct Listing {
 /// Whether reads on this thread may use the record at all: never where a read has been
 /// told to bypass reuse, as an uncached reader's `GIT_*` override does.
 pub(crate) fn enabled() -> bool {
-    crate::recovery_cache::enabled()
+    crate::recovery_cache::enabled() && !record_refused()
+}
+
+/// Whether `ONEVCS_DECISION_RECORD=off` turned the record off, which journeys about what
+/// a read derives use so a record cannot answer in the derivation's place.
+fn record_refused() -> bool {
+    std::env::var_os("ONEVCS_DECISION_RECORD").as_deref() == Some(std::ffi::OsStr::new("off"))
 }
 
 fn identity_directory(identity: &str) -> Result<PathBuf> {
@@ -188,7 +194,7 @@ pub(crate) fn write(decision: &Decision) {
 /// has already happened, and a record that could not be written costs only time.
 pub(crate) fn refresh(publication: &Path, branch: &str) {
     let recording = home::root().is_ok_and(|root| root.join("decisions/v1").is_dir());
-    if !recording {
+    if !recording || record_refused() {
         return;
     }
     let selection = crate::session::Selection {
