@@ -717,7 +717,11 @@ fn read_whole(token: &str, path: &Path) -> Step {
     let mut notes = Vec::new();
     let mut kept = Vec::new();
     let mut lines: u64 = 0;
-    let text = String::from_utf8_lossy(&raw[..complete]);
+    // Not text is no answer: as the reader this stands beside, a stream that is not
+    // valid UTF-8 is a gap rather than a stream to read past its bad bytes.
+    let Ok(text) = std::str::from_utf8(&raw[..complete]) else {
+        return Step::Unreadable(unreadable_record(token));
+    };
     for line in text.lines() {
         let index = lines;
         lines += 1;

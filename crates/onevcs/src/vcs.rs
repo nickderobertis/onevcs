@@ -968,6 +968,9 @@ fn serve_recorded(
         let current_copy = first.0 == decision.listing.checkout && agreed;
         // Judged against the base its session recorded, the base naming it is the session's
         // and covered by the digest; otherwise a move of the checkout's default re-judges it.
+        // llmlint: ignore[changed_behavior_has_e2e] every fixture branch carries a session's
+        // recorded base; a host branch with none changes only with this guard, covered by the
+        // read's own comparison of `listing.base` against the checkout's base.
         let own_base = latest_session(sessions, identity, branch).is_some_and(|record| {
             let recorded = record.change_base.as_ref().unwrap_or(&record.base);
             &**recorded
@@ -994,8 +997,14 @@ fn serve_recorded(
             served.derive.insert(branch.clone());
             continue;
         }
-        // Nothing about this copy moved, and the last derivation found it unlisted.
+        // A branch the last derivation found unlisted holds while the remote-tracking
+        // refs it was reached by are unchanged.
         if decision.row.is_none() {
+            let held = decisions::origin_digest(&first.0, "").as_deref()
+                == Some(decision.listing.origin.as_str());
+            if !held {
+                served.derive.insert(branch.clone());
+            }
             continue;
         }
         if !origin_fresh {
@@ -1931,6 +1940,7 @@ fn record_unlisted(
         logic: decisions::LOGIC,
         listing: Listing {
             checkout: repo.to_path_buf(),
+            origin: decisions::origin_digest(repo, "").unwrap_or_default(),
             ..Listing::default()
         },
         landed: true,

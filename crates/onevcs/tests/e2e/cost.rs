@@ -1012,8 +1012,6 @@ fn a_branch_whose_chain_of_retries_cannot_be_followed_is_not_put_to_the_tiers() 
     let compared: Vec<String> = calls
         .iter()
         .filter_map(|call| {
-            // The landing comparison counts what the branch changed since its fork
-            // before scoping the comparison; only that tier asks for this count.
             call.args
                 .strip_prefix("diff --shortstat --no-renames ")
                 .and_then(|rest| rest.split_whitespace().nth(1))

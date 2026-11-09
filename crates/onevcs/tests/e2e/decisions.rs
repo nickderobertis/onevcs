@@ -710,3 +710,52 @@ fn a_recorded_stream_entry_that_cannot_be_trusted_is_read_again() {
     std::fs::write(&path, document.to_string()).unwrap();
     host.assert_matches_uncached("a recorded position past the stream's own lines");
 }
+
+#[test]
+fn a_recorded_unlisted_branch_answers_again_once_nothing_reaches_it() {
+    let host = Host::new();
+    run(&host.repo, &["checkout", "-q", "-b", "work/reached"]);
+    std::fs::write(host.repo.join("reached.txt"), "reached\n").unwrap();
+    run(&host.repo, &["add", "."]);
+    run(&host.repo, &["commit", "-q", "-m", "feat: reached"]);
+    let tip = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(&host.repo, &["checkout", "-q", "main"]);
+    host.session("work/reached", Lifecycle::Closed);
+    // The base reaches it, so the read answers no row and records that.
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &tip],
+    );
+    let (rows, _) = host.read();
+    assert!(rows
+        .iter()
+        .all(|row| row["branch"]["branch"] != "work/reached"));
+    assert_eq!(rows, host.uncached());
+    // The ref that reached it goes away: it holds work no origin ref has again.
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/elsewhere"],
+    );
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached());
+    assert!(derived.contains("work/reached"), "{derived:?}");
+    assert!(rows
+        .iter()
+        .any(|row| row["branch"]["branch"] == "work/reached"));
+}
+
+#[test]
+fn a_stream_that_is_not_text_reads_as_the_uncached_read_reads_it() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let path = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.push(0xff);
+    bytes.push(b'\n');
+    std::fs::write(&path, bytes).unwrap();
+    host.assert_matches_uncached("a byte that is not UTF-8");
+}
