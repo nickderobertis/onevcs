@@ -123,20 +123,27 @@ enum Elapse {
 /// Every `origin` remote-tracking tip by branch name, asked of git where the checkout's
 /// refs cannot be read in process.
 pub(crate) fn origin_tips_listed(cwd: &Path) -> Result<BTreeMap<String, String>> {
-    Ok(checked(
+    let listed = checked(
         &[
             "for-each-ref",
             "--format=%(refname:lstrip=3)%00%(objectname)",
             "refs/remotes/origin",
         ],
         Some(cwd),
-    )?
-    .stdout
-    .lines()
-    .filter_map(|line| line.split_once('\0'))
-    .filter(|(name, _)| *name != "HEAD")
-    .map(|(name, tip)| (name.to_owned(), tip.to_owned()))
-    .collect())
+    )?;
+    if !listed.read_failures.is_empty() {
+        return Err(error::invalid(format!(
+            "the remote-tracking refs of {} could not be read whole",
+            cwd.display()
+        )));
+    }
+    Ok(listed
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\0'))
+        .filter(|(name, _)| *name != "HEAD")
+        .map(|(name, tip)| (name.to_owned(), tip.to_owned()))
+        .collect())
 }
 
 /// The most revisions an argument vector names before the list goes over standard
@@ -3122,7 +3129,7 @@ fn unpublished_among(
                 input.push('\n');
             }
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
-            if !given.ok() {
+            if !given.ok() || !given.read_failures.is_empty() {
                 if undecided == Undecided::List {
                     // llmlint: ignore[changed_behavior_has_e2e] a walk over thousands of
                     // refs failing is object damage the row journey reaches through the
@@ -3227,7 +3234,14 @@ pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
         let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
         args.extend(batch.iter().map(String::as_str));
         args.push("refs/heads");
-        let listed: BTreeSet<String> = checked(&args, Some(cwd))?
+        let listed = checked(&args, Some(cwd))?;
+        if !listed.read_failures.is_empty() {
+            return Err(error::invalid(format!(
+                "the branches of {} could not be read whole",
+                cwd.display()
+            )));
+        }
+        let listed: BTreeSet<String> = listed
             .stdout
             .lines()
             .filter(|line| !line.is_empty())
@@ -3847,7 +3861,8 @@ pub fn known_to_carry_changes<'a>(
     // A listing that arrived whole is text whole or not at all, as `changed_paths`
     // says, so a read answering from its decision record does not pay a process per
     // branch to count what it already read; only an empty one is asked.
-    let trust_listing = crate::decisions::enabled() && !touched.is_empty();
+    let trust_listing =
+        crate::decisions::enabled() && !touched.is_empty() && listed.read_failures.is_empty();
     if !trust_listing && touched.len() != counted_files(cwd, fork, commit)? {
         // Which leaves the same question asked without paths: a base carrying this
         // commit's whole tree carries its changes too, and that is the one answer
