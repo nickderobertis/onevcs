@@ -33,9 +33,15 @@ pub struct Host {
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> String {
+    // In the environment too: a session's worktree is commit-ready only where this user
+    // has a global identity, and CI's has none.
     let output = std::process::Command::new("git")
         .current_dir(repo)
         .args(args)
+        .env("GIT_AUTHOR_NAME", "Fixture")
+        .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Fixture")
+        .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
         .output()
         .expect("git starts");
     assert!(

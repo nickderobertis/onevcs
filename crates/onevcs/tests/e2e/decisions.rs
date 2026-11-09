@@ -1144,10 +1144,17 @@ fn origin_moving_under_a_recorded_branch_rederives_it_and_answers_the_uncached_r
         set(&["work/a"])
     );
 
-    // And one pushed there whole is published work, in the warm read as in the cold.
+    // And one arriving there whole is published work, in the warm read as in the cold.
+    // Origin fetches it because git 2.56 has a push to the remote's URL update the local
+    // tracking ref, and then the branch is no longer listed to re-derive.
     run(
-        &host.repo,
-        &["push", "-q", origin.to_str().unwrap(), "work/b"],
+        &origin,
+        &[
+            "fetch",
+            "-q",
+            host.repo.to_str().unwrap(),
+            "work/b:refs/heads/work/b",
+        ],
     );
     let derived = host.assert_matches_uncached("origin carries the work");
     assert_eq!(derived, set(&["work/b"]));
