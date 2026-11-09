@@ -861,7 +861,10 @@ directory loses nothing but time. Five things are easy to undo.
   landing) write; refresh runs only where a host read has already started recording.
 - **A read makes no request to a code host**: `git::local_only` makes `default_branch`
   answer from `origin/HEAD`, then `origin/main` or `origin/master`, and a checkout none of
-  those answers reads `unknown` with its reason. A comparison that is refused reads
+  those answers reads `unknown` with its reason. Whether origin carries a branch (`settle_published`) is
+  read in process from a bare origin on this filesystem; a network origin is not asked, so
+  only this host's own push records can unlist its branch, and the record keeps
+  `Listing::origin_tip` so a local origin moving re-derives it. A comparison that is refused reads
   `unknown` for that branch alone, its reason in `stopped_because`.
 
 Every list that grows with paths, refs or commits goes over standard input, or is asked

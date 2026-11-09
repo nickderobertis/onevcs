@@ -1094,3 +1094,114 @@ fn a_base_gaining_a_path_that_is_not_text_answers_the_uncached_read() {
     );
     host.assert_matches_uncached("a path git cannot print as text");
 }
+
+#[test]
+fn a_network_origin_is_never_asked_and_its_branch_stays_listed() {
+    let host = Host::new();
+    host.branch("work/a");
+    run(
+        &host.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://example.invalid/never/dialled.git",
+        ],
+    );
+    let mut rows = Vec::new();
+    let calls = with_shim(&host, || rows = host.read().0);
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call.starts_with("ls-remote") && !call.starts_with("fetch")),
+        "no command reaches the network: {calls:?}"
+    );
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["branch"]["branch"], "work/a");
+}
+
+#[test]
+fn origin_moving_under_a_recorded_branch_rederives_it_and_answers_the_uncached_read() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let origin = host.root.join("origin.git");
+    let main = run(&host.repo, &["rev-parse", "main"]);
+
+    // A branch of that name appears on origin at a commit that does not carry the work,
+    // pushed by nothing this host records, so only origin itself can say so.
+    run(&origin, &["update-ref", "refs/heads/work/a", &main]);
+    assert_eq!(
+        host.assert_matches_uncached("origin gained the name"),
+        set(&["work/a"])
+    );
+    assert_eq!(host.assert_matches_uncached("then unmoved"), set(&[]));
+
+    run(&origin, &["update-ref", "-d", "refs/heads/work/a"]);
+    assert_eq!(
+        host.assert_matches_uncached("origin lost the name"),
+        set(&["work/a"])
+    );
+
+    // And one pushed there whole is published work, in the warm read as in the cold.
+    run(
+        &host.repo,
+        &["push", "-q", origin.to_str().unwrap(), "work/b"],
+    );
+    let derived = host.assert_matches_uncached("origin carries the work");
+    assert_eq!(derived, set(&["work/b"]));
+    assert!(host
+        .rows()
+        .iter()
+        .all(|row| row["branch"]["branch"] != "work/b"));
+}
+
+#[test]
+fn a_branch_recorded_published_is_withheld_warm_and_answers_the_wider_report() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.session("work/a", Lifecycle::Closed);
+    let tip = run(&host.repo, &["rev-parse", "work/a"]);
+    testing::write_events(
+        &host.home,
+        &Host::token("work/a"),
+        &host.key,
+        &[(
+            EventKind::Push,
+            json!({"branch": "work/a", "head": tip, "accepted": true})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )],
+    )
+    .unwrap();
+    // Only the record can say so now: nothing tracks the branch and origin cannot answer.
+    std::fs::rename(
+        host.root.join("origin.git"),
+        host.root.join("origin.git.away"),
+    )
+    .unwrap();
+
+    host.read();
+    let (rows, derived) = host.read();
+    assert!(derived.is_empty(), "served: {derived:?}");
+    assert_eq!(rows, host.uncached());
+    assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/a"));
+    assert!(rows.iter().any(|row| row["branch"]["branch"] == "work/b"));
+
+    let wider = || {
+        Git.preserved_matching(Scope::All, &Host::selection())
+            .unwrap()
+            .into_iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let warm = wider();
+    std::env::set_var("GIT_NAMESPACE", "");
+    let uncached = wider();
+    std::env::remove_var("GIT_NAMESPACE");
+    assert_eq!(warm, uncached);
+    assert!(warm.iter().any(|row| row["branch"]["branch"] == "work/a"));
+}

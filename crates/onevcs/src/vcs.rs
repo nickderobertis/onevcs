@@ -1133,7 +1133,10 @@ fn serve_recorded(
             if every || decisions::names(&gained, &decision.tip, &decision.listing) {
                 served.derive.insert((*branch).clone());
                 named += 1;
-            } else if scan.writing && gained.commits.len() >= decisions::REANCHOR_AFTER {
+            } else if scan.writing && decision.decided_against.as_deref() != Some(&compared) {
+                // Checked against everything up to here and named by none of it: the
+                // next check starts here, so a branch re-derived by one gain is not
+                // named again by what the rest of its checkout had still to be read past.
                 let mut anchored = (*decision).clone();
                 anchored.decided_against = Some(compared.clone());
                 decisions::write(&anchored);

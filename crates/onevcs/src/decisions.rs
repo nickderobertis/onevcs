@@ -37,10 +37,6 @@ pub(crate) const VERSION: u32 = 1;
 /// derived again, so a build that decides differently never serves an earlier answer.
 pub(crate) const LOGIC: u32 = 1;
 
-/// How many commits the base may gain beyond a record before a read that wrote nothing
-/// else moves the record forward, so the increment asked of git does not keep growing.
-pub(crate) const REANCHOR_AFTER: usize = 256;
-
 /// More lines than any stream a run writes; a count past this is not one this build
 /// wrote.
 const MAX_STREAM_LINES: u64 = 1 << 40;
@@ -111,7 +107,9 @@ pub(crate) struct Listing {
 /// Whether reads on this thread may use the record at all: never where a read has been
 /// told to bypass reuse, as an uncached reader's `GIT_*` override does.
 pub(crate) fn enabled() -> bool {
-    crate::recovery_cache::enabled() && !record_refused()
+    crate::recovery_cache::enabled()
+        && !crate::recovery_cache::has_git_overrides()
+        && !record_refused()
 }
 
 /// Whether `ONEVCS_DECISION_RECORD=off` turned the record off, which journeys about what

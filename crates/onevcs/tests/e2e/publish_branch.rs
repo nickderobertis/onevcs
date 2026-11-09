@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
+use onevcs::Vcs as _;
 use predicates::prelude::*;
 
 use crate::host::{Hosted, AUTOMATED, DIRECT, REVIEWED};
@@ -4613,6 +4614,51 @@ fn a_publisher_that_dies_holds_nothing_by_the_rule_a_stale_lease_is_read_by() {
     );
     parked.release();
     assert_eq!(fixture.origin_log().len(), 1, "nothing landed");
+}
+
+#[test]
+fn a_recording_read_lists_a_running_publication_whose_tracking_ref_already_moved() {
+    let fixture = Fixture::local(&local_direct());
+    let branch = "feature/tracked";
+    finished_branch(&fixture, branch, "feat: tracked while running");
+    let parked = ParkedPush::install(&fixture, 0);
+    let mut running = start(&fixture, "publish-branch", branch);
+    parked.reached(&mut running);
+    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", branch]);
+    fixture.world.git(
+        &fixture.checkout,
+        &[
+            "update-ref",
+            &format!("refs/remotes/origin/{branch}"),
+            tip.trim(),
+        ],
+    );
+
+    // The typed read a consumer links, which is the one that answers from records.
+    std::env::set_var("ONEVCS_HOME", fixture.world.home());
+    let rows = onevcs::Git
+        .recoverable_matching(
+            onevcs::Scope::All,
+            &onevcs::Selection {
+                detail: onevcs::Detail::Decision,
+                ..onevcs::Selection::default()
+            },
+        )
+        .expect("the read answers");
+    let row = rows
+        .iter()
+        .find(|row| row.branch.branch == branch)
+        .expect("a running publication keeps the row that holds it");
+    assert!(row.held_by.is_some(), "{row:?}");
+
+    // Put back, or the publishing push's lease is held to the commit written above.
+    fixture.world.git(
+        &fixture.checkout,
+        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
+    );
+    parked.release();
+    let (code, stderr) = finish(running);
+    assert_eq!(code, Some(0), "{stderr}");
 }
 
 #[test]
