@@ -1410,7 +1410,11 @@ fn build_host_identity(
                 identity: key.clone(),
                 branch: branch.clone(),
                 session: if entry.class == Class::InPart {
-                    token.clone()
+                    self::token(format!(
+                        "s-fixture-{}-{}",
+                        entry.branch.replace('/', "-"),
+                        entry.mark
+                    ))?
                 } else {
                     entry.token.clone()
                 },

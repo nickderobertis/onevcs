@@ -303,6 +303,18 @@ fn class_name(class: Class) -> &'static str {
         Class::InPart => "in-part",
     }
 }
+/// The landing state and retirement class a fixture class declares.
+fn class_outcome(class: Class) -> (&'static str, &'static str) {
+    match class {
+        Class::Landed => ("yes", "retirable"),
+        Class::Retirable => ("unknown", "retirable"),
+        Class::Superseded => ("no", "superseded-with-changes"),
+        Class::Live | Class::No => ("no", "keep"),
+        Class::Unknown => ("unknown", "keep"),
+        Class::InPart => ("in-part", "keep"),
+    }
+}
+
 fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
     assert_eq!(rows.len(), fixture.expected.len(), "all selected branches");
     let mut classes = BTreeMap::new();
@@ -316,14 +328,7 @@ fn validate_all(fixture: &Fixture, rows: &[Value]) -> BTreeMap<String, usize> {
         assert_eq!(row["tip"], expected.tip.as_str());
         assert_eq!(row["session"], *expected.session);
         assert_eq!(row["labels"]["launcher"], fixture.launcher);
-        let (state, retirement) = match expected.class {
-            Class::Landed => ("yes", "retirable"),
-            Class::Retirable => ("unknown", "retirable"),
-            Class::Superseded => ("no", "superseded-with-changes"),
-            Class::Live | Class::No => ("no", "keep"),
-            Class::Unknown => ("unknown", "keep"),
-            Class::InPart => ("in-part", "keep"),
-        };
+        let (state, retirement) = class_outcome(expected.class);
         assert_eq!(row["landed"]["state"], state, "{}", expected.branch);
         assert_eq!(
             row["retirement"]["class"], retirement,

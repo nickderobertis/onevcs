@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use onevcs_testing::recovery::{age_host, build_host, AgedHost, Fixture, Landing};
+use onevcs_testing::recovery::{age_host, build_host, AgedHost, Class, Fixture, Landing};
 use serde_json::Value;
 
 use super::telemetry::{Call, HostChecks, HostRecord};
-use super::{digest, load1, milliseconds};
+use super::{class_name, class_outcome, digest, load1, milliseconds};
 
 /// How many timed warm calls a sample is the median of.
 const WARM_CALLS: usize = 10;
@@ -124,7 +124,7 @@ pub(super) fn journey(root: &Path) -> HostRecord {
         .expect("the uncached read's own caches are put back");
     aged.verify().expect("the aged state stands");
     let want = must_rederive(&aged);
-    let expected_rows: BTreeMap<String, String> = landed_absent(&aged);
+    let outcomes = declared(&fixture, &aged);
 
     // The cold read: no record of anything, every row the uncached read's.
     std::fs::remove_dir_all(fixture.home.join("decisions")).expect("the records go");
@@ -134,6 +134,8 @@ pub(super) fn journey(root: &Path) -> HostRecord {
         uncached_rows,
         "the cold read answers the uncached read's rows"
     );
+    assert_rows(&cold, "the cold read", &fixture, &outcomes);
+    assert_a_wrong_class_is_refused(&cold, &fixture, &outcomes);
     let cold_call = call(&cold);
     let mut samples = Vec::with_capacity(WARM_CALLS);
     let mut checks = HostChecks::default();
@@ -148,7 +150,12 @@ pub(super) fn journey(root: &Path) -> HostRecord {
             rows, uncached_rows,
             "sample {index} answers the uncached rows"
         );
-        assert_landed_absent(&report, &expected_rows);
+        assert_rows(
+            &report,
+            &format!("warm sample {index}"),
+            &fixture,
+            &outcomes,
+        );
         let note = diagnosed(&diagnostics);
         let derived: BTreeSet<(String, String)> = note["derived"]
             .as_array()
@@ -198,30 +205,190 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     }
 }
 
-fn landed_absent(aged: &AgedHost) -> BTreeMap<String, String> {
-    aged.landed
-        .iter()
-        .map(|landed| {
-            (
-                landed.branch.to_string(),
-                match landed.landing {
-                    Landing::Squash => "squash".to_owned(),
-                    Landing::Merge => "merge".to_owned(),
-                },
-            )
-        })
-        .collect()
+/// What the fixture, once aged, declares a branch answers in an unpublished read.
+#[derive(Debug, Clone)]
+enum Outcome {
+    /// A row, of this class, at this tip, answered by this session.
+    Answers {
+        class: Class,
+        tip: String,
+        session: String,
+    },
+    /// No row, for the reason given: the work reached its base or holds nothing beyond it.
+    Absent(String),
 }
 
-/// An unpublished read answers no row for work the base gained, however it landed.
-fn assert_landed_absent(report: &Value, landed: &BTreeMap<String, String>) {
-    let rows = report["rows"].as_array().unwrap();
-    for (branch, how) in landed {
-        assert!(
-            rows.iter().all(|row| row["branch"]["branch"] != *branch),
-            "{branch}, landed by {how}, answers no unpublished row"
-        );
+type Outcomes = BTreeMap<(String, String), Outcome>;
+
+/// Every branch `build_host` declared, with `age_host`'s moved tips and landings applied.
+/// A moved or landed branch the fixture never declared is a broken scenario, so it panics.
+fn declared(fixture: &Fixture, aged: &AgedHost) -> Outcomes {
+    let mut outcomes: Outcomes = fixture
+        .expected
+        .iter()
+        .map(|expected| {
+            let outcome = match expected.class {
+                Class::Landed | Class::Retirable => {
+                    Outcome::Absent(format!("declared {}", class_name(expected.class)))
+                }
+                class => Outcome::Answers {
+                    class,
+                    tip: expected.tip.as_str().to_owned(),
+                    session: expected.session.to_string(),
+                },
+            };
+            (
+                (expected.identity.clone(), expected.branch.to_string()),
+                outcome,
+            )
+        })
+        .collect();
+    for (identity, branch, moved) in &aged.moved {
+        let key = (identity.clone(), branch.to_string());
+        match outcomes.get_mut(&key) {
+            Some(Outcome::Answers { tip, .. }) => *tip = moved.as_str().to_owned(),
+            other => panic!("age_host moved {branch}, which declares {other:?}"),
+        }
     }
+    for landed in &aged.landed {
+        let how = match landed.landing {
+            Landing::Squash => "squash",
+            Landing::Merge => "merge",
+        };
+        let key = (landed.identity.clone(), landed.branch.to_string());
+        assert!(
+            matches!(outcomes.get(&key), Some(Outcome::Answers { .. })),
+            "age_host landed {}, which the fixture does not declare unlanded",
+            landed.branch
+        );
+        outcomes.insert(key, Outcome::Absent(format!("landed by {how}")));
+    }
+    outcomes
+}
+
+/// Hold one read's rows to what the fixture declares: exactly the branches that answer,
+/// each once, with its tip, session, launcher, landing state, retirement class and holder.
+fn rows_mismatch(rows: &[Value], launcher: &str, outcomes: &Outcomes) -> Result<(), String> {
+    let mut answered: BTreeMap<(String, String), &Value> = BTreeMap::new();
+    for row in rows {
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let key = (text(&row["identity"]), text(&row["branch"]["branch"]));
+        if answered.insert(key.clone(), row).is_some() {
+            return Err(format!("{key:?} answered more than one row"));
+        }
+    }
+    for key in answered.keys() {
+        if !outcomes.contains_key(key) {
+            return Err(format!("{key:?} answered a row the fixture never declared"));
+        }
+    }
+    for (key, outcome) in outcomes {
+        let branch = &key.1;
+        let row = answered.get(key);
+        let (class, tip, session) = match (outcome, row) {
+            (Outcome::Absent(why), Some(_)) => {
+                return Err(format!("{branch} answered a row, but is absent: {why}"));
+            }
+            (Outcome::Absent(_), None) => continue,
+            (Outcome::Answers { class, .. }, None) => {
+                return Err(format!(
+                    "{branch} declared {} answered no row",
+                    class_name(*class)
+                ));
+            }
+            (
+                Outcome::Answers {
+                    class,
+                    tip,
+                    session,
+                },
+                Some(_),
+            ) => (*class, tip, session),
+        };
+        let row = row.expect("matched as present above");
+        let name = class_name(class);
+        let (state, retirement) = class_outcome(class);
+        let checks = [
+            ("tip", row["tip"] == tip.as_str(), tip.clone(), &row["tip"]),
+            (
+                "session",
+                row["session"] == session.as_str(),
+                session.clone(),
+                &row["session"],
+            ),
+            (
+                "launcher",
+                row["labels"]["launcher"] == launcher,
+                launcher.to_owned(),
+                &row["labels"]["launcher"],
+            ),
+            (
+                "landing state",
+                row["landed"]["state"] == state,
+                state.to_owned(),
+                &row["landed"]["state"],
+            ),
+            (
+                "retirement class",
+                row["retirement"]["class"] == retirement,
+                retirement.to_owned(),
+                &row["retirement"]["class"],
+            ),
+        ];
+        for (what, matches, wanted, found) in checks {
+            if !matches {
+                return Err(format!(
+                    "{branch} declared {name} wants {what} {wanted}, and the read answered {found}"
+                ));
+            }
+        }
+        if row["held_by"].is_object() != (class == Class::Live) {
+            return Err(format!(
+                "{branch} declared {name} has the wrong holder: {}",
+                row["held_by"]
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn assert_rows(report: &Value, read: &str, fixture: &Fixture, outcomes: &Outcomes) {
+    let rows = report["rows"].as_array().expect("rows");
+    if let Err(mismatch) = rows_mismatch(rows, &fixture.launcher, outcomes) {
+        panic!("{read} does not answer the fixture's declared rows: {mismatch}");
+    }
+}
+
+/// Run on every journey, so the check above is known to be able to refuse: the same real
+/// rows, with one branch declared a class it is not, must fail by naming that branch.
+fn assert_a_wrong_class_is_refused(report: &Value, fixture: &Fixture, outcomes: &Outcomes) {
+    let rows = report["rows"].as_array().expect("rows");
+    let (key, class) = outcomes
+        .iter()
+        .find_map(|(key, outcome)| match outcome {
+            Outcome::Answers {
+                class: Class::No, ..
+            } => Some((key.clone(), Class::No)),
+            _ => None,
+        })
+        .expect("the fixture declares an unlanded branch");
+    let mut wrong = outcomes.clone();
+    if let Some(Outcome::Answers {
+        class: declared, ..
+    }) = wrong.get_mut(&key)
+    {
+        *declared = Class::Unknown;
+    }
+    let refusal = rows_mismatch(rows, &fixture.launcher, &wrong)
+        .expect_err("a branch declared the wrong class is refused");
+    assert!(
+        refusal.contains(&key.1)
+            && refusal.contains(&format!("declared {}", class_name(Class::Unknown)))
+            && refusal.contains("landing state"),
+        "declaring {} as unknown rather than {} failed for another reason: {refusal}",
+        key.1,
+        class_name(class),
+    );
 }
 
 fn count_git(fixture: &Fixture) -> (usize, Value) {
