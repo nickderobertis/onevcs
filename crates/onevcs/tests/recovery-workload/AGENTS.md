@@ -73,3 +73,10 @@ library, so a debug or coverage-instrumented build would measure different code.
 Keep it outside the recoverable read's clock. Its source-download retry must
 reuse the same source checkout and local LFS cache after the upload refusal;
 rebuilding either would measure another cold attempt instead of a retry.
+
+`host.rs` is the host-shaped budget journey: `onevcs_testing::recovery::build_host`'s
+fixture, every call of the warm sample started from the state `AgedHost::restore` and
+`verify` re-establish, each call's rows asserted against the uncached read's and against
+having re-derived exactly the moved and landed branches. `scripts/recoverable-latency-budget.mjs
+--scale host --warm` reads `Record.host`, whose cold figure is stated in the detail. Its samples
+stay out of the `--scale 1|10` workloads the other budgets read.

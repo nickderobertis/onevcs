@@ -1867,7 +1867,12 @@ fn record_decision(
         landed,
         decided_against,
         decided_at: decisions::now(),
-        row: Some(row.clone()),
+        // The class is computed afresh at every read and the derivation kept in
+        // `listing`, so the row carries none of it.
+        row: Some(Recoverable {
+            retirement: None,
+            ..row.clone()
+        }),
     });
 }
 

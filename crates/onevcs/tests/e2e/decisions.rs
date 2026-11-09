@@ -114,9 +114,7 @@ impl Host {
         std::env::set_var("HOME", &root);
         let diagnostics = root.join("diagnostics.ndjson");
         std::env::set_var("ONEVCS_DECISION_DIAGNOSTICS", &diagnostics);
-        for name in ["GIT_NAMESPACE"] {
-            std::env::remove_var(name);
-        }
+        std::env::remove_var("GIT_NAMESPACE");
         Host {
             _root: dir,
             root,

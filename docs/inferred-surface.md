@@ -1067,7 +1067,7 @@ question was:
 
 The recovery detail amendment in `docs/contract.md` is authoritative. `Recoverable`
 adds `tip: Option<String>` (always serialized, null only for an unreadable branch
-ref, defaulted on read). `Selection` adds `detail: Detail`, defaulted to `Full`.
+ref, defaulted on read). `Selection` adds `detail: Detail`, defaulted to `Full`, and `branch: Option<String>`, the one branch asked about, omitted when `None`.
 `Detail::{Full, Decision}` serializes in kebab-case. The CLI adds
 `recoverable --detail <full|decision>` with default `full`. Decision preserves all
 semantic fields and the recovery command; only the presentation omissions named

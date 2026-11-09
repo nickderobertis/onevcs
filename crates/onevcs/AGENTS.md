@@ -841,6 +841,33 @@ not a plain bare path — is left to git, so a network remote's HEAD is still an
 between two reads; `checkout_reads::an_in_process_landing_read_keeps_the_clone_it_read_until_it_completes`
 races the in-process read against a close.
 
+## A recovery read is answered from a record, and the record is rebuilt rather than trusted
+
+`decisions.rs` is `$ONEVCS_HOME/decisions/v1/`: one file per branch and one `streams.json`
+per identity, each written by an atomic rename, read by this crate alone. Deleting the
+directory loses nothing but time. Five things are easy to undo.
+
+- **Only a branch's own inputs and what the base gained re-derive it.** The base's tip is
+  no key: it moves on every read and can only make an unlanded branch landed, so a read
+  runs `decisions::gained` once per checkout (three git processes, however many commits or
+  branches) and re-derives only the branches that names. A check that cannot be made
+  (an unknown base commit, an unreadable stream) derives every branch it would cover.
+- **A warm read takes no turn** (`checkout_reads::unturned`), so one busy checkout cannot
+  stall the host's answer. Anything that must re-derive leaves that scope and waits.
+- **The retirement class is recomputed every read**; only the derivation
+  (`Listing::verdict`, tip-keyed) is kept, and a `consulted` one never is.
+- **A session-scoped read writes nothing**, because writing cost more than the read. The
+  host read, a branch-filtered read, and `decisions::refresh` (close, publication,
+  landing) write; refresh runs only where a host read has already started recording.
+- **A read makes no request to a code host**: `git::local_only` makes `default_branch`
+  answer from `origin/HEAD`, then `origin/main` or `origin/master`, and a checkout none of
+  those answers reads `unknown` with its reason. A comparison that is refused reads
+  `unknown` for that branch alone, its reason in `stopped_because`.
+
+Every list that grows with paths, refs or commits goes over standard input, or is asked
+without it: a whole-tree `diff --name-only` read and looked up in process, `rev-list --stdin`,
+or `--no-merged` in batches of `NO_MERGED_BATCH`. Nothing else may put such a list on argv.
+
 ## A branch this crate *cuts* takes a prefix and a suffix; a pinned one takes neither
 
 `branches.rs` is the host setting — `$ONEVCS_HOME/branches.yml`, one key, read the

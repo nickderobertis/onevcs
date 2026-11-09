@@ -5199,6 +5199,7 @@ retirement vocabulary, label matching and unknown-session refusal.
 ```rust
 pub enum Detail { Full, Decision } // Default: Full; serde: kebab-case
 // Selection gains pub detail: Detail, #[serde(default)].
+// Selection gains pub branch: Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")].
 // Recoverable gains pub tip: Option<String>, #[serde(default)].
 ```
 
