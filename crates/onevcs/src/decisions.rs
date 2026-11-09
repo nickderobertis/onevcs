@@ -459,9 +459,9 @@ pub(crate) fn unmatched_trailers_reached(
         &["rev-list", "--stdin", "--ignore-missing"],
         input.as_bytes(),
     )?;
-    if !listed.ok() {
+    if !listed.ok() || !listed.read_failures.is_empty() {
         return Err(crate::error::invalid(format!(
-            "git rev-list over the gained landing trailers failed: {}",
+            "git rev-list over the gained landing trailers could not be read whole: {}",
             listed.diagnostic()
         )));
     }
