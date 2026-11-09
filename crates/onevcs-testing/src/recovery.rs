@@ -1227,7 +1227,7 @@ fn build_host_identity(
         &[
             "update-ref",
             "refs/remotes/origin/main",
-            &git(&repo, &["rev-parse", "main"])?.trim().to_owned(),
+            git(&repo, &["rev-parse", "main"])?.trim(),
         ],
     )?;
     git(&repo, &["checkout", "-q", "main"])?;
@@ -1306,9 +1306,7 @@ fn build_host_identity(
                 &[
                     "update-ref",
                     &format!("refs/heads/{branch}"),
-                    &git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?
-                        .trim()
-                        .to_owned(),
+                    git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?.trim(),
                 ],
             )?;
             git(
@@ -1708,12 +1706,10 @@ pub fn age_host(fixture: &Fixture) -> Result<AgedHost> {
         let repo = repo_of(at);
         let mut base = main_tip(&repo)?;
         let branches: Vec<usize> = (0..HOST.preserved[at]).rev().take(gain.landing).collect();
-        let landings = branches.len();
         let mut import = Import::new(1);
         let mut reports = Vec::new();
         for n in 0..gain.commits {
-            let unrelated = n >= landings;
-            if unrelated {
+            let Some(&landed_at) = branches.get(n) else {
                 let mark = import.commit(
                     "main",
                     Some(&base),
@@ -1722,8 +1718,8 @@ pub fn age_host(fixture: &Fixture) -> Result<AgedHost> {
                 );
                 base = format!(":{mark}");
                 continue;
-            }
-            let branch = host_branch(at, branches[n]);
+            };
+            let branch = host_branch(at, landed_at);
             let tip = git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?
                 .trim()
                 .to_owned();

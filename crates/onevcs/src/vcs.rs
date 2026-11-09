@@ -1049,10 +1049,8 @@ fn serve_recorded(
             .filter(|value| !known.contains(value.as_str()))
             .cloned()
             .collect();
-        let every = match decisions::unmatched_trailers_reached(asked, &gained.from, &unmatched) {
-            Ok(reached) => reached,
-            Err(_) => true,
-        };
+        let every =
+            decisions::unmatched_trailers_reached(asked, &gained.from, &unmatched).unwrap_or(true);
         let mut named = 0;
         for (branch, decision) in members {
             if every || decisions::names(&gained, &decision.tip, &decision.listing) {

@@ -20,7 +20,8 @@ function fixture() {
   const class_counts = Object.fromEntries(["in-part","landed","live","no","retirable","superseded","unknown"].map(name=>[name,1]));
   const call = {wall_ms:12.5,load1:1,rows:5,verdict_sha256:sha("uncached verdict")};
   const calls = () => Array.from({length:10},()=>({...call}));
-  const record = {version:2,build,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
+  const host = {warm:calls(),cold:call,rederived:26,checks:{by_gain:[{gained:600,seconds:0.01}]},git_executions:40,slowest_ms:13,build_ms:5,load1:1,rows_sha256:sha("host rows")};
+  const record = {version:3,build,host,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
     workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256,
       uncached_verdict_sha256:call.verdict_sha256,in_process_warm:calls(),...(scale === 1 ? {in_process_cold:calls()} : {})}))};
   const invocation = {state:"complete",...build};
@@ -148,10 +149,10 @@ test("latency reader reports median wall time despite minority outliers and refu
     const unrecorded = run("--scale", "10", "--cold");
     assert.equal(unrecorded.status, 2);
     assert.match(unrecorded.stderr, /in-process cold calls are recorded at --scale 1 only/);
-    assert.match(unrecorded.stderr, /next: pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold/);
+    assert.match(unrecorded.stderr, /next: pass --scale 1 --warm, --scale 10 --warm, --scale 1 --cold or --scale host --warm/);
     const malformed = run("--scale", "2", "--warm");
     assert.equal(malformed.status, 2);
-    assert.match(malformed.stderr, /expected --scale 1\|10 --cold\|--warm/);
+    assert.match(malformed.stderr, /expected --scale 1\|10\|host --cold\|--warm/);
     assert.match(malformed.stderr, /next: pass --scale 1 --warm/);
     // Run outside onebudgetspec it has nowhere to report, and names the recipe that
     // gives it somewhere.

@@ -838,7 +838,7 @@ fn the_latency_program_refuses_what_it_cannot_use() {
         ),
         (
             vec!["--launcher", "x", "--calls", "1", "--mode", "hot"],
-            "is not warm, cold or uncached",
+            "is not warm, cold, uncached or once",
         ),
         (
             vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
