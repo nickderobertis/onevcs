@@ -404,32 +404,60 @@ fn a_host_of_unmoved_inputs_starts_no_git_per_branch_and_nothing_reaches_the_net
 fn a_base_comes_from_local_refs_and_a_checkout_with_none_reads_unknown_with_its_reason() {
     let host = Host::new();
     host.branch("work/a");
+    // A branch no session names, whose base is the checkout's rather than a record's.
+    run(&host.repo, &["checkout", "-q", "-b", "work/loose"]);
+    std::fs::write(host.repo.join("loose.txt"), "loose\n").unwrap();
+    run(&host.repo, &["add", "."]);
+    run(&host.repo, &["commit", "-q", "-m", "feat: loose"]);
+    run(&host.repo, &["checkout", "-q", "main"]);
     run(
         &host.repo,
         &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
     );
+    let main_tip = run(&host.repo, &["rev-parse", "refs/remotes/origin/main"]);
     let rows = host.uncached();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["branch"]["base"], "main");
+    let loose = |rows: &[Value]| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == "work/loose")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(loose(&rows)["branch"]["base"], "main");
+
+    // Then `origin/master`, the next name the read tries where `origin/HEAD` is gone.
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/master", &main_tip],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/main"],
+    );
+    let rows = host.uncached();
+    assert_eq!(loose(&rows)["branch"]["base"], "master");
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/master"],
+    );
 
     run(
         &host.repo,
         &["update-ref", "-d", "refs/remotes/origin/main"],
     );
     let rows = host.uncached();
-    assert_eq!(
-        rows.len(),
-        1,
-        "the checkout answers with no local base: {rows:?}"
-    );
-    assert_eq!(landed_state(&rows[0]), "unknown");
+    let unbased = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "work/a")
+        .expect("the session's branch answers with no local base");
+    assert_eq!(landed_state(unbased), "unknown");
     assert!(
-        rows[0]["stopped_because"]
+        unbased["stopped_because"]
             .as_str()
             .unwrap()
             .contains("no origin/HEAD, origin/main or origin/master"),
         "the reason says why: {:?}",
-        rows[0]["stopped_because"]
+        unbased["stopped_because"]
     );
 }
 
@@ -758,4 +786,20 @@ fn a_stream_that_is_not_text_reads_as_the_uncached_read_reads_it() {
     bytes.push(b'\n');
     std::fs::write(&path, bytes).unwrap();
     host.assert_matches_uncached("a byte that is not UTF-8");
+}
+
+#[test]
+fn a_stream_with_a_malformed_line_answers_the_uncached_read_each_time() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let path = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"{not an event\n");
+    std::fs::write(&path, bytes).unwrap();
+    host.assert_matches_uncached("a malformed line kept on the record");
+    host.assert_matches_uncached("and replayed from it");
 }
