@@ -1079,7 +1079,14 @@ pub(crate) trait PipeRead: Read + std::os::windows::io::AsRawHandle {
             )
         };
         if succeeded == 0 {
-            return Err(std::io::Error::last_os_error());
+            // Every write end closed: this platform's end of stream, reached by every
+            // command that finishes, and not a read that could not be made.
+            const ERROR_BROKEN_PIPE: i32 = 109;
+            let failure = std::io::Error::last_os_error();
+            return match failure.raw_os_error() {
+                Some(ERROR_BROKEN_PIPE) => Ok(0),
+                _ => Err(failure),
+            };
         }
         if available == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
@@ -6090,6 +6097,15 @@ mod list_bounds {
 
     /// Past one batch of tips, a branch one tip reaches is ruled out by the batch holding
     /// that tip, and one no tip reaches survives every batch.
+    #[cfg(windows)]
+    #[test]
+    fn a_finished_commands_output_is_whole_on_windows() {
+        let output = run(&["--version"], None).expect("git runs");
+        assert!(output.ok(), "{}", output.diagnostic());
+        assert!(!output.stdout.is_empty());
+        assert_eq!(output.read_failures, Vec::<String>::new());
+    }
+
     #[test]
     fn a_branch_survives_only_the_batches_of_tips_that_do_not_reach_it() {
         let (_dir, repo) = repo();
