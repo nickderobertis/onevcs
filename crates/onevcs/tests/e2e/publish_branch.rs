@@ -4659,9 +4659,15 @@ fn a_recording_read_lists_a_running_publication_whose_tracking_ref_already_moved
     let reference = format!("refs/remotes/origin/{branch}");
     let copies = every_copy_of(&fixture, branch);
     assert!(copies.len() >= 2, "{copies:?}");
+    // llmlint: ignore-block[tests_mirror_real_usage] the premise is the window after a
+    // publishing push moved its tracking refs and before the publication ended, and no verb
+    // can be parked inside it: the only park a journey has is the `pre-push` hook, which runs
+    // before that push. So the refs that push would have written are written here, and the
+    // real read then meets them.
     for (copy, tip) in &copies {
         fixture.world.git(copy, &["update-ref", &reference, tip]);
     }
+    // llmlint: ignore-end[tests_mirror_real_usage]
 
     // The typed read a consumer links, which is the one that answers from records.
     std::env::set_var("ONEVCS_HOME", fixture.world.home());
