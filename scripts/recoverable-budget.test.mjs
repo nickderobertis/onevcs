@@ -154,6 +154,9 @@ test("latency reader reports median wall time despite minority outliers and refu
       host => { host.cold.verdict_sha256 = "not hex"; },
       host => { host.checks.by_gain[0].seconds = -1; },
       host => { host.rows_sha256 = "not hex"; },
+      host => { host.warm[0].verdict_sha256 = sha("different rows"); },
+      host => { host.warm[0].rows = 3; },
+      host => { host.warm[0].rows = 0; },
     ]) {
       f.record.host = structuredClone(saved);
       mangle(f.record.host);

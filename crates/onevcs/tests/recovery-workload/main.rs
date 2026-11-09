@@ -844,6 +844,19 @@ fn the_latency_program_refuses_what_it_cannot_use() {
             "is not warm, cold, uncached or once",
         ),
         (
+            vec![
+                "--launcher",
+                "x",
+                "--selection",
+                "host",
+                "--calls",
+                "1",
+                "--mode",
+                "once",
+            ],
+            "are alternatives",
+        ),
+        (
             vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
             "is not a label value",
         ),
