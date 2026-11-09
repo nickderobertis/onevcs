@@ -309,6 +309,32 @@ pub(crate) fn tip_with_objects(
 /// and a HEAD naming a branch that exists and is not itself symbolic. Anything else —
 /// a dangling HEAD among it, which git versions advertise differently — is git's.
 pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
+    let remote = local_remote(repo, remote)?;
+    let head = remote.find_reference("HEAD").ok()?;
+    let target = head.symbolic_target().ok().flatten()?;
+    let branch = target.strip_prefix("refs/heads/")?;
+    let reference = remote.find_reference(target).ok()?;
+    (reference.kind() == Some(git2::ReferenceType::Direct)).then(|| branch.to_owned())
+}
+
+/// The commit `git ls-remote <remote> refs/heads/<branch>` would advertise, read from
+/// the remote's own refs under exactly the conditions [`advertised_head`] reads its
+/// HEAD under: `Some(None)` for a branch the remote does not have, and `None` for git
+/// to answer. A branch whose ref is symbolic is git's too.
+pub(crate) fn advertised_tip(repo: &Path, remote: &str, branch: &str) -> Option<Option<String>> {
+    let remote = local_remote(repo, remote)?;
+    let reference = match remote.find_reference(&format!("refs/heads/{branch}")) {
+        Ok(reference) => reference,
+        Err(missing) if missing.code() == git2::ErrorCode::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    (reference.kind() == Some(git2::ReferenceType::Direct))
+        .then(|| reference.target().map(|id| id.to_string()))
+}
+
+/// The bare repository on this filesystem `remote` names, opened, where what it
+/// advertises is nothing but its own refs — or `None`, for git to answer.
+fn local_remote(repo: &Path, remote: &str) -> Option<git2::Repository> {
     let rerouted = frozen_after_read(repo, |configuration| {
         let mut entries = configuration.entries(None).ok()?;
         let own = format!("remote.{}.", remote.to_ascii_lowercase());
@@ -346,11 +372,9 @@ pub(crate) fn advertised_head(repo: &Path, remote: &str) -> Option<String> {
             return None;
         }
     }
-    let head = remote.find_reference("HEAD").ok()?;
-    let target = head.symbolic_target().ok().flatten()?;
-    let branch = target.strip_prefix("refs/heads/")?;
-    let reference = remote.find_reference(target).ok()?;
-    (reference.kind() == Some(git2::ReferenceType::Direct)).then(|| branch.to_owned())
+    drop(entries);
+    drop(configuration);
+    Some(remote)
 }
 
 /// [`frozen`], for a repository whose snapshot this read has taken.

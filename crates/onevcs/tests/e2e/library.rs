@@ -4434,11 +4434,12 @@ fn the_landing_read_answers_a_change_requests_url_the_way_it_answers_the_branch(
         0,
         "the branch-keyed verb opens a change request for it"
     );
-    let rows = Git.recoverable(Scope::All).expect("the preserved branches");
+    // Published now, so only the report of every branch still lists it.
+    let rows = Git.preserved(Scope::All).expect("the preserved branches");
     let opened = rows
         .iter()
         .find(|row| row.branch.branch == "feature/branch-keyed")
-        .unwrap_or_else(|| panic!("the branch is still unpublished: {rows:#?}"))
+        .unwrap_or_else(|| panic!("the branch is still preserved: {rows:#?}"))
         .branch
         .change_url
         .clone()
@@ -8008,14 +8009,13 @@ fn stopped_on_its_red_check(ended: onevcs::Result<PublishOutcome>, which: &str) 
     );
 }
 
-/// What the inventory says holds the branch, where anything does.
+/// What the inventory says holds the branch, where anything does. This branch was
+/// pushed, so it has a row only while something holds it, and no row says nothing does.
 fn held(branch: &str) -> Option<onevcs::HeldBy> {
     let rows = onevcs::recoverable(&Scope::All).expect("the inventory reads");
     rows.iter()
         .find(|row| row.branch.branch == branch)
-        .unwrap_or_else(|| panic!("no row for {branch}: {rows:#?}"))
-        .held_by
-        .clone()
+        .and_then(|row| row.held_by.clone())
 }
 
 /// Hold `branch` to being held by a running publication.

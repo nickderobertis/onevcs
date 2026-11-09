@@ -121,7 +121,7 @@ kept; a pool slot is returned rather than removed. A branch a retry superseded,
 recorded with `onevcs supersede`, that still differs from the base is listed by
 `recoverable` with a `Reclaim:` line and only `onevcs reclaim` removes it.
 
-![`onevcs recoverable --all` over four branches: one whose run was left open and is only in a pool slot's clone, one whose publication stopped watching its checks and which is kept because its change request is open, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
+![`onevcs recoverable --all` over three branches: one whose run was left open and is only in a pool slot's clone, one marked landed whose recorded landing commit is named and which says there is nothing to resume, and one marked "on origin" that `onevcs preserve` pushed and nothing published — each with its identity, an indented "Found in:" path, why it stopped, and a pasteable "Resume: onevcs publish-branch …" line](docs/screenshots/recoverable.svg)
 
 `onevcs status REF` answers what became of a piece of work, asked by whichever
 name you hold — a change request's URL, a session token, a branch, or a commit. It

@@ -5013,6 +5013,53 @@ pub fn remote_tip(
     })
 }
 
+/// [`remote_tip`], answered from the remote's own refs where the remote is a plain bare
+/// repository on this filesystem, which is what that `ls-remote` would read anyway.
+pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteTip> {
+    match crate::native_refs::advertised_tip(cwd, remote, branch) {
+        Some(Some(id)) => Ok(ObjectId::parse(&id).map_or(RemoteTip::Unknown, RemoteTip::At)),
+        Some(None) => Ok(RemoteTip::Absent),
+        None => remote_tip(cwd, remote, branch, &[]),
+    }
+}
+
+/// Write `refs/remotes/origin/<branch>` to a commit origin is known to carry under that
+/// name, answering whether the ref now names it.
+///
+/// What a fetch of that one ref would have written, and only where a fetch would have
+/// written it: the commit must be one this repository holds itself, and a ref already
+/// at or past it is left where it is — moving it back would hide a push somebody else
+/// made. The write is leased on the value read, so a fetch racing it wins.
+pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
+    let reference = format!("refs/remotes/origin/{branch}");
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a commit this repository
+    // lacks. A copy-back fetches the commit first and a refresh only writes one it just read.
+    if !has_commit(repo, &Sha(commit.as_str().to_owned())) {
+        return false;
+    }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+    let current = tip(repo, &reference);
+    if let Some(current) = &current {
+        if current == commit.as_str() {
+            return true;
+        }
+        if is_ancestor(repo, commit.as_str(), current).unwrap_or(true) {
+            return false;
+        }
+    }
+    let lease = current.unwrap_or_else(|| "0".repeat(commit.as_str().len()));
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this lease lost to a racing
+    // fetch, between the read above and this write; no verb can be held inside that span,
+    // and losing it leaves the ref the fetch wrote. The write itself is every copy-back
+    // journey's assertion.
+    run(
+        &["update-ref", &reference, commit.as_str(), &lease],
+        Some(repo),
+    )
+    .is_ok_and(|written| written.ok())
+    // llmlint: ignore-end[changed_behavior_has_e2e]
+}
+
 /// Every branch a remote has and the commit each stands at, in one listing — or
 /// `None` where the remote could not be asked or answered with something that is not
 /// a listing, which is not the same fact as a remote with no branches.
@@ -5624,6 +5671,23 @@ pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> 
                 "--refmap=",
                 remote,
                 &format!("refs/heads/{branch}"),
+            ],
+            Some(cwd),
+        )
+    })?
+    .ok())
+}
+
+/// Fetch one branch of a remote to its remote-tracking ref and nothing else — no tag,
+/// no prune — answering whether git took it.
+pub fn fetch_tracking(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
+    Ok(fetching(cwd, || {
+        run(
+            &[
+                "fetch",
+                "--no-tags",
+                remote,
+                &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
             ],
             Some(cwd),
         )

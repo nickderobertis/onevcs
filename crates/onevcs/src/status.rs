@@ -2253,7 +2253,7 @@ fn holders_of(
 /// The stream is what `onevcs` knows it did, and it is the only durable link from a
 /// change request's URL back to the branch that opened it: the URL is the host's
 /// name for the change, and nothing on the branch carries it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Recorded {
     token: String,
     identity: Option<String>,
@@ -2303,6 +2303,63 @@ pub(crate) struct Recorded {
     /// Whether some of the stream could not be read — the file, or a line of it — so
     /// what it recorded is not all here.
     gaps: bool,
+    /// Every commit this stream records putting on origin under a branch's own name,
+    /// from each accepted `push` naming its `head` and each `change-opened` naming both
+    /// its `branch` and its `head`. Each keeps its scope where it has
+    /// one: a session's stream labels no identity, so [`publication_streams`] attributes
+    /// an unscoped entry through the session records instead.
+    ///
+    /// What `recoverable` asks before it lists a branch as unpublished: a copy whose tip
+    /// this host itself put on origin, or one behind such a commit, is published work
+    /// whatever the remote-tracking refs of the checkout holding it say.
+    pushed: Vec<(Option<Scope>, PushedHead)>,
+}
+
+/// One commit a stream records origin carrying under a branch's own name.
+#[derive(Debug, Clone)]
+pub(crate) struct PushedHead {
+    pub(crate) branch: Ref,
+    pub(crate) head: ObjectId,
+}
+
+/// Written out by hand so that it prints exactly what the derived form printed before
+/// [`pushed`](Recorded::pushed) existed: [`recorded_digest`] keys a retirement verdict
+/// on these bytes, the retirement derivation reads no push head, and builds sharing one
+/// state root must keep computing one key for one record.
+impl std::fmt::Debug for Recorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Recorded {
+            token,
+            identity,
+            branch,
+            proofs,
+            draft,
+            lifted,
+            described,
+            on_origin,
+            asked_the_host_to_land,
+            merge_path,
+            superseded,
+            retired,
+            gaps,
+            pushed: _,
+        } = self;
+        f.debug_struct("Recorded")
+            .field("token", token)
+            .field("identity", identity)
+            .field("branch", branch)
+            .field("proofs", proofs)
+            .field("draft", draft)
+            .field("lifted", lifted)
+            .field("described", described)
+            .field("on_origin", on_origin)
+            .field("asked_the_host_to_land", asked_the_host_to_land)
+            .field("merge_path", merge_path)
+            .field("superseded", superseded)
+            .field("retired", retired)
+            .field("gaps", gaps)
+            .finish()
+    }
 }
 
 /// Whose an event's proofs are, as the record-scoping rule reads it.
@@ -3531,6 +3588,7 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         superseded: Vec::new(),
         retired: None,
         gaps: false,
+        pushed: Vec::new(),
     };
     let path = directory.join(format!("{token}.ndjson"));
     let raw = match std::fs::read_to_string(&path) {
@@ -3614,6 +3672,9 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         );
         match kind {
             EventKind::ChangeOpened => {
+                if let Some(named) = pushed_head(&field) {
+                    record.pushed.push((scope.clone(), named));
+                }
                 if let (Some(url), Some(proofs)) = (field("url"), scoped(&mut record, &scope)) {
                     proofs.opened = Some(Stamped {
                         at,
@@ -3768,6 +3829,10 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
             // push's output, so `accepted` is what it ruled. A push that recorded no
             // such field said nothing, which is not the same as saying no.
             EventKind::Push => {
+                let accepted = event.payload.get("accepted").and_then(Value::as_bool);
+                if let (Some(true), Some(pushed)) = (accepted, pushed_head(&field)) {
+                    record.pushed.push((scope.clone(), pushed));
+                }
                 record.merge_path = Some(Stamped {
                     at,
                     value: MergePathReport {
@@ -3799,6 +3864,14 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         }
     }
     record
+}
+
+/// The branch and head one event says origin carries, each through the check its kind
+/// meets: a stream is input, and both go on to name a ref and a revision.
+fn pushed_head(field: &impl Fn(&str) -> Option<String>) -> Option<PushedHead> {
+    let branch = field("branch").and_then(|name| Ref::try_from(name).ok())?;
+    let head = field("head").as_deref().and_then(ObjectId::parse)?;
+    Some(PushedHead { branch, head })
 }
 
 /// The proofs one scope of a stream holds, made where they are first written — or
@@ -3938,6 +4011,127 @@ pub(crate) fn recorded_for(
         )
         .and_then(|opened| Url::parse(&opened.url).ok()),
     }
+}
+
+/// Whether an entry of `record` counts for `identity`: its own scope says so, or it has
+/// none and `record` is the stream of one of that identity's own sessions. A
+/// branch-keyed stream is one per name across repositories, so an unscoped entry there
+/// counts for nobody.
+fn counts_for(
+    scope: &Option<Scope>,
+    record: &Recorded,
+    identity: &str,
+    sessions: &[String],
+) -> bool {
+    match scope {
+        Some(scope) => scope.admits(identity),
+        None => sessions.contains(&record.token),
+    }
+}
+
+/// The streams about one branch: [`relevant_streams`], and the stream of each of the
+/// `sessions` of that identity which recorded the branch.
+fn publication_streams<'a>(
+    streams: &'a [Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> Vec<&'a Recorded> {
+    let named = relevant_streams(streams, identity, branch, None);
+    streams
+        .iter()
+        .filter(|record| {
+            sessions.contains(&record.token)
+                || named.iter().any(|kept| std::ptr::eq(*kept, *record))
+        })
+        .collect()
+}
+
+/// Every commit this host's streams record putting on origin as one branch of one
+/// identity, from accepted publishing pushes.
+///
+/// `sessions` are the tokens of that identity's sessions of the branch. Held to the
+/// branch asked about, for the reason [`preserved_in`] is: a stream is matched by name
+/// as well as by content, and a branch-keyed verb's stream can hold another branch's
+/// push. A `change-opened` naming no head cannot answer this; the push it follows does.
+pub(crate) fn pushed_heads(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> Vec<ObjectId> {
+    publication_streams(streams, identity, branch, sessions)
+        .into_iter()
+        .flat_map(|record| {
+            record
+                .pushed
+                .iter()
+                .filter(move |(scope, pushed)| {
+                    *pushed.branch == *branch && counts_for(scope, record, identity, sessions)
+                })
+                .map(|(_, pushed)| pushed.head.clone())
+        })
+        .collect()
+}
+
+/// The newest commit one session's stream records putting on origin as `branch` of
+/// `identity` — what a copy-back writes the destination's `origin/<branch>` to, so a
+/// checkout handed a published branch does not read it as work nobody published.
+pub(crate) fn pushed_on(token: &str, identity: &str, branch: &str) -> Option<ObjectId> {
+    let directory = home::streams_dir().ok()?;
+    if !directory.join(format!("{token}.ndjson")).is_file() {
+        return None;
+    }
+    read_stream(&directory, token, &mut Vec::new())
+        .pushed
+        .into_iter()
+        .rev()
+        .find(|(scope, pushed)| {
+            *pushed.branch == *branch && scope.as_ref().is_none_or(|scope| scope.admits(identity))
+        })
+        .map(|(_, pushed)| pushed.head)
+}
+
+/// Whether this host's streams record a change request opened for one branch of one
+/// identity, held to that identity's repository and to a stream about that branch: a
+/// session's of it, or one whose events name it.
+///
+/// Says that one was opened and nothing about which commit: only a commit a record
+/// names can cover a tip ([`pushed_heads`]).
+pub(crate) fn opened_change_recorded(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> bool {
+    publication_streams(streams, identity, branch, sessions)
+        .into_iter()
+        .filter(|record| {
+            sessions.contains(&record.token) || record.branch.as_deref() == Some(branch)
+        })
+        .any(|record| record.opened_for(identity).is_some())
+}
+
+/// The tokens of the streams that record publishing one branch of one identity: an
+/// accepted push of it, or a change request opened for it.
+pub(crate) fn publishing_streams(
+    streams: &[Recorded],
+    identity: &str,
+    branch: &str,
+    sessions: &[String],
+) -> BTreeSet<String> {
+    publication_streams(streams, identity, branch, sessions)
+        .into_iter()
+        .filter(|record| {
+            record.pushed.iter().any(|(scope, pushed)| {
+                *pushed.branch == *branch && counts_for(scope, record, identity, sessions)
+            }) || record
+                .proofs
+                .iter()
+                .any(|(scope, proofs)| scope.admits(identity) && proofs.opened.is_some())
+        })
+        .map(|record| record.token.clone())
+        .collect()
 }
 
 /// Where the newest preservation of one branch put it on its origin, across the
@@ -5190,6 +5384,26 @@ fn spell_source(source: &CheckSource) -> &'static str {
 /// answer for that are deliberately private, so proving they round-trip from outside
 /// the crate would mean making a dozen of them public for a test's benefit. The two
 /// halves read the same two files, so neither can drift from the other.
+#[cfg(test)]
+mod recorded_digest_bytes {
+    use super::read_stream;
+
+    /// Retirement verdicts are keyed on these bytes across builds sharing one state
+    /// root. `Recorded` is private and its `Debug` reaches no output, so no journey can
+    /// read them: the literal is what a build before `pushed` existed printed.
+    #[test]
+    fn a_record_debug_prints_the_bytes_builds_before_pushed_keyed_on() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let record = read_stream(directory.path(), "t", &mut Vec::new());
+        assert_eq!(
+            format!("{record:?}"),
+            "Recorded { token: \"t\", identity: None, branch: None, proofs: {}, draft: None, \
+             lifted: None, described: None, on_origin: None, asked_the_host_to_land: false, \
+             merge_path: None, superseded: [], retired: None, gaps: false }"
+        );
+    }
+}
+
 #[cfg(test)]
 mod round_trip {
     use super::{DraftReason, Landing, Report, ReportVersion, StandingDraft, REPORT_VERSION};
