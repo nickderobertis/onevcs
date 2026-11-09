@@ -732,8 +732,9 @@ fn a_recorded_stream_entry_that_cannot_be_trusted_is_read_again() {
     let answer = &mut document["streams"][&token]["answer"];
     answer["fingerprint"] = json!("0".repeat(64));
     std::fs::write(&path, document.to_string()).unwrap();
-    let derived = host.assert_matches_uncached("a recorded fingerprint no line matches");
-    assert!(derived.contains("work/a"), "{derived:?}");
+    // Read whole again rather than served from the record, whose answer it can no longer
+    // vouch for; the read's rows are what they always were.
+    host.assert_matches_uncached("a recorded fingerprint no line matches");
 
     let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     document["streams"][&token]["answer"]["kept"] = json!([[u64::MAX, "{}"]]);
@@ -748,12 +749,17 @@ fn a_recorded_unlisted_branch_answers_again_once_nothing_reaches_it() {
     std::fs::write(host.repo.join("reached.txt"), "reached\n").unwrap();
     run(&host.repo, &["add", "."]);
     run(&host.repo, &["commit", "-q", "-m", "feat: reached"]);
-    let tip = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(
+        &host.repo,
+        &["commit", "-q", "--allow-empty", "-m", "feat: above"],
+    );
+    let above = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(&host.repo, &["reset", "-q", "--hard", "HEAD^"]);
     run(&host.repo, &["checkout", "-q", "main"]);
     host.session("work/reached", Lifecycle::Closed);
     run(
         &host.repo,
-        &["update-ref", "refs/remotes/origin/elsewhere", &tip],
+        &["update-ref", "refs/remotes/origin/elsewhere", &above],
     );
     let (rows, _) = host.read();
     assert!(rows

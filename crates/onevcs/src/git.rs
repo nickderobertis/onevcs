@@ -3887,6 +3887,11 @@ pub fn known_to_carry_changes<'a>(
         .any(|path| touched.contains(path)))
 }
 
+/// How many files git says two commits differ in, for a caller holding a listing to it.
+pub(crate) fn count_files(cwd: Asked<'_>, from: &str, to: &str) -> Result<usize> {
+    counted_files(cwd, from, to)
+}
+
 /// Whether a whole-tree `diff --name-only -z` answered in full: a listing of text arrived
 /// whole, and an empty one is held to git's count of files, since an undecodable listing
 /// reads as empty.

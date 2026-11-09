@@ -385,12 +385,17 @@ pub(crate) fn gained(
         ],
         b"",
     )?;
-    if !changed.ok()
-        || changed.stdout.is_empty() && !listed.stdout.is_empty() && gained.commits.len() > 1
-    {
+    if !changed.ok() {
         return Err(crate::error::invalid(format!(
             "git diff {from} {current} failed: {}",
             changed.diagnostic()
+        )));
+    }
+    // A listing that was not text reads as empty, so an empty one is held to git's count
+    // of files: a base gaining a path it cannot print cannot be checked.
+    if changed.stdout.is_empty() && git::count_files(asked, &from, current)? != 0 {
+        return Err(crate::error::invalid(format!(
+            "the paths {from} and {current} differ in could not be read whole"
         )));
     }
     gained.paths = changed
@@ -864,8 +869,7 @@ pub(crate) fn host_streams() -> Result<StreamAnswers> {
             Step::New(record, entry) => {
                 let identity = record.identity().unwrap_or_default().to_owned();
                 let previous = answers.entries.get(&token);
-                let moved = previous
-                    .is_none_or(|(_, old)| old.answer.fingerprint != entry.answer.fingerprint);
+                let moved = previous.is_none_or(|(_, old)| old.answer.seen != entry.answer.seen);
                 let lines_read = !entry.answer.kept.is_empty()
                     || previous.is_some_and(|(_, old)| !old.answer.kept.is_empty());
                 if moved && lines_read {
