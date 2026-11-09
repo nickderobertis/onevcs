@@ -1999,12 +1999,12 @@ fn record_decision(
     let mut decided_against = None;
     if !landed {
         // What the increment check matches gained commits against, read while the
-        // branch's inputs are in hand. A fork it cannot read leaves nothing to match
-        // but the tip, which only an exact reach of the base can name.
+        // branch's inputs are in hand.
         decided_against = Some(compared.to_owned());
-        // A fork this checkout cannot read leaves only the tip to match. Commits or paths it
-        // could not read would conceal a landing that names them, so that decision is not
-        // recorded; the subject is one key beside those and is left out where it has none.
+        // A fork this checkout cannot read leaves only the tip to match, which only an exact
+        // reach of the base can name. Commits or paths it could not read would conceal a
+        // landing that names them, so that decision is not recorded; the subject is one key
+        // beside those and is left out where it has none.
         // llmlint: ignore[changed_behavior_has_e2e] these reads follow a comparison of the
         // same revisions in the same store, so no fixture fails one without the other.
         if let Ok(fork) = git::merge_base(asked, compared, branch) {
