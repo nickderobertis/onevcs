@@ -827,7 +827,17 @@ fn scan_identity(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         // its work reached a remote-tracking ref. Recording that keeps a read from
         // asking again until its tip moves.
         if scan.writing && scan.detail == crate::Detail::Decision {
-            for branch in derive.iter().filter(|branch| !recorded.contains(*branch)) {
+            // A branch the derivation answered but could not decide has a row and no
+            // record; only one that answered nothing is unlisted.
+            let answered: BTreeSet<&str> = rows
+                .iter()
+                .chain(withheld_rows.iter())
+                .map(|(_, row)| row.branch.branch.as_str())
+                .collect();
+            for branch in derive
+                .iter()
+                .filter(|branch| !recorded.contains(*branch) && !answered.contains(branch.as_str()))
+            {
                 let Some((repo, tip)) = tips.get(branch) else {
                     continue;
                 };
@@ -1470,6 +1480,11 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
                     scan.detail,
                     Some(tip.clone()),
                 )
+                // llmlint: ignore[changed_behavior_has_e2e] a row that cannot be built
+                // after a verdict was reached shares the comparison's own fallback above,
+                // which the refused-comparison journey drives; only a git failure in the
+                // row's provenance reads, after the same object store already answered,
+                // reaches this arm, and no fixture can fail one without the other.
                 .unwrap_or_else(|failure| {
                     undecided_row(
                         identity,

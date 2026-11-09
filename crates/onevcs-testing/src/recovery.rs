@@ -1561,7 +1561,7 @@ pub struct AgedHost {
     pub moved: Vec<(String, Ref, ObjectId)>,
     /// The branches the base's gains landed.
     pub landed: Vec<LandedBranch>,
-    bases: Vec<(PathBuf, String)>,
+    bases: Vec<(PathBuf, ObjectId)>,
     snapshot: BTreeMap<PathBuf, Vec<u8>>,
 }
 
@@ -1598,10 +1598,11 @@ impl AgedHost {
         }
         for (repo, base) in &self.bases {
             let found = main_tip(repo)?;
-            if found != *base {
+            if found != base.as_str() {
                 return Err(invalid(format!(
-                    "the base of {} is at {found}, not the aged {base}",
-                    repo.display()
+                    "the base of {} is at {found}, not the aged {}",
+                    repo.display(),
+                    base.as_str()
                 )));
             }
         }
@@ -1785,7 +1786,10 @@ pub fn age_host(fixture: &Fixture) -> Result<AgedHost> {
                 landing,
             });
         }
-        bases.push((repo, tip));
+        bases.push((
+            repo,
+            ObjectId::parse(&tip).ok_or_else(|| invalid("fixture base is not an object name"))?,
+        ));
     }
     let snapshot = list_files(&fixture.home)?;
     Ok(AgedHost {

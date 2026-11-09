@@ -478,12 +478,16 @@ pub(crate) struct Answer {
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 
+// llmlint: ignore-block[invalid_states_unrepresentable] a stream's token is read back and
+// held to `ids::is_safe_name` where the document is loaded, before it names a file, as
+// every other caller-supplied identifier in this crate is.
 #[derive(Debug, Serialize, Deserialize)]
 struct StreamsFile {
     version: u32,
     identity: String,
     streams: BTreeMap<String, StreamEntry>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// Which branches the streams now say something different about.
 #[derive(Debug, Default)]
@@ -544,7 +548,8 @@ fn load_entries(only: Option<&BTreeSet<String>>) -> HashMap<String, (String, Str
         for (token, entry) in file.streams {
             // A position outside the stream's own line count is not one this build
             // wrote; bounded here, before anything folds it into line arithmetic.
-            let bounded = entry.answer.lines < MAX_STREAM_LINES
+            let bounded = ids::is_safe_name(&token)
+                && entry.answer.lines < MAX_STREAM_LINES
                 && entry
                     .answer
                     .kept

@@ -971,3 +971,36 @@ fn a_record_that_cannot_be_written_costs_only_its_reuse() {
     host.read();
     assert_eq!(host.assert_matches_uncached("recorded"), set(&[]));
 }
+
+#[test]
+fn a_branch_whose_comparison_was_refused_is_not_recorded_and_answers_once_repaired() {
+    let host = Host::new();
+    let tip = host.branch("work/a");
+    host.branch("work/b");
+    let tree = run(&host.repo, &["rev-parse", &format!("{tip}^{{tree}}")]);
+    let object = host
+        .repo
+        .join(".git/objects")
+        .join(&tree[..2])
+        .join(&tree[2..]);
+    let saved = std::fs::read(&object).unwrap();
+    std::fs::remove_file(&object).unwrap();
+    // Refused twice, on the record's path: the row stays unknown and is not recorded.
+    for _ in 0..2 {
+        let rows = host.rows();
+        let refused = rows
+            .iter()
+            .find(|row| row["branch"]["branch"] == "work/a")
+            .unwrap();
+        assert_eq!(refused["landed"]["state"], "unknown");
+        assert!(!host.record_path("work/a").exists());
+    }
+    std::fs::write(&object, saved).unwrap();
+    let (rows, _) = host.read();
+    let repaired = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "work/a")
+        .unwrap();
+    assert_eq!(repaired["landed"]["state"], "no");
+    assert!(host.record_path("work/a").exists());
+}
