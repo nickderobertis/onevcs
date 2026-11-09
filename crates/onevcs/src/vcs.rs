@@ -476,45 +476,50 @@ struct Narrowed {
     /// session's own clone, and the execution checkout its branch is handed back to
     /// when it closes. A branch this host knows about is in one of the two.
     checkouts: BTreeSet<PathBuf>,
-    /// Whether sessions or labels selected the branches above.
-    selected_sessions: bool,
-    /// Which branch a branch filter named, where one did: every checkout of an
-    /// identity may hold it, so the checkouts above do not narrow a read by it alone.
-    only_branch: Option<String>,
+    /// What selected the branches above.
+    selecting: Selecting,
+}
+
+/// Which of a selection's two kinds of filter a read was asked through.
+enum Selecting {
+    /// Sessions or labels, and the branches they hold.
+    Sessions,
+    /// One branch alone: every checkout of an identity may hold it, so the checkouts
+    /// above do not narrow the read.
+    Branch(String),
+    /// One branch, among the branches sessions or labels selected.
+    BranchOfSessions(String),
 }
 
 impl Narrowed {
     /// Whether a branch is one of the ones asked about.
     fn wants(&self, identity: &str, branch: &str) -> bool {
-        match (&self.only_branch, self.selected_sessions) {
-            (Some(only), false) => only == branch,
-            (Some(only), true) => {
-                only == branch
-                    && self
-                        .branches
-                        .contains(&(identity.to_owned(), branch.to_owned()))
-            }
-            (None, _) => self
-                .branches
-                .contains(&(identity.to_owned(), branch.to_owned())),
+        let selected = || {
+            self.branches
+                .contains(&(identity.to_owned(), branch.to_owned()))
+        };
+        match &self.selecting {
+            Selecting::Branch(only) => only == branch,
+            Selecting::BranchOfSessions(only) => only == branch && selected(),
+            Selecting::Sessions => selected(),
         }
     }
 
     /// Whether a checkout can be holding a branch this read is asked about.
     fn looks_everywhere(&self) -> bool {
-        self.only_branch.is_some() && !self.selected_sessions
+        matches!(self.selecting, Selecting::Branch(_))
     }
 
     /// Whether a checkout can be holding a branch this read is asked about.
     fn looks_in(&self, repo: &Path) -> bool {
-        self.only_branch.is_some() && !self.selected_sessions || self.checkouts.contains(repo)
+        self.looks_everywhere() || self.checkouts.contains(repo)
     }
 
     /// The (identity, branch) pairs this read's streams are about. A branch filter alone
     /// names the branch in every identity, whether or not a session recorded it.
     fn about(&self, registry: &crate::registry::Registry) -> BTreeSet<(String, String)> {
         let mut about = self.branches.clone();
-        if let (Some(only), false) = (&self.only_branch, self.selected_sessions) {
+        if let Selecting::Branch(only) = &self.selecting {
             about.extend(
                 registry
                     .checkouts
@@ -528,8 +533,7 @@ impl Narrowed {
     /// Whether the read is confined to some identities: a branch filter alone is not,
     /// since any identity may hold the name.
     fn excludes_identity(&self, identity: &str) -> bool {
-        !(self.only_branch.is_some() && !self.selected_sessions)
-            && !self.identities.contains(identity)
+        !self.looks_everywhere() && !self.identities.contains(identity)
     }
 }
 
@@ -558,8 +562,14 @@ fn narrowed(selection: &Selection, sessions: &[workspace::Record]) -> Result<Opt
         identities: BTreeSet::new(),
         branches: BTreeSet::new(),
         checkouts: BTreeSet::new(),
-        selected_sessions: !selection.sessions.is_empty() || !selection.labels.is_empty(),
-        only_branch: selection.branch.clone(),
+        selecting: match (
+            selection.branch.clone(),
+            selection.sessions.is_empty() && selection.labels.is_empty(),
+        ) {
+            (None, _) => Selecting::Sessions,
+            (Some(only), true) => Selecting::Branch(only),
+            (Some(only), false) => Selecting::BranchOfSessions(only),
+        },
     };
     for record in sessions {
         if selection
@@ -656,7 +666,7 @@ fn collected(
     let writing = reusing && selection.sessions.is_empty() && selection.labels.is_empty();
     let branch_filter = narrowed
         .as_ref()
-        .is_some_and(|only| only.only_branch.is_some());
+        .is_some_and(|only| !matches!(only.selecting, Selecting::Sessions));
     let (streams, answers, moved) = if reusing && narrowed.is_none() {
         let answers = crate::decisions::host_streams()?;
         let streams = answers.streams.clone();

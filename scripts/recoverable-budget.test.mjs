@@ -60,6 +60,7 @@ const refusals = {
   "missing in-process cold calls":f=>{delete f.record.workloads[0].in_process_cold;f.save();},
   "too few in-process calls":f=>{f.record.workloads[0].in_process_cold.pop();f.save();},
   "an in-process call answering other rows":f=>{f.record.workloads[0].in_process_warm[3].verdict_sha256=sha("different verdict");f.save();},
+  "a host warm read answering other rows than the cold one":f=>{f.record.host.cold.verdict_sha256=sha("different verdict");f.save();},
   "an untimed in-process call":f=>{f.record.workloads[1].in_process_warm[9].wall_ms=0;f.save();},
   "foreign scale":f=>{f.record.workloads[0].scale=10;f.save();},
   "shrunk workload":f=>{f.record.workloads[0].shape=[1,1,1,1];f.save();},
