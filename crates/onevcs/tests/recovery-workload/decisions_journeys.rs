@@ -288,3 +288,20 @@ fn the_base_increment_check_costs_the_same_however_many_branches_or_commits() {
     assert_eq!(derived_many, set(&["work/0"]));
     assert_eq!(derived_commits, set(&["work/0"]));
 }
+
+#[test]
+fn a_record_is_reanchored_after_a_long_gain_and_stays_correct() {
+    let _exclusive = exclusive();
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    gain_unrelated(&host, 260);
+    host.assert_matches_uncached("the long gain");
+    let decided: Value =
+        serde_json::from_slice(&std::fs::read(host.record_path("work/a")).unwrap()).unwrap();
+    assert_eq!(
+        decided["decided_against"],
+        run(&host.repo, &["rev-parse", "main"])
+    );
+    assert_eq!(host.assert_matches_uncached("reanchored"), set(&[]));
+}

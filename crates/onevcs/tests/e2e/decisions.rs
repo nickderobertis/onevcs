@@ -555,22 +555,6 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
 }
 
 #[test]
-fn a_record_is_reanchored_after_a_long_gain_and_stays_correct() {
-    let host = Host::new();
-    host.branch("work/a");
-    host.read();
-    gain_unrelated(&host, 260);
-    host.assert_matches_uncached("the long gain");
-    let decided: Value =
-        serde_json::from_slice(&std::fs::read(host.record_path("work/a")).unwrap()).unwrap();
-    assert_eq!(
-        decided["decided_against"],
-        run(&host.repo, &["rev-parse", "main"])
-    );
-    assert_eq!(host.assert_matches_uncached("reanchored"), set(&[]));
-}
-
-#[test]
 fn a_partial_stream_line_and_a_removed_stream_answer_the_uncached_read() {
     let host = Host::new();
     host.branch("work/a");
@@ -631,4 +615,44 @@ fn a_branch_filter_narrows_a_session_or_label_selection_to_that_branch() {
         filtered(Vec::new(), run_label, "work/a").is_empty(),
         "no session carries that label"
     );
+}
+
+#[test]
+fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    let copy = host.second_checkout();
+    host.read();
+
+    // A copy elsewhere moving makes the copies disagree.
+    run(&copy, &["checkout", "-q", "work/a"]);
+    std::fs::write(copy.join("copy.txt"), "copy\n").unwrap();
+    run(&copy, &["add", "."]);
+    run(&copy, &["commit", "-q", "-m", "feat: copy only"]);
+    run(&copy, &["checkout", "-q", "main"]);
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "copies disagree");
+    assert!(derived.contains("work/a"), "{derived:?}");
+
+    // A non-base origin ref appearing leaves a branch still ahead of everything it has.
+    let tip = run(&host.repo, &["rev-parse", "work/b"]);
+    run(
+        &host.repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/elsewhere",
+            &run(&host.repo, &["rev-parse", "main"]),
+        ],
+    );
+    assert_eq!(host.assert_matches_uncached("another origin ref"), set(&[]));
+    // …until it is what reaches the branch's tip.
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &tip],
+    );
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "the origin reaches work/b");
+    assert!(derived.contains("work/b"), "{derived:?}");
+    assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
 }

@@ -133,6 +133,38 @@ impl Host {
         command
     }
 
+    /// A second registered checkout of this identity, with this one's branches.
+    pub fn second_checkout(&self) -> PathBuf {
+        let copy = self.root.join("copy");
+        run(
+            &self.root,
+            &[
+                "clone",
+                "-q",
+                self.repo.to_str().unwrap(),
+                copy.to_str().unwrap(),
+            ],
+        );
+        run(&copy, &["config", "user.name", "Fixture"]);
+        run(&copy, &["config", "user.email", "fixture@example.invalid"]);
+        run(&copy, &["config", "commit.gpgsign", "false"]);
+        run(
+            &copy,
+            &[
+                "fetch",
+                "-q",
+                "--update-head-ok",
+                "origin",
+                "+refs/heads/*:refs/heads/*",
+            ],
+        );
+        let path = self.home.join("registry.json");
+        let mut registry: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        registry["checkouts"]["copy"] = json!({"path": copy, "identity": self.key});
+        std::fs::write(&path, serde_json::to_vec_pretty(&registry).unwrap()).unwrap();
+        copy
+    }
+
     pub fn token(branch: &str) -> String {
         format!("s-{}", branch.replace('/', "-"))
     }

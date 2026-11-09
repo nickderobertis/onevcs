@@ -449,6 +449,9 @@ pub(crate) fn unmatched_trailers_reached(
         .any(|value| !printed.contains(value.as_str())))
 }
 
+// llmlint: ignore-block[invalid_states_unrepresentable] the spec fixes this stored
+// document's digest fields as lowercase hex strings; both are compared for equality against
+// a freshly computed digest and never interpreted, so a malformed one is simply no match.
 /// One stream's answer as a record keeps it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StreamEntry {
@@ -465,6 +468,7 @@ pub(crate) struct Answer {
     pub kept: Vec<(u64, String)>,
     pub fingerprint: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StreamsFile {
@@ -593,6 +597,16 @@ fn read_one(directory: &Path, token: &str, entry: Option<&StreamEntry>) -> Step 
         let unchanged = size >= entry.length
             && tail_digest(&file, entry.length).as_deref() == Some(entry.digest.as_str());
         if unchanged {
+            // Bounded before anything folds them, so a tampered position cannot reach
+            // the line arithmetic.
+            if entry
+                .answer
+                .kept
+                .iter()
+                .any(|(index, _)| *index >= entry.answer.lines)
+            {
+                return read_whole(token, &path);
+            }
             let record = fold(token, &path, &entry.answer.kept);
             // A kept answer that does not mean what its fingerprint says is no answer.
             if fingerprint(&record) != entry.answer.fingerprint
@@ -601,6 +615,11 @@ fn read_one(directory: &Path, token: &str, entry: Option<&StreamEntry>) -> Step 
                     .kept
                     .iter()
                     .is_sorted_by_key(|(index, _)| *index)
+                || entry
+                    .answer
+                    .kept
+                    .iter()
+                    .any(|(index, _)| *index >= entry.answer.lines)
             {
                 return read_whole(token, &path);
             }

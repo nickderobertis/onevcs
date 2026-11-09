@@ -3032,7 +3032,16 @@ pub fn unpublished_branches_among(
     listed_anyway: &BTreeSet<String>,
     based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
-    unpublished_among(cwd, keep, listed_anyway, based_on, false)
+    unpublished_among(cwd, keep, listed_anyway, based_on, Undecided::Refuse)
+}
+
+/// What a read of unpublished branches does when one branch's count cannot be made.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Undecided {
+    /// Refuses the whole read, the way a close or a reclamation needs.
+    Refuse,
+    /// Lists the branch for its row to say so, keeping the host's other answers.
+    List,
 }
 
 /// [`unpublished_branches_among`] for a report that keeps answering when one branch's
@@ -3044,7 +3053,7 @@ pub(crate) fn unpublished_branches_answering(
     listed_anyway: &BTreeSet<String>,
     based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
-    unpublished_among(cwd, keep, listed_anyway, based_on, true)
+    unpublished_among(cwd, keep, listed_anyway, based_on, Undecided::List)
 }
 
 fn unpublished_among(
@@ -3052,7 +3061,7 @@ fn unpublished_among(
     keep: impl Fn(&str) -> bool,
     listed_anyway: &BTreeSet<String>,
     based_on: impl Fn(&str) -> Option<String>,
-    answering: bool,
+    undecided: Undecided,
 ) -> Result<Vec<(String, String)>> {
     let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
     let (heads, origin_tips) = if let Some((heads, origin)) = native {
@@ -3114,7 +3123,7 @@ fn unpublished_among(
             }
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
             if !given.ok() {
-                if answering {
+                if undecided == Undecided::List {
                     // Counted branch by branch below, so the one that cannot be read
                     // answers alone.
                     found.clear();
@@ -3165,7 +3174,7 @@ fn unpublished_among(
         match unpublished_ahead(cwd, &tip, &carried) {
             Ok(ahead) if ahead > 0 => unpublished.push((branch, tip)),
             Ok(_) => {}
-            Err(_) if answering => unpublished.push((branch, tip)),
+            Err(_) if undecided == Undecided::List => unpublished.push((branch, tip)),
             Err(refused) => return Err(refused),
         }
     }
